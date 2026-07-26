@@ -9,6 +9,9 @@ plays through an allocation-free callback bridge, and Spectrum reacts to it.
 ## Commands
 
 ```sh
+tools/verify.sh                    # everything that can check itself, in order
+tools/verify.sh --quick            # same, minus the headless capture
+
 cargo build                        # no environment setup needed
 cargo test                         # headless; no window, no audio device
 cargo clippy --all-targets
