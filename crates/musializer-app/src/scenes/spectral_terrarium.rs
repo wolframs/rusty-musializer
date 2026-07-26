@@ -34,154 +34,18 @@ use raylib::prelude::{
 };
 
 use super::spectrum::CircleShader;
+use musializer_runtime::draw::{draw_billboard_rec, SceneViewport};
 
 const PI: f32 = std::f32::consts::PI;
 
-/// Restricts 3D rendering to `boundary` without changing the composition inside it.
-///
-/// Port of the viewport block the C repeats in every 3D scene
-/// (`scene_spectral_terrarium.c:555-604`, `scene_constellation.c:180-318`). Three
-/// things have to happen together and none of them is optional:
-///
-/// 1. the GL viewport is narrowed to the panel's pixels, so 3D geometry cannot
-///    spill over the UI;
-/// 2. rlgl's notion of the framebuffer size is narrowed with it, because
-///    `BeginMode3D` derives its projection aspect from that;
-/// 3. the projection is then rescaled in X by `full_aspect / viewport_aspect`, so
-///    the scene is framed by the *window's* aspect rather than the panel's. Without
-///    this a narrow preview panel stretches the world instead of cropping it.
-///
-/// The batch is flushed before and after, because rlgl defers draw calls and a
-/// pending batch would otherwise be rasterized under the wrong viewport.
-pub struct SceneViewport {
-    saved_width: i32,
-    saved_height: i32,
-    width: i32,
-    height: i32,
-}
-
-impl SceneViewport {
-    /// Narrows the viewport to `boundary`, or returns `None` when the result would
-    /// be degenerate — the same early returns the C takes.
-    pub fn begin<D: RaylibDraw>(_d: &mut D, boundary: Rectangle) -> Option<Self> {
-        // SAFETY: pure rlgl/raylib getters over global renderer state, valid while a
-        // drawing context is active. The `_d` borrow is that proof.
-        let (saved_width, saved_height, active_framebuffer, screen_width, screen_height) = unsafe {
-            (
-                raylib_sys::rlGetFramebufferWidth(),
-                raylib_sys::rlGetFramebufferHeight(),
-                raylib_sys::rlGetActiveFramebuffer(),
-                raylib_sys::GetScreenWidth(),
-                raylib_sys::GetScreenHeight(),
-            )
-        };
-        if saved_width < 1 || saved_height < 1 {
-            return None;
-        }
-        // When drawing to the default framebuffer, boundary coordinates are in
-        // screen space rather than framebuffer space; a supersampled export path
-        // renders into a render texture where the two already agree.
-        let (coordinate_width, coordinate_height) = if active_framebuffer == 0 {
-            if screen_width < 1 || screen_height < 1 {
-                return None;
-            }
-            (screen_width as f32, screen_height as f32)
-        } else {
-            (saved_width as f32, saved_height as f32)
-        };
-        let scale_x = saved_width as f32 / coordinate_width;
-        let scale_y = saved_height as f32 / coordinate_height;
-        let x = (boundary.x * scale_x).round() as i32;
-        let width = (boundary.width * scale_x).round() as i32;
-        let height = (boundary.height * scale_y).round() as i32;
-        // GL's origin is bottom-left, the boundary's is top-left.
-        let top = ((boundary.y + boundary.height) * scale_y).round() as i32;
-        let y = saved_height - top;
-        if width < 1 || height < 1 {
-            return None;
-        }
-
-        // SAFETY: rlgl state changes on the render thread while a drawing context is
-        // active. The batch is flushed first so nothing already queued is rasterized
-        // under the new viewport, and `end` restores every value this touches.
-        unsafe {
-            raylib_sys::rlDrawRenderBatchActive();
-            raylib_sys::rlViewport(x, y, width, height);
-            raylib_sys::rlSetFramebufferWidth(width);
-            raylib_sys::rlSetFramebufferHeight(height);
-        }
-        Some(Self {
-            saved_width,
-            saved_height,
-            width,
-            height,
-        })
-    }
-
-    /// Rescales the projection so the panel crops the world instead of stretching
-    /// it. Call this immediately inside `BeginMode3D`, as the C does.
-    pub fn correct_aspect<D: RaylibDraw3D>(&self, _d: &mut D) {
-        let viewport_aspect = self.width as f32 / self.height as f32;
-        let full_aspect = self.saved_width as f32 / self.saved_height as f32;
-        // SAFETY: matrix-stack calls on the active rlgl context, balanced so the
-        // mode is left back on MODELVIEW exactly as `BeginMode3D` left it.
-        unsafe {
-            raylib_sys::rlMatrixMode(raylib_sys::RL_PROJECTION as i32);
-            raylib_sys::rlScalef(full_aspect / viewport_aspect, 1.0, 1.0);
-            raylib_sys::rlMatrixMode(raylib_sys::RL_MODELVIEW as i32);
-        }
-    }
-
-    /// Restores the full viewport. Must be called after `EndMode3D`.
-    pub fn end<D: RaylibDraw>(self, _d: &mut D) {
-        // SAFETY: restores exactly the values captured in `begin`, after flushing
-        // the batch drawn under the narrowed viewport.
-        unsafe {
-            raylib_sys::rlDrawRenderBatchActive();
-            raylib_sys::rlSetFramebufferWidth(self.saved_width);
-            raylib_sys::rlSetFramebufferHeight(self.saved_height);
-            raylib_sys::rlViewport(0, 0, self.saved_width, self.saved_height);
-        }
-    }
-}
-
 /// Sets the circle shader's two uniforms.
 ///
-/// Agent C's `CircleShader` keeps its setters private to its own module, so this
-/// goes through the public location fields. Worth promoting to methods there
-/// eventually; not worth editing another agent's file for.
+/// Kept as a free function because three scenes in this module family call it and
+/// it reads better than two lines at each site. It now goes through
+/// `CircleShader`'s public setters rather than its raw location fields.
 pub(crate) fn set_circle(shader: &mut CircleShader, radius: f32, power: f32) {
-    shader
-        .shader
-        .set_shader_value(shader.radius_location, radius);
-    shader.shader.set_shader_value(shader.power_location, power);
-}
-
-/// `DrawBillboardRec` over the non-owning default texture.
-///
-/// The safe API takes an owned `Texture2D`, which would unload raylib's default
-/// texture on drop — the same reason `runtime::draw` wraps `DrawTexturePro`.
-pub(crate) fn draw_billboard_rec<D: RaylibDraw3D>(
-    _d: &mut D,
-    camera: Camera3D,
-    texture: raylib_sys::Texture2D,
-    source: Rectangle,
-    position: Vector3,
-    size: Vector2,
-    tint: Color,
-) {
-    // SAFETY: an immediate-mode draw call with a valid texture id and by-value
-    // geometry, inside an active 3D drawing context proven by `_d`.
-    unsafe {
-        raylib_sys::DrawBillboardRec(
-            camera.into(),
-            texture,
-            source.into(),
-            position.into(),
-            size.into(),
-            tint.into(),
-        );
-    }
+    shader.set_radius(radius);
+    shader.set_power(power);
 }
 
 fn vec3(v: terrarium::Vec3) -> Vector3 {

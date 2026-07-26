@@ -17,7 +17,7 @@
 //! RaylibDraw` where they can, and where the raw ffi has no safe counterpart
 //! they take the handle anyway purely to make the requirement checkable.
 
-use raylib::prelude::{Color, RaylibDraw, Rectangle, Vector2, Vector3};
+use raylib::prelude::{Camera3D, Color, RaylibDraw, Rectangle, Vector2, Vector3};
 
 /// A non-owning handle to raylib's built-in 1x1 white texture.
 ///
@@ -172,6 +172,213 @@ pub fn color_alpha(color: Color, alpha: f32) -> Color {
     // SAFETY: pure arithmetic.
     let raw = unsafe { raylib_sys::ColorAlpha(to_ffi_color(color), alpha) };
     Color::new(raw.r, raw.g, raw.b, raw.a)
+}
+
+// ---------------------------------------------------------------------------
+// 3D panel machinery.
+//
+// Hoisted here by the integration owner. Agents C and D independently ported the
+// same viewport block out of the C's 3D scenes and both asked for it to live in
+// one place: Orbital Lattice, Song Atlas, Spectral Terrarium and Constellation all
+// need it, and Song Atlas was importing it across a scene-module boundary, which
+// reads wrong and would have drifted.
+// ---------------------------------------------------------------------------
+
+/// Restricts 3D rendering to `boundary` without changing the composition inside it.
+///
+/// Port of the viewport block the C repeats in every 3D scene
+/// (`scene_spectral_terrarium.c:555-604`, `scene_constellation.c:180-318`). Three
+/// things have to happen together and none of them is optional:
+///
+/// 1. the GL viewport is narrowed to the panel's pixels, so 3D geometry cannot
+///    spill over the UI;
+/// 2. rlgl's notion of the framebuffer size is narrowed with it, because
+///    `BeginMode3D` derives its projection aspect from that;
+/// 3. the projection is then rescaled in X by `full_aspect / viewport_aspect`, so
+///    the scene is framed by the *window's* aspect rather than the panel's. Without
+///    this a narrow preview panel stretches the world instead of cropping it.
+///
+/// The batch is flushed before and after, because rlgl defers draw calls and a
+/// pending batch would otherwise be rasterized under the wrong viewport.
+pub struct SceneViewport {
+    saved_width: i32,
+    saved_height: i32,
+    width: i32,
+    height: i32,
+}
+
+impl SceneViewport {
+    /// Narrows the viewport to `boundary`, or returns `None` when the result would
+    /// be degenerate — the same early returns the C takes.
+    pub fn begin<D: RaylibDraw>(_d: &mut D, boundary: Rectangle) -> Option<Self> {
+        // SAFETY: pure raylib getters over global window state.
+        let (screen_width, screen_height) =
+            unsafe { (raylib_sys::GetScreenWidth(), raylib_sys::GetScreenHeight()) };
+        Self::begin_with_screen(boundary, screen_width, screen_height)
+    }
+
+    /// [`SceneViewport::begin`] with the screen size supplied rather than read.
+    ///
+    /// For a caller whose draw handle is already borrowed, and for tests.
+    pub fn begin_with_screen(
+        boundary: Rectangle,
+        screen_width: i32,
+        screen_height: i32,
+    ) -> Option<Self> {
+        // SAFETY: pure rlgl getters over global renderer state, valid while a
+        // drawing context is active — which every constructor path requires.
+        let (saved_width, saved_height, active_framebuffer) = unsafe {
+            (
+                raylib_sys::rlGetFramebufferWidth(),
+                raylib_sys::rlGetFramebufferHeight(),
+                raylib_sys::rlGetActiveFramebuffer(),
+            )
+        };
+        if saved_width < 1 || saved_height < 1 {
+            return None;
+        }
+        // When drawing to the default framebuffer, boundary coordinates are in
+        // screen space rather than framebuffer space; a supersampled export path
+        // renders into a render texture where the two already agree.
+        let (coordinate_width, coordinate_height) = if active_framebuffer == 0 {
+            if screen_width < 1 || screen_height < 1 {
+                return None;
+            }
+            (screen_width as f32, screen_height as f32)
+        } else {
+            (saved_width as f32, saved_height as f32)
+        };
+        let scale_x = saved_width as f32 / coordinate_width;
+        let scale_y = saved_height as f32 / coordinate_height;
+        let x = (boundary.x * scale_x).round() as i32;
+        let width = (boundary.width * scale_x).round() as i32;
+        let height = (boundary.height * scale_y).round() as i32;
+        // GL's origin is bottom-left, the boundary's is top-left.
+        let top = ((boundary.y + boundary.height) * scale_y).round() as i32;
+        let y = saved_height - top;
+        if width < 1 || height < 1 {
+            return None;
+        }
+
+        // SAFETY: rlgl state changes on the render thread while a drawing context is
+        // active. The batch is flushed first so nothing already queued is rasterized
+        // under the new viewport, and `end` restores every value this touches.
+        unsafe {
+            raylib_sys::rlDrawRenderBatchActive();
+            raylib_sys::rlViewport(x, y, width, height);
+            raylib_sys::rlSetFramebufferWidth(width);
+            raylib_sys::rlSetFramebufferHeight(height);
+        }
+        Some(Self {
+            saved_width,
+            saved_height,
+            width,
+            height,
+        })
+    }
+
+    /// Rescales the projection so the panel crops the world instead of stretching
+    /// it. Call this immediately inside `BeginMode3D`, as the C does.
+    pub fn correct_aspect<D: raylib::prelude::RaylibDraw3D>(&self, _d: &mut D) {
+        let viewport_aspect = self.width as f32 / self.height as f32;
+        let full_aspect = self.saved_width as f32 / self.saved_height as f32;
+        // SAFETY: matrix-stack calls on the active rlgl context, balanced so the
+        // mode is left back on MODELVIEW exactly as `BeginMode3D` left it.
+        unsafe {
+            raylib_sys::rlMatrixMode(raylib_sys::RL_PROJECTION as i32);
+            raylib_sys::rlScalef(full_aspect / viewport_aspect, 1.0, 1.0);
+            raylib_sys::rlMatrixMode(raylib_sys::RL_MODELVIEW as i32);
+        }
+    }
+
+    /// `correct_aspect` without a draw handle, for callers already inside a 3D mode
+    /// whose handle is borrowed elsewhere.
+    ///
+    /// Identical arithmetic; the caller carries the responsibility that
+    /// `correct_aspect`'s `_d` parameter otherwise proves.
+    pub fn correct_projection_aspect(&self) {
+        let viewport_aspect = self.width as f32 / self.height as f32;
+        let full_aspect = self.saved_width as f32 / self.saved_height as f32;
+        // SAFETY: matrix-stack calls on the active rlgl context, balanced so the
+        // mode is left back on MODELVIEW exactly as `BeginMode3D` left it.
+        unsafe {
+            raylib_sys::rlMatrixMode(raylib_sys::RL_PROJECTION as i32);
+            raylib_sys::rlScalef(full_aspect / viewport_aspect, 1.0, 1.0);
+            raylib_sys::rlMatrixMode(raylib_sys::RL_MODELVIEW as i32);
+        }
+    }
+
+    /// Scales the modelview matrix. Song Atlas stretches its terrain this way
+    /// rather than scaling every vertex.
+    ///
+    /// Must be called inside an active 3D mode.
+    pub fn scale_modelview(&self, x: f32, y: f32, z: f32) {
+        // SAFETY: an rlgl matrix call inside an active 3D mode, which the caller is
+        // required to have entered.
+        unsafe { raylib_sys::rlScalef(x, y, z) }
+    }
+
+    /// Restores the full viewport. Call after `EndMode3D`.
+    ///
+    /// Consuming `self` runs [`Drop`], which does the actual restoring, so an
+    /// explicit call and an early `return` behave identically.
+    pub fn end<D: RaylibDraw>(self, _d: &mut D) {}
+}
+
+/// Restoring on drop is deliberate, and it is the reason this type exists rather
+/// than a pair of functions.
+///
+/// A narrowed viewport is global renderer state. If a scene returns early — and
+/// several do, on a degenerate boundary or an empty band list — a forgotten
+/// restore does not corrupt that scene, it corrupts **everything drawn afterwards
+/// in the frame**, including the UI. That is a miserable bug to find from a
+/// screenshot. Agents C and D ported this block independently and split on exactly
+/// this point: one used `Drop`, the other an explicit `end`. Both are right, so
+/// this has both.
+///
+/// The invariant a caller must uphold: a `SceneViewport` is only constructible
+/// inside an active drawing context, and it must be dropped inside that same
+/// context. Every current caller drops it within the same `draw` call, which is
+/// the only shape the borrow of the draw handle in `begin` permits anyway.
+impl Drop for SceneViewport {
+    fn drop(&mut self) {
+        // SAFETY: restores exactly the values captured in `begin`, after flushing
+        // the batch drawn under the narrowed viewport. Valid because the drawing
+        // context that `begin` required is still active — see the note above.
+        unsafe {
+            raylib_sys::rlDrawRenderBatchActive();
+            raylib_sys::rlSetFramebufferWidth(self.saved_width);
+            raylib_sys::rlSetFramebufferHeight(self.saved_height);
+            raylib_sys::rlViewport(0, 0, self.saved_width, self.saved_height);
+        }
+    }
+}
+
+/// `DrawBillboardRec` over the non-owning default texture.
+///
+/// The safe API takes an owned `Texture2D`, which would unload raylib's default
+/// texture on drop — the same reason `runtime::draw` wraps `DrawTexturePro`.
+pub fn draw_billboard_rec<D: raylib::prelude::RaylibDraw3D>(
+    _d: &mut D,
+    camera: Camera3D,
+    texture: raylib_sys::Texture2D,
+    source: Rectangle,
+    position: Vector3,
+    size: Vector2,
+    tint: Color,
+) {
+    // SAFETY: an immediate-mode draw call with a valid texture id and by-value
+    // geometry, inside an active 3D drawing context proven by `_d`.
+    unsafe {
+        raylib_sys::DrawBillboardRec(
+            camera.into(),
+            texture,
+            source.into(),
+            position.into(),
+            size.into(),
+            tint.into(),
+        );
+    }
 }
 
 fn to_ffi_rect(rect: Rectangle) -> raylib_sys::Rectangle {

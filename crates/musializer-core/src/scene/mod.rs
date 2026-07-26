@@ -191,7 +191,7 @@ pub const ONSET_FLUX_THRESHOLD: f32 = 0.08;
 /// Deliberately separate from [`SceneAudioFrame`]: measured audio, lyric timing,
 /// model interpretation, and manual events are four evidence lanes and the
 /// rewrite keeps them apart.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SemanticFrame {
     pub available: bool,
     pub source_id: u64,

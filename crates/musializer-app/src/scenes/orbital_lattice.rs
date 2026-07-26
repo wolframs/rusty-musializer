@@ -37,6 +37,7 @@ use raylib::prelude::{
 // Aliased because `musializer_runtime::draw` has its own `RaylibDraw3D` — the
 // narrow capability `draw::tube` needs. Both must be in scope: this one for the
 // cube calls, that one for the tube.
+use musializer_runtime::draw::SceneViewport;
 use raylib::prelude::RaylibDraw3D as RlDraw3D;
 
 const PI: f32 = std::f32::consts::PI;
@@ -108,125 +109,6 @@ fn color_brightness(color: Color, factor: f32) -> Color {
     // SAFETY: pure arithmetic over a by-value colour, no global state.
     let out = unsafe { raylib_sys::ColorBrightness(raw, factor) };
     Color::new(out.r, out.g, out.b, out.a)
-}
-
-/// A borrowed GL viewport restricted to one sub-rectangle of the frame.
-///
-/// Port of the viewport preamble and epilogue in `scene_orbital_lattice.c:128-159`
-/// and `302-308`. Two things there are load-bearing and neither is obvious:
-///
-/// - **UI boundaries are top-left logical window coordinates; GL viewports are
-///   bottom-left framebuffer pixels.** Render textures are already in framebuffer
-///   pixels, so only the default framebuffer needs the DPI scale.
-/// - **rlgl's framebuffer size must be changed too**, not just the viewport,
-///   because its batch and stereo paths treat it as authoritative.
-///
-/// Restores on drop, so a `?` or an early return cannot leave the viewport
-/// clipped for the UI drawn afterwards. Declare it *before* the `Mode3D` handle so
-/// `EndMode3D` runs first, matching the C's order.
-pub struct SceneViewport {
-    saved_width: i32,
-    saved_height: i32,
-    width: i32,
-    height: i32,
-}
-
-impl SceneViewport {
-    /// Clips the GL viewport to `boundary`, or returns `None` for anything
-    /// degenerate — which is every one of C's early returns in that preamble.
-    #[must_use]
-    pub fn begin(boundary: Rectangle, screen_width: i32, screen_height: i32) -> Option<Self> {
-        // SAFETY: rlgl getters over global state, valid inside a drawing context,
-        // which every caller of this module is already required to hold.
-        let (saved_width, saved_height, active_framebuffer) = unsafe {
-            (
-                raylib_sys::rlGetFramebufferWidth(),
-                raylib_sys::rlGetFramebufferHeight(),
-                raylib_sys::rlGetActiveFramebuffer(),
-            )
-        };
-        if saved_width < 1 || saved_height < 1 {
-            return None;
-        }
-
-        let mut coordinate_width = saved_width as f32;
-        let mut coordinate_height = saved_height as f32;
-        if active_framebuffer == 0 {
-            if screen_width < 1 || screen_height < 1 {
-                return None;
-            }
-            coordinate_width = screen_width as f32;
-            coordinate_height = screen_height as f32;
-        }
-
-        let scale_x = saved_width as f32 / coordinate_width;
-        let scale_y = saved_height as f32 / coordinate_height;
-        let viewport_x = (boundary.x * scale_x).round() as i32;
-        let width = (boundary.width * scale_x).round() as i32;
-        let height = (boundary.height * scale_y).round() as i32;
-        let viewport_top = ((boundary.y + boundary.height) * scale_y).round() as i32;
-        let viewport_y = saved_height - viewport_top;
-        if width < 1 || height < 1 {
-            return None;
-        }
-
-        // SAFETY: rlgl state setters. `rlDrawRenderBatchActive` first, because the
-        // pending 2D batch must be flushed *before* the viewport it was recorded
-        // against changes.
-        unsafe {
-            raylib_sys::rlDrawRenderBatchActive();
-            raylib_sys::rlViewport(viewport_x, viewport_y, width, height);
-            raylib_sys::rlSetFramebufferWidth(width);
-            raylib_sys::rlSetFramebufferHeight(height);
-        }
-        Some(Self {
-            saved_width,
-            saved_height,
-            width,
-            height,
-        })
-    }
-
-    /// Corrects the projection for this sub-viewport
-    /// (`scene_orbital_lattice.c:183-190`).
-    ///
-    /// raylib 5.5's `BeginMode3D` reads its own full-target aspect rather than
-    /// rlgl's framebuffer dimensions, so the perspective it sets up is wrong for a
-    /// clipped viewport. Only the X axis is corrected, which centres and
-    /// proportions it without touching the field of view.
-    ///
-    /// Call this immediately after entering 3D mode.
-    pub fn correct_projection_aspect(&self) {
-        let target_aspect = self.width as f32 / self.height as f32;
-        let full_aspect = self.saved_width as f32 / self.saved_height as f32;
-        // SAFETY: rlgl matrix stack calls inside an active 3D mode, which the
-        // caller is required to have entered.
-        unsafe {
-            raylib_sys::rlMatrixMode(raylib_sys::RL_PROJECTION as i32);
-            raylib_sys::rlScalef(full_aspect / target_aspect, 1.0, 1.0);
-            raylib_sys::rlMatrixMode(raylib_sys::RL_MODELVIEW as i32);
-        }
-    }
-
-    /// Scales the model-view matrix, for scenes that stretch their whole world.
-    pub fn scale_modelview(&self, x: f32, y: f32, z: f32) {
-        // SAFETY: an rlgl matrix call inside an active 3D mode.
-        unsafe { raylib_sys::rlScalef(x, y, z) }
-    }
-}
-
-impl Drop for SceneViewport {
-    fn drop(&mut self) {
-        // SAFETY: the mirror image of `begin`. The flush comes first because the
-        // 3D batch was recorded against the clipped viewport and must be drawn
-        // before the full-frame contract is restored for subsequent 2D UI.
-        unsafe {
-            raylib_sys::rlDrawRenderBatchActive();
-            raylib_sys::rlSetFramebufferWidth(self.saved_width);
-            raylib_sys::rlSetFramebufferHeight(self.saved_height);
-            raylib_sys::rlViewport(0, 0, self.saved_width, self.saved_height);
-        }
-    }
 }
 
 /// `orbital_draw_swaying_link` (`scene_orbital_lattice.c:43-60`).
@@ -305,7 +187,8 @@ pub fn draw(
     let screen_height = d.get_screen_height();
     // Declared before the 3D handle so it is dropped after it: `EndMode3D` must
     // run while the clipped viewport is still in effect, exactly as in the C.
-    let Some(viewport) = SceneViewport::begin(boundary, screen_width, screen_height) else {
+    let Some(viewport) = SceneViewport::begin_with_screen(boundary, screen_width, screen_height)
+    else {
         return;
     };
 

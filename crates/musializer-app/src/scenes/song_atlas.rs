@@ -38,7 +38,7 @@ use raylib::prelude::{
     Camera3D, Color, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector3,
 };
 
-use super::orbital_lattice::SceneViewport;
+use musializer_runtime::draw::SceneViewport;
 
 const PI: f32 = std::f32::consts::PI;
 const DEG2RAD: f32 = PI / 180.0;
@@ -629,7 +629,8 @@ pub fn draw(
     let screen_height = d.get_screen_height();
     // Declared before the 3D handle so `EndMode3D` runs before the viewport is
     // restored, matching the C's order.
-    let Some(viewport) = SceneViewport::begin(boundary, screen_width, screen_height) else {
+    let Some(viewport) = SceneViewport::begin_with_screen(boundary, screen_width, screen_height)
+    else {
         return;
     };
 

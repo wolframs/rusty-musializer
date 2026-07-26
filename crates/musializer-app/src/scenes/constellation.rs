@@ -28,8 +28,9 @@ use raylib::prelude::{
     RaylibMode3DExt, RaylibShaderModeExt, Rectangle, Vector2, Vector3,
 };
 
-use super::spectral_terrarium::{draw_billboard_rec, set_circle, SceneViewport};
+use super::spectral_terrarium::set_circle;
 use super::spectrum::CircleShader;
+use musializer_runtime::draw::{draw_billboard_rec, SceneViewport};
 
 const TAU: f32 = std::f32::consts::TAU;
 

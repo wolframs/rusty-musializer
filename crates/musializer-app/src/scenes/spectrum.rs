@@ -54,11 +54,14 @@ impl CircleShader {
         })
     }
 
-    fn set_radius(&mut self, radius: f32) {
+    /// Public because three of Agent D's scenes set these too; going through
+    /// the raw `radius_location` field instead was a workaround for this being
+    /// private.
+    pub fn set_radius(&mut self, radius: f32) {
         self.shader.set_shader_value(self.radius_location, radius);
     }
 
-    fn set_power(&mut self, power: f32) {
+    pub fn set_power(&mut self, power: f32) {
         self.shader.set_shader_value(self.power_location, power);
     }
 }
