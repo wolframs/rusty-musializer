@@ -933,6 +933,17 @@ Format of a note entry:
          path (`../musializer/src/musializer.c:546-550`). The Rust slice
          deliberately errors instead. Noted as an intentional divergence, not a
          parity bug — flag it to the human if strict parity is wanted.
+- [INFO] Spot-checked the inventory's CLI section against
+         `../musializer/src/musializer.c` directly, since Agent F codes against
+         it: 18 long flags confirmed, all eight "missing" ones real,
+         `--render-window` confirmed to consume two argv words (`i + 2 >= argc`),
+         and route application confirmed to happen after the positional loop
+         (`musializer.c:553`). The inventory is trustworthy.
+- [INFO] One CLI detail worth Agent F's attention: a **positional argument
+         dispatches on file extension** — `.musi` goes to `plug_load_project`,
+         anything else to `plug_load_track` (`musializer.c:546-547`). So
+         `--project` is not the only way to open a project, and `musializer
+         show.musi` works. Easy to miss when porting the flags one by one.
 
 #### The raylib binding decision — resolved, option 2
 
