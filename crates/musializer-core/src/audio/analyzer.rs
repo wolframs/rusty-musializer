@@ -112,7 +112,11 @@ impl AudioAnalyzerConfig {
 }
 
 /// A rejected configuration (`audio_analyzer.c:81-98`).
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+///
+/// `Clone` and `Copy` are derived because callers wrap this with `#[from]` —
+/// `SongAtlasMapError` does — and a wrapper cannot be `Copy` if what it contains
+/// is not. It is three words of plain data, so there is no reason for it not to be.
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
 pub enum AnalyzerError {
     #[error("sample rate must be non-zero")]
     ZeroSampleRate,

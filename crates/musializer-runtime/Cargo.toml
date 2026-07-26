@@ -14,5 +14,8 @@ raylib-sys.workspace = true
 # emits no link directives of its own.
 raylib-5-5-link.workspace = true
 thiserror.workspace = true
-# Transactional staging for atomic publication (Agent E).
-tempfile.workspace = true
+
+# No tempfile: it was added in anticipation of transactional staging and turned
+# out to be the wrong tool. `rename(2)` cannot cross filesystems, so staging must
+# write *next to* the destination rather than in a temp directory — that is a
+# name-and-retry loop, not a temp-dir crate. See `process::publish`.

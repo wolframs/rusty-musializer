@@ -375,7 +375,6 @@ dependencies = [
  "raylib",
  "raylib-5-5-link",
  "raylib-sys",
- "tempfile",
  "thiserror 2.0.19",
 ]
 

@@ -110,8 +110,29 @@ comment stating why it holds. Current islands:
 | `runtime::audio_bridge` | raylib's `AudioCallback` is a bare `extern "C"` fn with no user-data pointer, so the ring must be reachable from a `static` | The callback only touches a lock-free SPSC ring — no allocation, lock, or syscall. `attach`/`detach` are `unsafe` and document the stream-lifetime contract |
 | `runtime::draw` | raylib's default 1x1 texture is a non-owning handle, and the safe `Texture2D` would unload it on drop | The ffi draw wrappers take a `&mut impl RaylibDraw`, so an active drawing context is proven at compile time |
 | `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
+| `runtime::process::process_group` | `std`'s `Child::kill` sends only `SIGKILL`, to only one process. `SIGTERM` and process-group delivery need `kill(2)`, and `libc` is not a dependency | One block wrapping a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`. Both arguments pass by value, nothing is written through a pointer, and every caller passes a pid it owns as a live `Child` (or its negation) |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
+
+## Traps this rewrite has already paid for
+
+- **Never give the Python helpers their own process group from the parent.**
+  `os.setsid()` in `external_analysis.py` fails with `EPERM` if the caller is
+  already a group leader, so calling `process_group(0)` on the child would kill
+  the helper at startup. A test in `runtime::process::assist` fails loudly with
+  that explanation if anyone changes it, and the `ESRCH` fallback from
+  `kill(-pid)` to `kill(pid)` covers the race that leaves. Do not simplify it away.
+- **Read the `.c`, not the header comment.** `core::scene::events` was written
+  from `scene_event_merge.h`'s comment and was wrong in seven ways, including
+  using OR where the C uses XOR to namespace ids — which is not injective and
+  could have collapsed two distinct events into one. The comment was accurate
+  about intent and silent about every edge case.
+- **`take_screenshot` cannot write to a subdirectory.** raylib's
+  `TakeScreenshot` runs its argument through `GetFileName`, so `build/x/y.png`
+  lands in the working directory. Use `LoadImageFromScreen` + `ExportImage`.
+- **rustfmt destroys data tables.** Anything checked column-by-column against C
+  needs `#[rustfmt::skip]`, or it becomes one argument per line and stops being
+  checkable.
 
 ## Before implementation work
 
