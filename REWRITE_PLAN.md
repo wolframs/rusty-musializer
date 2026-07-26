@@ -1630,3 +1630,96 @@ Format of a note entry:
          lands, and it measures at zero spacing on purpose — that is what makes
          width linear in font size, which `row_typography::font_size` relies on to
          fit a row in one pass instead of searching.
+
+#### Agent B — project and editor model
+
+- [DONE] All thirteen assigned files are ported and none are stubbed:
+         `project/{model,io,lyrics,event_timeline,preset_store,semantic_lane,
+         analysis_bridge,analysis_candidate,scene_switch,caption_layout,
+         editor_draft,sha256,assets}.rs`. **229 tests** across them, all passing,
+         `cargo fmt`/`cargo clippy --all-targets` clean. Test counts per module:
+         io 36, model 33, analysis_bridge 24, lyrics 23, scene_switch 22,
+         preset_store 18, caption_layout 17, analysis_candidate 17, assets 13,
+         event_timeline 8, sha256 6, semantic_lane 6, editor_draft 6.
+- [HURDLE] **`musializer-core` still needs `serde`, `serde_json` and `sha2`.** The
+         manifest was off limits, so both were worked around and the workarounds
+         are shippable rather than temporary scaffolding:
+         `sha256.rs` is a hand port of `sha256.c` (the C hand-rolls it too, so the
+         port is checkable), and `io.rs` is a hand-rolled strict JSON writer plus a
+         recursive-descent parser. Adding the dependencies is now optional, not
+         blocking. If they are added, the sensible split is documented at the top
+         of `io.rs`: derive the *shape*, keep every rule as explicit code.
+         `#[serde(deny_unknown_fields)]` would cover two of the six rules that
+         make this codec strict; the other four (byte-bounded strings at parse
+         time, integers that reject `1.0`, arrays bounded before element parse,
+         compatibility defaults) still need code either way.
+- [INFO] The persistence half of `core::scene::routes` is done, in
+         `project::model`: `mapping_is_constant`, `constant_mapping`,
+         `mappings_supported`, `export_mappings`, `import_mappings`,
+         `parse_route_spec`. It landed there rather than in `routes.rs` because
+         that file is a shared contract Agent B does not own, and it needs only
+         `routes`' public API. **What `routes` should absorb when convenient:** all
+         six functions, plus `scene::settings` gaining `mapping_supported` /
+         `export_mappings` / `import_mappings` (`scene_settings.c:407-467`), which
+         are currently absent there. Move them wholesale — splitting the
+         constant-mapping rule from the route rule would let one parameter persist
+         as both, which is the exact ambiguity v1 cannot represent.
+- [INFO] For Agent F: `caption_layout::CaptionLayout` is `Vec<CaptionLine>` (max 3)
+         plus an `ellipsized` flag; each line carries `text`, measured `width`, and
+         `centered_offset`. Nothing to interpret, no state across frames. The
+         measure callback is `&mut dyn FnMut(&str) -> f32` and its unit is whatever
+         the renderer measures in; the *fractions* stay in
+         `model::CaptionStyle` and become a `max_width` before the call.
+- [INFO] Verified, not assumed: the analysis bridge's scene names and enum order
+         are identical to `SceneId::stable_name` and the registry order, so C's
+         separate `Analysis_Scene` enum has **no** Rust counterpart and a test
+         asserts the equivalence (`bridge_scene_names_match_the_registry`). The C
+         comment at `analysis_candidate.c:43-44` claims this; now something checks it.
+- [INFO] `scene::events::EventRecord::is_well_formed` is a **weaker** check than
+         C's `event_record_is_valid` (`event_timeline.c:32-44`): it omits `id != 0`,
+         the event-type range, and `value_count != 0`. `project::event_timeline::
+         record_is_valid` is the complete rule and is what the model and codec use.
+         Do not substitute one for the other; `is_well_formed` alone would admit an
+         id-zero event into a `.musi`.
+- [INFO] Two C parity details worth not "fixing": an integer field with a fraction
+         (`"width": 1920.0`) is a **syntax** error, not a number error, because the
+         integer parser stops at the digits and the object loop then chokes on the
+         `.`; and one whole millisecond of scene-switch coverage drift is *not*
+         reliably tolerated, because `20.001 - 20.0` is `0.001000000000001` and the
+         C test is `> 0.001`. Both are reproduced with tests that say so.
+- [INFO] `scene_switch_retarget`'s snapshot guard is incomplete and now has a test
+         that documents it rather than a comment that hopes: same-control-count
+         scenes with mutually in-range values carry silently. Capturing from the
+         target scene remains the caller's responsibility.
+- [INFO] The filesystem halves of `project_io.c` and `preset_store.c` are
+         deliberately absent from `musializer-core`, which has no filesystem:
+         `atomic_write`, `canonicalize_existing_file`, `existing_files_alias`,
+         `project_copy_asset_transaction`, directory `fsync`, `mkdir -p`, and
+         `sha256_file`. **Agent E owns these.** What is here for them to build on:
+         every result enum with its granularity intact (`ProjectFileError` keeps
+         `Sync`/`Publish`/`Durability` apart, and `Durability` is the one failure
+         that must *not* delete the transaction file), `io::temporary_path`,
+         `io::{directory_of, is_unambiguous_relative_path, relative_descendant_path,
+         path_is_absolute}`, `assets::bundle_paths` and `assets::safe_extension`,
+         and `sha256::Sha256` as a streaming hasher (C reads 64 KiB chunks;
+         nothing about the digest depends on that).
+- [INFO] `PresetLibrary` is in `preset_store.rs` and belongs in `scene::settings`
+         beside the rest of that contract. It is there only because that module had
+         no preset library yet. Also `preset_store::default_path` takes a
+         `PathEnvironment` struct instead of reading `getenv`, which keeps the crate
+         pure and makes the path policy testable — the C could only exercise it by
+         mutating the process environment. Only the Linux branch exists; Windows and
+         macOS are stated non-goals and are absent rather than half-written.
+- [INFO] Fixtures are generated in tests, never committed, exactly as the C suite
+         does it: serialize a project, then edit the text. `io.rs`'s
+         `without_block` helper is the Rust equivalent of the C tests' JSON-block
+         deletion. `fixtures/musi/` stays empty.
+- [INFO] The "analysis inputs outside the bundle are session state" invariant needs
+         no code: there is no `.musi` field for the chosen lyric sheet and none was
+         added. Recorded here so a later session does not add one by analogy with
+         `analysis_lanes`.
+- [INFO] Deliberate strictness beyond the C, in one place only: an interior
+         `U+0000` in lyric text is rejected, where C's NUL-terminated buffer would
+         treat it as end-of-string and silently accept the prefix. Truncating a
+         lyric on a byte the user cannot see is the worse failure. Flag it if strict
+         parity matters more.
