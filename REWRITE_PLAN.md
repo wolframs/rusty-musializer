@@ -1815,3 +1815,134 @@ wired.** State of trunk:
          `--ascii-image` is not wired to a grid. That is its other documented mode,
          not a degraded one.
 - [INFO] Nothing has been pushed. All work is local commits on `master`.
+
+### Session 2 (2026-07-27): the interface face and the welcome screen
+
+Both items came from the operator looking at the running application, which is
+worth recording on its own: the automated checks were green through a session in
+which the entire interface rendered in raylib's 10 px bitmap face, and in which
+the first screen a new user sees did not exist. Neither was a subtle defect. See
+the new trap in `AGENTS.md`: *a surface nothing photographs does not get
+reviewed*.
+
+#### The interface face — landed
+
+`runtime::font` ports the font half of `load_assets` (`plug.c:8060-8137`) plus
+`ui_font`/`caption_face` (`plug.c:340-365`).
+
+- **Space Grotesk** for the chrome, at the codepoint subset `ui_font_codepoint`
+  defines, and **Alegreya** for captions, at the full curated set. Both faces are
+  in `resources/fonts/` under SIL OFL 1.1, copied from the oracle's own
+  `resources/fonts/`.
+- The subset is built by *filtering the curated caption set*, exactly as the C
+  does, rather than by expanding the ranges directly. That is what makes the
+  interface face a strict subset of the caption face — so a string that renders in
+  a button renders in a caption too. Pinned by a test.
+- Loaded once into `Faces`, borrowed for the run. `ShellInput.fonts` carries it so
+  no panel can measure a string with one face and draw it with another.
+- **The fallback is a `WeakFont`, not a `Font`.** `GetFontDefault()` is a
+  non-owning handle into raylib's static storage and `Font`'s `Drop` calls
+  `UnloadFont`. Same hazard `runtime::draw` already carries a note about.
+- **raylib-rs's safe `load_font_from_memory` cannot be used.** It takes the glyph
+  set as a `&str` and passes `str::len()` — a byte count — as the codepoint count.
+  Correct for ASCII, out-of-bounds for the curated set. Hence the ffi call and a
+  new row in the `unsafe` inventory.
+
+Two consequences worth knowing:
+
+- The C's **third** face (Space Grotesk at the full caption set, for
+  `MUSI_CAPTION_FACE_SPACE_GROTESK`) and **fourth** (a project's imported face)
+  are deliberately not loaded. Both are selected by caption style, which nothing
+  can reach yet, and a 64 px atlas of ~2,000 codepoints is not worth carrying for
+  an unreachable selector. `Faces::caption()` is where they land.
+- The `'\u{2026}'` → `"..."` substitution in `widgets::draw_button_label` survives
+  but is now guarded on `!font.is_loaded()`. The real ellipsis is in the interface
+  face's General Punctuation range, so truncated labels finally read as the oracle
+  wrote them; the substitution is only reachable on the fallback face, where it is
+  still needed.
+- Cadence now draws with `fonts.caption()`, which is what the oracle hands it
+  (`plug.c:1329` → `scene_cadence.c:449`). ASCII Field deliberately keeps raylib's
+  default: `ascii_grid_font` (`scene_ascii_field.c:154-160`) says why — the
+  bundled face is proportional and the built-in one is monospaced, which is what
+  keeps ASCII samples legible after video encoding.
+
+#### The welcome screen — landed
+
+`Shell::draw_welcome` ports `preview_screen`'s `else` branch
+(`plug.c:7769-7830`); geometry is in `shell_layout::WelcomeFrame` so it is
+assertable rather than photographed.
+
+This replaces the rewrite's own answer, which was to draw the full workspace with
+eleven controls greyed out. The oracle's answer is better and it is the oracle: an
+empty workspace makes a first-time user read every disabled control to discover
+the one thing they can do.
+
+The startup notice ("Drop an audio file on the window to begin") is **gone**. It
+existed because the empty workspace said nothing; the welcome screen says it
+properly. It was also actively harmful — being persistent it stayed in the tray
+after a track loaded, and on the welcome screen it covered the supported-format
+strip along the bottom edge. A capture is what showed that.
+
+#### Runtime track loading — landed, and it was a real gap
+
+The welcome screen prints "or drop audio anywhere in this window", and before this
+session that gesture answered "Reopening is not wired up yet". The loop held the
+`Music` by shared reference and could not replace it.
+
+`open_track`/`close_track` in `main.rs` own the transition, and the ordering is
+the whole reason they are functions rather than code at each site:
+
+1. Load the new `Music` **first**, so a failure leaves the session as it was.
+2. Detach the processor **before** the old `Music` drops, or raylib's per-stream
+   list holds a callback for a freed stream.
+3. Drain the ring **after** the detach — the only moment a consumer safely can,
+   since nothing produces then — or the new track's first frames are analysed
+   together with the old track's tail.
+4. Rebind the analyzer from the **file's** sample rate, not the device's
+   (`start_preview_track`, `plug.c:658-660`). Reading the device's rate shifts
+   every band.
+
+#### File dialogs — implemented, on the backend the stub recommended
+
+`process::dialogs` was a stub that laid out three candidate backends and named
+`kdialog`/`zenity` as child processes as the one fitting its existing machinery.
+That is what landed. No new dependency; it is what tinyfiledialogs does on Linux
+anyway.
+
+**The display guard is the most important line in that file.** `kdialog` with no
+reachable display does not fail politely — it aborts under `SIGABRT`, and Ubuntu
+files an Apport crash report for it. This project did that to its operator once
+already. `choose_backend` is pure so the guard is testable, and *no test in this
+repository calls anything that could open a dialog* — a dialog opened by
+`cargo test` would appear on the operator's real desktop.
+
+#### Evidence
+
+`tools/verify.sh`: 10 passed, 0 failed. 733 tests. Oracle clean at `9300af9`.
+
+New in `tools/headless_check.sh`:
+
+- **`fonts:` is parsed from the report and the run fails on either fallback.** The
+  regression this closes is invisible to a screenshot review that nobody performs.
+- **The welcome screen is captured** at 1280x720 and at the 960x640 minimum. Every
+  other capture in that file passes a fixture, so this surface was unreachable.
+- **`--probe-reopen PATH` swaps tracks halfway through a probe run**, which is the
+  only way to reach the detach/drop/drain/rebind/reattach path from a script: a
+  drop gesture and a modal picker can be driven by neither. It is a rewrite-only
+  diagnostic, in the same spirit as `--probe-frames`. The check asserts three
+  things a clean exit does not prove — the swap ran, it did not report failure,
+  and audio arrived through the *second* attachment. Measured: 47,040 frames.
+
+#### Known gaps in this session's evidence
+
+- [INFO] **The `zenity` path is unit-tested but never executed**: zenity is not
+         installed on this machine. `kdialog`'s argument syntax was verified for
+         real, on a private Xvfb display, by checking that it opens and waits
+         rather than exiting with a usage error.
+- [INFO] **Clicking "Open audio" and dropping a file are not driven by any
+         script.** `xdotool` is absent and installing packages on the operator's
+         machine is not this session's call. What is proven is the code both
+         gestures reach, through `--probe-reopen`.
+- [INFO] The modal picker blocks the render loop while it is open, as
+         tinyfiledialogs does in the C. The window stops repainting; that is
+         expected, not a hang.

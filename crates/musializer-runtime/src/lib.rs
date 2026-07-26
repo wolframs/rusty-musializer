@@ -15,6 +15,7 @@
 
 pub mod audio_bridge;
 pub mod draw;
+pub mod font;
 pub mod process;
 
 pub use raylib;

@@ -267,6 +267,105 @@ impl WorkspaceFrame {
     }
 }
 
+/// Where the welcome screen's pieces go (`plug.c:7769-7830`).
+///
+/// The C computes these inline while it draws. They are pulled out here for the
+/// same reason as everything else in this file: the interesting failures are at
+/// the small end, where `Open audio` — the one control on the screen that
+/// matters — can be pushed off the bottom edge by a window the application still
+/// permits. That is assertable, and a screenshot at 1280x720 would never show it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WelcomeFrame {
+    /// The masthead rule, at a fixed y (`plug.c:7771`).
+    pub header_rule_y: f32,
+    /// The vertical rule at 72% of the width (`plug.c:7772`).
+    pub column_rule_x: f32,
+    /// `MUSIALIZER`, top left.
+    pub masthead: UiRect,
+    /// The oversized `01`, right of the column rule.
+    pub step_number: UiRect,
+    /// Left edge and first baseline of the body column
+    /// (`fmaxf(48, w*0.10)`, `fmaxf(120, h*0.20)`).
+    pub body: UiRect,
+    pub open_audio: UiRect,
+    pub open_project: UiRect,
+    /// `or drop audio anywhere in this window`.
+    pub drop_hint: UiRect,
+    /// The three numbered steps, left to right.
+    pub steps: [UiRect; 3],
+    /// The rule above the steps.
+    pub steps_rule: UiRect,
+    /// The supported-format strip along the bottom.
+    pub formats: UiRect,
+}
+
+impl WelcomeFrame {
+    /// Button size at `plug.c:7789`, and the 10 px gap at `:7802`.
+    const BUTTON: (f32, f32) = (176.0, 44.0);
+    const BUTTON_GAP: f32 = 10.0;
+
+    #[must_use]
+    pub fn layout(window_width: f32, window_height: f32) -> Self {
+        let w = window_width;
+        let h = window_height;
+        let left = 48.0f32.max(w * 0.10);
+        let top = 120.0f32.max(h * 0.20);
+
+        let open_audio = UiRect::new(left, top + 158.0, Self::BUTTON.0, Self::BUTTON.1);
+        let open_project = UiRect::new(
+            open_audio.x + open_audio.width + Self::BUTTON_GAP,
+            open_audio.y,
+            Self::BUTTON.0,
+            Self::BUTTON.1,
+        );
+
+        // `fminf(250, (w*0.60)/3)`: the columns stop spreading at 250 px so the
+        // three captions stay a group rather than drifting apart on a wide window.
+        let step_stride = 250.0f32.min((w * 0.60) / 3.0);
+        let steps_y = top + 250.0;
+        let steps = [0usize, 1, 2].map(|index| {
+            UiRect::new(
+                left + index as f32 * step_stride,
+                steps_y,
+                step_stride,
+                // Number at `steps_y`, caption 40 px below it at 15 px.
+                55.0,
+            )
+        });
+
+        Self {
+            header_rule_y: 72.0,
+            column_rule_x: w * 0.72,
+            masthead: UiRect::new(32.0, 30.0, w - 64.0, 24.0),
+            step_number: UiRect::new(w - 150.0, 82.0, 150.0, 84.0),
+            body: UiRect::new(left, top, (w * 0.72 - left).max(0.0), 112.0 + 17.0),
+            open_audio,
+            open_project,
+            drop_hint: UiRect::new(
+                open_audio.x,
+                open_audio.y + open_audio.height + 14.0,
+                w - open_audio.x - 32.0,
+                15.0,
+            ),
+            steps,
+            steps_rule: UiRect::new(left, steps_y - 16.0, (w * 0.66 - left).max(0.0), 1.0),
+            formats: UiRect::new(32.0, h - 48.0, w - 64.0, 14.0),
+        }
+    }
+
+    /// Whether everything this screen needs is inside the window.
+    ///
+    /// Reported rather than enforced, because the answer at the sizes the
+    /// application permits should be "yes" — and if it ever is not, the caller
+    /// dropping the step captions is a better outcome than drawing them off the
+    /// edge.
+    #[must_use]
+    pub fn fits(&self, window_height: f32) -> bool {
+        let lowest = self.steps[0].y + self.steps[0].height;
+        lowest <= self.formats.y && self.formats.y + self.formats.height <= window_height
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +576,53 @@ mod tests {
         );
         // A short window floors at 150 rather than pushing the preview negative.
         assert_eq!(WorkspaceFrame::export_timeline_height(300.0), 150.0);
+    }
+
+    #[test]
+    fn the_welcome_screen_seats_its_call_to_action_at_the_smallest_permitted_window() {
+        // GLFW clamps a smaller request up to 960x640 (`cli::MIN_WINDOW`), so that
+        // is the real floor and the one worth asserting. The failure this catches
+        // is the interesting one: `top` is `max(120, h*0.20)` and the buttons sit
+        // 158 px below it, so a short window pushes the only control on the screen
+        // toward the format strip rather than shrinking anything.
+        for (w, h) in [(960.0f32, 640.0f32), (1280.0, 720.0), (1920.0, 1080.0)] {
+            let frame = WelcomeFrame::layout(w, h);
+            let window = UiRect::new(0.0, 0.0, w, h);
+            assert!(
+                window.contains(frame.open_audio),
+                "{w}x{h}: Open audio is outside the window"
+            );
+            assert!(
+                window.contains(frame.open_project),
+                "{w}x{h}: Open project is outside the window"
+            );
+            assert!(
+                !frame.open_audio.overlaps(frame.open_project),
+                "{w}x{h}: the two buttons overlap"
+            );
+            assert!(frame.fits(h), "{w}x{h}: the screen does not fit");
+        }
+    }
+
+    #[test]
+    fn a_window_too_short_for_the_steps_says_so_rather_than_drawing_off_the_edge() {
+        // Not reachable through the window minimum, but reachable through
+        // `--size` before GLFW clamps, and through a fullscreen probe. `fits`
+        // exists so the caller can drop the captions instead of painting them
+        // over the format strip.
+        let frame = WelcomeFrame::layout(960.0, 420.0);
+        assert!(!frame.fits(420.0));
+    }
+
+    #[test]
+    fn the_step_columns_stop_spreading_on_a_wide_window() {
+        // `fminf(250, (w*0.60)/3)`. Without the cap the three captions drift to
+        // the far side of a 4K window and stop reading as one sequence.
+        let wide = WelcomeFrame::layout(3840.0, 2160.0);
+        let stride = wide.steps[1].x - wide.steps[0].x;
+        assert_eq!(stride, 250.0);
+        // And below the cap it is proportional, so a narrow window packs them.
+        let narrow = WelcomeFrame::layout(960.0, 640.0);
+        assert!((narrow.steps[1].x - narrow.steps[0].x) < 250.0);
     }
 }

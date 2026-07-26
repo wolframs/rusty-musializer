@@ -99,6 +99,18 @@ if [ ! -f "$SHOT" ]; then
     exit 1
 fi
 
+# The interface face, which no screenshot can assert. A silent fall back to
+# raylib's 10 px bitmap face is a regression that otherwise gets noticed by eye
+# weeks later, so the report names both faces and this fails on either fallback.
+FONT_LINE="$(sed -n 's/^fonts: *//p' "$REPORT")"
+echo "fonts: ${FONT_LINE:-<absent>}"
+case "${FONT_LINE:-absent}" in
+    *FALLBACK*|absent)
+        echo "FAIL: the interface or caption face did not load: ${FONT_LINE:-<absent>}" >&2
+        exit 1
+        ;;
+esac
+
 echo "=== screenshot ==="
 ffprobe -v error -show_entries stream=width,height,pix_fmt \
     -of default=noprint_wrappers=1 "$SHOT"
@@ -176,6 +188,83 @@ for panel in none tune export lyrics; do
             || echo "  (note: $panel at $size exits non-zero while its panel is a stub)"
     done
 done
+
+echo "=== the welcome screen, with no track open ==="
+# The one surface every other capture in this file cannot reach, because they all
+# pass a fixture. It is also the first thing a new user sees, so a regression here
+# is the most visible one available — and the layout tests can only assert where
+# its pieces go, not that they were drawn.
+for size in 1280x720 960x640; do
+    out="$OUT_DIR/welcome-$size.png"
+    log="$OUT_DIR/welcome-$size.txt"
+    set +e
+    env -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer \
+            --size "$size" \
+            --probe-frames 30 \
+            --probe-shot "$out" \
+        >"$log" 2>&1
+    status=$?
+    set -e
+    printf '%-22s %-9s exit=%s ' "welcome" "$size" "$status"
+    if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
+        echo "FAIL"
+        SWEEP_FAILED=1
+    else
+        # With no track there is nothing to consume, so the verdict is expected to
+        # say so. Asserting it keeps this capture honest about what it proves.
+        echo "verdict=$(sed -n 's/^verdict: *//p' "$log")"
+    fi
+done
+
+echo "=== the runtime track swap ==="
+# The path a dropped file and the native picker both take, and the only place in
+# this binary where a wrong `unsafe` ordering is a use-after-free rather than a
+# wrong pixel: detach the processor, drop the Music, drain the ring, rebind the
+# analyzer to the new file's sample rate, reattach. Neither a drop gesture nor a
+# modal picker can be driven from a capture script, so `--probe-reopen` is what
+# makes it reachable.
+#
+# A second fixture at a different length, so the swap is observable in the
+# duration as well as in the audio-frame count.
+FIXTURE_TWO="$OUT_DIR/fixture-sweep-short.wav"
+cargo run --quiet --bin make-fixture-wav -- "$FIXTURE_TWO" 3
+REOPEN_LOG="$OUT_DIR/reopen.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer "$FIXTURE" \
+        --size 1280x720 \
+        --probe-frames 120 \
+        --probe-reopen "$FIXTURE_TWO" \
+        --probe-shot "$OUT_DIR/reopen.png" \
+    >"$REOPEN_LOG" 2>&1
+REOPEN_STATUS=$?
+set -e
+REOPEN_LINE="$(sed -n 's/^reopen: *//p' "$REOPEN_LOG")"
+echo "reopen: ${REOPEN_LINE:-<absent>} (exit=$REOPEN_STATUS)"
+# Three separate claims, because a clean exit proves none of them: the swap ran,
+# it did not report failure, and audio arrived through the *second* attachment.
+if [ "$REOPEN_STATUS" -ne 0 ]; then
+    echo "FAIL: the track swap run exited $REOPEN_STATUS" >&2
+    SWEEP_FAILED=1
+fi
+case "${REOPEN_LINE:-absent}" in
+    ok*)
+        frames_after="$(printf '%s' "$REOPEN_LINE" | sed -n 's/.*; \([0-9]*\) audio frames.*/\1/p')"
+        if [ -z "$frames_after" ] || [ "$frames_after" -le 0 ]; then
+            echo "FAIL: no audio arrived through the reattached stream" >&2
+            SWEEP_FAILED=1
+        fi
+        ;;
+    *)
+        echo "FAIL: the track swap did not run: ${REOPEN_LINE:-<absent>}" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
 
 echo "=== a routed setting ==="
 # Routes are applied after every input is resolved, and the report prints how

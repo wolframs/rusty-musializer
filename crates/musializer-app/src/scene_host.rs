@@ -26,6 +26,7 @@
 
 use musializer_core::scene::{SceneDescriptor, SceneFrame, SceneId, SceneInstance, StatelessScene};
 use musializer_core::scenes as core_scenes;
+use musializer_runtime::font::Faces;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Rectangle};
 
 use crate::scenes;
@@ -237,9 +238,14 @@ impl SceneRenderer {
     /// half needs the deterministic state, recover it from `instance.state()`
     /// with `as_any().downcast_ref::<YourState>()` — that downcast hook exists on
     /// [`musializer_core::scene::SceneState`] precisely for this crossing.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scene-draw crossing: target, faces, instance, frame, boundary, scale"
+    )]
     pub fn draw(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
+        fonts: &Faces,
         instance: &SceneInstance,
         frame: &SceneFrame<'_>,
         boundary: Rectangle,
@@ -294,11 +300,12 @@ impl SceneRenderer {
             }
             SceneId::Cadence => {
                 if let Some(state) = state_of(instance, id) {
-                    // Cadence is the one scene that draws glyphs, so it needs a
-                    // font. The default is enough to prove the port; the imported
-                    // caption face belongs to the caption typography work.
-                    let font = d.get_font_default();
-                    scenes::cadence::draw(d, frame, state, &font, boundary, pixel_scale);
+                    // The caption face, Alegreya, which is what the oracle draws
+                    // Cadence with (`plug.c:1329` hands `p->font` to the scene
+                    // renderer, and `scene_cadence.c:449` uses it). Not the
+                    // interface face: this scene typesets lyrics, and the interface
+                    // atlas carries only the codepoints the chrome needs.
+                    scenes::cadence::draw(d, frame, state, fonts.caption(), boundary, pixel_scale);
                 }
             }
             SceneId::Loom => {

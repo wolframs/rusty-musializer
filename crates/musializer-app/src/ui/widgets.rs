@@ -19,16 +19,17 @@
 //!   visible defect in the workspace (`ui_row_typography.h:9-13`). The shared
 //!   size comes from [`musializer_core::ui::row_typography`].
 //!
-//! Text is drawn with raylib's default font for now rather than the C's imported
-//! UI face: the face is Agent B's caption-typography work and this shell should
-//! not block on it. Measurement therefore goes through [`measure`], which is the
-//! one place that changes when a real font lands.
+//! Text is drawn and measured through [`Face`], the interface face
+//! [`musializer_runtime::font`] loads, so every widget agrees with the one place
+//! that knows how wide a string is. Passing the face explicitly rather than
+//! reaching for `get_font_default()` inside each helper is the C's shape too
+//! (`ui_font()` threaded into every `ui_widgets_*` call) and it is what makes the
+//! fallback face reachable in a test.
 
 use musializer_core::ui::row_typography;
 use musializer_core::ui::workspace_layout::UiRect;
-use raylib::prelude::{
-    Color, RaylibDraw, RaylibDrawHandle, RaylibFont, Rectangle, Vector2, WeakFont,
-};
+use musializer_runtime::font::Face;
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibFont, Rectangle, Vector2};
 
 use super::theme::{color, metric};
 
@@ -121,6 +122,7 @@ impl Widgets {
     pub fn text_button(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
+        font: &Face,
         id: u64,
         boundary: UiRect,
         label: &str,
@@ -167,6 +169,7 @@ impl Widgets {
         );
         draw_button_label(
             d,
+            font,
             boundary,
             label,
             font_size,
@@ -192,6 +195,7 @@ impl Widgets {
     pub fn disabled_button(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
+        font: &Face,
         boundary: UiRect,
         label: &str,
         font_size: Option<f32>,
@@ -202,7 +206,15 @@ impl Widgets {
         let rect = rectangle(boundary);
         d.draw_rectangle_rec(rect, color::ui_surface());
         d.draw_rectangle_lines_ex(rect, 1.0, color::ui_rule());
-        draw_button_label(d, boundary, label, font_size, 0.0, color::ui_disabled());
+        draw_button_label(
+            d,
+            font,
+            boundary,
+            label,
+            font_size,
+            0.0,
+            color::ui_disabled(),
+        );
     }
 
     /// A horizontal slider returning the value the pointer asks for, or `None`
@@ -286,7 +298,7 @@ pub fn slider_value(x: f32, low: f32, high: f32) -> f32 {
 /// what makes it linear in font size — the property `font_size` needs to scale a
 /// measured width into a fitted size.
 #[must_use]
-pub fn row_font_size(font: &WeakFont, labels: &[&str], widths: &[f32], box_height: f32) -> f32 {
+pub fn row_font_size(font: &Face, labels: &[&str], widths: &[f32], box_height: f32) -> f32 {
     let base = row_typography::base_font_size(box_height);
     row_typography::font_size(
         labels,
@@ -305,16 +317,18 @@ pub fn row_font_size(font: &WeakFont, labels: &[&str], widths: &[f32], box_heigh
 /// [`row_typography::font_size`] relies on to fit a row in one pass instead of
 /// searching.
 ///
-/// The font is raylib's default rather than the C's imported UI face. The face is
-/// part of Agent B's caption typography and this shell should not block on it;
-/// this function is the single place that changes when it lands.
 #[must_use]
-pub fn measure(font: &WeakFont, text: &str, font_size: f32) -> f32 {
+pub fn measure(font: &Face, text: &str, font_size: f32) -> f32 {
     font.measure_text(text, font_size, 0.0).x
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the C's `ui_widgets_draw_label` shape; every argument is one of face, box, text, size, offset, tint"
+)]
 fn draw_button_label(
     d: &mut RaylibDrawHandle<'_>,
+    font: &Face,
     boundary: UiRect,
     label: &str,
     font_size: Option<f32>,
@@ -324,14 +338,13 @@ fn draw_button_label(
     if label.is_empty() {
         return;
     }
-    let font = d.get_font_default();
     let base = row_typography::base_font_size(boundary.height);
     if base <= 0.0 {
         return;
     }
     let size = font_size
         .filter(|value| *value > 0.0)
-        .unwrap_or_else(|| row_font_size(&font, &[label], &[boundary.width], boundary.height));
+        .unwrap_or_else(|| row_font_size(font, &[label], &[boundary.width], boundary.height));
     let available = boundary.width - row_typography::UI_ROW_LABEL_PADDING;
     // Ellipsize rather than shrink without end. A box too narrow even for the
     // ellipsis still gets the ellipsis: a missing label reads as a bug, a clipped
@@ -339,24 +352,26 @@ fn draw_button_label(
     let (fitted, truncated) = row_typography::truncate_label(
         label,
         available,
-        Some(|text: &str| measure(&font, text, size)),
+        Some(|text: &str| measure(font, text, size)),
         row_typography::UI_ROW_LABEL_CAPACITY,
     );
-    // U+2026 is in the C's *imported* face's curated codepoint set
-    // (`ui_row_typography.c:6-8`); raylib's default font is ASCII 32..126 and
-    // renders it as a missing-glyph box. A headless capture at 960x640 caught
-    // this reading "Pau?" and "Exp?" on the toolbar — the tests could not, since
-    // the truncation itself was correct. Substituting here rather than in
-    // `row_typography` keeps the oracle's ellipsis where the oracle put it, and
-    // this line goes away when the real UI face lands.
-    let fitted = if truncated {
+    // U+2026 is in the interface face's codepoint set
+    // (`ui_row_typography.c:6-8`, and `font::ui_codepoint`'s General Punctuation
+    // range), so with the face loaded the oracle's ellipsis is drawn as the
+    // oracle wrote it. raylib's *default* face stops at ASCII 126 and renders it
+    // as a missing-glyph box — a headless capture at 960x640 caught exactly that,
+    // reading "Pau?" and "Exp?" on the toolbar, which no test could have since
+    // the truncation itself was correct. So the substitution survives, guarded:
+    // it is now reachable only on the fallback face.
+    let fitted = if truncated && !font.is_loaded() {
         fitted.replace('\u{2026}', "...")
     } else {
         fitted
     };
-    let width = measure(&font, &fitted, size);
+    let width = measure(font, &fitted, size);
     draw_text(
         d,
+        font,
         &fitted,
         boundary.x + (boundary.width - width) * 0.5,
         boundary.y + (boundary.height - size) * 0.5 + press_offset,
@@ -366,20 +381,51 @@ fn draw_button_label(
 }
 
 /// Draws text at a float position and size, which raylib's `draw_text` cannot do.
-pub fn draw_text(
-    d: &mut RaylibDrawHandle<'_>,
+///
+/// Zero letter spacing, which is what [`measure`] assumes — see its note on why
+/// that is load-bearing rather than a default. Text that wants tracking goes
+/// through [`draw_text_tracked`] and is not measured for fitting.
+/// Generic over the draw target rather than taking a `RaylibDrawHandle`, because
+/// this is also how text lands inside a scissor region — and a scissor handle is a
+/// different type that merely implements the same trait.
+pub fn draw_text<D: RaylibDraw>(
+    d: &mut D,
+    font: &Face,
     text: &str,
     x: f32,
     y: f32,
     font_size: f32,
     tint: Color,
 ) {
-    let font = d.get_font_default();
-    d.draw_text_ex(&font, text, Vector2::new(x, y), font_size, 0.0, tint);
+    d.draw_text_ex(font, text, Vector2::new(x, y), font_size, 0.0, tint);
+}
+
+/// Text with letter spacing, for the few places the C asks for tracking.
+///
+/// Only the welcome screen's masthead and format strip use it (`plug.c:7773`,
+/// `:7828`), where the extra space is what makes a short all-caps line read as a
+/// masthead rather than a label. Deliberately separate from [`draw_text`]: nothing
+/// tracked is measured for fitting, so the linearity [`measure`] depends on is
+/// never at risk.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "draw_text plus one spacing argument; a struct here would hide the position"
+)]
+pub fn draw_text_tracked(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &Face,
+    text: &str,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    spacing: f32,
+    tint: Color,
+) {
+    d.draw_text_ex(font, text, Vector2::new(x, y), font_size, spacing, tint);
 }
 
 /// A titled panel background: surface fill, a hairline border, and a header rule.
-pub fn panel(d: &mut RaylibDrawHandle<'_>, boundary: UiRect, title: &str) -> UiRect {
+pub fn panel(d: &mut RaylibDrawHandle<'_>, font: &Face, boundary: UiRect, title: &str) -> UiRect {
     if boundary.is_empty() {
         return boundary;
     }
@@ -391,6 +437,7 @@ pub fn panel(d: &mut RaylibDrawHandle<'_>, boundary: UiRect, title: &str) -> UiR
     }
     draw_text(
         d,
+        font,
         title,
         boundary.x + metric::UI_PANEL_PADDING,
         boundary.y + 8.0,
@@ -473,6 +520,11 @@ pub mod id {
     pub const TRACKS: u32 = 3;
     pub const INSPECTOR: u32 = 4;
     pub const TIMELINE: u32 = 5;
+    /// The welcome screen's two buttons. A namespace of its own even though the
+    /// screen and the workspace are never on screen together — an id shared with a
+    /// panel would let a press claimed on one be released by the other across a
+    /// track load.
+    pub const WELCOME: u32 = 6;
 }
 
 #[cfg(test)]
@@ -512,6 +564,7 @@ mod tests {
             id::TRACKS,
             id::INSPECTOR,
             id::TIMELINE,
+            id::WELCOME,
         ] {
             for index in 0..64u32 {
                 assert!(

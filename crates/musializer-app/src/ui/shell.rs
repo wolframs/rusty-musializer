@@ -19,9 +19,10 @@ use musializer_core::ui::row_typography;
 use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
+use musializer_runtime::font::{Face, Faces};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
-use super::shell_layout::{WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
+use super::shell_layout::{WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
@@ -47,6 +48,14 @@ pub enum ShellCommand {
     ResetScene(SceneId),
     /// A file the user dropped on the window.
     LoadTrack(PathBuf),
+    /// Ask for an audio file through a native picker (`plug.c:7790-7800`).
+    ///
+    /// A command rather than the shell opening the dialog itself, because a modal
+    /// picker blocks until the user answers and doing that from inside a
+    /// begin/end drawing pair would hold the frame open across it.
+    OpenAudio,
+    /// Ask for a `.musi` project (`plug.c:7802-7805`).
+    OpenProject,
     /// A panel the rewrite has not built yet. Carried as a command rather than
     /// silently ignored, so the notice tray can say so by name — a stub that
     /// says nothing is indistinguishable from a bug.
@@ -59,6 +68,11 @@ pub enum ShellCommand {
 /// anything it is handed.
 pub struct ShellInput<'a> {
     pub window: (f32, f32),
+    /// The faces to draw and measure with. Borrowed rather than owned for the same
+    /// reason as everything else here, and travelling in the input rather than as a
+    /// separate parameter so that no panel can measure a string with one face and
+    /// draw it with another.
+    pub fonts: &'a Faces,
     pub scene: SceneId,
     pub settings: &'a SceneSettings,
     /// The effective settings after routes, when they differ from `settings`.
@@ -109,23 +123,19 @@ impl Default for Shell {
 impl Shell {
     #[must_use]
     pub fn new() -> Self {
-        let mut notices = NoticeQueue::default();
-        // The empty state is a notice rather than nothing, because a workspace
-        // that says nothing does not teach the one thing a new user needs.
-        let _ = notices.push(&NoticeSpec {
-            severity: Severity::Info,
-            persistent: true,
-            duration_seconds: 0.0,
-            title: Some("Drop an audio file on the window to begin"),
-            detail: "Then choose a scene on the left. Space plays, Tab cycles scenes.",
-            path: "",
-        });
+        // No startup notice. There used to be a persistent one saying "Drop an
+        // audio file on the window to begin", because an empty workspace that says
+        // nothing teaches a new user nothing. `draw_welcome` says all of that
+        // properly now, so the notice was both redundant and harmful: being
+        // persistent it stayed in the tray after a track loaded, and on the welcome
+        // screen it covered the format strip along the bottom edge — which a
+        // headless capture is what showed.
         Self {
             widgets: Widgets::new(),
+            notices: NoticeQueue::default(),
             inspector_open: false,
             panel: UiPanel::None,
             fullscreen: false,
-            notices,
             timeline: TimelineView::new(0.0),
             scrubbing: false,
         }
@@ -193,14 +203,7 @@ impl Shell {
         let mut commands = Vec::new();
         self.widgets.begin_frame();
 
-        // Dropped files first: the gesture is the primary way a track gets in
-        // while there is no file dialog (Agent E owns tinyfiledialogs).
-        if d.is_file_dropped() {
-            for path in d.load_dropped_files().paths() {
-                commands.push(ShellCommand::LoadTrack(PathBuf::from(path)));
-            }
-        }
-
+        self.dropped_files(d, &mut commands);
         self.keyboard(d, input, &mut commands);
 
         // The toolbar runs first because its band decides whether the timecode
@@ -217,10 +220,218 @@ impl Shell {
                 self.inspector(d, frame, input, &mut commands);
             }
         }
-        self.notice_tray(d, frame.preview);
+        self.notice_tray(d, input.fonts.ui(), frame.preview);
 
         self.notices.tick(f64::from(d.get_frame_time()));
         commands
+    }
+
+    /// The welcome screen, drawn instead of the workspace while no track is open
+    /// (`preview_screen`'s `else` branch, `plug.c:7769-7830`).
+    ///
+    /// A separate screen rather than the workspace with everything disabled, which
+    /// is what this rewrite did before. Both are defensible, but the C's answer is
+    /// better and it is the oracle: an empty workspace makes a first-time user read
+    /// eleven greyed-out controls to discover the one thing they can do, where this
+    /// puts that one thing under the cursor and names the three steps that follow.
+    ///
+    /// Geometry comes from [`WelcomeFrame`] so it is assertable at the window sizes
+    /// the application permits; this method is only pixels and clicks.
+    pub fn draw_welcome(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+    ) -> Vec<ShellCommand> {
+        let mut commands = Vec::new();
+        self.widgets.begin_frame();
+        self.dropped_files(d, &mut commands);
+
+        let (w, h) = input.window;
+        let frame = WelcomeFrame::layout(w, h);
+        let font = input.fonts.ui();
+
+        // A light surface, not the scene background: this screen is chrome, and
+        // the C clears it to COLOR_UI_SURFACE for that reason (`plug.c:7770`).
+        d.draw_rectangle(0, 0, w as i32, h as i32, color::ui_surface());
+        d.draw_line(
+            32,
+            frame.header_rule_y as i32,
+            (w - 32.0) as i32,
+            frame.header_rule_y as i32,
+            color::ui_rule(),
+        );
+        d.draw_line(
+            frame.column_rule_x as i32,
+            32,
+            frame.column_rule_x as i32,
+            (h - 32.0) as i32,
+            color::ui_rule(),
+        );
+
+        widgets::draw_text_tracked(
+            d,
+            font,
+            "MUSIALIZER",
+            frame.masthead.x,
+            frame.masthead.y,
+            24.0,
+            2.0,
+            color::ui_ink(),
+        );
+        widgets::draw_text(
+            d,
+            font,
+            "01",
+            frame.step_number.x,
+            frame.step_number.y,
+            84.0,
+            color::accent(),
+        );
+
+        widgets::draw_text(
+            d,
+            font,
+            "Turn one track into a",
+            frame.body.x,
+            frame.body.y,
+            38.0,
+            color::ui_ink(),
+        );
+        widgets::draw_text(
+            d,
+            font,
+            "finished visual score.",
+            frame.body.x,
+            frame.body.y + 46.0,
+            38.0,
+            color::ui_ink(),
+        );
+        widgets::draw_text(
+            d,
+            font,
+            "Open an audio file, choose a scene, refine timing, then export a deterministic MP4.",
+            frame.body.x,
+            frame.body.y + 112.0,
+            17.0,
+            color::ui_muted(),
+        );
+
+        // `Open audio` is drawn selected — accent fill, white label — which is how
+        // the C marks the one action the screen exists for (`plug.c:7790`).
+        if self
+            .widgets
+            .text_button(
+                d,
+                font,
+                widgets::widget_id(widgets::id::WELCOME, 0),
+                frame.open_audio,
+                "Open audio",
+                true,
+                ButtonStyle::Neutral,
+                None,
+            )
+            .clicked
+        {
+            commands.push(ShellCommand::OpenAudio);
+        }
+        if self
+            .widgets
+            .text_button(
+                d,
+                font,
+                widgets::widget_id(widgets::id::WELCOME, 1),
+                frame.open_project,
+                "Open project",
+                false,
+                ButtonStyle::Neutral,
+                None,
+            )
+            .clicked
+        {
+            commands.push(ShellCommand::OpenProject);
+        }
+        widgets::draw_text(
+            d,
+            font,
+            "or drop audio anywhere in this window",
+            frame.drop_hint.x,
+            frame.drop_hint.y,
+            15.0,
+            color::ui_muted(),
+        );
+
+        // The steps are the first thing to go when the window is too short for
+        // everything, because they are the only part of the screen that is
+        // explanation rather than affordance.
+        if frame.fits(h) {
+            d.draw_line_ex(
+                Vector2::new(frame.steps_rule.x, frame.steps_rule.y),
+                Vector2::new(
+                    frame.steps_rule.x + frame.steps_rule.width,
+                    frame.steps_rule.y,
+                ),
+                1.0,
+                color::ui_rule(),
+            );
+            let steps = [
+                "Choose or automate scenes",
+                "Edit lyrics and timing",
+                "Review settings and export",
+            ];
+            for (index, caption) in steps.iter().enumerate() {
+                let column = frame.steps[index];
+                widgets::draw_text(
+                    d,
+                    font,
+                    &format!("{}", index + 1),
+                    column.x,
+                    column.y,
+                    28.0,
+                    color::accent(),
+                );
+                widgets::draw_text(
+                    d,
+                    font,
+                    caption,
+                    column.x,
+                    column.y + 40.0,
+                    15.0,
+                    color::ui_ink(),
+                );
+            }
+        }
+
+        widgets::draw_text_tracked(
+            d,
+            font,
+            "WAV  OGG  MP3  QOA  XM  MOD  FLAC",
+            frame.formats.x,
+            frame.formats.y,
+            14.0,
+            2.0,
+            color::ui_muted(),
+        );
+
+        // The tray covers the whole window here, not a preview rectangle: there is
+        // no preview, and a load failure is exactly the message this screen has to
+        // be able to show (`plug.c:7830`).
+        self.notice_tray(d, font, UiRect::new(0.0, 0.0, w, h));
+        self.notices.tick(f64::from(d.get_frame_time()));
+        commands
+    }
+
+    /// Files dropped on the window, in either screen.
+    ///
+    /// The C handles this once for the whole application rather than per screen,
+    /// and the welcome screen's own copy printing "or drop audio anywhere in this
+    /// window" is a promise that has to hold on both.
+    fn dropped_files(&mut self, d: &RaylibDrawHandle<'_>, commands: &mut Vec<ShellCommand>) {
+        if !d.is_file_dropped() {
+            return;
+        }
+        for path in d.load_dropped_files().paths() {
+            commands.push(ShellCommand::LoadTrack(PathBuf::from(path)));
+        }
     }
 
     fn keyboard(
@@ -295,13 +506,13 @@ impl Shell {
             "Assist",
             if self.fullscreen { "Windowed" } else { "Full" },
         ];
-        let font = d.get_font_default();
+        let font = input.fonts.ui();
         let timecode = format!(
             "{} / {}",
             widgets::format_timestamp(input.time_seconds),
             widgets::format_timestamp(input.duration_seconds)
         );
-        let timecode_width = widgets::measure(&font, &timecode, metric::UI_FONT_VALUE);
+        let timecode_width = widgets::measure(font, &timecode, metric::UI_FONT_VALUE);
 
         // Each button's *natural* width: what its own label needs at the label
         // size, plus the row padding. The band scales them together, so neighbours
@@ -309,7 +520,7 @@ impl Shell {
         // defect `ui_row_typography.h:9-13` describes.
         let mut natural = [0.0f32; 6];
         for (index, label) in labels.iter().enumerate() {
-            natural[index] = widgets::measure(&font, label, metric::UI_FONT_LABEL)
+            natural[index] = widgets::measure(font, label, metric::UI_FONT_LABEL)
                 + row_typography::UI_ROW_LABEL_PADDING
                 + 8.0;
         }
@@ -346,7 +557,7 @@ impl Shell {
             .collect();
         let label_slice = &labels[..count];
         let font_size =
-            widgets::row_font_size(&font, label_slice, &scaled, metric::UI_BUTTON_HEIGHT);
+            widgets::row_font_size(font, label_slice, &scaled, metric::UI_BUTTON_HEIGHT);
 
         for (index, label) in label_slice.iter().enumerate() {
             let boundary = UiRect::new(cursor, row_y, scaled[index], metric::UI_BUTTON_HEIGHT);
@@ -364,12 +575,13 @@ impl Shell {
             // hidden, so the control names the feature even when it cannot run.
             if index < 5 && !has_track {
                 self.widgets
-                    .disabled_button(d, boundary, label, Some(font_size));
+                    .disabled_button(d, font, boundary, label, Some(font_size));
                 continue;
             }
             let id = widgets::widget_id(widgets::id::TOOLBAR, index as u32);
             let state = self.widgets.text_button(
                 d,
+                input.fonts.ui(),
                 id,
                 boundary,
                 label,
@@ -398,6 +610,7 @@ impl Shell {
         if timecode_inline {
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 &timecode,
                 band.timecode.x,
                 band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5,
@@ -440,6 +653,7 @@ impl Shell {
             if meter.width > 190.0 {
                 widgets::draw_text(
                     d,
+                    input.fonts.ui(),
                     &format!(
                         "{} bands  peak {}  rms {:.3}",
                         input.band_count, input.peak_band, input.rms
@@ -485,7 +699,7 @@ impl Shell {
         if frame.tracks_mode == TracksPanelMode::Hidden || frame.tracks.is_empty() {
             return;
         }
-        let content = widgets::panel(d, frame.tracks, "TRACKS");
+        let content = widgets::panel(d, input.fonts.ui(), frame.tracks, "TRACKS");
         let Some((top, height)) = frame.tracks_mode.action_row() else {
             return;
         };
@@ -511,8 +725,8 @@ impl Shell {
             row.height
         };
         let widths = [cell_width; 4];
-        let font = d.get_font_default();
-        let font_size = widgets::row_font_size(&font, &labels, &widths, cell_height);
+        let font = input.fonts.ui();
+        let font_size = widgets::row_font_size(font, &labels, &widths, cell_height);
 
         for (index, label) in labels.iter().enumerate() {
             let column = index % columns;
@@ -529,7 +743,7 @@ impl Shell {
             let unavailable = index > 0 && input.track_name.is_none();
             if unavailable {
                 self.widgets
-                    .disabled_button(d, boundary, label, Some(font_size));
+                    .disabled_button(d, font, boundary, label, Some(font_size));
                 continue;
             }
             let id = widgets::widget_id(widgets::id::TRACKS, index as u32);
@@ -540,16 +754,25 @@ impl Shell {
             } else {
                 ButtonStyle::Neutral
             };
-            let state =
-                self.widgets
-                    .text_button(d, id, boundary, label, false, style, Some(font_size));
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                boundary,
+                label,
+                false,
+                style,
+                Some(font_size),
+            );
             if state.clicked {
-                commands.push(ShellCommand::NotImplemented(match index {
-                    0 => "Open track (drop a file on the window instead)",
-                    1 => "Save project",
-                    2 => "Save project as",
-                    _ => "Close track",
-                }));
+                // Open reaches the picker now that there is one; the other three
+                // need Agent B's project model.
+                match index {
+                    0 => commands.push(ShellCommand::OpenAudio),
+                    1 => commands.push(ShellCommand::NotImplemented("Save project")),
+                    2 => commands.push(ShellCommand::NotImplemented("Save project as")),
+                    _ => commands.push(ShellCommand::NotImplemented("Close track")),
+                }
             }
         }
 
@@ -567,6 +790,7 @@ impl Shell {
                 let id = widgets::widget_id(widgets::id::TRACKS, 16);
                 self.widgets.text_button(
                     d,
+                    input.fonts.ui(),
                     id,
                     boundary,
                     name,
@@ -578,6 +802,7 @@ impl Shell {
         } else {
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 "no track open",
                 frame.tracks.x + metric::UI_PANEL_PADDING,
                 list_top,
@@ -601,7 +826,7 @@ impl Shell {
         if frame.scenes.is_empty() {
             return;
         }
-        let content = widgets::panel(d, frame.scenes, "SCENES");
+        let content = widgets::panel(d, input.fonts.ui(), frame.scenes, "SCENES");
         let padding = 8.0f32;
         let columns = 2usize;
         let rows = SceneId::ALL.len().div_ceil(columns);
@@ -620,8 +845,8 @@ impl Shell {
 
         let labels: Vec<&str> = SceneId::ALL.iter().map(|id| id.display_name()).collect();
         let widths = vec![tile_width; labels.len()];
-        let font = d.get_font_default();
-        let font_size = widgets::row_font_size(&font, &labels, &widths, tile_height);
+        let font = input.fonts.ui();
+        let font_size = widgets::row_font_size(font, &labels, &widths, tile_height);
 
         for (index, id) in SceneId::ALL.into_iter().enumerate() {
             let column = index % columns;
@@ -641,6 +866,7 @@ impl Shell {
             let widget = widgets::widget_id(widgets::id::SCENE_BROWSER, index as u32);
             let state = self.widgets.text_button(
                 d,
+                input.fonts.ui(),
                 widget,
                 boundary,
                 id.display_name(),
@@ -672,6 +898,7 @@ impl Shell {
         if footer_y > content.y {
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 "* not ported yet",
                 content.x + padding,
                 footer_y,
@@ -696,13 +923,14 @@ impl Shell {
         if frame.inspector.is_empty() {
             return;
         }
-        let content = widgets::panel(d, frame.inspector, "TUNE");
-        let font = d.get_font_default();
+        let content = widgets::panel(d, input.fonts.ui(), frame.inspector, "TUNE");
+        let font = input.fonts.ui();
         let padding = metric::UI_PANEL_PADDING;
         let mut y = content.y + padding;
 
         widgets::draw_text(
             d,
+            input.fonts.ui(),
             input.scene.display_name(),
             content.x + padding,
             y,
@@ -726,6 +954,7 @@ impl Shell {
                 // find.
                 widgets::draw_text(
                     d,
+                    input.fonts.ui(),
                     &format!("+{} more (enlarge the window)", descriptors.len() - index),
                     content.x + padding,
                     y,
@@ -744,6 +973,7 @@ impl Shell {
 
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 descriptor.label,
                 row.x,
                 row.y,
@@ -760,9 +990,10 @@ impl Shell {
                 effective,
                 if routed { "  routed" } else { "" }
             );
-            let readout_width = widgets::measure(&font, &readout, metric::UI_FONT_VALUE);
+            let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 &readout,
                 row.x + row.width - readout_width,
                 row.y,
@@ -809,6 +1040,7 @@ impl Shell {
                 .widgets
                 .text_button(
                     d,
+                    input.fonts.ui(),
                     id,
                     reset,
                     "Reset scene",
@@ -840,7 +1072,7 @@ impl Shell {
         if band.is_empty() {
             return;
         }
-        let content = widgets::panel(d, band, "TIMELINE");
+        let content = widgets::panel(d, input.fonts.ui(), band, "TIMELINE");
         // The timecode's fallback home, when the toolbar's band could not seat it
         // beside the transport buttons (`timeline_layout.h:42-44`). Right-aligned
         // in this panel's header, where nothing else is drawn.
@@ -850,10 +1082,11 @@ impl Shell {
                 widgets::format_timestamp(input.time_seconds),
                 widgets::format_timestamp(input.duration_seconds)
             );
-            let font = d.get_font_default();
-            let width = widgets::measure(&font, &timecode, metric::UI_FONT_VALUE);
+            let font = input.fonts.ui();
+            let width = widgets::measure(font, &timecode, metric::UI_FONT_VALUE);
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 &timecode,
                 band.x + band.width - width - metric::UI_PANEL_PADDING,
                 band.y + 6.0,
@@ -880,13 +1113,14 @@ impl Shell {
         if duration <= 0.0 {
             widgets::draw_text(
                 d,
+                input.fonts.ui(),
                 "open a track to see its timeline",
                 strip.x + 8.0,
                 strip.y + strip.height * 0.5 - 7.0,
                 metric::UI_FONT_CAPTION,
                 color::ui_muted(),
             );
-            self.panel_stub(d, content, strip);
+            self.panel_stub(d, input.fonts.ui(), content, strip);
             return;
         }
 
@@ -934,6 +1168,7 @@ impl Shell {
                     // is a tick label that is not there.
                     widgets::draw_text(
                         d,
+                        input.fonts.ui(),
                         &widgets::format_timestamp(tick),
                         x + 3.0,
                         strip.y + strip.height - 16.0,
@@ -998,6 +1233,7 @@ impl Shell {
         };
         widgets::draw_text(
             d,
+            input.fonts.ui(),
             &zoom_label,
             strip.x,
             strip.y + strip.height + 4.0,
@@ -1014,21 +1250,36 @@ impl Shell {
             let id = widgets::widget_id(widgets::id::TIMELINE, 1);
             if self
                 .widgets
-                .text_button(d, id, reset, "Zoom out", false, ButtonStyle::Neutral, None)
+                .text_button(
+                    d,
+                    input.fonts.ui(),
+                    id,
+                    reset,
+                    "Zoom out",
+                    false,
+                    ButtonStyle::Neutral,
+                    None,
+                )
                 .clicked
             {
                 self.timeline.reset(duration);
             }
         }
 
-        self.panel_stub(d, content, strip);
+        self.panel_stub(d, input.fonts.ui(), content, strip);
     }
 
     /// Names the open panel and what it will hold, in the space it would occupy.
     ///
     /// A blank region is indistinguishable from a broken one, and the panel that
     /// says "not built yet" is the one a reviewer can act on.
-    fn panel_stub(&mut self, d: &mut RaylibDrawHandle<'_>, content: UiRect, strip: UiRect) {
+    fn panel_stub(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &Face,
+        content: UiRect,
+        strip: UiRect,
+    ) {
         let (title, detail) = match self.panel {
             UiPanel::None => return,
             UiPanel::Tune => return,
@@ -1062,6 +1313,7 @@ impl Shell {
         d.draw_rectangle_lines_ex(widgets::rectangle(area), 1.0, color::ui_warning());
         widgets::draw_text(
             d,
+            font,
             title,
             area.x + 8.0,
             area.y + 8.0,
@@ -1070,6 +1322,7 @@ impl Shell {
         );
         widgets::draw_text(
             d,
+            font,
             "not built yet",
             area.x + 8.0,
             area.y + 26.0,
@@ -1079,6 +1332,7 @@ impl Shell {
         if area.height > 62.0 {
             widgets::draw_text(
                 d,
+                font,
                 detail,
                 area.x + 8.0,
                 area.y + 48.0,
@@ -1090,7 +1344,7 @@ impl Shell {
 
     /// The notice tray, over the preview's bottom-left corner
     /// (`notice_tray`, `plug.c`).
-    fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, preview: UiRect) {
+    fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, font: &Face, preview: UiRect) {
         if preview.is_empty() || self.notices.is_empty() {
             return;
         }
@@ -1120,6 +1374,7 @@ impl Shell {
             );
             widgets::draw_text(
                 d,
+                font,
                 notice.severity.label(),
                 boundary.x + 10.0,
                 boundary.y + 4.0,
@@ -1128,6 +1383,7 @@ impl Shell {
             );
             widgets::draw_text(
                 d,
+                font,
                 &notice.title,
                 boundary.x + 10.0,
                 boundary.y + 19.0,
@@ -1137,6 +1393,7 @@ impl Shell {
             if !notice.detail.is_empty() {
                 widgets::draw_text(
                     d,
+                    font,
                     &notice.detail,
                     boundary.x + 10.0,
                     boundary.y + 37.0,
@@ -1307,9 +1564,12 @@ mod tests {
     }
 
     #[test]
-    fn the_shell_starts_with_a_persistent_notice_that_explains_the_empty_state() {
+    fn the_tray_starts_empty_so_the_welcome_screen_is_not_covered() {
+        // The tray draws over the bottom-left of whatever screen is up, which is
+        // where the welcome screen puts its supported-format strip. A persistent
+        // startup notice therefore hid it — and stayed in the tray after a track
+        // loaded, because persistent notices do not expire.
         let shell = Shell::new();
-        assert_eq!(shell.notices.len(), 1);
-        assert!(shell.notices.notices()[0].persistent);
+        assert!(shell.notices.is_empty());
     }
 }

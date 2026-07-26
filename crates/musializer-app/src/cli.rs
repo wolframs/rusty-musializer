@@ -239,6 +239,15 @@ pub struct Cli {
     /// depends on them and on the report they produce.
     pub probe_frames: Option<u32>,
     pub probe_shot: Option<PathBuf>,
+    /// Reopen this track halfway through a `--probe-frames` run.
+    ///
+    /// Exists to make the runtime track-swap path — detach, drop, drain, rebind
+    /// the analyzer, reattach — reachable from a headless check. That sequence is
+    /// otherwise only reachable by dropping a file on the window or clicking
+    /// through a native picker, neither of which a capture script can drive, and it
+    /// is the one path in this binary where getting an `unsafe` ordering wrong is a
+    /// use-after-free rather than a wrong pixel.
+    pub probe_reopen: Option<PathBuf>,
     /// `--size WxH`, the slice's own geometry flag. `--ui-probe size=` is the
     /// oracle's spelling; both are honoured.
     pub window: (i32, i32),
@@ -445,6 +454,10 @@ where
                 Some(path) => cli.probe_shot = Some(PathBuf::from(path)),
                 None => cli.warn("--probe-shot needs a path"),
             },
+            "--probe-reopen" => match value_of(&argv, i) {
+                Some(path) => cli.probe_reopen = Some(PathBuf::from(path)),
+                None => cli.warn("--probe-reopen needs a path"),
+            },
             "--size" => match value_of(&argv, i).and_then(parse_resolution) {
                 Some((width, height)) => cli.window = (width as i32, height as i32),
                 None => cli.warn("--size wants WIDTHxHEIGHT"),
@@ -499,6 +512,7 @@ fn takes_one_value(flag: &str) -> bool {
             | "--ui-probe"
             | "--probe-frames"
             | "--probe-shot"
+            | "--probe-reopen"
             | "--size"
     )
 }
@@ -820,6 +834,8 @@ Diagnostics:
   --size WIDTHxHEIGHT     Preview window geometry
   --probe-frames N        Render N frames, print the report, and exit
   --probe-shot PATH       Write a PNG of the last rendered frame
+  --probe-reopen PATH     Swap to PATH halfway through --probe-frames, to
+                          exercise the runtime track-swap path
   -h, --help              Show this help without opening a window
   --version               Show the version
 "

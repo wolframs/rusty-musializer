@@ -37,6 +37,8 @@ use musializer_core::scene::settings;
 use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneId, SceneInstance, SceneSettings};
 use musializer_core::ui::notice::Severity;
 use musializer_runtime::audio_bridge;
+use musializer_runtime::font::Faces;
+use musializer_runtime::process::dialogs::{self, FileDialog};
 use raylib::prelude::*;
 
 mod cli;
@@ -123,6 +125,10 @@ fn run() -> Result<std::process::ExitCode, String> {
 
     let audio = RaylibAudio::init_audio_device()
         .map_err(|error| format!("could not initialize the audio device: {error}"))?;
+
+    // After the window, because the atlas is a GPU upload. Never fails: a face
+    // that will not rasterize falls back to raylib's default and says so.
+    let fonts = Faces::load(&mut rl, &thread);
 
     let mut renderer = scene_host::SceneRenderer::load(&mut rl, &thread)?;
 
@@ -280,48 +286,37 @@ fn run() -> Result<std::process::ExitCode, String> {
         }
     }
 
-    // Scoped so the Music is dropped — and the processor detached — while the
-    // audio device and window are still alive. Getting that order wrong is one of
-    // the plan's named traps.
-    let music = match audio_path.as_ref() {
-        Some(path) => {
-            let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
-            match audio.new_music(path_str) {
-                Ok(music) => {
-                    // `start_preview_track` reconfigures the analyzer from the
-                    // file's sample rate (`../musializer/src/plug.c:658-660`).
-                    let file_sample_rate = music.stream.sampleRate;
-                    *analyzer =
-                        *AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(file_sample_rate))
-                            .map_err(|error| {
-                                format!("could not configure the analyzer: {error}")
-                            })?;
-                    if !options
-                        .ui_probe
-                        .as_ref()
-                        .is_some_and(|probe| !probe.playing)
-                    {
-                        music.play_stream();
-                    }
-                    // SAFETY: the bridge is installed above, the audio device is
-                    // initialized, and `music` outlives the detach below because
-                    // both live in this function's scope and the detach happens
-                    // before the end of it.
-                    unsafe { audio_bridge::attach(music.stream) }
-                        .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
-                    app.track = Some(track_name(path));
-                    Some(music)
-                }
-                Err(error) => {
-                    // The C's `Could not load command-line track` (`:548`).
-                    eprintln!("warning: could not load {}: {error}", path.display());
-                    options.error = true;
-                    None
-                }
-            }
+    // Interleaved stereo scratch, drained from the ring each frame. Sized for a
+    // long frame at 44.1 kHz so a hitch does not silently discard audio. Declared
+    // before the first track load because `open_track` drains through it.
+    let mut scratch = vec![0.0f32; 4096 * audio_bridge::MIXED_CHANNELS];
+
+    // The Music must be dropped — and the processor detached — while the audio
+    // device and window are still alive. Getting that order wrong is one of the
+    // plan's named traps, which is why every transition goes through
+    // `open_track`/`close_track` rather than being written out at each site.
+    let mut music: Option<Music<'_>> = None;
+    if let Some(path) = audio_path.as_ref() {
+        if let Err(error) = open_track(
+            &audio,
+            path,
+            &mut analyzer,
+            &mut music,
+            &mut app,
+            &mut scratch,
+            // `--ui-probe play=0` photographs a paused track. `is_some_and` rather
+            // than `is_none_or`, which needs a newer Rust than this workspace's MSRV.
+            !options
+                .ui_probe
+                .as_ref()
+                .is_some_and(|probe| !probe.playing),
+        ) {
+            // The C's `Could not load command-line track` (`:548`).
+            eprintln!("warning: could not load {}: {error}", path.display());
+            options.error = true;
         }
-        None => None,
-    };
+    }
+
     if let Some(probe) = options.ui_probe.as_ref() {
         // "a panel or seek probe needs a loaded, seekable track"
         // (`musializer.c:609-611`).
@@ -342,10 +337,6 @@ fn run() -> Result<std::process::ExitCode, String> {
                 .zoom(duration, zoom, f64::from(music.get_time_played()));
         }
     }
-
-    // Interleaved stereo scratch, drained from the ring each frame. Sized for a
-    // long frame at 44.1 kHz so a hitch does not silently discard audio.
-    let mut scratch = vec![0.0f32; 4096 * audio_bridge::MIXED_CHANNELS];
 
     let mut report = Report::default();
 
@@ -419,6 +410,7 @@ fn run() -> Result<std::process::ExitCode, String> {
 
         let shell_input = ShellInput {
             window: (rl.get_screen_width() as f32, rl.get_screen_height() as f32),
+            fonts: &fonts,
             scene: app.scene.id(),
             settings: &app.settings,
             routed: routed.as_ref(),
@@ -430,13 +422,21 @@ fn run() -> Result<std::process::ExitCode, String> {
             peak_band: report.peak_band_last,
             rms: frame.audio.rms,
         };
-        let layout = app.shell.layout(&shell_input);
-
-        // Scoped so the draw handle — and with it the frame — is dropped before
-        // the commands run: a command may pause the stream or rebind the scene,
-        // and neither should happen inside a begin/end drawing pair.
+        // With no track open the C draws the welcome screen instead of the
+        // workspace (`preview_screen`, `plug.c:7769`), so the workspace frame is
+        // not even computed on that path — there is no preview to lay out around.
         let commands;
-        {
+        if app.track.is_none() {
+            let mut d = rl.begin_drawing(&thread);
+            d.clear_background(ui::theme::color::ui_surface());
+            commands = app.shell.draw_welcome(&mut d, &shell_input);
+        } else {
+            let layout = app.shell.layout(&shell_input);
+
+            // Scoped so the draw handle — and with it the frame — is dropped
+            // before the commands run: a command may pause the stream or rebind
+            // the scene, and neither should happen inside a begin/end drawing
+            // pair.
             let mut d = rl.begin_drawing(&thread);
             // COLOR_BACKGROUND, from the palette rather than a literal, so the
             // contrast checks see the same number the window is cleared with.
@@ -453,7 +453,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     preview.width as i32,
                     preview.height as i32,
                 );
-                renderer.draw(&mut scissor, &app.scene, &frame, preview, 1.0);
+                renderer.draw(&mut scissor, &fonts, &app.scene, &frame, preview, 1.0);
             }
 
             commands = app.shell.draw(&mut d, &layout, &shell_input);
@@ -485,8 +485,20 @@ fn run() -> Result<std::process::ExitCode, String> {
                     report.peak_band_last,
                 )
             };
+            // Drawn with the interface face like everything else, rather than
+            // raylib's default: this line is the evidence a capture is read for,
+            // and it was the last thing on screen still rendering in the bitmap
+            // face.
             if layout.preview.is_empty() {
-                d.draw_text(&readout, 12, 12, 18, Color::RAYWHITE);
+                ui::widgets::draw_text(
+                    &mut d,
+                    fonts.ui(),
+                    &readout,
+                    12.0,
+                    12.0,
+                    18.0,
+                    Color::RAYWHITE,
+                );
             } else {
                 let preview = ui::widgets::rectangle(layout.preview);
                 let mut scissor = d.begin_scissor_mode(
@@ -495,11 +507,13 @@ fn run() -> Result<std::process::ExitCode, String> {
                     preview.width as i32,
                     preview.height as i32,
                 );
-                scissor.draw_text(
+                ui::widgets::draw_text(
+                    &mut scissor,
+                    fonts.ui(),
                     &readout,
-                    preview.x as i32 + 12,
-                    preview.y as i32 + 12,
-                    18,
+                    preview.x + 12.0,
+                    preview.y + 12.0,
+                    18.0,
                     Color::RAYWHITE,
                 );
             }
@@ -533,19 +547,42 @@ fn run() -> Result<std::process::ExitCode, String> {
                 }
                 ShellCommand::ResetScene(scene) => app.settings.reset_scene(scene),
                 ShellCommand::LoadTrack(path) => {
-                    // The window has no way to swap the Music mid-loop while the
-                    // bridge holds its stream, so this is honest about it rather
-                    // than dropping the gesture on the floor.
+                    // Drop-to-open, which the welcome screen promises in so many
+                    // words. It used to answer "restart with…", because the loop
+                    // held the Music by shared reference and could not replace it;
+                    // `open_track` owns that transition now.
+                    if let Err(error) = open_track(
+                        &audio,
+                        &path,
+                        &mut analyzer,
+                        &mut music,
+                        &mut app,
+                        &mut scratch,
+                        true,
+                    ) {
+                        app.shell.notify(
+                            Severity::Error,
+                            "Audio could not be loaded",
+                            &format!(
+                                "{}: {error}",
+                                path.file_name().map_or_else(
+                                    || path.display().to_string(),
+                                    |name| name.to_string_lossy().into_owned()
+                                )
+                            ),
+                        );
+                    }
+                }
+                ShellCommand::OpenAudio => {
+                    open_audio_dialog(&audio, &mut analyzer, &mut music, &mut app, &mut scratch)
+                }
+                ShellCommand::OpenProject => {
+                    // The picker would work; what is behind it does not. Saying so
+                    // beats opening a dialog whose result is then discarded.
                     app.shell.notify(
-                        Severity::Warning,
-                        "Reopening is not wired up yet",
-                        &format!(
-                            "Restart with: musializer {}",
-                            path.file_name().map_or_else(
-                                || path.display().to_string(),
-                                |n| n.to_string_lossy().into_owned()
-                            )
-                        ),
+                        Severity::Info,
+                        "Not built yet",
+                        "Opening a .musi project needs the project model, which is Agent B's.",
                     );
                 }
                 ShellCommand::NotImplemented(what) => {
@@ -559,6 +596,33 @@ fn run() -> Result<std::process::ExitCode, String> {
         }
 
         report.frames += 1;
+
+        // `--probe-reopen`: swap tracks halfway through the run, so a headless
+        // check exercises detach/drop/drain/rebind/reattach rather than only the
+        // fresh-load path. Taken rather than borrowed, so it happens exactly once.
+        if let Some(limit) = options.probe_frames {
+            if report.frames == u64::from(limit) / 2 {
+                if let Some(path) = options.probe_reopen.take() {
+                    report.reopened = Some(
+                        match open_track(
+                            &audio,
+                            &path,
+                            &mut analyzer,
+                            &mut music,
+                            &mut app,
+                            &mut scratch,
+                            true,
+                        ) {
+                            Ok(()) => Reopen::Ok {
+                                frame: report.frames,
+                                consumed_before: report.consumed_frames,
+                            },
+                            Err(error) => Reopen::Failed(error),
+                        },
+                    );
+                }
+            }
+        }
         if let Some(limit) = options.probe_frames {
             if report.frames >= u64::from(limit) {
                 if let Some(path) = options.probe_shot.as_ref() {
@@ -583,14 +647,17 @@ fn run() -> Result<std::process::ExitCode, String> {
     }
 
     // Detach before the Music drops, so raylib's per-stream processor list never
-    // holds a callback for a freed stream.
-    if let Some(music) = music.as_ref() {
-        // SAFETY: the same stream passed to `attach`, still alive here.
-        unsafe { audio_bridge::detach(music.stream) };
-    }
-    drop(music);
+    // holds a callback for a freed stream. The same function every track switch
+    // goes through, so there is one place where that order is written down.
+    close_track(&mut music, &mut app, &mut scratch);
 
-    report.print(raylib_version, &app, analyzer.band_count(), requested_scene);
+    report.print(
+        raylib_version,
+        &app,
+        analyzer.band_count(),
+        requested_scene,
+        &fonts,
+    );
 
     // `exit_status = command_line_error ? 1 : 0` (`musializer.c:618`).
     Ok(if options.exit_status() == 0 {
@@ -639,6 +706,107 @@ fn unimplemented_action(options: &mut Cli, app: &mut App, flag: &str, detail: &s
     options.error = true;
 }
 
+/// Binds a track, replacing whatever was open.
+///
+/// The order here is the whole reason this is one function rather than code at
+/// each call site. Detach before the old `Music` drops, or raylib's per-stream
+/// processor list holds a callback for a freed stream; drain the ring after the
+/// detach, or the first frames of the new track are analysed together with the
+/// tail of the old one; and rebind the analyzer from the *file's* sample rate,
+/// because that is what `start_preview_track` does (`plug.c:658-660`) and reading
+/// the device's rate instead shifts every band.
+fn open_track<'audio>(
+    audio: &'audio RaylibAudio,
+    path: &Path,
+    analyzer: &mut AudioAnalyzer,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    play: bool,
+) -> Result<(), String> {
+    let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
+    // Loaded before the old track is torn down, so a failure leaves the session
+    // exactly as it was rather than closing what was playing.
+    let opened = audio
+        .new_music(path_str)
+        .map_err(|error| error.to_string())?;
+
+    close_track(music, app, scratch);
+
+    let file_sample_rate = opened.stream.sampleRate;
+    *analyzer = *AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(file_sample_rate))
+        .map_err(|error| format!("could not configure the analyzer: {error}"))?;
+    if play {
+        opened.play_stream();
+    }
+    // SAFETY: the bridge is installed in `run` before this can be called, the
+    // audio device is initialized (it is what produced `opened`), and the stream
+    // outlives the attachment because `close_track` — reached from the next
+    // `open_track` and from `run`'s shutdown — detaches before dropping it.
+    unsafe { audio_bridge::attach(opened.stream) }
+        .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
+
+    app.track = Some(track_name(path));
+    app.shell
+        .timeline
+        .reset(f64::from(opened.get_time_length()));
+    *music = Some(opened);
+    Ok(())
+}
+
+/// Detaches and drops the current track, leaving no stale samples behind.
+///
+/// Draining the ring is not tidiness. The ring is lock-free SPSC and nothing
+/// produces into it once the processor is detached, so this is the only moment a
+/// consumer may safely empty it — and the samples in it belong to a track that is
+/// about to stop existing.
+fn close_track(music: &mut Option<Music<'_>>, app: &mut App, scratch: &mut [f32]) {
+    let Some(open) = music.take() else {
+        return;
+    };
+    // SAFETY: the same stream `open_track` passed to `attach`, still alive here
+    // because it is dropped at the end of this function and not before.
+    unsafe { audio_bridge::detach(open.stream) };
+    drop(open);
+    while audio_bridge::drain_interleaved(scratch) > 0 {}
+    app.track = None;
+    app.shell.timeline.reset(0.0);
+}
+
+/// Asks for an audio file and opens it, reporting either failure in the tray.
+///
+/// Called from outside the drawing pair: the picker is modal and blocks until the
+/// user answers.
+fn open_audio_dialog<'audio>(
+    audio: &'audio RaylibAudio,
+    analyzer: &mut AudioAnalyzer,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+) {
+    let dialog = FileDialog::new("Open audio").with_filter(dialogs::filters::AUDIO);
+    match dialog.pick_file() {
+        // Cancellation. Deliberately silent: the user changed their mind, and a
+        // notice saying so would be noise.
+        Ok(None) => {}
+        Ok(Some(path)) => {
+            if let Err(error) = open_track(audio, &path, analyzer, music, app, scratch, true) {
+                app.shell.notify(
+                    Severity::Error,
+                    "Audio could not be loaded",
+                    // The C's wording (`plug.c:7797-7798`), plus the reason.
+                    &format!("The file is unsupported, corrupt, or unreadable: {error}"),
+                );
+            }
+        }
+        Err(error) => app.shell.notify(
+            Severity::Warning,
+            "No file picker is available",
+            &format!("{error}. Drop a file on the window, or pass it on the command line."),
+        ),
+    }
+}
+
 fn track_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
@@ -657,6 +825,19 @@ struct Report {
     peak_band_last: usize,
     peak_band_low: usize,
     peak_band_high: usize,
+    reopened: Option<Reopen>,
+}
+
+/// What `--probe-reopen` did, so the report can say whether the swap worked.
+///
+/// The interesting number is `consumed_before`: subtracting it from the final
+/// count says how many audio frames arrived through the *second* attachment. A
+/// swap that silently left the bridge detached would still exit 0 and still draw,
+/// and only this difference would show it.
+#[derive(Debug)]
+enum Reopen {
+    Ok { frame: u64, consumed_before: u64 },
+    Failed(String),
 }
 
 impl Default for Report {
@@ -669,6 +850,7 @@ impl Default for Report {
             peak_band_last: 0,
             peak_band_low: usize::MAX,
             peak_band_high: 0,
+            reopened: None,
         }
     }
 }
@@ -686,11 +868,16 @@ impl Report {
         app: &App,
         band_count: usize,
         requested_scene: Option<SceneId>,
+        fonts: &Faces,
     ) {
         let dropped = audio_bridge::ring().map_or(0, |ring| ring.dropped());
         println!("--- slice report ---");
         println!("verified:        window opened, audio device initialized, clean shutdown");
         println!("raylib:          {raylib_version}");
+        // Evidence, not assertion. A silent fall back to raylib's 10 px bitmap
+        // face is the kind of regression that gets noticed by eye weeks later, and
+        // `tools/headless_check.sh` greps this line.
+        println!("fonts:           {}", fonts.describe());
         println!("frames rendered: {}", self.frames);
         println!("analyzer runs:   {}", self.analyzed_frames);
         println!(
@@ -727,6 +914,17 @@ impl Report {
         );
         println!("routes:          {}", app.routes.scene(scene).len());
         println!("panel:           {}", app.shell.panel.label());
+        match &self.reopened {
+            None => println!("reopen:          not requested"),
+            Some(Reopen::Failed(error)) => println!("reopen:          FAILED: {error}"),
+            Some(Reopen::Ok {
+                frame,
+                consumed_before,
+            }) => println!(
+                "reopen:          ok at frame {frame}; {} audio frames through the new stream",
+                self.consumed_frames.saturating_sub(*consumed_before)
+            ),
+        }
         // Evidence, not assertion: `--scene loom` that parses and then leaves
         // Spectrum bound would otherwise exit 0 and look fine.
         match requested_scene {
