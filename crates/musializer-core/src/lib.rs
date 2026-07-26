@@ -10,4 +10,8 @@
 //! line so a later reader can check the port rather than trust it.
 
 pub mod audio;
+pub mod project;
 pub mod scene;
+pub mod scenes;
+pub mod timing;
+pub mod ui;
