@@ -1084,3 +1084,90 @@ Format of a note entry:
          Rust build currently prints `musializer-rs <crate version>` and does not
          claim parity with any of them. Tell us which spelling is canonical when
          the CLI is finished.
+#### Agent D (2026-07-27): scenes 6-10
+
+- [DONE] **All five scenes ported, both halves.** Deterministic state and update in
+         `crates/musializer-core/src/scenes/`: `spectral_terrarium.rs`,
+         `constellation.rs`, `cadence.rs`, `loom.rs`, `pentagram.rs`. Drawing in
+         `crates/musializer-app/src/scenes/` under the same five names. **66 new
+         tests**; `musializer-core` is at 121. `cargo fmt --check`, `cargo clippy
+         --all-targets` and `cargo test` are clean, and `tools/headless_check.sh`
+         still passes unchanged (Spectrum, 240 frames, peak band 14..103).
+- [DONE] The three raylib-free modules are ported as pure submodules and their C
+         tests came with them: `scenes/constellation/motion.rs` (from
+         `scene_constellation_motion.c`, 2 C tests), `scenes/cadence/timing.rs`
+         (from `scene_cadence_timing.c`, 5 C tests), `scenes/loom/weave.rs` (from
+         `scene_loom_weave.c`, 5 C tests). They live in `scenes/<name>/<part>.rs`
+         next to `scenes/<name>.rs`, which needs no `mod.rs` and mirrors the C's
+         file split.
+- [INFO] Each scene exposes a `pub const DESCRIPTOR: SceneDescriptor` with the C's
+         `state_version` (terrarium 2, constellation 2, cadence 1, loom 2,
+         pentagram 1), ready for whoever builds the registry.
+- [INFO] **Nothing draws these yet.** `main.rs` still dispatches only Spectrum, so
+         every app-side scene module carries `#![allow(dead_code)]` with a comment
+         saying to remove it once a scene selector exists. The drawing halves are
+         therefore **unverified visually** — that needs the `--scene` flag (Agent F)
+         plus a capture. Do not read "clean clippy" as "looks right".
+
+##### Needed from the integration owner (shared contracts)
+
+- [HURDLE] `SemanticFrame` does not derive `PartialEq`, so a Loom test compares it
+         field-by-field (`scenes/loom.rs`, `the_woven_fallback_answers_the_same_thing_twice`).
+         Please add `PartialEq` (and `Copy` is already there).
+- [HURDLE] Two drawing primitives every 3D scene needs are parked in
+         `musializer-app::scenes::spectral_terrarium` because `runtime/**` is not
+         Agent D's: **`SceneViewport`** (the `rlViewport` +
+         `rlSetFramebufferWidth/Height` + projection-rescale block the C repeats in
+         each 3D scene, so a narrow panel crops the world instead of stretching it)
+         and **`draw_billboard_rec`** over the non-owning default texture. Agent C's
+         Orbital Lattice and Song Atlas need the first one too, and Constellation
+         already imports it across a module boundary that reads oddly. They belong
+         in `runtime::draw` next to `tube()`.
+- [HURDLE] Agent C's `CircleShader::set_radius`/`set_power` are private to
+         `scenes::spectrum`, so three of my scenes go through the public
+         `radius_location`/`power_location` fields via a local `set_circle` helper.
+         Making those two methods `pub` would remove the helper.
+- [INFO] `EventRecord::is_well_formed` (pre-fix) was laxer than the C's
+         `event_record_is_valid`, which Constellation and the semantic lane both
+         depend on, so `scenes::constellation::event_is_valid` is a local faithful
+         copy. Once the tightened contract lands (non-zero id, `value_count >= 1`,
+         known type) that function should collapse into a call to it.
+- [INFO] `semantic_lane.c` is Agent B's and is still a stub, but Loom needs it now,
+         so `scenes::loom::semantic_lane_sample` is a local faithful port. Collapse
+         it into `core::project::semantic_lane` when B lands the real one.
+- [INFO] `musializer-core` has no shared small-vector type, so
+         `spectral_terrarium::Vec3`, `constellation::Vec3` and `pentagram::Vec2`
+         are three tiny local definitions. Agent C's 3D scenes will make that four
+         or five. A `core::math` with `Vec2`/`Vec3` would be worth ten minutes.
+
+##### C behaviour that looks wrong, reproduced deliberately
+
+- [INFO] **`semantic_lane_sample` rejects any view longer than
+         `EVENT_TIMELINE_CAPACITY` (1024)**, but a scene receives the *merged* view
+         whose capacity is `2 * 1024` (`semantic_lane.c` vs `scene_event_merge.h:8`).
+         A project with more than 1024 merged events therefore **silently loses its
+         semantic lane in Loom**, which falls back to measured audio. Suspected
+         oracle bug; reproduced, tested
+         (`a_merged_view_larger_than_the_lane_capacity_loses_the_lane`), not fixed.
+- [INFO] `cadence_layout`'s fit loop shrinks `font_size` by 0.82 *after* the sixth
+         failed attempt and then exits, so a line that cannot be made to fit is
+         drawn 18% smaller than the slot widths it was measured at
+         (`scene_cadence.c:141-164`). Only reachable with a pathological cue.
+         Reproduced with the reason recorded at the site.
+- [INFO] The four scene hash helpers are not the same function: Constellation,
+         Pentagram and Spectral Terrarium add `0x9e3779b97f4a7c15` to the salt
+         before mixing, **Cadence and Loom do not**. "Harmonizing" them would move
+         every particle in Cadence and every glint in Loom. A test pins it.
+- [INFO] Spectral Terrarium drops its simulation backlog rather than repaying it:
+         once the catch-up loop saturates at eight fixed steps the leftover
+         accumulator is reduced modulo the step (`:344-346`). Deliberate — it stops
+         a stall becoming a burst — and now tested.
+- [INFO] `pentagram_hop_ease`'s input can in principle be negative, and the C casts
+         it through `uint64_t`, which is UB for negatives. `motion` and
+         `orbit_offset` are both non-negative so it cannot happen; the Rust port
+         makes that explicit with a `max(0.0)` instead of relying on the setting
+         range. Behaviourally identical.
+- [INFO] Confirmed rather than "fixed": Loom filling only part of the stage is
+         correct, exactly as `../musializer/tools/UI_REVIEW.md` says. The reason is
+         restated in the module doc of both Loom halves so the next reader does not
+         re-diagnose it.
