@@ -1222,3 +1222,108 @@ Format of a note entry:
          preprocessing it needs are free functions over `&[f32]` plus owned
          `Waveform`/`SongAtlasMap` values, so whoever lands the track model can
          hold those without either side reshaping the other.
+
+#### Agent E (2026-07-26): runtime and process edges
+
+- [DONE] All six modules under `crates/musializer-runtime/src/process/` are
+         landed with **72 tests** passing (`cargo test -p musializer-runtime`),
+         clippy and `fmt --check` clean. Nothing outside that directory was
+         touched except this note.
+         `process_group.rs` (9 tests) — bounded reaping and group signalling;
+         `publish.rs` (11) — transactional publication;
+         `ffmpeg.rs` (12 + 1 `#[ignore]`d real encode) — the encoder child;
+         `font_import.rs` (23) — catalogue/manifest readers + job supervision,
+         with `tests/test_font_catalogue.c` ported in full;
+         `assist.rs` (12) — Assist supervision;
+         `dialogs.rs` (2) — a deliberate stub, see below.
+- [HURDLE] **Do not give the Python helpers their own process group from the
+         parent.** This is the trap in this workstream. `os.setsid()` in
+         `tools/external_analysis.py:307-310` fails with `EPERM` if the caller is
+         already a process-group leader, so `CommandExt::process_group(0)` or a
+         `pre_exec` `setsid` would make the helper raise `PermissionError` and die
+         on startup. The child creates its own group (`--new-process-group`); the
+         parent only signals it. `assist.rs`'s
+         `cancelling_reaches_the_whole_tree_not_just_python` test fails if anyone
+         changes this, and says so in its panic message.
+         The consequence is a race the oracle also has: between `exec` and the
+         helper's `setsid`, `kill(-pid, …)` addresses a group that does not exist
+         and returns `ESRCH`. That is what the `kill(-pid)` → `kill(pid)` fallback
+         (`plug.c:4112-4113`) is for; it is not defensive padding and must not be
+         simplified away.
+- [INFO] **Dependencies wanted, none added.** `libc` for `kill(2)`: `std` sends
+         only `SIGKILL` to only one process, so `process_group.rs` declares
+         `extern "C" { fn kill(pid: c_int, sig: c_int) -> c_int; }` by hand — the
+         plan's "hand-written FFI instead of bindgen" fallback. It works and is
+         one 4-line `mod sys`, so this is a preference, not a blocker.
+         `tempfile` turned out **not** to be needed: transactional staging must
+         write next to the destination (`rename(2)` is per-filesystem), which is
+         a name-and-retry loop, not a temp-dir crate, and the tests use
+         `std::env::temp_dir()` with `Drop` cleanup.
+- [INFO] **Two `waitpid` behaviours got better for free.** `Child::try_wait()`
+         caches the status, so the C's `ECHILD`-means-finished tolerance
+         (`plug.c:3991`, `:4159`) is unnecessary rather than reimplemented, and a
+         monotonic `Instant` replaces both the `clock_gettime` borrow-from-seconds
+         fixup (`ffmpeg_posix.c:83-89`) and the "clock went backwards" guard
+         (`font_import_state.c:31-35`).
+- [INFO] Two C behaviours that look like bugs, reproduced with a comment rather
+         than fixed:
+         (1) `render_export_temporary_path` formats its nonce in **decimal**
+         while `musi_project_temporary_path` uses **16 hex digits**
+         (`render_export.c:287` vs `project_io.c:999`). Harmless, preserved
+         because those names appear in messages users are told to look for.
+         (2) `project_last_separator` treats `\` as a path separator on POSIX
+         (`project_io.c:994`), so a Linux filename containing a backslash gets
+         its temporary in the wrong directory. Exotic; reproduced and noted.
+- [HURDLE] **One deliberate divergence, in `font_catalogue_parse`.** Its header
+         promises the destination survives a failed parse
+         (`font_catalogue.h:76-78`) and `tests/test_font_catalogue.c:85-88`
+         asserts it, but the implementation writes each row straight into
+         `destination->entries` and only withholds `count`
+         (`font_catalogue.c:196-206`). A failure part-way through therefore leaves
+         the **old count with new rows** — a silently corrupted picker. The Rust
+         parses into a local and commits, which satisfies both the header and the
+         C tests. Reproducing the clobber would have meant reproducing a bug
+         nothing covers. Flag it if strict parity is wanted.
+- [INFO] `ffmpeg_available` diverges in one detail: the C uses `access(X_OK)`,
+         which consults the real uid/gid; without `libc` the Rust checks "is a
+         file with an execute bit". A file the user cannot actually execute now
+         passes the preflight and fails at spawn — which the C already tolerates
+         by design, since it re-validates startup independently
+         (`ffmpeg.h:12-13`). The `PATH` quirks are exact: unset or empty is
+         `false`, and an empty element means `"."`.
+- [INFO] The C's `transport_ok` from a failing `close(2)` on the frame pipe has
+         no safe-Rust equivalent — `ChildStdin` has no fallible close. The flag is
+         kept and cleared by a failed **frame write** instead, which is a stronger
+         trigger for the same purpose: a broken transport never publishes.
+- [INFO] `dialogs.rs` is a **stub on purpose** and is the one thing here that is
+         not a port. It defines the call surface (the eight `tinyfd_*` sites are
+         tabulated in its doc comment, with their titles and filters) and returns
+         `DialogError::Unavailable` from all of it. Phase 5 owns the backend
+         choice; `zenity`/`kdialog` as child processes is the cheapest option and
+         would reuse this crate's existing machinery with no new dependency.
+         Two rules for whoever implements it: **cancellation is `Ok(None)`, not an
+         `Err`**, because every C call site treats `NULL` as "the user changed
+         their mind"; and an `Err` from the unsaved-work confirmation
+         (`plug.c:7248`) must **keep** the user's work, never discard it.
+- [INFO] Boundary duplications to delete when their owners land, all marked in the
+         code: `export_temporary_path` and `transport_duration_text` are Agent A's
+         (`render_export.c`); `project_temporary_path` is Agent B's
+         (`project_io.c`); `ExportConfig`/`validate` should become a `From`
+         conversion over Agent A's `Render_Export_Config`.
+         `publish_content_addressed` takes a **verifier callback** so hashing
+         stays Agent B's `sha256` and this crate needs no digest dependency, and
+         it publishes with `link(2)` rather than `rename(2)` on purpose: a digest
+         collision must be detectable, not destructive.
+         `find_assist_helper` lives in `font_import.rs` next to
+         `find_font_helper` because the two C functions are identical apart from
+         the env variable and the filename; one resolver, so they cannot drift.
+- [INFO] `unsafe` inventory rows for `AGENTS.md` (Agent E cannot edit that file):
+         | `runtime::process::process_group` | `std`'s `Child::kill` sends only
+         `SIGKILL` to only one process, so `SIGTERM` and process-group delivery
+         need `kill(2)`, and `libc` is not a dependency | The single `unsafe`
+         block wraps a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`.
+         Both arguments are passed by value, nothing is written through a pointer,
+         and every caller passes a pid it owns as a live `std::process::Child` (or
+         its negation). A wrong pid is a logic bug, not unsoundness |
+         That is the only new `unsafe` in this workstream — the three child
+         families otherwise run entirely on `std::process`.
