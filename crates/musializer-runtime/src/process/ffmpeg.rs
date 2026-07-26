@@ -643,6 +643,49 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Serialises "create an executable" against "fork and exec" for the whole
+    /// test module.
+    ///
+    /// Without this the suite failed roughly two runs in three with
+    /// `ETXTBSY` ("Text file busy"), and a *different* test each time, which is
+    /// what a shared-resource race looks like. The mechanism is the classic
+    /// Linux one:
+    ///
+    /// 1. test B's `fake_encoder` opens its script and writes it;
+    /// 2. test A forks to spawn its own encoder, and the child inherits every
+    ///    open descriptor — including B's write handle to script B;
+    /// 3. test B closes its handle, chmods, and execs script B;
+    /// 4. child A has not reached its own `exec` yet, so it still holds a write
+    ///    descriptor to script B, and the kernel refuses B's exec.
+    ///
+    /// Holding this lock across both halves closes the window: no fork can happen
+    /// while a script's write handle is open. It is test-only on purpose —
+    /// `Encoder::start` must **not** retry `ETXTBSY`, because for a real user that
+    /// error means something is genuinely writing their ffmpeg binary and it
+    /// deserves to surface.
+    static EXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// `Encoder::start_with_program` under [`EXEC_LOCK`]. Every test spawns
+    /// through this rather than calling `start_with_program` directly.
+    fn start_locked(
+        program: &OsStr,
+        destination: &Path,
+        config: &ExportConfig,
+        sound_file: &Path,
+        total_frames: u64,
+        job_nonce: u64,
+    ) -> Result<Encoder, StartError> {
+        let _guard = EXEC_LOCK.lock().expect("exec lock");
+        Encoder::start_with_program(
+            program,
+            destination,
+            config,
+            sound_file,
+            total_frames,
+            job_nonce,
+        )
+    }
+
     struct Scratch(PathBuf);
 
     impl Scratch {
@@ -665,12 +708,17 @@ mod tests {
             let path = self.join(label);
             let script =
                 format!("#!/bin/sh\nout=\"\"\nfor a in \"$@\"; do out=\"$a\"; done\n{body}\n");
+            // See EXEC_LOCK: the write handle must be closed before any other test
+            // is allowed to fork, or that fork's child pins this file and our exec
+            // of it fails with ETXTBSY.
+            let guard = EXEC_LOCK.lock().expect("exec lock");
             fs::write(&path, script).expect("script");
             fs::set_permissions(&path, {
                 use std::os::unix::fs::PermissionsExt;
                 fs::Permissions::from_mode(0o755)
             })
             .expect("chmod");
+            drop(guard);
             path
         }
     }
@@ -837,7 +885,7 @@ mod tests {
         let audio = scratch.join("in.wav");
         fs::write(&audio, b"pcm").unwrap();
         for (frames, nonce) in [(0u64, 1u64), (1, 0)] {
-            let error = Encoder::start_with_program(
+            let error = start_locked(
                 program.as_os_str(),
                 &destination,
                 &small(),
@@ -858,9 +906,8 @@ mod tests {
         let audio = scratch.join("in.wav");
         fs::write(&audio, b"pcm").unwrap();
 
-        let mut encoder =
-            Encoder::start_with_program(program.as_os_str(), &destination, &small(), &audio, 30, 7)
-                .expect("start");
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 7)
+            .expect("start");
         let temporary = encoder.temporary_path().to_path_buf();
         assert!(
             temporary
@@ -893,9 +940,8 @@ mod tests {
         let audio = scratch.join("in.wav");
         fs::write(&audio, b"pcm").unwrap();
 
-        let mut encoder =
-            Encoder::start_with_program(program.as_os_str(), &destination, &small(), &audio, 30, 9)
-                .expect("start");
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 9)
+            .expect("start");
         let temporary = encoder.temporary_path().to_path_buf();
         encoder
             .send_frame_flipped(&frame(16, 16), 16, 16)
@@ -924,15 +970,8 @@ mod tests {
         let audio = scratch.join("in.wav");
         fs::write(&audio, b"pcm").unwrap();
 
-        let encoder = Encoder::start_with_program(
-            program.as_os_str(),
-            &destination,
-            &small(),
-            &audio,
-            30,
-            11,
-        )
-        .expect("start");
+        let encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 11)
+            .expect("start");
         let temporary = encoder.temporary_path().to_path_buf();
         let error = encoder
             .finish(false)
@@ -957,15 +996,8 @@ mod tests {
         let audio = scratch.join("in.wav");
         fs::write(&audio, b"pcm").unwrap();
 
-        let mut encoder = Encoder::start_with_program(
-            program.as_os_str(),
-            &destination,
-            &small(),
-            &audio,
-            30,
-            13,
-        )
-        .expect("start");
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 13)
+            .expect("start");
         // The real grace period is five minutes, which no test should wait for.
         // Cancelling exercises the same ladder with the 5 s policy, and the
         // fake encoder ignores SIGTERM so only the SIGKILL escalation can
@@ -984,15 +1016,8 @@ mod tests {
         let destination = scratch.join("out.mp4");
         let audio = scratch.join("in.wav");
         fs::write(&audio, b"pcm").unwrap();
-        let mut encoder = Encoder::start_with_program(
-            program.as_os_str(),
-            &destination,
-            &small(),
-            &audio,
-            30,
-            17,
-        )
-        .expect("start");
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 17)
+            .expect("start");
 
         let error = encoder
             .send_frame_flipped(&frame(16, 15), 16, 16)
@@ -1017,15 +1042,9 @@ mod tests {
 
         let temporary;
         {
-            let mut encoder = Encoder::start_with_program(
-                program.as_os_str(),
-                &destination,
-                &small(),
-                &audio,
-                30,
-                19,
-            )
-            .expect("start");
+            let mut encoder =
+                start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 19)
+                    .expect("start");
             temporary = encoder.temporary_path().to_path_buf();
             encoder
                 .send_frame_flipped(&frame(16, 16), 16, 16)
