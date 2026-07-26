@@ -19,15 +19,34 @@ cargo run --bin make-fixture-wav -- build/x.wav 8   # synthetic fixture audio
 
 tools/headless_check.sh            # the self-check: private Xvfb, evidence
 tools/differential_analyzer.sh     # the Rust analyzer vs the frozen C analyzer
+tools/differential_settings.sh     # the Rust settings table vs the frozen C
 ```
 
-`tools/differential_analyzer.sh` compiles `../musializer/src/audio_analyzer.c`
-(output into our `build/`, the oracle untouched) and compares its band output
-against the Rust port on identical synthetic PCM. It currently agrees to 4e-10
-across all 104 bands. This is the pattern to copy for any other pure module: a
-number to compare beats a paragraph of reasoning about whether a port is
-faithful. Band *indices* are compared exactly; float values within a tolerance,
-because libm and Rust's intrinsics may differ in the last bits.
+## Differential testing against the oracle
+
+Both scripts compile the relevant `../musializer/src/*.c` with output going into
+our own `build/`. The oracle is read, never written, and its own build directory
+is never touched.
+
+| Harness | Result |
+| --- | --- |
+| `differential_analyzer.sh` | 104 bands agree to 4e-10 (float print precision) |
+| `differential_settings.sh` | all 81 descriptors match exactly |
+
+**This is the pattern to copy for every pure module.** A number to compare beats
+a paragraph of reasoning about whether a port is faithful, and it catches the
+class of error review misses — the settings harness exists because ~81
+descriptors were transcribed by hand and a single mistyped bound would surface
+much later as a scene quietly ignoring a saved setting.
+
+Compare integers exactly; give floats a tolerance, because libm and Rust's
+intrinsics may differ in the last bits. Duplicate the fixture generator between
+the C and Rust sides rather than sharing it — a shared generator can hide the
+difference you are looking for.
+
+Adding one: put the C harness in `tests/differential/`, the Rust side in
+`crates/musializer-core/examples/` (examples need no manifest entry, so they
+never collide with a parallel agent), and the driver in `tools/`.
 
 `tools/headless_check.sh` is how this project checks its own work without
 occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`
