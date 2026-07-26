@@ -1,0 +1,1315 @@
+//! The workspace shell: one frame of chrome around the scene preview.
+//!
+//! Distributed from `../musializer/src/plug.c`, which is 8,682 lines and is the
+//! composition root — a source to distribute from, not a file to port. What
+//! worked in the C was moving *state* out of the shell into raylib-free modules,
+//! not moving drawing code between files, so everything here that could be a
+//! decision instead of a pixel already lives in
+//! [`musializer_core::ui`] or [`super::shell_layout`].
+//!
+//! The shell therefore does three things and no more: read input, draw, and
+//! return [`ShellCommand`]s. It owns no audio handle, no analyzer and no track
+//! list. That is what keeps `main.rs` the only place resource ownership lives.
+
+use std::path::PathBuf;
+
+use musializer_core::scene::{settings, SceneId, SceneSettings};
+use musializer_core::ui::notice::{NoticeQueue, NoticeSpec, Severity};
+use musializer_core::ui::row_typography;
+use musializer_core::ui::timeline_layout::TimelineBand;
+use musializer_core::ui::timeline_view::{self, TimelineView};
+use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
+
+use super::shell_layout::{WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
+use super::theme::{color, metric};
+use super::widgets::{self, ButtonStyle, Widgets};
+use crate::cli::UiPanel;
+use crate::scene_host;
+
+/// What the shell asks the application to do.
+///
+/// A command rather than a mutation: the shell can be driven in a test and its
+/// decisions inspected, and `main.rs` stays the only owner of the audio device,
+/// the analyzer and the window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShellCommand {
+    TogglePlay,
+    /// Absolute transport position in seconds.
+    Seek(f64),
+    SelectScene(SceneId),
+    /// One scene setting, already clamped by the descriptor.
+    SetSetting {
+        scene: SceneId,
+        index: usize,
+        value: f32,
+    },
+    ResetScene(SceneId),
+    /// A file the user dropped on the window.
+    LoadTrack(PathBuf),
+    /// A panel the rewrite has not built yet. Carried as a command rather than
+    /// silently ignored, so the notice tray can say so by name — a stub that
+    /// says nothing is indistinguishable from a bug.
+    NotImplemented(&'static str),
+}
+
+/// What the shell needs to know to draw one frame.
+///
+/// Borrowed, never owned. The lifetime is the contract: the shell may not retain
+/// anything it is handed.
+pub struct ShellInput<'a> {
+    pub window: (f32, f32),
+    pub scene: SceneId,
+    pub settings: &'a SceneSettings,
+    /// The effective settings after routes, when they differ from `settings`.
+    /// Shown as the routed readout so a routed row does not look like a slider
+    /// that moved on its own.
+    pub routed: Option<&'a SceneSettings>,
+    pub time_seconds: f64,
+    pub duration_seconds: f64,
+    pub playing: bool,
+    pub track_name: Option<&'a str>,
+    pub band_count: usize,
+    pub peak_band: usize,
+    pub rms: f32,
+}
+
+/// What the toolbar managed to place, so the timeline knows what is left to it.
+///
+/// The one field is the band's `timecode_inline` answer. It travels rather than
+/// being recomputed, because two places deciding independently where the timecode
+/// goes is precisely the bug `timeline_layout.h:12-21` records — the two of them
+/// drew into the same strip and printed through each other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ToolbarResult {
+    pub timecode_inline: bool,
+}
+
+/// Shell state that survives between frames.
+pub struct Shell {
+    pub widgets: Widgets,
+    /// The right-hand tuning inspector.
+    pub inspector_open: bool,
+    /// Which bottom panel is open. [`UiPanel::None`] is the plain timeline.
+    pub panel: UiPanel,
+    pub fullscreen: bool,
+    pub notices: NoticeQueue,
+    pub timeline: TimelineView,
+    /// Which of the timeline's own controls the pointer is dragging, so a scrub
+    /// that leaves the strip keeps scrubbing.
+    scrubbing: bool,
+}
+
+impl Default for Shell {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Shell {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut notices = NoticeQueue::default();
+        // The empty state is a notice rather than nothing, because a workspace
+        // that says nothing does not teach the one thing a new user needs.
+        let _ = notices.push(&NoticeSpec {
+            severity: Severity::Info,
+            persistent: true,
+            duration_seconds: 0.0,
+            title: Some("Drop an audio file on the window to begin"),
+            detail: "Then choose a scene on the left. Space plays, Tab cycles scenes.",
+            path: "",
+        });
+        Self {
+            widgets: Widgets::new(),
+            inspector_open: false,
+            panel: UiPanel::None,
+            fullscreen: false,
+            notices,
+            timeline: TimelineView::new(0.0),
+            scrubbing: false,
+        }
+    }
+
+    /// Pushes a notice, dropping the result: the overflow policy in
+    /// [`NoticeQueue`] is the right answer and there is nothing better for a
+    /// caller to do with a refusal.
+    pub fn notify(&mut self, severity: Severity, title: &str, detail: &str) {
+        let _ = self.notices.push(&NoticeSpec {
+            severity,
+            persistent: false,
+            duration_seconds: 6.0,
+            title: Some(title),
+            detail,
+            path: "",
+        });
+    }
+
+    /// The timeline height this frame's open panel asks for.
+    ///
+    /// A parameter rather than an assumption, per the layout rule: the panel that
+    /// draws the rows is the panel that asks for the height. A stub asks for
+    /// nothing extra, which is why opening one does not shrink the preview.
+    #[must_use]
+    pub fn timeline_height(&self, window_height: f32) -> f32 {
+        match self.panel {
+            UiPanel::None | UiPanel::Tune => DEFAULT_TIMELINE_HEIGHT,
+            UiPanel::Export => WorkspaceFrame::export_timeline_height(window_height),
+            // Lyrics and Assist are stubs. When they land they ask through
+            // `lyrics_editor_layout::panel_height` and `assist_ui_state`'s
+            // `timeline_height`, both of which are already ported in
+            // musializer-core; until the panels draw rows, asking for their
+            // height would steal it from the preview for nothing.
+            UiPanel::Lyrics | UiPanel::Assist => DEFAULT_TIMELINE_HEIGHT,
+        }
+    }
+
+    /// Draws one frame of chrome and returns what the user asked for.
+    ///
+    /// The preview rectangle is returned alongside so the caller can draw the
+    /// scene into it. Chrome is drawn *after* the scene, so the caller's order is
+    /// `layout` → draw scene → `draw`.
+    #[must_use]
+    pub fn layout(&self, input: &ShellInput<'_>) -> WorkspaceFrame {
+        if self.fullscreen {
+            WorkspaceFrame::fullscreen(input.window.0, input.window.1, true)
+        } else {
+            WorkspaceFrame::layout(
+                input.window.0,
+                input.window.1,
+                self.inspector_open,
+                usize::from(input.track_name.is_some()),
+                self.timeline_height(input.window.1),
+            )
+        }
+    }
+
+    pub fn draw(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+    ) -> Vec<ShellCommand> {
+        let mut commands = Vec::new();
+        self.widgets.begin_frame();
+
+        // Dropped files first: the gesture is the primary way a track gets in
+        // while there is no file dialog (Agent E owns tinyfiledialogs).
+        if d.is_file_dropped() {
+            for path in d.load_dropped_files().paths() {
+                commands.push(ShellCommand::LoadTrack(PathBuf::from(path)));
+            }
+        }
+
+        self.keyboard(d, input, &mut commands);
+
+        // The toolbar runs first because its band decides whether the timecode
+        // fits beside the transport buttons, and the timeline is where it goes
+        // when it does not. The regions are disjoint, so drawing it first costs
+        // nothing — and one owner of that decision is the whole point.
+        let toolbar = self.toolbar(d, frame, input, &mut commands);
+
+        if !self.fullscreen {
+            self.tracks_panel(d, frame, input, &mut commands);
+            self.scene_browser(d, frame, input, &mut commands);
+            self.timeline_strip(d, frame, input, toolbar, &mut commands);
+            if self.inspector_open {
+                self.inspector(d, frame, input, &mut commands);
+            }
+        }
+        self.notice_tray(d, frame.preview);
+
+        self.notices.tick(f64::from(d.get_frame_time()));
+        commands
+    }
+
+    fn keyboard(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        use raylib::consts::KeyboardKey as Key;
+
+        // The C's bindings (`ui_theme.h:60-64`), plus Tab for scene cycling,
+        // which the C spells with its own scene shortcuts.
+        if d.is_key_pressed(Key::KEY_SPACE) {
+            commands.push(ShellCommand::TogglePlay);
+        }
+        if d.is_key_pressed(Key::KEY_F) {
+            self.fullscreen = !self.fullscreen;
+        }
+        if d.is_key_pressed(Key::KEY_TAB) {
+            let shift = d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT);
+            let step = if shift { SceneId::ALL.len() - 1 } else { 1 };
+            let next = (input.scene.index() + step) % SceneId::ALL.len();
+            if let Some(id) = SceneId::from_index(next) {
+                commands.push(ShellCommand::SelectScene(id));
+            }
+        }
+        if d.is_key_pressed(Key::KEY_T) {
+            self.inspector_open = !self.inspector_open;
+        }
+    }
+
+    /// The transport row (`toolbar`, `plug.c:7366-7420`).
+    ///
+    /// Placement goes through [`TimelineBand`], the ported band policy, rather
+    /// than through arithmetic beside it. That module exists because the control
+    /// row and the timecode used to be positioned independently against the same
+    /// band, and below roughly 785 px of workspace the timecode printed straight
+    /// through the buttons (`timeline_layout.h:12-21`). The toolbar has exactly
+    /// that shape, and the 960 px minimum window with the inspector open is
+    /// exactly the reachable case that header names — a capture at that size is
+    /// what sent this code through the band in the first place.
+    ///
+    /// The band decides three things: the scale every button shares, whether the
+    /// timecode can sit beside them, and whether even the minimum scale overflows.
+    /// The last is *reported* rather than hidden, and this caller is what then
+    /// drops something.
+    fn toolbar(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) -> ToolbarResult {
+        let bar = frame.toolbar;
+        if bar.is_empty() {
+            return ToolbarResult::default();
+        }
+        d.draw_rectangle_rec(widgets::rectangle(bar), color::ui_surface());
+        d.draw_line_ex(
+            Vector2::new(bar.x, bar.y),
+            Vector2::new(bar.x + bar.width, bar.y),
+            1.0,
+            color::ui_rule(),
+        );
+
+        let has_track = input.track_name.is_some();
+        let labels: [&str; 6] = [
+            if input.playing { "Pause" } else { "Play" },
+            "Tune",
+            "Export",
+            "Lyrics",
+            "Assist",
+            if self.fullscreen { "Windowed" } else { "Full" },
+        ];
+        let font = d.get_font_default();
+        let timecode = format!(
+            "{} / {}",
+            widgets::format_timestamp(input.time_seconds),
+            widgets::format_timestamp(input.duration_seconds)
+        );
+        let timecode_width = widgets::measure(&font, &timecode, metric::UI_FONT_VALUE);
+
+        // Each button's *natural* width: what its own label needs at the label
+        // size, plus the row padding. The band scales them together, so neighbours
+        // stay proportional instead of each shrinking to fit itself — which is the
+        // defect `ui_row_typography.h:9-13` describes.
+        let mut natural = [0.0f32; 6];
+        for (index, label) in labels.iter().enumerate() {
+            natural[index] = widgets::measure(&font, label, metric::UI_FONT_LABEL)
+                + row_typography::UI_ROW_LABEL_PADDING
+                + 8.0;
+        }
+
+        let row_y = bar.y + (bar.height - metric::UI_BUTTON_HEIGHT) * 0.5;
+        let Some(band) = TimelineBand::layout(
+            bar.x,
+            row_y,
+            bar.width,
+            metric::UI_BUTTON_HEIGHT,
+            metric::UI_CONTROL_GAP,
+            &natural,
+            // No trailing "Clear manual" button in the transport row, so the
+            // band's clear slot is zero-width here.
+            0.0,
+            timecode_width,
+        ) else {
+            return ToolbarResult::default();
+        };
+
+        // `fits == false` means even TIMELINE_BAND_MIN_SCALE overflows, so
+        // something has to go rather than be squeezed into illegibility. The
+        // transport button is the one control the row cannot do without, so
+        // everything else goes — and the timecode moves to the timeline panel,
+        // which is the fallback home the band's `timecode_inline == false` asks
+        // for.
+        let full_row = band.fits;
+        let count = if full_row { labels.len() } else { 1 };
+
+        let mut cursor = bar.x + metric::UI_CONTROL_GAP;
+        let scaled: Vec<f32> = natural[..count]
+            .iter()
+            .map(|width| width * band.scale)
+            .collect();
+        let label_slice = &labels[..count];
+        let font_size =
+            widgets::row_font_size(&font, label_slice, &scaled, metric::UI_BUTTON_HEIGHT);
+
+        for (index, label) in label_slice.iter().enumerate() {
+            let boundary = UiRect::new(cursor, row_y, scaled[index], metric::UI_BUTTON_HEIGHT);
+            cursor += scaled[index] + metric::UI_CONTROL_GAP * band.scale;
+
+            let selected = match index {
+                1 => self.inspector_open,
+                2 => self.panel == UiPanel::Export,
+                3 => self.panel == UiPanel::Lyrics,
+                4 => self.panel == UiPanel::Assist,
+                5 => self.fullscreen,
+                _ => false,
+            };
+            // Play needs a track; the panels do too. Drawn disabled rather than
+            // hidden, so the control names the feature even when it cannot run.
+            if index < 5 && !has_track {
+                self.widgets
+                    .disabled_button(d, boundary, label, Some(font_size));
+                continue;
+            }
+            let id = widgets::widget_id(widgets::id::TOOLBAR, index as u32);
+            let state = self.widgets.text_button(
+                d,
+                id,
+                boundary,
+                label,
+                selected,
+                ButtonStyle::Neutral,
+                Some(font_size),
+            );
+            if !state.clicked {
+                continue;
+            }
+            match index {
+                0 => commands.push(ShellCommand::TogglePlay),
+                1 => self.inspector_open = !self.inspector_open,
+                2 => self.toggle_panel(UiPanel::Export, "Export", commands),
+                3 => self.toggle_panel(UiPanel::Lyrics, "Lyrics", commands),
+                4 => self.toggle_panel(UiPanel::Assist, "Assist", commands),
+                5 => self.fullscreen = !self.fullscreen,
+                _ => {}
+            }
+        }
+
+        // The timecode goes where the band put it, and only if the band said it
+        // fits there. Drawing it at `bar.x + bar.width - width` regardless is the
+        // exact mistake `timeline_layout.h` was written to stop.
+        let timecode_inline = band.timecode_inline && full_row && !band.timecode.is_empty();
+        if timecode_inline {
+            widgets::draw_text(
+                d,
+                &timecode,
+                band.timecode.x,
+                band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5,
+                metric::UI_FONT_VALUE,
+                color::ui_ink(),
+            );
+        }
+
+        // A level meter in whatever is left between the buttons and the timecode.
+        // It reads `rms`, not a band: bands are normalized per frame by the frame's
+        // own maximum (`audio_analyzer.c:204`), so the loudest band always reads
+        // ~1.0 regardless of level and a meter driven from `bands` would be a flat
+        // line. This is the readout that makes a stuck analyzer visible in a
+        // screenshot.
+        let meter_right = if timecode_inline {
+            band.timecode.x - metric::UI_CONTROL_GAP
+        } else {
+            bar.x + bar.width - metric::UI_CONTROL_GAP
+        };
+        let meter = UiRect::new(
+            cursor,
+            bar.y + bar.height * 0.5 - 5.0,
+            (meter_right - cursor).max(0.0),
+            10.0,
+        );
+        // A 20 px meter is a decoration, not a readout. Below a width it can
+        // actually express a level in, it is not drawn.
+        if meter.width >= 60.0 && input.band_count > 0 {
+            d.draw_rectangle_rec(widgets::rectangle(meter), color::ui_rule());
+            let level = input.rms.clamp(0.0, 1.0);
+            d.draw_rectangle_rec(
+                widgets::rectangle(UiRect::new(
+                    meter.x,
+                    meter.y,
+                    meter.width * level,
+                    meter.height,
+                )),
+                color::ui_success(),
+            );
+            if meter.width > 190.0 {
+                widgets::draw_text(
+                    d,
+                    &format!(
+                        "{} bands  peak {}  rms {:.3}",
+                        input.band_count, input.peak_band, input.rms
+                    ),
+                    meter.x,
+                    meter.y - 16.0,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_muted(),
+                );
+            }
+        }
+
+        ToolbarResult { timecode_inline }
+    }
+
+    fn toggle_panel(
+        &mut self,
+        panel: UiPanel,
+        name: &'static str,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if self.panel == panel {
+            self.panel = UiPanel::None;
+            return;
+        }
+        self.panel = panel;
+        commands.push(ShellCommand::NotImplemented(name));
+    }
+
+    /// The tracks rail (`tracks_panel`, `plug.c`).
+    ///
+    /// Drawn only when the layout says the panel can host its own action row. The
+    /// alternative — drawing it anyway at a fixed offset — is the defect
+    /// `workspace_layout.h:7-19` documents: invisible buttons that claim clicks
+    /// aimed at the scene tiles painted over them.
+    fn tracks_panel(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if frame.tracks_mode == TracksPanelMode::Hidden || frame.tracks.is_empty() {
+            return;
+        }
+        let content = widgets::panel(d, frame.tracks, "TRACKS");
+        let Some((top, height)) = frame.tracks_mode.action_row() else {
+            return;
+        };
+        let row = UiRect::new(
+            frame.tracks.x + metric::UI_PANEL_PADDING,
+            frame.tracks.y + top,
+            frame.tracks.width - metric::UI_PANEL_PADDING * 2.0,
+            height,
+        );
+        // The layout promised this fits; assert it rather than trust it, because
+        // this is the exact promise the C broke.
+        if !frame.tracks.contains(row) {
+            return;
+        }
+
+        let stacked = frame.tracks_mode == TracksPanelMode::Stacked;
+        let labels: [&str; 4] = ["Open", "Save", "Save As", "Close"];
+        let columns = if stacked { 2 } else { 4 };
+        let cell_width = (row.width - (columns - 1) as f32 * 4.0) / columns as f32;
+        let cell_height = if stacked {
+            (row.height - 4.0) * 0.5
+        } else {
+            row.height
+        };
+        let widths = [cell_width; 4];
+        let font = d.get_font_default();
+        let font_size = widgets::row_font_size(&font, &labels, &widths, cell_height);
+
+        for (index, label) in labels.iter().enumerate() {
+            let column = index % columns;
+            let line = index / columns;
+            let boundary = UiRect::new(
+                row.x + column as f32 * (cell_width + 4.0),
+                row.y + line as f32 * (cell_height + 4.0),
+                cell_width,
+                cell_height,
+            );
+            // Every one of these needs Agent B's project model. Disabled and
+            // named beats absent: the affordance is what tells the user the
+            // feature exists at all.
+            let unavailable = index > 0 && input.track_name.is_none();
+            if unavailable {
+                self.widgets
+                    .disabled_button(d, boundary, label, Some(font_size));
+                continue;
+            }
+            let id = widgets::widget_id(widgets::id::TRACKS, index as u32);
+            // Close discards a track's unsaved editor state, so it is styled as
+            // a danger action rather than looking like Open.
+            let style = if index == 3 {
+                ButtonStyle::Danger
+            } else {
+                ButtonStyle::Neutral
+            };
+            let state =
+                self.widgets
+                    .text_button(d, id, boundary, label, false, style, Some(font_size));
+            if state.clicked {
+                commands.push(ShellCommand::NotImplemented(match index {
+                    0 => "Open track (drop a file on the window instead)",
+                    1 => "Save project",
+                    2 => "Save project as",
+                    _ => "Close track",
+                }));
+            }
+        }
+
+        // The track list, below the action row.
+        let list_top = frame.tracks.y + top + height + metric::UI_CONTROL_GAP;
+        if let Some(name) = input.track_name {
+            let row_height = frame.tracks.width * 0.2;
+            let boundary = UiRect::new(
+                frame.tracks.x + metric::UI_PANEL_PADDING,
+                list_top,
+                frame.tracks.width - metric::UI_PANEL_PADDING * 2.0,
+                row_height,
+            );
+            if content.contains(boundary) {
+                let id = widgets::widget_id(widgets::id::TRACKS, 16);
+                self.widgets.text_button(
+                    d,
+                    id,
+                    boundary,
+                    name,
+                    true,
+                    ButtonStyle::Neutral,
+                    Some(metric::UI_FONT_LABEL),
+                );
+            }
+        } else {
+            widgets::draw_text(
+                d,
+                "no track open",
+                frame.tracks.x + metric::UI_PANEL_PADDING,
+                list_top,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+        }
+    }
+
+    /// The scene browser (`scene_browser`, `plug.c`).
+    ///
+    /// Its content floor is why the sidebar serves it first: it has no collapsed
+    /// form (`workspace_layout.h:78-81`).
+    fn scene_browser(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if frame.scenes.is_empty() {
+            return;
+        }
+        let content = widgets::panel(d, frame.scenes, "SCENES");
+        let padding = 8.0f32;
+        let columns = 2usize;
+        let rows = SceneId::ALL.len().div_ceil(columns);
+        let available_height = content.height - padding * 2.0 - 24.0;
+        if available_height <= 0.0 {
+            return;
+        }
+        let gap = 4.0f32;
+        // Tiles clamp to a 24 px floor and a 52 px cap, the numbers
+        // WORKSPACE_SCENES_MINIMUM and _MAXIMUM are derived from
+        // (`workspace_layout.h:55-62`). Raising one without the other changes
+        // nothing, which is why they are written down together there.
+        let tile_height =
+            ((available_height - gap * (rows - 1) as f32) / rows as f32).clamp(24.0, 52.0);
+        let tile_width = (content.width - padding * 2.0 - gap) / columns as f32;
+
+        let labels: Vec<&str> = SceneId::ALL.iter().map(|id| id.display_name()).collect();
+        let widths = vec![tile_width; labels.len()];
+        let font = d.get_font_default();
+        let font_size = widgets::row_font_size(&font, &labels, &widths, tile_height);
+
+        for (index, id) in SceneId::ALL.into_iter().enumerate() {
+            let column = index % columns;
+            let row = index / columns;
+            let boundary = UiRect::new(
+                content.x + padding + column as f32 * (tile_width + gap),
+                content.y + padding + row as f32 * (tile_height + gap),
+                tile_width,
+                tile_height,
+            );
+            // A tile that does not fit inside the panel is not drawn. The panel
+            // is what owns those pixels; drawing past it is how the C stole
+            // clicks.
+            if !content.contains(boundary) {
+                continue;
+            }
+            let widget = widgets::widget_id(widgets::id::SCENE_BROWSER, index as u32);
+            let state = self.widgets.text_button(
+                d,
+                widget,
+                boundary,
+                id.display_name(),
+                id == input.scene,
+                ButtonStyle::Neutral,
+                Some(font_size),
+            );
+            // A scene whose drawing half is still a placeholder is marked, so the
+            // browser does not promise ten finished scenes.
+            if !scene_host::drawing_is_ported(id) {
+                d.draw_circle_v(
+                    Vector2::new(boundary.x + boundary.width - 8.0, boundary.y + 8.0),
+                    3.0,
+                    color::ui_warning(),
+                );
+                // The badge is a drawn dot rather than a glyph on purpose: the
+                // footer legend below has to be ASCII because raylib's default
+                // font stops at 126, and "*" is the closest honest stand-in for
+                // the C's U+00B7 until the imported face lands.
+            }
+            if state.clicked && id != input.scene {
+                commands.push(ShellCommand::SelectScene(id));
+            }
+        }
+
+        // The footer names what the badge means, because an unexplained dot is
+        // worse than no dot.
+        let footer_y = content.y + content.height - 22.0;
+        if footer_y > content.y {
+            widgets::draw_text(
+                d,
+                "* not ported yet",
+                content.x + padding,
+                footer_y,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+        }
+    }
+
+    /// The tuning inspector: one slider per setting of the active scene.
+    ///
+    /// Bounds, defaults and precision all come from the descriptor table in
+    /// [`settings`], which was checked column-by-column against the C. The
+    /// inspector never invents a range.
+    fn inspector(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if frame.inspector.is_empty() {
+            return;
+        }
+        let content = widgets::panel(d, frame.inspector, "TUNE");
+        let font = d.get_font_default();
+        let padding = metric::UI_PANEL_PADDING;
+        let mut y = content.y + padding;
+
+        widgets::draw_text(
+            d,
+            input.scene.display_name(),
+            content.x + padding,
+            y,
+            metric::UI_FONT_HEADER,
+            color::ui_ink(),
+        );
+        y += metric::UI_FONT_HEADER + metric::UI_CONTROL_GAP;
+
+        let descriptors = settings::descriptors(input.scene);
+        let row_height = 46.0f32;
+        for (index, descriptor) in descriptors.iter().enumerate() {
+            let row = UiRect::new(
+                content.x + padding,
+                y,
+                content.width - padding * 2.0,
+                row_height,
+            );
+            if !content.contains(row) {
+                // Out of room. Say so rather than silently dropping the tail: a
+                // truncated list that does not admit it is a feature nobody can
+                // find.
+                widgets::draw_text(
+                    d,
+                    &format!("+{} more (enlarge the window)", descriptors.len() - index),
+                    content.x + padding,
+                    y,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_warning(),
+                );
+                break;
+            }
+            y += row_height;
+
+            let value = input.settings.get(input.scene, index);
+            let effective = input
+                .routed
+                .map_or(value, |routed| routed.get(input.scene, index));
+            let routed = (effective - value).abs() > f32::EPSILON;
+
+            widgets::draw_text(
+                d,
+                descriptor.label,
+                row.x,
+                row.y,
+                metric::UI_FONT_CAPTION,
+                if routed {
+                    color::accent()
+                } else {
+                    color::ui_muted()
+                },
+            );
+            let readout = format!(
+                "{:.*}{}",
+                descriptor.precision as usize,
+                effective,
+                if routed { "  routed" } else { "" }
+            );
+            let readout_width = widgets::measure(&font, &readout, metric::UI_FONT_VALUE);
+            widgets::draw_text(
+                d,
+                &readout,
+                row.x + row.width - readout_width,
+                row.y,
+                metric::UI_FONT_VALUE,
+                if routed {
+                    color::accent()
+                } else {
+                    color::ui_ink()
+                },
+            );
+
+            let span = descriptor.maximum - descriptor.minimum;
+            let normalized = if span > 0.0 {
+                (effective - descriptor.minimum) / span
+            } else {
+                0.0
+            };
+            let track = UiRect::new(row.x, row.y + 22.0, row.width, 20.0);
+            let id = widgets::widget_id(widgets::id::INSPECTOR, index as u32);
+            if let Some(fraction) = self.widgets.slider(d, id, track, normalized) {
+                let mut proposed = descriptor.minimum + fraction * span;
+                // Precision 0 settings are integers in the C's readout, so the
+                // slider must produce integers too or the readout lies.
+                if descriptor.precision == 0 {
+                    proposed = proposed.round();
+                }
+                commands.push(ShellCommand::SetSetting {
+                    scene: input.scene,
+                    index,
+                    value: proposed,
+                });
+            }
+        }
+
+        let reset = UiRect::new(
+            content.x + padding,
+            content.y + content.height - metric::UI_BUTTON_HEIGHT - padding,
+            content.width - padding * 2.0,
+            metric::UI_BUTTON_HEIGHT,
+        );
+        if content.contains(reset) {
+            let id = widgets::widget_id(widgets::id::INSPECTOR, 900);
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    id,
+                    reset,
+                    "Reset scene",
+                    false,
+                    ButtonStyle::Neutral,
+                    None,
+                )
+                .clicked
+            {
+                commands.push(ShellCommand::ResetScene(input.scene));
+            }
+        }
+    }
+
+    /// The timeline strip: waveform lane placeholder, ticks, playhead, scrubber.
+    ///
+    /// Every seconds↔pixel conversion goes through [`TimelineView`] so the ticks,
+    /// the playhead and the scrubber cannot disagree about where a moment is
+    /// (`timeline_view.h:6-15`).
+    fn timeline_strip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        toolbar: ToolbarResult,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        let band = frame.timeline;
+        if band.is_empty() {
+            return;
+        }
+        let content = widgets::panel(d, band, "TIMELINE");
+        // The timecode's fallback home, when the toolbar's band could not seat it
+        // beside the transport buttons (`timeline_layout.h:42-44`). Right-aligned
+        // in this panel's header, where nothing else is drawn.
+        if !toolbar.timecode_inline {
+            let timecode = format!(
+                "{} / {}",
+                widgets::format_timestamp(input.time_seconds),
+                widgets::format_timestamp(input.duration_seconds)
+            );
+            let font = d.get_font_default();
+            let width = widgets::measure(&font, &timecode, metric::UI_FONT_VALUE);
+            widgets::draw_text(
+                d,
+                &timecode,
+                band.x + band.width - width - metric::UI_PANEL_PADDING,
+                band.y + 6.0,
+                metric::UI_FONT_VALUE,
+                color::ui_ink(),
+            );
+        }
+        let duration = input.duration_seconds;
+        self.timeline.clamp(duration);
+
+        let padding = metric::UI_PANEL_PADDING;
+        let strip = UiRect::new(
+            content.x + padding,
+            content.y + padding,
+            (content.width - padding * 2.0).max(0.0),
+            56.0f32.min((content.height - padding * 2.0).max(0.0)),
+        );
+        if strip.is_empty() {
+            return;
+        }
+        d.draw_rectangle_rec(widgets::rectangle(strip), color::ui_raised());
+        d.draw_rectangle_lines_ex(widgets::rectangle(strip), 1.0, color::ui_rule());
+
+        if duration <= 0.0 {
+            widgets::draw_text(
+                d,
+                "open a track to see its timeline",
+                strip.x + 8.0,
+                strip.y + strip.height * 0.5 - 7.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            self.panel_stub(d, content, strip);
+            return;
+        }
+
+        // Wheel zoom about the pointer, so the moment under the cursor does not
+        // slide away (`timeline_view.h:43-47`).
+        let mouse = d.get_mouse_position();
+        let over_strip = mouse.x >= strip.x
+            && mouse.x <= strip.x + strip.width
+            && mouse.y >= strip.y
+            && mouse.y <= strip.y + strip.height;
+        let wheel = d.get_mouse_wheel_move();
+        if over_strip && wheel != 0.0 {
+            let anchor = self.timeline.seconds_at(
+                f64::from(mouse.x),
+                f64::from(strip.x),
+                f64::from(strip.width),
+                duration,
+            );
+            self.timeline
+                .zoom(duration, 1.2f64.powf(f64::from(wheel)), anchor);
+        }
+
+        // Ticks from the ladder, chosen from the visible span rather than the
+        // track length — picking it from the length left a zoomed-in window with
+        // no label in it at all (`timeline_view.h:76-78`).
+        let step = timeline_view::tick_step(self.timeline.span_seconds);
+        if step > 0.0 {
+            let first = (self.timeline.start_seconds / step).floor() * step;
+            let mut tick = first;
+            while tick <= self.timeline.start_seconds + self.timeline.span_seconds {
+                let x = self
+                    .timeline
+                    .x_at(tick, f64::from(strip.x), f64::from(strip.width))
+                    as f32;
+                if x >= strip.x && x <= strip.x + strip.width {
+                    d.draw_line_ex(
+                        Vector2::new(x, strip.y),
+                        Vector2::new(x, strip.y + strip.height),
+                        1.0,
+                        color::ui_rule(),
+                    );
+                    // Not smaller than UI_FONT_CAPTION: the 11 px labels in an
+                    // earlier capture rendered the colon and the point as boxes
+                    // in raylib's 10 px bitmap font. A tick label nobody can read
+                    // is a tick label that is not there.
+                    widgets::draw_text(
+                        d,
+                        &widgets::format_timestamp(tick),
+                        x + 3.0,
+                        strip.y + strip.height - 16.0,
+                        metric::UI_FONT_CAPTION,
+                        color::ui_muted(),
+                    );
+                }
+                tick += step;
+            }
+        }
+
+        // Playhead.
+        let playhead = self.timeline.x_at(
+            input.time_seconds,
+            f64::from(strip.x),
+            f64::from(strip.width),
+        ) as f32;
+        if playhead >= strip.x && playhead <= strip.x + strip.width {
+            d.draw_line_ex(
+                Vector2::new(playhead, strip.y),
+                Vector2::new(playhead, strip.y + strip.height),
+                2.0,
+                color::accent(),
+            );
+        }
+        // Follow playback with the least scroll that keeps the playhead inside,
+        // which is safe to call every frame (`timeline_view.h:52-55`).
+        if input.playing {
+            self.timeline.reveal(duration, input.time_seconds);
+        }
+
+        // Scrub. The drag is tracked here rather than through the button claim
+        // because a scrub that leaves the strip must keep scrubbing.
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+        if over_strip && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
+            self.scrubbing = true;
+        }
+        if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+            self.scrubbing = false;
+        }
+        if self.scrubbing {
+            let seconds = self.timeline.seconds_at(
+                f64::from(mouse.x),
+                f64::from(strip.x),
+                f64::from(strip.width),
+                duration,
+            );
+            commands.push(ShellCommand::Seek(seconds));
+        }
+
+        // The zoom readout, so "why is the strip not the whole track" has an
+        // answer on screen.
+        let zoom_label = if self.timeline.is_whole(duration) {
+            "whole track".to_string()
+        } else {
+            format!(
+                "{:.1}x  ({} - {})",
+                duration / self.timeline.span_seconds,
+                widgets::format_timestamp(self.timeline.start_seconds),
+                widgets::format_timestamp(self.timeline.start_seconds + self.timeline.span_seconds)
+            )
+        };
+        widgets::draw_text(
+            d,
+            &zoom_label,
+            strip.x,
+            strip.y + strip.height + 4.0,
+            metric::UI_FONT_CAPTION,
+            color::ui_muted(),
+        );
+        let reset = UiRect::new(
+            strip.x + strip.width - 84.0,
+            strip.y + strip.height + 2.0,
+            84.0,
+            22.0,
+        );
+        if content.contains(reset) {
+            let id = widgets::widget_id(widgets::id::TIMELINE, 1);
+            if self
+                .widgets
+                .text_button(d, id, reset, "Zoom out", false, ButtonStyle::Neutral, None)
+                .clicked
+            {
+                self.timeline.reset(duration);
+            }
+        }
+
+        self.panel_stub(d, content, strip);
+    }
+
+    /// Names the open panel and what it will hold, in the space it would occupy.
+    ///
+    /// A blank region is indistinguishable from a broken one, and the panel that
+    /// says "not built yet" is the one a reviewer can act on.
+    fn panel_stub(&mut self, d: &mut RaylibDrawHandle<'_>, content: UiRect, strip: UiRect) {
+        let (title, detail) = match self.panel {
+            UiPanel::None => return,
+            UiPanel::Tune => return,
+            UiPanel::Export => (
+                "EXPORT",
+                "FFmpeg supervision and transactional publication are Agent E's.",
+            ),
+            UiPanel::Lyrics => (
+                "LYRICS",
+                "Three-pane editor, cue lane and caption typography. Layout policy is ported; \
+                 the panel is not.",
+            ),
+            UiPanel::Assist => (
+                "ASSIST",
+                "Confirmation step names the lyric sheet a run will use, with Choose/Replace/Clear.",
+            ),
+        };
+        let area = UiRect::new(
+            content.x + metric::UI_PANEL_PADDING,
+            strip.y + strip.height + 28.0,
+            content.width - metric::UI_PANEL_PADDING * 2.0,
+            (content.y + content.height
+                - (strip.y + strip.height + 28.0)
+                - metric::UI_PANEL_PADDING)
+                .max(0.0),
+        );
+        if area.is_empty() {
+            return;
+        }
+        d.draw_rectangle_rec(widgets::rectangle(area), color::ui_raised());
+        d.draw_rectangle_lines_ex(widgets::rectangle(area), 1.0, color::ui_warning());
+        widgets::draw_text(
+            d,
+            title,
+            area.x + 8.0,
+            area.y + 8.0,
+            metric::UI_FONT_CAPTION,
+            color::ui_warning(),
+        );
+        widgets::draw_text(
+            d,
+            "not built yet",
+            area.x + 8.0,
+            area.y + 26.0,
+            metric::UI_FONT_LABEL,
+            color::ui_ink(),
+        );
+        if area.height > 62.0 {
+            widgets::draw_text(
+                d,
+                detail,
+                area.x + 8.0,
+                area.y + 48.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+        }
+    }
+
+    /// The notice tray, over the preview's bottom-left corner
+    /// (`notice_tray`, `plug.c`).
+    fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, preview: UiRect) {
+        if preview.is_empty() || self.notices.is_empty() {
+            return;
+        }
+        let width = 380.0f32.min(preview.width - 24.0);
+        if width <= 0.0 {
+            return;
+        }
+        let row_height = 56.0f32;
+        let mut y = preview.y + preview.height - 12.0 - row_height;
+        // Newest last in the queue, so draw from the end upward: the most recent
+        // notice sits closest to the bottom edge where the eye already is.
+        for notice in self.notices.notices().iter().rev() {
+            if y < preview.y {
+                break;
+            }
+            let boundary = UiRect::new(preview.x + 12.0, y, width, row_height);
+            let accent = match notice.severity {
+                Severity::Info => color::accent(),
+                Severity::Success => color::ui_success(),
+                Severity::Warning => color::ui_warning(),
+                Severity::Error => color::ui_danger(),
+            };
+            d.draw_rectangle_rec(widgets::rectangle(boundary), Color::new(20, 22, 28, 232));
+            d.draw_rectangle_rec(
+                widgets::rectangle(UiRect::new(boundary.x, boundary.y, 3.0, boundary.height)),
+                accent,
+            );
+            widgets::draw_text(
+                d,
+                notice.severity.label(),
+                boundary.x + 10.0,
+                boundary.y + 4.0,
+                metric::UI_FONT_CAPTION,
+                accent,
+            );
+            widgets::draw_text(
+                d,
+                &notice.title,
+                boundary.x + 10.0,
+                boundary.y + 19.0,
+                metric::UI_FONT_LABEL,
+                Color::RAYWHITE,
+            );
+            if !notice.detail.is_empty() {
+                widgets::draw_text(
+                    d,
+                    &notice.detail,
+                    boundary.x + 10.0,
+                    boundary.y + 37.0,
+                    metric::UI_FONT_CAPTION,
+                    Color::new(180, 190, 205, 255),
+                );
+            }
+            y -= row_height + 4.0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stub_panel_does_not_reserve_height_it_never_draws() {
+        // The rule, as a test. Opening Lyrics or Assist while their panels are
+        // stubs must not shrink the preview, because the height would buy
+        // nothing.
+        let mut shell = Shell::new();
+        let baseline = shell.timeline_height(720.0);
+        for panel in [UiPanel::Lyrics, UiPanel::Assist, UiPanel::Tune] {
+            shell.panel = panel;
+            assert_eq!(
+                shell.timeline_height(720.0),
+                baseline,
+                "{panel:?} reserved height for a panel it does not draw"
+            );
+        }
+        // Export does draw a taller region, and asks for it.
+        shell.panel = UiPanel::Export;
+        assert!(shell.timeline_height(1080.0) > baseline);
+    }
+
+    #[test]
+    fn toggling_a_panel_twice_returns_to_the_timeline() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        shell.toggle_panel(UiPanel::Export, "Export", &mut commands);
+        assert_eq!(shell.panel, UiPanel::Export);
+        assert_eq!(commands, vec![ShellCommand::NotImplemented("Export")]);
+        shell.toggle_panel(UiPanel::Export, "Export", &mut commands);
+        assert_eq!(shell.panel, UiPanel::None);
+        // Closing does not re-announce.
+        assert_eq!(commands.len(), 1);
+    }
+
+    /// The toolbar's own band, computed the way [`Shell::toolbar`] computes it but
+    /// with a stubbed text measurer, so the policy is assertable without a window.
+    ///
+    /// The measurer is the default font's rough average advance at the label size
+    /// (raylib's default face is a fixed 10x10 cell, so ~0.5 em per character is
+    /// close). Exactness is not the point — the point is that the *policy* is
+    /// exercised at the sizes a capture showed to be tight.
+    fn toolbar_band(bar_width: f32, playing: bool, fullscreen: bool) -> TimelineBand {
+        let labels = [
+            if playing { "Pause" } else { "Play" },
+            "Tune",
+            "Export",
+            "Lyrics",
+            "Assist",
+            if fullscreen { "Windowed" } else { "Full" },
+        ];
+        let measure = |text: &str, size: f32| text.chars().count() as f32 * size * 0.5;
+        let mut natural = [0.0f32; 6];
+        for (index, label) in labels.iter().enumerate() {
+            natural[index] =
+                measure(label, metric::UI_FONT_LABEL) + row_typography::UI_ROW_LABEL_PADDING + 8.0;
+        }
+        let timecode_width = measure("00:00.000 / 00:00.000", metric::UI_FONT_VALUE);
+        TimelineBand::layout(
+            0.0,
+            0.0,
+            bar_width,
+            metric::UI_BUTTON_HEIGHT,
+            metric::UI_CONTROL_GAP,
+            &natural,
+            0.0,
+            timecode_width,
+        )
+        .expect("the band accepts these inputs")
+    }
+
+    #[test]
+    fn the_toolbar_never_squeezes_its_labels_below_the_legibility_floor() {
+        // The band's contract: it will shrink to TIMELINE_BAND_MIN_SCALE and no
+        // further, and it says so through `fits`. A capture at 960x640 with the
+        // inspector open — a 440 px toolbar — is what caught the old arithmetic
+        // reading "Pau?  Tune  Exp?  Lyr?".
+        use musializer_core::ui::timeline_layout::TIMELINE_BAND_MIN_SCALE;
+
+        for width in [440.0f32, 640.0, 960.0, 1280.0] {
+            let band = toolbar_band(width, false, false);
+            assert!(
+                band.scale >= TIMELINE_BAND_MIN_SCALE,
+                "{width}px scaled to {} — below the legibility floor",
+                band.scale
+            );
+            assert!(band.scale <= 1.0, "{width}px scaled up to {}", band.scale);
+        }
+    }
+
+    #[test]
+    fn a_narrow_toolbar_moves_the_timecode_out_rather_than_over_the_buttons() {
+        // The whole reason the band exists. At the narrow end the timecode must
+        // not be inline, and the timeline panel is then responsible for it —
+        // which is why `ToolbarResult` travels.
+        let narrow = toolbar_band(440.0, false, false);
+        let wide = toolbar_band(1280.0, false, false);
+        assert!(
+            !narrow.timecode_inline || !narrow.fits,
+            "a 440 px band claimed room for both the row and the timecode"
+        );
+        assert!(wide.timecode_inline, "a 1280 px band should seat both");
+        assert!(wide.fits);
+        // Inline or not, the timecode rect never overlaps the control row.
+        if wide.timecode_inline {
+            assert!(!wide.controls.overlaps(wide.timecode));
+        }
+    }
+
+    #[test]
+    fn the_toolbar_row_stays_inside_the_bar_at_every_supported_width() {
+        // A sweep, because the interesting failures are at the two boundaries: the
+        // one where the band stops seating the timecode inline, and the one where
+        // it stops fitting at all.
+        //
+        // Note what `fits == false` does *not* mean: it does not mean the band
+        // returns something that fits. It means the band has already scaled to its
+        // floor and the row still overflows, so **the caller has to drop
+        // controls** (`timeline_layout.h:45-47`). This test found that the first
+        // time round by asserting the wrong thing, which is worth recording: at
+        // 300 px the band honestly reports a 322 px row. `Shell::toolbar` responds
+        // by drawing the transport button alone, and that is the invariant below.
+        for width in 300..=1920 {
+            let bar = width as f32;
+            let band = toolbar_band(bar, true, true);
+            if band.fits {
+                assert!(
+                    band.controls_width <= bar + 0.01,
+                    "{width}px: the band said a {}px row fits, and it does not",
+                    band.controls_width
+                );
+            } else {
+                // What the shell actually draws in this case: one scaled button.
+                let transport = toolbar_band(bar, true, true).scale
+                    * (metric::UI_FONT_LABEL * 0.5 * 5.0
+                        + row_typography::UI_ROW_LABEL_PADDING
+                        + 8.0);
+                assert!(
+                    transport + metric::UI_CONTROL_GAP * 2.0 <= bar,
+                    "{width}px: even the lone transport button does not fit"
+                );
+            }
+            if band.timecode_inline && band.fits {
+                assert!(
+                    band.timecode.x + band.timecode.width <= bar + 0.01,
+                    "{width}px: the timecode runs past the bar"
+                );
+                assert!(
+                    !band.controls.overlaps(band.timecode),
+                    "{width}px: the timecode prints through the controls"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_shell_starts_with_a_persistent_notice_that_explains_the_empty_state() {
+        let shell = Shell::new();
+        assert_eq!(shell.notices.len(), 1);
+        assert!(shell.notices.notices()[0].persistent);
+    }
+}
