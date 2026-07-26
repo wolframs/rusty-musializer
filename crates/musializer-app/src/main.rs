@@ -1,132 +1,130 @@
-//! The Musializer binary.
+//! The Musializer binary: composition root.
 //!
-//! Right now this is the Phase 1 vertical slice: open a window, initialize audio,
-//! play a track, feed samples through the allocation-free callback bridge,
-//! analyze them in Rust, draw Spectrum, and shut down cleanly. Agent F grows a
-//! workspace around this; the frame loop's shape is the integration owner's.
+//! This grew around the Phase 1 vertical slice rather than replacing it. The
+//! slice's path — window, audio device, callback bridge, analyzer, Spectrum,
+//! clean shutdown, and the `--probe-frames`/`--probe-shot`/`--size` diagnostics
+//! with their report — is still the only thing proving P1, and
+//! `tools/headless_check.sh` depends on that report's format. What is new is a
+//! real CLI ([`cli`]), all ten scenes selectable ([`scene_host`]), and an
+//! operable workspace around the preview ([`ui::shell`]).
 //!
-//! ## The probe flags
+//! ## Order of operations
 //!
-//! `--probe-frames N` and `--probe-shot PATH` exist so this can check its own
-//! work without a human looking at a screen, following
-//! `../musializer/tools/UI_REVIEW.md`. They are diagnostics, deliberately named
-//! so they cannot be confused with the product CLI Agent F will implement.
+//! Reproduced from `../musializer/src/musializer.c:315-662`, because the order is
+//! semantics, not sequence:
+//!
+//! 1. `-h`/`--help`/`--version` pre-pass over all of `argv` — exits 0 before a
+//!    window opens, even when the rest of the line is invalid.
+//! 2. Window, minimum size, audio device.
+//! 3. The `argv` actions, left to right, so a later input overwrites an earlier
+//!    one.
+//! 4. **Then** the deferred routes, so a project hydration cannot overwrite a
+//!    route that appeared earlier in `argv` (`musializer.c:553-561`).
+//! 5. Render config, save, probe — each short-circuited by the shared error flag.
+//!
+//! ## Where the `App` state is
+//!
+//! Deliberately not a `Plug *p` equivalent. The frame loop owns the audio and the
+//! analyzer; [`ui::shell::Shell`] owns editor state and returns
+//! [`ShellCommand`](ui::shell::ShellCommand)s rather than mutating anything. That
+//! is why there is no `Rc<RefCell<_>>` anywhere in this file.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
-use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneSettings};
+use musializer_core::scene::routes::{RouteSources, RouteTable};
+use musializer_core::scene::settings;
+use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneId, SceneInstance, SceneSettings};
+use musializer_core::ui::notice::Severity;
 use musializer_runtime::audio_bridge;
 use raylib::prelude::*;
 
+mod cli;
+mod scene_host;
 mod scenes;
+mod ui;
 
-/// The minimum window the C project supports. A panel's minimum size must be
-/// measured against what this actually produces, not against a guessed threshold
-/// (REWRITE_PLAN.md, Agent F's layout rules).
-const MIN_WINDOW: (i32, i32) = (960, 640);
-const DEFAULT_WINDOW: (i32, i32) = (1280, 720);
+use cli::{Action, Cli, Outcome};
+use ui::shell::{Shell, ShellCommand, ShellInput};
 
-struct Options {
-    audio_path: Option<PathBuf>,
-    probe_frames: Option<u32>,
-    probe_shot: Option<PathBuf>,
-    window: (i32, i32),
-}
+/// Seed for a scene with no track to derive one from. The C seeds per track
+/// (`scene_seed_for_track`); until the track model lands (Agent B), one constant
+/// keeps scene state deterministic, which is the property that actually matters.
+const DEFAULT_SCENE_SEED: u64 = 0x5eed_0000_0000_0001;
 
-fn parse_options() -> Result<Options, String> {
-    let mut options = Options {
-        audio_path: None,
-        probe_frames: None,
-        probe_shot: None,
-        window: DEFAULT_WINDOW,
-    };
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--probe-frames" => {
-                let value = args.next().ok_or("--probe-frames needs a count")?;
-                options.probe_frames = Some(
-                    value
-                        .parse()
-                        .map_err(|_| format!("bad frame count: {value}"))?,
-                );
-            }
-            "--probe-shot" => {
-                options.probe_shot = Some(PathBuf::from(
-                    args.next().ok_or("--probe-shot needs a path")?,
-                ));
-            }
-            "--size" => {
-                let value = args.next().ok_or("--size needs WIDTHxHEIGHT")?;
-                let (w, h) = value.split_once('x').ok_or("--size wants WIDTHxHEIGHT")?;
-                options.window = (
-                    w.parse().map_err(|_| format!("bad width: {w}"))?,
-                    h.parse().map_err(|_| format!("bad height: {h}"))?,
-                );
-            }
-            "--version" => {
-                println!(
-                    "musializer-rs {} (raylib {})",
-                    env!("CARGO_PKG_VERSION"),
-                    musializer_runtime::RAYLIB_VERSION
-                );
-                std::process::exit(0);
-            }
-            "-h" | "--help" => {
-                print_help();
-                std::process::exit(0);
-            }
-            // Unlike the C parser, an unknown flag is an error rather than a
-            // file path. The oracle falls through to its positional arm and
-            // tries to load `--typo` as audio (`../musializer/src/musializer.c:546-550`),
-            // which is a diagnostic gap worth not reproducing.
-            other if other.starts_with('-') => {
-                return Err(format!("unknown flag: {other}"));
-            }
-            positional => {
-                if options.audio_path.is_some() {
-                    return Err("only one audio path is supported so far".into());
-                }
-                options.audio_path = Some(PathBuf::from(positional));
-            }
+fn main() -> std::process::ExitCode {
+    match run() {
+        Ok(status) => status,
+        Err(message) => {
+            eprintln!("musializer: {message}");
+            std::process::ExitCode::FAILURE
         }
     }
-    Ok(options)
 }
 
-fn print_help() {
-    println!(
-        "usage: musializer [AUDIO] [--size WxH]\n\
-         \n\
-         Phase 1 vertical slice: window, audio, analyzer, Spectrum.\n\
-         \n\
-         diagnostics:\n\
-         \x20 --probe-frames N   render N frames then exit\n\
-         \x20 --probe-shot PATH  write a PNG of the last rendered frame"
-    );
-}
-
-fn main() -> Result<(), String> {
+fn run() -> Result<std::process::ExitCode, String> {
     // Keeps the raylib-5-5-link crate in the link graph; see its build.rs.
     let raylib_version = musializer_runtime::ensure_raylib_linked();
 
-    let options = parse_options()?;
+    // The pre-pass wins from any position and opens no window.
+    let mut options = match cli::parse(std::env::args().skip(1)) {
+        Outcome::Help => {
+            let program = std::env::args()
+                .next()
+                .unwrap_or_else(|| "musializer".into());
+            print!("{}", cli::help_text(&program));
+            return Ok(std::process::ExitCode::SUCCESS);
+        }
+        Outcome::Version => {
+            // Three spellings of the version exist in the C, from three separate
+            // literals. This build claims none of them; see REWRITE_PLAN.md's
+            // open question.
+            println!(
+                "musializer-rs {} (raylib {raylib_version})",
+                env!("CARGO_PKG_VERSION")
+            );
+            return Ok(std::process::ExitCode::SUCCESS);
+        }
+        Outcome::Parsed(cli) => cli,
+    };
 
-    let (width, height) = options.window;
+    for warning in &options.warnings {
+        eprintln!("warning: {warning}");
+    }
+    // Captured before the actions are drained, so the report can check the scene
+    // that got bound against the one the command line asked for. A `--scene` flag
+    // that parsed but did not take effect is exactly the failure a clean exit
+    // would otherwise hide.
+    let requested_scene = options.requested_scene();
+
+    let (width, height) = options
+        .ui_probe
+        .as_ref()
+        .and_then(|probe| probe.size)
+        .map_or(options.window, |(w, h)| (w as i32, h as i32));
+
     let (mut rl, thread) = raylib::init()
         .size(width, height)
         .title("Musializer (Rust)")
         .msaa_4x()
         .resizable()
         .build();
-    rl.set_window_min_size(MIN_WINDOW.0, MIN_WINDOW.1);
+    // GLFW clamps a smaller request to this, which is why a deliberately tiny
+    // `--ui-probe size=` photographs the smallest layout the app permits
+    // (`musializer.c:354`, `:599-601`).
+    rl.set_window_min_size(cli::MIN_WINDOW.0, cli::MIN_WINDOW.1);
     rl.set_target_fps(60);
+    if options.ui_probe.is_some() {
+        // Park the window at the origin so a capture of a display sized to the
+        // window needs no guesswork about compositor placement
+        // (`musializer.c:605-607`).
+        rl.set_window_position(0, 0);
+    }
 
     let audio = RaylibAudio::init_audio_device()
         .map_err(|error| format!("could not initialize the audio device: {error}"))?;
 
-    let mut shader = scenes::spectrum::CircleShader::load(&mut rl, &thread)?;
+    let mut renderer = scene_host::SceneRenderer::load(&mut rl, &thread)?;
 
     audio_bridge::install(audio_bridge::DEFAULT_CAPACITY)
         .map_err(|error| format!("could not install the audio bridge: {error}"))?;
@@ -137,50 +135,225 @@ fn main() -> Result<(), String> {
     let mut analyzer = AudioAnalyzer::boxed(AudioAnalyzerConfig::idle())
         .map_err(|error| format!("could not create the analyzer: {error}"))?;
 
-    let settings = SceneSettings::default();
+    let mut app = App {
+        scene: SceneInstance::new(
+            scene_host::descriptor(SceneId::Spectrum),
+            DEFAULT_SCENE_SEED,
+        ),
+        settings: SceneSettings::default(),
+        routes: RouteTable::new(),
+        shell: Shell::new(),
+        track: None,
+    };
+
+    // Step 3: the argv actions, left to right.
+    let mut audio_path: Option<PathBuf> = None;
+    for action in std::mem::take(&mut options.actions) {
+        match action {
+            Action::Mute => audio.set_master_volume(0.0),
+            Action::SelectScene(id) => app.select_scene(id),
+            Action::AsciiImage(path) => {
+                app.select_scene(SceneId::AsciiField);
+                unimplemented_action(
+                    &mut options,
+                    &mut app,
+                    "--ascii-image",
+                    &format!(
+                        "{} was not imported: ASCII glyph import is Agent C's",
+                        path.display()
+                    ),
+                );
+            }
+            Action::RecordEvent(_) => unimplemented_action(
+                &mut options,
+                &mut app,
+                "--event",
+                "the manual event lane needs Agent B's event timeline",
+            ),
+            Action::OpenProject(path) => unimplemented_action(
+                &mut options,
+                &mut app,
+                "--project",
+                &format!(
+                    "{} was not opened: the .musi model is Agent B's",
+                    path.display()
+                ),
+            ),
+            // The last input wins, exactly as in the C.
+            Action::LoadTrack(path) => audio_path = Some(path),
+        }
+    }
+
+    // Step 4: routes, deferred until every input is resolved.
+    for route in std::mem::take(&mut options.routes) {
+        let Some((scene, _index, _descriptor)) = settings::descriptor_by_key(&route.parameter)
+        else {
+            continue;
+        };
+        if let Err(error) = app.routes.add(scene, route) {
+            eprintln!("warning: could not add command-line route: {error:?}");
+            options.error = true;
+        }
+    }
+
+    // Render configuration, validated where the C validates it: the flag stores
+    // the quality name and `plug_configure_render` is what rejects it
+    // (`musializer.c:563-569`, `plug.c:7157-7160`). The C also only validates at
+    // all when one of width/fps/quality was given, and only when no earlier error
+    // has already poisoned the stage.
+    let mut quality = None;
+    if !options.error
+        && (options.resolution.is_some() || options.fps.is_some() || options.quality.is_some())
+    {
+        match options.quality.as_deref().map(cli::Quality::from_name) {
+            Some(None) => {
+                eprintln!(
+                    "warning: invalid render configuration; quality is balanced, high, or master"
+                );
+                options.error = true;
+            }
+            Some(Some(named)) => quality = Some(named),
+            None => {}
+        }
+    }
+
+    // Step 5: the stages the rewrite has not built.
+    if options.render.is_some() {
+        unimplemented_action(
+            &mut options,
+            &mut app,
+            "--render",
+            "FFmpeg export supervision is Agent E's",
+        );
+    }
+    if options.save_project.is_some() {
+        unimplemented_action(
+            &mut options,
+            &mut app,
+            "--save-project",
+            "transactional .musi saving is Agent B's",
+        );
+    }
+    if options.analysis_bridge.is_some() {
+        unimplemented_action(
+            &mut options,
+            &mut app,
+            "--analysis-bridge",
+            "the analysis bridge importer is Agent B's",
+        );
+    }
+    if options.reload_once {
+        unimplemented_action(
+            &mut options,
+            &mut app,
+            "--reload-once",
+            "hot reload is an explicit first-pass non-goal",
+        );
+    }
+    if let Some(quality) = quality {
+        // Parsed and reported, so a script can see its value was understood even
+        // though the encoder that would honour it is Agent E's.
+        eprintln!("note: render quality {} parsed but unused", quality.name());
+    }
+    if let Some(probe) = options.ui_probe.as_ref() {
+        // Only the parts of the probe that have a surface to open are honoured;
+        // the rest is reported rather than silently ignored, because a capture
+        // script that photographs the wrong state is the failure this flag exists
+        // to prevent (`musializer.c:128-130`).
+        app.shell.panel = probe.panel;
+        app.shell.fullscreen = probe.fullscreen;
+        if probe.panel == cli::UiPanel::Tune {
+            app.shell.inspector_open = true;
+        }
+        if probe.assist_confirmation
+            || probe.lyric_selection.is_some()
+            || probe.caption_style_pane
+            || probe.font_browser.is_some()
+            || probe.lyrics_reference_path.is_some()
+        {
+            unimplemented_action(
+                &mut options,
+                &mut app,
+                "--ui-probe",
+                "assist=, lyric=, style=, fonts= and lyrics-file= need panels that are still stubs",
+            );
+        }
+    }
 
     // Scoped so the Music is dropped — and the processor detached — while the
-    // audio device and window are still alive. Getting that order wrong is one
-    // of the plan's named traps.
-    let music = match options.audio_path.as_ref() {
+    // audio device and window are still alive. Getting that order wrong is one of
+    // the plan's named traps.
+    let music = match audio_path.as_ref() {
         Some(path) => {
             let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
-            let music = audio
-                .new_music(path_str)
-                .map_err(|error| format!("could not load {}: {error}", path.display()))?;
-            // `start_preview_track` reconfigures the analyzer from the file's
-            // sample rate (`../musializer/src/plug.c:658-660`).
-            let file_sample_rate = music.stream.sampleRate;
-            *analyzer = *AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(file_sample_rate))
-                .map_err(|error| format!("could not configure the analyzer: {error}"))?;
-            music.play_stream();
-            // SAFETY: the bridge is installed above, the audio device is
-            // initialized, and `music` outlives the detach below because both
-            // live in this function's scope and the detach happens before the
-            // end of it.
-            unsafe { audio_bridge::attach(music.stream) }
-                .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
-            Some(music)
+            match audio.new_music(path_str) {
+                Ok(music) => {
+                    // `start_preview_track` reconfigures the analyzer from the
+                    // file's sample rate (`../musializer/src/plug.c:658-660`).
+                    let file_sample_rate = music.stream.sampleRate;
+                    *analyzer =
+                        *AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(file_sample_rate))
+                            .map_err(|error| {
+                                format!("could not configure the analyzer: {error}")
+                            })?;
+                    if !options
+                        .ui_probe
+                        .as_ref()
+                        .is_some_and(|probe| !probe.playing)
+                    {
+                        music.play_stream();
+                    }
+                    // SAFETY: the bridge is installed above, the audio device is
+                    // initialized, and `music` outlives the detach below because
+                    // both live in this function's scope and the detach happens
+                    // before the end of it.
+                    unsafe { audio_bridge::attach(music.stream) }
+                        .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
+                    app.track = Some(track_name(path));
+                    Some(music)
+                }
+                Err(error) => {
+                    // The C's `Could not load command-line track` (`:548`).
+                    eprintln!("warning: could not load {}: {error}", path.display());
+                    options.error = true;
+                    None
+                }
+            }
         }
-        None => {
-            eprintln!("note: no audio path given — the window opens but Spectrum will idle");
-            None
-        }
+        None => None,
     };
+    if let Some(probe) = options.ui_probe.as_ref() {
+        // "a panel or seek probe needs a loaded, seekable track"
+        // (`musializer.c:609-611`).
+        if music.is_none() && (probe.panel != cli::UiPanel::None || probe.seek_seconds.is_some()) {
+            eprintln!(
+                "warning: could not apply --ui-probe state; a panel or seek probe needs a loaded, seekable track"
+            );
+            options.error = true;
+        }
+        if let (Some(music), Some(seconds)) = (music.as_ref(), probe.seek_seconds) {
+            music.seek_stream(seconds as f32);
+        }
+        if let (Some(music), Some(zoom)) = (music.as_ref(), probe.timeline_zoom) {
+            let duration = f64::from(music.get_time_length());
+            app.shell.timeline.reset(duration);
+            app.shell
+                .timeline
+                .zoom(duration, zoom, f64::from(music.get_time_played()));
+        }
+    }
 
     // Interleaved stereo scratch, drained from the ring each frame. Sized for a
     // long frame at 44.1 kHz so a hitch does not silently discard audio.
     let mut scratch = vec![0.0f32; 4096 * audio_bridge::MIXED_CHANNELS];
 
-    let mut frame_index: u64 = 0;
-    let mut consumed_frames: u64 = 0;
-    let mut analyzed_frames: u64 = 0;
-    let mut peak_seen: f32 = 0.0;
-    let mut peak_band_last: usize = 0;
-    let mut peak_band_low: usize = usize::MAX;
-    let mut peak_band_high: usize = 0;
+    let mut report = Report::default();
 
-    while !rl.window_should_close() {
+    // `--save-project` without `--render` skips the main loop entirely
+    // (`musializer.c:617`, `:637`). The save itself is Agent B's and already
+    // reported above; honouring the skip keeps the exit path identical.
+    let mut running = !options.exit_after_save();
+    while running && !rl.window_should_close() {
         if let Some(music) = music.as_ref() {
             music.update_stream();
         }
@@ -189,14 +362,14 @@ fn main() -> Result<(), String> {
         if drained > 0 {
             let consumed =
                 analyzer.push_interleaved(&scratch[..drained * audio_bridge::MIXED_CHANNELS]);
-            consumed_frames += consumed as u64;
+            report.consumed_frames += consumed as u64;
         }
 
         // The scene clock is the frame delta, which is what preview and export
         // must agree on.
         let delta = rl.get_frame_time();
         if analyzer.analyze(delta) {
-            analyzed_frames += 1;
+            report.analyzed_frames += 1;
         }
 
         let time_seconds = music
@@ -205,68 +378,189 @@ fn main() -> Result<(), String> {
         let duration_seconds = music
             .as_ref()
             .map_or(0.0, |m| f64::from(m.get_time_length()));
+        let playing = music.as_ref().is_some_and(|m| m.is_stream_playing());
 
         let spectrum = analyzer.spectrum();
         let mut audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
-        peak_seen = peak_seen.max(audio_frame.peak);
+        report.peak_seen = report.peak_seen.max(audio_frame.peak);
         audio_frame.beat_phase = 0.0; // Agent A's beat tracker lands here.
 
-        // Which band is loudest, and at what frequency. Reported so a headless
-        // check can assert that the spectrum *moved* rather than that it merely
-        // drew something: with a swept fixture, a peak band that never changes
-        // means the analyzer is stuck.
-        let peak_band = (0..spectrum.band_count())
-            .max_by(|&a, &b| spectrum.smooth[a].total_cmp(&spectrum.smooth[b]));
-        if let Some(band) = peak_band {
-            peak_band_last = band;
-            peak_band_low = peak_band_low.min(band);
-            peak_band_high = peak_band_high.max(band);
+        // Which band is loudest. Reported so a headless check can assert that the
+        // spectrum *moved* rather than that it merely drew something: with a swept
+        // fixture, a peak band that never changes means the analyzer is stuck.
+        if let Some(band) = (0..spectrum.band_count())
+            .max_by(|&a, &b| spectrum.smooth[a].total_cmp(&spectrum.smooth[b]))
+        {
+            report.observe_peak_band(band);
         }
+
+        // Routes are evaluated into a staged copy, and the frame reads the staged
+        // copy. Preview and export come through the same path, which is what keeps
+        // routed parameters identical between them (`plug.c:1147-1166`).
+        let sources = RouteSources::from_audio(&audio_frame);
+        let routed = app.routes.apply(app.scene.id(), &sources, &app.settings);
+        let effective = routed.as_ref().unwrap_or(&app.settings);
 
         let frame = SceneFrame {
             time_seconds,
             duration_seconds,
             delta_seconds: delta,
-            frame_index,
+            frame_index: report.frames,
             audio: audio_frame,
-            settings: &settings,
-            ..SceneFrame::idle(&settings)
+            settings: effective,
+            ..SceneFrame::idle(effective)
         };
+        app.scene.update(&frame);
 
         let band_centre_hz = spectrum
             .band_first_bin
-            .get(peak_band_last)
+            .get(report.peak_band_last)
             .map_or(0.0, |&bin| analyzer.bin_frequency(bin as usize));
 
-        let screen = Rectangle::new(
-            0.0,
-            0.0,
-            rl.get_screen_width() as f32,
-            rl.get_screen_height() as f32,
-        );
+        let shell_input = ShellInput {
+            window: (rl.get_screen_width() as f32, rl.get_screen_height() as f32),
+            scene: app.scene.id(),
+            settings: &app.settings,
+            routed: routed.as_ref(),
+            time_seconds,
+            duration_seconds,
+            playing,
+            track_name: app.track.as_deref(),
+            band_count: spectrum.band_count(),
+            peak_band: report.peak_band_last,
+            rms: frame.audio.rms,
+        };
+        let layout = app.shell.layout(&shell_input);
 
-        let mut d = rl.begin_drawing(&thread);
-        d.clear_background(Color::get_color(0x181818ff));
-        scenes::spectrum::draw(&mut d, &frame, &mut shader, screen, 1.0);
-        // A one-line readout, so a headless capture carries its own evidence
-        // rather than needing a separate log to be trusted.
-        d.draw_text(
-            &format!(
-                "frame {frame_index}  t={time_seconds:.2}s  bands={}  peak band={peak_band_last} ({:.0} Hz)  rms={:.3}  audio frames={consumed_frames}",
-                spectrum.band_count(),
-                band_centre_hz,
-                frame.audio.rms,
-            ),
-            12,
-            12,
-            18,
-            Color::RAYWHITE,
-        );
-        drop(d);
+        // Scoped so the draw handle — and with it the frame — is dropped before
+        // the commands run: a command may pause the stream or rebind the scene,
+        // and neither should happen inside a begin/end drawing pair.
+        let commands;
+        {
+            let mut d = rl.begin_drawing(&thread);
+            // COLOR_BACKGROUND, from the palette rather than a literal, so the
+            // contrast checks see the same number the window is cleared with.
+            d.clear_background(ui::theme::color::background());
 
-        frame_index += 1;
+            // Scene first, chrome over it, and the scene clipped to its own
+            // rectangle so a scene that draws past its boundary cannot paint over
+            // a panel (`plug.c:7712-7716`).
+            if !layout.preview.is_empty() {
+                let preview = ui::widgets::rectangle(layout.preview);
+                let mut scissor = d.begin_scissor_mode(
+                    preview.x as i32,
+                    preview.y as i32,
+                    preview.width as i32,
+                    preview.height as i32,
+                );
+                renderer.draw(&mut scissor, &app.scene, &frame, preview, 1.0);
+            }
+
+            commands = app.shell.draw(&mut d, &layout, &shell_input);
+
+            // A one-line readout, so a headless capture carries its own evidence
+            // rather than needing a separate log to be trusted.
+            //
+            // Two things about it are corrections a capture forced, and no test
+            // would have: it used to be drawn at the window origin, where the
+            // tracks panel covered its left half, and it used to run past the
+            // preview's right edge into the tuning inspector. It now starts inside
+            // the preview and is clipped to it, and it drops to a short form when
+            // the long form will not fit — a readout that overwrites a panel is
+            // worse than a shorter readout.
+            let readout = if layout.preview.width >= 700.0 {
+                format!(
+                    "frame {}  scene={}  t={time_seconds:.2}s  bands={}  peak band={} ({band_centre_hz:.0} Hz)  rms={:.3}  audio frames={}",
+                    report.frames,
+                    app.scene.id().stable_name(),
+                    spectrum.band_count(),
+                    report.peak_band_last,
+                    frame.audio.rms,
+                    report.consumed_frames,
+                )
+            } else {
+                format!(
+                    "{}  t={time_seconds:.2}s  peak {} ({band_centre_hz:.0} Hz)",
+                    app.scene.id().stable_name(),
+                    report.peak_band_last,
+                )
+            };
+            if layout.preview.is_empty() {
+                d.draw_text(&readout, 12, 12, 18, Color::RAYWHITE);
+            } else {
+                let preview = ui::widgets::rectangle(layout.preview);
+                let mut scissor = d.begin_scissor_mode(
+                    preview.x as i32,
+                    preview.y as i32,
+                    preview.width as i32,
+                    preview.height as i32,
+                );
+                scissor.draw_text(
+                    &readout,
+                    preview.x as i32 + 12,
+                    preview.y as i32 + 12,
+                    18,
+                    Color::RAYWHITE,
+                );
+            }
+        }
+
+        for command in commands {
+            match command {
+                ShellCommand::TogglePlay => {
+                    if let Some(music) = music.as_ref() {
+                        if music.is_stream_playing() {
+                            music.pause_stream();
+                        } else {
+                            music.resume_stream();
+                        }
+                    }
+                }
+                ShellCommand::Seek(seconds) => {
+                    if let Some(music) = music.as_ref() {
+                        music.seek_stream(seconds as f32);
+                    }
+                }
+                ShellCommand::SelectScene(id) => app.select_scene(id),
+                ShellCommand::SetSetting {
+                    scene,
+                    index,
+                    value,
+                } => {
+                    // `set` refuses a value the descriptor rejects, so a bad
+                    // slider cannot smuggle one past the bounds.
+                    app.settings.set(scene, index, value);
+                }
+                ShellCommand::ResetScene(scene) => app.settings.reset_scene(scene),
+                ShellCommand::LoadTrack(path) => {
+                    // The window has no way to swap the Music mid-loop while the
+                    // bridge holds its stream, so this is honest about it rather
+                    // than dropping the gesture on the floor.
+                    app.shell.notify(
+                        Severity::Warning,
+                        "Reopening is not wired up yet",
+                        &format!(
+                            "Restart with: musializer {}",
+                            path.file_name().map_or_else(
+                                || path.display().to_string(),
+                                |n| n.to_string_lossy().into_owned()
+                            )
+                        ),
+                    );
+                }
+                ShellCommand::NotImplemented(what) => {
+                    app.shell.notify(
+                        Severity::Info,
+                        "Not built yet",
+                        &format!("{what} is still a stub in the Rust rewrite."),
+                    );
+                }
+            }
+        }
+
+        report.frames += 1;
         if let Some(limit) = options.probe_frames {
-            if frame_index >= u64::from(limit) {
+            if report.frames >= u64::from(limit) {
                 if let Some(path) = options.probe_shot.as_ref() {
                     let path_str = path
                         .to_str()
@@ -279,11 +573,11 @@ fn main() -> Result<(), String> {
                     let image = rl.load_image_from_screen(&thread);
                     image.export_image(path_str);
                     // `export_image` reports nothing, so confirm by looking.
-                    if !std::path::Path::new(path_str).is_file() {
+                    if !Path::new(path_str).is_file() {
                         return Err(format!("could not write {path_str}"));
                     }
                 }
-                break;
+                running = false;
             }
         }
     }
@@ -296,36 +590,170 @@ fn main() -> Result<(), String> {
     }
     drop(music);
 
-    let dropped = audio_bridge::ring().map_or(0, |ring| ring.dropped());
-    println!("--- slice report ---");
-    println!("verified:        window opened, audio device initialized, clean shutdown");
-    println!("raylib:          {raylib_version}");
-    println!("frames rendered: {frame_index}");
-    println!("analyzer runs:   {analyzed_frames}");
-    println!("audio frames:    {consumed_frames} consumed, {dropped} dropped");
-    println!("bands:           {}", analyzer.band_count());
-    println!("peak seen:       {peak_seen:.4}");
-    let peak_band_moved = peak_band_low != usize::MAX && peak_band_high > peak_band_low;
-    if peak_band_low == usize::MAX {
-        println!("peak band:       never established");
-    } else {
-        println!("peak band:       {peak_band_low}..{peak_band_high} (last {peak_band_last})");
-    }
-    println!("dropped frames:  {dropped}");
-    // Three separate claims, because "it compiled" and "it drew something" are
-    // both weaker than the gate. A swept fixture that leaves the peak band
-    // stationary means the analyzer is stuck even though the picture looks fine.
-    println!(
-        "verdict:         {}",
-        match (consumed_frames > 0, peak_seen > 0.0, peak_band_moved) {
-            (true, true, true) =>
-                "audio advanced, the spectrum responded, and the peak band tracked the sweep",
-            (true, true, false) =>
-                "audio advanced and bands were non-zero, but the peak band never moved",
-            (true, false, _) => "audio advanced but the spectrum stayed flat",
-            (false, _, _) => "no audio was consumed",
-        }
-    );
+    report.print(raylib_version, &app, analyzer.band_count(), requested_scene);
 
-    Ok(())
+    // `exit_status = command_line_error ? 1 : 0` (`musializer.c:618`).
+    Ok(if options.exit_status() == 0 {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    })
+}
+
+/// The application's own state, such as it is.
+///
+/// Deliberately small and flat: `RenderController`, `AssistController` and the
+/// track list all land here later, and the shape that survives is the one where
+/// each is a field with a narrow `&mut` rather than a shared cell.
+struct App {
+    scene: SceneInstance,
+    /// The editable values. Routes are applied into a staged copy per frame, never
+    /// written back, so a routed parameter does not become an edit.
+    settings: SceneSettings,
+    routes: RouteTable,
+    shell: Shell,
+    track: Option<String>,
+}
+
+impl App {
+    fn select_scene(&mut self, id: SceneId) {
+        if self.scene.id() == id {
+            return;
+        }
+        self.scene = SceneInstance::new(scene_host::descriptor(id), DEFAULT_SCENE_SEED);
+    }
+}
+
+/// Reports a stage the rewrite has not built, on stderr and in the tray, and
+/// fails the exit status.
+///
+/// Failing is the point. Silently ignoring `--render` would let a script believe
+/// it produced a video, which is worse than an error.
+fn unimplemented_action(options: &mut Cli, app: &mut App, flag: &str, detail: &str) {
+    eprintln!("warning: {flag} is not implemented yet: {detail}");
+    app.shell.notify(
+        Severity::Warning,
+        &format!("{flag} is not implemented"),
+        detail,
+    );
+    options.error = true;
+}
+
+fn track_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// The slice report. `tools/headless_check.sh` reads this, and its shape is the
+/// reason the check can distinguish "drew something" from "tracked the input".
+#[derive(Debug)]
+struct Report {
+    frames: u64,
+    consumed_frames: u64,
+    analyzed_frames: u64,
+    peak_seen: f32,
+    peak_band_last: usize,
+    peak_band_low: usize,
+    peak_band_high: usize,
+}
+
+impl Default for Report {
+    fn default() -> Self {
+        Self {
+            frames: 0,
+            consumed_frames: 0,
+            analyzed_frames: 0,
+            peak_seen: 0.0,
+            peak_band_last: 0,
+            peak_band_low: usize::MAX,
+            peak_band_high: 0,
+        }
+    }
+}
+
+impl Report {
+    fn observe_peak_band(&mut self, band: usize) {
+        self.peak_band_last = band;
+        self.peak_band_low = self.peak_band_low.min(band);
+        self.peak_band_high = self.peak_band_high.max(band);
+    }
+
+    fn print(
+        &self,
+        raylib_version: &str,
+        app: &App,
+        band_count: usize,
+        requested_scene: Option<SceneId>,
+    ) {
+        let dropped = audio_bridge::ring().map_or(0, |ring| ring.dropped());
+        println!("--- slice report ---");
+        println!("verified:        window opened, audio device initialized, clean shutdown");
+        println!("raylib:          {raylib_version}");
+        println!("frames rendered: {}", self.frames);
+        println!("analyzer runs:   {}", self.analyzed_frames);
+        println!(
+            "audio frames:    {} consumed, {dropped} dropped",
+            self.consumed_frames
+        );
+        println!("bands:           {band_count}");
+        println!("peak seen:       {:.4}", self.peak_seen);
+        let moved = self.peak_band_low != usize::MAX && self.peak_band_high > self.peak_band_low;
+        if self.peak_band_low == usize::MAX {
+            println!("peak band:       never established");
+        } else {
+            println!(
+                "peak band:       {}..{} (last {})",
+                self.peak_band_low, self.peak_band_high, self.peak_band_last
+            );
+        }
+        println!("dropped frames:  {dropped}");
+        // The scene lines are what a `--scene` check reads: the name that was
+        // actually bound, and whether its drawing half is real or a placeholder.
+        let scene = app.scene.id();
+        println!(
+            "scene:           {} ({})",
+            scene.stable_name(),
+            scene.display_name()
+        );
+        println!(
+            "scene drawing:   {}",
+            if scene_host::drawing_is_ported(scene) {
+                "ported"
+            } else {
+                "placeholder"
+            }
+        );
+        println!("routes:          {}", app.routes.scene(scene).len());
+        println!("panel:           {}", app.shell.panel.label());
+        // Evidence, not assertion: `--scene loom` that parses and then leaves
+        // Spectrum bound would otherwise exit 0 and look fine.
+        match requested_scene {
+            Some(requested) if requested == scene => {
+                println!("scene request:   honoured ({})", requested.stable_name());
+            }
+            Some(requested) => println!(
+                "scene request:   MISMATCH: asked for {}, bound {}",
+                requested.stable_name(),
+                scene.stable_name()
+            ),
+            None => println!("scene request:   none (default)"),
+        }
+        // Three separate claims, because "it compiled" and "it drew something" are
+        // both weaker than the gate. A swept fixture that leaves the peak band
+        // stationary means the analyzer is stuck even though the picture looks
+        // fine.
+        println!(
+            "verdict:         {}",
+            match (self.consumed_frames > 0, self.peak_seen > 0.0, moved) {
+                (true, true, true) =>
+                    "audio advanced, the spectrum responded, and the peak band tracked the sweep",
+                (true, true, false) =>
+                    "audio advanced and bands were non-zero, but the peak band never moved",
+                (true, false, _) => "audio advanced but the spectrum stayed flat",
+                (false, _, _) => "no audio was consumed",
+            }
+        );
+    }
 }
