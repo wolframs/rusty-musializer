@@ -1084,3 +1084,109 @@ Format of a note entry:
          Rust build currently prints `musializer-rs <crate version>` and does not
          claim parity with any of them. Tell us which spelling is canonical when
          the CLI is finished.
+#### Agent F (UI and product shell)
+
+- [DONE] **All eleven raylib-free UI modules are ported with their C tests**, one
+         Rust module per C pair, one `#[test]` per C test case, same names:
+         `workspace_layout` 9, `timeline_layout` 7, `lyrics_editor_layout` 6,
+         `timeline_view` 14, `lyric_lane_edit` 14, `assist_ui_state` 11,
+         `route_editor_state` 10, `font_import_state` 7, `contrast` 5, `notice` 8,
+         `row_typography` 12 — **103 ported tests**. `musializer-core` is at 158
+         passing, `musializer-app` at 62, `musializer-runtime` at 5.
+- [DONE] **`--scene NAME` works and is proven by captures, not by a clean exit.**
+         Done first, out of Phase 4's order, because Agents C and D were porting
+         ten scenes and nothing could display them.
+         `crates/musializer-app/src/scene_host.rs` is the hookup point: one line
+         per scene in `descriptor()` and one match arm in `SceneRenderer::draw`,
+         both marked `HOOKUP`. **A scene agent's whole integration is those two
+         edits plus flipping `drawing_is_ported`.** Unported scenes draw a card
+         naming the scene, its `--scene` flag, its C source and its owner — a
+         black frame cannot distinguish "not ported" from "ported and broken".
+- [DONE] **The full CLI is ported** in `crates/musializer-app/src/cli.rs` from
+         `docs/PHASE0_INVENTORY.md` section 3: all eighteen flags, the four value
+         grammars, `--ui-probe`'s eleven keys, the `-h/--help/--version` pre-pass,
+         the ordered-action replay, the deferred routes, `--render-window`'s two
+         argv words and its index-advance quirk, and the shared error flag that
+         short-circuits later stages. 34 tests. `--route` spec parsing lives here
+         rather than in `core::scene::routes`, whose persistence half is still
+         Agent B's; **if a `ParameterMapping::parse_spec` lands there, `cli.rs`
+         should delegate to it rather than keep a second grammar.**
+- [INFO] Operable now: scene browser (all ten), transport, timeline
+         zoom/pan/scrub, tuning inspector with per-descriptor sliders and a routed
+         readout, notice tray, fullscreen, drag-and-drop track open.
+         Stubbed-but-named: export, lyrics, assist, project open/save, presets,
+         route editing. **A stub asks for no extra timeline height**, so opening
+         one does not steal preview it will not use.
+- [INFO] **Reading the captures found four defects no test would have caught.**
+         Recorded because the lesson generalizes: (1) U+2026 is in the C's
+         imported face's curated codepoint set but *not* in raylib's default font,
+         so every truncated toolbar label rendered as `Pau?`, `Exp?` — substituted
+         at the draw layer, and this goes away when a real UI face lands; (2) the
+         toolbar reserved a guessed 200 px for the timecode, which forced every
+         label through the ellipsis at the 960x640 minimum with the inspector open
+         (a 440 px bar) — it now goes through the ported `TimelineBand`, which is
+         the module written for exactly that collision, and the timecode relocates
+         to the timeline header when the band says it cannot sit inline; (3) the
+         diagnostic readout was drawn at the window origin, under the tracks
+         panel, and overran the preview into the inspector; (4) 10-11 px labels
+         rendered `:` and `.` as boxes in raylib's bitmap font.
+- [INFO] `TimelineBand`'s `fits == false` does **not** mean it returned something
+         that fits — it means it has already scaled to its floor and the caller
+         must drop controls. A test asserting the wrong thing here failed for the
+         right reason; it now pins the caller's obligation instead.
+- [HURDLE] **`scene_settings_ui_layout` was effectively unassigned.** It lives in
+         `scene_settings.c`, which the map puts in the shared-contracts bundle,
+         but it is pure workspace geometry that only the shell reads. It landed in
+         `crates/musializer-app/src/ui/shell_layout.rs` rather than being wedged
+         into `core::scene::settings`, which C, D and F all compile against. Move
+         it if the integration owner disagrees; nothing else consumes it.
+         Related: `core::ui`'s module list is fixed by the ownership map and
+         `ui/mod.rs` is not Agent F's to edit, so any *new* pure UI module has no
+         home in `musializer-core`. `shell_layout` is app-side for that reason
+         too, despite being raylib-free and headlessly tested.
+- [INFO] **Dependency request: `clap`.** Not blocking — `cli.rs` is hand-rolled,
+         complete, and tested, and it is arguably the *better* answer here because
+         the oracle's grammar is idiosyncratic (order-sensitive application,
+         two-word `--render-window`, a comma-separated sub-grammar in
+         `--ui-probe`, no `--` marker) and clap would have to be fought into
+         each of those. Recording the request rather than making it: **no crate is
+         needed.**
+- [INFO] Two agent-B-shaped contracts Agent F now depends on, both designed to be
+         cheap to satisfy: `ui::lyric_lane_edit::LaneCues` (three required
+         methods; **index order must be canonical cue order**, or the hit test's
+         overlap preference and shift+click ranges break silently), and
+         `ui::row_typography`'s `impl Fn(&str) -> f32` measurer in place of
+         `Caption_Measure_Text`.
+- [INFO] **The divergence on unknown flags is kept and now has a test.** The C
+         loads `--typo` as an audio path (`musializer.c:546-550`); the Rust errors
+         and says so. Same exit status, better diagnostic. Flag it if strict parity
+         is wanted — it is one match arm.
+- [INFO] Requested-but-unbuilt stages (`--render`, `--save-project`,
+         `--analysis-bridge`, `--event`, `--project`, `--ascii-image`,
+         `--reload-once`, and the `--ui-probe` keys that need stub panels) warn on
+         stderr, raise a notice, **and set the exit status to 1**. Silently
+         ignoring `--render` would let a script believe it produced a video.
+- [DONE] `tools/headless_check.sh` extended along the lines of
+         `../musializer/tools/ui_capture.sh`, keeping the Xvfb `:77` /
+         `WAYLAND_DISPLAY` unset / unresolvable `PULSE_SERVER` isolation. It now
+         sweeps all ten scenes, all six long `--scene` aliases, four panels at
+         both 1280x720 and the 960x640 minimum, and one routed setting — 26
+         captures, all exit 0. It parses **`scene request: honoured`** from the
+         report, which is the line separating "`--scene` parsed" from "`--scene`
+         took effect"; a screenshot of a placeholder card cannot make that
+         distinction.
+- [INFO] Left undone by Agent F, in the plan's order: project open/save (needs
+         Agent B), export (needs Agent E), the lyrics three-pane editor and cue
+         lane, the Assist panel and its confirmation step, presets, and the route
+         editor UI. The *state* for the last four is already ported and tested in
+         `core::ui`; what is missing is only the drawing and the wiring — which is
+         the right way round, and the opposite of what porting `plug.c` wholesale
+         would have produced.
+- [INFO] Keyboard bindings so far, from `ui_theme.h:60-64` plus two of ours:
+         Space toggles play, `F` fullscreen, `T` the tuning inspector, Tab and
+         Shift+Tab cycle scenes. Mouse-only parity was the brief; these were free.
+- [INFO] The UI draws with raylib's default font, not the C's imported face.
+         `ui::widgets::measure` is the single place that changes when the real face
+         lands, and it measures at zero spacing on purpose — that is what makes
+         width linear in font size, which `row_typography::font_size` relies on to
+         fit a row in one pass instead of searching.
