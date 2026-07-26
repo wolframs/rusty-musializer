@@ -38,6 +38,7 @@ use raylib::prelude::{
     Camera3D, Color, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector3,
 };
 
+use musializer_core::scenes::song_atlas as core_atlas;
 use musializer_runtime::draw::SceneViewport;
 
 const PI: f32 = std::f32::consts::PI;
@@ -444,7 +445,7 @@ fn draw_complete_surface(
         return;
     }
     let slices = map.slices();
-    let playhead = map.playhead(time_seconds);
+    let playhead = core_atlas::map_playhead(map, time_seconds);
     // Ten slices' worth of already-played terrain is kept behind the playhead, so
     // the recent past is visible without drawing the whole song every frame.
     let history = 10 * MAX_DETAIL;
@@ -588,8 +589,8 @@ pub fn draw(
         let mut hue_energy = frame.audio.rms;
         let mut hue_flux = frame.audio.spectral_flux;
         if let Some(map) = valid_map {
-            let playhead = map.playhead(frame.time_seconds);
-            if let Some((energy, flux)) = map.dynamics(playhead) {
+            let playhead = core_atlas::map_playhead(map, frame.time_seconds);
+            if let Some((energy, flux)) = core_atlas::map_dynamics(map, playhead) {
                 hue_energy = energy;
                 hue_flux = flux;
             }
@@ -640,8 +641,8 @@ pub fn draw(
         // With a map the camera looks a bounded distance ahead of the playhead
         // rather than at a fixed point, so the framing tightens toward the end of
         // the song instead of staring past it.
-        let playhead = map.playhead(frame.time_seconds);
-        let remaining = ((map.count() - 1) as f32 - playhead) / MAX_DETAIL as f32;
+        let playhead = core_atlas::map_playhead(map, frame.time_seconds);
+        let remaining = ((map.len() - 1) as f32 - playhead) / MAX_DETAIL as f32;
         let focus_slices = (remaining * 0.45).clamp(4.0, 18.0);
         target_z = 1.40 - focus_slices * SLICE_SPACING;
     }

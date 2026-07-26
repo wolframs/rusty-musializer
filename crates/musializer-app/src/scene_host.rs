@@ -25,6 +25,7 @@
 //! a broken scene.
 
 use musializer_core::scene::{SceneDescriptor, SceneFrame, SceneId, SceneInstance, StatelessScene};
+use musializer_core::scenes as core_scenes;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Rectangle};
 
 use crate::scenes;
@@ -50,20 +51,82 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             state_version: 1,
             make_state: |_seed| Box::new(StatelessScene::new(SceneId::Spectrum)),
         },
-        // HOOKUP: Agent C owns these four.
-        SceneId::PulseField => stateless(id),
-        SceneId::OrbitalLattice => stateless(id),
-        SceneId::AsciiField => stateless(id),
-        SceneId::SongAtlas => stateless(id),
-        // HOOKUP: Agent D owns these five.
-        SceneId::SpectralTerrarium => stateless(id),
-        SceneId::Constellation => stateless(id),
-        SceneId::Cadence => stateless(id),
-        SceneId::Loom => stateless(id),
-        SceneId::Pentagram => stateless(id),
+        // Agent C's four.
+        SceneId::PulseField => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::pulse_field::PulseFieldState::new(seed)),
+        },
+        SceneId::OrbitalLattice => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| {
+                Box::new(core_scenes::orbital_lattice::OrbitalLatticeState::new(seed))
+            },
+        },
+        SceneId::AsciiField => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::ascii_field::AsciiFieldState::new(seed)),
+        },
+        SceneId::SongAtlas => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::song_atlas::SongAtlasState::new(seed)),
+        },
+        // Agent D's five.
+        SceneId::SpectralTerrarium => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| {
+                Box::new(core_scenes::spectral_terrarium::SpectralTerrariumState::new(seed))
+            },
+        },
+        SceneId::Constellation => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::constellation::ConstellationState::new(seed)),
+        },
+        SceneId::Cadence => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::cadence::CadenceState::new(seed)),
+        },
+        SceneId::Loom => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::loom::LoomState::new(seed)),
+        },
+        SceneId::Pentagram => SceneDescriptor {
+            id,
+            state_version: 1,
+            make_state: |seed| Box::new(core_scenes::pentagram::PentagramState::new(seed)),
+        },
     }
 }
 
+/// Recovers a scene's concrete state from its boxed trait object.
+///
+/// The downcast is the crossing the split costs us: `update` lives in
+/// `musializer-core` behind `dyn SceneState`, and drawing needs the real type.
+/// `SceneState::as_any` exists for exactly this. A failure here means a descriptor
+/// and a draw arm disagree about a scene's state type, which the tests below catch.
+fn state_of<T: 'static>(instance: &SceneInstance, id: SceneId) -> Option<&T> {
+    let state = instance.state().as_any().downcast_ref::<T>();
+    debug_assert!(
+        state.is_some(),
+        "{}: descriptor and draw arm disagree about the state type",
+        id.stable_name()
+    );
+    state
+}
+
+/// A descriptor for a scene whose deterministic half has not landed.
+///
+/// Unused now that all ten are ported, and kept deliberately: it is what a
+/// newly added scene should start from, and deleting it would push the next
+/// person toward wiring a half-built scene straight into `descriptor`.
+#[allow(dead_code)]
 fn stateless(id: SceneId) -> SceneDescriptor {
     SceneDescriptor {
         id,
@@ -91,12 +154,26 @@ fn stateless(id: SceneId) -> SceneDescriptor {
 /// has one answer rather than two that can disagree.
 #[must_use]
 pub fn drawing_is_ported(id: SceneId) -> bool {
-    matches!(id, SceneId::Spectrum)
+    // All ten drawing halves have landed. `draw_placeholder` is kept because it is
+    // the right answer for a scene added later, and because deleting it would make
+    // the next addition silently draw nothing.
+    let _ = id;
+    true
 }
 
+/// The placeholder machinery below is unreachable now that all ten drawing halves
+/// have landed, and it stays on purpose.
+///
+/// It is what an eleventh scene should render before its drawing half exists, and
+/// the reason is worth keeping: a labelled card naming the scene and its C source
+/// tells a reviewer looking at a screenshot the difference between "not ported
+/// yet" and "ported and broken", which a black rectangle cannot. Deleting it would
+/// make the next addition draw nothing and look like a bug.
+///
 /// The C source each scene's drawing half comes from, named on the placeholder
 /// card so a reviewer looking at a screenshot knows where to look.
 #[must_use]
+#[allow(dead_code)]
 pub fn oracle_source(id: SceneId) -> &'static str {
     match id {
         SceneId::Spectrum => "scene_spectrum.c",
@@ -114,6 +191,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
 
 /// Which agent owns a scene's port, for the placeholder card.
 #[must_use]
+#[allow(dead_code)]
 pub fn owner(id: SceneId) -> &'static str {
     match id {
         SceneId::Spectrum
@@ -132,6 +210,10 @@ pub fn owner(id: SceneId) -> &'static str {
 /// resources get a field here rather than loading them inside `draw`.
 pub struct SceneRenderer {
     circle: scenes::spectrum::CircleShader,
+    /// Song Atlas's whole-track terrain, built once per track rather than per
+    /// frame. `None` until track load runs the preprocessing, and Song Atlas draws
+    /// its idle terrain in the meantime rather than nothing.
+    atlas_map: Option<musializer_core::audio::song_atlas_map::SongAtlasMap>,
 }
 
 impl SceneRenderer {
@@ -141,6 +223,7 @@ impl SceneRenderer {
     ) -> Result<Self, String> {
         Ok(Self {
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
+            atlas_map: None,
         })
     }
 
@@ -167,8 +250,67 @@ impl SceneRenderer {
             SceneId::Spectrum => {
                 scenes::spectrum::draw(d, frame, &mut self.circle, boundary, pixel_scale);
             }
-            // HOOKUP: nine arms to fill in. Until then the card says so.
-            _ => draw_placeholder(d, id, boundary),
+            SceneId::PulseField => {
+                if let Some(state) = state_of(instance, id) {
+                    scenes::pulse_field::draw(d, state, frame, boundary, pixel_scale);
+                }
+            }
+            SceneId::OrbitalLattice => {
+                if let Some(state) = state_of(instance, id) {
+                    scenes::orbital_lattice::draw(d, state, frame, boundary);
+                }
+            }
+            SceneId::AsciiField => {
+                if let Some(state) = state_of(instance, id) {
+                    // `None` until `--ascii-image` is wired: without a grid the
+                    // scene is a procedural rolling spectrogram, which is its other
+                    // documented mode rather than a degraded one.
+                    scenes::ascii_field::draw(d, state, frame, boundary, pixel_scale, None);
+                }
+            }
+            SceneId::SongAtlas => {
+                if let Some(state) = state_of(instance, id) {
+                    // `None` until whole-track preprocessing runs at load; the
+                    // scene draws its idle terrain rather than nothing.
+                    scenes::song_atlas::draw(
+                        d,
+                        state,
+                        frame,
+                        boundary,
+                        pixel_scale,
+                        self.atlas_map.as_ref(),
+                    );
+                }
+            }
+            SceneId::SpectralTerrarium => {
+                if let Some(state) = state_of(instance, id) {
+                    scenes::spectral_terrarium::draw(d, frame, state, &mut self.circle, boundary);
+                }
+            }
+            SceneId::Constellation => {
+                if let Some(state) = state_of(instance, id) {
+                    scenes::constellation::draw(d, frame, state, &mut self.circle, boundary);
+                }
+            }
+            SceneId::Cadence => {
+                if let Some(state) = state_of(instance, id) {
+                    // Cadence is the one scene that draws glyphs, so it needs a
+                    // font. The default is enough to prove the port; the imported
+                    // caption face belongs to the caption typography work.
+                    let font = d.get_font_default();
+                    scenes::cadence::draw(d, frame, state, &font, boundary, pixel_scale);
+                }
+            }
+            SceneId::Loom => {
+                if let Some(state) = state_of(instance, id) {
+                    scenes::loom::draw(d, frame, state, boundary, pixel_scale);
+                }
+            }
+            SceneId::Pentagram => {
+                if let Some(state) = state_of(instance, id) {
+                    scenes::pentagram::draw(d, frame, state, &mut self.circle, boundary);
+                }
+            }
         }
     }
 }
@@ -179,6 +321,7 @@ impl SceneRenderer {
 /// black rectangle cannot tell "not ported yet" from "ported and broken". It also
 /// draws a thin audio-reactive bar so the *host* — analyzer, bridge, frame loop —
 /// is still visibly working behind the missing scene.
+#[allow(dead_code)]
 pub fn draw_placeholder(d: &mut RaylibDrawHandle<'_>, id: SceneId, boundary: Rectangle) {
     let card_width = (boundary.width * 0.62).min(560.0);
     let card_height = 132.0f32.min(boundary.height - 16.0).max(0.0);
@@ -259,15 +402,63 @@ mod tests {
     }
 
     #[test]
-    fn only_the_ported_scenes_claim_to_be_ported() {
-        // A reminder to update this when a HOOKUP arm lands: the count here and
-        // the match in `SceneRenderer::draw` have to move together.
+    fn every_scene_claims_to_be_ported_and_all_ten_are() {
+        // This assertion is deliberately exhaustive rather than a count. It was
+        // written when only Spectrum was wired, and it failed — correctly — the
+        // moment the other nine arms landed, which is exactly the reminder it was
+        // for. If an eleventh scene is added, it fails again until its arm exists.
         let ported: Vec<&str> = SceneId::ALL
             .into_iter()
             .filter(|id| drawing_is_ported(*id))
             .map(SceneId::stable_name)
             .collect();
-        assert_eq!(ported, vec!["spectrum"]);
+        assert_eq!(
+            ported,
+            vec![
+                "spectrum",
+                "pulse",
+                "orbital",
+                "ascii",
+                "atlas",
+                "terrarium",
+                "constellation",
+                "cadence",
+                "loom",
+                "pentagram",
+            ]
+        );
+    }
+
+    /// Every scene's descriptor must hand back the state type its drawing arm
+    /// downcasts to. A mismatch would silently draw nothing, because `state_of`
+    /// returns `None` and the arm skips — so this walks all ten and asserts the
+    /// downcast succeeds.
+    #[test]
+    fn every_drawing_arm_can_recover_its_scenes_state() {
+        use musializer_core::scenes as cs;
+        for id in SceneId::ALL {
+            let instance = SceneInstance::new(descriptor(id), 12345);
+            let any = instance.state().as_any();
+            let recovered = match id {
+                SceneId::Spectrum => any.is::<StatelessScene>(),
+                SceneId::PulseField => any.is::<cs::pulse_field::PulseFieldState>(),
+                SceneId::OrbitalLattice => any.is::<cs::orbital_lattice::OrbitalLatticeState>(),
+                SceneId::AsciiField => any.is::<cs::ascii_field::AsciiFieldState>(),
+                SceneId::SongAtlas => any.is::<cs::song_atlas::SongAtlasState>(),
+                SceneId::SpectralTerrarium => {
+                    any.is::<cs::spectral_terrarium::SpectralTerrariumState>()
+                }
+                SceneId::Constellation => any.is::<cs::constellation::ConstellationState>(),
+                SceneId::Cadence => any.is::<cs::cadence::CadenceState>(),
+                SceneId::Loom => any.is::<cs::loom::LoomState>(),
+                SceneId::Pentagram => any.is::<cs::pentagram::PentagramState>(),
+            };
+            assert!(
+                recovered,
+                "{}: descriptor state type does not match the drawing arm's downcast",
+                id.stable_name()
+            );
+        }
     }
 
     #[test]

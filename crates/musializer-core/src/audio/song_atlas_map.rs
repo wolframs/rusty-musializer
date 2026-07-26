@@ -81,14 +81,23 @@ pub struct Slice {
     pub onset: bool,
 }
 
+impl Slice {
+    /// The zeroed slice C memsets its map to before building.
+    ///
+    /// A `const` as well as a `Default` because the Song Atlas scene fills a
+    /// fixed-size ring with it (`vec![Slice::ZERO; MAX_SLICES]`), and `Default` is
+    /// not usable in a const context.
+    pub const ZERO: Self = Self {
+        bands: [0.0; BAND_COUNT],
+        rms: 0.0,
+        flux: 0.0,
+        onset: false,
+    };
+}
+
 impl Default for Slice {
     fn default() -> Self {
-        Self {
-            bands: [0.0; BAND_COUNT],
-            rms: 0.0,
-            flux: 0.0,
-            onset: false,
-        }
+        Self::ZERO
     }
 }
 
@@ -481,6 +490,24 @@ impl SongAtlasMap {
             if self.slices[index].onset {
                 last_onset = Some(index);
             }
+        }
+    }
+
+    /// Builds a map directly from slices, bypassing the analysis pass.
+    ///
+    /// [`SongAtlasMap::build`] is the real path — it decodes a whole track. This
+    /// exists for two callers: tests that need a map of known shape, and the Song
+    /// Atlas scene, which keeps a live ring of the same slices and needs to present
+    /// it through the same type rather than declaring a second one.
+    ///
+    /// Does **not** validate; [`SongAtlasMap::is_valid`] is how a caller checks.
+    /// That is deliberate, because one test's whole point is constructing an
+    /// oversized map and asserting it reads as invalid.
+    #[must_use]
+    pub fn from_slices(slices: Vec<Slice>, duration_seconds: f64) -> Self {
+        Self {
+            slices,
+            duration_seconds,
         }
     }
 

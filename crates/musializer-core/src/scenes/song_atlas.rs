@@ -63,30 +63,17 @@ pub const DISCONTINUITY_SECONDS: f64 = 3.0;
 /// `scene_song_atlas.c:726`.
 pub const STATE_VERSION: u32 = 4;
 
-/// One spectral slice of the terrain (`Song_Atlas_Slice`, `song_atlas_map.h:14-19`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Slice {
-    pub bands: [f32; BAND_COUNT],
-    pub rms: f32,
-    pub flux: f32,
-    pub onset: bool,
-}
-
-impl Default for Slice {
-    fn default() -> Self {
-        Self::ZERO
-    }
-}
-
-impl Slice {
-    /// C's zeroed slice.
-    pub const ZERO: Self = Self {
-        bands: [0.0; BAND_COUNT],
-        rms: 0.0,
-        flux: 0.0,
-        onset: false,
-    };
-}
+// `Slice` and `SongAtlasMap` are Agent A's, in `core::audio::song_atlas_map`, and
+// re-exported here so the scene's callers keep one import.
+//
+// Both agents defined them: Agent C branched while A's module was still a
+// placeholder, so trunk briefly had two field-identical `Slice` types and two
+// `SongAtlasMap`s. A's is the survivor because it owns `build` — the whole-track
+// preprocessing — and is differentially verified against the C over 72 slices x 28
+// bands. The scene-specific readers that were methods on C's copy are free
+// functions below, which is the right split: A owns the map, this module owns how
+// Song Atlas reads it.
+pub use crate::audio::song_atlas_map::{Slice, SongAtlasMap};
 
 fn clamp01(value: f32) -> f32 {
     // `atlas_clamp01` (`scene_song_atlas.c:32-37`). Note that this one does *not*
@@ -173,96 +160,44 @@ pub fn render_distance(source_distance: f32) -> f32 {
     source_distance / MAX_DETAIL as f32
 }
 
-/// A bounded whole-track spectral map (`Song_Atlas_Map`, `song_atlas_map.h:21-25`).
+/// The playhead as a fractional slice index (`atlas_map_playhead`,
+/// `scene_song_atlas.c:406-413`). `0.0` for an invalid map.
 ///
-/// C carries a fixed `Song_Atlas_Slice[MAX_SLICES]` array plus a `count`; the Vec
-/// here holds exactly `count` slices and is still bounded by [`MAX_SLICES`] —
-/// [`SongAtlasMap::is_valid`] rejects anything longer, and an invalid map is never
-/// drawn.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct SongAtlasMap {
-    slices: Vec<Slice>,
-    duration_seconds: f64,
+/// A free function rather than a method because [`SongAtlasMap`] belongs to
+/// `core::audio::song_atlas_map`, which builds the map and knows nothing about how
+/// a scene reads it.
+#[must_use]
+pub fn map_playhead(map: &SongAtlasMap, time_seconds: f64) -> f32 {
+    if !map.is_valid() || map.is_empty() {
+        return 0.0;
+    }
+    let normalized = (time_seconds / map.duration_seconds()).clamp(0.0, 1.0);
+    (normalized * (map.len() - 1) as f64) as f32
 }
 
-impl SongAtlasMap {
-    #[must_use]
-    pub fn new(slices: Vec<Slice>, duration_seconds: f64) -> Self {
-        Self {
-            slices,
-            duration_seconds,
-        }
+/// Linearly interpolated `(rms, flux)` at a fractional slice index
+/// (`atlas_map_dynamics`, `scene_song_atlas.c:415-430`).
+///
+/// `None` for an invalid map, which is C leaving the caller's pre-seeded values
+/// alone rather than zeroing them.
+#[must_use]
+pub fn map_dynamics(map: &SongAtlasMap, playhead: f32) -> Option<(f32, f32)> {
+    if !map.is_valid() || map.is_empty() {
+        return None;
     }
-
-    #[must_use]
-    pub fn count(&self) -> usize {
-        self.slices.len()
+    let slices = map.slices();
+    let lower = playhead.floor().max(0.0) as usize;
+    let last = map.len() - 1;
+    if lower >= last {
+        return Some((slices[last].rms, slices[last].flux));
     }
-
-    #[must_use]
-    pub fn slices(&self) -> &[Slice] {
-        &self.slices
-    }
-
-    #[must_use]
-    pub fn duration_seconds(&self) -> f64 {
-        self.duration_seconds
-    }
-
-    /// `song_atlas_map_valid` (`song_atlas_map.c:219-237`).
-    ///
-    /// Every band, rms and flux must be finite and within `0..=1`, the duration
-    /// must be finite and positive, and there must be at least two slices to
-    /// interpolate between.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        if self.slices.len() < 2
-            || self.slices.len() > MAX_SLICES
-            || !self.duration_seconds.is_finite()
-            || self.duration_seconds <= 0.0
-        {
-            return false;
-        }
-        self.slices.iter().all(|slice| {
-            let unit = |value: f32| value.is_finite() && (0.0..=1.0).contains(&value);
-            unit(slice.rms) && unit(slice.flux) && slice.bands.iter().copied().all(unit)
-        })
-    }
-
-    /// The playhead as a fractional slice index (`atlas_map_playhead`,
-    /// `scene_song_atlas.c:406-413`). `0.0` for an invalid map.
-    #[must_use]
-    pub fn playhead(&self, time_seconds: f64) -> f32 {
-        if !self.is_valid() {
-            return 0.0;
-        }
-        let normalized = (time_seconds / self.duration_seconds).clamp(0.0, 1.0);
-        (normalized * (self.count() - 1) as f64) as f32
-    }
-
-    /// Linearly interpolated `(rms, flux)` at a fractional slice index
-    /// (`atlas_map_dynamics`, `scene_song_atlas.c:415-430`).
-    ///
-    /// `None` for an invalid map, which is C leaving the caller's pre-seeded
-    /// values alone.
-    #[must_use]
-    pub fn dynamics(&self, playhead: f32) -> Option<(f32, f32)> {
-        if !self.is_valid() {
-            return None;
-        }
-        let lower = playhead.floor() as usize;
-        let last = self.count() - 1;
-        if lower >= last {
-            return Some((self.slices[last].rms, self.slices[last].flux));
-        }
-        let amount = playhead - lower as f32;
-        let a = &self.slices[lower];
-        let b = &self.slices[lower + 1];
-        Some((
-            a.rms + (b.rms - a.rms) * amount,
-            a.flux + (b.flux - a.flux) * amount,
-        ))
-    }
+    let amount = playhead - lower as f32;
+    let a = &slices[lower];
+    let b = &slices[lower + 1];
+    Some((
+        a.rms + (b.rms - a.rms) * amount,
+        a.flux + (b.flux - a.flux) * amount,
+    ))
 }
 
 /// The live fallback ring (`Song_Atlas_State`, `scene_song_atlas.c:19-30`).
@@ -540,7 +475,7 @@ mod tests {
                 }
             })
             .collect();
-        SongAtlasMap::new(slices, 120.0)
+        SongAtlasMap::from_slices(slices, 120.0)
     }
 
     #[test]
@@ -726,28 +661,28 @@ mod tests {
     fn a_map_validates_its_bounds_and_interpolates_its_dynamics() {
         let map = ramp_map(64);
         assert!(map.is_valid());
-        assert_eq!(map.count(), 64);
-        assert_eq!(map.playhead(0.0), 0.0);
-        assert_eq!(map.playhead(120.0), 63.0);
-        assert_eq!(map.playhead(1000.0), 63.0, "the playhead is clamped");
-        assert_eq!(map.playhead(-5.0), 0.0);
-        let (rms, flux) = map.dynamics(map.playhead(60.0)).expect("a valid map");
+        assert_eq!(map.len(), 64);
+        assert_eq!(map_playhead(&map, 0.0), 0.0);
+        assert_eq!(map_playhead(&map, 120.0), 63.0);
+        assert_eq!(map_playhead(&map, 1000.0), 63.0, "the playhead is clamped");
+        assert_eq!(map_playhead(&map, -5.0), 0.0);
+        let (rms, flux) = map_dynamics(&map, map_playhead(&map, 60.0)).expect("a valid map");
         assert!(rms > 0.4 && rms < 0.6);
         assert!(flux > 0.2 && flux < 0.3);
 
         // One slice cannot be interpolated, so it is not a valid map.
-        assert!(!SongAtlasMap::new(vec![Slice::ZERO], 10.0).is_valid());
+        assert!(!SongAtlasMap::from_slices(vec![Slice::ZERO], 10.0).is_valid());
         // Neither is a zero duration.
-        assert!(!SongAtlasMap::new(vec![Slice::ZERO; 4], 0.0).is_valid());
+        assert!(!SongAtlasMap::from_slices(vec![Slice::ZERO; 4], 0.0).is_valid());
         // Nor a non-finite band.
         let mut broken = ramp_map(8);
         let mut slices = broken.slices().to_vec();
         slices[3].bands[0] = f32::NAN;
-        broken = SongAtlasMap::new(slices, broken.duration_seconds());
+        broken = SongAtlasMap::from_slices(slices, broken.duration_seconds());
         assert!(!broken.is_valid());
-        assert_eq!(broken.dynamics(0.0), None);
-        assert_eq!(broken.playhead(1.0), 0.0);
+        assert_eq!(map_dynamics(&broken, 0.0), None);
+        assert_eq!(map_playhead(&broken, 1.0), 0.0);
         // And a map longer than the C's fixed array cannot be drawn.
-        assert!(!SongAtlasMap::new(vec![Slice::ZERO; MAX_SLICES + 1], 10.0).is_valid());
+        assert!(!SongAtlasMap::from_slices(vec![Slice::ZERO; MAX_SLICES + 1], 10.0).is_valid());
     }
 }
