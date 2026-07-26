@@ -1341,3 +1341,97 @@ Format of a note entry:
          its negation). A wrong pid is a logic bug, not unsoundness |
          That is the only new `unsafe` in this workstream — the three child
          families otherwise run entirely on `std::process`.
+
+#### Agent C (scenes 1-5, 2026-07-26)
+
+- [DONE] **All five scenes ported, both halves.** Deterministic state and update in
+         `crates/musializer-core/src/scenes/`: `spectrum.rs` (stateless — the C
+         descriptor sets no `update`), `pulse_field.rs`, `orbital_lattice.rs` +
+         `orbital_lattice/motion.rs`, `ascii_field.rs` + `ascii_field/ascii_art.rs`,
+         `song_atlas.rs`. Drawing in `crates/musializer-app/src/scenes/`:
+         `pulse_field.rs`, `orbital_lattice.rs`, `ascii_field.rs`, `song_atlas.rs`.
+         **51 tests**, of which **21 are direct ports of C tests**: all 5 from
+         `tests/test_scene_orbital_lattice_motion.c` and all 16 from
+         `tests/test_ascii_art.c`. `cargo fmt`, `cargo clippy --all-targets` and
+         `cargo test` are clean.
+- [DONE] The two already-raylib-free C modules stayed that way, as the plan asks:
+         `scene_orbital_lattice_motion.c` -> `scenes/orbital_lattice/motion.rs`,
+         `ascii_art.c` -> `scenes/ascii_field/ascii_art.rs`. Their pure helpers that
+         the *drawing* code also needs were put in `musializer-core` too rather than
+         duplicated in the app crate: `ascii_field::{audio_band, main_color,
+         seed_phase, color_byte, clamp01}` and `song_atlas::{render_sample_count,
+         render_sample_index, render_distance, hash_unit}`. `main_color` is the whole
+         ASCII colour pipeline and is now testable.
+- [DONE] **Rendering was verified with pixels, not asserted.** `--scene` is Agent
+         F's, so `main.rs` was patched *temporarily*, all four new scenes captured on
+         a private Xvfb `:78`, and the patch reverted (`main.rs` is byte-identical to
+         trunk; verified by md5 and `git diff`). Every scene exited 0 with the
+         "tracked the sweep" verdict, and the captures show what they should: Pulse
+         Field's rose stack with its centre bloom, Orbital Lattice's receding ring
+         convoy with facets and swaying links, ASCII Field's waterfall showing the
+         fixture's rising sweep as a diagonal ridge of ramp glyphs, and Song Atlas's
+         lit terrain with the bass-to-treble hue gradient. `tools/headless_check.sh`
+         still passes on the reverted tree.
+- [HURDLE] **`song_atlas_map.h`'s slice type and render sampling had to be defined
+         by Agent C**, because Agent A's `core::audio::song_atlas_map` is still a
+         placeholder and the scene's own live ring stores the same slices. They are
+         in `core::scenes::song_atlas`: `Slice`, `SongAtlasMap`, `BAND_COUNT`,
+         `BASE_SLICES`, `MAX_DETAIL`, `MAX_SLICES`, `render_sample_count`,
+         `render_sample_index`, `render_distance`, `SongAtlasMap::{is_valid,
+         playhead, dynamics}`. **Agent A should build into this `SongAtlasMap` rather
+         than declare a second slice type**; only `song_atlas_map_build` (the
+         whole-track FFT) is missing and it is squarely Agent A's.
+- [HURDLE] **Two pieces of shared 3D machinery are parked in Agent C's files and
+         want hoisting into `musializer_runtime::draw`** next to `tube()`, which
+         Agent C may not edit. Agent D's 3D scenes will need both:
+         `app::scenes::orbital_lattice::SceneViewport` (the clip-the-GL-viewport-to-a-
+         sub-rectangle dance from `scene_orbital_lattice.c:128-159,302-308`, plus the
+         raylib 5.5 projection-aspect correction) and `app::scenes::song_atlas::{Batch,
+         LineWidth}` (RAII `rlBegin`/`rlEnd` and `rlSetLineWidth`). Song Atlas already
+         imports `SceneViewport` from the Orbital Lattice module, which is the wrong
+         home for it. Also parked there: `color_brightness` and `color_to_hsv`, two
+         one-line ffi wrappers the safe raylib API is missing.
+- [INFO] **New `unsafe` islands, for the AGENTS.md inventory** (Agent C may not edit
+         that file). All are rlgl/raylib ffi with `SAFETY:` comments, all in
+         `musializer-app`: `SceneViewport` (rlgl viewport + framebuffer size +
+         `rlDrawRenderBatchActive`, restored on drop), `Batch` (`rlBegin`/`rlVertex3f`/
+         `rlColor4ub`/`rlEnd`, closed on drop), `LineWidth` (`rlSetLineWidth`, reset on
+         drop), `color_brightness`/`color_to_hsv` (pure colour arithmetic), and
+         `DefaultFont::get` (`GetFontDefault`, a non-owning handle that is never
+         unloaded). The invariant in every drop-guard case is the same: the pair is
+         closed by `Drop`, so an early return cannot leave rlgl in a scene's state.
+- [INFO] **Spectrum's existing drawing half was checked against
+         `scene_spectrum.c` line by line and no parity error was found.** It is
+         unchanged. The one thing worth recording is that its `#[allow(clippy::
+         needless_range_loop)]` is load-bearing for the same reason the new files
+         keep index loops.
+- [INFO] Three C functions called `orbital_clamp01`/`atlas_clamp01`/`ascii_clamp01`
+         are **not the same function**. The motion module's and ASCII Field's reject
+         non-finite input; `scene_orbital_lattice.c:10-15` and
+         `scene_song_atlas.c:32-37` do not, so a NaN passes through both comparisons
+         untouched. Reproduced faithfully rather than unified, and each carries a
+         comment saying so — this is exactly the kind of thing a later session would
+         "tidy" into a parity break.
+- [INFO] Suspected oracle bug, reproduced, **not** fixed: `ascii_field_update`
+         (`scene_ascii_field.c:186-195`) indexes the *trail* array by
+         `column*bands_count/MAX_COLUMNS` and bounds it against `bands_count` rather
+         than the trail array's own length, while the band beside it uses the very
+         different `ascii_audio_band` index expression. The two arrays are always the
+         same length in practice so nothing misbehaves, but the asymmetry looks
+         accidental. Rust's version cannot read out of bounds either way.
+- [INFO] Two behaviours that read as bugs and are not, both pinned by tests:
+         Song Atlas's `song_atlas_update` runs its camera damping *on the same frame*
+         as a discontinuity snap, one frame after setting the value it then smooths
+         toward; and its onset flag is latched before the capture check, so the very
+         first frame of a track consumes an onset it never scrolled far enough to
+         show. Both are harmless and both are what the terrain was tuned against.
+- [INFO] The event lane does not reach Agent C at all. Verified against the C: none
+         of `scene_spectrum.c`, `scene_pulse_field.c`, `scene_orbital_lattice.c`,
+         `scene_ascii_field.c` or `scene_song_atlas.c` reads `frame->events`, and no
+         Agent C file mentions `EventRecord`. The `core::scene::events` corrections
+         are Agent D's concern, not this workstream's.
+- [INFO] The four new drawing modules carry a file-level `#![allow(dead_code)]`
+         with the reason inline: nothing dispatches them yet because `main.rs` still
+         calls Spectrum directly and the `SceneId` -> descriptor/draw registry is the
+         integration owner's. Each `descriptor()` exists and is tested; wiring them
+         into one table is a five-line change once someone owns it.
