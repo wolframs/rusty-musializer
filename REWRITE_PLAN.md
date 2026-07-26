@@ -1723,3 +1723,95 @@ Format of a note entry:
          treat it as end-of-string and silently accept the prefix. Truncating a
          lyric on a byte the user cannot see is the worse failure. Flag it if strict
          parity matters more.
+
+### Session 1 close-out: integration (2026-07-27)
+
+All six workstreams merged. **P0, P1 and P2 reached; P3-P6 partly built but not
+wired.** State of trunk:
+
+- [DONE] **724 tests**, clippy clean, `cargo fmt --check` clean, and
+         `tools/verify.sh` at 10 passed / 0 failed. That script is the one command
+         to run first next session: fmt, build, clippy, tests, four differential
+         harnesses against the frozen C, the headless window/audio/Spectrum gate,
+         and a check that the oracle is still clean at `9300af9`.
+- [DONE] **All ten scenes draw.** `app::scene_host` binds descriptor and drawing
+         half; `--scene` honours all ten stable names and six long aliases.
+         Verified by 26 captures on a private Xvfb, not by exit codes.
+- [DONE] Merge order was A, E, C, D, F, B. Every merge conflicted only in this
+         file's notes section, resolved by keeping all sections. **Zero source
+         conflicts across six agents and ~40 files**, which is what the
+         pre-scaffolded module tree bought.
+
+#### What the integration owner had to arbitrate
+
+- [DONE] **`SceneViewport` was ported twice**, by C and D, with different APIs, and
+         Song Atlas imported it across a scene-module boundary. Hoisted to
+         `runtime::draw`. The two ports disagreed on `Drop` versus an explicit
+         `end()`; the canonical version has **both**, because a narrowed viewport is
+         global renderer state and a scene that returns early would otherwise
+         corrupt everything drawn after it in the frame, UI included.
+- [DONE] **`SongAtlasMap` and `Slice` were defined twice**, by A and C — the one
+         collision the scaffolding did not prevent, because C branched while A's
+         module was still a placeholder. A's survives (it owns `build` and is
+         differentially verified); C's scene-specific readers became free functions
+         over A's type. A gained `from_slices` and `Slice::ZERO`.
+- [DONE] Applied on request: `AnalyzerError: Clone + Copy`, `SemanticFrame:
+         PartialEq`, `CircleShader` setters public. Dropped `tempfile` from
+         `musializer-runtime` — Agent E established `rename(2)` cannot cross
+         filesystems, so staging writes next to the destination and a temp-dir
+         crate is the wrong tool.
+- [HURDLE] **The ffmpeg test suite was failing about one run in three**, a
+         different test each time. Root cause was the classic Linux fork/exec race:
+         one test writes its fake-encoder script while another forks, the child
+         inherits the write descriptor, and the first test's `exec` then fails with
+         `ETXTBSY`. A module-wide mutex now spans script creation and spawning;
+         eight consecutive runs pass. Deliberately test-only — `Encoder::start`
+         must never retry `ETXTBSY`, because for a real user that means something
+         is writing their ffmpeg binary. **Found by running the suite repeatedly
+         rather than once**, which is worth doing again after any process work.
+
+#### Independent confirmation worth noting
+
+- [INFO] Agent B, working from the C without seeing the fix, independently
+         reported that `scene::events::EventRecord::is_well_formed` was missing
+         `id != 0`, the type range, and `value_count != 0` — the same three rules
+         the differential harness had already caught. Two routes to the same
+         finding is a good sign about both.
+
+#### Next session: start here
+
+1. Run `tools/verify.sh`. Then read the six `#### Agent` sections above; each ends
+   with what its author deliberately left undone.
+2. **Highest value first: wire what is already built.** The state for project
+   open/save, export, lyrics, Assist, presets and the route editor is ported and
+   tested — only drawing and wiring are missing, which is the right way round.
+   Agent F's stubs name each one. That is P3 through P6 mostly by connection
+   rather than by new code.
+3. Absorb the persistence half of routes: Agent B left six functions in
+   `project::model` (`mapping_is_constant`, `constant_mapping`,
+   `mappings_supported`, `export_mappings`, `import_mappings`,
+   `parse_route_spec`) that belong in `scene::routes`, plus `PresetLibrary` into
+   `scene::settings`. Move them wholesale — splitting the constant rule from the
+   route rule lets one parameter persist as both, the exact ambiguity v1 cannot
+   represent.
+4. Collapse the local copies agents wrote around each other: `scenes::loom`'s
+   `semantic_lane_sample`, `scenes::constellation`'s `event_is_valid`, and the
+   three small `Vec2`/`Vec3` copies (a `core::math` was requested twice).
+5. `track.h` → `app::Workspace` is still deferred. Agent B's model has landed now,
+   so the reason for deferring it is gone.
+6. Add a differential harness for anything ported without one. The pattern is in
+   `AGENTS.md`; it caught a seven-way error in a module that looked finished.
+
+#### Known gaps in the evidence
+
+- [INFO] **Cadence cannot be visually verified yet.** It typesets timed lyric
+         words, the synthetic fixture has none, so captures show only its particle
+         swarm. Not evidence of a defect, but not evidence of correctness either. A
+         lyric fixture would close it.
+- [INFO] Song Atlas draws its idle terrain because whole-track preprocessing is
+         not yet run at track load. `SceneRenderer::atlas_map` is where the built
+         map goes; `SongAtlasMap::build` already exists and is verified.
+- [INFO] ASCII Field draws its procedural rolling spectrogram because
+         `--ascii-image` is not wired to a grid. That is its other documented mode,
+         not a degraded one.
+- [INFO] Nothing has been pushed. All work is local commits on `master`.
