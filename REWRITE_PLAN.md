@@ -1111,6 +1111,20 @@ Format of a note entry:
 
 #### Open questions for the human
 
+- [HURDLE] **A deliberate divergence from the oracle needs your ruling.** Agent E
+         found that `font_catalogue_parse` does not deliver the atomicity its own
+         header promises (`font_catalogue.h:76-78`) and its own test asserts
+         (`tests/test_font_catalogue.c:85-88`): it writes rows straight into the
+         destination and only withholds `count`, so a mid-parse failure leaves the
+         old count beside new rows — a silently corrupted font picker
+         (`font_catalogue.c:196-206`). E chose to parse into a local and commit,
+         which satisfies both the header and the C tests while *not* reproducing
+         the clobber. That is the one place in this session where the Rust
+         deliberately behaves better than the frozen C rather than identically.
+         The standing rule is "reproduce it, note the suspicion, move on", so say
+         if you would rather have bit-parity with the bug. Full note under Agent E
+         below.
+
 - [INFO] `track.h` → `app::Workspace` was deferred rather than guessed. The
          track model touches Agent A (waveform, atlas preprocessing), B (project
          binding) and F (tracks panel), and inventing it before the `.musi` model
