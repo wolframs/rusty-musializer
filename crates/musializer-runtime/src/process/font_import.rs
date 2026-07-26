@@ -408,7 +408,7 @@ impl CatalogueEntry {
             window
                 .iter()
                 .zip(needle)
-                .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
         })
     }
 }
