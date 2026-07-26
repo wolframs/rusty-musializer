@@ -119,6 +119,18 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
 ## Traps this rewrite has already paid for
 
+- **Unset `WAYLAND_DISPLAY`, not just `DISPLAY`, before testing anything that can
+  open a window or a dialog.** This operator's session is Wayland
+  (`XDG_SESSION_TYPE=wayland`), so `DISPLAY= somecommand` isolates nothing: Qt and
+  GTK fall straight through to `WAYLAND_DISPLAY` and draw on the real desktop.
+  This has already leaked a `kdialog` error box onto the operator's screen mid-session.
+  `tools/headless_check.sh` gets this right with `env -u WAYLAND_DISPLAY`; the rule
+  applies just as much to a two-line shell test as to a capture run.
+- **Do not invoke `kdialog` with no display reachable.** It aborts with `SIGABRT`,
+  which on Ubuntu summons an Apport "internal error" report for a crash you caused.
+  `tools/rusty-musializer-launcher` guards against this by checking for a display
+  before it reaches for a dialog and printing to stderr otherwise; keep that guard.
+
 - **Never give the Python helpers their own process group from the parent.**
   `os.setsid()` in `external_analysis.py` fails with `EPERM` if the caller is
   already a group leader, so calling `process_group(0)` on the child would kill

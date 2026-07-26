@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The `.musi` project type.
+
+  Deliberately the *same* type name the C project registers
+  (`../musializer/packaging/linux/io.github.tsoding.musializer.xml`), because it is
+  the same file format read by both applications. Declaring a second type for the
+  same extension would give one format two identities and make "Open with" behave
+  differently depending on which entry the user came from.
+
+  Also deliberately *without* an <icon> element, unlike the C's copy.
+  `update-mime-database` merges packages that describe the same type, so two
+  competing icon declarations would resolve unpredictably depending on install
+  order. The format keeps whatever icon the C package gave it; only the
+  application entries differ. If the C launcher is not installed, `.musi` simply
+  gets the generic document icon, which is a cosmetic loss and not a functional one.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-musializer-project">
+    <comment>Musializer project</comment>
+    <glob pattern="*.musi"/>
+  </mime-type>
+</mime-info>

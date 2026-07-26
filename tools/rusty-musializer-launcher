@@ -1,0 +1,83 @@
+#!/bin/sh
+#
+# Generated from this template by tools/install-linux-launcher.sh, which fills in
+# @PROJECT_ROOT_SHELL@ and @APP_RELATIVE@. Do not install this file directly.
+#
+# Adapted from ../musializer/tools/musializer-launcher. Same job: give a desktop
+# menu entry somewhere to point that reports failures visibly instead of vanishing.
+# A GUI application launched from a menu has nowhere to print, so a crash with no
+# log and no dialog looks like "clicking the icon does nothing".
+
+set -u
+
+PROJECT_ROOT=@PROJECT_ROOT_SHELL@
+APP="$PROJECT_ROOT/@APP_RELATIVE@"
+STATE_HOME=${XDG_STATE_HOME:-"$HOME/.local/state"}
+LOG_DIR="$STATE_HOME/rusty-musializer"
+LOG_FILE="$LOG_DIR/launcher.log"
+
+# Always writes the message to stderr, and *additionally* opens a dialog when
+# there is a display to open one on.
+#
+# The C launcher's version picks exactly one of the three, dialog first. That
+# fails in the case this function exists for: with kdialog installed but no
+# display reachable, kdialog aborts with a Qt core dump and the operator gets
+# "could not connect to display" instead of the actual problem. Verified by
+# running this script with an empty DISPLAY. Printing unconditionally means the
+# message always lands somewhere -- the terminal, the journal, or the log file the
+# caller redirects into.
+show_error()
+{
+    message=$1
+    printf '%s\n' "Rusty Musializer: $message" >&2
+    if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        return 0
+    fi
+    if command -v kdialog >/dev/null 2>&1; then
+        kdialog --title "Rusty Musializer" --error "$message" >/dev/null 2>&1 || true
+    elif command -v zenity >/dev/null 2>&1; then
+        zenity --title="Rusty Musializer" --error --text="$message" >/dev/null 2>&1 || true
+    fi
+}
+
+if [ ! -x "$APP" ]; then
+    show_error "The Rusty Musializer executable is missing. Run tools/install-linux-launcher.sh again to rebuild it."
+    exit 1
+fi
+
+if ! mkdir -p "$LOG_DIR"; then
+    show_error "Could not create the launcher log directory: $LOG_DIR"
+    exit 1
+fi
+
+# Keep failures launched from a desktop menu diagnosable without growing a log
+# forever. The previous session is enough context for a development launcher.
+if [ -f "$LOG_FILE" ] && [ "$(wc -c <"$LOG_FILE")" -gt 1048576 ]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.old"
+fi
+
+# Gives the X11 window a stable WM_CLASS instance name, which is what
+# StartupWMClass in the .desktop file matches so the taskbar attributes the window
+# to this entry.
+#
+# This is load-bearing and non-obvious. raylib 5.5 does not expose GLFW's
+# GLFW_X11_CLASS_NAME hint, and with no hint GLFW falls back to the *window title*
+# for both halves of WM_CLASS (vendor/raylib-5.5/src/external/glfw/src/x11_window.c:743-770).
+# Verified by reading WM_CLASS off the live window: without this the class is
+# "Musializer (Rust)", with it the instance name becomes "rusty-musializer".
+# Without it, renaming the window would silently break the taskbar association.
+RESOURCE_NAME=rusty-musializer
+export RESOURCE_NAME
+
+{
+    printf '\n[%s] Launching %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$APP"
+    cd "$PROJECT_ROOT" || exit 1
+    "$APP" "$@"
+} >>"$LOG_FILE" 2>&1
+status=$?
+
+if [ "$status" -ne 0 ]; then
+    show_error "Rusty Musializer exited with status $status. Details were written to $LOG_FILE"
+fi
+
+exit "$status"

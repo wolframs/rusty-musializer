@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=Rusty Musializer
+GenericName=Music Visualization Studio
+Comment=Create and render music visualizations (Rust rewrite)
+Exec="@LAUNCHER@" %F
+Path=@PROJECT_ROOT@
+Icon=rusty-musializer
+Terminal=false
+StartupNotify=true
+StartupWMClass=rusty-musializer
+Categories=AudioVideo;AudioVideoEditing;
+Keywords=music;audio;visualizer;visualization;render;video;rust;
+MimeType=application/x-musializer-project;audio/mpeg;audio/flac;audio/ogg;audio/x-wav;audio/x-mod;audio/x-xm;
