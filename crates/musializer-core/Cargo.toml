@@ -8,6 +8,17 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# For Agent B's .musi codec. The codec is strict, not forward-compatible: serde
+# alone does not reproduce input bounds, unknown-field rejection, finite-number
+# checks, or compatibility defaults, so these are a starting point and not the
+# whole implementation.
+serde.workspace = true
+serde_json.workspace = true
+# Content-addressed asset identity.
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 # No raylib, no OS process handles, no filesystem side effects, no global
 # mutable state. If something here needs one of those, it belongs in

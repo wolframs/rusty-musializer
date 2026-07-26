@@ -29,8 +29,15 @@ raylib-5-5-link = { path = "crates/raylib-5-5-link" }
 musializer-core = { path = "crates/musializer-core" }
 musializer-runtime = { path = "crates/musializer-runtime" }
 
+# Conservative, ordinary crates, per the plan's dependency starting point.
+# `thiserror` for library errors, `anyhow` only at the binary/command boundary.
 thiserror = "2"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
 
 [profile.release]
 # The C build deliberately avoids fast-math: project parsing, analysis, and

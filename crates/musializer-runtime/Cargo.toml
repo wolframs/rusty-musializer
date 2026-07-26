@@ -14,3 +14,5 @@ raylib-sys.workspace = true
 # emits no link directives of its own.
 raylib-5-5-link.workspace = true
 thiserror.workspace = true
+# Transactional staging for atomic publication (Agent E).
+tempfile.workspace = true

@@ -49,3 +49,6 @@ __pycache__/
 *.swp
 *~
 .DS_Store
+
+# Agent worktrees created by the harness. Each is its own git checkout.
+/.claude/

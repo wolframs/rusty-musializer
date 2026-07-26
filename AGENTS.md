@@ -18,7 +18,16 @@ cargo run -- path/to/song.mp3      # the slice: window + audio + Spectrum
 cargo run --bin make-fixture-wav -- build/x.wav 8   # synthetic fixture audio
 
 tools/headless_check.sh            # the self-check: private Xvfb, evidence
+tools/differential_analyzer.sh     # the Rust analyzer vs the frozen C analyzer
 ```
+
+`tools/differential_analyzer.sh` compiles `../musializer/src/audio_analyzer.c`
+(output into our `build/`, the oracle untouched) and compares its band output
+against the Rust port on identical synthetic PCM. It currently agrees to 4e-10
+across all 104 bands. This is the pattern to copy for any other pure module: a
+number to compare beats a paragraph of reasoning about whether a port is
+faithful. Band *indices* are compared exactly; float values within a tolerance,
+because libm and Rust's intrinsics may differ in the last bits.
 
 `tools/headless_check.sh` is how this project checks its own work without
 occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`

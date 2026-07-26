@@ -23,3 +23,7 @@ musializer-runtime.workspace = true
 raylib.workspace = true
 raylib-sys.workspace = true
 anyhow.workspace = true
+# For the CLI surface (Agent F). Note the C parser has no unknown-flag
+# diagnostic and treats any unrecognized --flag as an audio path; clap errors
+# instead, which is a deliberate divergence recorded in REWRITE_PLAN.md.
+clap.workspace = true
