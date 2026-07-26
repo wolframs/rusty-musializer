@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/raylib-5-5-link",
+    "crates/musializer-core",
+    "crates/musializer-runtime",
+    "crates/musializer-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# raylib stays C. The binding crate is pinned to 5.5.x and runs in `nobuild`
+# mode; `raylib-5-5-link` supplies the actual library, built from the raylib 5.5
+# source vendored under vendor/. See REWRITE_PLAN.md "The raylib linking choice".
+#
+# `nobuild` means raylib-sys generates bindings but neither builds nor links a
+# library; `raylib-5-5-link` supplies the library, built from vendored 5.5
+# source. Note that `bindgen` is on anyway despite `default-features = false`:
+# the safe `raylib` crate declares raylib-sys without disabling defaults, and
+# Cargo unifies features. See vendor/clang-builtin-shim/README.md.
+raylib = { version = "5.5.1", default-features = false, features = ["nobuild"] }
+raylib-sys = { version = "5.5.1", default-features = false, features = ["nobuild"] }
+raylib-5-5-link = { path = "crates/raylib-5-5-link" }
+musializer-core = { path = "crates/musializer-core" }
+musializer-runtime = { path = "crates/musializer-runtime" }
+
+thiserror = "2"
+anyhow = "1"
+
+[profile.release]
+# The C build deliberately avoids fast-math: project parsing, analysis, and
+# event contracts reject NaN/Inf, and finite-only assumptions would compile
+# those checks away. Rust does not enable fast-math, so nothing to disable —
+# this note exists so nobody adds it later. (src_build/nob_linux.c:5-11)
+lto = "thin"

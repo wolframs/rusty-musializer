@@ -1,0 +1,11 @@
+[package]
+name = "raylib-5-5-link"
+description = "Builds and links raylib 5.5 from vendored source, for raylib-sys nobuild mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+links = "raylib"
+
+[build-dependencies]
+cc = "1"

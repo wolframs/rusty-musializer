@@ -1,0 +1,14 @@
+[package]
+name = "musializer-core"
+description = "Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+# No raylib, no OS process handles, no filesystem side effects, no global
+# mutable state. If something here needs one of those, it belongs in
+# musializer-runtime or musializer-app instead. See REWRITE_PLAN.md.

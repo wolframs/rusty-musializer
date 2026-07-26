@@ -1,9 +1,89 @@
 # Repository guide for coding agents
 
-The Rust rewrite of Musializer. The C repository is feature frozen and the
-rewrite has started; no Cargo workspace exists yet.
+The Rust rewrite of Musializer. The C repository is feature frozen. The Cargo
+workspace exists and the Phase 1 vertical slice works: a window opens, audio
+plays through an allocation-free callback bridge, and Spectrum reacts to it.
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
+
+## Commands
+
+```sh
+cargo build                        # no environment setup needed
+cargo test                         # headless; no window, no audio device
+cargo clippy --all-targets
+cargo fmt --check
+
+cargo run -- path/to/song.mp3      # the slice: window + audio + Spectrum
+cargo run --bin make-fixture-wav -- build/x.wav 8   # synthetic fixture audio
+
+tools/headless_check.sh            # the self-check: private Xvfb, evidence
+```
+
+`tools/headless_check.sh` is how this project checks its own work without
+occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`
+unset and `PULSE_SERVER` pointed somewhere unresolvable, and writes artifacts
+under the gitignored `build/`. Read `../musializer/tools/UI_REVIEW.md` for the
+reasoning; the isolation rules there are not optional.
+
+**Check claims with evidence, not with a clean compile.** A build that succeeds
+and a process that exits 0 prove almost nothing about a renderer. The slice
+prints a report distinguishing "drew something" from "tracked the input", and
+that distinction is the point.
+
+## Crate map
+
+```text
+crates/
+  raylib-5-5-link/    # builds + links raylib 5.5 from vendor/raylib-5.5
+  musializer-core/    # no raylib: analysis, scene contracts, model, layout
+  musializer-runtime/ # raylib, the audio bridge, processes, filesystem edges
+  musializer-app/     # the binary, CLI, scene drawing, UI
+vendor/
+  raylib-5.5/         # upstream raylib source (third-party, not ours)
+  clang-builtin-shim/ # five headers so bindgen can run; see its README
+resources/shaders/    # first-party GLSL
+docs/PHASE0_INVENTORY.md  # CLI grammar, settings tables, schemas, env vars
+```
+
+`musializer-core` must stay free of raylib handles, OS process handles, global
+mutable state, and filesystem side effects. That constraint is what made the C
+project's 327-test suite possible and it is the main bet of this rewrite.
+
+## The raylib binding decision
+
+**Option 2, decided and proven by the vertical slice.** raylib 5.5 source is
+vendored here and built by `crates/raylib-5-5-link`, with `raylib`/`raylib-sys`
+5.5.1 in `nobuild` mode supplying only the bindings.
+
+The reason, recorded so nobody re-derives it: `raylib-sys` 5.5.1 vendors raylib
+**5.6-dev**, so letting it build its own copy would put a different raylib under
+the renderer than the parity oracle was built against. Compile flags mirror
+`../musializer/src_build/nob_linux.c` exactly.
+
+Two things about this that will otherwise waste a session:
+
+- `bindgen` cannot be turned off. The safe `raylib` crate depends on
+  `raylib-sys` without disabling its default features, and Cargo unifies
+  features, so `bindgen` is on whenever `raylib` is in the graph.
+- bindgen needs clang's builtin headers, which Ubuntu's `libclang1` does not
+  ship. `vendor/clang-builtin-shim/` supplies them via `CPATH`, and
+  `raylib-5-5-link/build.rs` strips `CPATH` before compiling raylib so those
+  minimal headers never shadow GCC's real ones. Full reasoning in
+  `vendor/clang-builtin-shim/README.md`.
+
+## `unsafe` inventory
+
+Small, named, reviewable islands. Every `unsafe` block carries a `SAFETY:`
+comment stating why it holds. Current islands:
+
+| Where | Why | Invariant |
+| --- | --- | --- |
+| `runtime::audio_bridge` | raylib's `AudioCallback` is a bare `extern "C"` fn with no user-data pointer, so the ring must be reachable from a `static` | The callback only touches a lock-free SPSC ring — no allocation, lock, or syscall. `attach`/`detach` are `unsafe` and document the stream-lifetime contract |
+| `runtime::draw` | raylib's default 1x1 texture is a non-owning handle, and the safe `Texture2D` would unload it on drop | The ffi draw wrappers take a `&mut impl RaylibDraw`, so an active drawing context is proven at compile time |
+| `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
+
+Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
 ## Before implementation work
 
@@ -50,13 +130,26 @@ note `master`, not `main`.
 - Only the integration owner edits the root manifest or broad application
   state. Leaf agents request dependencies rather than adding them.
 
+## Style
+
+- Cite the oracle. Where a function reproduces C behaviour, name the C file and
+  line in the doc comment. It is the difference between a port a later reader can
+  check and one they have to trust.
+- Say why, not what, in comments — especially where the oracle looks wrong. Those
+  are the lines a future session will otherwise "fix" back into a parity bug.
+- Data tables that are checked column-by-column against C carry
+  `#[rustfmt::skip]`, because rustfmt explodes them into one argument per line
+  and destroys the thing that makes them checkable.
+- `cargo fmt` and a clippy-clean tree are the baseline; deviations are marked
+  with `#[allow(...)]` and a reason.
+
 ## Still to be filled in
 
-These land as the work reaches them, and this file is where they go:
-
-- the actual Cargo commands and crate map, once the workspace exists;
-- the raylib binding decision — `raylib-sys` building its own copy versus
-  no-build mode linking the vendored raylib 5.5 from the frozen tree — recorded
-  with the reason, once the vertical slice proves one;
-- build, test, and style guidance;
-- the `unsafe` inventory and where its invariants are documented.
+- `track.h` → `app::Workspace`: deferred until Agent B's `.musi` model lands, so
+  the track model is not invented twice.
+- The persistence half of `core::scene::routes` (export/import mappings, spec
+  parsing), which needs Agent B's codec.
+- FFmpeg export, Assist and font-import supervision (Agent E).
+- The workspace UI and the real CLI (Agent F) — work from
+  `docs/PHASE0_INVENTORY.md` section 3, not from the plan's older flag list,
+  which was missing eight flags.

@@ -1,0 +1,6 @@
+# Vendored third-party source is stored exactly as upstream shipped it. Some
+# raylib platform backends use CRLF; normalizing them would create a diff against
+# upstream for no benefit and make a future version bump noisier.
+vendor/raylib-5.5/** -text
+
+* text=auto

@@ -1,0 +1,25 @@
+[package]
+name = "musializer-app"
+description = "The Musializer binary: CLI, workspace UI, scene drawing, orchestration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "musializer"
+path = "src/main.rs"
+
+# Writes the synthetic WAV the headless checks analyze. A fixture generator
+# rather than a committed binary asset: the repository rule is synthetic
+# fixtures only, and a generator is smaller and auditable.
+[[bin]]
+name = "make-fixture-wav"
+path = "src/bin/make_fixture_wav.rs"
+
+[dependencies]
+musializer-core.workspace = true
+musializer-runtime.workspace = true
+raylib.workspace = true
+raylib-sys.workspace = true
+anyhow.workspace = true

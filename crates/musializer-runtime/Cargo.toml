@@ -1,0 +1,16 @@
+[package]
+name = "musializer-runtime"
+description = "raylib, resources, processes and filesystem edges behind small safe APIs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+musializer-core.workspace = true
+raylib.workspace = true
+raylib-sys.workspace = true
+# Supplies the actual raylib 5.5 library; raylib-sys is in nobuild mode and
+# emits no link directives of its own.
+raylib-5-5-link.workspace = true
+thiserror.workspace = true

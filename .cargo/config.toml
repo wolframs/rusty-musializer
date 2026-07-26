@@ -1,0 +1,18 @@
+[env]
+# `raylib-sys` runs bindgen in its build script, and bindgen needs libclang.
+# Ubuntu's libclang1-21 ships the shared library but not clang's resource
+# directory, so the compiler-provided headers (`stdarg.h`, `stdbool.h`,
+# `stddef.h`, `float.h`, `stdalign.h`) are missing and parsing raylib.h fails.
+#
+# `vendor/clang-builtin-shim/` supplies exactly those five, defined in terms of
+# compiler intrinsics so no GCC or clang version is hardcoded. `CPATH` is how
+# clang picks up an implicit include search path; `relative = true` resolves it
+# against this file's directory, so it works from any subdirectory and any
+# checkout path.
+#
+# `crates/raylib-5-5-link/build.rs` removes CPATH before compiling raylib, so
+# these minimal headers never shadow the real ones for actual C compilation.
+# See vendor/clang-builtin-shim/README.md for why bindgen cannot just be
+# disabled.
+CPATH = { value = "vendor/clang-builtin-shim", relative = true }
+LIBCLANG_PATH = "/usr/lib/x86_64-linux-gnu"

@@ -906,3 +906,181 @@ Format of a note entry:
          still lists eight open tasks (1.2, 1.3, 1.4, 2.1, 2.2, 2.3, 2.5, 2.6).
          Those are C-side cleanups the rewrite inherits as *structure to avoid
          reproducing*, not as work to port. Do not modify the oracle to close them.
+
+### Session 1 (2026-07-26): Phase 0, Phase 1, shared contracts
+
+- [DONE] Base commit landed. `.gitignore`, `AGENTS.md` (+`CLAUDE.md` symlink,
+         preserved as a symlink in git), `REWRITE_PLAN.md`. The "zero commits"
+         note above is now stale.
+- [DONE] Phase 0 test baseline at the freeze commit: **327/327 C tests**
+         (`../musializer/build/tests/musializer_tests`, prebuilt — the oracle was
+         *not* rebuilt) and **137 Python tests + 15 subtests** across the 11 files
+         in `tests/adapters/`. Build profile: `MUSIALIZER_TARGET_LINUX`, hotreload
+         off, unbundle off, microphone off. `--version` prints `musializer 2026.07`.
+- [DONE] Phase 0 inventory catalogue is in `docs/PHASE0_INVENTORY.md` (CLI
+         grammar, all ten scenes' settings tables, both schemas, resources, env
+         vars, capture harness). Read it before re-deriving any of that.
+- [HURDLE] **This plan's CLI list was incomplete.** Eight flags were missing:
+         `--save-project FILE`, `--analysis-bridge FILE`, `--auto-scenes`,
+         `--resolution WxH`, `--fps N`, `--quality NAME`, `--reload-once`,
+         `--ui-probe SPEC`. Also `--render-window` takes **two** argv words, not
+         one. The route-ordering claim was verified correct
+         (`../musializer/src/musializer.c:553-561`). Agent F owns the CLI and
+         should work from `docs/PHASE0_INVENTORY.md` section 3, not from the
+         Phase 0 prose above.
+- [INFO] The C parser has **no unknown-flag diagnostic**: any unrecognized
+         `--flag` falls through to the positional arm and is loaded as an audio
+         path (`../musializer/src/musializer.c:546-550`). The Rust slice
+         deliberately errors instead. Noted as an intentional divergence, not a
+         parity bug — flag it to the human if strict parity is wanted.
+
+#### The raylib binding decision — resolved, option 2
+
+- [DONE] **Option 2 landed and is proven by the vertical slice.** raylib 5.5
+         source is vendored at `vendor/raylib-5.5/` (copied from
+         `../musializer/thirdparty/raylib-5.5/`), built by
+         `crates/raylib-5-5-link/build.rs` with the oracle's exact flags
+         (`-DPLATFORM_DESKTOP -D_GLFW_X11 -fPIC -DSUPPORT_FILEFORMAT_FLAC=1`,
+         per `../musializer/src_build/nob_linux.c:98-150`), and linked under
+         `raylib`/`raylib-sys` 5.5.1 in `nobuild` mode. Link deps are only
+         `-lm -ldl -lpthread`, matching the oracle: GLFW under `_GLFW_X11`
+         `dlopen`s X11 and GL rather than linking them.
+- [INFO] The version-coupling argument for option 2 turned out to be *stronger*
+         than the plan assumed: **`raylib-sys` 5.5.1 vendors raylib 5.6-dev**, not
+         5.5.0. So option 1 would have silently put a different raylib under the
+         renderer than the parity oracle uses.
+- [INFO] The feared bindings/ABI mismatch is **not** a problem, and this was
+         checked rather than hoped: the 5.5.0 and 5.6-dev headers differ by 18
+         lines — a version string, one whitespace change, and one added function
+         (`GetKeyName`). `rlgl.h` differs only in comments and one implementation
+         bugfix; `rcamera.h` and `rgestures.h` are identical. No struct layout or
+         signature changes, so bindings generated from 5.6-dev headers are
+         ABI-compatible with a 5.5.0 library. `GetKeyName` is simply never called.
+- [HURDLE] **bindgen cannot be switched off**, so the "pregenerated bindings"
+         idea does not work. The safe `raylib` crate declares `raylib-sys`
+         without `default-features = false` (`raylib-5.5.1/Cargo.toml:87-88`), and
+         Cargo unifies features, so `bindgen` is on whenever `raylib` is in the
+         graph. Setting `default-features = false` on our own entry does not undo
+         it (verified with `cargo tree -e features -p raylib-sys`).
+- [HURDLE] Ubuntu's `libclang1-21` ships `libclang.so` **without clang's resource
+         directory**, so bindgen fails with `'stdarg.h' file not found`. Fixed
+         with five ~12-line shim headers in `vendor/clang-builtin-shim/`, put on
+         `CPATH` by `.cargo/config.toml`. `raylib-5-5-link/build.rs` removes
+         `CPATH` before compiling raylib so the shims never shadow GCC's real
+         headers. Rejected alternative: `BINDGEN_EXTRA_CLANG_ARGS` pointing at
+         `/usr/lib/gcc/x86_64-linux-gnu/15/include`, which works but breaks on the
+         next GCC bump with an error that does not mention GCC. Installing
+         `clang`/`libclang-dev` is the better fix on a machine where root is
+         available. See `vendor/clang-builtin-shim/README.md`.
+- [INFO] `cargo build` therefore needs **no** environment setup. Verified from a
+         deleted `target/`: 8.2 s.
+
+#### Phase 1 gate — cleared with evidence
+
+- [DONE] **P0 and P1 reached.** `tools/headless_check.sh` runs the binary on a
+         private Xvfb `:77` with `WAYLAND_DISPLAY` unset and `PULSE_SERVER` pointed
+         at an unresolvable path, per `../musializer/tools/UI_REVIEW.md`. Result:
+         window opened, audio device initialized on miniaudio/ALSA (**not** the
+         operator's PulseAudio), 190,560 audio frames through the callback bridge,
+         104 bands, peak 0.95, clean shutdown, exit 0.
+- [DONE] Reactivity was checked, not asserted. Captures at three playhead
+         positions against a synthetic 110→3500 Hz sweep put the peak band at
+         **36 (398 Hz) → 55 (1297 Hz) → 66 (2509 Hz)**, moving monotonically with
+         the playhead. A picture alone would not have distinguished this from a
+         stuck analyzer, which is why the report prints the peak-band range and
+         the verdict separates "drew something" from "tracked the sweep".
+- [INFO] The capture harness improves on the C one in one place: it waits for the
+         X socket instead of `sleep 6`. `UI_REVIEW.md` flags the blind sleep as
+         its weak point.
+- [INFO] `take_screenshot` is unusable for a path with directories: raylib's
+         `TakeScreenshot` runs the argument through `GetFileName` and writes to
+         the working directory, so `build/x/y.png` lands in the repository root.
+         Use `LoadImageFromScreen` + `ExportImage`.
+
+#### Parity findings worth knowing before porting
+
+- [INFO] **The analyzer reads the left channel only.** `analyzer_configure`
+         (`../musializer/src/plug.c:438-449`) uses
+         `AUDIO_ANALYZER_CHANNEL_SELECT` with `selected_channel = 0`, never
+         `MIX`. The slice originally mixed both channels; corrected. A mix looks
+         more principled and is a visible parity break for anything panned
+         off-centre. Reproduced in `AudioAnalyzerConfig::preview`.
+- [INFO] **The analyzer's sample rate is the source file's, not the device's.**
+         `plug.c:660` passes `track->music.stream.sampleRate`, but raylib invokes
+         stream processors *after* resampling to the device rate. On a 44.1 kHz
+         file with a 48 kHz device — the common case — every frequency label the
+         analyzer derives is skewed by 44100/48000. This is reproduced
+         deliberately. It is a suspected oracle bug; **do not fix it in
+         `../musializer`**, and do not "correct" it here without the human's call.
+         `analyzer_configure(48000, 2)` is the no-track default
+         (`plug.c:8368,8399`).
+- [INFO] Band values are **normalized per frame** by the frame's own maximum
+         (`audio_analyzer.c:204`, with `maximum` seeded at 1.0), so the loudest
+         band always reads ~1.0 regardless of absolute level. A scene cannot read
+         loudness from `bands`; that is what `rms`/`peak` on the frame are for.
+         A test pins this so nobody "fixes" it.
+- [INFO] The FFT's twiddle factor uses `+2π/length` (`audio_analyzer.c:47-48`),
+         the inverse-transform sign convention. Harmless downstream because only
+         `re² + im²` is read, and reproduced literally.
+- [INFO] `raylib`'s own `attach_audio_stream_processor_to_music` was rejected on
+         purpose: it routes every callback through a `LazyLock<Mutex<_>>` slot
+         table, and taking a mutex on the audio thread violates the
+         "callbacks do not block" invariant. `runtime::audio_bridge` calls
+         `AttachAudioStreamProcessor` directly with a bare `extern "C"` callback
+         over a lock-free SPSC ring. raylib 5.5's `AudioCallback` has no user-data
+         pointer, which is why the ring must live in a `static` — the same shape
+         the C uses (`plug.c:531-536`).
+
+#### Shared contracts — landed
+
+- [DONE] All six rows of "Shared contracts land first" now exist and compile:
+         `core::scene` (`SceneId`, `SceneFrame`, `SceneAudioFrame`,
+         `SemanticFrame`, `LyricCue`, `SceneState`, `SceneDescriptor`,
+         `SceneInstance`), `core::scene::settings` (all ten scenes' descriptor
+         tables with exact C bounds/defaults, plus snapshot legacy-count
+         compatibility), `core::scene::routes` (sources, curves, mapping
+         evaluation, route table), `core::scene::events` (records, merged view,
+         semantic id namespacing), `runtime::draw` (the `tube` primitive and the
+         non-owning default-texture wrappers). The `track.h` row is **not** done —
+         see the open question below.
+- [INFO] The C `Scene_Descriptor` splits into two halves in Rust: `SceneState`
+         (deterministic `update`, in `musializer-core`, headlessly testable) and a
+         drawing function in `musializer-app` where raylib is allowed. Spectrum is
+         a `StatelessScene` because the C sets no `update` for it.
+- [INFO] Agent A's `audio_analyzer.c` and `sample_ring.c` were **already ported**
+         by the integration owner because the Phase 1 gate needed them. They are
+         faithful line-by-line ports with 20 tests. Agent A's job on those two is
+         to verify against the C suite and port the remaining C tests, not to
+         rewrite them.
+- [HURDLE] `scene_routes` cannot be finished until Agent B lands the `.musi`
+         model: `scene_routes_export_mappings`/`import_mappings` and
+         `scene_route_parse_spec` need the project codec's canonical names. The
+         evaluation semantics (which the frame loop, the Tune readout and the
+         transfer graph must share) are done and tested; the persistence half is
+         Agent B's to complete against this module.
+
+#### Open questions for the human
+
+- [INFO] `track.h` → `app::Workspace` was deferred rather than guessed. The
+         track model touches Agent A (waveform, atlas preprocessing), B (project
+         binding) and F (tracks panel), and inventing it before the `.musi` model
+         exists would mean Agent B reshaping it immediately. It is scheduled for
+         after Agent B's first checkpoint.
+- [INFO] The `.musi` fixture plan needs a decision. **There are no `.musi`
+         fixtures in the frozen tree to copy** — zero in git, zero outside
+         `build/`; the C suite builds compatibility fixtures inline by serializing
+         a project and then textually deleting JSON blocks. So `fixtures/musi/` is
+         deliberately empty and Agent B must generate fixtures the same way. If
+         you have saved projects you would like used as real-world compatibility
+         cases, say so and they can be reduced to synthetic equivalents.
+- [INFO] Two schema asymmetries found in the inventory that look deliberate but
+         are worth confirming: `caption_font_asset.licence_sha256` uses
+         `^([0-9a-f]{64})?$` rather than the shared `$defs/sha256`, allowing an
+         empty licence hash for a legitimately unlicensed user-disk import; and
+         every schema `maxLength` counts **UTF-8 bytes**, not code points, so a
+         Rust `chars().count()` check would accept documents the C rejects.
+- [INFO] The version string exists three times in three spellings:
+         `musializer 2026.07`, `Musializer 2026.07`, `musializer-2026.07`. The
+         Rust build currently prints `musializer-rs <crate version>` and does not
+         claim parity with any of them. Tell us which spelling is canonical when
+         the CLI is finished.
