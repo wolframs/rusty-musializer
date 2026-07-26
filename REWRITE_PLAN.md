@@ -1059,6 +1059,45 @@ Format of a note entry:
          transfer graph must share) are done and tested; the persistence half is
          Agent B's to complete against this module.
 
+#### Differential harnesses against the frozen C
+
+- [DONE] Four harnesses in `tools/differential_*.sh`, each compiling the relevant
+         `../musializer/src/*.c` with output into our `build/`. The oracle was
+         verified clean at `9300af9` after every run. Results: analyzer 104 bands
+         to 4e-10; scene settings all 81 descriptors exact; route evaluation 380
+         rows exact; event merge 12 cases exact. Copy this pattern for every pure
+         module — a number to compare beats a paragraph of reasoning.
+- [HURDLE] **`core::scene::events` was wrong on first write, and the differential
+         harness is what caught it.** It had been written from
+         `scene_event_merge.h`'s comment rather than the `.c`, and got *seven*
+         things wrong. All are now fixed and pinned by tests:
+         1. Semantic ids are namespaced by **XOR** with `0x8000000000000000`, not
+            OR. XOR is one-to-one; OR maps every id that already has the high bit
+            set onto itself, so two distinct semantic ids could collapse into one.
+         2. A qualified id of **zero is avoided**, becoming `lane_bit | 1`.
+         3. There is a **bounded collision probe**: if the qualified id is already
+            used, it advances by the golden-ratio constant
+            `0x9E3779B97F4A7C15`, skipping zero.
+         4. The canonical sort key is **`(timestamp, type, id)`** —
+            `type` sits *between* the other two (`scene_event_merge.c:6-17`).
+            Omitting it reorders events sharing a timestamp.
+         5. A record's **`id` must be non-zero** (`event_timeline.c:35`).
+         6. A record's **`value_count` must be at least 1** — an event with no
+            values is malformed (`event_timeline.c:37`).
+         7. An **unknown `event_type` is rejected, not carried through**. The
+            first draft deliberately passed unknown types along on the theory that
+            dropping them would be worse; the oracle simply rejects them
+            (`event_timeline.c:36`). That was inventing tolerance the oracle does
+            not have.
+         Also: each input lane must **already be strictly sorted with unique
+         ids** (`event_timeline_validate`, `event_timeline.c:46-65`); the merge
+         validates and rejects rather than sorting inputs into shape.
+- [INFO] The lesson for every agent: **read the implementation, not the header
+         comment.** Six of those seven errors came from trusting a well-written
+         comment that described intent accurately but omitted the edge cases. The
+         plan already says the code and its tests are authoritative and documents
+         are not; this is what that costs when ignored.
+
 #### Open questions for the human
 
 - [INFO] `track.h` → `app::Workspace` was deferred rather than guessed. The
