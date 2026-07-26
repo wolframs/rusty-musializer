@@ -1050,6 +1050,28 @@ mod tests {
         assert_eq!(wait_action(true, 0, false), WaitAction::Complete);
     }
 
+    /// **Differential against the frozen C, not against this implementation.**
+    ///
+    /// Produced by compiling `../musializer/src/render_export.c` unmodified into a
+    /// scratch harness *outside both repositories*. A 60 s track at 44.1 kHz and
+    /// 30 fps, which is the case where every rounding decision in the module is
+    /// simultaneously non-trivial: the frame count is exact, the last cursor is
+    /// not on a sample boundary, the window straddles two frames at both ends, and
+    /// the duration text needs all nine digits.
+    #[test]
+    fn matches_the_c_oracle_on_a_real_transport() {
+        assert_eq!(total_frames(2_646_000, 44_100, 30), Ok(1_800));
+        assert_eq!(sample_cursor(1_799, 44_100, 30, 2_646_000), Ok(2_644_530));
+        assert_eq!(window_frames(1_800, 30, 12.345, 3.21), Ok(370..467));
+        assert_eq!(
+            transport_duration_text(1_799, 30).unwrap(),
+            "59.966666667",
+            "the frame *before* the end of a 60 s track"
+        );
+        assert_eq!(transport_duration_text(1, 240).unwrap(), "0.004166667");
+        assert_eq!(transport_duration_text(7, 60).unwrap(), "0.116666667");
+    }
+
     /// The user-visible failure text, pinned so a refactor of the enum cannot
     /// silently reword a notice. These are C's strings verbatim
     /// (`render_export.c:105-115`).

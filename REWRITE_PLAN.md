@@ -1084,3 +1084,91 @@ Format of a note entry:
          Rust build currently prints `musializer-rs <crate version>` and does not
          claim parity with any of them. Tell us which spelling is canonical when
          the CLI is finished.
+
+#### Agent A — core audio and timing
+
+- [DONE] All five mapped modules are ported with tests. `musializer-core` went
+         from 101 to 132 passing tests; `cargo fmt`, `cargo clippy --all-targets`
+         and `cargo test` are clean.
+         `audio::beat_tracker` (10 tests) <- `src/beat_tracker.c/.h`;
+         `audio::song_atlas_map` (14) <- `src/song_atlas_map.c/.h`;
+         `timing::render_export` (23) <- `src/render_export.c/.h`;
+         `timing::track_identity` (4) <- `src/track_identity.c/.h`;
+         `timing::track_timeline` (12) <- `src/track_timeline.c/.h`.
+         Every C test case in `tests/test_{beat_tracker,song_atlas_map,
+         render_export,track_identity,track_timeline}.c` is represented.
+- [DONE] **`analyzer.rs` and `sample_ring.rs` verified, not rewritten.** Eight
+         assertions from `tests/test_audio_analyzer.c` and four from
+         `test_sample_ring.c` had no Rust counterpart; they are appended as
+         `mod c_suite_parity` in each file (taking those two modules from 11+5 to
+         19+10 tests) and **all pass unmodified**. No
+         divergence found in either port. The valuable ones a later session should
+         not delete: antiphase `Mix` cancelling to *exact* zero
+         (`test_audio_analyzer.c:81-104`, sharper than a silent-channel test), the
+         `8*dt`/`3*dt` smoothing coefficients pinned directly
+         (`:106-124`), and the circular-window identity where silence-then-tone
+         must equal tone alone (`:143-164`, the only cover for the ring
+         wraparound in `prepare_window`).
+- [DONE] **Differential tests against the compiled C, not just behavioural
+         ones.** `../musializer/src/{song_atlas_map,audio_analyzer,track_timeline,
+         beat_tracker,render_export}.c` were compiled *unmodified* with `gcc` into
+         a scratch harness under `/tmp` (nothing written to the oracle; its tree
+         is still clean at `9300af9`), and its `%.9g` output is pinned as literals
+         in four tests named `matches_the_c_oracle_*`. The atlas one compares 72
+         slices x 28 bands x 3 scalars for a 1800 Hz mono sweep and a 440 Hz
+         stereo one and agrees to < 1e-6. To reproduce, compile those five
+         `.c` files plus a `main` into a directory outside both repositories.
+         This also independently validates the already-landed analyzer port,
+         since the atlas drives it.
+- [INFO] **The Song Atlas spatial blur is in place, and it is asymmetric.**
+         `atlas_map_smooth` writes `bands[band]` inside the same loop that reads
+         `bands[band - 1]` (`song_atlas_map.c:89` vs `:102`), so the low-frequency
+         neighbour is already filtered and the high-frequency one is not. It looks
+         like a missing scratch buffer. Reproduced deliberately; the differential
+         test is what pins it, because a "corrected" symmetric blur still produces
+         a plausible terrain. Do not fix it in the oracle.
+- [INFO] **`Song_Atlas_Slice.rms` is a mean square during the measuring pass**
+         (`song_atlas_map.c:208`), not an RMS. The square root arrives later and
+         is applied to the *ratio* against the loudest slice
+         (`:115-116`), so the published value is
+         `sqrt(meansquare_i/meansquare_max)` — a relative loudness in [0,1] that
+         is not comparable across tracks. The misleading field name is kept.
+- [INFO] **A third analyzer-configuration asymmetry, beyond the two Session 1
+         recorded.** The offline atlas pass uses `AUDIO_ANALYZER_CHANNEL_MIX`
+         (`song_atlas_map.c:162`) while the live preview uses `CHANNEL_SELECT`
+         channel 0 (`plug.c:438-449`). The same track therefore has a different
+         spectrum in the Song Atlas terrain than in every other scene. Agent C
+         should not "unify" these.
+- [INFO] `render_export_total_frames` reports `ERROR_FRAME_RATE` for a zero
+         `frame_count` *and* for a zero `sample_rate` (`render_export.c:123`),
+         neither of which is a frame-rate problem. Reproduced. If Agent F matches
+         notice text against error classes, this is the one that will look wrong.
+- [INFO] Three C error classes are unrepresentable in Rust and are therefore
+         untestable rather than untested: out-of-range enum arguments to the
+         render-config setters (a Rust `enum` cannot hold one, so the setters are
+         infallible), and `ERROR_BUFFER` from the path and duration helpers now
+         that they return `String`. `RenderExportError::OutputBufferTooSmall` is
+         kept anyway, with a test pinning all eight message strings verbatim,
+         because `render_export_result_string` (`render_export.c:105-115`) is
+         user-visible text Agent F will want.
+- [INFO] `sample_ring_init` also rejects `capacity > SIZE_MAX/2`
+         (`sample_ring.c:8`), which `SampleRing::with_capacity` does not. Left
+         alone: on a 64-bit host the only power of two above `SIZE_MAX/2` is
+         `2^63`, and allocating `2^63` frames aborts in the allocator long before
+         the check could matter. Noted in the file rather than fixed.
+- [INFO] Two shape decisions a later session should not re-litigate.
+         `build_waveform` and `SongAtlasMap::build` derive the frame count from
+         `samples.len() / channel_count` instead of taking it separately, which
+         makes C's `frame_count > SIZE_MAX/channel_count` overflow guards
+         unrepresentable rather than dropped. `render_export::window_frames`
+         returns a `Range<u64>` because C's start/end pair is already half-open.
+- [HURDLE] Nothing blocked, but one small ask for the **integration owner**:
+         `audio::analyzer::AnalyzerError` derives neither `Clone` nor `Copy`, so
+         `SongAtlasMapError` — which wraps it with `#[from]` — cannot either. Two
+         plain derives on `AnalyzerError` would fix it. Not done here because
+         `analyzer.rs` is not this agent's file outside its `#[cfg(test)]` blocks.
+- [INFO] `track.h` -> `app::Workspace` is still deferred (see the open questions
+         above) and Agent A did **not** invent it. The waveform and atlas
+         preprocessing it needs are free functions over `&[f32]` plus owned
+         `Waveform`/`SongAtlasMap` values, so whoever lands the track model can
+         hold those without either side reshaping the other.

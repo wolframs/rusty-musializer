@@ -365,6 +365,65 @@ mod tests {
         assert!(early > late);
     }
 
+    /// **Differential against the frozen C, not against this implementation.**
+    ///
+    /// Produced by compiling `../musializer/src/beat_tracker.c` unmodified into a
+    /// scratch harness *outside both repositories* and printing `%.9g` of the
+    /// phase every fifth step: a 20 ms tick with onsets at steps 0, 24, and 35,
+    /// strength 0.5. Step 24 is a credible 0.48 s interval and is learned; step 35
+    /// is 0.22 s later and must be rejected without moving the anchor.
+    ///
+    /// The `time` accumulator is deliberately a running `+= 0.02` rather than
+    /// `step as f64 * 0.02`, because the C harness accumulated too and the drift
+    /// is visible in the ninth digit.
+    // `%.9g` output pasted verbatim; see the note in
+    // `track_timeline::tests::matches_the_c_oracle_bin_for_bin`.
+    #[allow(clippy::excessive_precision)]
+    #[test]
+    fn matches_the_c_oracle_step_for_step() {
+        #[rustfmt::skip]
+        let expected: [(u32, f32); 8] = [
+            ( 0, 0.0),
+            ( 5, 0.200_000_003),
+            (10, 0.400_000_006),
+            (15, 0.600_000_024),
+            (20, 0.800_000_012),
+            (25, 0.040_683_481),
+            (30, 0.244_100_899),
+            (35, 0.447_518_319),
+        ];
+
+        let mut tracker = BeatTracker::new();
+        let mut time = 0.0f64;
+        let mut observed = Vec::new();
+        for step in 0..40u32 {
+            let onset = step % 24 == 0 || step == 35;
+            let phase = tracker
+                .update(time, onset, 0.5)
+                .expect("every step is accepted");
+            if step % 5 == 0 {
+                observed.push((step, phase));
+            }
+            time += 0.02;
+        }
+
+        assert_eq!(observed.len(), expected.len());
+        for ((step, phase), (expected_step, expected_phase)) in observed.into_iter().zip(expected) {
+            assert_eq!(step, expected_step);
+            assert!(
+                (phase - expected_phase).abs() < 1.0e-7,
+                "step {step} phase: {phase} vs C's {expected_phase}"
+            );
+        }
+        // 0.5 + (0.48 - 0.5)*0.42, and only the step-24 onset was credible.
+        assert!(
+            (tracker.interval_seconds() - 0.491_600_000_000_000_04).abs() < 1.0e-15,
+            "{}",
+            tracker.interval_seconds()
+        );
+        assert_eq!(tracker.learned_intervals(), 1);
+    }
+
     /// Octave folding is what stops a detector that fires twice per beat from
     /// halving the reported tempo.
     #[test]

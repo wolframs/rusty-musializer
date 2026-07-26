@@ -327,6 +327,65 @@ mod tests {
         assert_eq!(bins[1].maximum, 1.0);
     }
 
+    /// **Differential against the frozen C, not against this implementation.**
+    ///
+    /// Produced by compiling `../musializer/src/track_timeline.c` unmodified into
+    /// a scratch harness *outside both repositories* and printing `%.9g` per
+    /// field: 1000 frames of a 50 Hz stereo sine at 8 kHz, amplitude 0.8, into 16
+    /// bins. 1000 does not divide by 16, so this exercises the remainder
+    /// distribution as well as the envelope and the normalization.
+    // The literals below are the C's `%.9g` output pasted verbatim, which is more
+    // digits than `f32` can hold. Truncating them to fit would replace the
+    // oracle's value with a value derived from this implementation's rounding,
+    // which is exactly what a differential test must not do.
+    #[allow(clippy::excessive_precision)]
+    #[test]
+    fn matches_the_c_oracle_bin_for_bin() {
+        let (frames, channels) = (1000usize, 2usize);
+        let mut samples = vec![0.0f32; frames * channels];
+        for frame in 0..frames {
+            let phase = 2.0 * std::f64::consts::PI * 50.0 * frame as f64 / 8000.0;
+            let value = 0.8 * (phase as f32).sin();
+            samples[frame * channels] = value;
+            samples[frame * channels + 1] = value;
+        }
+
+        #[rustfmt::skip]
+        let expected: [(f32, f32); 16] = [
+            ( 0.0,            1.0),
+            (-1.0,            0.649_448_037),
+            (-0.980_785_251,  0.852_640_212),
+            (-0.346_116_781,  1.0),
+            (-1.0,            0.0),
+            (-0.309_016_794,  1.0),
+            (-0.987_688_243,  0.831_469_774),
+            (-1.0,            0.678_800_642),
+            (-0.039_259_731,  1.0),
+            (-1.0,            0.0),
+            (-0.555_569_470,  1.0),
+            (-0.908_142_865,  0.962_455_511),
+            (-1.0,            0.418_658_972),
+            ( 0.0,            1.0),
+            (-1.0,            0.195_092_037),
+            (-0.785_317_957,  0.999_228_954),
+        ];
+
+        let mut bins = [Bin::default(); 16];
+        assert_eq!(build_waveform(&samples, channels, &mut bins), 16);
+        for (index, (minimum, maximum)) in expected.into_iter().enumerate() {
+            assert!(
+                (bins[index].minimum - minimum).abs() < 1.0e-6,
+                "bin {index} minimum: {} vs C's {minimum}",
+                bins[index].minimum
+            );
+            assert!(
+                (bins[index].maximum - maximum).abs() < 1.0e-6,
+                "bin {index} maximum: {} vs C's {maximum}",
+                bins[index].maximum
+            );
+        }
+    }
+
     #[test]
     fn relative_seek_is_exact_and_clamped() {
         assert!((seek_relative(12.5, 0.1, 60.0) - 12.6).abs() < 1.0e-7);

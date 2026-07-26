@@ -299,3 +299,123 @@ mod tests {
         assert_eq!(sent + ring.dropped(), 100_000);
     }
 }
+
+/// The cases from `../musializer/tests/test_sample_ring.c` that the port above
+/// did not already cover.
+///
+/// **Appended by Agent A as verification, not as a rewrite.** All pass
+/// unmodified; no divergence was found. C's `NULL`-pointer arms
+/// (`test_sample_ring.c:8-11, 61-62`) are replaced by their reachable Rust
+/// analogues — a zero capacity and an empty slice.
+///
+/// One genuine divergence exists and is *not* testable: C's `sample_ring_init`
+/// also rejects `capacity > SIZE_MAX/2` (`sample_ring.c:8`), which
+/// [`SampleRing::with_capacity`] does not. It is unreachable — on a 64-bit host
+/// the only power of two above `SIZE_MAX/2` is `2^63`, and allocating `2^63`
+/// frames would abort in the allocator long before the check mattered.
+#[cfg(test)]
+mod c_suite_parity {
+    use super::*;
+
+    /// `test_sample_ring.c:12-14`. A fresh ring reports its capacity and no
+    /// queued frames.
+    #[test]
+    fn a_new_ring_reports_its_capacity_and_is_empty() {
+        let ring = SampleRing::with_capacity(4).unwrap();
+        assert_eq!(ring.capacity(), 4);
+        assert_eq!(ring.len(), 0);
+        assert!(ring.is_empty());
+        assert_eq!(ring.dropped(), 0);
+        assert_eq!(ring.pop(), None);
+    }
+
+    /// `test_sample_ring.c:16-43`. FIFO order has to survive the index wrapping
+    /// past the backing store's end, which only happens after the ring has been
+    /// filled, partially drained, and refilled.
+    #[test]
+    fn wraparound_preserves_fifo_order() {
+        let ring = SampleRing::with_capacity(4).unwrap();
+        for i in 0..4u32 {
+            assert!(ring.push(SampleFrame::new(i as f32, (i + 10) as f32)));
+        }
+        assert_eq!(ring.len(), 4);
+        assert!(!ring.push(SampleFrame::new(99.0, 99.0)));
+        assert_eq!(ring.dropped(), 1);
+
+        assert_eq!(ring.pop(), Some(SampleFrame::new(0.0, 10.0)));
+        assert_eq!(ring.pop(), Some(SampleFrame::new(1.0, 11.0)));
+        // These two land in the slots the popped frames vacated.
+        assert!(ring.push(SampleFrame::new(4.0, 14.0)));
+        assert!(ring.push(SampleFrame::new(5.0, 15.0)));
+
+        for expected in 2..6u32 {
+            assert_eq!(
+                ring.pop(),
+                Some(SampleFrame::new(expected as f32, (expected + 10) as f32)),
+                "frame {expected} came out of order"
+            );
+        }
+        assert_eq!(ring.pop(), None);
+        assert_eq!(ring.len(), 0);
+    }
+
+    /// `test_sample_ring.c:45-64`. `pop_many` was untested, and the drop
+    /// accounting is checked at a different capacity than the existing suite uses
+    /// so an off-by-one that happens to work at capacity 2 cannot hide.
+    #[test]
+    fn bulk_operations_round_trip_and_report_every_dropped_frame() {
+        let ring = SampleRing::with_capacity(4).unwrap();
+        let input: Vec<SampleFrame> = (0..6u32)
+            .map(|i| SampleFrame::new(i as f32, -(i as f32)))
+            .collect();
+
+        assert_eq!(ring.push_many(&input), 4);
+        assert_eq!(ring.dropped(), 2, "two frames did not fit");
+
+        let mut output = [SampleFrame::SILENT; 6];
+        assert_eq!(ring.pop_many(&mut output), 4);
+        for i in 0..4 {
+            assert_eq!(output[i], input[i], "frame {i}");
+        }
+        // The tail of the destination is untouched by a short pop.
+        assert_eq!(output[4], SampleFrame::SILENT);
+        assert_eq!(output[5], SampleFrame::SILENT);
+
+        // The reachable analogue of C's NULL arms: nothing in, nothing out, and
+        // no accounting change.
+        assert_eq!(ring.push_many(&[]), 0);
+        assert_eq!(ring.pop_many(&mut []), 0);
+        assert_eq!(ring.dropped(), 2);
+    }
+
+    /// `test_sample_ring.c:66-79`. Reset clears the drop counter too, which is
+    /// what makes it usable between tracks rather than only at construction.
+    #[test]
+    fn reset_clears_indices_and_diagnostics() {
+        let ring = SampleRing::with_capacity(2).unwrap();
+        assert!(ring.push(SampleFrame::new(1.0, 2.0)));
+        assert!(ring.push(SampleFrame::new(3.0, 4.0)));
+        assert!(!ring.push(SampleFrame::new(5.0, 6.0)));
+        assert_eq!(ring.dropped(), 1);
+
+        ring.reset();
+        assert_eq!(ring.len(), 0);
+        assert_eq!(ring.dropped(), 0);
+        assert_eq!(
+            ring.pop(),
+            None,
+            "reset discards queued audio, it does not keep it"
+        );
+    }
+
+    /// Not in the C suite. `mono()` is the reduction the analyzer bridge applies
+    /// to every frame that comes off this ring, so it is worth pinning that it is
+    /// an average and not a sum.
+    #[test]
+    fn a_frames_mono_reduction_is_an_average() {
+        assert_eq!(SampleFrame::new(1.0, 1.0).mono(), 1.0);
+        assert_eq!(SampleFrame::new(1.0, -1.0).mono(), 0.0);
+        assert_eq!(SampleFrame::new(0.5, 0.0).mono(), 0.25);
+        assert_eq!(SampleFrame::SILENT.mono(), 0.0);
+    }
+}
