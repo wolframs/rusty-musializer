@@ -1,0 +1,51 @@
+# Rust build artifacts
+/target/
+**/target/
+*.rs.bk
+*.pdb
+
+# Vendored raylib build output (source is tracked, artifacts are not)
+/vendor/raylib-5.5/**/*.o
+/vendor/raylib-5.5/**/*.a
+/vendor/raylib-5.5/**/*.so
+/vendor/raylib-5.5/**/*.so.*
+/build/
+
+# Headless UI review artifacts (see tools/ui_capture.sh, UI_REVIEW.md)
+/build/ui-review/
+*.png.tmp
+
+# Audio, video, and analysis caches must never be committed
+music/
+*.mp3
+*.ogg
+*.flac
+*.qoa
+*.mp4
+*.mkv
+*.webm
+*.wav
+!fixtures/**/*.wav
+!crates/**/fixtures/**/*.wav
+!tests/fixtures/**/*.wav
+
+# Local credentials
+.env
+.env.*
+!.env.example
+
+# Analysis caches and staged model output
+*.analysis.json
+/caches/
+
+# Local coding-agent instructions that are not this repo's tracked guide
+/.hermes/
+
+# Python helper bytecode
+__pycache__/
+*.py[cod]
+
+# Editor scratch
+*.swp
+*~
+.DS_Store
