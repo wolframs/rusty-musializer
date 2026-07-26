@@ -337,15 +337,20 @@ impl RouteTable {
             return Err(RouteError::Invalid);
         }
         let routes = &mut self.scenes[scene.index()];
+        // Capacity before duplicates, matching `scene_route_table_add`'s
+        // precedence (`scene_routes.c:65-78`). C returns a bare `false` either
+        // way so the order is unobservable there, but these errors are richer
+        // than a boolean and keeping the precedence identical means mapping them
+        // back to one can never disagree with the oracle.
+        if routes.items.len() >= ROUTES_PER_SCENE {
+            return Err(RouteError::Full);
+        }
         if routes
             .items
             .iter()
             .any(|existing| existing.parameter == route.parameter)
         {
             return Err(RouteError::Duplicate);
-        }
-        if routes.items.len() >= ROUTES_PER_SCENE {
-            return Err(RouteError::Full);
         }
         routes.items.push(route);
         Ok(())
