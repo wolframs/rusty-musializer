@@ -728,3 +728,296 @@ mod tests {
         assert_eq!(analyzer.push_interleaved(&[0.1, 0.2, 0.3, 0.4, 0.5]), 2);
     }
 }
+
+/// The cases from `../musializer/tests/test_audio_analyzer.c` that the port above
+/// did not already cover.
+///
+/// **Appended by Agent A as verification, not as a rewrite.** The implementation
+/// was already landed by the integration owner for the Phase 1 gate; this module
+/// exists because a port is only verified against the suite that constrained the
+/// original, and eight of the C suite's assertions had no Rust counterpart. All of
+/// them pass unmodified, so no divergence was found.
+///
+/// Two C assertions are deliberately absent because Rust cannot express them:
+/// `audio_analyzer_init` with `(AudioAnalyzerChannelMode)99`
+/// (`test_audio_analyzer.c:33`) and the `NULL`-pointer push arms
+/// (`test_audio_analyzer.c:36-37`), whose nearest analogue — an empty slice — is
+/// covered below.
+#[cfg(test)]
+mod c_suite_parity {
+    use super::*;
+
+    const TEST_SAMPLE_RATE: u32 = 44_100;
+
+    fn mono_analyzer() -> Box<AudioAnalyzer> {
+        AudioAnalyzer::boxed(AudioAnalyzerConfig {
+            sample_rate: TEST_SAMPLE_RATE,
+            channel_count: 1,
+            channel_mode: ChannelMode::Mix,
+        })
+        .unwrap()
+    }
+
+    /// Mirrors `make_sine` (`test_audio_analyzer.c:9-15`), including its `tau`
+    /// literal and f32 arithmetic.
+    fn make_sine(count: usize, frequency: f32, amplitude: f32) -> Vec<f32> {
+        use std::f32::consts::TAU;
+        (0..count)
+            .map(|i| amplitude * (TAU * frequency * i as f32 / TEST_SAMPLE_RATE as f32).sin())
+            .collect()
+    }
+
+    fn strongest_band(spectrum: &SpectrumView<'_>) -> usize {
+        (1..spectrum.band_count()).fold(0, |strongest, i| {
+            if spectrum.logarithmic[i] > spectrum.logarithmic[strongest] {
+                i
+            } else {
+                strongest
+            }
+        })
+    }
+
+    /// `test_audio_analyzer.c:36-40`. An empty push is the reachable analogue of
+    /// C's `NULL` push, and `bin_frequency` past Nyquist reads zero rather than
+    /// extrapolating a frequency the transform does not contain.
+    #[test]
+    fn empty_pushes_consume_nothing_and_bins_past_nyquist_read_zero() {
+        let mut analyzer =
+            AudioAnalyzer::boxed(AudioAnalyzerConfig::stereo(TEST_SAMPLE_RATE)).unwrap();
+        assert_eq!(analyzer.push_mono(&[]), 0);
+        assert_eq!(analyzer.push_interleaved(&[]), 0);
+        assert_eq!(analyzer.bin_frequency(FFT_SIZE), 0.0);
+        assert_eq!(analyzer.bin_frequency(FFT_SIZE / 2 + 1), 0.0);
+        // The Nyquist bin itself is valid and is the largest one that is.
+        assert!(analyzer.bin_frequency(FFT_SIZE / 2) > 0.0);
+        assert_eq!(analyzer.bin_frequency(0), 0.0, "bin 0 is DC, which is 0 Hz");
+    }
+
+    /// `test_audio_analyzer.c:43-60`. One sample in an 8192-point window is
+    /// 8191 zeros of padding, and the band layout must still resolve.
+    #[test]
+    fn a_single_sample_still_produces_a_stable_zeroed_spectrum() {
+        let mut analyzer = mono_analyzer();
+        assert_eq!(analyzer.push_mono(&[0.0]), 1);
+        assert!(analyzer.analyze(1.0 / 60.0));
+
+        let spectrum = analyzer.spectrum();
+        assert!(spectrum.band_count() > 0);
+        assert!(spectrum.band_count() <= MAX_BANDS);
+        for i in 0..spectrum.band_count() {
+            assert_eq!(spectrum.logarithmic[i], 0.0, "band {i}");
+            assert_eq!(spectrum.smooth[i], 0.0, "band {i}");
+            assert_eq!(spectrum.smear[i], 0.0, "band {i}");
+        }
+        assert!(analyzer.settled(1.0e-3));
+    }
+
+    /// `test_audio_analyzer.c:62-79`. The existing suite drives the smoothing to
+    /// convergence over 400 frames; this pins the *single-frame* normalization,
+    /// which is the property the Song Atlas offline pass depends on because it
+    /// reads `logarithmic` after exactly one `analyze`.
+    #[test]
+    fn a_tone_normalizes_to_one_after_a_single_analyze() {
+        let mut analyzer = mono_analyzer();
+        let samples = make_sine(FFT_SIZE, 440.0, 0.8);
+        assert_eq!(analyzer.push_mono(&samples), FFT_SIZE);
+        assert!(analyzer.analyze(1.0 / 60.0));
+
+        let spectrum = analyzer.spectrum();
+        let band = strongest_band(&spectrum);
+        let lower = analyzer.bin_frequency(spectrum.band_first_bin[band] as usize);
+        let upper = analyzer.bin_frequency(spectrum.band_end_bin[band] as usize);
+        assert!(lower <= 440.0, "band starts at {lower} Hz");
+        assert!(upper >= 440.0, "band ends at {upper} Hz");
+        assert!(
+            spectrum.logarithmic[band] > 0.99,
+            "per-frame normalization pins the peak band at 1.0, got {}",
+            spectrum.logarithmic[band]
+        );
+    }
+
+    /// `test_audio_analyzer.c:81-104`, and the sharpest test in the C suite.
+    ///
+    /// With `left == -right`, `Mix` cancels to *exact* silence while `Select(0)`
+    /// sees the full tone. The existing Rust test uses a silent left channel,
+    /// which distinguishes the two modes but would also pass for several wrong
+    /// reductions; antiphase cancellation only passes for a true average.
+    #[test]
+    fn mixing_antiphase_channels_cancels_while_selecting_one_does_not() {
+        let stereo_config = |mode| AudioAnalyzerConfig {
+            sample_rate: TEST_SAMPLE_RATE,
+            channel_count: 2,
+            channel_mode: mode,
+        };
+        let mut mixed = AudioAnalyzer::boxed(stereo_config(ChannelMode::Mix)).unwrap();
+        let mut selected = AudioAnalyzer::boxed(stereo_config(ChannelMode::Select(0))).unwrap();
+
+        use std::f32::consts::TAU;
+        let mut interleaved = Vec::with_capacity(FFT_SIZE * 2);
+        for i in 0..FFT_SIZE {
+            let value = (TAU * 880.0 * i as f32 / TEST_SAMPLE_RATE as f32).sin();
+            interleaved.push(value);
+            interleaved.push(-value);
+        }
+
+        assert_eq!(mixed.push_interleaved(&interleaved), FFT_SIZE);
+        assert_eq!(selected.push_interleaved(&interleaved), FFT_SIZE);
+        assert!(mixed.analyze(1.0 / 60.0));
+        assert!(selected.analyze(1.0 / 60.0));
+
+        let mixed_spectrum = mixed.spectrum();
+        let selected_spectrum = selected.spectrum();
+        assert_eq!(
+            mixed_spectrum.logarithmic[strongest_band(&mixed_spectrum)],
+            0.0,
+            "an antiphase mix must cancel to exactly nothing"
+        );
+        assert!(
+            selected_spectrum.logarithmic[strongest_band(&selected_spectrum)] > 0.99,
+            "Select(0) sees the tone at full level"
+        );
+    }
+
+    /// `test_audio_analyzer.c:106-124`. Pins the smoothing coefficients
+    /// themselves — `8*dt` for `smooth` and `3*dt` for `smear`
+    /// (`audio_analyzer.c:205-206`) — rather than only their consequences, so a
+    /// "nicer" rate cannot be substituted silently.
+    #[test]
+    fn the_smoothing_recurrence_uses_exactly_eight_and_three_times_dt() {
+        let mut analyzer = mono_analyzer();
+        let mut impulse = vec![0.0f32; FFT_SIZE];
+        impulse[FFT_SIZE / 2] = 1.0;
+        analyzer.push_mono(&impulse);
+        assert!(analyzer.analyze(0.01));
+
+        let (band, logarithmic, smooth, smear) = {
+            let spectrum = analyzer.spectrum();
+            let band = strongest_band(&spectrum);
+            (
+                band,
+                spectrum.logarithmic[band],
+                spectrum.smooth[band],
+                spectrum.smear[band],
+            )
+        };
+
+        // No new samples, so the transform — and therefore `logarithmic` — is
+        // identical on the second pass. Only the smoothing state moves.
+        assert!(analyzer.analyze(0.01));
+        let spectrum = analyzer.spectrum();
+        assert_eq!(
+            spectrum.logarithmic[band], logarithmic,
+            "the same window must produce the same spectrum"
+        );
+        let expected_smooth = smooth + (logarithmic - smooth) * 0.08;
+        assert!(
+            (spectrum.smooth[band] - expected_smooth).abs() < 1.0e-6,
+            "smooth: {} vs 8*dt recurrence {expected_smooth}",
+            spectrum.smooth[band]
+        );
+        let expected_smear = smear + (spectrum.smooth[band] - smear) * 0.03;
+        assert!(
+            (spectrum.smear[band] - expected_smear).abs() < 1.0e-6,
+            "smear: {} vs 3*dt recurrence {expected_smear}",
+            spectrum.smear[band]
+        );
+    }
+
+    /// `test_audio_analyzer.c:126-141`. The existing suite checks a *repeated*
+    /// stall stays bounded; this checks a single 0.5 s step, which is the one that
+    /// would overshoot to 4x without the clamp.
+    #[test]
+    fn one_long_dt_cannot_push_the_first_frame_out_of_the_unit_range() {
+        let mut analyzer = mono_analyzer();
+        analyzer.push_mono(&make_sine(FFT_SIZE, 440.0, 0.9));
+        assert!(analyzer.analyze(0.5));
+        let spectrum = analyzer.spectrum();
+        for i in 0..spectrum.band_count() {
+            assert!(spectrum.smooth[i].is_finite(), "band {i}");
+            assert!(spectrum.smear[i].is_finite(), "band {i}");
+            assert!(
+                (0.0..=1.0).contains(&spectrum.smooth[i]),
+                "band {i} smooth {} escaped [0, 1]",
+                spectrum.smooth[i]
+            );
+            assert!(
+                (0.0..=1.0).contains(&spectrum.smear[i]),
+                "band {i} smear {} escaped [0, 1]",
+                spectrum.smear[i]
+            );
+        }
+    }
+
+    /// `test_audio_analyzer.c:143-164`, and the only test that exercises the ring
+    /// buffer's wraparound in `prepare_window`.
+    ///
+    /// Pushing a full window of silence and *then* the tone must produce a
+    /// bit-identical spectrum to pushing the tone alone: in the first case the
+    /// window is read starting from a wrapped `write_cursor`, in the second from
+    /// index 0. Equality is exact, not approximate — the same samples in the same
+    /// order are the same floats.
+    #[test]
+    fn the_circular_window_keeps_only_the_latest_samples() {
+        let silence = vec![0.0f32; FFT_SIZE];
+        let sine = make_sine(FFT_SIZE, 1_000.0, 0.7);
+
+        let mut direct = mono_analyzer();
+        let mut wrapped = mono_analyzer();
+        direct.push_mono(&sine);
+        wrapped.push_mono(&silence);
+        wrapped.push_mono(&sine);
+        assert!(direct.analyze(1.0 / 30.0));
+        assert!(wrapped.analyze(1.0 / 30.0));
+
+        let a = direct.spectrum();
+        let b = wrapped.spectrum();
+        assert_eq!(a.band_count(), b.band_count());
+        assert_eq!(a.logarithmic, b.logarithmic);
+        assert_eq!(a.smooth, b.smooth);
+        assert_eq!(a.smear, b.smear);
+    }
+
+    /// `test_audio_analyzer.c:166-186`. The export path relies on this: an offline
+    /// render feeds the analyzer a silence tail and needs the bands to actually
+    /// reach zero within a bounded number of frames, not merely approach it.
+    #[test]
+    fn an_offline_silence_tail_reaches_settlement_in_bounded_time() {
+        let mut analyzer = mono_analyzer();
+        let block = (TEST_SAMPLE_RATE / 30) as usize;
+        analyzer.push_mono(&make_sine(FFT_SIZE, 220.0, 0.9));
+        assert!(analyzer.analyze(1.0 / 30.0));
+        assert!(!analyzer.settled(1.0e-3), "a 220 Hz tone is not silence");
+
+        let silence = vec![0.0f32; block];
+        let mut tail_frames = 0usize;
+        while !analyzer.settled(1.0e-3) && tail_frames < 300 {
+            analyzer.push_mono(&silence);
+            assert!(analyzer.analyze(1.0 / 30.0));
+            tail_frames += 1;
+        }
+        assert!(analyzer.settled(1.0e-3), "never settled");
+        assert!(tail_frames > 0);
+        assert!(tail_frames < 300, "took {tail_frames} frames to settle");
+    }
+
+    /// Not in the C suite. `settled` rejects a non-finite or negative epsilon
+    /// (`audio_analyzer.c:228`) rather than treating it as "any tolerance", which
+    /// matters because a caller computing epsilon from a setting could hand it a
+    /// `NaN`.
+    #[test]
+    fn settled_rejects_a_nonsensical_tolerance() {
+        let mut analyzer = mono_analyzer();
+        assert!(analyzer.analyze(0.016));
+        assert!(
+            analyzer.settled(0.0),
+            "silence is settled at zero tolerance"
+        );
+        assert!(!analyzer.settled(f32::NAN));
+        assert!(!analyzer.settled(-0.1));
+        assert!(!analyzer.settled(f32::NEG_INFINITY));
+        assert!(
+            !analyzer.settled(f32::INFINITY),
+            "an infinite tolerance is rejected, not treated as 'always settled'"
+        );
+    }
+}
