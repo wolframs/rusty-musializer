@@ -172,9 +172,11 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
 ## Before implementation work
 
-Read `REWRITE_PLAN.md`. Start with its "Handoff: start here" section, which
-gives the incoming session its first moves in order; then the source ownership
-map, which assigns every C file in the frozen tree to a workstream. The plan
+Read `REWRITE_PLAN.md`. Start with **"COMPLETION PLAN (session 3 onward)"** at the
+bottom — it supersedes the phase sketches for everything that remains, and it
+carries the dependency order, the fan-out agreements, and the definition of done
+every item is held to. The older "Handoff: start here" and the source ownership
+map describe the port that has already happened. The plan
 also carries the frozen commit, the crate boundaries, the invariants that
 survive the rewrite, and a NOTE ENTRIES section at the bottom recording what
 has already been done, decided, or gone wrong.

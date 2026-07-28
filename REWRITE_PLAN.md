@@ -1982,9 +1982,17 @@ than it looks.** Three parts, two of them done:
   a staged copy every frame in `main.rs`, and the inspector already shows a routed
   row in accent with a "routed" readout.
 - [DONE] The **editor state**: `core::ui::route_editor_state` is ported.
-- [TODO] The **editor panel**. There is no UI to create a coupling — the C's
-  `+ Feel`, `+ Scene`, `+ Custom` and `Clear manual` row. State and policy exist;
-  only the drawing and the widget wiring do not.
+- [TODO] The **editor UI** — and it needs no design work, which this note
+  originally got wrong. It is **not** a new panel and it is **not** the toolbar's
+  `+ Feel` / `+ Scene` / `+ Custom` row (those are manual *event* markers, a
+  different feature). The route editor expands **the setting's own row inside the
+  Tune inspector**, replacing its slider zone: `scene_route_editor_area_height`
+  (`plug.c:5517-5523`) is 24+26+40+40+70+26+32+4 px, plus 24 more when the source
+  is `band`, and `route_editor_targets` decides which row hosts it. Editing runs
+  on a draft; Apply commits, Close discards, and a dirty draft participates in the
+  close/context-change guards. All of that is specified in
+  `route_editor_state.h:10-16` and already ported. What is missing is the drawing
+  and the widget wiring, nothing more.
 - [TODO] The **persistence half**. Six functions Agent B left in
   `project::model` belong in `scene::routes`: `mapping_is_constant`,
   `constant_mapping`, `mappings_supported`, `export_mappings`,
@@ -1992,9 +2000,18 @@ than it looks.** Three parts, two of them done:
   constant rule from the route rule lets one parameter persist as both, which is
   an ambiguity the v1 format cannot represent.
 
-So this is roughly "draw a panel over ported state" plus "move six functions",
-not "port a coupling system". Worth knowing before it gets budgeted as the
-hardest item.
+So this is "draw an expanded inspector row over ported state" plus "move six
+functions", not "port a coupling system", and not a design exercise either. Worth
+knowing before it gets budgeted as the hardest item — on this reading it is a
+mid-sized one.
+
+The genuinely unported neighbour is the **manual event row** (`+ Feel`,
+`+ Scene`, `+ Custom`, `Clear manual` with its confirm/undo states,
+`plug.c:2834-2860`). Its policy is ported — `project::event_timeline`,
+`project::semantic_lane`, `scene::events` — and the C's tooltips record a rule
+worth keeping: manual markers carry one value, so the semantic lane skips them
+and only Constellation reacts. Say that in the interface rather than implying
+every scene responds.
 
 **The rest, in rough order of how much is already ported underneath:**
 
@@ -2021,3 +2038,245 @@ why the coupling editor is the only item that needs real design.
 Write the completion plan against the table above. Do not re-derive the
 inventory; it was checked this session. Do read `AGENTS.md`'s parity section
 first, because several of these will not have a faithful port available.
+
+---
+
+## COMPLETION PLAN (session 3 onward)
+
+Supersedes the phase sketches above for everything that remains. Those were
+written before the port existed; this one is written against it.
+
+### The one fact that shapes everything
+
+**The raylib-free half is almost entirely ported and tested. What is missing is
+panels and wiring.** Every remaining feature has its policy, state machine,
+process supervision or codec already in the tree with tests — usually
+differentially verified. Almost nothing here is "port a subsystem"; it is "draw
+the surface over the subsystem that is already there, and connect it to `main`".
+
+That is why this plan is organised by *surface*, not by C file.
+
+### Scope
+
+**In:** everything in the feature table below.
+
+**Out, deliberately, and recorded so it is not rediscovered as a gap:**
+
+- **Microphone capture** (`MUSIALIZER_MICROPHONE`). Operator's call, 2026-07-27.
+  It is a build-flag feature of the frozen binary, nothing else depends on it, and
+  it needs a second audio path the bridge does not have. Parity is declared
+  without it. If it ever comes back, `capture_screen` (`plug.c`) and a second
+  `audio_bridge` producer are the whole of it.
+- **Hot reload.** Already an explicit first-pass non-goal.
+- **Windows and macOS.** Linux-first hobby rewrite.
+
+### Dependency order
+
+Three items unblock others; everything else is independent. Do not fan out until
+the first band has landed.
+
+```
+Band 0 (integration owner, before any fan-out)
+  W1  .musi open/save wiring          -> unblocks presets, route persistence, W2
+  W2  track.h -> app::Workspace        -> unblocks the tracks panel, per-track state
+  W3  pre-scaffold the module tree     -> prevents the mod.rs collisions of session 1
+
+Band 1 (parallel, six agents)
+  G  route editor row + persistence   (needs W1)
+  H  export panel + --render
+  I  lyrics editor panel
+  J  assist panel + --analysis-bridge
+  K  font browser + caption faces
+  L  manual event row + presets       (needs W1, W2)
+
+Band 2 (integration owner, after the merge)
+  M  Song Atlas whole-track map at load
+  N  --ascii-image -> glyph grid
+  O  the parity gate
+```
+
+`W2` is the one that will hurt if it is skipped: `App.track` is a single
+`Option<String>` and six panels want a real track list underneath. Doing it after
+the fan-out means six agents each invent a shim.
+
+### Working agreements for the fan-out
+
+Session 1's fan-out produced zero source collisions and three duplicated types.
+Keep what worked and close what did not:
+
+1. **Pre-scaffold every module before branching.** `W3` creates each file below
+   with a doc comment, its `pub mod` line already registered, and nothing else.
+   Agents fill files; they never edit `mod.rs`. This is what prevented collisions
+   last time.
+2. **Only the integration owner edits the root manifest, `main.rs`,
+   `scene_host.rs`, `theme.rs` or `widgets.rs`.** An agent that needs a widget or
+   a colour *requests* it; adding one is a five-line merge conflict in the file
+   every agent touches.
+3. **Duplication is a merge cost, not an agent's problem.** Session 1 lost time to
+   `SongAtlasMap`, `SceneViewport` and three `Vec2`/`Vec3` copies. `W3` therefore
+   also lands the `core::math` that was requested twice, and the shared
+   `runtime::draw` helpers, *before* the branch.
+4. **Every agent appends a `#### Agent X` section to NOTE ENTRIES.** Merge
+   conflicts there are resolved by keeping all sections.
+5. **A panel that cannot host its own controls is not drawn at all.**
+   `workspace_layout.h`'s rule; it is why invisible zero-height panels stole
+   clicks in the C.
+
+### Definition of done — applies to every item
+
+An item is done when **all** of these hold. This is the checklist that would have
+caught the font gap and the missing welcome screen.
+
+- [ ] It draws, and `tools/headless_check.sh` **captures it** at 1280x720 *and*
+      at the 960x640 minimum. A surface nothing photographs does not get reviewed.
+- [ ] The capture is reachable: if the state needs a probe flag to reach, the flag
+      exists. `--ui-probe` already carries `panel=`, `assist=`, `lyric=`, `style=`,
+      `fonts=`, `lyrics-file=` and they currently report "not implemented" —
+      honouring them *is* part of the item.
+- [ ] The report prints **evidence, not existence**: a line a script can assert
+      on, distinguishing "drew something" from "did the thing". Follow the
+      `fonts:` and `reopen:` lines.
+- [ ] Anything with a C counterpart that is pure gets a **differential harness**
+      (`tests/differential/` + `crates/musializer-core/examples/` + `tools/`). The
+      pattern found a seven-way error in a module that looked finished.
+- [ ] `cargo clippy --all-targets` silent, `cargo fmt --check` clean, no new
+      `unsafe` without a `SAFETY:` comment *and* a row in `AGENTS.md`.
+- [ ] `tools/verify.sh` green, oracle still clean at `9300af9`.
+- [ ] Divergences from the oracle recorded with their reason, per `AGENTS.md`'s
+      parity section.
+
+### The work
+
+Each brief names the C sources, the Rust that already exists underneath, and what
+is actually missing. Where the oracle does not settle a question, the brief says
+so — those are the only places invention is required.
+
+#### W1 — `.musi` open/save wiring  *(integration owner)*
+
+- **C:** `project_io.c`, `project.c`, `plug.c:4634`, `:5049`, `:5180-5191`
+- **Have:** `project::model`, `project::io`, `project::assets`, `project::sha256`,
+  `process::publish` (transactional rename), `dialogs::filters::MUSIALIZER_PROJECT`
+- **Missing:** the four tracks-panel buttons reaching it, `--project`,
+  `--save-project`, and the unsaved-work guard on quit (`plug.c:7248`, which is
+  `dialogs::confirm_warning` — note its contract: an `Err` must **keep** the work,
+  never discard it).
+- **Watch:** `export_mappings`/`import_mappings` move to `scene::routes` in G, not
+  here. Do not duplicate them.
+
+#### W2 — `track.h` → `app::Workspace`  *(integration owner)*
+
+- **C:** `track.h`, `plug.c`'s `Tracks`/`current_track`
+- **Have:** Agent B's model; the deferral reason is gone.
+- **Missing:** the type itself. `App.track: Option<String>` becomes a real list
+  with a selection, per-track settings, per-track routes, per-track editor drafts
+  and `scene_seed_for_track` (which replaces `DEFAULT_SCENE_SEED`).
+- **Why first:** the route editor keys its draft by `track_slot`, and the C's
+  close/context-change guards are all per-track. Six panels want this underneath.
+
+#### G — the route editor row, and route persistence
+
+- **C:** `route_editor_state.c/h`, `scene_routes.c`, `plug.c:5517-5528`,
+  `:6179-6215`
+- **Have:** the engine (380 route rows differentially exact),
+  `ui::route_editor_state`, live per-frame evaluation, the routed readout
+- **Missing:** (a) the expanded inspector row — **not a new panel**; it replaces
+  the setting's 30 px slider zone and makes the row
+  `24+26+40+40+70+26+32+4` px tall, plus 24 when the source is `band`. Draft
+  edits, Apply commits, Close discards, dirty participates in the guards.
+  (b) Move six functions out of `project::model` into `scene::routes`:
+  `mapping_is_constant`, `constant_mapping`, `mappings_supported`,
+  `export_mappings`, `import_mappings`, `parse_route_spec`. **Move them
+  wholesale** — splitting the constant rule from the route rule lets one parameter
+  persist as both, an ambiguity the v1 format cannot represent.
+- **Harness:** yes. Round-trip every descriptor through export/import against the C.
+
+#### H — export panel and `--render`
+
+- **C:** `render_export.c`, `ffmpeg_posix.c`, `plug.c:7132`, `:7157-7160`
+- **Have:** `process::ffmpeg` (with the `ETXTBSY` test lock), `timing::render_export`,
+  `process::publish`, `WorkspaceFrame::export_timeline_height`
+- **Missing:** the panel, the save dialog, progress and cancel, and the
+  fast-forward window (`render_start_frame`) that keeps windowed exports
+  bit-identical to the same frames of a full render.
+- **Evidence:** encode a short synthetic fixture in the headless check and assert
+  frame count and determinism — the same export twice must be byte-identical.
+
+#### I — lyrics editor panel
+
+- **C:** `lyrics_editor_ui.c`, `lyrics_editor_layout.c`, `lyric_lane_edit.c`
+- **Have:** all three ported, plus `caption_layout` and the caption face
+- **Missing:** the three-pane editor, the cue lane, and text entry — which this
+  codebase has none of yet. **Invention required:** a text input widget.
+  `widgets.rs` has no caret, selection or clipboard. Design it once, in
+  `widgets.rs`, via the integration owner.
+
+#### J — assist panel and `--analysis-bridge`
+
+- **C:** `analysis_bridge.c`, `analysis_candidate.c`, `assist_ui_state.c`,
+  `plug.c:2143`, `:2176-2337`
+- **Have:** all of it, including `process::assist` with the `setsid`/`EPERM`
+  trap already handled and tested
+- **Missing:** the confirmation panel naming the lyric sheet a run will use, with
+  Choose/Replace/Clear; the importer; `--ui-probe assist=`.
+- **Do not touch:** `process::assist`'s process-group handling. There is a test
+  that fails loudly with the reason if anyone "simplifies" it.
+
+#### K — font browser and the two missing faces
+
+- **C:** `font_catalogue.c`, `font_import_state.c`, `plug.c:373-426`, `:1547+`
+- **Have:** `ui::font_catalogue`-side state, `process::font_import`,
+  `runtime::font`
+- **Missing:** the browser panel, the once-per-run network consent (**deliberately
+  not persisted** — consent to contact a third party is asked once per run, not
+  remembered until someone withdraws it), and then `runtime::font` grows from two
+  faces to four: Space Grotesk at the full caption set, and the project's imported
+  face keyed by path. `Faces::caption()` is the seam.
+- **Open question, unresolved:** Agent E's deliberate `font_catalogue_parse`
+  atomicity divergence. Settle it here.
+
+#### L — manual event row and presets
+
+- **C:** `plug.c:2834-2880`, `event_timeline.c`, `semantic_lane.c`,
+  `preset_store.c`
+- **Have:** all the policy, plus `scene::events` (the module the header comment
+  got wrong in seven ways — trust the `.c`)
+- **Missing:** the `+ Feel` / `+ Scene` / `+ Custom` row with `Clear manual`'s
+  confirm/undo states, and the preset UI.
+- **Keep the honesty:** manual markers carry one value, so the semantic lane skips
+  them and **only Constellation reacts**. The C's tooltip says so; say it too
+  rather than implying every scene responds.
+
+#### M, N — the two scene gaps  *(integration owner)*
+
+- **M:** run `SongAtlasMap::build` at track load into `SceneRenderer::atlas_map`.
+  Both sides exist and are verified; this is a call site. It belongs in
+  `open_track`.
+- **N:** `--ascii-image` → decode → `ascii_art`'s glyph grid → the `Option`
+  argument `ascii_field::draw` already takes.
+
+#### O — the parity gate
+
+Parity is reached when, and only when:
+
+- Every item above is done by the checklist.
+- A `.musi` written by the frozen C opens here, and one written here opens in the
+  frozen C, with no field lost. **Round-trip both directions.**
+- The differential harnesses all pass, and every pure module ported without one
+  has since acquired one.
+- `tools/headless_check.sh` captures every panel and every scene, and asserts
+  something about each beyond "a file exists".
+- The out-of-scope list above is the complete set of differences, and it is in
+  `AGENTS.md` where a user would find it.
+
+### Known unknowns
+
+Three things this plan cannot settle from the oracle, flagged rather than guessed:
+
+1. **Text entry** (item I) is genuinely absent from this codebase. It is the one
+   piece of real UI engineering left.
+2. **The three version-string spellings** in the C, still unresolved from session
+   1. Pick one at the gate.
+3. **The `.musi` fixture strategy**, also open from session 1. A round-trip test
+   against the C needs a fixture, and the repository rule is synthetic only —
+   which is fine, but the fixture has to be *generated*, not committed from a real
+   project.
