@@ -1946,3 +1946,78 @@ New in `tools/headless_check.sh`:
 - [INFO] The modal picker blocks the render loop while it is open, as
          tinyfiledialogs does in the C. The window stops repainting; that is
          expected, not a hang.
+
+### Session 2 close-out (2026-07-27): the parity rule, and what is actually left
+
+#### The standing rule, from the operator
+
+> "The coding agent does what it must do to achieve the feature parity with the
+> before-rewrite state. Which means: the alternatives must be found and
+> implemented as need be."
+
+Written up properly in `AGENTS.md` under **"Parity is the goal. A line-by-line
+port is not the method"**, including the part that makes it safe: the *mechanism*
+is negotiable, anything a user or a file can observe is not. Read that section
+before the next feature, because the remaining work is where it starts to bite.
+
+The reasoning behind it is worth keeping. The oracle is most informative for pure
+logic — analysis, layout policy, settings tables, formats — and that is precisely
+what went first. What remains is what is most entangled with the things this
+rewrite deliberately does not reproduce: the single global `Plug *p`, hot reload,
+tinyfiledialogs, and C idioms with no Rust shape. The oracle will keep getting
+less useful. That is expected, not a sign anything has gone wrong.
+
+#### What is left, checked rather than remembered
+
+The next session's first job is a completion plan. This inventory is the input to
+it, verified against both trees this session rather than recalled:
+
+**The PCM → scene-settings coupling — the gnarly one, and it is further along
+than it looks.** Three parts, two of them done:
+
+- [DONE] The **engine**: `core::scene::routes` — `AnalysisSource`,
+  `Interpolation`, `ParameterMapping::evaluate`/`output_value`/`is_valid_for`,
+  `RouteSources::from_audio`, `RouteTable::add`/`remove`/`apply`. Differentially
+  verified: 380 route rows exact against the C. Routes are already evaluated into
+  a staged copy every frame in `main.rs`, and the inspector already shows a routed
+  row in accent with a "routed" readout.
+- [DONE] The **editor state**: `core::ui::route_editor_state` is ported.
+- [TODO] The **editor panel**. There is no UI to create a coupling — the C's
+  `+ Feel`, `+ Scene`, `+ Custom` and `Clear manual` row. State and policy exist;
+  only the drawing and the widget wiring do not.
+- [TODO] The **persistence half**. Six functions Agent B left in
+  `project::model` belong in `scene::routes`: `mapping_is_constant`,
+  `constant_mapping`, `mappings_supported`, `export_mappings`,
+  `import_mappings`, `parse_route_spec`. Move them wholesale — splitting the
+  constant rule from the route rule lets one parameter persist as both, which is
+  an ambiguity the v1 format cannot represent.
+
+So this is roughly "draw a panel over ported state" plus "move six functions",
+not "port a coupling system". Worth knowing before it gets budgeted as the
+hardest item.
+
+**The rest, in rough order of how much is already ported underneath:**
+
+| Feature | State underneath | What is missing |
+| --- | --- | --- |
+| Project open/save (`.musi`) | Agent B's model + codec, ported | Wiring: the four tracks-panel buttons, `--project`, `--save-project` |
+| Export / FFmpeg | `process::ffmpeg`, `render_export`, `publish` — all ported and tested | The Export panel, and `--render` |
+| Lyrics editor | `lyrics`, `lyric_lane_edit`, `lyrics_editor_layout`, `caption_layout` — ported | The three-pane panel and cue lane |
+| Assist | `process::assist`, `assist_ui_state`, `analysis_bridge` — ported | The confirmation panel, `--analysis-bridge` |
+| Presets | `preset_store` ported | UI |
+| Caption face selector | `font_catalogue`, `font_import_state`, `process::font_import` — ported | The browser panel; `runtime::font` then loads 4 faces, not 2 |
+| Song Atlas whole-track map | `SongAtlasMap::build` ported and verified | Run it at track load into `SceneRenderer::atlas_map` |
+| `--ascii-image` | `ascii_art` ported | Decode → glyph grid → `ascii_field::draw`'s `Option` argument |
+| `track.h` → `app::Workspace` | Agent B's model landed | The multi-track list itself; `App.track` is one `Option<String>` |
+| Microphone capture | nothing | `MUSIALIZER_MICROPHONE` is a build flag in the C; decide whether it is in scope at all |
+
+The pattern is consistent and worth stating plainly: **the raylib-free half is
+almost entirely ported and tested; what is missing is nearly all panels and
+wiring.** That is the good case — it is translation and housekeeping, and it is
+why the coupling editor is the only item that needs real design.
+
+#### Next action
+
+Write the completion plan against the table above. Do not re-derive the
+inventory; it was checked this session. Do read `AGENTS.md`'s parity section
+first, because several of these will not have a faithful port available.

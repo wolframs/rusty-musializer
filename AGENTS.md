@@ -202,6 +202,71 @@ note `master`, not `main`.
   though it is present in the local working tree.
 - The code and its tests are authoritative about behaviour. Documents are not.
 
+## Parity is the goal. A line-by-line port is not the method
+
+The target is **feature parity with the frozen C**, judged by what a user or a
+file can observe. It is not fidelity to the C's structure, and there is no
+requirement that a feature arrive as a 1:1 translation.
+
+This matters more the further the rewrite goes, and the shape is familiar to
+anyone who has done a language migration by hand: **the oracle gets less
+informative as you go.** It is at its most useful for pure logic — analysis,
+layout policy, settings tables, file formats — which is exactly the part that
+went first. What is left is what is most entangled with the things this rewrite
+deliberately does not reproduce: `plug.c`'s single global `Plug *p`, hot reload,
+tinyfiledialogs, and C idioms with no good Rust shape. Expect the last stretch to
+be substantially invention rather than translation.
+
+**So when a faithful port is impossible, unavailable, or would be bad Rust: find
+the alternative and implement it.** Do not stall, do not leave a stub that
+explains what the oracle does instead, and do not stop to ask. Decide, build it,
+and record the divergence and its reason. This repository has been agent-driven
+since the fork, and the operator's standing instruction is that the agent does
+what it must to reach parity.
+
+### What is negotiable, and what is not
+
+The distinction is the whole rule, because "find an alternative" must never
+become "reinvent the semantics".
+
+**Negotiable — the mechanism.** How a thing is built is yours. Precedents already
+in the tree:
+
+| The oracle | Here | Why |
+| --- | --- | --- |
+| tinyfiledialogs through FFI | `kdialog`/`zenity` as child processes | No new dependency, same thing tinyfd does on Linux, and it fits `process`'s existing supervise-and-reap machinery |
+| Fonts and shaders read from `./resources/` | `include_bytes!`/`include_str!` | The C's relative paths are why its launcher must `cd` first; an interface that loses its font to the wrong working directory is worth deleting, not reproducing |
+| One global `Plug *p` | `main.rs` owns resources; the shell returns `ShellCommand`s | Makes the shell drivable in a test, and is why there is no `Rc<RefCell<_>>` in this codebase |
+| `GuiSetFont`-style implicit face | `Face` threaded explicitly | Makes the fallback reachable in a test |
+| Hot reload | Not reproduced at all | An explicit first-pass non-goal |
+| — | `--probe-frames`, `--probe-shot`, `--probe-reopen` | Invented, because nothing in the oracle can drive a headless check |
+
+**Not negotiable — anything a user or a file can observe.** These are parity
+bugs, not design choices:
+
+- The `.musi` format and every schema in `docs/PHASE0_INVENTORY.md`. A project
+  saved by the C must open here and back again.
+- Analysis numbers. The analyzer, beat tracker and band layout are checked
+  against the C numerically; a "nicer" formulation that shifts a band is wrong.
+- Settings semantics: descriptor keys, bounds, defaults, precision and clamping.
+  81 descriptors, verified column-by-column, and a mistyped bound surfaces much
+  later as a scene quietly ignoring a saved value.
+- Export determinism. The same project must produce the same frames.
+- The CLI grammar, including flag order effects and exit status.
+- Anything with a differential harness. If a harness exists, it is the contract.
+
+The test to apply: **if the difference is visible in a `.musi` file, a rendered
+MP4, a number, or a documented command line, it is a parity bug. If it is visible
+only in the source, take the better option and write down why.**
+
+### Missing beats pretending
+
+A feature that is not built yet says so **in the interface**, by name, where the
+control would be — see the disabled buttons and `ShellCommand::NotImplemented`.
+A blank region is indistinguishable from a broken one, and a control that
+silently does nothing is worse than one that explains itself. This is also what
+makes an unfinished area show up in a capture instead of in a bug report.
+
 ## Rules for this repository
 
 - Preserve unrelated work in both repositories.
