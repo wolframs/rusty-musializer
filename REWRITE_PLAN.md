@@ -2280,3 +2280,138 @@ Three things this plan cannot settle from the oracle, flagged rather than guesse
    against the C needs a fixture, and the repository rule is synthetic only —
    which is fine, but the fixture has to be *generated*, not committed from a real
    project.
+
+---
+
+## NOTE ENTRIES — session 3
+
+### Band 0 is landed: W1, W2, W3
+
+All three integration-owner items are done and committed. The fan-out is
+unblocked. Two of the three changed the plan they were written from.
+
+#### W2 — `app::Workspace` (commit `9e7c6b5`)
+
+`track.h`'s `Track`/`Tracks` came across whole, minus the `Music`. **That
+omission is the one design decision in it and it is settled, not open:**
+raylib-rs's `Music` borrows the audio device, so a `Track` holding one makes the
+whole model `Workspace<'audio>` and infects `App`, `ShellInput` and every panel.
+It is also unnecessary — selecting a track in the C *stops* the outgoing stream
+(`plug.c:5273`) and replays the incoming one from zero, so no playback state
+survives a switch. `main.rs` keeps one `Music` for the current track and reopens
+on switch; the cost is one `LoadMusicStream`, which is a streaming open.
+
+Three `Option`s replace C sentinel pairs (`project_metadata_initialized`, the
+ASCII cell/dimension bundle, every possibly-empty path). `song_atlas_map_attempted`
+is deliberately *not* folded in: "no map" and "tried and failed" differ, and the
+C distinguishes them to avoid retrying every frame.
+
+`App` keeps a *pending* settings/routes pair — `p->scene_settings` and
+`p->pending_scene_routes` — used with no track open, with the pending routes
+handed to the first track that loads (`plug.c:852`). `App::settings()` is
+`track_effective_scene_settings` and is the **edit** target as well as the read
+target, because the C returns a non-const pointer and the inspector writes
+through it.
+
+Two parity fixes fell out:
+
+- `DEFAULT_SCENE_SEED` was invented. It is now the oracle's
+  `0x4D555349414C495A` (`plug.c:8401`), so a fresh track's scene state matches
+  the C's for the same audio.
+- the frame's `duration_seconds` now comes from the track, not the stream
+  (`plug.c:1169`) — which is what survives a track added but not playing.
+
+**`core::ui::scroll_list` is new and shared.** The tracks list scrolls, and the
+oracle's geometry, momentum and scrollbar (`plug.c:5213-5382`) are policy, so
+they are raylib-free and tested rather than living in the drawing code. The C
+keeps `panel_scroll`/`panel_velocity`/`scrolling` as **function statics**, which
+is why its list code can only ever serve one panel; per-list state here is the
+divergence that lets the inspector and both browsers use the same policy. Two
+oracle behaviours are reproduced rather than corrected and both look like bugs:
+damping is per *frame* (`velocity *= 0.9` once per update, so 60 fps decays twice
+as fast as 30), and the offset is clamped after integration while the velocity
+is not (so a fling rests against the end rather than bouncing).
+
+`UiRect::contains_point` was added because `contains` deliberately refuses an
+empty inner rect, so a point expressed as a zero-size rect always read as
+outside. Two callers had already reached for it.
+
+**The capture is what caught the first attempt.** It passed every check in
+`headless_check.sh` while silently dropping track 2, because the row stride was a
+guess (`row_height + 4`) rather than the oracle's `item_size`. The report now
+carries a `tracks:` line and the check asserts on it.
+
+#### W1 — `.musi` open and save (commit `e30e336`)
+
+`runtime::project_files` is the filesystem half that `project::io`'s own module
+comment said was deliberately absent from the core crate. The rule worth knowing:
+**a bundled asset must resolve back to the very same relative path it was stored
+as.** `resolve_bundled_asset_path` canonicalizes the asset *and* the project
+directory, recomputes the descendant path, and refuses anything that does not
+match byte for byte (`project_io.c:874-884`). Without it "bundled" would only
+mean "found". A test proves a symlink into the bundle is refused.
+
+`app::project` is `build_project` / `save_project_to_path` / `open_project_path`.
+Open verifies every digest before a `Track` exists and builds the whole `Track`
+before anything is replaced; save publishes assets first and adopts the published
+copies after. Neither leaves a half-state.
+
+Three findings:
+
+- **the tracks action row's labels were invented.** The oracle's are
+  `"Open project"`, `"Add audio"`, `"Save"`, `"Save As"` (`plug.c:5165`), and
+  there is **no "Close"** — the frozen C cannot close a single track. A `Close`
+  button would have been an invented feature wearing parity's clothes.
+- **`PresetLibrary` could only allocate ids, not restore them.** Hydrating a
+  project through `push` would have renumbered every preset, quietly breaking any
+  reference across a round trip. `PresetLibrary::restore` is the missing half.
+- **the quit guard diverges, deliberately.** `tinyfd_messageBox` always answers
+  because tinyfd falls back to a terminal prompt; `kdialog`/`zenity` may be
+  absent. Refusing forever traps the user, quitting silently loses the work the
+  guard exists to protect. So an unavailable dialog refuses the **first** request
+  and says why in the tray and on stderr, and honours the second.
+
+Still to hook in, by the agent who owns each: `confirm_close` weighs only dirty
+projects — the open lyric draft (I), the open route edit (G), staged Assist
+suggestions (J), a running analysis (J) and a running export (H) each add a line.
+`autosave_is_due` takes an `editor_dirty` parameter for the same reason.
+
+Autosave currently only writes the **current** track, because only it has a bound
+stream and `build_project` needs the sample rate and channel count off it
+(`plug.c:4304`). The C autosaves every track. Closing that means caching those
+two numbers on the `Track` at load; it is a small, known gap.
+
+#### W3 — the scaffold (this commit)
+
+`ui/panels/` is one file per agent, every `pub mod` line already registered.
+**No agent edits a `mod.rs`, `shell.rs`, `widgets.rs`, `theme.rs` or the root
+manifest.** An agent that needs a widget or a colour requests it.
+
+Three surfaces nest inside another agent's, and the call sites are defined rather
+than left to be negotiated:
+
+| Surface | Owner | Called from |
+| --- | --- | --- |
+| the route editor row | G | `tune.rs`'s per-setting row loop, already wired |
+| the font browser pane | K | `lyrics.rs`'s three-pane editor |
+| the manual event row | L | `events.rs`, from the timeline strip |
+
+`route_editor_height` is asked **before** the row is measured, so a row that will
+not fit is never drawn. That is the layout rule this repository has already paid
+for, applied to a row rather than to a panel.
+
+The font browser is a **pane inside the lyrics editor**, not a panel: the oracle
+drives it with `p->lyric_editor.font_pane` (`plug.c:3786`). There is therefore no
+`UiPanel` variant for it, and K does not need to touch `cli.rs`.
+
+**`core::math` was not landed, and the plan line asking for it no longer
+applies.** It was justified by scene agents duplicating `Vec2`/`Vec3`/`clamp01` in
+session 1. Band 1 is panels; no Band 1 agent touches a scene file, so there is no
+collision to prevent, and the eleven `clamp01` copies are in modules that are
+already differentially verified. Consolidating them is a cleanup, not a
+prerequisite, and doing it mid-fan-out would risk numeric parity for no benefit.
+
+**A capture caught this item too.** The first split drew the "not built yet" box
+into the panel's content rectangle and printed it over the timeline's ticks; the
+oracle's box starts below the strip (`strip.y + strip.height + 28.0`). No test
+would have found it.

@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use musializer_core::scene::{settings, SceneId, SceneSettings};
+use musializer_core::scene::{SceneId, SceneSettings};
 use musializer_core::ui::notice::{NoticeQueue, NoticeSpec, Severity};
 use musializer_core::ui::row_typography;
 use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
@@ -1031,153 +1031,6 @@ impl Shell {
         }
     }
 
-    /// The tuning inspector: one slider per setting of the active scene.
-    ///
-    /// Bounds, defaults and precision all come from the descriptor table in
-    /// [`settings`], which was checked column-by-column against the C. The
-    /// inspector never invents a range.
-    fn inspector(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
-        input: &ShellInput<'_>,
-        commands: &mut Vec<ShellCommand>,
-    ) {
-        if frame.inspector.is_empty() {
-            return;
-        }
-        let content = widgets::panel(d, input.fonts.ui(), frame.inspector, "TUNE");
-        let font = input.fonts.ui();
-        let padding = metric::UI_PANEL_PADDING;
-        let mut y = content.y + padding;
-
-        widgets::draw_text(
-            d,
-            input.fonts.ui(),
-            input.scene.display_name(),
-            content.x + padding,
-            y,
-            metric::UI_FONT_HEADER,
-            color::ui_ink(),
-        );
-        y += metric::UI_FONT_HEADER + metric::UI_CONTROL_GAP;
-
-        let descriptors = settings::descriptors(input.scene);
-        let row_height = 46.0f32;
-        for (index, descriptor) in descriptors.iter().enumerate() {
-            let row = UiRect::new(
-                content.x + padding,
-                y,
-                content.width - padding * 2.0,
-                row_height,
-            );
-            if !content.contains(row) {
-                // Out of room. Say so rather than silently dropping the tail: a
-                // truncated list that does not admit it is a feature nobody can
-                // find.
-                widgets::draw_text(
-                    d,
-                    input.fonts.ui(),
-                    &format!("+{} more (enlarge the window)", descriptors.len() - index),
-                    content.x + padding,
-                    y,
-                    metric::UI_FONT_CAPTION,
-                    color::ui_warning(),
-                );
-                break;
-            }
-            y += row_height;
-
-            let value = input.settings.get(input.scene, index);
-            let effective = input
-                .routed
-                .map_or(value, |routed| routed.get(input.scene, index));
-            let routed = (effective - value).abs() > f32::EPSILON;
-
-            widgets::draw_text(
-                d,
-                input.fonts.ui(),
-                descriptor.label,
-                row.x,
-                row.y,
-                metric::UI_FONT_CAPTION,
-                if routed {
-                    color::accent()
-                } else {
-                    color::ui_muted()
-                },
-            );
-            let readout = format!(
-                "{:.*}{}",
-                descriptor.precision as usize,
-                effective,
-                if routed { "  routed" } else { "" }
-            );
-            let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
-            widgets::draw_text(
-                d,
-                input.fonts.ui(),
-                &readout,
-                row.x + row.width - readout_width,
-                row.y,
-                metric::UI_FONT_VALUE,
-                if routed {
-                    color::accent()
-                } else {
-                    color::ui_ink()
-                },
-            );
-
-            let span = descriptor.maximum - descriptor.minimum;
-            let normalized = if span > 0.0 {
-                (effective - descriptor.minimum) / span
-            } else {
-                0.0
-            };
-            let track = UiRect::new(row.x, row.y + 22.0, row.width, 20.0);
-            let id = widgets::widget_id(widgets::id::INSPECTOR, index as u32);
-            if let Some(fraction) = self.widgets.slider(d, id, track, normalized) {
-                let mut proposed = descriptor.minimum + fraction * span;
-                // Precision 0 settings are integers in the C's readout, so the
-                // slider must produce integers too or the readout lies.
-                if descriptor.precision == 0 {
-                    proposed = proposed.round();
-                }
-                commands.push(ShellCommand::SetSetting {
-                    scene: input.scene,
-                    index,
-                    value: proposed,
-                });
-            }
-        }
-
-        let reset = UiRect::new(
-            content.x + padding,
-            content.y + content.height - metric::UI_BUTTON_HEIGHT - padding,
-            content.width - padding * 2.0,
-            metric::UI_BUTTON_HEIGHT,
-        );
-        if content.contains(reset) {
-            let id = widgets::widget_id(widgets::id::INSPECTOR, 900);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    input.fonts.ui(),
-                    id,
-                    reset,
-                    "Reset scene",
-                    false,
-                    ButtonStyle::Neutral,
-                    None,
-                )
-                .clicked
-            {
-                commands.push(ShellCommand::ResetScene(input.scene));
-            }
-        }
-    }
-
     /// The timeline strip: waveform lane placeholder, ticks, playhead, scrubber.
     ///
     /// Every seconds↔pixel conversion goes through [`TimelineView`] so the ticks,
@@ -1243,7 +1096,7 @@ impl Shell {
                 metric::UI_FONT_CAPTION,
                 color::ui_muted(),
             );
-            self.panel_stub(d, input.fonts.ui(), content, strip);
+            self.open_panel(d, input, content, strip, commands);
             return;
         }
 
@@ -1389,79 +1242,27 @@ impl Shell {
             }
         }
 
-        self.panel_stub(d, input.fonts.ui(), content, strip);
+        self.open_panel(d, input, content, strip, commands);
     }
 
-    /// Names the open panel and what it will hold, in the space it would occupy.
+    /// Dispatches to whichever bottom panel is open.
     ///
-    /// A blank region is indistinguishable from a broken one, and the panel that
-    /// says "not built yet" is the one a reviewer can act on.
-    fn panel_stub(
+    /// One `match` in one place, so an agent fills a function in their own file
+    /// and never edits this one. [`UiPanel::Tune`] is absent because the tuning
+    /// controls are the right-hand inspector, not a bottom panel.
+    fn open_panel(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
+        input: &ShellInput<'_>,
         content: UiRect,
         strip: UiRect,
+        commands: &mut Vec<ShellCommand>,
     ) {
-        let (title, detail) = match self.panel {
-            UiPanel::None => return,
-            UiPanel::Tune => return,
-            UiPanel::Export => (
-                "EXPORT",
-                "FFmpeg supervision and transactional publication are Agent E's.",
-            ),
-            UiPanel::Lyrics => (
-                "LYRICS",
-                "Three-pane editor, cue lane and caption typography. Layout policy is ported; \
-                 the panel is not.",
-            ),
-            UiPanel::Assist => (
-                "ASSIST",
-                "Confirmation step names the lyric sheet a run will use, with Choose/Replace/Clear.",
-            ),
-        };
-        let area = UiRect::new(
-            content.x + metric::UI_PANEL_PADDING,
-            strip.y + strip.height + 28.0,
-            content.width - metric::UI_PANEL_PADDING * 2.0,
-            (content.y + content.height
-                - (strip.y + strip.height + 28.0)
-                - metric::UI_PANEL_PADDING)
-                .max(0.0),
-        );
-        if area.is_empty() {
-            return;
-        }
-        d.draw_rectangle_rec(widgets::rectangle(area), color::ui_raised());
-        d.draw_rectangle_lines_ex(widgets::rectangle(area), 1.0, color::ui_warning());
-        widgets::draw_text(
-            d,
-            font,
-            title,
-            area.x + 8.0,
-            area.y + 8.0,
-            metric::UI_FONT_CAPTION,
-            color::ui_warning(),
-        );
-        widgets::draw_text(
-            d,
-            font,
-            "not built yet",
-            area.x + 8.0,
-            area.y + 26.0,
-            metric::UI_FONT_LABEL,
-            color::ui_ink(),
-        );
-        if area.height > 62.0 {
-            widgets::draw_text(
-                d,
-                font,
-                detail,
-                area.x + 8.0,
-                area.y + 48.0,
-                metric::UI_FONT_CAPTION,
-                color::ui_muted(),
-            );
+        match self.panel {
+            UiPanel::None | UiPanel::Tune => {}
+            UiPanel::Export => self.export_panel(d, input, content, strip, commands),
+            UiPanel::Lyrics => self.lyrics_panel(d, input, content, strip, commands),
+            UiPanel::Assist => self.assist_panel(d, input, content, strip, commands),
         }
     }
 

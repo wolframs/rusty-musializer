@@ -71,6 +71,8 @@ crates/
   musializer-core/    # no raylib: analysis, scene contracts, model, layout
   musializer-runtime/ # raylib, the audio bridge, processes, filesystem edges
   musializer-app/     # the binary, CLI, scene drawing, UI
+                      #   ui/panels/ is one file per fan-out agent; nobody edits
+                      #   another's, and nobody edits a mod.rs
 vendor/
   raylib-5.5/         # upstream raylib source (third-party, not ours)
   clang-builtin-shim/ # five headers so bindgen can run; see its README
@@ -295,16 +297,36 @@ makes an unfinished area show up in a capture instead of in a bug report.
 - `cargo fmt` and a clippy-clean tree are the baseline; deviations are marked
   with `#[allow(...)]` and a reason.
 
+## Not built, and not going to be
+
+Recorded here rather than only in the plan, because this is where a user would
+look for the difference list. Parity is declared *with* these, not despite them.
+
+- **Microphone capture** (`MUSIALIZER_MICROPHONE`). Operator's call, 2026-07-27.
+  A build-flag feature of the frozen binary; nothing else depends on it, and it
+  needs a second audio path the bridge does not have.
+- **Hot reload.** An explicit first-pass non-goal since the fork.
+- **Windows and macOS.** Linux-first hobby rewrite.
+
 ## Still to be filled in
 
-- `track.h` → `app::Workspace`: was deferred until Agent B's `.musi` model landed.
-  It has, so the reason is gone.
-- The persistence half of `core::scene::routes` (export/import mappings, spec
-  parsing). Agent B left six functions in `project::model` that belong there.
-- The Export, Lyrics and Assist panels. Their state is ported and their layout
-  policy is ported; the panels themselves are stubs that say so.
-- The caption face selector, which is why `runtime::font` loads two faces and not
-  the oracle's four.
-- Whole-track Song Atlas preprocessing at load, and `--ascii-image` → a glyph grid.
+Band 0 of `REWRITE_PLAN.md`'s completion plan is landed: `app::Workspace`, the
+`.musi` open/save wiring, and the `ui/panels/` scaffold. What remains is Band 1
+and Band 2 of that plan:
 
-`REWRITE_PLAN.md`'s "Next session: start here" is the ordered version of this.
+- The Export, Lyrics, Assist and font-browser surfaces. Their state and layout
+  policy are ported; the panels are stubs in `ui/panels/` that say so by name.
+- The route editor row inside the tuning inspector, and moving six persistence
+  functions out of `project::model` into `core::scene::routes`. **Move them
+  wholesale** — splitting the constant rule from the route rule lets one
+  parameter persist as both.
+- The manual event row and the preset UI.
+- `runtime::font`'s two faces becoming four, which is the caption face selector.
+- Whole-track Song Atlas preprocessing at load, and `--ascii-image` → a glyph grid.
+- Text entry. There is no caret, no selection and no clipboard anywhere in this
+  codebase; the lyrics editor needs one and it is the last piece of real UI
+  engineering in the rewrite.
+
+`REWRITE_PLAN.md`'s **"COMPLETION PLAN (session 3 onward)"** is the ordered
+version, and the NOTE ENTRIES below it record what each landed item changed about
+the plan it was written from.
