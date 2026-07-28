@@ -130,7 +130,31 @@ impl Widgets {
         style: ButtonStyle,
         font_size: Option<f32>,
     ) -> ButtonState {
-        let state = self.button(d, id, boundary);
+        self.text_button_in(
+            d, font, id, boundary, boundary, label, selected, style, font_size,
+        )
+    }
+
+    /// A labelled button whose press area is not its drawing area.
+    ///
+    /// This is `button_with_id(id, GetCollisionRec(panel, item))` (`plug.c:5306`):
+    /// a row in a scrolling list is drawn at its full height and clipped, but only
+    /// the part still inside the panel may claim a press. Passing the same rect
+    /// twice is [`Self::text_button`], which is the common case.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_button_in(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &Face,
+        id: u64,
+        boundary: UiRect,
+        hit: UiRect,
+        label: &str,
+        selected: bool,
+        style: ButtonStyle,
+        font_size: Option<f32>,
+    ) -> ButtonState {
+        let state = self.button(d, id, hit);
         if boundary.is_empty() {
             return state;
         }
@@ -469,6 +493,14 @@ pub fn format_timestamp(seconds: f64) -> String {
     let minutes = (seconds / 60.0) as u32;
     let within_minute = seconds - f64::from(minutes) * 60.0;
     format!("{minutes:02}:{within_minute:06.3}")
+}
+
+/// A flat filled rectangle. The scrollbar thumb and any other plain block.
+pub fn fill<D: RaylibDraw>(d: &mut D, rect: UiRect, tint: Color) {
+    if rect.is_empty() {
+        return;
+    }
+    d.draw_rectangle_rec(rectangle(rect), tint);
 }
 
 /// `UiRect` to raylib's `Rectangle`. The two are the same four floats; the split

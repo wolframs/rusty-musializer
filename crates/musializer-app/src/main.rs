@@ -45,14 +45,24 @@ mod cli;
 mod scene_host;
 mod scenes;
 mod ui;
+mod workspace;
 
 use cli::{Action, Cli, Outcome};
 use ui::shell::{Shell, ShellCommand, ShellInput};
+use workspace::{Track, Workspace};
 
-/// Seed for a scene with no track to derive one from. The C seeds per track
-/// (`scene_seed_for_track`); until the track model lands (Agent B), one constant
-/// keeps scene state deterministic, which is the property that actually matters.
-const DEFAULT_SCENE_SEED: u64 = 0x5eed_0000_0000_0001;
+/// Seed for a scene with no track to derive one from.
+///
+/// This is the C's own initial seed, `UINT64_C(0x4D555349414C495A)` — ASCII
+/// `MUSIALIZ` — from `scene_instance_init` in `plug_init`
+/// (`../musializer/src/plug.c:8401`). It matters because scene state is seeded
+/// deterministically: a different constant here would give every freshly opened
+/// track a different star field than the oracle's for the same audio, and
+/// export determinism between the two implementations is worth having for free.
+///
+/// Per-track seeds come from [`Workspace::inherited_scene`]; this is only the
+/// value the very first track inherits.
+const DEFAULT_SCENE_SEED: u64 = 0x4D55_5349_414C_495A;
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -146,10 +156,10 @@ fn run() -> Result<std::process::ExitCode, String> {
             scene_host::descriptor(SceneId::Spectrum),
             DEFAULT_SCENE_SEED,
         ),
-        settings: SceneSettings::default(),
-        routes: RouteTable::new(),
+        workspace: Workspace::new(),
+        pending_settings: SceneSettings::default(),
+        pending_routes: RouteTable::new(),
         shell: Shell::new(),
-        track: None,
     };
 
     // Step 3: the argv actions, left to right.
@@ -196,7 +206,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         else {
             continue;
         };
-        if let Err(error) = app.routes.add(scene, route) {
+        if let Err(error) = app.routes_mut().add(scene, route) {
             eprintln!("warning: could not add command-line route: {error:?}");
             options.error = true;
         }
@@ -288,13 +298,13 @@ fn run() -> Result<std::process::ExitCode, String> {
 
     // Interleaved stereo scratch, drained from the ring each frame. Sized for a
     // long frame at 44.1 kHz so a hitch does not silently discard audio. Declared
-    // before the first track load because `open_track` drains through it.
+    // before the first track load because `close_audio` drains through it.
     let mut scratch = vec![0.0f32; 4096 * audio_bridge::MIXED_CHANNELS];
 
     // The Music must be dropped — and the processor detached — while the audio
     // device and window are still alive. Getting that order wrong is one of the
     // plan's named traps, which is why every transition goes through
-    // `open_track`/`close_track` rather than being written out at each site.
+    // `bind_current_audio`/`close_audio` rather than being written out at each site.
     let mut music: Option<Music<'_>> = None;
     if let Some(path) = audio_path.as_ref() {
         if let Err(error) = open_track(
@@ -366,9 +376,14 @@ fn run() -> Result<std::process::ExitCode, String> {
         let time_seconds = music
             .as_ref()
             .map_or(0.0, |m| f64::from(m.get_time_played()));
-        let duration_seconds = music
-            .as_ref()
-            .map_or(0.0, |m| f64::from(m.get_time_length()));
+        // The track's decoded duration, not the stream's, because that is what
+        // the C puts in the frame (`plug.c:1169`) and what every timeline and
+        // export length is measured against. They agree, but only one of them
+        // survives a track that is added and not yet playing.
+        let duration_seconds = app
+            .workspace
+            .current()
+            .map_or(0.0, |track| track.duration_seconds);
         let playing = music.as_ref().is_some_and(|m| m.is_stream_playing());
 
         let spectrum = analyzer.spectrum();
@@ -389,8 +404,15 @@ fn run() -> Result<std::process::ExitCode, String> {
         // copy. Preview and export come through the same path, which is what keeps
         // routed parameters identical between them (`plug.c:1147-1166`).
         let sources = RouteSources::from_audio(&audio_frame);
-        let routed = app.routes.apply(app.scene.id(), &sources, &app.settings);
-        let effective = routed.as_ref().unwrap_or(&app.settings);
+        // Copied out of `app` rather than borrowed from it. `settings()` and
+        // `routes()` borrow the whole `App` (they choose between the current
+        // track's tables and the pending ones), so holding either across
+        // `app.scene.update` or `app.shell.draw` would deny those the `&mut` they
+        // need. A `SceneSettings` is 480 bytes of `f32`, and `apply` already
+        // produces a whole copy whenever a route fires.
+        let base = *app.settings();
+        let routed = app.routes().apply(app.scene.id(), &sources, &base);
+        let effective = routed.as_ref().unwrap_or(&base);
 
         let frame = SceneFrame {
             time_seconds,
@@ -412,12 +434,12 @@ fn run() -> Result<std::process::ExitCode, String> {
             window: (rl.get_screen_width() as f32, rl.get_screen_height() as f32),
             fonts: &fonts,
             scene: app.scene.id(),
-            settings: &app.settings,
+            settings: &base,
             routed: routed.as_ref(),
             time_seconds,
             duration_seconds,
             playing,
-            track_name: app.track.as_deref(),
+            workspace: &app.workspace,
             band_count: spectrum.band_count(),
             peak_band: report.peak_band_last,
             rms: frame.audio.rms,
@@ -426,7 +448,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         // workspace (`preview_screen`, `plug.c:7769`), so the workspace frame is
         // not even computed on that path — there is no preview to lay out around.
         let commands;
-        if app.track.is_none() {
+        if app.workspace.current().is_none() {
             let mut d = rl.begin_drawing(&thread);
             d.clear_background(ui::theme::color::ui_surface());
             commands = app.shell.draw_welcome(&mut d, &shell_input);
@@ -543,9 +565,9 @@ fn run() -> Result<std::process::ExitCode, String> {
                 } => {
                     // `set` refuses a value the descriptor rejects, so a bad
                     // slider cannot smuggle one past the bounds.
-                    app.settings.set(scene, index, value);
+                    app.settings_mut().set(scene, index, value);
                 }
-                ShellCommand::ResetScene(scene) => app.settings.reset_scene(scene),
+                ShellCommand::ResetScene(scene) => app.settings_mut().reset_scene(scene),
                 ShellCommand::LoadTrack(path) => {
                     // Drop-to-open, which the welcome screen promises in so many
                     // words. It used to answer "restart with…", because the loop
@@ -570,6 +592,25 @@ fn run() -> Result<std::process::ExitCode, String> {
                                     |name| name.to_string_lossy().into_owned()
                                 )
                             ),
+                        );
+                    }
+                }
+                ShellCommand::SelectTrack(index) => {
+                    if let Err(error) = select_track(
+                        &audio,
+                        index,
+                        &mut analyzer,
+                        &mut music,
+                        &mut app,
+                        &mut scratch,
+                    ) {
+                        // The C's wording when a track switch cannot be prepared
+                        // (`plug.c:5269-5271`): the previous track keeps playing,
+                        // and saying so is the point of the notice.
+                        app.shell.notify(
+                            Severity::Error,
+                            "Track could not be prepared",
+                            &format!("The current track remains active: {error}"),
                         );
                     }
                 }
@@ -603,23 +644,36 @@ fn run() -> Result<std::process::ExitCode, String> {
         if let Some(limit) = options.probe_frames {
             if report.frames == u64::from(limit) / 2 {
                 if let Some(path) = options.probe_reopen.take() {
-                    report.reopened = Some(
-                        match open_track(
+                    // Add *and* select, because adding alone no longer rebinds:
+                    // the oracle only auto-plays the first track (`plug.c:843`).
+                    // Selecting is what exercises detach/drop/drain/rebind, which
+                    // is the whole point of this probe.
+                    let swapped = open_track(
+                        &audio,
+                        &path,
+                        &mut analyzer,
+                        &mut music,
+                        &mut app,
+                        &mut scratch,
+                        true,
+                    )
+                    .and_then(|index| {
+                        select_track(
                             &audio,
-                            &path,
+                            index,
                             &mut analyzer,
                             &mut music,
                             &mut app,
                             &mut scratch,
-                            true,
-                        ) {
-                            Ok(()) => Reopen::Ok {
-                                frame: report.frames,
-                                consumed_before: report.consumed_frames,
-                            },
-                            Err(error) => Reopen::Failed(error),
+                        )
+                    });
+                    report.reopened = Some(match swapped {
+                        Ok(()) => Reopen::Ok {
+                            frame: report.frames,
+                            consumed_before: report.consumed_frames,
                         },
-                    );
+                        Err(error) => Reopen::Failed(error),
+                    });
                 }
             }
         }
@@ -649,7 +703,7 @@ fn run() -> Result<std::process::ExitCode, String> {
     // Detach before the Music drops, so raylib's per-stream processor list never
     // holds a callback for a freed stream. The same function every track switch
     // goes through, so there is one place where that order is written down.
-    close_track(&mut music, &mut app, &mut scratch);
+    close_audio(&mut music, &mut app, &mut scratch);
 
     report.print(
         raylib_version,
@@ -669,25 +723,82 @@ fn run() -> Result<std::process::ExitCode, String> {
 
 /// The application's own state, such as it is.
 ///
-/// Deliberately small and flat: `RenderController`, `AssistController` and the
-/// track list all land here later, and the shape that survives is the one where
-/// each is a field with a narrow `&mut` rather than a shared cell.
+/// Deliberately small and flat: `RenderController` and `AssistController` land
+/// here later, and the shape that survives is the one where each is a field with
+/// a narrow `&mut` rather than a shared cell.
+///
+/// The settings/routes pair here is the C's *pending* pair, not a second copy of
+/// the track's. `p->scene_settings` and `p->pending_scene_routes` are what the
+/// oracle edits and evaluates when no track is open, and the pending routes are
+/// handed to the first track that loads (`plug.c:852-853`). Everything else lives
+/// on the [`Track`], because every close guard, dirty flag and editor draft in
+/// the C is per-track.
 struct App {
     scene: SceneInstance,
-    /// The editable values. Routes are applied into a staged copy per frame, never
-    /// written back, so a routed parameter does not become an edit.
-    settings: SceneSettings,
-    routes: RouteTable,
+    workspace: Workspace,
+    /// `p->scene_settings` (`plug.c:1026`): the editable values with no track.
+    pending_settings: SceneSettings,
+    /// `p->pending_scene_routes` (`plug.c:282`).
+    pending_routes: RouteTable,
     shell: Shell,
-    track: Option<String>,
 }
 
 impl App {
+    /// `track_effective_scene_settings` (`plug.c:1024-1028`).
+    ///
+    /// Note that this is the *edit* target as well as the read target: the C
+    /// returns a non-const pointer and the tuning inspector writes through it. A
+    /// track playing a scene-switch cue edits its playback copy, so the cue can
+    /// drive a parameter without the change surviving the cue.
+    fn settings(&self) -> &SceneSettings {
+        match self.workspace.current() {
+            None => &self.pending_settings,
+            Some(track) if track.cue_settings_active => &track.playback_scene_settings,
+            Some(track) => &track.scene_settings,
+        }
+    }
+
+    fn settings_mut(&mut self) -> &mut SceneSettings {
+        match self.workspace.current_mut() {
+            None => &mut self.pending_settings,
+            Some(track) if track.cue_settings_active => &mut track.playback_scene_settings,
+            Some(track) => &mut track.scene_settings,
+        }
+    }
+
+    /// `plug_add_scene_route`'s table choice (`plug.c:1077-1080`).
+    fn routes(&self) -> &RouteTable {
+        match self.workspace.current() {
+            Some(track) => &track.scene_routes,
+            None => &self.pending_routes,
+        }
+    }
+
+    fn routes_mut(&mut self) -> &mut RouteTable {
+        match self.workspace.current_mut() {
+            Some(track) => &mut track.scene_routes,
+            None => &mut self.pending_routes,
+        }
+    }
+
+    /// Binds a scene, seeded from the current track (`scene_seed_for_track`,
+    /// `plug.c:611-614`; used at `:987` and `:1354`).
     fn select_scene(&mut self, id: SceneId) {
         if self.scene.id() == id {
             return;
         }
-        self.scene = SceneInstance::new(scene_host::descriptor(id), DEFAULT_SCENE_SEED);
+        let seed = self
+            .workspace
+            .current()
+            .map_or(DEFAULT_SCENE_SEED, |track| track.scene_seed);
+        self.scene = SceneInstance::new(scene_host::descriptor(id), seed);
+        // The track remembers what it is showing, so reselecting it later
+        // restores this scene rather than the one the previous track left behind
+        // (`plug.c:5265-5268`).
+        if let Some(track) = self.workspace.current_mut() {
+            track.previous_base_scene = track.base_scene;
+            track.base_scene = id;
+        }
     }
 }
 
@@ -706,15 +817,13 @@ fn unimplemented_action(options: &mut Cli, app: &mut App, flag: &str, detail: &s
     options.error = true;
 }
 
-/// Binds a track, replacing whatever was open.
+/// Adds a track to the workspace, and binds audio to it only if it became the
+/// current one (`plug_load_track`, `plug.c:751-861`).
 ///
-/// The order here is the whole reason this is one function rather than code at
-/// each call site. Detach before the old `Music` drops, or raylib's per-stream
-/// processor list holds a callback for a freed stream; drain the ring after the
-/// detach, or the first frames of the new track are analysed together with the
-/// tail of the old one; and rebind the analyzer from the *file's* sample rate,
-/// because that is what `start_preview_track` does (`plug.c:658-660`) and reading
-/// the device's rate instead shifts every band.
+/// The "only if" is the oracle's, not a shortcut: loading a second file while one
+/// is playing appends it to the list and leaves playback alone (`plug.c:843`).
+///
+/// Returns the new track's index.
 fn open_track<'audio>(
     audio: &'audio RaylibAudio,
     path: &Path,
@@ -723,15 +832,87 @@ fn open_track<'audio>(
     app: &mut App,
     scratch: &mut [f32],
     play: bool,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
-    // Loaded before the old track is torn down, so a failure leaves the session
-    // exactly as it was rather than closing what was playing.
-    let opened = audio
+    // Opened before anything is mutated, so an unreadable file leaves the session
+    // exactly as it was rather than half-adding a track. This one is only a
+    // metadata probe — the stream that plays is opened by `bind_current_audio` —
+    // which is the same split as C's `metadata_probe` (`plug.c:4901-4913`).
+    let probe = audio
         .new_music(path_str)
         .map_err(|error| error.to_string())?;
+    let duration = f64::from(probe.get_time_length());
+    drop(probe);
 
-    close_track(music, app, scratch);
+    let (base_scene, seed) = app
+        .workspace
+        .inherited_scene(app.scene.id(), app.scene.seed());
+    let mut track = Track::new(path.to_path_buf(), duration, base_scene, seed)
+        .map_err(|error| format!("could not prepare the track: {error}"))?;
+    track.transport_seekable =
+        musializer_core::timing::track_timeline::path_is_seekable(Some(path_str));
+
+    let was_empty = app.workspace.current().is_none();
+    if was_empty {
+        // Routes accepted before any track existed belong to the first one
+        // (`plug.c:852-853`). The pending table is emptied, not copied, so a
+        // later track does not silently inherit them too.
+        track.scene_routes = std::mem::take(&mut app.pending_routes);
+    }
+    let index = app.workspace.push(track);
+
+    if was_empty {
+        bind_current_audio(audio, analyzer, music, app, scratch, play)?;
+    }
+    Ok(index)
+}
+
+/// Makes the workspace's current track the one the audio device is playing.
+///
+/// The order here is the whole reason this is one function rather than code at
+/// each call site. Detach before the old `Music` drops, or raylib's per-stream
+/// processor list holds a callback for a freed stream; drain the ring after the
+/// detach, or the first frames of the new track are analysed together with the
+/// tail of the old one; and rebind the analyzer from the *file's* sample rate,
+/// because that is what `start_preview_track` does (`plug.c:658-660`) and reading
+/// the device's rate instead shifts every band.
+fn bind_current_audio<'audio>(
+    audio: &'audio RaylibAudio,
+    analyzer: &mut AudioAnalyzer,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    play: bool,
+) -> Result<(), String> {
+    let Some(track) = app.workspace.current() else {
+        close_audio(music, app, scratch);
+        return Ok(());
+    };
+    // Opened before the teardown, so a file deleted since it was added leaves the
+    // previous track playing rather than leaving silence.
+    let opened = open_music(audio, &track.file_path)?;
+    bind_audio(opened, analyzer, music, app, scratch, play)
+}
+
+/// Opens a stream without binding it to anything.
+///
+/// Split out so a caller that must not mutate before it knows the file is
+/// readable — [`select_track`] — can prove that first.
+fn open_music<'audio>(audio: &'audio RaylibAudio, path: &Path) -> Result<Music<'audio>, String> {
+    let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
+    audio.new_music(path_str).map_err(|error| error.to_string())
+}
+
+/// Swaps an already-opened stream in as the one the analyzer hears.
+fn bind_audio<'audio>(
+    opened: Music<'audio>,
+    analyzer: &mut AudioAnalyzer,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    play: bool,
+) -> Result<(), String> {
+    close_audio(music, app, scratch);
 
     let file_sample_rate = opened.stream.sampleRate;
     *analyzer = *AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(file_sample_rate))
@@ -741,12 +922,12 @@ fn open_track<'audio>(
     }
     // SAFETY: the bridge is installed in `run` before this can be called, the
     // audio device is initialized (it is what produced `opened`), and the stream
-    // outlives the attachment because `close_track` — reached from the next
-    // `open_track` and from `run`'s shutdown — detaches before dropping it.
+    // outlives the attachment because `close_audio` — reached from the next
+    // `bind_current_audio` and from `run`'s shutdown — detaches before dropping
+    // it.
     unsafe { audio_bridge::attach(opened.stream) }
         .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
 
-    app.track = Some(track_name(path));
     app.shell
         .timeline
         .reset(f64::from(opened.get_time_length()));
@@ -754,22 +935,25 @@ fn open_track<'audio>(
     Ok(())
 }
 
-/// Detaches and drops the current track, leaving no stale samples behind.
+/// Detaches and drops the playing stream, leaving no stale samples behind.
 ///
 /// Draining the ring is not tidiness. The ring is lock-free SPSC and nothing
 /// produces into it once the processor is detached, so this is the only moment a
 /// consumer may safely empty it — and the samples in it belong to a track that is
-/// about to stop existing.
-fn close_track(music: &mut Option<Music<'_>>, app: &mut App, scratch: &mut [f32]) {
+/// about to stop being heard.
+///
+/// This touches audio only. The track stays in the workspace, because the frozen
+/// C has no way to close one.
+fn close_audio(music: &mut Option<Music<'_>>, app: &mut App, scratch: &mut [f32]) {
     let Some(open) = music.take() else {
         return;
     };
-    // SAFETY: the same stream `open_track` passed to `attach`, still alive here
-    // because it is dropped at the end of this function and not before.
+    // SAFETY: the same stream `bind_current_audio` passed to `attach`, still
+    // alive here because it is dropped at the end of this function and not
+    // before.
     unsafe { audio_bridge::detach(open.stream) };
     drop(open);
     while audio_bridge::drain_interleaved(scratch) > 0 {}
-    app.track = None;
     app.shell.timeline.reset(0.0);
 }
 
@@ -807,11 +991,42 @@ fn open_audio_dialog<'audio>(
     }
 }
 
-fn track_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    )
+/// Makes another track current, rebinding the scene and the audio device
+/// (the tracks-panel click, `plug.c:5261-5283`).
+///
+/// The order is the oracle's and it is defensive: the scene is bound *first*, so
+/// a scene that cannot be prepared leaves the current track playing rather than
+/// leaving the session with no audio and no picture. Selecting the same track is
+/// a no-op rather than a restart.
+///
+/// The C also runs `lyric_editor_allow_context_change` and
+/// `route_editor_allow_active_context_change` before any of this. Those guards
+/// belong to the panels that own the drafts (Agents G and I); the call sites here
+/// are where they hook in.
+fn select_track<'audio>(
+    audio: &'audio RaylibAudio,
+    index: usize,
+    analyzer: &mut AudioAnalyzer,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+) -> Result<(), String> {
+    if app.workspace.current_index() == Some(index) {
+        return Ok(());
+    }
+    let track = app
+        .workspace
+        .get(index)
+        .ok_or_else(|| format!("there is no track {index}"))?;
+    let (scene, seed) = (track.base_scene, track.scene_seed);
+    // Everything that can fail happens before anything is mutated, so a refused
+    // switch leaves the session exactly as it was — which is what the notice at
+    // the call site promises.
+    let opened = open_music(audio, &track.file_path)?;
+
+    app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+    app.workspace.select(index);
+    bind_audio(opened, analyzer, music, app, scratch, true)
 }
 
 /// The slice report. `tools/headless_check.sh` reads this, and its shape is the
@@ -912,7 +1127,21 @@ impl Report {
                 "placeholder"
             }
         );
-        println!("routes:          {}", app.routes.scene(scene).len());
+        println!("routes:          {}", app.routes().scene(scene).len());
+        // The workspace, as evidence rather than as existence. `--probe-reopen`
+        // adds a second track and selects it, and only this line distinguishes
+        // "swapped the stream" from "swapped the stream *and* kept both tracks in
+        // the list with the right one current" — which is the whole difference
+        // between the oracle's track model and the single slot it replaced.
+        match app.workspace.current() {
+            None => println!("tracks:          0 open"),
+            Some(track) => println!(
+                "tracks:          {} open, current {} \"{}\"",
+                app.workspace.len(),
+                app.workspace.current_index().unwrap_or(0),
+                track.display_name()
+            ),
+        }
         println!("panel:           {}", app.shell.panel.label());
         match &self.reopened {
             None => println!("reopen:          not requested"),

@@ -16,17 +16,19 @@ use std::path::PathBuf;
 use musializer_core::scene::{settings, SceneId, SceneSettings};
 use musializer_core::ui::notice::{NoticeQueue, NoticeSpec, Severity};
 use musializer_core::ui::row_typography;
+use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
 use musializer_runtime::font::{Face, Faces};
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
 
 use super::shell_layout::{WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
 use crate::scene_host;
+use crate::workspace::Workspace;
 
 /// What the shell asks the application to do.
 ///
@@ -48,6 +50,8 @@ pub enum ShellCommand {
     ResetScene(SceneId),
     /// A file the user dropped on the window.
     LoadTrack(PathBuf),
+    /// Make another open track current (`plug.c:5261-5283`).
+    SelectTrack(usize),
     /// Ask for an audio file through a native picker (`plug.c:7790-7800`).
     ///
     /// A command rather than the shell opening the dialog itself, because a modal
@@ -82,7 +86,14 @@ pub struct ShellInput<'a> {
     pub time_seconds: f64,
     pub duration_seconds: f64,
     pub playing: bool,
-    pub track_name: Option<&'a str>,
+    /// The open tracks and which one is current.
+    ///
+    /// The whole workspace rather than a name, because every Band 1 panel reads
+    /// per-track state — the route editor keys its draft by track slot, the
+    /// export panel reads the track's render config, the lyrics editor its
+    /// document. Passing a display name would mean six agents each threading
+    /// their own second channel to the same object.
+    pub workspace: &'a Workspace,
     pub band_count: usize,
     pub peak_band: usize,
     pub rms: f32,
@@ -112,6 +123,10 @@ pub struct Shell {
     /// Which of the timeline's own controls the pointer is dragging, so a scrub
     /// that leaves the strip keeps scrubbing.
     scrubbing: bool,
+    /// The tracks list's scroll position and momentum. The C keeps this in
+    /// function statics, which is why its list code can only ever serve one panel;
+    /// per-list state here is what lets the same policy serve the browsers too.
+    track_scroll: ScrollState,
 }
 
 impl Default for Shell {
@@ -138,6 +153,7 @@ impl Shell {
             fullscreen: false,
             timeline: TimelineView::new(0.0),
             scrubbing: false,
+            track_scroll: ScrollState::new(),
         }
     }
 
@@ -188,7 +204,7 @@ impl Shell {
                 input.window.0,
                 input.window.1,
                 self.inspector_open,
-                usize::from(input.track_name.is_some()),
+                input.workspace.len(),
                 self.timeline_height(input.window.1),
             )
         }
@@ -497,7 +513,7 @@ impl Shell {
             color::ui_rule(),
         );
 
-        let has_track = input.track_name.is_some();
+        let has_track = input.workspace.current().is_some();
         let labels: [&str; 6] = [
             if input.playing { "Pause" } else { "Play" },
             "Tune",
@@ -740,7 +756,7 @@ impl Shell {
             // Every one of these needs Agent B's project model. Disabled and
             // named beats absent: the affordance is what tells the user the
             // feature exists at all.
-            let unavailable = index > 0 && input.track_name.is_none();
+            let unavailable = index > 0 && input.workspace.current().is_none();
             if unavailable {
                 self.widgets
                     .disabled_button(d, font, boundary, label, Some(font_size));
@@ -778,27 +794,8 @@ impl Shell {
 
         // The track list, below the action row.
         let list_top = frame.tracks.y + top + height + metric::UI_CONTROL_GAP;
-        if let Some(name) = input.track_name {
-            let row_height = frame.tracks.width * 0.2;
-            let boundary = UiRect::new(
-                frame.tracks.x + metric::UI_PANEL_PADDING,
-                list_top,
-                frame.tracks.width - metric::UI_PANEL_PADDING * 2.0,
-                row_height,
-            );
-            if content.contains(boundary) {
-                let id = widgets::widget_id(widgets::id::TRACKS, 16);
-                self.widgets.text_button(
-                    d,
-                    input.fonts.ui(),
-                    id,
-                    boundary,
-                    name,
-                    true,
-                    ButtonStyle::Neutral,
-                    Some(metric::UI_FONT_LABEL),
-                );
-            }
+        if !input.workspace.is_empty() {
+            self.track_list(d, frame, input, commands, content, list_top);
         } else {
             widgets::draw_text(
                 d,
@@ -808,6 +805,131 @@ impl Shell {
                 list_top,
                 metric::UI_FONT_CAPTION,
                 color::ui_muted(),
+            );
+        }
+    }
+
+    /// The scrolling track list (`plug.c:5213-5382`).
+    ///
+    /// Split out of [`Self::tracks_panel`] because it is the one part of that
+    /// panel with state that outlives a frame. The geometry, the momentum and the
+    /// thumb are [`scroll_list`]'s, so all of that is asserted headlessly; what is
+    /// here is the drawing and the raylib input.
+    ///
+    /// Rows are **clipped, not skipped**. A row that is half out of view is drawn
+    /// half, and its hit rectangle is intersected with the visible area so the
+    /// hidden half cannot claim a click — the failure `workspace_layout.h:7-19`
+    /// records, arrived at from the other direction.
+    fn track_list(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+        content: UiRect,
+        list_top: f32,
+    ) {
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+
+        let count = input.workspace.len();
+        // The list area is what is left of the panel's content below the action
+        // row, so `header_height` here is everything above the first row.
+        let area = UiRect::new(
+            frame.tracks.x,
+            list_top,
+            frame.tracks.width,
+            (content.y + content.height - list_top).max(0.0),
+        );
+        if area.height <= 0.0 {
+            return;
+        }
+        let metrics = ListMetrics::measure(frame.tracks.width, area.height, 0.0, count);
+
+        let mouse = d.get_mouse_position();
+        let over_panel = frame.tracks.contains_point(mouse.x, mouse.y);
+        if over_panel {
+            self.track_scroll.wheel(d.get_mouse_wheel_move(), &metrics);
+        }
+
+        // The thumb is measured before `advance` so that a drag reads the same
+        // rectangle the user pressed on, and released before the rows are drawn.
+        let bar_x = frame.tracks.x + frame.tracks.width - metrics.bar_width;
+        if let Some((thumb_y, thumb_height)) = metrics.thumb(self.track_scroll.offset()) {
+            let thumb = UiRect::new(bar_x, area.y + thumb_y, metrics.bar_width, thumb_height);
+            if self.track_scroll.is_dragging() {
+                if d.is_mouse_button_released(MOUSE_BUTTON_LEFT) {
+                    self.track_scroll.end_drag();
+                }
+            } else if thumb.contains_point(mouse.x, mouse.y) {
+                if d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
+                    self.track_scroll.begin_drag(mouse.y - thumb.y);
+                }
+            } else if mouse.x >= bar_x
+                && mouse.x <= bar_x + metrics.bar_width
+                && mouse.y >= area.y
+                && mouse.y <= area.y + area.height
+                && d.is_mouse_button_released(MOUSE_BUTTON_LEFT)
+            {
+                let hit = if mouse.y < thumb.y {
+                    BarHit::Above
+                } else {
+                    BarHit::Below
+                };
+                self.track_scroll.page(hit, &metrics);
+            }
+        }
+
+        self.track_scroll
+            .advance(d.get_frame_time(), mouse.y - area.y, &metrics);
+
+        let current = input.workspace.current_index();
+        let row_width = metrics.row_width(frame.tracks.width);
+        // Scissor mode is GL state, so drawing through the parent handle inside
+        // the pair is still clipped; the handle type only enforces the begin/end
+        // pairing. Opened once around the whole list rather than per row.
+        let mut clip = d.begin_scissor_mode(
+            area.x as i32,
+            area.y as i32,
+            area.width as i32,
+            area.height as i32,
+        );
+        for (index, name) in input.workspace.display_names().enumerate() {
+            let (row_y, row_height) = metrics.row_offset(index, self.track_scroll.offset());
+            let top = area.y + row_y;
+            // Fully outside: no draw, and — the part that matters — no widget id
+            // registered, so nothing off-screen can claim the press.
+            if top + row_height <= area.y || top >= area.y + area.height {
+                continue;
+            }
+            let boundary =
+                UiRect::new(frame.tracks.x + metrics.padding, top, row_width, row_height);
+            let selected = current == Some(index);
+            // Offset past the action buttons above, so a track row and an action
+            // never hash to the same id.
+            let id = widgets::widget_id(widgets::id::TRACKS, 16 + index as u32);
+            let state = self.widgets.text_button_in(
+                &mut clip,
+                input.fonts.ui(),
+                id,
+                boundary,
+                // The press is tested against the visible part only.
+                boundary.intersect(area),
+                name,
+                selected,
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_LABEL),
+            );
+            if state.clicked && !selected {
+                commands.push(ShellCommand::SelectTrack(index));
+            }
+        }
+        drop(clip);
+
+        if let Some((thumb_y, thumb_height)) = metrics.thumb(self.track_scroll.offset()) {
+            widgets::fill(
+                d,
+                UiRect::new(bar_x, area.y + thumb_y, metrics.bar_width, thumb_height),
+                color::ui_rule(),
             );
         }
     }

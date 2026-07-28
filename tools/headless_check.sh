@@ -265,6 +265,19 @@ case "${REOPEN_LINE:-absent}" in
         SWEEP_FAILED=1
         ;;
 esac
+# A fourth claim, and the one the old single-slot model could not have made: the
+# swap kept *both* tracks in the workspace and made the second one current. A run
+# that merely rebound the stream and forgot the first track would pass every
+# check above.
+TRACKS_LINE="$(sed -n 's/^tracks: *//p' "$REOPEN_LOG")"
+echo "tracks after the swap: ${TRACKS_LINE:-<absent>}"
+case "${TRACKS_LINE:-absent}" in
+    "2 open, current 1 "*) ;;
+    *)
+        echo "FAIL: expected two tracks with the second current, got: ${TRACKS_LINE:-<absent>}" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
 
 echo "=== a routed setting ==="
 # Routes are applied after every input is resolved, and the report prints how

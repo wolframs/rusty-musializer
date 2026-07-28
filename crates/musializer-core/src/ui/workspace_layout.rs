@@ -89,6 +89,20 @@ impl UiRect {
             && other.y < self.y + self.height
     }
 
+    /// Inclusive point containment — `CheckCollisionPointRec`'s rule, which is
+    /// what every hit test in `plug.c` goes through.
+    ///
+    /// Separate from [`UiRect::contains`] because that one deliberately refuses
+    /// an empty inner rect, so a point expressed as a zero-size rect always
+    /// reports as outside. Two callers have already reached for it; it belongs
+    /// here rather than being written a third time.
+    pub fn contains_point(&self, x: f32, y: f32) -> bool {
+        if self.is_empty() || !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
+    }
+
     /// `ui_rect_intersect` (`workspace_layout.c:35-45`). Returns the all-zero rect
     /// when the two do not overlap, which [`UiRect::is_empty`] reports as empty.
     pub fn intersect(&self, other: UiRect) -> UiRect {
