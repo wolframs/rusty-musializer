@@ -18,5 +18,6 @@
 pub mod panels;
 pub mod shell;
 pub mod shell_layout;
+pub mod text_input;
 pub mod theme;
 pub mod widgets;

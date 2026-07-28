@@ -19,6 +19,7 @@ pub mod notice;
 pub mod route_editor_state;
 pub mod row_typography;
 pub mod scroll_list;
+pub mod text_edit;
 pub mod timeline_layout;
 pub mod timeline_view;
 pub mod workspace_layout;
