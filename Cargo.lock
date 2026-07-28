@@ -354,6 +354,7 @@ dependencies = [
  "musializer-runtime",
  "raylib",
  "raylib-sys",
+ "thiserror 2.0.19",
 ]
 
 [[package]]

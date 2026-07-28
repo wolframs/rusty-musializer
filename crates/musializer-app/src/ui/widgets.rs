@@ -46,6 +46,11 @@ pub struct ButtonState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonStyle {
     Neutral,
+    // No caller yet. It is the style for a destructive action, and the two the
+    // oracle has — `Clear manual` and Cancel export — are Agents L and H's. Kept
+    // rather than deleted because it is half of the C's widget vocabulary and
+    // re-deriving the colour ramp later would be worse than an allow here.
+    #[allow(dead_code)]
     Danger,
 }
 

@@ -60,6 +60,11 @@ pub enum ShellCommand {
     OpenAudio,
     /// Ask for a `.musi` project (`plug.c:7802-7805`).
     OpenProject,
+    /// Save the current track's project, asking for a destination only when it
+    /// has none (`save_project`, `plug.c:4641-4646`).
+    SaveProject,
+    /// Always ask for a destination (`save_project_as`, `plug.c:4615-4639`).
+    SaveProjectAs,
     /// A panel the rewrite has not built yet. Carried as a command rather than
     /// silently ignored, so the notice tray can say so by name — a stub that
     /// says nothing is indistinguishable from a bug.
@@ -732,7 +737,10 @@ impl Shell {
         }
 
         let stacked = frame.tracks_mode == TracksPanelMode::Stacked;
-        let labels: [&str; 4] = ["Open", "Save", "Save As", "Close"];
+        // The oracle's four, in its order (`action_labels`, `plug.c:5165-5166`).
+        // There is no "Close": the frozen C cannot close a single track, and a
+        // button for it would be an invented feature rather than parity.
+        let labels: [&str; 4] = ["Open project", "Add audio", "Save", "Save As"];
         let columns = if stacked { 2 } else { 4 };
         let cell_width = (row.width - (columns - 1) as f32 * 4.0) / columns as f32;
         let cell_height = if stacked {
@@ -756,20 +764,15 @@ impl Shell {
             // Every one of these needs Agent B's project model. Disabled and
             // named beats absent: the affordance is what tells the user the
             // feature exists at all.
-            let unavailable = index > 0 && input.workspace.current().is_none();
+            // Opening a project and adding audio work with an empty workspace;
+            // saving needs something to save.
+            let unavailable = index >= 2 && input.workspace.current().is_none();
             if unavailable {
                 self.widgets
                     .disabled_button(d, font, boundary, label, Some(font_size));
                 continue;
             }
             let id = widgets::widget_id(widgets::id::TRACKS, index as u32);
-            // Close discards a track's unsaved editor state, so it is styled as
-            // a danger action rather than looking like Open.
-            let style = if index == 3 {
-                ButtonStyle::Danger
-            } else {
-                ButtonStyle::Neutral
-            };
             let state = self.widgets.text_button(
                 d,
                 font,
@@ -777,17 +780,15 @@ impl Shell {
                 boundary,
                 label,
                 false,
-                style,
+                ButtonStyle::Neutral,
                 Some(font_size),
             );
             if state.clicked {
-                // Open reaches the picker now that there is one; the other three
-                // need Agent B's project model.
                 match index {
-                    0 => commands.push(ShellCommand::OpenAudio),
-                    1 => commands.push(ShellCommand::NotImplemented("Save project")),
-                    2 => commands.push(ShellCommand::NotImplemented("Save project as")),
-                    _ => commands.push(ShellCommand::NotImplemented("Close track")),
+                    0 => commands.push(ShellCommand::OpenProject),
+                    1 => commands.push(ShellCommand::OpenAudio),
+                    2 => commands.push(ShellCommand::SaveProject),
+                    _ => commands.push(ShellCommand::SaveProjectAs),
                 }
             }
         }

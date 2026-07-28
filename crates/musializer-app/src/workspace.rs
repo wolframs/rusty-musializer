@@ -64,7 +64,17 @@ use musializer_core::timing::track_timeline::Waveform;
 /// `ascii_columns`, `ascii_rows`, `ascii_image_path`, `ascii_image_sha256`).
 #[derive(Clone, Debug)]
 pub struct AsciiImage {
-    pub grid: AsciiGrid,
+    /// The converted cells, or `None` when only the image's identity is known.
+    ///
+    /// The C has no such state: its cells and its dimensions are one buffer, so
+    /// a project always restores both. Here opening a project restores the
+    /// identity immediately and decodes the image separately, and a blank grid
+    /// of the right size would claim cells had been restored when they had not.
+    pub grid: Option<AsciiGrid>,
+    /// The dimensions the project recorded, which survive whether or not the
+    /// image has been decoded yet.
+    pub columns: usize,
+    pub rows: usize,
     pub path: PathBuf,
     /// Hex SHA-256 of the source file. Empty when hashing was deferred, exactly
     /// as C leaves the buffer empty rather than failing the load.

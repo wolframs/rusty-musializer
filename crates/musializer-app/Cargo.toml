@@ -23,6 +23,9 @@ musializer-runtime.workspace = true
 raylib.workspace = true
 raylib-sys.workspace = true
 anyhow.workspace = true
+# Project save/open reports failures whose wording reaches the notice tray, so
+# each is a named variant rather than a formatted string.
+thiserror.workspace = true
 # For the CLI surface (Agent F). Note the C parser has no unknown-flag
 # diagnostic and treats any unrecognized --flag as an audio path; clap errors
 # instead, which is a deliberate divergence recorded in REWRITE_PLAN.md.

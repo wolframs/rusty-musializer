@@ -42,6 +42,7 @@ use musializer_runtime::process::dialogs::{self, FileDialog};
 use raylib::prelude::*;
 
 mod cli;
+mod project;
 mod scene_host;
 mod scenes;
 mod ui;
@@ -163,7 +164,7 @@ fn run() -> Result<std::process::ExitCode, String> {
     };
 
     // Step 3: the argv actions, left to right.
-    let mut audio_path: Option<PathBuf> = None;
+    let mut input: Option<Input> = None;
     for action in std::mem::take(&mut options.actions) {
         match action {
             Action::Mute => audio.set_master_volume(0.0),
@@ -186,17 +187,11 @@ fn run() -> Result<std::process::ExitCode, String> {
                 "--event",
                 "the manual event lane needs Agent B's event timeline",
             ),
-            Action::OpenProject(path) => unimplemented_action(
-                &mut options,
-                &mut app,
-                "--project",
-                &format!(
-                    "{} was not opened: the .musi model is Agent B's",
-                    path.display()
-                ),
-            ),
-            // The last input wins, exactly as in the C.
-            Action::LoadTrack(path) => audio_path = Some(path),
+            // The last input wins, exactly as in the C, and a project and an
+            // audio file compete for the same slot — which is why they share one
+            // variable rather than each having their own.
+            Action::OpenProject(path) => input = Some(Input::Project(path)),
+            Action::LoadTrack(path) => input = Some(Input::Audio(path)),
         }
     }
 
@@ -240,14 +235,6 @@ fn run() -> Result<std::process::ExitCode, String> {
             &mut app,
             "--render",
             "FFmpeg export supervision is Agent E's",
-        );
-    }
-    if options.save_project.is_some() {
-        unimplemented_action(
-            &mut options,
-            &mut app,
-            "--save-project",
-            "transactional .musi saving is Agent B's",
         );
     }
     if options.analysis_bridge.is_some() {
@@ -306,24 +293,58 @@ fn run() -> Result<std::process::ExitCode, String> {
     // plan's named traps, which is why every transition goes through
     // `bind_current_audio`/`close_audio` rather than being written out at each site.
     let mut music: Option<Music<'_>> = None;
-    if let Some(path) = audio_path.as_ref() {
-        if let Err(error) = open_track(
-            &audio,
-            path,
-            &mut analyzer,
-            &mut music,
-            &mut app,
-            &mut scratch,
-            // `--ui-probe play=0` photographs a paused track. `is_some_and` rather
-            // than `is_none_or`, which needs a newer Rust than this workspace's MSRV.
-            !options
-                .ui_probe
-                .as_ref()
-                .is_some_and(|probe| !probe.playing),
-        ) {
-            // The C's `Could not load command-line track` (`:548`).
-            eprintln!("warning: could not load {}: {error}", path.display());
-            options.error = true;
+    // `--ui-probe play=0` photographs a paused track. `is_some_and` rather than
+    // `is_none_or`, which needs a newer Rust than this workspace's MSRV.
+    let play = !options
+        .ui_probe
+        .as_ref()
+        .is_some_and(|probe| !probe.playing);
+    match input.as_ref() {
+        None => {}
+        Some(Input::Audio(path)) => {
+            if let Err(error) = open_track(
+                &audio,
+                path,
+                &mut analyzer,
+                &mut music,
+                &mut app,
+                &mut scratch,
+                play,
+            ) {
+                // The C's `Could not load command-line track` (`:548`).
+                eprintln!("warning: could not load {}: {error}", path.display());
+                options.error = true;
+            }
+        }
+        Some(Input::Project(path)) => {
+            if let Err(error) = open_project(
+                &audio,
+                path,
+                &mut analyzer,
+                &mut music,
+                &mut app,
+                &mut scratch,
+            ) {
+                // The C's `Could not load command-line project` (`musializer.c`).
+                eprintln!("warning: could not open {}: {error}", path.display());
+                options.error = true;
+            } else if !play {
+                if let Some(open) = music.as_ref() {
+                    open.pause_stream();
+                }
+            }
+        }
+    }
+
+    // `--save-project`, after every input is resolved so it saves what the rest
+    // of the command line actually produced (`musializer.c:571-577`).
+    if let Some(destination) = options.save_project.clone() {
+        match save_project_to(&mut app, music.as_ref(), &destination, false) {
+            Ok(()) => println!("saved {}", destination.display()),
+            Err(error) => {
+                eprintln!("warning: could not save {}: {error}", destination.display());
+                options.error = true;
+            }
         }
     }
 
@@ -354,7 +375,17 @@ fn run() -> Result<std::process::ExitCode, String> {
     // (`musializer.c:617`, `:637`). The save itself is Agent B's and already
     // reported above; honouring the skip keeps the exit path identical.
     let mut running = !options.exit_after_save();
-    while running && !rl.window_should_close() {
+    // Set once the close guard has warned with no dialog available; see
+    // `confirm_close`.
+    let mut close_warned = false;
+    while running {
+        // Exactly once per frame: raylib's `WindowShouldClose` clears the GLFW
+        // flag as it reads it (`rcore_desktop_glfw.c`), which is what lets the
+        // C's `WindowShouldClose() && plug_confirm_close()` refuse a quit without
+        // re-asking every frame afterwards (`musializer.c:638`).
+        if rl.window_should_close() && confirm_close(&mut app, &mut close_warned) {
+            break;
+        }
         if let Some(music) = music.as_ref() {
             music.update_stream();
         }
@@ -618,13 +649,52 @@ fn run() -> Result<std::process::ExitCode, String> {
                     open_audio_dialog(&audio, &mut analyzer, &mut music, &mut app, &mut scratch)
                 }
                 ShellCommand::OpenProject => {
-                    // The picker would work; what is behind it does not. Saying so
-                    // beats opening a dialog whose result is then discarded.
-                    app.shell.notify(
-                        Severity::Info,
-                        "Not built yet",
-                        "Opening a .musi project needs the project model, which is Agent B's.",
-                    );
+                    let dialog = FileDialog::new("Open Musializer project")
+                        .with_filter(dialogs::filters::MUSIALIZER_PROJECT);
+                    match dialog.pick_file() {
+                        // Cancellation is deliberately silent.
+                        Ok(None) => {}
+                        Ok(Some(path)) => {
+                            if let Err(error) = open_project(
+                                &audio,
+                                &path,
+                                &mut analyzer,
+                                &mut music,
+                                &mut app,
+                                &mut scratch,
+                            ) {
+                                app.shell.notify(
+                                    Severity::Error,
+                                    "Project could not be opened",
+                                    &error,
+                                );
+                            }
+                        }
+                        Err(error) => app.shell.notify(
+                            Severity::Warning,
+                            "No file picker is available",
+                            &format!("{error}. Pass --project on the command line instead."),
+                        ),
+                    }
+                }
+                ShellCommand::SaveProject => {
+                    save_project_command(&mut app, music.as_ref(), true);
+                }
+                ShellCommand::SaveProjectAs => {
+                    if let Some(destination) = ask_for_project_path(&mut app) {
+                        match save_project_to(&mut app, music.as_ref(), &destination, false) {
+                            Ok(()) => app.shell.notify(
+                                Severity::Info,
+                                "Project saved",
+                                "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
+                            ),
+                            Err(error) => app.shell.notify(
+                                Severity::Error,
+                                "Project could not be saved",
+                                &error,
+                            ),
+                        }
+                    }
                 }
                 ShellCommand::NotImplemented(what) => {
                     app.shell.notify(
@@ -637,6 +707,36 @@ fn run() -> Result<std::process::ExitCode, String> {
         }
 
         report.frames += 1;
+
+        // Autosave, polled after the frame like the C's (`plug.c:7580-7583`).
+        // Every track, not only the current one, because a background track can
+        // be dirty from a project open. `editor_dirty` is `false` until Agents G
+        // and I have drafts to report.
+        let now = rl.get_time();
+        let due: Vec<usize> = (0..app.workspace.len())
+            .filter(|&index| {
+                app.workspace
+                    .get(index)
+                    .is_some_and(|track| project::autosave_is_due(track, now, false))
+            })
+            .collect();
+        for index in due {
+            // Only the current track has a bound stream to read the sample rate
+            // from, which is the same reason `save_project_to` needs one.
+            if app.workspace.current_index() != Some(index) {
+                continue;
+            }
+            if let Some(path) = app
+                .workspace
+                .get(index)
+                .and_then(|track| track.project_path.clone())
+            {
+                // A failure sets `project_autosave_failed`, which stops the retry
+                // until the next edit clears it — so this cannot become a loop
+                // that writes every frame.
+                let _ = save_project_to(&mut app, music.as_ref(), &path, true);
+            }
+        }
 
         // `--probe-reopen`: swap tracks halfway through the run, so a headless
         // check exercises detach/drop/drain/rebind/reattach rather than only the
@@ -991,6 +1091,201 @@ fn open_audio_dialog<'audio>(
     }
 }
 
+/// Whether the window may close (`plug_confirm_close`, `plug.c:7200-7250`).
+///
+/// Returns `true` to quit. With nothing unresolved it never asks, which is the
+/// C's first check and the reason a normal session closes instantly.
+///
+/// # The divergence, and why
+///
+/// The C asks through `tinyfd_messageBox`, which always answers something
+/// because tinyfd falls back to a terminal prompt. Here the dialog is `kdialog`
+/// or `zenity` as a child process, and neither may be installed. Refusing to
+/// quit forever would trap the user in the application; quitting silently would
+/// discard the work the guard exists to protect. So an unavailable dialog
+/// refuses the **first** request and says why, in the tray and on stderr, and
+/// honours the second. That is finite, it never loses work without having said
+/// so, and it is the smallest invention that satisfies both halves.
+fn confirm_close(app: &mut App, already_warned: &mut bool) -> bool {
+    let dirty = app
+        .workspace
+        .tracks()
+        .iter()
+        .filter(|track| track.has_unsaved_work())
+        .count();
+    // The other five conditions the C weighs — an open lyric draft, an open route
+    // edit, staged Assist suggestions, a running analysis and a running export —
+    // belong to Agents I, G, J and H. Each adds a line to this list.
+    if dirty == 0 {
+        return true;
+    }
+    let message = format!(
+        "Resolve these items before quitting, or discard them now:\n\n- Save {dirty} unnamed or unresolved track project{}.\n\nQuit anyway and discard or cancel the items above?",
+        if dirty == 1 { "" } else { "s" }
+    );
+    match dialogs::confirm_warning("Unresolved Musializer work", &message) {
+        Ok(quit) => quit,
+        Err(error) => {
+            if *already_warned {
+                eprintln!(
+                    "warning: quitting with {dirty} unsaved project(s) after a second request"
+                );
+                return true;
+            }
+            *already_warned = true;
+            eprintln!("warning: {dirty} unsaved project(s), and no dialog is available to confirm: {error}");
+            app.shell.notify(
+                Severity::Warning,
+                "Unresolved work",
+                &format!(
+                    "{dirty} project(s) have unsaved changes and no confirmation dialog is available. Save them, or ask to close again to discard."
+                ),
+            );
+            false
+        }
+    }
+}
+
+/// What the command line asked to open. One slot, because a project and an audio
+/// file compete for it and the last one wins (`musializer.c:500-506`).
+enum Input {
+    Audio(PathBuf),
+    Project(PathBuf),
+}
+
+/// Opens a `.musi` and makes its track current (`open_project_path`,
+/// `plug.c:4665-5044`).
+///
+/// The whole track is built, with every asset digest already verified, before
+/// anything in the session is replaced. A project that fails to open leaves the
+/// workspace exactly as it was, which is why this cannot be written as "clear,
+/// then load".
+fn open_project<'audio>(
+    audio: &'audio RaylibAudio,
+    path: &Path,
+    analyzer: &mut AudioAnalyzer,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+) -> Result<(), String> {
+    let opened = project::open_path(path, |audio_path| {
+        // A metadata probe, exactly as C's `LoadMusicStream` at `plug.c:4901` is:
+        // the stream that plays is opened by `bind_current_audio`.
+        let probe = open_music(audio, audio_path)?;
+        Ok(f64::from(probe.get_time_length()))
+    })
+    .map_err(|error| error.to_string())?;
+
+    if let Some(project::OpenWarning::LegacyAudioPath) = opened.warning {
+        app.shell.notify(
+            Severity::Warning,
+            "Project used a legacy asset path",
+            "Audio was found in the launch directory because it was not beside the project. Move it beside the project or use an absolute path for portability.",
+        );
+    }
+
+    let index = app.workspace.push(opened.track);
+    // `push` only selects when the workspace was empty, but opening a project
+    // always makes its track current (`plug.c:5031`). The audio bind is
+    // `select_track`'s either way, so this is one call rather than two paths.
+    if app.workspace.current_index() == Some(index) {
+        let (scene, seed) = {
+            let track = &app.workspace.tracks()[index];
+            (track.base_scene, track.scene_seed)
+        };
+        app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+        bind_current_audio(audio, analyzer, music, app, scratch, true)?;
+    } else {
+        select_track(audio, index, analyzer, music, app, scratch)?;
+    }
+    app.shell.notify(
+        Severity::Info,
+        "Project opened",
+        "Lyrics, embedded semantic cues, authored lanes, scene plan, and output settings were restored.",
+    );
+    Ok(())
+}
+
+/// Saves the current track's project to `destination`.
+///
+/// The sample rate and channel count come off the live stream because that is
+/// where the C reads them (`plug.c:4304-4306`) and the track model deliberately
+/// holds no audio handle. A track with no stream bound cannot be saved, which is
+/// the same restriction the C has by construction.
+fn save_project_to(
+    app: &mut App,
+    music: Option<&Music<'_>>,
+    destination: &Path,
+    reuse_published: bool,
+) -> Result<(), String> {
+    let stream = music.ok_or("there is no track to save")?.stream;
+    let track = app
+        .workspace
+        .current_mut()
+        .ok_or("there is no track to save")?;
+    project::save_to_path(
+        track,
+        destination,
+        stream.sampleRate,
+        stream.channels as u16,
+        reuse_published,
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// The Save button (`save_project`, `plug.c:4641-4646`): saves in place when the
+/// track has a project path, and otherwise falls through to Save As.
+fn save_project_command(app: &mut App, music: Option<&Music<'_>>, ask_if_unnamed: bool) {
+    let existing = app
+        .workspace
+        .current()
+        .and_then(|track| track.project_path.clone());
+    let destination = match existing {
+        Some(path) => Some(path),
+        None if ask_if_unnamed => match ask_for_project_path(app) {
+            Some(path) => Some(path),
+            None => return,
+        },
+        None => return,
+    };
+    let Some(destination) = destination else {
+        return;
+    };
+    match save_project_to(app, music, &destination, false) {
+        Ok(()) => app.shell.notify(
+            Severity::Info,
+            "Project saved",
+            "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
+        ),
+        Err(error) => app
+            .shell
+            .notify(Severity::Error, "Project could not be saved", &error),
+    }
+}
+
+/// Asks where to save, seeded with the suggestion `save_project_as` computes.
+///
+/// Called from outside the drawing pair, like every other modal here.
+fn ask_for_project_path(app: &mut App) -> Option<PathBuf> {
+    let suggestion = app.workspace.current().map(project::suggested_save_path);
+    let mut dialog = FileDialog::new("Save Musializer project")
+        .with_filter(dialogs::filters::MUSIALIZER_PROJECT);
+    if let Some(path) = suggestion {
+        dialog = dialog.with_default_path(path);
+    }
+    match dialog.save_file() {
+        Ok(path) => path,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Warning,
+                "No file picker is available",
+                &format!("{error}. Pass --save-project on the command line instead."),
+            );
+            None
+        }
+    }
+}
+
 /// Makes another track current, rebinding the scene and the audio device
 /// (the tracks-panel click, `plug.c:5261-5283`).
 ///
@@ -1141,6 +1436,24 @@ impl Report {
                 app.workspace.current_index().unwrap_or(0),
                 track.display_name()
             ),
+        }
+        // The project half, as evidence: a `.musi` that was opened but left no
+        // path behind, or one that is dirty the moment it was written, both exit
+        // 0 and look identical without this line.
+        match app.workspace.current() {
+            Some(track) => match &track.project_path {
+                Some(path) => println!(
+                    "project:         {} ({})",
+                    path.display(),
+                    if track.project_dirty {
+                        "dirty"
+                    } else {
+                        "clean"
+                    }
+                ),
+                None => println!("project:         none (audio only)"),
+            },
+            None => println!("project:         no track"),
         }
         println!("panel:           {}", app.shell.panel.label());
         match &self.reopened {

@@ -279,6 +279,74 @@ case "${TRACKS_LINE:-absent}" in
         ;;
 esac
 
+echo "=== the .musi round trip ==="
+# Save a project, then open it back and check that the audio came through the
+# *bundled* copy rather than the file it was saved from. A save that wrote a
+# syntactically valid project referring to nothing would pass a "the file exists"
+# check and fail here.
+PROJECT_DIR="$OUT_DIR/project"
+rm -rf "$PROJECT_DIR"
+mkdir -p "$PROJECT_DIR"
+cp "$FIXTURE" "$PROJECT_DIR/source.wav"
+PROJECT="$PROJECT_DIR/show.musi"
+SAVE_LOG="$OUT_DIR/project-save.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer "$PROJECT_DIR/source.wav" \
+        --save-project "$PROJECT" \
+    >"$SAVE_LOG" 2>&1
+SAVE_STATUS=$?
+set -e
+BUNDLED="$(find "$PROJECT_DIR/show.assets" -type f 2>/dev/null | head -1)"
+echo "saved: exit=$SAVE_STATUS project=$([ -f "$PROJECT" ] && echo present || echo ABSENT) bundled=$([ -n "$BUNDLED" ] && echo present || echo ABSENT)"
+if [ "$SAVE_STATUS" -ne 0 ] || [ ! -f "$PROJECT" ] || [ -z "$BUNDLED" ]; then
+    echo "FAIL: the project was not saved with its audio bundled" >&2
+    SWEEP_FAILED=1
+fi
+
+# The source is removed before the reopen, so the run can only succeed by
+# reading the bundled copy. This is the assertion that makes the bundle mean
+# something rather than merely exist.
+rm -f "$PROJECT_DIR/source.wav"
+OPEN_LOG="$OUT_DIR/project-open.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --project "$PROJECT" \
+        --size 1280x720 \
+        --probe-frames 90 \
+        --probe-shot "$OUT_DIR/project-open.png" \
+    >"$OPEN_LOG" 2>&1
+OPEN_STATUS=$?
+set -e
+OPEN_PROJECT_LINE="$(sed -n 's/^project: *//p' "$OPEN_LOG")"
+OPEN_VERDICT="$(sed -n 's/^verdict: *//p' "$OPEN_LOG")"
+echo "opened: exit=$OPEN_STATUS project=${OPEN_PROJECT_LINE:-<absent>}"
+echo "        verdict=${OPEN_VERDICT:-<absent>}"
+if [ "$OPEN_STATUS" -ne 0 ]; then
+    echo "FAIL: opening the saved project exited $OPEN_STATUS" >&2
+    SWEEP_FAILED=1
+fi
+case "${OPEN_PROJECT_LINE:-absent}" in
+    *"show.musi (clean)") ;;
+    *)
+        echo "FAIL: the reopened track did not adopt its project path cleanly" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+case "${OPEN_VERDICT:-absent}" in
+    "audio advanced"*)
+        # Only reachable through the bundled asset: the source is gone.
+        ;;
+    *)
+        echo "FAIL: no audio arrived from the bundled asset: ${OPEN_VERDICT:-<absent>}" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+
 echo "=== a routed setting ==="
 # Routes are applied after every input is resolved, and the report prints how
 # many landed on the active scene.

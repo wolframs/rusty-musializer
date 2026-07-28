@@ -182,6 +182,45 @@ impl PresetLibrary {
         Some(index)
     }
 
+    /// Adds a preset with an id that already exists, from a file
+    /// (`plug.c:4776-4801` for `.musi`, `library_from_document` for the store).
+    ///
+    /// Distinct from [`Self::push`], which *allocates* an id: hydration must
+    /// preserve the identifiers the file recorded, or a project's cue references
+    /// would point at different presets after a round trip. The allocator is
+    /// advanced past every restored id so a later `push` cannot collide.
+    ///
+    /// `u64::MAX` is refused because advancing past it would wrap to zero.
+    pub fn restore(
+        &mut self,
+        scene: SceneId,
+        id: u64,
+        name: &str,
+        snapshot: &SettingsSnapshot,
+    ) -> bool {
+        if id == 0 || id == u64::MAX || name.is_empty() || name.len() > NAME_MAX_BYTES {
+            return false;
+        }
+        if !snapshot.captured || !snapshot.is_valid_for(scene) {
+            return false;
+        }
+        if self.scenes[scene.index()].len() >= PRESETS_PER_SCENE {
+            return false;
+        }
+        if self.scenes.iter().flatten().any(|preset| preset.id == id) {
+            return false;
+        }
+        self.scenes[scene.index()].push(Preset {
+            id,
+            name: name.to_owned(),
+            snapshot: *snapshot,
+        });
+        if id >= self.next_id {
+            self.next_id = id + 1;
+        }
+        true
+    }
+
     /// Replaces one preset's captured values, keeping its id and name
     /// (`scene_settings_preset_replace`, `scene_settings.c:341-353`).
     pub fn replace_snapshot(
