@@ -277,6 +277,239 @@ impl<'a> EventTimelineCursor<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The manual event row's policy (Agent L).
+//
+// Everything below is `plug.c:1959-1977` and `:2834-2971` with the drawing taken
+// out, so the row that a headless capture photographs and the state machine that
+// a test drives are the same code.
+// ---------------------------------------------------------------------------
+
+/// The single value a manually recorded marker carries (`plug.c:1972`).
+///
+/// **One** value, which is the whole reason the row's caption says only
+/// Constellation reacts: [`crate::project::semantic_lane::sample`] requires the
+/// four-value analysis payload and skips anything else, so a `+ Feel` marker is
+/// invisible to every scene that reads the semantic lane. The generic event path
+/// is the only reader it has.
+pub const MANUAL_MARKER_VALUE: f32 = 1.0;
+
+/// Builds the record `record_timeline_event` builds (`plug.c:1959-1977`).
+///
+/// `None` when the id space is exhausted, which is the C's `UINT64_MAX` guard —
+/// an id of `u64::MAX` cannot be followed by another, and
+/// [`crate::project::model`]'s next-id rule refuses to wrap to zero.
+#[must_use]
+pub fn manual_marker(
+    timestamp_seconds: f64,
+    next_id: u64,
+    event_type: EventType,
+) -> Option<EventRecord> {
+    if next_id == u64::MAX {
+        return None;
+    }
+    let mut values = [0.0f32; VALUE_CAPACITY];
+    values[0] = MANUAL_MARKER_VALUE;
+    Some(EventRecord {
+        timestamp_seconds,
+        id: next_id,
+        event_type: event_type as u32,
+        value_count: 1,
+        values,
+    })
+}
+
+/// The three faces of the `Clear manual` button (`plug.c:2852-2855`).
+///
+/// The order is not interchangeable: an available undo wins over an armed
+/// confirmation, so the button that just cleared the lane offers to put it back
+/// rather than asking to clear the now-empty lane again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClearButton {
+    /// Idle. A click arms the confirmation.
+    Clear,
+    /// Armed. A click clears, and the button is drawn in the danger style.
+    Confirm,
+    /// The lane was cleared and can be put back.
+    Undo,
+}
+
+impl ClearButton {
+    /// `clear_label` (`plug.c:2852-2855`).
+    #[must_use]
+    pub fn resolve(undo_available: bool, armed: bool) -> Self {
+        if undo_available {
+            Self::Undo
+        } else if armed {
+            Self::Confirm
+        } else {
+            Self::Clear
+        }
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Clear => "Clear manual",
+            Self::Confirm => "Confirm clear",
+            Self::Undo => "Undo clear",
+        }
+    }
+
+    /// Whether the button draws in the destructive style
+    /// (`danger_text_button`, `plug.c:2926-2928`).
+    ///
+    /// Only the armed state does. Undo is a *recovery*, and colouring it as a
+    /// danger would tell the user the safe way out is the dangerous one.
+    #[must_use]
+    pub const fn is_danger(self) -> bool {
+        matches!(self, Self::Confirm)
+    }
+
+    /// What a click on this face asks for.
+    #[must_use]
+    pub const fn click(self) -> ManualEventAction {
+        match self {
+            Self::Clear => ManualEventAction::ArmClear,
+            Self::Confirm => ManualEventAction::Clear,
+            Self::Undo => ManualEventAction::UndoClear,
+        }
+    }
+}
+
+/// `plug_record_event`'s lane half (`plug.c:1055-1066`).
+///
+/// The allocator only ever moves **forward past the id just used**, which is not
+/// [`crate::project::model`]'s recompute-from-scratch rule: importing an event
+/// with a low id must not rewind an allocator that has already handed out a
+/// higher one. `u64::MAX` is left alone because `id + 1` would wrap to zero.
+pub fn record_into(
+    lane: &mut EventTimeline,
+    next_id: &mut u64,
+    event: EventRecord,
+) -> Result<(), EventTimelineError> {
+    lane.record(event)?;
+    if event.id >= *next_id && event.id != u64::MAX {
+        *next_id = event.id + 1;
+    }
+    Ok(())
+}
+
+/// The `Clear manual` button's cross-frame state: whether it is armed, and the
+/// lane a confirmed clear took away (`p->clear_events_confirmation`,
+/// `p->event_undo`, `p->event_undo_available`, `plug.c:250-256`).
+///
+/// One type rather than three fields because the three can disagree: C's
+/// `event_undo` is meaningful only while `event_undo_available` is set, and an
+/// armed confirmation surviving a clear is what would let a second click clear
+/// the lane the first one just saved. Here "there is something to undo" is
+/// `Option::is_some` and cannot be out of step with the buffer it describes.
+#[derive(Clone, Debug, Default)]
+pub struct ManualClear {
+    armed: bool,
+    undo: Option<EventTimeline>,
+}
+
+impl ManualClear {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Which face the button shows this frame (`plug.c:2852-2855`).
+    #[must_use]
+    pub fn button(&self) -> ClearButton {
+        ClearButton::resolve(self.undo.is_some(), self.armed)
+    }
+
+    /// First click: arm the confirmation (`plug.c:2965`).
+    pub fn arm(&mut self) {
+        self.armed = true;
+    }
+
+    /// Second click: move `lane` into the undo slot and restart the allocator
+    /// (`plug.c:2954-2957`).
+    ///
+    /// The allocator goes back to 1 because an empty lane can collide with
+    /// nothing, and leaving it high would make every id after a clear look like
+    /// it came from a lane that no longer exists.
+    pub fn clear(&mut self, lane: &mut EventTimeline, next_id: &mut u64) {
+        self.undo = Some(lane.clone());
+        lane.clear();
+        *next_id = 1;
+        self.armed = false;
+    }
+
+    /// `Undo clear` (`plug.c:2943-2951`). `false` when there is nothing to undo.
+    ///
+    /// A saved lane that will not validate is put **back** rather than dropped:
+    /// the user's markers are still in the slot, and losing them to a bug in the
+    /// validator would be the one outcome undo exists to prevent.
+    pub fn undo(&mut self, lane: &mut EventTimeline, next_id: &mut u64) -> bool {
+        let Some(saved) = self.undo.take() else {
+            return false;
+        };
+        if lane.replace(&saved).is_err() {
+            self.undo = Some(saved);
+            return false;
+        }
+        *next_id = next_id_for(lane);
+        self.armed = false;
+        true
+    }
+
+    /// A newly recorded event retires both (`plug.c:1067-1068`).
+    ///
+    /// Putting the pre-clear lane back afterwards would have to reconcile with an
+    /// id that did not exist when the clear happened, so the C drops the offer
+    /// rather than making that the user's problem.
+    pub fn forget(&mut self) {
+        self.armed = false;
+        self.undo = None;
+    }
+}
+
+/// `timeline_next_id` (`plug.c:624-634`): the smallest allocator value that
+/// cannot collide with anything already in `lane`.
+///
+/// `u64::MAX` is skipped rather than incremented past, because `id + 1` would
+/// wrap to zero and zero is not a valid id.
+#[must_use]
+pub fn next_id_for(lane: &EventTimeline) -> u64 {
+    let mut next = 1u64;
+    for event in lane.events() {
+        if event.id >= next && event.id != u64::MAX {
+            next = event.id + 1;
+        }
+    }
+    next
+}
+
+/// What the manual event row asks the application to do.
+///
+/// A command rather than a mutation, for the reason the whole shell is: the row
+/// draws inside a `BeginDrawing` pair and owns neither the track list nor the
+/// transport, and a row that can be driven in a test is a row whose confirm/undo
+/// sequence is assertable.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ManualEventAction {
+    /// `+ Feel` and `+ Custom`, and the `--event` command line
+    /// (`plug_record_event`, `plug.c:1055-1069`).
+    Record(EventRecord),
+    /// `+ Scene`: cue the active scene and its current tuning at the playhead
+    /// (`record_scene_cue`, `plug.c:1979-2030`). Carries nothing because
+    /// everything it needs — the scene, its settings, the playhead — belongs to
+    /// the application, not to the row.
+    RecordSceneCue,
+    /// First click on `Clear manual`: arm the confirmation and say so
+    /// (`plug.c:2965-2970`).
+    ArmClear,
+    /// Second click: move the lane into the undo slot (`plug.c:2954-2963`).
+    Clear,
+    /// Put the cleared lane back (`plug.c:2943-2952`).
+    UndoClear,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,5 +681,140 @@ mod tests {
         assert_eq!(cursor.next_until(9.0).unwrap().map(|e| e.id), Some(1));
         assert_eq!(cursor.seek(-1.0), Err(EventTimelineError::Malformed));
         assert_eq!(cursor.seek(f64::NAN), Err(EventTimelineError::Malformed));
+    }
+
+    #[test]
+    fn a_manual_marker_carries_exactly_one_value() {
+        // This is the fact the row's caption is about: one value, so
+        // `semantic_lane::sample` (which requires four) skips it entirely.
+        let marker = manual_marker(12.5, 7, EventType::Semantic).expect("id 7 is usable");
+        assert_eq!(marker.timestamp_seconds, 12.5);
+        assert_eq!(marker.id, 7);
+        assert_eq!(marker.event_type, EventType::Semantic as u32);
+        assert_eq!(marker.value_count, 1);
+        assert_eq!(marker.values(), &[MANUAL_MARKER_VALUE]);
+        assert!(record_is_valid(&marker));
+
+        let view = crate::scene::events::EventTimelineView {
+            events: core::slice::from_ref(&marker),
+        };
+        let frame = crate::project::semantic_lane::sample(view, 20.0).expect("a usable time");
+        assert!(
+            !frame.available,
+            "a one-value marker must not reach the semantic lane"
+        );
+    }
+
+    #[test]
+    fn an_exhausted_id_space_refuses_to_build_a_marker() {
+        // `id + 1` would wrap to zero and zero is not a valid id (plug.c:1961).
+        assert!(manual_marker(1.0, u64::MAX, EventType::Custom).is_none());
+        assert!(manual_marker(1.0, u64::MAX - 1, EventType::Custom).is_some());
+    }
+
+    #[test]
+    fn the_clear_button_prefers_undo_over_an_armed_confirmation() {
+        assert_eq!(ClearButton::resolve(false, false), ClearButton::Clear);
+        assert_eq!(ClearButton::resolve(false, true), ClearButton::Confirm);
+        assert_eq!(ClearButton::resolve(true, false), ClearButton::Undo);
+        // Both set: the C's ternary chain tests undo first (plug.c:2852).
+        assert_eq!(ClearButton::resolve(true, true), ClearButton::Undo);
+
+        assert_eq!(ClearButton::Clear.label(), "Clear manual");
+        assert_eq!(ClearButton::Confirm.label(), "Confirm clear");
+        assert_eq!(ClearButton::Undo.label(), "Undo clear");
+
+        // Only the armed face is destructive; undo is the way back out.
+        assert!(!ClearButton::Clear.is_danger());
+        assert!(ClearButton::Confirm.is_danger());
+        assert!(!ClearButton::Undo.is_danger());
+
+        assert_eq!(ClearButton::Clear.click(), ManualEventAction::ArmClear);
+        assert_eq!(ClearButton::Confirm.click(), ManualEventAction::Clear);
+        assert_eq!(ClearButton::Undo.click(), ManualEventAction::UndoClear);
+    }
+
+    #[test]
+    fn the_allocator_moves_forward_past_the_id_used_and_never_back() {
+        let mut lane = EventTimeline::new();
+        let mut next = 1u64;
+        record_into(&mut lane, &mut next, event(1.0, 1, EventType::Custom)).unwrap();
+        assert_eq!(next, 2);
+        record_into(&mut lane, &mut next, event(2.0, 40, EventType::Custom)).unwrap();
+        assert_eq!(next, 41);
+        // A later low id does not rewind it (plug.c:1063-1065).
+        record_into(&mut lane, &mut next, event(3.0, 5, EventType::Custom)).unwrap();
+        assert_eq!(next, 41);
+        // `id + 1` would wrap to zero, so u64::MAX leaves it alone.
+        record_into(
+            &mut lane,
+            &mut next,
+            event(4.0, u64::MAX, EventType::Custom),
+        )
+        .unwrap();
+        assert_eq!(next, 41);
+    }
+
+    #[test]
+    fn a_refused_record_leaves_the_allocator_where_it_was() {
+        let mut lane = EventTimeline::new();
+        let mut next = 1u64;
+        record_into(&mut lane, &mut next, event(1.0, 7, EventType::Cue)).unwrap();
+        assert_eq!(next, 8);
+        assert_eq!(
+            record_into(&mut lane, &mut next, event(2.0, 7, EventType::Cue)),
+            Err(EventTimelineError::DuplicateId)
+        );
+        assert_eq!(next, 8);
+        assert_eq!(lane.len(), 1);
+    }
+
+    #[test]
+    fn next_id_for_skips_u64_max_and_starts_at_one() {
+        assert_eq!(next_id_for(&EventTimeline::new()), 1);
+        let mut lane = EventTimeline::new();
+        lane.record(event(1.0, u64::MAX, EventType::Cue)).unwrap();
+        assert_eq!(next_id_for(&lane), 1);
+        lane.record(event(0.5, 4, EventType::Cue)).unwrap();
+        assert_eq!(next_id_for(&lane), 5);
+    }
+
+    #[test]
+    fn arming_then_clearing_then_undoing_returns_the_lane_and_the_allocator() {
+        let mut lane = EventTimeline::new();
+        let mut next = 1u64;
+        let mut clear = ManualClear::new();
+        record_into(&mut lane, &mut next, event(1.0, 1, EventType::Custom)).unwrap();
+        record_into(&mut lane, &mut next, event(2.0, 9, EventType::Custom)).unwrap();
+        assert_eq!(clear.button(), ClearButton::Clear);
+
+        clear.arm();
+        assert_eq!(clear.button(), ClearButton::Confirm);
+
+        clear.clear(&mut lane, &mut next);
+        assert!(lane.is_empty());
+        assert_eq!(next, 1, "an empty lane can collide with nothing");
+        assert_eq!(clear.button(), ClearButton::Undo);
+
+        assert!(clear.undo(&mut lane, &mut next));
+        assert_eq!(lane.len(), 2);
+        assert_eq!(next, 10);
+        assert_eq!(clear.button(), ClearButton::Clear);
+        // Nothing left to give back.
+        assert!(!clear.undo(&mut lane, &mut next));
+    }
+
+    #[test]
+    fn a_recorded_event_retires_the_undo_offer() {
+        let mut lane = EventTimeline::new();
+        let mut next = 1u64;
+        let mut clear = ManualClear::new();
+        record_into(&mut lane, &mut next, event(1.0, 1, EventType::Custom)).unwrap();
+        clear.arm();
+        clear.clear(&mut lane, &mut next);
+        assert_eq!(clear.button(), ClearButton::Undo);
+        clear.forget();
+        assert_eq!(clear.button(), ClearButton::Clear);
+        assert!(!clear.undo(&mut lane, &mut next));
     }
 }

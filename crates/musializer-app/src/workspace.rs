@@ -48,11 +48,12 @@
 use std::path::PathBuf;
 
 use musializer_core::audio::song_atlas_map::SongAtlasMap;
-use musializer_core::project::event_timeline::EventTimeline;
+use musializer_core::project::event_timeline::{self, EventTimeline, ManualClear};
 use musializer_core::project::lyrics::{LyricsDocument, LyricsError};
 use musializer_core::project::model::{AnalysisLaneReference, CaptionStyle, Metadata};
 use musializer_core::project::preset_store::PresetLibrary;
-use musializer_core::project::scene_switch::SceneSwitchTimeline;
+use musializer_core::project::scene_switch::{SceneSwitchError, SceneSwitchTimeline};
+use musializer_core::scene::events::{EventRecord, EventTimelineError};
 use musializer_core::scene::routes::RouteTable;
 use musializer_core::scene::{SceneId, SceneSettings};
 use musializer_core::scenes::ascii_field::ascii_art::Grid as AsciiGrid;
@@ -79,6 +80,27 @@ pub struct AsciiImage {
     /// Hex SHA-256 of the source file. Empty when hashing was deferred, exactly
     /// as C leaves the buffer empty rather than failing the load.
     pub sha256: String,
+}
+
+/// Why a `+ Scene` cue was refused (`record_scene_cue`'s three notices,
+/// `plug.c:1984-2022`).
+///
+/// The messages are the oracle's, kept next to the failure rather than at the
+/// call site so the tray and a test read the same words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SceneCueError {
+    #[error("Move the playhead before the end of the track.")]
+    Playhead,
+    #[error("The selected scene settings are invalid.")]
+    Settings,
+    #[error("The scene cue could not be added to the switch plan.")]
+    Plan(SceneSwitchError),
+}
+
+impl From<SceneSwitchError> for SceneCueError {
+    fn from(error: SceneSwitchError) -> Self {
+        Self::Plan(error)
+    }
 }
 
 /// One open track (`track.h:31-89`).
@@ -109,6 +131,18 @@ pub struct Track {
     /// User-authored markers only.
     pub manual_events: EventTimeline,
     pub next_manual_event_id: u64,
+    /// The `Clear manual` button's armed flag and undo buffer, whose whole state
+    /// machine is [`ManualClear`].
+    ///
+    /// **Per track, where the C keeps one global pair** (`p->event_undo`,
+    /// `p->clear_events_confirmation`). That is a deliberate divergence and it
+    /// fixes a bug rather than reproducing one: in the frozen C you can clear
+    /// track A's lane, select track B, and click `Undo clear` — which runs
+    /// `event_timeline_replace(&track->manual_events, &p->event_undo)` against
+    /// *B* and moves A's markers onto it (`plug.c:2944`). Nothing in a `.musi`
+    /// file distinguishes the two designs, so by `AGENTS.md`'s parity test this
+    /// is a mechanism choice, and the safe mechanism wins.
+    pub manual_clear: ManualClear,
 
     // ---- scene binding --------------------------------------------------
     pub base_scene: SceneId,
@@ -200,6 +234,7 @@ impl Track {
             semantic_events: EventTimeline::new(),
             manual_events: EventTimeline::new(),
             next_manual_event_id: 1,
+            manual_clear: ManualClear::new(),
             base_scene,
             previous_base_scene: base_scene,
             scene_selection_pending: false,
@@ -259,13 +294,95 @@ impl Track {
     /// `u64::MAX` is skipped rather than incremented past, because `id + 1`
     /// would wrap to zero and zero is not a valid id.
     pub fn refresh_next_manual_event_id(&mut self) {
-        let mut next = 1u64;
-        for event in self.manual_events.events() {
-            if event.id >= next && event.id != u64::MAX {
-                next = event.id + 1;
-            }
+        // Delegated rather than reimplemented: `Track::record_manual_event` and
+        // `ManualClear::undo` both have to agree with this rule, and two copies
+        // of it is how they would stop agreeing.
+        self.next_manual_event_id = event_timeline::next_id_for(&self.manual_events);
+    }
+
+    /// The settings the tuning inspector and a scene cue actually read
+    /// (`track_effective_scene_settings`, `plug.c:1024-1028`).
+    ///
+    /// A track playing a scene-switch cue reads and writes its *playback* copy,
+    /// so a cue can drive a parameter without the change surviving the cue.
+    #[must_use]
+    pub fn effective_settings(&self) -> &SceneSettings {
+        if self.cue_settings_active {
+            &self.playback_scene_settings
+        } else {
+            &self.scene_settings
         }
-        self.next_manual_event_id = next;
+    }
+
+    /// The per-track half of `plug_record_event` (`plug.c:1055-1069`).
+    ///
+    /// A thin delegation on purpose: the allocator rule and the undo retirement
+    /// are [`event_timeline`]'s, tested there against the `.c`, so this cannot
+    /// drift from them.
+    pub fn record_manual_event(&mut self, event: EventRecord) -> Result<(), EventTimelineError> {
+        event_timeline::record_into(
+            &mut self.manual_events,
+            &mut self.next_manual_event_id,
+            event,
+        )?;
+        self.manual_clear.forget();
+        Ok(())
+    }
+
+    /// `record_scene_cue` (`plug.c:1979-2030`): cue `scene` and its current
+    /// tuning at the playhead.
+    ///
+    /// The first cue of a track that has switched scene since it loaded implies a
+    /// second one at `0.0` for the *previous* scene, or the plan would retroject
+    /// the new scene over the part of the track the user already watched under
+    /// the old one (`plug.c:1997-2013`).
+    pub fn record_scene_cue(
+        &mut self,
+        scene: SceneId,
+        time_seconds: f64,
+    ) -> Result<(), SceneCueError> {
+        if !time_seconds.is_finite() || time_seconds < 0.0 || time_seconds >= self.duration_seconds
+        {
+            return Err(SceneCueError::Playhead);
+        }
+        let snapshot = self
+            .effective_settings()
+            .capture(scene)
+            .ok_or(SceneCueError::Settings)?;
+
+        let mut staged = self.scene_switches.clone();
+        let scene_count = SceneId::ALL.len() as u32;
+        // No `previous != scene` test here, deliberately: the C's guard is only
+        // that the previous scene is a legal one (`plug.c:2000`), which `SceneId`
+        // makes true by construction. Adding the comparison would drop a cue the
+        // oracle stages.
+        if staged.is_empty() && time_seconds > 0.001 && self.scene_selection_pending {
+            let previous = self
+                .scene_settings
+                .capture(self.previous_base_scene)
+                .ok_or(SceneCueError::Settings)?;
+            staged.cue_at(
+                0.0,
+                self.duration_seconds,
+                self.previous_base_scene.index() as u32,
+                scene_count,
+                1.0,
+                &previous,
+            )?;
+        }
+        staged.cue_at(
+            time_seconds,
+            self.duration_seconds,
+            scene.index() as u32,
+            scene_count,
+            1.0,
+            &snapshot,
+        )?;
+
+        self.scene_switches = staged;
+        self.scene_selection_pending = false;
+        self.cue_settings_active = false;
+        Ok(())
     }
 
     /// True when this track has unsaved project work.
@@ -288,16 +405,57 @@ impl Track {
 /// There is deliberately no `remove`: the frozen C has no way to close a single
 /// track, only `plug_reset` (`plug.c:8403`), and inventing one would be a
 /// feature rather than parity.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Workspace {
     tracks: Vec<Track>,
     current: Option<usize>,
+    /// Markers recorded before any track existed (`p->event_timeline`,
+    /// `plug.c:1058`), which is the only lane `--event` has to write into: the
+    /// command line runs before an input is resolved.
+    pending_events: EventTimeline,
+    /// `p->next_event_id` (`plug.c:1062`).
+    pending_next_event_id: u64,
+}
+
+impl Default for Workspace {
+    /// `plug_init`'s event fields (`plug.c:8386`): the pending allocator starts
+    /// at 1, because zero is the "no event" sentinel and never a legal id.
+    fn default() -> Self {
+        Self {
+            tracks: Vec::new(),
+            current: None,
+            pending_events: EventTimeline::new(),
+            pending_next_event_id: 1,
+        }
+    }
 }
 
 impl Workspace {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// `plug_record_event` (`plug.c:1055-1069`).
+    ///
+    /// Writes into the current track's lane, or into the pending one when no
+    /// track is open — which is the case every `--event` on the command line hits,
+    /// because the actions run before an input is resolved.
+    pub fn record_event(&mut self, event: EventRecord) -> Result<(), EventTimelineError> {
+        match self.current {
+            Some(index) => self.tracks[index].record_manual_event(event),
+            None => event_timeline::record_into(
+                &mut self.pending_events,
+                &mut self.pending_next_event_id,
+                event,
+            ),
+        }
+    }
+
+    /// The markers waiting for the first track to open.
+    #[must_use]
+    pub fn pending_events(&self) -> &EventTimeline {
+        &self.pending_events
     }
 
     #[must_use]
@@ -358,10 +516,24 @@ impl Workspace {
     /// second file while one is playing adds it to the list and leaves playback
     /// alone; that is the C's behaviour and it is the reason `push` returns the
     /// index instead of assuming the caller now needs to bind audio.
-    pub fn push(&mut self, track: Track) -> usize {
+    pub fn push(&mut self, mut track: Track) -> usize {
+        let becomes_current = self.current.is_none();
+        // Markers recorded before any track existed belong to the first one
+        // (`plug.c:844-851`), and the pending lane is *emptied*, not copied, so a
+        // second track does not silently inherit them too. `replace` is what
+        // validates them, and a lane it refuses is left where it is rather than
+        // half-adopted.
+        if becomes_current
+            && !self.pending_events.is_empty()
+            && track.manual_events.replace(&self.pending_events).is_ok()
+        {
+            track.refresh_next_manual_event_id();
+            self.pending_events.clear();
+            self.pending_next_event_id = 1;
+        }
         let index = self.tracks.len();
         self.tracks.push(track);
-        if self.current.is_none() {
+        if becomes_current {
             self.current = Some(index);
         }
         index
@@ -518,5 +690,100 @@ mod tests {
         track.manual_events.record(record).expect("a valid record");
         track.refresh_next_manual_event_id();
         assert_eq!(track.next_manual_event_id, 1);
+    }
+
+    fn marker(seconds: f64, id: u64) -> EventRecord {
+        use musializer_core::project::event_timeline::manual_marker;
+        use musializer_core::scene::events::EventType;
+        manual_marker(seconds, id, EventType::Custom).expect("a usable id")
+    }
+
+    #[test]
+    fn a_track_owns_its_own_clear_confirmation_and_undo_buffer() {
+        // The state machine itself is tested in `event_timeline`; what this
+        // pins is the divergence — the buffer is per track, so undoing on B
+        // cannot restore A's markers (plug.c:2944).
+        use musializer_core::project::event_timeline::ClearButton;
+        let mut workspace = Workspace::new();
+        workspace.push(track("/tmp/a.wav"));
+        workspace.push(track("/tmp/b.wav"));
+
+        let first = workspace.get_mut(0).expect("two tracks");
+        first.record_manual_event(marker(1.0, 1)).unwrap();
+        first.manual_clear.arm();
+        first
+            .manual_clear
+            .clear(&mut first.manual_events, &mut first.next_manual_event_id);
+
+        assert_eq!(
+            workspace.get(0).expect("two tracks").manual_clear.button(),
+            ClearButton::Undo
+        );
+        assert_eq!(
+            workspace.get(1).expect("two tracks").manual_clear.button(),
+            ClearButton::Clear,
+            "the other track must not be offered someone else's markers"
+        );
+    }
+
+    #[test]
+    fn events_recorded_before_any_track_are_handed_to_the_first_one() {
+        // plug.c:844-851 — which is the only lane `--event` can reach, because
+        // the command-line actions run before an input is resolved.
+        let mut workspace = Workspace::new();
+        workspace.record_event(marker(1.0, 1)).unwrap();
+        workspace.record_event(marker(2.0, 2)).unwrap();
+        assert_eq!(workspace.pending_events().len(), 2);
+
+        workspace.push(track("/tmp/a.wav"));
+        let first = workspace.current().expect("the first track is current");
+        assert_eq!(first.manual_events.len(), 2);
+        assert_eq!(first.next_manual_event_id, 3);
+        assert!(workspace.pending_events().is_empty());
+
+        // A second track inherits nothing, and a recorded event now lands on the
+        // current track instead of the pending lane.
+        workspace.push(track("/tmp/b.wav"));
+        assert!(workspace
+            .get(1)
+            .expect("two tracks")
+            .manual_events
+            .is_empty());
+        workspace.record_event(marker(3.0, 7)).unwrap();
+        assert_eq!(workspace.current().expect("current").manual_events.len(), 3);
+    }
+
+    #[test]
+    fn a_scene_cue_refuses_a_playhead_at_or_past_the_end() {
+        let mut track = track("/tmp/a.wav");
+        assert_eq!(
+            track.record_scene_cue(SceneId::Spectrum, 12.0),
+            Err(SceneCueError::Playhead)
+        );
+        assert_eq!(
+            track.record_scene_cue(SceneId::Spectrum, f64::NAN),
+            Err(SceneCueError::Playhead)
+        );
+        assert!(track.scene_switches.is_empty());
+        track.record_scene_cue(SceneId::Spectrum, 4.0).unwrap();
+        assert_eq!(track.scene_switches.len(), 1);
+    }
+
+    #[test]
+    fn the_first_cue_of_a_switched_track_also_covers_what_came_before_it() {
+        // plug.c:1997-2013: without the implied cue at 0.0 the plan would
+        // retroject the new scene over the part already watched under the old.
+        let mut track = track("/tmp/a.wav");
+        track.previous_base_scene = SceneId::Loom;
+        track.base_scene = SceneId::Spectrum;
+        track.scene_selection_pending = true;
+        track.record_scene_cue(SceneId::Spectrum, 4.0).unwrap();
+        assert_eq!(track.scene_switches.len(), 2);
+        assert_eq!(track.scene_switches.cues()[0].start_seconds, 0.0);
+        assert_eq!(
+            track.scene_switches.cues()[0].scene_index,
+            SceneId::Loom.index() as u32
+        );
+        assert!(!track.scene_selection_pending);
     }
 }
