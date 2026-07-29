@@ -59,6 +59,7 @@ use musializer_core::scenes::ascii_field::ascii_art::Grid as AsciiGrid;
 use musializer_core::timing::render_export::RenderExportConfig;
 use musializer_core::timing::track_identity;
 use musializer_core::timing::track_timeline::Waveform;
+use musializer_core::ui::assist_ui_state::AssistSession;
 
 /// An ASCII source image bound to a track (`track.h`'s `ascii_cells`,
 /// `ascii_columns`, `ascii_rows`, `ascii_image_path`, `ascii_image_sha256`).
@@ -292,6 +293,14 @@ impl Track {
 pub struct Workspace {
     tracks: Vec<Track>,
     current: Option<usize>,
+    /// The one Assist session (Agent J). The C's sixteen `p->assist_*` fields
+    /// minus the process handle, which stays in `ui::panels::assist`.
+    ///
+    /// It rides with the track list because it names its target by index
+    /// (`p->assist_track_index`, `p->assist_candidate_track_index`) and both are
+    /// indices into `tracks`. **Move it to `Shell` if you prefer** — see Agent
+    /// J's note; the type is defined in `core::ui::assist_ui_state`.
+    pub assist: AssistSession,
 }
 
 impl Workspace {
