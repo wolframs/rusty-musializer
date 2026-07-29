@@ -48,7 +48,7 @@ step "cargo test" cargo test --quiet
 
 # Differential harnesses against the frozen C. These are the evidence that the
 # ports are faithful rather than merely plausible.
-for harness in analyzer settings routes event_merge; do
+for harness in analyzer settings routes route_persistence event_merge; do
     script="tools/differential_${harness}.sh"
     [ -x "$script" ] && step "differential: $harness" "$script"
 done

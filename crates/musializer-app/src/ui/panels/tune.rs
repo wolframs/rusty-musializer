@@ -21,11 +21,10 @@
 //!
 //! 1. **The draft has nowhere to live.** The C keeps `Route_Editor_State` in the
 //!    global `Plug` (`plug.c:5646`); the natural home here is a `Shell` field.
-//!    Until one exists the draft sits in a `thread_local` [`RefCell`] owned by
-//!    this module. It is the *one* piece of global mutable state in the
-//!    application crate, it is confined to a file nothing else may edit, and
-//!    every access goes through [`with_editor`]/[`peek_editor`] so moving it onto
-//!    `Shell` is a change to those two functions.
+//!    The draft lives on [`Shell`] as `route_editor`, reached through
+//!    [`Shell::with_editor`]/[`Shell::peek_editor`]. It was a `thread_local`
+//!    while that field did not exist — Agent G flagged it as something that
+//!    should not survive the merge, and it did not.
 //! 2. **Apply and Remove need `&mut RouteTable`.** The shell only ever sees
 //!    `&Workspace`, and the two [`ShellCommand`]s that would carry the commit do
 //!    not exist yet. Both buttons therefore draw with the oracle's enable rules
@@ -36,8 +35,6 @@
 //!    reads live and the other four sources honestly report `no signal`, which is
 //!    the same wording the C uses when a source is unavailable
 //!    (`plug.c:5673-5674`).
-
-use std::cell::RefCell;
 
 use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
 use musializer_core::scene::settings::{self, SettingDescriptor};
@@ -125,28 +122,28 @@ mod slot {
 /// handed the workspace, while [`RouteEditorState::targets`] needs the slot to
 /// keep a hidden draft for another track from expanding a row on this one
 /// (`route_editor_state.c:101-114`).
-struct EditorHost {
+pub(crate) struct EditorHost {
     state: RouteEditorState,
     track_slot: usize,
-    /// `--ui-probe route=` is honoured once, on the first inspector frame. After
-    /// that the draft belongs to the user.
-    probe_applied: bool,
 }
 
-thread_local! {
-    static ROUTE_EDITOR: RefCell<EditorHost> = RefCell::new(EditorHost {
-        state: RouteEditorState::new(),
-        track_slot: 0,
-        probe_applied: false,
-    });
+impl Default for EditorHost {
+    fn default() -> Self {
+        Self {
+            state: RouteEditorState::new(),
+            track_slot: 0,
+        }
+    }
 }
 
-fn with_editor<T>(f: impl FnOnce(&mut EditorHost) -> T) -> T {
-    ROUTE_EDITOR.with(|cell| f(&mut cell.borrow_mut()))
-}
+impl Shell {
+    fn with_editor<T>(&mut self, f: impl FnOnce(&mut EditorHost) -> T) -> T {
+        f(&mut self.route_editor)
+    }
 
-fn peek_editor<T>(f: impl FnOnce(&EditorHost) -> T) -> T {
-    ROUTE_EDITOR.with(|cell| f(&cell.borrow()))
+    fn peek_editor<T>(&self, f: impl FnOnce(&EditorHost) -> T) -> T {
+        f(&self.route_editor)
+    }
 }
 
 /// Whether an open, dirty route draft should stop the application quitting.
@@ -158,88 +155,70 @@ fn peek_editor<T>(f: impl FnOnce(&EditorHost) -> T) -> T {
     dead_code,
     reason = "the close guard in main.rs is the integration owner's line to add; see the Agent G note in REWRITE_PLAN.md"
 )]
-pub(crate) fn route_edit_is_dirty() -> bool {
-    peek_editor(|host| host.state.is_dirty())
+impl Shell {
+    pub(crate) fn route_edit_is_dirty(&self) -> bool {
+        self.peek_editor(|host| host.state.is_dirty())
+    }
 }
 
-/// SEAM 4: `--ui-probe route=KEY`, honoured on the first inspector frame.
+/// `--ui-probe route=KEY`: opens the editor on a named setting.
 ///
-/// `main.rs` is where every other probe key is applied, and it is not this
-/// agent's file, so the spec is re-read from `argv` here through the same
-/// [`crate::cli::parse_ui_probe`] the command line used — one parser, not a
-/// second grammar. When the probe moves to `main.rs` this function and the
-/// `probe_applied` flag both go, and the call site becomes an `if let`.
-///
-/// It exists at all because the expanded editor is 260 px of drawing whose only
+/// Applied by `main.rs` with the rest of the probe, before the first frame. It
+/// exists at all because the expanded editor is 260 px of drawing whose only
 /// other entrance is a mouse click, and this repository has already paid twice
 /// for a surface no capture could reach.
-fn apply_route_probe(input: &ShellInput<'_>, track_slot: usize) {
-    if peek_editor(|host| host.probe_applied) {
-        return;
-    }
-    with_editor(|host| host.probe_applied = true);
-
-    let mut argv = std::env::args().skip(1);
-    let key = loop {
-        let Some(word) = argv.next() else { return };
-        if word != "--ui-probe" {
-            continue;
+///
+/// Returns the line the run prints as evidence. A screenshot cannot say whether
+/// the block under the cursor is the editor or a very tall slider, so the line
+/// names which setting opened, how tall the row it asked for is, and whether it
+/// opened onto a committed route or a fresh full-range draft.
+/// `headless_check.sh` asserts on it.
+impl Shell {
+    pub(crate) fn open_route_editor_probe(
+        &mut self,
+        key: &str,
+        drawn_scene: SceneId,
+        track_slot: usize,
+        committed: Option<&ParameterMapping>,
+    ) -> String {
+        let Some((scene, index, _)) = settings::descriptor_by_key(key) else {
+            return format!("route editor: {key} UNKNOWN");
+        };
+        // A key from another scene is not an error: a capture may probe a scene it
+        // then switches away from. It simply does not expand a row here.
+        if scene != drawn_scene {
+            return format!("route editor: {key} not on the drawn scene");
         }
-        let Some(spec) = argv.next() else { return };
-        match crate::cli::parse_ui_probe(&spec).and_then(|probe| probe.route_editor) {
-            Some(key) => break key,
-            None => return,
+        self.route_editor.track_slot = track_slot;
+        if !self.with_editor(|host| host.state.open(track_slot, scene, index, committed)) {
+            return format!("route editor: {key} REFUSED");
         }
-    };
-
-    let Some((scene, index, _)) = settings::descriptor_by_key(&key) else {
-        return;
-    };
-    // A key from another scene is not an error: a capture may probe a scene it
-    // then switches away from. It simply does not expand a row here.
-    if scene != input.scene {
-        return;
-    }
-    let committed = committed_route(input, scene, index).cloned();
-    let opened = with_editor(|host| {
-        host.state
-            .open(track_slot, scene, index, committed.as_ref())
-    });
-
-    // Evidence, not existence. A screenshot cannot say whether the block under
-    // the cursor is the editor or a very tall slider, so the run says which
-    // setting it opened, how tall the row it asked for is, and whether it opened
-    // onto a committed route or a fresh full-range draft. `headless_check.sh`
-    // asserts on this line.
-    if !opened {
-        println!("route editor: {key} REFUSED");
-        return;
-    }
-    let (height, source) = peek_editor(|host| {
-        let source = host
-            .state
-            .draft()
-            .map_or("?", |draft| route_editor_state::source_label(draft.source));
-        (
-            ROUTE_EDITOR_ROW_HEADER
-                + ROUTE_EDITOR_AREA_HEIGHT
-                + if host
-                    .state
-                    .draft()
-                    .is_some_and(|draft| draft.source == AnalysisSource::Band)
-                {
-                    ROUTE_EDITOR_BAND_ROW_HEIGHT
-                } else {
-                    0.0
-                }
-                + ROUTE_EDITOR_ROW_GAP,
-            source,
+        let (height, source) = self.peek_editor(|host| {
+            let source = host
+                .state
+                .draft()
+                .map_or("?", |draft| route_editor_state::source_label(draft.source));
+            (
+                ROUTE_EDITOR_ROW_HEADER
+                    + ROUTE_EDITOR_AREA_HEIGHT
+                    + if host
+                        .state
+                        .draft()
+                        .is_some_and(|draft| draft.source == AnalysisSource::Band)
+                    {
+                        ROUTE_EDITOR_BAND_ROW_HEIGHT
+                    } else {
+                        0.0
+                    }
+                    + ROUTE_EDITOR_ROW_GAP,
+                source,
+            )
+        });
+        format!(
+            "route editor: {key} open row={height}px source={source} committed={}",
+            u8::from(committed.is_some())
         )
-    });
-    println!(
-        "route editor: {key} open row={height}px source={source} committed={}",
-        u8::from(committed.is_some())
-    );
+    }
 }
 
 impl Shell {
@@ -261,8 +240,7 @@ impl Shell {
         // The slot the draft is keyed against. Cached before any row is measured,
         // because `route_editor_height` is asked without the workspace.
         let track_slot = input.workspace.current_index().unwrap_or(0);
-        with_editor(|host| host.track_slot = track_slot);
-        apply_route_probe(input, track_slot);
+        self.with_editor(|host| host.track_slot = track_slot);
 
         let content = widgets::panel(d, input.fonts.ui(), frame.inspector, "TUNE");
         let font = input.fonts.ui();
@@ -459,7 +437,7 @@ impl Shell {
         editing_this_row: bool,
     ) {
         let track_slot = input.workspace.current_index().unwrap_or(0);
-        let dirty = peek_editor(|host| host.state.is_dirty());
+        let dirty = self.peek_editor(|host| host.state.is_dirty());
         if dirty {
             self.notify(
                 Severity::Warning,
@@ -469,10 +447,11 @@ impl Shell {
             return;
         }
         if editing_this_row {
-            with_editor(|host| host.state.close());
+            self.with_editor(|host| host.state.close());
             return;
         }
-        let opened = with_editor(|host| host.state.open(track_slot, input.scene, index, committed));
+        let opened =
+            self.with_editor(|host| host.state.open(track_slot, input.scene, index, committed));
         if !opened {
             // `open` only refuses for a setting that has no descriptor or a
             // committed route that does not belong to it — both of which mean the
@@ -533,7 +512,7 @@ impl Shell {
     /// [`ROUTE_EDITOR_ROW_HEADER`] for why the row is that plus 26 rather than
     /// the C's plus 41.
     pub(crate) fn route_editor_height(&self, scene: SceneId, index: usize) -> f32 {
-        peek_editor(|host| {
+        self.peek_editor(|host| {
             if !host.state.targets(host.track_slot, scene, index) {
                 return 0.0;
             }
@@ -574,7 +553,7 @@ impl Shell {
         let Some(descriptor) = settings::descriptor(scene, index) else {
             return 0.0;
         };
-        let Some(draft) = peek_editor(|host| host.state.draft().cloned()) else {
+        let Some(draft) = self.peek_editor(|host| host.state.draft().cloned()) else {
             return 0.0;
         };
         let font = input.fonts.ui();
@@ -650,7 +629,7 @@ impl Shell {
                 )
                 .clicked
             {
-                with_editor(|host| host.state.set_source(source));
+                self.with_editor(|host| host.state.set_source(source));
             }
         }
         cursor += 26.0;
@@ -686,7 +665,7 @@ impl Shell {
                     )
                     .clicked
                 {
-                    with_editor(|host| host.state.step_band(delta, band_limit));
+                    self.with_editor(|host| host.state.step_band(delta, band_limit));
                 }
             }
             let caption = format!("Band {} of {} (low to high)", draft.band_index, band_limit);
@@ -770,7 +749,7 @@ impl Shell {
                 .widgets
                 .slider(d, id, input_slider, anchor_input as f32)
             {
-                with_editor(|host| {
+                self.with_editor(|host| {
                     if high {
                         host.state.set_input_max(f64::from(fraction))
                     } else {
@@ -789,7 +768,7 @@ impl Shell {
             let normalized = (anchor_output as f32 - descriptor.minimum) / span;
             if let Some(fraction) = self.widgets.slider(d, id, output_slider, normalized) {
                 let value = f64::from(descriptor.minimum + fraction * span);
-                with_editor(|host| {
+                self.with_editor(|host| {
                     if high {
                         host.state.set_output_high(value)
                     } else {
@@ -833,7 +812,7 @@ impl Shell {
                 .clicked
             {
                 let next = Interpolation::ALL[(current + step) % curves];
-                with_editor(|host| host.state.set_curve(next));
+                self.with_editor(|host| host.state.set_curve(next));
             }
         }
         let caption = format!(
@@ -873,7 +852,7 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         let font = input.fonts.ui();
-        let (dirty, can_apply, has_committed) = peek_editor(|host| {
+        let (dirty, can_apply, has_committed) = self.peek_editor(|host| {
             (
                 host.state.is_dirty(),
                 host.state.can_apply(),
@@ -915,7 +894,7 @@ impl Shell {
             .clicked
         {
             let next = !draft.clamp;
-            with_editor(|host| host.state.set_clamp(next));
+            self.with_editor(|host| host.state.set_clamp(next));
         }
         if self
             .widgets
@@ -931,7 +910,7 @@ impl Shell {
             )
             .clicked
         {
-            with_editor(|host| host.state.swap_output());
+            self.with_editor(|host| host.state.swap_output());
         }
 
         // SEAM 2: committing needs `&mut RouteTable`, which the shell never sees.
@@ -952,7 +931,11 @@ impl Shell {
                 )
                 .clicked
             {
-                commands.push(ShellCommand::NotImplemented("Committing a route"));
+                commands.push(ShellCommand::ApplyRoute {
+                    scene: input.scene,
+                    route: draft.clone(),
+                });
+                self.with_editor(|host| host.state.close());
             }
         } else {
             self.widgets
@@ -974,7 +957,11 @@ impl Shell {
                 )
                 .clicked
             {
-                commands.push(ShellCommand::NotImplemented("Removing a route"));
+                commands.push(ShellCommand::RemoveRoute {
+                    scene: input.scene,
+                    parameter: draft.parameter.clone(),
+                });
+                self.with_editor(|host| host.state.close());
             }
         } else {
             self.widgets
@@ -999,7 +986,7 @@ impl Shell {
             )
             .clicked
         {
-            with_editor(|host| host.state.close());
+            self.with_editor(|host| host.state.close());
         }
     }
 
@@ -1037,15 +1024,12 @@ impl Shell {
         &self,
         input: &ShellInput<'_>,
         source: AnalysisSource,
-        _band_index: u16,
+        band_index: u16,
     ) -> Option<f64> {
-        match source {
-            AnalysisSource::Rms => {
-                let value = f64::from(input.rms);
-                value.is_finite().then_some(value)
-            }
-            _ => None,
-        }
+        // Every source now, not just RMS: `ShellInput` carries the same
+        // `RouteSources` the frame loop evaluated the routes from, so the meter
+        // and the route agree by construction rather than by coincidence.
+        input.route_sources.value(source, band_index)
     }
 }
 
@@ -1166,26 +1150,17 @@ mod tests {
     use super::*;
     use musializer_core::scene::settings::index;
 
-    /// The editor state is a thread_local, so every test that opens one closes it
-    /// again. Without this a failing test would leak a draft into the next.
-    fn with_closed_editor<T>(f: impl FnOnce() -> T) -> T {
-        with_editor(|host| {
-            host.state.close();
-            host.track_slot = 0;
-        });
-        let value = f();
-        with_editor(|host| host.state.close());
-        value
-    }
+    // The draft is a field of `Shell`, so each test gets a fresh one from
+    // `Shell::new()` and there is nothing to leak between them. It used to be a
+    // `thread_local`, which is why these tests were once wrapped in a
+    // close-before-and-after helper; that helper is gone with the global.
 
     #[test]
     fn a_closed_editor_leaves_every_row_a_slider() {
-        with_closed_editor(|| {
-            let shell = Shell::new();
-            for index in 0..settings::descriptors(SceneId::Loom).len() {
-                assert_eq!(shell.route_editor_height(SceneId::Loom, index), 0.0);
-            }
-        });
+        let shell = Shell::new();
+        for index in 0..settings::descriptors(SceneId::Loom).len() {
+            assert_eq!(shell.route_editor_height(SceneId::Loom, index), 0.0);
+        }
     }
 
     #[test]
@@ -1195,33 +1170,34 @@ mod tests {
         const ORACLE_AREA: f32 = 24.0 + 26.0 + 40.0 + 40.0 + 70.0 + 26.0 + 32.0 + 4.0;
         assert_eq!(ROUTE_EDITOR_AREA_HEIGHT, ORACLE_AREA);
 
-        with_closed_editor(|| {
-            let shell = Shell::new();
-            let weight = index::loom::WEIGHT;
-            with_editor(|host| assert!(host.state.open(0, SceneId::Loom, weight, None)));
-            assert_eq!(
-                shell.route_editor_height(SceneId::Loom, weight),
-                ORACLE_AREA + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP
-            );
-            // Only the row that hosts the draft grows.
-            assert_eq!(
-                shell.route_editor_height(SceneId::Loom, index::loom::DENSITY),
-                0.0
-            );
-            // And only for the scene it was opened on.
-            assert_eq!(shell.route_editor_height(SceneId::SongAtlas, weight), 0.0);
+        let mut shell = Shell::new();
+        let weight = index::loom::WEIGHT;
+        assert!(shell
+            .route_editor
+            .state
+            .open(0, SceneId::Loom, weight, None));
+        assert_eq!(
+            shell.route_editor_height(SceneId::Loom, weight),
+            ORACLE_AREA + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP
+        );
+        // Only the row that hosts the draft grows.
+        assert_eq!(
+            shell.route_editor_height(SceneId::Loom, index::loom::DENSITY),
+            0.0
+        );
+        // And only for the scene it was opened on.
+        assert_eq!(shell.route_editor_height(SceneId::SongAtlas, weight), 0.0);
 
-            // The band source adds its stepper row, and the height is asked before
-            // the row is measured — so the change has to be visible here.
-            with_editor(|host| assert!(host.state.set_source(AnalysisSource::Band)));
-            assert_eq!(
-                shell.route_editor_height(SceneId::Loom, weight),
-                ORACLE_AREA
-                    + ROUTE_EDITOR_BAND_ROW_HEIGHT
-                    + ROUTE_EDITOR_ROW_HEADER
-                    + ROUTE_EDITOR_ROW_GAP
-            );
-        });
+        // The band source adds its stepper row, and the height is asked before
+        // the row is measured — so the change has to be visible here.
+        assert!(shell.route_editor.state.set_source(AnalysisSource::Band));
+        assert_eq!(
+            shell.route_editor_height(SceneId::Loom, weight),
+            ORACLE_AREA
+                + ROUTE_EDITOR_BAND_ROW_HEIGHT
+                + ROUTE_EDITOR_ROW_HEADER
+                + ROUTE_EDITOR_ROW_GAP
+        );
     }
 
     #[test]
@@ -1229,17 +1205,16 @@ mod tests {
         // `route_editor_targets` is track-scoped for exactly this reason
         // (`route_editor_state.c:101-114`): a hidden draft must not reshape the
         // list of a track it does not belong to.
-        with_closed_editor(|| {
-            let shell = Shell::new();
-            let weight = index::loom::WEIGHT;
-            with_editor(|host| {
-                assert!(host.state.open(1, SceneId::Loom, weight, None));
-                host.track_slot = 0;
-            });
-            assert_eq!(shell.route_editor_height(SceneId::Loom, weight), 0.0);
-            with_editor(|host| host.track_slot = 1);
-            assert!(shell.route_editor_height(SceneId::Loom, weight) > 0.0);
-        });
+        let mut shell = Shell::new();
+        let weight = index::loom::WEIGHT;
+        assert!(shell
+            .route_editor
+            .state
+            .open(1, SceneId::Loom, weight, None));
+        shell.route_editor.track_slot = 0;
+        assert_eq!(shell.route_editor_height(SceneId::Loom, weight), 0.0);
+        shell.route_editor.track_slot = 1;
+        assert!(shell.route_editor_height(SceneId::Loom, weight) > 0.0);
     }
 
     #[test]

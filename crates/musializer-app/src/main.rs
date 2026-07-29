@@ -367,6 +367,24 @@ fn run() -> Result<std::process::ExitCode, String> {
                 .timeline
                 .zoom(duration, zoom, f64::from(music.get_time_played()));
         }
+        // Applied here with the rest of the probe, before the first frame, so the
+        // evidence line is printed once rather than being guarded by a flag on the
+        // draft. It needs the committed route, which needs the track.
+        if let Some(key) = probe.route_editor.clone() {
+            let slot = app.workspace.current_index().unwrap_or(0);
+            let scene = app.scene.id();
+            let committed = app
+                .routes()
+                .scene(scene)
+                .items()
+                .iter()
+                .find(|mapping| mapping.parameter == key)
+                .cloned();
+            let line = app
+                .shell
+                .open_route_editor_probe(&key, scene, slot, committed.as_ref());
+            println!("{line}");
+        }
     }
 
     let mut report = Report::default();
@@ -471,6 +489,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             duration_seconds,
             playing,
             workspace: &app.workspace,
+            route_sources: sources,
             band_count: spectrum.band_count(),
             peak_band: report.peak_band_last,
             rms: frame.audio.rms,
@@ -624,6 +643,28 @@ fn run() -> Result<std::process::ExitCode, String> {
                                 )
                             ),
                         );
+                    }
+                }
+                ShellCommand::ApplyRoute { scene, route } => {
+                    // Add and replace are one command: the table keys by
+                    // parameter, so committing over an existing route replaces it
+                    // (`plug.c:5852`). A refusal is the editor's own validation
+                    // having been bypassed, so it is reported rather than ignored.
+                    let parameter = route.parameter.clone();
+                    remove_route(&mut app, scene, &parameter);
+                    if let Err(error) = app.routes_mut().add(scene, route) {
+                        app.shell.notify(
+                            Severity::Error,
+                            "Route could not be applied",
+                            &format!("{parameter}: {error}"),
+                        );
+                    } else {
+                        mark_current_track_dirty(&mut app, rl.get_time());
+                    }
+                }
+                ShellCommand::RemoveRoute { scene, parameter } => {
+                    if remove_route(&mut app, scene, &parameter) {
+                        mark_current_track_dirty(&mut app, rl.get_time());
                     }
                 }
                 ShellCommand::SelectTrack(index) => {
@@ -1091,6 +1132,35 @@ fn open_audio_dialog<'audio>(
     }
 }
 
+/// Drops the committed route for one parameter, if there is one.
+///
+/// `RouteTable::remove` takes a position, and every caller here knows a
+/// parameter key instead — the table keys by parameter, so the lookup is the
+/// same one `add` does to reject a duplicate.
+fn remove_route(app: &mut App, scene: SceneId, parameter: &str) -> bool {
+    let Some(index) = app
+        .routes()
+        .scene(scene)
+        .items()
+        .iter()
+        .position(|mapping| mapping.parameter == parameter)
+    else {
+        return false;
+    };
+    app.routes_mut().remove(scene, index)
+}
+
+/// `mark_project_dirty` (`plug.c:616-622`), for the current track.
+///
+/// Every edit that a `.musi` would record goes through here, which is what makes
+/// autosave's 1.5-second settle measure from the last edit rather than from the
+/// first.
+fn mark_current_track_dirty(app: &mut App, now_seconds: f64) {
+    if let Some(track) = app.workspace.current_mut() {
+        track.mark_dirty(now_seconds);
+    }
+}
+
 /// Whether the window may close (`plug_confirm_close`, `plug.c:7200-7250`).
 ///
 /// Returns `true` to quit. With nothing unresolved it never asks, which is the
@@ -1113,15 +1183,28 @@ fn confirm_close(app: &mut App, already_warned: &mut bool) -> bool {
         .iter()
         .filter(|track| track.has_unsaved_work())
         .count();
+    let route_edit = app.shell.route_edit_is_dirty();
     // The other five conditions the C weighs — an open lyric draft, an open route
     // edit, staged Assist suggestions, a running analysis and a running export —
     // belong to Agents I, G, J and H. Each adds a line to this list.
-    if dirty == 0 {
+    if dirty == 0 && !route_edit {
         return true;
     }
+    // The C builds this list line by line from six conditions (`plug.c:7222-7247`).
+    // Three of the six — staged Assist suggestions, a running analysis and a
+    // running export — belong to Agents H and J and each adds a line here.
+    let mut items = String::new();
+    if route_edit {
+        items.push_str("\n- Apply or discard the open audio-route edit.");
+    }
+    if dirty > 0 {
+        items.push_str(&format!(
+            "\n- Save {dirty} unnamed or unresolved track project{}.",
+            if dirty == 1 { "" } else { "s" }
+        ));
+    }
     let message = format!(
-        "Resolve these items before quitting, or discard them now:\n\n- Save {dirty} unnamed or unresolved track project{}.\n\nQuit anyway and discard or cancel the items above?",
-        if dirty == 1 { "" } else { "s" }
+        "Resolve these items before quitting, or discard them now:\n{items}\n\nQuit anyway and discard or cancel the items above?"
     );
     match dialogs::confirm_warning("Unresolved Musializer work", &message) {
         Ok(quit) => quit,

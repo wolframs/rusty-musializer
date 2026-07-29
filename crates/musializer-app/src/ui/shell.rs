@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 
+use musializer_core::scene::routes::{ParameterMapping, RouteSources};
 use musializer_core::scene::{SceneId, SceneSettings};
 use musializer_core::ui::notice::{NoticeQueue, NoticeSpec, Severity};
 use musializer_core::ui::row_typography;
@@ -50,6 +51,19 @@ pub enum ShellCommand {
     ResetScene(SceneId),
     /// A file the user dropped on the window.
     LoadTrack(PathBuf),
+    /// Commit the route editor's draft onto the current track
+    /// (`plug.c:5852`). Adding and replacing are the same command: the table
+    /// keys by parameter, so a second route for one parameter is a replacement
+    /// rather than a duplicate.
+    ApplyRoute {
+        scene: SceneId,
+        route: ParameterMapping,
+    },
+    /// Drop the committed route for one parameter (`plug.c:5862`).
+    RemoveRoute {
+        scene: SceneId,
+        parameter: String,
+    },
     /// Make another open track current (`plug.c:5261-5283`).
     SelectTrack(usize),
     /// Ask for an audio file through a native picker (`plug.c:7790-7800`).
@@ -99,6 +113,11 @@ pub struct ShellInput<'a> {
     /// document. Passing a display name would mean six agents each threading
     /// their own second channel to the same object.
     pub workspace: &'a Workspace,
+    /// Every analysis source at its current value, so a panel reads the same
+    /// numbers the routes were evaluated from rather than a subset. `rms` above
+    /// predates this and stays because the toolbar's readout is the only caller
+    /// that wants one scalar without knowing what a source is.
+    pub route_sources: RouteSources<'a>,
     pub band_count: usize,
     pub peak_band: usize,
     pub rms: f32,
@@ -128,6 +147,13 @@ pub struct Shell {
     /// Which of the timeline's own controls the pointer is dragging, so a scrub
     /// that leaves the strip keeps scrubbing.
     scrubbing: bool,
+    /// The route editor's draft, and the track slot it is keyed against.
+    ///
+    /// Lives here rather than in `panels::tune` because a draft outlives a frame
+    /// and `Shell` is where per-frame-surviving state belongs. Agent G had it in
+    /// a `thread_local` while this field did not exist and flagged it as
+    /// something that should not survive the merge; it did not.
+    pub route_editor: super::panels::tune::EditorHost,
     /// The tracks list's scroll position and momentum. The C keeps this in
     /// function statics, which is why its list code can only ever serve one panel;
     /// per-list state here is what lets the same policy serve the browsers too.
@@ -159,6 +185,7 @@ impl Shell {
             timeline: TimelineView::new(0.0),
             scrubbing: false,
             track_scroll: ScrollState::new(),
+            route_editor: super::panels::tune::EditorHost::default(),
         }
     }
 
