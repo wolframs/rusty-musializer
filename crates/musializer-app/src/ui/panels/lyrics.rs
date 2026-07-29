@@ -31,7 +31,6 @@
 //! command vector because these are a panel's private vocabulary and adding six
 //! variants to a shared enum is a merge conflict in the file every agent touches.
 
-use std::cell::RefCell;
 use std::path::PathBuf;
 
 use musializer_core::project::editor_draft::{LyricDraftState, LyricDraftValues};
@@ -465,12 +464,21 @@ impl LyricEditor {
         dead_code,
         reason = "part of the `main.rs` integration surface this fan-out does not wire; see the report"
     )]
-    pub fn timeline_height(&self, window_height: f32) -> f32 {
+    pub fn timeline_height(&self, window_height: f32, extra_chrome: f32) -> f32 {
         let wanted = CHROME_ABOVE_PANEL
             + PANEL_BOTTOM_PADDING
             + LANE_HEIGHT
             + LANE_GAP
-            + lyrics_editor_layout::panel_height(window_height, self.cue_count);
+            // `panel_height`'s own ceiling is `screen_height - SIDEBAR_MINIMUM -
+            // TIMELINE_CHROME`, which is the guarantee that the sidebar keeps its
+            // floor. `extra_chrome` is whatever else the band spends above this
+            // editor that the oracle's chrome constant does not know about —
+            // today the manual event row, which landed in the same fan-out as
+            // this panel. Subtracting it from the screen height *here* is what
+            // keeps that guarantee true of the whole band rather than of this
+            // panel alone; a capture caught the alternative, with the tracks
+            // panel silently below its floor and not drawn.
+            + lyrics_editor_layout::panel_height(window_height - extra_chrome, self.cue_count);
         let ceiling = window_height - metric::HUD_BUTTON_SIZE - DEFAULT_TIMELINE_HEIGHT;
         if wanted > ceiling {
             DEFAULT_TIMELINE_HEIGHT.max(ceiling)
@@ -570,43 +578,6 @@ impl LyricEditor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The state seam this fan-out could not close from a panel file.
-//
-// `Shell` has no field for a panel's own state and `ui/shell.rs` is a shared
-// file, so the editor lives here for now. It is one `RefCell` on the render
-// thread, borrowed for exactly the length of one panel draw and never held
-// across a call into another agent's code.
-//
-// **Removing it is three edits**, and the request is in Agent I's report:
-//
-//   1. `Shell` gains `pub lyrics: LyricEditor`, initialised in `Shell::new`;
-//   2. `lyrics_panel`'s body becomes one call to `draw_lyrics` with
-//      `&mut self.lyrics` — every method below already takes the editor by
-//      reference for exactly this reason;
-//   3. this block goes.
-//
-// It is written down rather than hidden because a global in this codebase is a
-// deviation from its stated shape ("`main.rs` owns resources; the shell returns
-// `ShellCommand`s"), and a deviation nobody records is one nobody removes.
-// ---------------------------------------------------------------------------
-thread_local! {
-    static EDITOR: RefCell<LyricEditor> = RefCell::new(LyricEditor::new());
-}
-
-/// Runs `body` with the lyrics editor state. See the block comment above.
-///
-/// `main.rs` uses this to drain [`LyricEditor::take_pending`], to apply a probe
-/// and to print the report line, and it is the one call site that has to move
-/// when `Shell` grows the field.
-#[allow(
-    dead_code,
-    reason = "part of the `main.rs` integration surface this fan-out does not wire; see the report"
-)]
-pub fn with_editor<R>(body: impl FnOnce(&mut LyricEditor) -> R) -> R {
-    EDITOR.with(|cell| body(&mut cell.borrow_mut()))
-}
-
 impl Shell {
     /// The lyrics editor, in the timeline strip's place.
     pub(crate) fn lyrics_panel(
@@ -617,17 +588,18 @@ impl Shell {
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) {
-        EDITOR.with(|cell| {
-            let mut editor = cell.borrow_mut();
-            self.draw_lyrics(d, input, &mut editor, content, strip, commands);
-        });
+        // Split borrow: the editor and the widget set are both fields of
+        // `self`, and `draw_lyrics` needs them at once.
+        let mut editor = std::mem::take(&mut self.lyrics);
+        self.draw_lyrics(d, input, &mut editor, content, strip, commands);
+        self.lyrics = editor;
     }
 
     /// One frame of the editor.
     ///
     /// Split from [`Self::lyrics_panel`] so every method below takes the editor
-    /// by reference and the seam above is the only thing that changes when
-    /// `Shell` grows the field.
+    /// by reference rather than reaching through `self`, which is what lets the
+    /// panel borrow the widget set and the editor at the same time.
     fn draw_lyrics(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -2420,7 +2392,7 @@ mod tests {
         for count in [0usize, 1, 8, 64, 1024] {
             editor.cue_count = count;
             for window in [640.0f32, 720.0, 800.0, 1080.0, 1440.0, 2160.0] {
-                let band = editor.timeline_height(window);
+                let band = editor.timeline_height(window, 0.0);
                 let panel = band - CHROME_ABOVE_PANEL - PANEL_BOTTOM_PADDING;
                 let boundary = panel - LANE_HEIGHT - LANE_GAP;
                 assert!(
@@ -2441,9 +2413,9 @@ mod tests {
     fn a_taller_window_shows_more_cues_rather_than_a_fixed_three() {
         let mut editor = LyricEditor::new();
         editor.cue_count = 12;
-        let at_640 = editor.timeline_height(640.0);
-        let at_720 = editor.timeline_height(720.0);
-        let at_1080 = editor.timeline_height(1080.0);
+        let at_640 = editor.timeline_height(640.0, 0.0);
+        let at_720 = editor.timeline_height(720.0, 0.0);
+        let at_1080 = editor.timeline_height(1080.0, 0.0);
         assert!(at_720 > at_640);
         assert!(at_1080 > at_720);
     }

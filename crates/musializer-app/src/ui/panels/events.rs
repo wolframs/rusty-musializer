@@ -135,6 +135,12 @@ impl Shell {
         area: UiRect,
         actions: &mut Vec<ManualEventAction>,
     ) -> f32 {
+        // Not drawn over the lyrics editor: see `Shell::timeline_height` for why
+        // the band cannot afford both, and why that is the oracle's arithmetic
+        // rather than a preference.
+        if self.panel == crate::cli::UiPanel::Lyrics {
+            return 0.0;
+        }
         use geometry::{CAPTION_GAP, CLEAR_WIDTH, CONTROLS_HEIGHT, MARGIN, MARKER_WIDTHS};
 
         let Some(track) = input.workspace.current() else {

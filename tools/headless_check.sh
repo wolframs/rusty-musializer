@@ -60,7 +60,11 @@ cleanup() {
         wait "$XVFB_PID" 2>/dev/null || true
     fi
 }
-trap cleanup EXIT
+# EXIT alone is not enough: a `timeout` or a Ctrl-C on the parent kills this
+# shell with a signal, the trap never fires, and the leaked server then makes the
+# *next* run fail for the wrong reason — "display in use" instead of whatever was
+# actually wrong. That has already cost one debugging round.
+trap cleanup EXIT INT TERM
 
 # Wait for the display rather than sleeping blind. The C harness sleeps, and
 # UI_REVIEW.md flags that as the weak point; a readiness check is cheap here.

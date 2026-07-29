@@ -190,12 +190,32 @@ pub fn drain_interleaved(out: &mut [f32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Every test here drives the **process-global** ring and `CAPTURING` flag,
+    /// so they cannot run concurrently with each other — one test's `reset` is
+    /// another's missing frames. `cargo test` runs a binary's tests in parallel
+    /// by default, and this suite got large enough during the Band 1 fan-out for
+    /// that to start failing intermittently rather than never.
+    ///
+    /// A lock rather than `--test-threads=1`, because the fix has to hold for
+    /// anyone who runs `cargo test` the ordinary way.
+    static BRIDGE: Mutex<()> = Mutex::new(());
+
+    fn exclusive() -> MutexGuard<'static, ()> {
+        // A poisoned lock means a previous test panicked while holding it; the
+        // state it guards is rebuilt by `install_default` in every test anyway.
+        BRIDGE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// The callback is exercised directly here rather than through raylib: no
     /// audio device, no window, no sound card. That is the point of the design —
     /// the realtime path is testable without a session.
     #[test]
     fn the_callback_moves_stereo_frames_into_the_ring() {
+        let _guard = exclusive();
         install_default();
         let ring = ring().expect("installed");
         ring.reset();
@@ -215,6 +235,7 @@ mod tests {
 
     #[test]
     fn a_null_buffer_or_zero_frames_is_ignored() {
+        let _guard = exclusive();
         install_default();
         let ring = ring().expect("installed");
         ring.reset();
@@ -233,6 +254,7 @@ mod tests {
 
     #[test]
     fn a_detached_bridge_drops_frames_instead_of_writing_them() {
+        let _guard = exclusive();
         install_default();
         let ring = ring().expect("installed");
         ring.reset();
@@ -246,6 +268,7 @@ mod tests {
 
     #[test]
     fn draining_produces_interleaved_samples() {
+        let _guard = exclusive();
         install_default();
         let ring = ring().expect("installed");
         ring.reset();

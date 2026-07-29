@@ -165,6 +165,14 @@ pub struct Shell {
     /// Which of the timeline's own controls the pointer is dragging, so a scrub
     /// that leaves the strip keeps scrubbing.
     scrubbing: bool,
+    /// The lyrics editor's draft, selection, panes and pending edits.
+    ///
+    /// Agent I had this in a `thread_local` while this field did not exist and
+    /// documented its own removal; it is gone. The same thing happened with the
+    /// route editor, which is the shape of the fan-out working: an agent that
+    /// cannot touch a shared file names what it needs instead of quietly
+    /// reaching for a global and leaving it there.
+    pub lyrics: super::panels::lyrics::LyricEditor,
     /// The font browser's catalogue, query, selection and consent, plus the
     /// importer it drives.
     ///
@@ -212,6 +220,7 @@ impl Shell {
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
             font_browser: super::panels::fonts::FontBrowser::new(),
+            lyrics: super::panels::lyrics::LyricEditor::new(),
         }
     }
 
@@ -237,23 +246,26 @@ impl Shell {
     #[must_use]
     pub fn timeline_height(&self, window_height: f32) -> f32 {
         // The manual event row is reserved before it is measured, which is why
-        // its height is a constant as well as a return value — and it is added
-        // to *every* arm, because the oracle calls `timeline()` unconditionally
-        // (`plug.c:7748`). Adding it to only the no-panel arm would make opening
-        // a stub panel change the layout, which is the thing
-        // `a_stub_panel_does_not_reserve_height_it_never_draws` exists to catch.
+        // its height is a constant as well as a return value.
+        //
+        // It is **not** added when the lyrics editor is open, and that divergence
+        // is arithmetic rather than taste. In the oracle those buttons share the
+        // band's controls row with Lyrics/Assist/Export (`plug.c:2867-2870`, six
+        // controls in one row); this rewrite seats those three in the toolbar
+        // instead, so a separate event row is chrome the oracle never spends.
+        // `LYRIC_EDITOR_TIMELINE_CHROME` is budgeted against the oracle's band,
+        // and at 720p there is no room for both without pushing the sidebar under
+        // its floor — which drops the tracks panel entirely, as a capture showed.
+        // The event lane keeps its own affordance in the no-panel band.
         let events = super::panels::events::EVENT_ROW_HEIGHT;
-        events
-            + match self.panel {
-                UiPanel::None | UiPanel::Tune => DEFAULT_TIMELINE_HEIGHT,
-                UiPanel::Export => WorkspaceFrame::export_timeline_height(window_height),
-                // Lyrics and Assist are stubs. When they land they ask through
-                // `lyrics_editor_layout::panel_height` and `assist_ui_state`'s
-                // `timeline_height`, both of which are already ported in
-                // musializer-core; until the panels draw rows, asking for their
-                // height would steal it from the preview for nothing.
-                UiPanel::Lyrics | UiPanel::Assist => DEFAULT_TIMELINE_HEIGHT,
-            }
+        match self.panel {
+            UiPanel::None | UiPanel::Tune => events + DEFAULT_TIMELINE_HEIGHT,
+            UiPanel::Export => events + WorkspaceFrame::export_timeline_height(window_height),
+            UiPanel::Lyrics => self.lyrics.timeline_height(window_height, 0.0),
+            // Assist is still a stub, and a panel that draws no rows must not
+            // reserve height it never uses.
+            UiPanel::Assist => events + DEFAULT_TIMELINE_HEIGHT,
+        }
     }
 
     /// Draws one frame of chrome and returns what the user asked for.
@@ -1413,12 +1425,13 @@ mod tests {
 
     #[test]
     fn a_stub_panel_does_not_reserve_height_it_never_draws() {
-        // The rule, as a test. Opening Lyrics or Assist while their panels are
-        // stubs must not shrink the preview, because the height would buy
-        // nothing.
+        // The rule, as a test: height is reserved by panels that draw rows, and
+        // by nothing else. The list of which panels those are has changed twice
+        // as the fan-out landed — Lyrics and Export were on the stub side of it
+        // until their agents finished — and each time this test is what said so.
         let mut shell = Shell::new();
         let baseline = shell.timeline_height(720.0);
-        for panel in [UiPanel::Lyrics, UiPanel::Assist, UiPanel::Tune] {
+        for panel in [UiPanel::Assist, UiPanel::Tune] {
             shell.panel = panel;
             assert_eq!(
                 shell.timeline_height(720.0),
@@ -1426,9 +1439,14 @@ mod tests {
                 "{panel:?} reserved height for a panel it does not draw"
             );
         }
-        // Export does draw a taller region, and asks for it.
-        shell.panel = UiPanel::Export;
-        assert!(shell.timeline_height(1080.0) > baseline);
+        // Export and Lyrics both draw real rows, and ask for the room.
+        for panel in [UiPanel::Export, UiPanel::Lyrics] {
+            shell.panel = panel;
+            assert!(
+                shell.timeline_height(1080.0) > baseline,
+                "{panel:?} draws rows but did not ask for their height"
+            );
+        }
     }
 
     #[test]

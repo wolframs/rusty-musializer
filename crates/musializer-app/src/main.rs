@@ -300,17 +300,12 @@ fn run() -> Result<std::process::ExitCode, String> {
         if probe.panel == cli::UiPanel::Tune {
             app.shell.inspector_open = true;
         }
-        if probe.assist_confirmation
-            || probe.lyric_selection.is_some()
-            || probe.caption_style_pane
-            || probe.font_browser.is_some()
-            || probe.lyrics_reference_path.is_some()
-        {
+        if probe.assist_confirmation {
             unimplemented_action(
                 &mut options,
                 &mut app,
                 "--ui-probe",
-                "assist=, lyric=, style=, fonts= and lyrics-file= need panels that are still stubs",
+                "assist= needs a panel that is still a stub",
             );
         }
     }
@@ -398,6 +393,16 @@ fn run() -> Result<std::process::ExitCode, String> {
             app.shell
                 .timeline
                 .zoom(duration, zoom, f64::from(music.get_time_played()));
+        }
+        // The lyrics editor's probe keys, which need the track they edit.
+        if let Some(track) = app.workspace.current_mut() {
+            let mut lyrics = std::mem::take(&mut app.shell.lyrics);
+            let honoured = lyrics.apply_probe(probe, track);
+            app.shell.lyrics = lyrics;
+            if !honoured {
+                eprintln!("warning: --ui-probe lyrics keys could not be applied");
+                options.error = true;
+            }
         }
         // Applied here with the rest of the probe, before the first frame, so the
         // evidence line is printed once rather than being guarded by a flag on the
@@ -721,6 +726,31 @@ fn run() -> Result<std::process::ExitCode, String> {
                     18.0,
                     Color::RAYWHITE,
                 );
+            }
+        }
+
+        // The lyrics editor writes through the track rather than through a
+        // `ShellCommand` per keystroke: an edit is a whole cue operation and the
+        // editor already validated it against the model's own rules.
+        let edits = app.shell.lyrics.take_pending();
+        if !edits.is_empty() {
+            let now = rl.get_time();
+            if let Some(track) = app.workspace.current_mut() {
+                let mut failed = None;
+                for edit in edits {
+                    if let Err(error) = edit.apply(track) {
+                        failed = Some(error);
+                        break;
+                    }
+                }
+                track.mark_dirty(now);
+                if let Some(error) = failed {
+                    app.shell.notify(
+                        Severity::Warning,
+                        "Lyric edit was refused",
+                        &format!("{error:?}"),
+                    );
+                }
             }
         }
 
@@ -1844,6 +1874,12 @@ impl Report {
             None => println!("project:         no track"),
         }
         println!("panel:           {}", app.shell.panel.label());
+        // `headless_check.sh` greps this: how many cues the editor is showing and
+        // which pane is open, which a screenshot of a scrolled list cannot say.
+        println!(
+            "lyrics:          {}",
+            app.shell.lyrics.describe(app.workspace.current())
+        );
         match &self.reopened {
             None => println!("reopen:          not requested"),
             Some(Reopen::Failed(error)) => println!("reopen:          FAILED: {error}"),
