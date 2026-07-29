@@ -297,13 +297,40 @@ impl FontCatalogue {
     /// must not empty a working picker, which is what
     /// `tests/test_font_catalogue.c:85-88` pins.
     ///
-    /// **Divergence, deliberate.** The C claims to parse into a scratch count
-    /// but writes each row straight into `destination->entries` and only
-    /// withholds `count` on failure (`:196-206`). So a failure part-way through
-    /// leaves the previous catalogue's *count* with the new catalogue's *rows* —
-    /// a silently corrupted picker. This builds a local `Vec` and commits it, so
-    /// the header's documented contract holds. Reproducing the clobber would be
-    /// reproducing a bug the tests do not cover; it is noted rather than copied.
+    /// **Divergence, deliberate, and settled — do not "restore" the clobber.**
+    /// The C claims to parse into a scratch count but writes each row straight
+    /// into `destination->entries` and only withholds `count` on failure
+    /// (`:196-206`). So a failure part-way through leaves the previous
+    /// catalogue's *count* beside the new catalogue's *rows*: the picker still
+    /// lists N families, and the first few of them are now whichever families the
+    /// failed refresh got through before it gave up. This builds a local `Vec`
+    /// and commits it.
+    ///
+    /// Agent E raised this and Agent K closed it. Three reasons it is the
+    /// improvement and not a parity bug, in the order they decide it:
+    ///
+    /// 1. **Nothing observable diverges.** The catalogue never reaches a `.musi`,
+    ///    a rendered frame, a number or a command line. It is a transient list
+    ///    read from a file another process wrote, and the only thing a user can
+    ///    see is which families the picker offers. That is the test `AGENTS.md`
+    ///    applies, and this fails it — so the better option wins.
+    /// 2. **The oracle's own header and its own test ask for this behaviour.**
+    ///    `font_catalogue.h:76-78` promises the destination survives a failed
+    ///    parse and `tests/test_font_catalogue.c:85-88` asserts it. The C passes
+    ///    that test only because every case it exercises fails before the first
+    ///    row is written. Reproducing the clobber would mean reproducing a bug
+    ///    that contradicts the frozen tree's own stated contract.
+    /// 3. **The clobber is not reachable by accident here anyway.** Rust has no
+    ///    way to leave a `Vec`'s length and contents disagreeing, so reproducing
+    ///    it would take deliberate extra code to make a corrupted picker
+    ///    possible.
+    ///
+    /// The counter-argument, recorded because it is real: the standing rule is
+    /// "reproduce it, note the suspicion, move on", and this is the one place the
+    /// rewrite behaves *better* than the frozen C rather than identically. It is
+    /// worth knowing that a differential harness over `font_catalogue_parse`
+    /// would disagree with the C on exactly one class of input — a malformed row
+    /// after at least one good one — and that this is why.
     pub fn parse_replace(&mut self, text: &str) -> Result<(), CatalogueError> {
         let parsed = Self::parse(text)?;
         *self = parsed;
@@ -890,6 +917,414 @@ fn read_bounded_artifact(path: &Path) -> Result<String, FontJobError> {
     String::from_utf8(bytes).map_err(|_| FontJobError::UnreadableArtifact)
 }
 
+// ---------------------------------------------------------------------------
+// The supervisor the browser pane talks to.
+//
+// `plug.c` spreads this across `font_job_start`/`poll_font_job`/
+// `font_job_finish_catalogue`/`font_job_finish_fetch` and the nine
+// `font_service_*` wrappers (`:1578-1935`), all reaching into the global
+// `Plug *p`. Here it is one object the pane owns, which is what makes the whole
+// state machine reachable from a test with a fake helper instead of a network.
+// ---------------------------------------------------------------------------
+
+use musializer_core::ui::font_import_state as state;
+
+/// What a poll produced, if anything.
+#[derive(Debug)]
+pub enum FontImportOutcome {
+    /// A new family list is loaded. Read it with [`FontImporter::catalogue`].
+    Catalogue,
+    /// A face finished downloading **and both digests re-verified**.
+    ///
+    /// The manifest's paths are on this machine and its digests have been
+    /// checked against the files (`plug.c:1750-1761`), so the caller may
+    /// rasterize and record without hashing again. It still owns the last two
+    /// steps the C does inline: making this the track's caption face, and
+    /// marking the project dirty.
+    Imported(Box<ImportManifest>),
+    /// The request stopped without a result. [`FontImporter::status`] says why,
+    /// in the sentence the user is shown.
+    Failed,
+}
+
+/// One `google_fonts.py` pipeline: consent-gated, one job at a time.
+///
+/// The oracle's nine service functions in one object. Two behaviours worth
+/// naming because they are not obvious from the shape:
+///
+/// - **Every failure is a `status` string, never an `Err`.** The panel *is* the
+///   error channel here (`font_job_fail`, `plug.c:1584-1592`), and a request
+///   that could not start has to leave the pane readable rather than unwind.
+/// - **Consent is not this object's memory.** `network_allowed` is passed in on
+///   every call that needs it, and lives in
+///   [`state::BrowserView`], which is where the "asked once per run" rule is
+///   written down and tested.
+#[derive(Debug)]
+pub struct FontImporter {
+    helper: Option<PathBuf>,
+    workspace_root: PathBuf,
+    catalogue: FontCatalogue,
+    catalogue_loaded: bool,
+    job: Option<FontJob>,
+    kind: state::FontImportJob,
+    job_state: state::FontImportJobState,
+    nonce: u64,
+    finished_at: Option<std::time::Instant>,
+    status: String,
+}
+
+impl FontImporter {
+    /// `application_directory` is raylib's `GetApplicationDirectory()` — the
+    /// directory of the running executable, not the working directory —
+    /// and `workspace_root` is the C's `./build/fonts` (`plug.c:1624`).
+    ///
+    /// The helper is resolved **once**, here, rather than on every request. The
+    /// C re-probes each time; one resolution means the browser cannot start
+    /// offering a feature halfway through a run because a file appeared, which
+    /// would be a stranger experience than a consistent refusal.
+    #[must_use]
+    pub fn new(application_directory: &Path, workspace_root: PathBuf) -> Self {
+        Self {
+            helper: find_font_helper(application_directory),
+            workspace_root,
+            catalogue: FontCatalogue::default(),
+            catalogue_loaded: false,
+            job: None,
+            kind: state::FontImportJob::None,
+            job_state: state::FontImportJobState::Idle,
+            nonce: 0,
+            finished_at: None,
+            status: String::new(),
+        }
+    }
+
+    /// `font_helper_available` (`plug.c:1572-1576`).
+    #[must_use]
+    pub fn helper_available(&self) -> bool {
+        self.helper.is_some()
+    }
+
+    /// `font_service_catalogue` (`plug.c:1863-1866`): `None` until a list has
+    /// actually loaded, so a half-built catalogue can never be browsed.
+    #[must_use]
+    pub fn catalogue(&self) -> Option<&FontCatalogue> {
+        self.catalogue_loaded.then_some(&self.catalogue)
+    }
+
+    /// `font_service_panel` (`plug.c:1868-1872`).
+    #[must_use]
+    pub fn panel(&self, network_allowed: bool) -> state::FontImportPanel {
+        state::panel(
+            network_allowed,
+            self.catalogue_loaded,
+            self.kind,
+            self.job_state,
+        )
+    }
+
+    /// The last thing that happened, for the progress and failure lines. Empty
+    /// when there is nothing to say (`font_service_status`, `plug.c:1874-1877`).
+    #[must_use]
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    #[must_use]
+    pub fn job_state(&self) -> state::FontImportJobState {
+        self.job_state
+    }
+
+    /// Starts a family-list request (`font_service_browse`, `plug.c:1884-1893`).
+    pub fn browse(&mut self, network_allowed: bool) {
+        let block = state::browse_block(self.helper_available(), network_allowed, self.job_state);
+        if block != state::FontImportBlock::Allowed {
+            self.fail(block.reason());
+            return;
+        }
+        self.start(state::FontImportJob::Catalogue, "");
+    }
+
+    /// Starts a download (`font_service_fetch`, `plug.c:1895-1905`).
+    ///
+    /// `track_present` is not a courtesy: a face has to belong to something, and
+    /// without a track there is nothing to bundle it into, so the download would
+    /// be discarded on exit.
+    pub fn fetch(&mut self, network_allowed: bool, family: &str, track_present: bool) {
+        let block = state::fetch_block(
+            self.helper_available(),
+            network_allowed,
+            self.job_state,
+            !family.is_empty(),
+            track_present,
+        );
+        if block != state::FontImportBlock::Allowed {
+            self.fail(block.reason());
+            return;
+        }
+        self.start(state::FontImportJob::Fetch, family);
+    }
+
+    /// `font_job_cancel` (`plug.c:1801-1809`).
+    pub fn cancel(&mut self) {
+        if !self.job_state.is_active() {
+            return;
+        }
+        self.job_state = state::FontImportJobState::Cancelling;
+        self.status = "Waiting for the helper to stop.".to_string();
+        if let Some(job) = self.job.as_mut() {
+            if let Err(error) = job.request_cancel() {
+                eprintln!("FONT: could not signal the helper: {error}");
+            }
+        }
+    }
+
+    /// Non-blocking progress check (`poll_font_job`, `plug.c:1811-1861`, plus
+    /// the two finish steps).
+    ///
+    /// Call it every frame whether or not the pane is open. The C does, and the
+    /// reason is that a job started and then hidden still has to be reaped and
+    /// still has to publish its result; polling only while the browser is
+    /// visible would leave a download that finished behind a closed pane
+    /// permanently "in progress".
+    pub fn poll(&mut self, track_present: bool) -> Option<FontImportOutcome> {
+        if !self.job_state.is_active() {
+            // A finished outcome clears itself after the linger, except a
+            // failure, which waits to be read.
+            let elapsed = self
+                .finished_at
+                .map_or(0.0, |at| at.elapsed().as_secs_f64());
+            if state::outcome_expired(self.job_state, 0.0, elapsed) {
+                self.job_state = state::FontImportJobState::Idle;
+                self.kind = state::FontImportJob::None;
+                self.finished_at = None;
+            }
+            return None;
+        }
+        let Some(job) = self.job.as_mut() else {
+            // A job with no handle can never finish. Reporting it beats leaving
+            // a panel that says "downloading" until the application is
+            // restarted (`plug.c:1821-1827`).
+            self.fail("The helper process handle was lost.");
+            return Some(FontImportOutcome::Failed);
+        };
+        let poll = match job.poll() {
+            Ok(poll) => poll,
+            Err(error) => {
+                eprintln!("FONT: could not poll the helper: {error}");
+                self.fail("The helper process handle was lost.");
+                return Some(FontImportOutcome::Failed);
+            }
+        };
+        match poll {
+            FontJobPoll::Running => None,
+            FontJobPoll::TimedOut => {
+                self.fail_with("The request took longer than this build will wait.");
+                self.job_state = state::FontImportJobState::TimedOut;
+                Some(FontImportOutcome::Failed)
+            }
+            FontJobPoll::Cancelled => {
+                // A cancellation is not a failure and leaves no message: the
+                // user stopped a request, they did not ask to be told off.
+                self.job = None;
+                self.job_state = state::FontImportJobState::Cancelled;
+                self.finished_at = Some(std::time::Instant::now());
+                self.status.clear();
+                None
+            }
+            FontJobPoll::Failed => {
+                let log = job.log_path().display().to_string();
+                self.fail(
+                    "The helper could not complete the request. Check the network connection \
+                     and the job log.",
+                );
+                eprintln!("FONT: helper failed; see {log}");
+                Some(FontImportOutcome::Failed)
+            }
+            FontJobPoll::Succeeded => Some(match self.kind {
+                state::FontImportJob::Fetch => self.finish_fetch(track_present),
+                // A `None` job that reports success cannot happen — `start` sets
+                // the kind before the child exists — and if it ever did, reading
+                // the catalogue artifact is the harmless answer.
+                _ => self.finish_catalogue(),
+            }),
+        }
+    }
+
+    /// Loads a family list from a file instead of from the network.
+    ///
+    /// **Invented, and the reason is the definition of done.** `--ui-probe
+    /// fonts=PATH` exists so a headless capture can photograph the browsing
+    /// state; without this the only way to reach that state is to contact
+    /// Google, which no check in this repository is allowed to do. Nothing in
+    /// the oracle corresponds to it, and it deliberately does *not* set consent
+    /// — reading a local file is not contacting anybody.
+    pub fn load_catalogue_from_file(&mut self, path: &Path) -> Result<(), FontJobError> {
+        let text = read_bounded_artifact(path)?;
+        self.catalogue.parse_replace(&text)?;
+        self.catalogue_loaded = true;
+        self.status.clear();
+        Ok(())
+    }
+
+    /// Stops any running helper and reaps it. Call before dropping on shutdown;
+    /// `Drop` does the same but cannot report.
+    pub fn shutdown(&mut self) -> io::Result<()> {
+        match self.job.as_mut() {
+            None => Ok(()),
+            Some(job) => job.shutdown(),
+        }
+    }
+
+    fn start(&mut self, kind: state::FontImportJob, family: &str) {
+        let Some(helper) = self.helper.clone() else {
+            self.fail("The font helper is missing from this installation.");
+            return;
+        };
+        let job_kind = match kind {
+            state::FontImportJob::Fetch => FontJobKind::Fetch,
+            _ => FontJobKind::Catalogue,
+        };
+        match FontJob::start(&helper, &self.workspace_root, job_kind, family, self.nonce) {
+            Err(FontJobError::Workspace(_)) => {
+                self.fail("The font workspace could not be created. Check directory permissions.");
+            }
+            Err(FontJobError::Spawn(_)) => {
+                self.fail(
+                    "Python could not launch the font helper. Review the job log for details.",
+                );
+            }
+            Err(FontJobError::HelperMissing) => {
+                self.fail("The font helper is missing from this installation.");
+            }
+            Err(error) => self.fail(&error.to_string()),
+            Ok(job) => {
+                self.nonce = job.nonce();
+                self.job = Some(job);
+                self.kind = kind;
+                self.job_state = state::FontImportJobState::Running;
+                self.finished_at = None;
+                self.status = if kind == state::FontImportJob::Catalogue {
+                    "Contacting fonts.google.com.".to_string()
+                } else {
+                    family.to_string()
+                };
+            }
+        }
+    }
+
+    /// `font_job_finish_catalogue` (`plug.c:1702-1728`).
+    fn finish_catalogue(&mut self) -> FontImportOutcome {
+        let Some(job) = self.job.as_ref() else {
+            self.fail("The helper finished without writing a family list.");
+            return FontImportOutcome::Failed;
+        };
+        let read = job.read_artifact();
+        self.job = None;
+        let text = match read {
+            Err(FontJobError::UnreadableArtifact) => {
+                self.fail("The helper finished without writing a family list.");
+                return FontImportOutcome::Failed;
+            }
+            Err(error) => {
+                self.fail(&error.to_string());
+                return FontImportOutcome::Failed;
+            }
+            Ok(text) => text,
+        };
+        // `parse_replace`, so a malformed refresh leaves the working picker
+        // exactly as it was. See the divergence note on it.
+        if let Err(error) = self.catalogue.parse_replace(&text) {
+            self.fail(&error.to_string());
+            return FontImportOutcome::Failed;
+        }
+        self.catalogue_loaded = true;
+        self.succeed();
+        FontImportOutcome::Catalogue
+    }
+
+    /// `font_job_finish_fetch` (`plug.c:1730-1799`) as far as the digest check.
+    ///
+    /// The project half stays with the caller: the C writes the caption style,
+    /// the two runtime paths and the dirty flag inline, and none of those belong
+    /// to a process supervisor.
+    fn finish_fetch(&mut self, track_present: bool) -> FontImportOutcome {
+        if !track_present {
+            self.job = None;
+            self.fail("The track this face was for is no longer open.");
+            return FontImportOutcome::Failed;
+        }
+        let Some(job) = self.job.as_ref() else {
+            self.fail("The helper finished without writing a usable result.");
+            return FontImportOutcome::Failed;
+        };
+        let read = job.read_manifest();
+        self.job = None;
+        let manifest = match read {
+            Err(FontJobError::UnreadableArtifact) => {
+                self.fail("The helper finished without writing a usable result.");
+                return FontImportOutcome::Failed;
+            }
+            Err(error) => {
+                self.fail(&error.to_string());
+                return FontImportOutcome::Failed;
+            }
+            Ok(manifest) => manifest,
+        };
+        // The helper's digests are claims. Both files are re-hashed here, before
+        // anything is rasterized or written into a project, because everything
+        // downstream treats a recorded digest as the identity of the bytes
+        // (`plug.c:1750-1761`).
+        if !manifest_digests_hold(&manifest) {
+            self.fail("The downloaded face did not match the digest recorded for it.");
+            return FontImportOutcome::Failed;
+        }
+        self.succeed();
+        FontImportOutcome::Imported(Box::new(manifest))
+    }
+
+    fn succeed(&mut self) {
+        self.job_state = state::FontImportJobState::Succeeded;
+        self.finished_at = Some(std::time::Instant::now());
+        self.status.clear();
+    }
+
+    /// `font_job_fail` (`plug.c:1584-1592`), which also drops the child handle:
+    /// a failed job has nothing left to poll.
+    fn fail(&mut self, detail: &str) {
+        self.job = None;
+        self.fail_with(detail);
+    }
+
+    fn fail_with(&mut self, detail: &str) {
+        self.job = None;
+        self.job_state = state::FontImportJobState::Failed;
+        self.finished_at = Some(std::time::Instant::now());
+        self.status = detail.to_string();
+    }
+}
+
+impl Drop for FontImporter {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown() {
+            eprintln!("FONT: abandoned helper could not be reaped: {error}");
+        }
+    }
+}
+
+/// Both of a manifest's digests, re-checked against the files it points at.
+///
+/// Separate from [`FontImporter`] so the rule is callable — and testable —
+/// without a child process. The failure it exists to catch is a truncated or
+/// substituted download, which reads as a perfectly good manifest.
+#[must_use]
+pub fn manifest_digests_hold(manifest: &ImportManifest) -> bool {
+    crate::project_files::file_has_digest(Path::new(&manifest.font_path), &manifest.font_sha256)
+        && crate::project_files::file_has_digest(
+            Path::new(&manifest.licence_path),
+            &manifest.licence_sha256,
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -987,6 +1422,27 @@ mod tests {
             assert_eq!(catalogue.len(), 3);
             assert_eq!(catalogue.entries()[0].family, "Roboto");
         }
+    }
+
+    #[test]
+    fn a_refresh_that_fails_after_a_good_row_leaves_the_old_catalogue_whole() {
+        // The settled divergence, pinned. The C withholds only `count` here, so
+        // the picker would keep three families and quietly serve "Newface" as
+        // the first of them. This keeps all three, unchanged — see the note on
+        // `parse_replace` for why that is the answer rather than the clobber.
+        let mut catalogue = FontCatalogue::default();
+        catalogue.parse_replace(&sample()).expect("seed");
+        let error = catalogue
+            .parse_replace(&format!("{HEADER}Newface\tSerif\tlatin\nRagged\tSerif\n"))
+            .expect_err("the second row is ragged");
+        assert_eq!(error, CatalogueError::Row);
+        assert_eq!(catalogue.len(), 3);
+        let families: Vec<&str> = catalogue
+            .entries()
+            .iter()
+            .map(|entry| entry.family.as_str())
+            .collect();
+        assert_eq!(families, ["Roboto", "Playfair Display", "Space Mono"]);
     }
 
     #[test]
@@ -1437,5 +1893,274 @@ mod tests {
     fn job_timeouts_are_the_oracles_two_values() {
         assert_eq!(FontJobKind::Catalogue.timeout(), Duration::from_secs(120));
         assert_eq!(FontJobKind::Fetch.timeout(), Duration::from_secs(180));
+    }
+
+    // -----------------------------------------------------------------------
+    // The supervisor. Every one of these runs against the fake helper: this
+    // suite never contacts fonts.google.com, and the policy is what is under
+    // test, not the download.
+    // -----------------------------------------------------------------------
+
+    fn importer_with(scratch: &Scratch, helper: Option<&Path>) -> FontImporter {
+        let application = scratch.join("app");
+        std::fs::create_dir_all(application.join("tools")).expect("appdir");
+        if let Some(helper) = helper {
+            std::fs::copy(helper, application.join("tools/google_fonts.py")).expect("install");
+        }
+        FontImporter::new(&application, scratch.join("workspace"))
+    }
+
+    fn drive(importer: &mut FontImporter, track_present: bool) -> Option<FontImportOutcome> {
+        for _ in 0..600 {
+            match importer.poll(track_present) {
+                None if importer.job_state().is_active() => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                outcome => return outcome,
+            }
+        }
+        panic!("the fake helper never finished");
+    }
+
+    #[test]
+    fn nothing_is_contacted_until_consent_is_given_and_the_reason_is_shown() {
+        // The gate this whole module exists to hold. Without consent neither a
+        // browse nor a fetch may spawn anything at all — not even the "it is
+        // only a list" request, which is still a request to a third party.
+        let scratch = Scratch::new("consent");
+        let helper = scratch.fake_helper("helper.py", "raise SystemExit('must not run')");
+        let mut importer = importer_with(&scratch, Some(&helper));
+        assert!(importer.helper_available());
+
+        importer.browse(false);
+        assert_eq!(importer.job_state(), state::FontImportJobState::Failed);
+        assert_eq!(importer.status(), "Allow contacting Google Fonts first.");
+        assert!(importer.catalogue().is_none());
+        assert_eq!(
+            importer.panel(false),
+            state::FontImportPanel::Consent,
+            "a refused request must still show the question, not a failure"
+        );
+
+        importer.fetch(false, "Inter", true);
+        assert_eq!(importer.status(), "Allow contacting Google Fonts first.");
+
+        // And with consent, the same call reaches the helper.
+        importer.browse(true);
+        assert_eq!(importer.job_state(), state::FontImportJobState::Running);
+        assert_eq!(importer.status(), "Contacting fonts.google.com.");
+    }
+
+    #[test]
+    fn a_missing_helper_is_reported_ahead_of_the_consent_question() {
+        // Asking somebody to approve a network call this installation cannot
+        // make would be a pointless question with a misleading answer.
+        let scratch = Scratch::new("nohelper");
+        let mut importer = importer_with(&scratch, None);
+        assert!(!importer.helper_available());
+        importer.browse(false);
+        assert_eq!(
+            importer.status(),
+            "The font helper is missing from this installation."
+        );
+    }
+
+    #[test]
+    fn a_browse_loads_the_family_list_and_the_panel_moves_to_browsing() {
+        let scratch = Scratch::new("browse");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "pathlib.Path(sys.argv[4]).write_text(\
+             'musializer.font-catalogue/v1\\t2\\nInter\\tSans Serif\\tlatin\\n\
+             Roboto\\tSans Serif\\tlatin,cyrillic\\n')",
+        );
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.browse(true);
+        assert_eq!(importer.panel(true), state::FontImportPanel::Loading);
+
+        assert!(matches!(
+            drive(&mut importer, true),
+            Some(FontImportOutcome::Catalogue)
+        ));
+        let catalogue = importer.catalogue().expect("loaded");
+        assert_eq!(catalogue.len(), 2);
+        assert_eq!(importer.panel(true), state::FontImportPanel::Browsing);
+        assert_eq!(importer.status(), "");
+        // Withdrawing consent puts the question back even with a list in hand.
+        assert_eq!(importer.panel(false), state::FontImportPanel::Consent);
+    }
+
+    #[test]
+    fn a_download_is_refused_when_its_digests_do_not_hold() {
+        // The manifest's digests are claims. A helper that wrote a good-looking
+        // manifest for bytes that do not hash to it must not reach a project,
+        // because everything downstream treats a recorded digest as the identity
+        // of the bytes.
+        let scratch = Scratch::new("digest");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            &format!(
+                "directory = pathlib.Path(sys.argv[3])\n\
+                 (directory / 'face.ttf').write_text('not the bytes that hash to it')\n\
+                 (directory / 'OFL.txt').write_text('terms')\n\
+                 (directory / 'import.tsv').write_text(\n\
+                 'musializer.font-import/v1\\t1\\n' + sys.argv[2] + '\\t' +\n\
+                 str(directory / 'face.ttf') + '\\t{GOOD_DIGEST}\\t' +\n\
+                 str(directory / 'OFL.txt') + '\\t{GOOD_DIGEST}\\tOFL-1.1\\n')"
+            ),
+        );
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.fetch(true, "Space Mono", true);
+        assert_eq!(importer.status(), "Space Mono");
+        assert!(matches!(
+            drive(&mut importer, true),
+            Some(FontImportOutcome::Failed)
+        ));
+        assert_eq!(
+            importer.status(),
+            "The downloaded face did not match the digest recorded for it."
+        );
+        assert_eq!(importer.panel(true), state::FontImportPanel::Failed);
+    }
+
+    #[test]
+    fn a_download_whose_digests_hold_is_handed_over_verified() {
+        let scratch = Scratch::new("import");
+        // The helper hashes what it wrote, which is what the real one does.
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "import hashlib\n\
+             directory = pathlib.Path(sys.argv[3])\n\
+             face = directory / 'face.ttf'\n\
+             licence = directory / 'OFL.txt'\n\
+             face.write_bytes(b'\\x00\\x01\\x00\\x00 pretend outlines')\n\
+             licence.write_text('SIL Open Font License 1.1')\n\
+             digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()\n\
+             (directory / 'import.tsv').write_text(\n\
+             'musializer.font-import/v1\\t1\\n' + sys.argv[2] + '\\t' + str(face) +\n\
+             '\\t' + digest(face) + '\\t' + str(licence) + '\\t' + digest(licence) +\n\
+             '\\tOFL-1.1\\n')",
+        );
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.fetch(true, "Space Mono", true);
+        let outcome = drive(&mut importer, true);
+        let Some(FontImportOutcome::Imported(manifest)) = outcome else {
+            panic!("expected a verified import, got {outcome:?}");
+        };
+        assert_eq!(manifest.family, "Space Mono");
+        assert_eq!(manifest.licence_name, "OFL-1.1");
+        assert!(Path::new(&manifest.font_path).is_file());
+        assert!(manifest_digests_hold(&manifest));
+        assert_eq!(importer.job_state(), state::FontImportJobState::Succeeded);
+    }
+
+    #[test]
+    fn a_face_with_nowhere_to_go_is_refused_at_the_finish_as_well_as_at_the_start() {
+        // The track can close while the download runs. The C checks again at the
+        // finish for exactly that (`plug.c:1732-1736`), and without the second
+        // check the face would be rasterized and then dropped on exit.
+        let scratch = Scratch::new("notrack");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            &format!(
+                "directory = pathlib.Path(sys.argv[3])\n\
+                 (directory / 'import.tsv').write_text(\n\
+                 'musializer.font-import/v1\\t1\\nA\\t/f.ttf\\t{GOOD_DIGEST}\\t/l.txt\\t\
+                 {GOOD_DIGEST}\\tOFL\\n')"
+            ),
+        );
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.fetch(true, "A", false);
+        assert_eq!(
+            importer.status(),
+            "Open a track before importing a caption face."
+        );
+
+        importer.fetch(true, "A", true);
+        assert!(matches!(
+            drive(&mut importer, false),
+            Some(FontImportOutcome::Failed)
+        ));
+        assert_eq!(
+            importer.status(),
+            "The track this face was for is no longer open."
+        );
+    }
+
+    #[test]
+    fn a_second_request_is_refused_while_one_is_in_flight_and_cancelling_clears_it() {
+        let scratch = Scratch::new("busy");
+        let helper = scratch.fake_helper("helper.py", "time.sleep(60)");
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.browse(true);
+        assert_eq!(importer.job_state(), state::FontImportJobState::Running);
+
+        importer.fetch(true, "Inter", true);
+        assert_eq!(importer.status(), "A font request is already running.");
+        // The refusal must not have killed the request it refused to duplicate.
+        assert_eq!(importer.job_state(), state::FontImportJobState::Failed);
+
+        importer.cancel();
+        assert_eq!(
+            importer.job_state(),
+            state::FontImportJobState::Failed,
+            "a cancel with nothing active must not invent a cancellation"
+        );
+
+        // A live one does cancel, and a cancellation carries no message: the
+        // user stopped a request, they were not told off for it.
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.browse(true);
+        importer.cancel();
+        assert_eq!(importer.panel(true), state::FontImportPanel::Cancelling);
+        assert!(drive(&mut importer, true).is_none());
+        assert_eq!(importer.job_state(), state::FontImportJobState::Cancelled);
+        assert_eq!(importer.status(), "");
+    }
+
+    #[test]
+    fn a_helper_that_writes_nothing_reads_as_a_failure_with_a_sentence() {
+        let scratch = Scratch::new("empty");
+        let helper = scratch.fake_helper("helper.py", "pass");
+        let mut importer = importer_with(&scratch, Some(&helper));
+        importer.browse(true);
+        assert!(matches!(
+            drive(&mut importer, true),
+            Some(FontImportOutcome::Failed)
+        ));
+        assert_eq!(
+            importer.status(),
+            "The helper finished without writing a family list."
+        );
+        // A failure is the one outcome that never clears itself. The reason is
+        // the point, so it waits to be read.
+        assert!(importer.poll(true).is_none());
+        assert_eq!(importer.job_state(), state::FontImportJobState::Failed);
+    }
+
+    #[test]
+    fn a_local_catalogue_reaches_browsing_without_asking_anyone_for_consent() {
+        // `--ui-probe fonts=PATH`, which is what lets a headless capture
+        // photograph the browsing state. Reading a file is not contacting
+        // anybody, so it deliberately grants nothing.
+        let scratch = Scratch::new("probe");
+        let path = scratch.join("families.tsv");
+        std::fs::write(
+            &path,
+            format!("{HEADER}Inter\tSans Serif\tlatin\nRoboto\tSans Serif\tlatin\n"),
+        )
+        .expect("write");
+        let mut importer = importer_with(&scratch, None);
+        importer.load_catalogue_from_file(&path).expect("load");
+        assert_eq!(importer.catalogue().expect("loaded").len(), 2);
+        assert_eq!(importer.panel(true), state::FontImportPanel::Browsing);
+        // Still no consent, so the pane still asks first.
+        assert_eq!(importer.panel(false), state::FontImportPanel::Consent);
+
+        // And a file that is not a catalogue is refused without emptying the
+        // list that was already there.
+        std::fs::write(&path, "not a catalogue\n").expect("write");
+        assert!(importer.load_catalogue_from_file(&path).is_err());
+        assert_eq!(importer.catalogue().expect("still loaded").len(), 2);
     }
 }

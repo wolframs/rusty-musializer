@@ -2541,3 +2541,288 @@ than merely opening. If `Report::print` ever takes this over, that is the wordin
   because `MUSI_PROJECT_PARAMETER_CAPACITY` is 65 *with* the NUL. `capacity::PARAMETER`
   is 64 and the Rust check is `> capacity::PARAMETER`, which is the same boundary.
   It reads like an off-by-one and is not; the harness pins both sides of it.
+---
+
+#### Agent K — the font browser pane and the two missing faces
+
+**Landed, except two call sites in shared files.** Everything below builds, tests
+and is clippy/fmt clean; nothing in `shell.rs`, `main.rs`, `widgets.rs`,
+`theme.rs`, `cli.rs` or any `mod.rs` was touched. The pane is written and tested
+but **is not drawn yet**, because both of its entry points live in files this
+agent may not edit. The two diffs are at the bottom of this note; until they are
+applied `ui/panels/fonts.rs` carries a module-level `#![allow(dead_code)]` whose
+comment says to delete it when they land.
+
+##### `runtime::font` is four faces now
+
+`Faces` carries the interface subset of Space Grotesk, Alegreya at the full
+curated caption set, **Space Grotesk at the full caption set**, and a project's
+imported face. `Faces::caption_for(CaptionFace)` is `caption_face`
+(`plug.c:350-364`) including its fallback rule — a style naming a face this build
+could not rasterize gets **Alegreya**, never raylib's default, because the bitmap
+face has none of the curated coverage and would silently drop every accent.
+
+Two things worth knowing:
+
+- **`caption()` survived as the no-argument default** rather than becoming
+  `caption(face)`. `scene_host.rs:308` calls it and that file is the integration
+  owner's; a signature change there is a one-line diff nobody asked for. It now
+  means "the caption default", and its doc says a scene drawing a *project's*
+  captions must use `caption_for` with that track's style instead. That call site
+  is a real, small parity gap: the cadence scene's overlay ignores the caption
+  face the project selected.
+- **The imported face is keyed by its path** (`plug.c:389-392`), and
+  `load_imported` returns early when asked for the face it already holds. That
+  early return is not an optimization — without it a per-frame call leaks a 64 px
+  atlas every frame. The 32 MiB ceiling and the `.ttf` extension default are the
+  oracle's (`plug.c:369`, `:411-415`); the size gate is split out as
+  `imported_face_size_is_usable` because it is the half of that function reachable
+  without a window.
+
+No new `unsafe`. The four existing blocks now also carry heap bytes read from
+disk rather than only `include_bytes!` arrays, so the `SAFETY:` comment and the
+`AGENTS.md` row were both corrected to say why that is equally sound: raylib
+copies out what it needs before returning and keeps no pointer into the buffer.
+
+The report line grew to name all four slots, and the imported one reports its
+**path** — "an imported face is loaded" and "the imported face this project
+names is loaded" are different claims and only the second is worth a check.
+
+##### The pane, and where its state lives
+
+`ui/panels/fonts.rs` reproduces `draw_font_consent` and `draw_font_browser`
+(`lyrics_editor_ui.c:617-833`): consent, loading, fetching, cancelling, failed,
+and the browsing body with its search field, its scrolling family list, its
+"N of M" count and its "Download and use" row.
+
+Everything that is a decision went somewhere headless:
+
+| Decision | Where |
+| --- | --- |
+| rectangles, the 420x150 threshold, how many rows fit | `core::ui::font_import_state::BrowserLayout` |
+| query editing, scroll window, selection, consent | `core::ui::font_import_state::BrowserView` |
+| the child, the digests, the catalogue | `runtime::process::font_import::FontImporter` |
+
+`FontImporter` is the oracle's nine `font_service_*` functions plus
+`poll_font_job` and both finish steps, as one object instead of reaches into a
+global `Plug *p`. That is what makes the whole state machine testable with a fake
+helper: **eleven new tests drive consent refusal, a missing helper, a browse, a
+verified download, a download whose digests do not hold, a track that closed
+mid-download, a second request while one is in flight, cancellation, a helper
+that writes nothing, and a local family list — and not one of them touches the
+network.**
+
+`FontImporter::poll` stops one step short of the C: it hands back a
+**digest-verified** manifest rather than writing the caption style itself.
+Rasterizing needs `&mut Faces` and recording needs `&mut Workspace`, and the pane
+holds both as shared references. The last two steps of `font_job_finish_fetch`
+(`plug.c:1762-1798`) therefore happen in `main.rs`, and they must stay **one
+step**: a project that names an imported face without carrying the asset fails
+its own validation.
+
+##### Divergences, with reasons
+
+1. **`font_catalogue_parse` atomicity — settled, keeping Agent E's improvement.**
+   The C withholds only `count` on a failed parse, so a refresh that fails after
+   a good row leaves the old count beside new rows: the picker keeps listing N
+   families and the first few are now from the failed refresh. Three reasons the
+   local-`Vec`-then-commit stays: nothing observable diverges (a catalogue never
+   reaches a `.musi`, a frame, a number or a command line, so `AGENTS.md`'s test
+   says take the better option); the oracle's own header *and* its own test ask
+   for the behaviour we implement, and the C passes that test only because every
+   case it exercises fails before the first row is written; and Rust cannot leave
+   a `Vec`'s length disagreeing with its contents without deliberate extra code to
+   make the corruption possible. Recorded on `parse_replace` in full, with the
+   counter-argument, and pinned by
+   `a_refresh_that_fails_after_a_good_row_leaves_the_old_catalogue_whole`.
+   **A differential harness over this function would disagree with the C on
+   exactly one class of input — a malformed row after at least one good one — and
+   that is expected.**
+2. **The selection is a family name, not a catalogue index.** The C stores an
+   index and its own header comment says why that is wrong: "A catalogue refresh
+   can renumber every row, so the family name is re-resolved rather than the index
+   being trusted across a reload" (`lyrics_editor_ui.h:68-71`). The implementation
+   never does the re-resolution — `can_import` only bounds-checks
+   (`lyrics_editor_ui.c:813-814`) — so a refresh between choosing and pressing
+   downloads a *different family*. Storing the name is the comment's stated
+   intent. Same class as (1): the comment is right and the code is not.
+3. **The selected row uses the palette's accent, not `GetColor(0xE7ECFAFF)`.**
+   That literal is not in `ui_palette.h`, so it is invisible to the contrast suite
+   that header exists for — exactly the failure `theme.rs`'s module comment warns
+   about. The accent/white pair *is* contrast-checked, and adding a palette entry
+   would mean editing `theme.rs`.
+4. **`--ui-probe fonts=PATH` is invented**
+   (`FontImporter::load_catalogue_from_file`). Nothing in the oracle reaches the
+   browsing state without contacting Google, and no check here may do that. It
+   grants **no** consent: a probe that quietly answered the consent question would
+   make the consent panel unreviewable, which is the exact failure the probe
+   exists to prevent. There is a test for that.
+5. **The helper is resolved once, at construction**, not re-probed per request. A
+   browser that starts offering a feature halfway through a run because a file
+   appeared is stranger than a consistent refusal.
+6. **`current_exe()` stands in for `GetApplicationDirectory()`.** Same fact, and
+   it keeps `FontImporter` constructible without a window.
+
+##### The consent is not a preference, and must not become one
+
+`BrowserView::network_allowed` starts false in every run, is never written
+anywhere, and has no setter that takes a stored value. `plug.c:1542-1548` is
+explicit about why — "'I wanted a font earlier' is not standing permission to
+contact anyone later" — and the consent copy promises it in as many words:
+"Musializer asks again next time it starts."
+`network_consent_starts_refused_every_run_and_cannot_be_restored` fails if anyone
+adds one.
+
+##### What is unfinished, and what I need
+
+**Not done, and honestly not done:**
+
+- **The pane is not drawn and has no capture.** Its only caller is Agent I's
+  lyrics editor. Nothing photographs it, so by the definition of done this item is
+  incomplete — and this is precisely the "a surface nothing photographs does not
+  get reviewed" trap, arrived at from the merge side rather than the code side.
+  The capture belongs in `tools/headless_check.sh` once the pane is reachable, at
+  1280x720 and 960x640, driven by `--ui-probe panel=lyrics,fonts=PATH` with a
+  **generated** family list under `build/`.
+- **`--ui-probe fonts=` still reports "not implemented"** in `main.rs`, and the
+  branch that says so also covers four other agents' flags.
+- **The caption face selector** — the `FACE` row's third choice and the
+  "Import a face..." / "Remove" buttons (`lyrics_editor_ui.c:855-928`) — is in the
+  caption style form, which is Agent I's file. `FontBrowser::clear_selection` and
+  `Faces::clear_imported` are the halves it needs from here.
+- **No differential harness.** `font_catalogue.c`'s readers were already ported
+  with the C test suite in full by Agent E, and the one function worth comparing
+  numerically is the one this note deliberately diverges on. A harness over
+  `font_catalogue_filter` and `font_scripts_describe` would still be worth having.
+- **The cadence scene's overlay ignores the project's caption face** (see above).
+
+**Exact diffs needed from the integration owner.**
+
+`crates/musializer-app/src/ui/shell.rs` — one field, so the pane's state survives
+a frame:
+
+```rust
+ use crate::cli::UiPanel;
++use crate::ui::panels::fonts::FontBrowser;
+
+ pub struct Shell {
+     ...
+     track_scroll: ScrollState,
++    /// The caption face browser's state and its importer (Agent K).
++    pub font_browser: FontBrowser,
+ }
+
+ // in Shell::new()
+             track_scroll: ScrollState::new(),
++            font_browser: FontBrowser::default(),
+```
+
+then in `crates/musializer-app/src/ui/panels/fonts.rs`, drop the `browser`
+parameter and the module-level `#![allow(dead_code)]`:
+
+```rust
+     pub(crate) fn font_browser_pane(
+         &mut self,
+         d: &mut RaylibDrawHandle<'_>,
+         input: &ShellInput<'_>,
+-        browser: &mut FontBrowser,
+         area: UiRect,
+         commands: &mut Vec<ShellCommand>,
+     ) {
+         let _ = commands;
+-        draw_font_browser(&mut self.widgets, d, input, browser, area);
++        let Shell { widgets, font_browser, .. } = self;
++        draw_font_browser(widgets, d, input, font_browser, area);
+     }
+```
+
+`crates/musializer-app/src/main.rs` — four changes:
+
+```rust
+ // 1. the per-frame poll, next to the other per-frame work, BEFORE shell.draw.
+ //    A download that finished behind a closed pane still has to be reaped.
++        app.shell
++            .font_browser
++            .poll(app.workspace.current().is_some());
++        if let Some(manifest) = app.shell.font_browser.take_import() {
++            // The rest of `font_job_finish_fetch` (plug.c:1762-1798). One step:
++            // the face becomes the selected one in the same move that records
++            // the asset, or the project names a face it does not carry.
++            let path = std::path::PathBuf::from(&manifest.font_path);
++            if fonts.load_imported(&mut rl, &thread, &path) {
++                if let Some(track) = app.workspace.current_mut() {
++                    let style = &mut track.caption_style;
++                    style.face = CaptionFace::Imported;
++                    style.font = Some(FontAsset {
++                        // `path`/`licence_path` are written by the save, which
++                        // decides where in the bundle they land. Empty until then.
++                        path: String::new(),
++                        sha256: manifest.font_sha256.clone(),
++                        family: manifest.family.clone(),
++                        licence_path: String::new(),
++                        licence_sha256: manifest.licence_sha256.clone(),
++                        licence_name: manifest.licence_name.clone(),
++                    });
++                    track.caption_font_path = Some(path);
++                    track.caption_licence_path =
++                        Some(std::path::PathBuf::from(&manifest.licence_path));
++                    track.project_dirty = true;
++                    app.shell.notify(
++                        Severity::Success,
++                        "Caption face imported",
++                        &format!(
++                            "{} is now the caption face. It is licensed under {}, and both \
++                             the face and its licence are saved with the project.",
++                            manifest.family, manifest.licence_name
++                        ),
++                    );
++                }
++            } else {
++                app.shell.notify(
++                    Severity::Error,
++                    "Caption face not imported",
++                    "The downloaded face is not a font this build can rasterize.",
++                );
++            }
++        }
+
+ // 2. honour `--ui-probe fonts=`, and drop `fonts=` from the "not implemented" list.
++        match probe.font_browser.as_ref() {
++            None => {}
++            Some(cli::FontBrowserProbe::Consent) => {}   // the default state
++            Some(cli::FontBrowserProbe::Catalogue(path)) => {
++                // Reads a family list from disk. Never contacts anybody, and
++                // deliberately does not grant consent on its own.
++                if let Err(error) = app.shell.font_browser.load_catalogue_from_file(path) {
++                    eprintln!("warning: --ui-probe fonts=: {error}");
++                }
++                app.shell.font_browser.allow_network();
++            }
++        }
+
+ // 3. the report, next to `fonts:`.
++        println!("font browser:    {}", app.shell.font_browser.describe());
+
+ // 4. an imported face survives a project open. In `open_project_path`'s
+ //    caller, after the track is installed:
++        if let Some(path) = app.workspace.current().and_then(|t| t.caption_font_path.clone()) {
++            if !fonts.load_imported(&mut rl, &thread, &path) {
++                eprintln!("FONT: the project's imported caption face could not be rasterized");
++            }
++        }
+```
+
+`crates/musializer-app/src/ui/widgets.rs` — optional and cosmetic: move the
+pane's `0x464F_4E54` namespace into `widgets::id` as `FONTS`. It cannot collide
+today (a test in `fonts.rs` proves it against all six existing namespaces), so
+this is tidiness, not a fix.
+
+##### For whoever writes the capture
+
+`--ui-probe panel=lyrics,fonts=consent` photographs the consent panel — the
+question itself, which is the screen most worth reviewing, since it is the one
+that decides whether a user understands what leaves their machine. `fonts=PATH`
+photographs the browsing body with a generated list. Assert on the
+`font browser:` report line, not on the pixels: `consent=not asked` versus
+`consent=granted` and `families=N` are the two facts a screenshot cannot prove on
+its own.

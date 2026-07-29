@@ -126,7 +126,7 @@ comment stating why it holds. Current islands:
 | `runtime::draw` | raylib's default 1x1 texture is a non-owning handle, and the safe `Texture2D` would unload it on drop | The ffi draw wrappers take a `&mut impl RaylibDraw`, so an active drawing context is proven at compile time |
 | `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
 | `runtime::process::process_group` | `std`'s `Child::kill` sends only `SIGKILL`, to only one process. `SIGTERM` and process-group delivery need `kill(2)`, and `libc` is not a dependency | One block wrapping a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`. Both arguments pass by value, nothing is written through a pointer, and every caller passes a pid it owns as a live `Child` (or its negation) |
-| `runtime::font` | raylib-rs's safe `load_font_from_memory` takes the glyph set as a `&str` and passes `str::len()` — a **byte** count — as the codepoint count, so a multi-byte set makes raylib read past the array. And `GetFontDefault` is a non-owning handle that `Font`'s `Drop` would unload | Three blocks. `LoadFontFromMemory` gets both lengths from the slices themselves; the result goes straight into `Font::from_raw`, whose `Drop` is `UnloadFont`. The default face is wrapped in `WeakFont`, whose drop is a no-op. `GenTextureMipmaps` borrows the font's own texture field so the level count is written back where `SetTextureFilter` reads it |
+| `runtime::font` | raylib-rs's safe `load_font_from_memory` takes the glyph set as a `&str` and passes `str::len()` — a **byte** count — as the codepoint count, so a multi-byte set makes raylib read past the array. And `GetFontDefault` is a non-owning handle that `Font`'s `Drop` would unload | Four blocks, all inside `rasterize` and `default_face`, and every face goes through them — the three built-in ones and a project's imported one. `LoadFontFromMemory` gets both lengths from the slices themselves, and raylib copies out what it needs before returning, so a heap buffer read from disk is as safe as an `include_bytes!` array; the result goes straight into `Font::from_raw`, whose `Drop` is `UnloadFont`. The default face is wrapped in `WeakFont`, whose drop is a no-op. `GenTextureMipmaps` borrows the font's own texture field so the level count is written back where `SetTextureFilter` reads it |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
@@ -321,7 +321,13 @@ and Band 2 of that plan:
   wholesale** — splitting the constant rule from the route rule lets one
   parameter persist as both.
 - The manual event row and the preset UI.
-- `runtime::font`'s two faces becoming four, which is the caption face selector.
+- ~~`runtime::font`'s two faces becoming four~~ — **done.** `Faces` carries the
+  interface subset, Alegreya, Space Grotesk at the full caption set, and a
+  project's imported face keyed by its path; `Faces::caption_for` is
+  `caption_face` (`plug.c:350-364`). The caption *style* selector that chooses
+  between them is the lyrics editor's, and the pane that imports the fourth is
+  `ui/panels/fonts.rs`, which needs two call sites in shared files before it
+  draws — see the Agent K note in `REWRITE_PLAN.md`.
 - Whole-track Song Atlas preprocessing at load, and `--ascii-image` → a glyph grid.
 - Text entry. There is no caret, no selection and no clipboard anywhere in this
   codebase; the lyrics editor needs one and it is the last piece of real UI
