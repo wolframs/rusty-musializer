@@ -23,9 +23,9 @@
 use crate::project::lyrics::LyricsDocument;
 use crate::project::sha256;
 use crate::scene::events::EventType;
-use crate::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
-use crate::scene::settings::{self, SceneSettings, MAX_CONTROLS, PRESETS_PER_SCENE};
-use crate::scene::{SceneId, SCENE_COUNT};
+use crate::scene::routes::{mappings_supported, AnalysisSource, Interpolation, ParameterMapping};
+use crate::scene::settings::{MAX_CONTROLS, PRESETS_PER_SCENE};
+use crate::scene::SCENE_COUNT;
 
 use super::event_timeline::EventTimeline;
 
@@ -1151,190 +1151,23 @@ pub fn is_bundled_relative_path(path: &str) -> bool {
         .all(|component| !component.is_empty() && component != "." && component != "..")
 }
 
-// -- The persistence half of `core::scene::routes` ---------------------------
+// -- The persistence half of `core::scene::routes`, and where it went ---------
 //
-// `scene_routes.c`'s persistence functions need this module's canonical names and
-// bounds, so they land here rather than in `routes.rs`, which is a shared
-// contract owned by the integration owner. If they are moved later they should
-// move wholesale; splitting the constant-mapping rule from the route rule would
-// let a project persist a parameter as both.
-
-/// `scene_settings_mapping_supported` (`scene_settings.c:407-417`): the canonical
-/// spelling of a persisted **slider constant**.
-///
-/// A constant is a full-range RMS mapping whose output endpoints are equal. That
-/// is why a *route* with equal endpoints is rejected
-/// ([`ParameterMapping::is_valid_for`]): v1 cannot distinguish the two, so each
-/// parameter is persisted as exactly one of them.
-#[must_use]
-pub fn mapping_is_constant(mapping: &ParameterMapping) -> bool {
-    settings::descriptor_by_key(&mapping.parameter).is_some()
-        && mapping.source == AnalysisSource::Rms
-        && mapping.band_index == 0
-        && mapping.input_min == 0.0
-        && mapping.input_max == 1.0
-        && mapping.output_min == mapping.output_max
-        && mapping.output_min.is_finite()
-        && mapping.interpolation == Interpolation::Linear
-        && mapping.clamp
-}
-
-/// The canonical constant mapping for one setting value
-/// (`scene_settings_export_mappings`, `scene_settings.c:434-467`).
-#[must_use]
-pub fn constant_mapping(key: &str, value: f32) -> ParameterMapping {
-    ParameterMapping {
-        parameter: key.to_owned(),
-        source: AnalysisSource::Rms,
-        band_index: 0,
-        input_min: 0.0,
-        input_max: 1.0,
-        output_min: f64::from(value),
-        output_max: f64::from(value),
-        interpolation: Interpolation::Linear,
-        clamp: true,
-    }
-}
-
-/// `scene_routes_mappings_supported` (`scene_routes.c:224-237`): every mapping is
-/// either a canonical constant or a valid dynamic route for its parameter's scene,
-/// with parameter names unique across the list.
-#[must_use]
-pub fn mappings_supported(mappings: &[ParameterMapping]) -> bool {
-    if mappings.len() > MAX_MAPPINGS_PER_SCENE {
-        return false;
-    }
-    for (index, mapping) in mappings.iter().enumerate() {
-        let supported = mapping_is_constant(mapping)
-            || settings::descriptor_by_key(&mapping.parameter)
-                .is_some_and(|(scene, _, _)| mapping.is_valid_for(scene));
-        if !supported {
-            return false;
-        }
-        if mappings[..index]
-            .iter()
-            .any(|other| other.parameter == mapping.parameter)
-        {
-            return false;
-        }
-    }
-    true
-}
-
-/// `scene_routes_export_mappings` (`scene_routes.c:239-269`): every setting as its
-/// canonical constant, except settings driven by a route, which persist the route
-/// in that position instead.
-///
-/// Deterministic order — scene by scene, control by control — so saves are
-/// byte-stable. A route with no matching constant slot means the route table and
-/// the settings tables disagree, and that refuses to save rather than dropping the
-/// route.
-pub fn export_mappings(
-    settings_values: &SceneSettings,
-    routes: Option<&RouteTable>,
-) -> Option<Vec<ParameterMapping>> {
-    if !settings_values.is_valid() {
-        return None;
-    }
-    let mut mappings = Vec::with_capacity(MAX_MAPPINGS_PER_SCENE);
-    for scene in SceneId::ALL {
-        for (index, descriptor) in settings::descriptors(scene).iter().enumerate() {
-            mappings.push(constant_mapping(
-                descriptor.key,
-                settings_values.get(scene, index),
-            ));
-        }
-    }
-    if let Some(routes) = routes {
-        for scene in SceneId::ALL {
-            for route in routes.scene(scene).items() {
-                let slot = mappings
-                    .iter_mut()
-                    .find(|mapping| mapping.parameter == route.parameter)?;
-                *slot = route.clone();
-            }
-        }
-    }
-    Some(mappings)
-}
-
-/// `scene_routes_import_mappings` (`scene_routes.c:271-301`): partitions project
-/// mappings into slider constants and dynamic routes.
-///
-/// All-or-nothing: a mapping that is neither refuses the whole import, so nothing
-/// is silently dropped. Settings for routed parameters keep their scene defaults.
-pub fn import_mappings(mappings: &[ParameterMapping]) -> Option<(SceneSettings, RouteTable)> {
-    if !mappings_supported(mappings) {
-        return None;
-    }
-    let mut staged_settings = SceneSettings::new();
-    let mut staged_routes = RouteTable::new();
-    for mapping in mappings {
-        let (scene, index, _) = settings::descriptor_by_key(&mapping.parameter)?;
-        if mapping_is_constant(mapping) {
-            if !staged_settings.set(scene, index, mapping.output_min as f32) {
-                return None;
-            }
-        } else {
-            staged_routes.add(scene, mapping.clone()).ok()?;
-        }
-    }
-    Some((staged_settings, staged_routes))
-}
-
-/// Longest `--route` spec the parser will look at (`scene_routes.c:97`).
-pub const ROUTE_SPEC_MAX_BYTES: usize = 255;
-
-/// `scene_route_parse_spec` (`scene_routes.c:109-189`).
-///
-/// Grammar:
-/// `parameter:source:band:in_min:in_max:out_min:out_max[:curve][:clamp|noclamp]`,
-/// e.g. `loom.weight:band:2:0:1:0.4:2.2:smoothstep`. The `settings.` key prefix
-/// may be omitted; source and curve names are this codec's canonical names; the
-/// curve defaults to linear and clamping is on unless `noclamp` is given.
-pub fn parse_route_spec(spec: &str) -> Option<(SceneId, ParameterMapping)> {
-    if spec.len() > ROUTE_SPEC_MAX_BYTES {
-        return None;
-    }
-    let fields: Vec<&str> = spec.split(':').collect();
-    if fields.len() < 7 || fields.len() > 9 {
-        return None;
-    }
-    // The persisted keys all carry the "settings." prefix; accept the short form
-    // people actually type.
-    let parameter = if fields[0].starts_with("settings.") {
-        fields[0].to_owned()
-    } else {
-        format!("settings.{}", fields[0])
-    };
-    if parameter.len() > capacity::PARAMETER {
-        return None;
-    }
-    let parse_double = |text: &str| -> Option<f64> {
-        let value: f64 = text.parse().ok()?;
-        value.is_finite().then_some(value)
-    };
-    let mut route = ParameterMapping {
-        parameter,
-        source: AnalysisSource::from_canonical_name(fields[1])?,
-        band_index: fields[2].parse().ok()?,
-        input_min: parse_double(fields[3])?,
-        input_max: parse_double(fields[4])?,
-        output_min: parse_double(fields[5])?,
-        output_max: parse_double(fields[6])?,
-        interpolation: Interpolation::Linear,
-        clamp: true,
-    };
-    for extra in &fields[7..] {
-        match *extra {
-            "clamp" => route.clamp = true,
-            "noclamp" => route.clamp = false,
-            name => route.interpolation = Interpolation::from_canonical_name(name)?,
-        }
-    }
-    let (scene, _, _) = settings::descriptor_by_key(&route.parameter)?;
-    route.is_valid_for(scene).then_some((scene, route))
-}
+// `mapping_is_constant`, `constant_mapping`, `mappings_supported`,
+// `export_mappings`, `import_mappings` and `parse_route_spec` used to live here,
+// because they need this module's canonical names and bounds. They now live in
+// [`crate::scene::routes`], next to the evaluation they persist.
+//
+// **They moved wholesale, and they must stay together.** The constant rule and
+// the route rule are two halves of one decision — `.musi` v1 spells a slider
+// value as a full-range RMS mapping with equal output endpoints, so a parameter
+// is persisted as *either* a constant *or* a route and never both. Splitting them
+// across two modules is what would let one parameter acquire both spellings, an
+// ambiguity the format cannot represent.
+//
+// [`MAX_MAPPINGS_PER_SCENE`] and [`capacity::PARAMETER`] stay here: they are
+// `.musi` schema bounds (`project.h:25`, `:36`), not route semantics, and the
+// validator above reads them too.
 
 /// Synthetic fixtures shared by this module's tests and the codec's.
 ///
@@ -1609,7 +1442,7 @@ mod tests {
     }
 
     fn mapping(parameter: &str) -> ParameterMapping {
-        constant_mapping(parameter, 0.5)
+        crate::scene::routes::constant_mapping(parameter, 0.5)
     }
 
     #[test]
@@ -2188,94 +2021,6 @@ mod tests {
         assert!(!project.audio_metadata_matches(0.0, 44_100, 2, 0.1));
         assert!(!project.audio_metadata_matches(f64::NAN, 44_100, 2, 0.1));
         assert!(!project.audio_metadata_matches(60.0, 44_100, 2, -1.0));
-    }
-
-    // -- route persistence --------------------------------------------------
-
-    #[test]
-    fn exported_mappings_are_one_constant_per_control() {
-        let settings_values = SceneSettings::new();
-        let mappings = export_mappings(&settings_values, None).unwrap();
-        let expected: usize = SceneId::ALL.into_iter().map(settings::count).sum();
-        assert_eq!(mappings.len(), expected);
-        assert!(mappings.iter().all(mapping_is_constant));
-        assert!(mappings_supported(&mappings));
-    }
-
-    #[test]
-    fn a_route_replaces_its_constant_in_place() {
-        let settings_values = SceneSettings::new();
-        let mut routes = RouteTable::new();
-        let (scene, route) =
-            parse_route_spec("spectrum.amplitude:band:2:0:1:0.4:2.2:smoothstep").unwrap();
-        assert_eq!(scene, SceneId::Spectrum);
-        routes.add(scene, route.clone()).unwrap();
-
-        let baseline = export_mappings(&settings_values, None).unwrap();
-        let mappings = export_mappings(&settings_values, Some(&routes)).unwrap();
-        assert_eq!(
-            mappings.len(),
-            baseline.len(),
-            "no slot is added or removed"
-        );
-        let at = mappings
-            .iter()
-            .position(|mapping| mapping.parameter == "settings.spectrum.amplitude")
-            .unwrap();
-        assert_eq!(mappings[at], route);
-        assert!(mappings_supported(&mappings));
-
-        let (imported_settings, imported_routes) = import_mappings(&mappings).unwrap();
-        assert_eq!(imported_routes.scene(SceneId::Spectrum).items(), [route]);
-        // A routed parameter keeps its scene default in the slider table.
-        assert_eq!(
-            imported_settings.get(SceneId::Spectrum, 0),
-            settings::descriptor(SceneId::Spectrum, 0)
-                .unwrap()
-                .default_value
-        );
-    }
-
-    #[test]
-    fn import_is_all_or_nothing() {
-        let mut mappings = export_mappings(&SceneSettings::new(), None).unwrap();
-        mappings.push(mapping("settings.not.a.control"));
-        assert!(!mappings_supported(&mappings));
-        assert!(import_mappings(&mappings).is_none());
-    }
-
-    #[test]
-    fn a_flat_route_is_not_a_route() {
-        // v1 cannot distinguish a full-range flat RMS route from a persisted
-        // slider constant, so flat values belong to the slider representation.
-        let (_, route) = parse_route_spec("spectrum.amplitude:rms:0:0:1:0.5:0.5").unzip();
-        assert!(route.is_none());
-    }
-
-    #[test]
-    fn route_specs_are_parsed_with_defaults_and_rejected_when_malformed() {
-        let (scene, route) = parse_route_spec("settings.loom.weight:rms:0:0:1:0.4:2.2").unwrap();
-        assert_eq!(scene, SceneId::Loom);
-        assert_eq!(route.interpolation, Interpolation::Linear);
-        assert!(route.clamp, "clamping is on unless noclamp is given");
-
-        let (_, route) = parse_route_spec("loom.weight:rms:0:0:1:0.4:2.2:ease_in:noclamp").unwrap();
-        assert_eq!(route.interpolation, Interpolation::EaseIn);
-        assert!(!route.clamp);
-
-        for spec in [
-            "loom.weight:rms:0:0:1:0.4",           // too few fields
-            "loom.weight:rms:0:0:1:0.4:2.2:a:b:c", // too many
-            "loom.weight:bogus:0:0:1:0.4:2.2",     // unknown source
-            "loom.weight:rms:0:0:1:0.4:2.2:bogus", // unknown curve
-            "loom.weight:rms:0:1:0:0.4:2.2",       // input_max <= input_min
-            "loom.weight:rms:3:0:1:0.4:2.2",       // band index without band
-            "nope.nothing:rms:0:0:1:0.4:2.2",      // unknown parameter
-            "loom.weight:rms:0:nan:1:0.4:2.2",     // non-finite
-            "loom.weight:rms:70000:0:1:0.4:2.2",   // band index out of u16
-        ] {
-            assert!(parse_route_spec(spec).is_none(), "accepted {spec}");
-        }
     }
 
     #[test]

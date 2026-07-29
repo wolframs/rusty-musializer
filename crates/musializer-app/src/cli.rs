@@ -44,7 +44,7 @@
 use std::path::PathBuf;
 
 use musializer_core::scene::events::{EventRecord, EventType, VALUE_CAPACITY};
-use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping};
+use musializer_core::scene::routes::{self, ParameterMapping};
 use musializer_core::scene::{settings, SceneId};
 
 /// Host-side cap on `--route` occurrences (`COMMAND_LINE_ROUTE_CAPACITY`,
@@ -186,6 +186,16 @@ pub struct UiProbe {
     /// `fonts=consent` shows the network-consent panel; `fonts=PATH` loads a
     /// family list from disk, so a capture never contacts Google.
     pub font_browser: Option<FontBrowserProbe>,
+    /// `route=KEY`: open the Tune inspector's route editor on the setting that
+    /// `KEY` names, e.g. `route=loom.weight` or the full `settings.loom.weight`.
+    ///
+    /// **Invented, not the oracle's.** The frozen C has no probe for it because
+    /// nothing in the C can drive a headless capture at all; the editor is a
+    /// 260 px block of drawing that a click is otherwise the only way to reach,
+    /// and a surface nothing photographs does not get reviewed. Same rationale as
+    /// `--probe-frames` and `--probe-shot`. Needs `panel=tune`, and the key must
+    /// belong to the scene being drawn.
+    pub route_editor: Option<String>,
     /// `assist=confirm`: arm the Assist confirmation prompt.
     pub assist_confirmation: bool,
     /// Selects an authored lyric sheet for the next Assist lyrics run.
@@ -441,7 +451,7 @@ where
                 Some(probe) => cli.ui_probe = Some(probe),
                 None => cli.warn(
                     "Invalid --ui-probe spec; expected comma-separated panel=, \
-                     fullscreen=, time=, or size= pairs",
+                     fullscreen=, time=, route=, or size= pairs",
                 ),
             },
 
@@ -610,77 +620,18 @@ pub fn parse_event(spec: &str) -> Option<EventRecord> {
 ///
 /// `PARAM:SOURCE:BAND:IN_MIN:IN_MAX:OUT_MIN:OUT_MAX[:CURVE][:noclamp]`.
 ///
-/// This lives here rather than in `core::scene::routes` because the CLI is its
-/// only consumer and the persistence half of that module is still Agent B's to
-/// finish. If a `ParameterMapping::parse_spec` lands there, this should delegate
-/// to it rather than keep a second copy — a duplicated grammar drifts.
+/// **This used to be a second implementation of the grammar, and is now a
+/// delegation.** Its own doc comment asked for that: "if a
+/// `ParameterMapping::parse_spec` lands there, this should delegate to it rather
+/// than keep a second copy — a duplicated grammar drifts." Item G moved the
+/// persistence half of `scene_routes.c` into [`routes`], so the copy is gone.
+///
+/// The scene the key names is dropped here because `--route` is applied through
+/// `App::routes_mut`, which re-derives it from the parameter — the same key, the
+/// same table (`plug.c:1077-1080`).
 #[must_use]
 pub fn parse_route_spec(spec: &str) -> Option<ParameterMapping> {
-    // `SCENE_ROUTE_SPEC_CAPACITY` (`scene_routes.c:97`), checked at `:113`.
-    if spec.is_empty() || spec.len() >= 256 {
-        return None;
-    }
-    let fields: Vec<&str> = spec.split(':').collect();
-    // At most 9 fields, at least 7 (`scene_routes.c:127`).
-    if fields.len() < 7 || fields.len() > 9 {
-        return None;
-    }
-
-    // The `settings.` prefix is optional; absent, it is prepended, so
-    // `loom.weight` and `settings.loom.weight` are the same route
-    // (`scene_routes.c:130-138`).
-    let parameter = if fields[0].starts_with("settings.") {
-        fields[0].to_string()
-    } else {
-        format!("settings.{}", fields[0])
-    };
-    // The scene is derived from the key, not from the selected scene
-    // (`scene_routes.c:184-188`).
-    let (scene, _index, _descriptor) = settings::descriptor_by_key(&parameter)?;
-
-    let source = AnalysisSource::from_canonical_name(fields[1])?;
-
-    let band: u32 = fields[2].parse().ok()?;
-    let band_index = u16::try_from(band).ok()?;
-
-    let input_min = parse_finite(fields[3])?;
-    let input_max = parse_finite(fields[4])?;
-    let output_min = parse_finite(fields[5])?;
-    let output_max = parse_finite(fields[6])?;
-
-    // Fields 8 and 9 are order-free optional tokens, repeats allowed and
-    // last-wins (`scene_routes.c:163-182`). Defaults: linear, clamped.
-    let mut interpolation = Interpolation::Linear;
-    let mut clamp = true;
-    for token in fields.iter().skip(7) {
-        match *token {
-            "clamp" => clamp = true,
-            "noclamp" => clamp = false,
-            other => interpolation = Interpolation::from_canonical_name(other)?,
-        }
-    }
-
-    let route = ParameterMapping {
-        parameter,
-        source,
-        band_index,
-        input_min,
-        input_max,
-        output_min,
-        output_max,
-        interpolation,
-        clamp,
-    };
-    // `scene_route_valid` carries the rest: band 0 unless the source is `band`,
-    // a strictly increasing input range, and — the surprising one — a rejection
-    // of equal output endpoints, because a flat mapping would be indistinguishable
-    // from a persisted slider constant (`scene_routes.c:52-61`).
-    route.is_valid_for(scene).then_some(route)
-}
-
-fn parse_finite(text: &str) -> Option<f64> {
-    let value: f64 = text.parse().ok()?;
-    value.is_finite().then_some(value)
+    routes::parse_route_spec(spec).map(|(_scene, route)| route)
 }
 
 /// `parse_ui_probe` (`musializer.c:131-250`). One argv word,
@@ -746,6 +697,18 @@ pub fn parse_ui_probe(spec: &str) -> Option<UiProbe> {
                     return None;
                 }
                 probe.assist_confirmation = true;
+            }
+            "route" => {
+                // Resolved against the descriptor tables here rather than in the
+                // panel, so a mistyped key fails the command line instead of
+                // quietly photographing an unexpanded row.
+                let key = if value.starts_with("settings.") {
+                    value.to_string()
+                } else {
+                    format!("settings.{value}")
+                };
+                settings::descriptor_by_key(&key)?;
+                probe.route_editor = Some(key);
             }
             "lyrics-file" => probe.lyrics_reference_path = Some(PathBuf::from(value)),
             "time" => probe.seek_seconds = Some(parse_seconds(value)?),
@@ -823,6 +786,10 @@ Diagnostics:
                           pane (needs panel=lyrics),
                           lyrics-file=PATH selects an authored lyric
                           sheet for the next Assist lyrics run,
+                          route=KEY opens the Tune inspector's route
+                          editor on that setting, e.g. route=loom.weight
+                          (needs panel=tune, and the key's scene has to
+                          be the one being drawn),
                           fonts=consent shows the face browser's network
                           consent panel; fonts=PATH loads a family list
                           from disk instead, so a capture never opens a
@@ -845,6 +812,7 @@ Diagnostics:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use musializer_core::scene::routes::{AnalysisSource, Interpolation};
 
     fn parsed(arguments: &[&str]) -> Cli {
         match parse(arguments.iter().copied()) {
@@ -1204,6 +1172,23 @@ mod tests {
         assert!(parse_ui_probe("=tune").is_none());
         assert!(parse_ui_probe("panel=").is_none());
         assert!(parse_ui_probe("").is_none());
+    }
+
+    #[test]
+    fn the_route_probe_resolves_its_key_and_rejects_a_typo() {
+        // Resolved at parse time on purpose: a capture script that names a
+        // setting that does not exist has to fail the command line, not
+        // photograph an unexpanded row and look like a working editor.
+        let probe = parse_ui_probe("panel=tune,route=loom.weight").unwrap();
+        assert_eq!(
+            probe.route_editor.as_deref(),
+            Some("settings.loom.weight"),
+            "the settings. prefix is optional, as it is for --route"
+        );
+        let prefixed = parse_ui_probe("panel=tune,route=settings.loom.weight").unwrap();
+        assert_eq!(prefixed.route_editor, probe.route_editor);
+        assert!(parse_ui_probe("panel=tune,route=loom.wieght").is_none());
+        assert!(parse_ui_probe("panel=tune,route=nope.nothing").is_none());
     }
 
     #[test]

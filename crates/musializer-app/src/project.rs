@@ -23,20 +23,21 @@
 //!
 //! # Where `export_mappings` lives
 //!
-//! In `project::model`, not `scene::routes` — which is wrong, and is item G's to
-//! move (REWRITE_PLAN.md's completion plan). Called from where it is rather than
-//! duplicated here, because splitting the constant rule from the route rule lets
-//! one parameter persist as both.
+//! In [`musializer_core::scene::routes`], beside the evaluation it persists —
+//! moved there from `project::model` by item G. Called from where it is rather
+//! than duplicated here, because splitting the constant rule from the route rule
+//! lets one parameter persist as both.
 
 use std::path::{Path, PathBuf};
 
 use musializer_core::project::io;
 use musializer_core::project::model::{
-    self, AsciiImageAsset, AssetMode, AudioAsset, Metadata, OutputQuality, OutputSettings, Project,
+    AsciiImageAsset, AssetMode, AudioAsset, Metadata, OutputQuality, OutputSettings, Project,
     SceneEntry, ScenePreset, SceneSwitchSuggestion, SceneSwitchSuggestions,
 };
 use musializer_core::project::preset_store::PresetLibrary;
 use musializer_core::project::scene_switch::{SceneSwitchCue, SceneSwitchTimeline};
+use musializer_core::scene::routes;
 use musializer_core::scene::settings::SettingsSnapshot;
 use musializer_core::scene::{SceneId, SCENE_COUNT};
 use musializer_core::timing::render_export::{Quality, RenderExportConfig};
@@ -187,7 +188,7 @@ pub fn build_project(
     };
     project.deterministic_seed = track.scene_seed;
 
-    let mappings = model::export_mappings(&track.scene_settings, Some(&track.scene_routes))
+    let mappings = routes::export_mappings(&track.scene_settings, Some(&track.scene_routes))
         .ok_or_else(|| ProjectError::Build("a setting or route is outside its bounds".into()))?;
     project.scenes = vec![SceneEntry {
         instance_id: if track.scene_instance_id != 0 {
@@ -452,7 +453,7 @@ pub fn open_path(
     let base_scene = SceneId::from_stable_name(&entry.scene_type)
         .ok_or_else(|| ProjectError::UnknownScene(entry.scene_type.clone()))?;
     let (scene_settings, scene_routes) =
-        model::import_mappings(&entry.mappings).ok_or(ProjectError::Mappings)?;
+        routes::import_mappings(&entry.mappings).ok_or(ProjectError::Mappings)?;
 
     let scene_switches = hydrate_scene_switches(&project.scene_switches, &project.audio)?;
     let scene_presets = hydrate_presets(&project.scene_presets)?;

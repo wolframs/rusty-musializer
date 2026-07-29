@@ -1818,9 +1818,9 @@ pub use assets::{bundle_paths, AssetCategory, BundleError, BundlePaths};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::model::constant_mapping;
     use crate::project::model::tests_support::valid_project;
     use crate::project::sha256;
+    use crate::scene::routes::constant_mapping;
 
     fn round_trip(project: &Project) -> Project {
         let text = serialize(project).expect("the fixture project serializes");
