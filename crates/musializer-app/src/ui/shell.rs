@@ -13,6 +13,8 @@
 
 use std::path::PathBuf;
 
+use musializer_core::project::event_timeline::ManualEventAction;
+use musializer_core::project::preset_store::{PresetAction, SharedPresetsView};
 use musializer_core::scene::routes::{ParameterMapping, RouteSources};
 use musializer_core::scene::{SceneId, SceneSettings};
 use musializer_core::ui::notice::{NoticeQueue, NoticeSpec, Severity};
@@ -83,6 +85,10 @@ pub enum ShellCommand {
     /// silently ignored, so the notice tray can say so by name — a stub that
     /// says nothing is indistinguishable from a bug.
     NotImplemented(&'static str),
+    /// The manual event row's outcome (`plug.c:2834-2971`).
+    ManualEvent(ManualEventAction),
+    /// The shared preset block's outcome (`plug.c:5979-6100`).
+    Preset(PresetAction),
 }
 
 /// What the shell needs to know to draw one frame.
@@ -118,6 +124,9 @@ pub struct ShellInput<'a> {
     /// predates this and stays because the toolbar's readout is the only caller
     /// that wants one scalar without knowing what a source is.
     pub route_sources: RouteSources<'a>,
+    /// The shared per-user preset library, its selection, and whether the store
+    /// file is writable (`p->shared_presets`, `plug.c:265-270`).
+    pub presets: SharedPresetsView<'a>,
     pub band_count: usize,
     pub peak_band: usize,
     pub rms: f32,
@@ -218,16 +227,24 @@ impl Shell {
     /// nothing extra, which is why opening one does not shrink the preview.
     #[must_use]
     pub fn timeline_height(&self, window_height: f32) -> f32 {
-        match self.panel {
-            UiPanel::None | UiPanel::Tune => DEFAULT_TIMELINE_HEIGHT,
-            UiPanel::Export => WorkspaceFrame::export_timeline_height(window_height),
-            // Lyrics and Assist are stubs. When they land they ask through
-            // `lyrics_editor_layout::panel_height` and `assist_ui_state`'s
-            // `timeline_height`, both of which are already ported in
-            // musializer-core; until the panels draw rows, asking for their
-            // height would steal it from the preview for nothing.
-            UiPanel::Lyrics | UiPanel::Assist => DEFAULT_TIMELINE_HEIGHT,
-        }
+        // The manual event row is reserved before it is measured, which is why
+        // its height is a constant as well as a return value — and it is added
+        // to *every* arm, because the oracle calls `timeline()` unconditionally
+        // (`plug.c:7748`). Adding it to only the no-panel arm would make opening
+        // a stub panel change the layout, which is the thing
+        // `a_stub_panel_does_not_reserve_height_it_never_draws` exists to catch.
+        let events = super::panels::events::EVENT_ROW_HEIGHT;
+        events
+            + match self.panel {
+                UiPanel::None | UiPanel::Tune => DEFAULT_TIMELINE_HEIGHT,
+                UiPanel::Export => WorkspaceFrame::export_timeline_height(window_height),
+                // Lyrics and Assist are stubs. When they land they ask through
+                // `lyrics_editor_layout::panel_height` and `assist_ui_state`'s
+                // `timeline_height`, both of which are already ported in
+                // musializer-core; until the panels draw rows, asking for their
+                // height would steal it from the preview for nothing.
+                UiPanel::Lyrics | UiPanel::Assist => DEFAULT_TIMELINE_HEIGHT,
+            }
     }
 
     /// Draws one frame of chrome and returns what the user asked for.
@@ -1109,11 +1126,27 @@ impl Shell {
         self.timeline.clamp(duration);
 
         let padding = metric::UI_PANEL_PADDING;
+        // The manual event row, above the waveform lane (`plug.c:2861-2971`).
+        // It reports what it took; 0.0 means it could not seat its controls and
+        // the strip gets the space back.
+        let mut events = Vec::new();
+        let row = self.event_row(
+            d,
+            input,
+            UiRect::new(
+                content.x + padding,
+                content.y + padding,
+                (content.width - padding * 2.0).max(0.0),
+                (content.height - padding * 2.0).max(0.0),
+            ),
+            &mut events,
+        );
+        commands.extend(events.into_iter().map(ShellCommand::ManualEvent));
         let strip = UiRect::new(
             content.x + padding,
-            content.y + padding,
+            content.y + padding + row,
             (content.width - padding * 2.0).max(0.0),
-            56.0f32.min((content.height - padding * 2.0).max(0.0)),
+            56.0f32.min((content.height - padding * 2.0 - row).max(0.0)),
         );
         if strip.is_empty() {
             return;

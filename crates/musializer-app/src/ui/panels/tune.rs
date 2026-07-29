@@ -258,6 +258,19 @@ impl Shell {
         );
         y += metric::UI_FONT_HEADER + metric::UI_CONTROL_GAP;
 
+        // The shared preset block, between the header and the first slider
+        // (`plug.c:5979-6100`): 42 px collapsed, 98 px populated, 0 if it does
+        // not fit.
+        let mut presets = Vec::new();
+        y += self.preset_block(
+            d,
+            input,
+            UiRect::new(content.x, y, content.width, content.y + content.height - y),
+            input.presets,
+            &mut presets,
+        );
+        commands.extend(presets.into_iter().map(ShellCommand::Preset));
+
         let descriptors = settings::descriptors(input.scene);
         let row_height = 46.0f32;
         for (index, descriptor) in descriptors.iter().enumerate() {

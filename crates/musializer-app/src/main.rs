@@ -32,12 +32,17 @@
 use std::path::{Path, PathBuf};
 
 use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
+use musializer_core::project::event_timeline::ManualEventAction;
+use musializer_core::project::preset_store::{
+    self, PresetAction, PresetLibrary, SharedPresetsView,
+};
 use musializer_core::scene::routes::{RouteSources, RouteTable};
 use musializer_core::scene::settings;
 use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneId, SceneInstance, SceneSettings};
 use musializer_core::ui::notice::Severity;
 use musializer_runtime::audio_bridge;
 use musializer_runtime::font::Faces;
+use musializer_runtime::preset_files;
 use musializer_runtime::process::dialogs::{self, FileDialog};
 use raylib::prelude::*;
 
@@ -160,8 +165,39 @@ fn run() -> Result<std::process::ExitCode, String> {
         workspace: Workspace::new(),
         pending_settings: SceneSettings::default(),
         pending_routes: RouteTable::new(),
+        shared_presets: PresetLibrary::new(),
+        preset_store_path: None,
+        presets_editable: false,
+        preset_selection: 0,
+        preset_delete_armed: false,
         shell: Shell::new(),
     };
+
+    // The shared preset store, read once (`plug.c:8397-8410`). A store that
+    // cannot be read is not fatal: the library stays empty and writes are
+    // refused, so a recoverable file is never overwritten by an empty one.
+    app.preset_store_path = preset_files::default_path();
+    match app.preset_store_path.clone() {
+        None => app.shell.notify(
+            Severity::Error,
+            "Shared presets are unavailable",
+            "No location for the preset store could be derived from the environment.",
+        ),
+        Some(path) => match preset_files::load(&path) {
+            Ok(library) => {
+                app.shared_presets = library.unwrap_or_default();
+                app.presets_editable = true;
+            }
+            Err(error) => app.shell.notify(
+                Severity::Error,
+                "Shared presets could not be read",
+                &format!(
+                    "{}: {error}. Saving is disabled so the file is not overwritten.",
+                    path.display()
+                ),
+            ),
+        },
+    }
 
     // Step 3: the argv actions, left to right.
     let mut input: Option<Input> = None;
@@ -181,12 +217,19 @@ fn run() -> Result<std::process::ExitCode, String> {
                     ),
                 );
             }
-            Action::RecordEvent(_) => unimplemented_action(
-                &mut options,
-                &mut app,
-                "--event",
-                "the manual event lane needs Agent B's event timeline",
-            ),
+            // `plug_record_event` (`plug.c:1055-1069`). No track is open yet —
+            // the actions run before an input is resolved — so this lands in the
+            // workspace's pending lane and is handed to the first track that
+            // opens (`plug.c:844-851`). The C reports a rejected record with the
+            // same message as a parse failure (`musializer.c:423-431`).
+            Action::RecordEvent(event) => {
+                if app.workspace.record_event(event).is_err() {
+                    eprintln!(
+                        "warning: Invalid command-line event; expected type:seconds:id:value"
+                    );
+                    options.error = true;
+                }
+            }
             // The last input wins, exactly as in the C, and a project and an
             // audio file compete for the same slot — which is why they share one
             // variable rather than each having their own.
@@ -489,6 +532,12 @@ fn run() -> Result<std::process::ExitCode, String> {
             duration_seconds,
             playing,
             workspace: &app.workspace,
+            presets: SharedPresetsView {
+                library: &app.shared_presets,
+                selected: app.preset_selection,
+                editable: app.presets_editable,
+                delete_armed: app.preset_delete_armed,
+            },
             route_sources: sources,
             band_count: spectrum.band_count(),
             peak_band: report.peak_band_last,
@@ -644,6 +693,14 @@ fn run() -> Result<std::process::ExitCode, String> {
                             ),
                         );
                     }
+                }
+                ShellCommand::ManualEvent(action) => {
+                    // The playhead this frame, not the timeline widget's view: a cue is
+                    // recorded where the transport is (`plug.c:1979-2030`).
+                    handle_manual_event(&mut app, action, time_seconds, rl.get_time());
+                }
+                ShellCommand::Preset(action) => {
+                    handle_preset(&mut app, action, rl.get_time());
                 }
                 ShellCommand::ApplyRoute { scene, route } => {
                     // Add and replace are one command: the table keys by
@@ -881,6 +938,23 @@ struct App {
     pending_settings: SceneSettings,
     /// `p->pending_scene_routes` (`plug.c:282`).
     pending_routes: RouteTable,
+    /// The shared per-user preset library (`p->shared_presets`, `plug.c:265`).
+    ///
+    /// Distinct from a track's own presets, which are project data written into
+    /// the `.musi`. This one is a per-user file, read once at startup.
+    shared_presets: PresetLibrary,
+    /// Where that file lives, or `None` when no location could be derived.
+    preset_store_path: Option<PathBuf>,
+    /// False when the store was rejected at startup. Mutations are then refused
+    /// rather than overwriting a file that might still be recoverable
+    /// (`shared_presets_editable`, `plug.c:4200-4209`).
+    presets_editable: bool,
+    /// The selected preset within the active scene, and whether `Delete` is
+    /// armed for it. Disarmed whenever either moves, which is `plug.c:5983-5987`
+    /// — an armed Delete that survived paging would remove something the user
+    /// never armed.
+    preset_selection: usize,
+    preset_delete_armed: bool,
     shell: Shell,
 }
 
@@ -1129,6 +1203,130 @@ fn open_audio_dialog<'audio>(
             "No file picker is available",
             &format!("{error}. Drop a file on the window, or pass it on the command line."),
         ),
+    }
+}
+
+/// The manual event row's outcome (`plug.c:2861-2971`).
+///
+/// Every arm ends in `mark_dirty`, because each one changes something a `.musi`
+/// records. Arming and undoing do not, which is the C's distinction too: a
+/// confirmation that has not been answered has changed nothing yet.
+fn handle_manual_event(app: &mut App, action: ManualEventAction, time: f64, now: f64) {
+    use ManualEventAction as Action;
+    let scene = app.scene.id();
+    let Some(track) = app.workspace.current_mut() else {
+        return;
+    };
+    match action {
+        Action::Record(event) => {
+            if track.record_manual_event(event).is_ok() {
+                track.mark_dirty(now);
+            }
+        }
+        Action::RecordSceneCue => match track.record_scene_cue(scene, time) {
+            Ok(()) => track.mark_dirty(now),
+            Err(error) => {
+                let detail = error.to_string();
+                app.shell
+                    .notify(Severity::Warning, "Scene cue was not recorded", &detail);
+            }
+        },
+        Action::ArmClear => track.manual_clear.arm(),
+        Action::Clear => {
+            // Disjoint field borrows: the clear owns the undo slot, the timeline
+            // and the id allocator are the track's.
+            track
+                .manual_clear
+                .clear(&mut track.manual_events, &mut track.next_manual_event_id);
+            track.mark_dirty(now);
+        }
+        Action::UndoClear => {
+            track
+                .manual_clear
+                .undo(&mut track.manual_events, &mut track.next_manual_event_id);
+            track.mark_dirty(now);
+        }
+    }
+}
+
+/// The shared preset block's outcome (`plug.c:5979-6100`).
+///
+/// Every mutation writes the store immediately rather than at shutdown: the C
+/// does the same, and a preset library that only survives a clean exit is one
+/// that loses work to the crash it was meant to protect against.
+fn handle_preset(app: &mut App, action: PresetAction, now: f64) {
+    let scene = app.scene.id();
+    // Any movement disarms Delete, so a second click cannot land on a preset the
+    // user never armed (`plug.c:5983-5987`).
+    let mut mutated = false;
+    match action {
+        PresetAction::Select(index) => {
+            app.preset_selection = index;
+            app.preset_delete_armed = false;
+        }
+        PresetAction::Apply(index) => {
+            app.preset_delete_armed = false;
+            if let Some(preset) = app.shared_presets.presets(scene).get(index) {
+                let snapshot = preset.snapshot;
+                if app.settings_mut().apply_snapshot(scene, &snapshot) {
+                    mark_current_track_dirty(app, now);
+                }
+            }
+        }
+        PresetAction::SaveNew => {
+            app.preset_delete_armed = false;
+            let Some(snapshot) = app.settings().capture(scene) else {
+                return;
+            };
+            let name = preset_store::generated_name(&app.shared_presets);
+            if let Some(index) = app.shared_presets.push(scene, &name, &snapshot) {
+                app.preset_selection = index;
+                mutated = true;
+            }
+        }
+        PresetAction::Replace(index) => {
+            app.preset_delete_armed = false;
+            if let Some(snapshot) = app.settings().capture(scene) {
+                mutated = app.shared_presets.replace_snapshot(scene, index, &snapshot);
+            }
+        }
+        PresetAction::ArmDelete(index) => {
+            app.preset_selection = index;
+            app.preset_delete_armed = true;
+        }
+        PresetAction::Delete(index) => {
+            app.preset_delete_armed = false;
+            if app.shared_presets.remove(scene, index) {
+                app.preset_selection = preset_store::selection_after_remove(
+                    app.shared_presets.presets(scene).len(),
+                    index,
+                );
+                mutated = true;
+            }
+        }
+    }
+    if mutated {
+        save_shared_presets(app);
+    }
+}
+
+/// Writes the shared library back, reporting a failure rather than losing it
+/// silently.
+fn save_shared_presets(app: &mut App) {
+    let Some(path) = app.preset_store_path.clone() else {
+        return;
+    };
+    if let Err(error) = preset_files::save(&path, &app.shared_presets) {
+        // The edit stays in memory: refusing to keep it as well would lose the
+        // work twice over.
+        app.shell.notify(
+            Severity::Error,
+            "Presets could not be saved",
+            &format!(
+                "{}: {error}. The change is still in this session.",
+                path.display()
+            ),
+        );
     }
 }
 
