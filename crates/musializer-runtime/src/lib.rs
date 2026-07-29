@@ -14,6 +14,7 @@
 //! version rather than each pinning it.
 
 pub mod audio_bridge;
+pub mod decode;
 pub mod draw;
 pub mod font;
 pub mod preset_files;

@@ -594,6 +594,40 @@ pub(crate) struct ExportSession {
     restore_playing: bool,
 }
 
+/// Builds any whole-track data the export's frames will need, before the first one
+/// (`plug.c:6945-6955`).
+///
+/// The preview builds Song Atlas's terrain lazily, at the first frame that would
+/// draw it, and pauses the audio stream while it decodes. An export has neither
+/// affordance: there is no stream to pause, and a mid-timeline decode would stall
+/// the encoder's pipe for as long as the decode takes. So the C hoists the build to
+/// export start, and gates it on [`Track::uses_song_atlas`] rather than on the live
+/// scene — a windowed render can pass through a Song Atlas *cue* the preview never
+/// showed.
+///
+/// A failure here is deliberately not fatal. The C warns and renders anyway
+/// (`plug.c:6950-6953`), and the scene falls back to its live idle terrain, which is
+/// a worse video but a video.
+fn prepare_track_assets(audio: &RaylibAudio, app: &mut crate::App) {
+    let needed = app
+        .workspace
+        .current()
+        .is_some_and(|track| track.uses_song_atlas() && track.atlas_map().is_none());
+    if !needed {
+        return;
+    }
+    if let Some(track) = app.workspace.current_mut() {
+        // The one place the "do not retry" flag is deliberately cleared. The C
+        // checks only `song_atlas_map_valid` here, not `attempted`
+        // (`plug.c:6944-6946`), so an export retries a build the preview already
+        // failed. That is not an oversight: the flag exists to keep a failing decode
+        // out of the *frame loop*, and an export is a one-shot setup step where the
+        // cost is paid once against a whole encode.
+        track.song_atlas_map_attempted = false;
+    }
+    crate::ensure_song_atlas_map(audio, app, None);
+}
+
 impl ExportSession {
     /// Stops playback, prepares the offline target, and starts the encoder
     /// (`start_rendering_track_to`, `plug.c:6863-7118`).
@@ -692,6 +726,7 @@ impl ExportSession {
             track.scene_switches.reset();
             track.cue_settings_active = false;
         }
+        prepare_track_assets(audio, app);
         app.shell.panel = UiPanel::None;
 
         let pixels = vec![0u8; config.width as usize * config.height as usize * 4];
@@ -863,11 +898,25 @@ impl ExportSession {
                 target_height as f32,
             ));
             app.scene.update(&frame);
+            // The same per-track assets the preview draws. Song Atlas's terrain is
+            // built once when the export starts rather than on demand here, because
+            // an export cannot pause to decode a whole track mid-timeline — see
+            // `prepare_track_assets`.
+            let assets =
+                app.workspace
+                    .current()
+                    .map_or_else(scene_host::TrackAssets::default, |track| {
+                        scene_host::TrackAssets {
+                            atlas_map: track.atlas_map(),
+                            ascii_grid: track.ascii_grid(),
+                        }
+                    });
             renderer.draw(
                 &mut texture,
                 fonts,
                 &app.scene,
                 &frame,
+                assets,
                 boundary,
                 pixel_scale,
             );

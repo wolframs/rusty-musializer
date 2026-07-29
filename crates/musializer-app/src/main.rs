@@ -39,12 +39,14 @@ use musializer_core::project::preset_store::{
 use musializer_core::scene::routes::{RouteSources, RouteTable};
 use musializer_core::scene::settings;
 use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneId, SceneInstance, SceneSettings};
+use musializer_core::scenes::ascii_field::ascii_art;
 use musializer_core::timing::render_export::{Quality as RenderQuality, RenderExportConfig};
 use musializer_core::ui::notice::Severity;
 use musializer_runtime::audio_bridge;
 use musializer_runtime::font::Faces;
 use musializer_runtime::preset_files;
 use musializer_runtime::process::dialogs::{self, FileDialog};
+use musializer_runtime::project_files;
 use raylib::prelude::*;
 
 mod cli;
@@ -168,6 +170,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         workspace: Workspace::new(),
         pending_settings: SceneSettings::default(),
         pending_routes: RouteTable::new(),
+        pending_ascii: None,
         shared_presets: PresetLibrary::new(),
         preset_store_path: None,
         presets_editable: false,
@@ -217,17 +220,30 @@ fn run() -> Result<std::process::ExitCode, String> {
         match action {
             Action::Mute => audio.set_master_volume(0.0),
             Action::SelectScene(id) => app.select_scene(id),
+            // The scene is selected whether or not the import succeeds, which is
+            // the oracle's order (`musializer.c:413-422` selects unconditionally
+            // after reporting). A user who mistyped the filename still lands on the
+            // scene they asked for, drawing its procedural mode.
             Action::AsciiImage(path) => {
-                app.select_scene(SceneId::AsciiField);
-                unimplemented_action(
-                    &mut options,
-                    &mut app,
-                    "--ascii-image",
-                    &format!(
-                        "{} was not imported: ASCII glyph import is Agent C's",
+                match import_ascii_image(&mut app, &path) {
+                    Ok((columns, rows)) => println!(
+                        "ascii: imported {} as {columns}x{rows} glyphs",
                         path.display()
                     ),
-                );
+                    // A refused import is a failed exit status, not a warning
+                    // buried in a log: `--ascii-image` is a scripted flag, and a
+                    // script that gets 0 back has been told the image is on screen.
+                    Err(detail) => {
+                        eprintln!("warning: could not load command-line ASCII image: {detail}");
+                        app.shell.notify(
+                            Severity::Error,
+                            "ASCII image could not be imported",
+                            &detail,
+                        );
+                        options.error = true;
+                    }
+                }
+                app.select_scene(SceneId::AsciiField);
             }
             // `plug_record_event` (`plug.c:1055-1069`). No track is open yet —
             // the actions run before an input is resolved — so this lands in the
@@ -671,6 +687,26 @@ fn run() -> Result<std::process::ExitCode, String> {
             .get(report.peak_band_last)
             .map_or(0.0, |&bin| analyzer.bin_frequency(bin as usize));
 
+        // Before the draw, and only for the scene that needs it
+        // (`scene_render`, `plug.c:1313-1315`). Placed here rather than inside the
+        // begin/end drawing pair because it pauses and resumes the audio stream,
+        // which is not something to do mid-frame.
+        if app.scene.id() == SceneId::SongAtlas {
+            let _ = ensure_song_atlas_map(&audio, &mut app, music.as_ref());
+        }
+
+        // Borrowed from the current track for exactly this frame, which is what
+        // stops one track's terrain or glyph grid from being drawn under another.
+        let assets =
+            app.workspace
+                .current()
+                .map_or_else(scene_host::TrackAssets::default, |track| {
+                    scene_host::TrackAssets {
+                        atlas_map: track.atlas_map(),
+                        ascii_grid: track.ascii_grid(),
+                    }
+                });
+
         let shell_input = ShellInput {
             window: (rl.get_screen_width() as f32, rl.get_screen_height() as f32),
             fonts: &fonts,
@@ -723,7 +759,15 @@ fn run() -> Result<std::process::ExitCode, String> {
                     preview.width as i32,
                     preview.height as i32,
                 );
-                renderer.draw(&mut scissor, &fonts, &app.scene, &frame, preview, 1.0);
+                renderer.draw(
+                    &mut scissor,
+                    &fonts,
+                    &app.scene,
+                    &frame,
+                    assets,
+                    preview,
+                    1.0,
+                );
             }
 
             commands = app.shell.draw(&mut d, &layout, &shell_input);
@@ -1171,6 +1215,15 @@ struct App {
     pending_settings: SceneSettings,
     /// `p->pending_scene_routes` (`plug.c:282`).
     pending_routes: RouteTable,
+    /// `p->ascii_cells` and its three companions (`plug.c:274-278`): an image
+    /// imported before any track existed, waiting for one to belong to.
+    ///
+    /// Unlike [`Self::pending_routes`], this is claimed by **whichever** track opens
+    /// next, not only by the first one (`plug.c:825-839` runs for every new track,
+    /// where the route handoff at `:852` is inside a `current_track() == NULL`
+    /// guard). Both are cleared as they are handed over, so nothing is inherited
+    /// twice.
+    pending_ascii: Option<workspace::AsciiImage>,
     /// The shared per-user preset library (`p->shared_presets`, `plug.c:265`).
     ///
     /// Distinct from a track's own presets, which are project data written into
@@ -1250,6 +1303,210 @@ impl App {
     }
 }
 
+/// Builds the timeline's waveform envelope for a track (`load_timeline_waveform`,
+/// `plug.c:688-709`).
+///
+/// **Eager, at track load**, because the oracle is: the strip has to draw an
+/// envelope from the first frame the track is visible, and there is no later
+/// moment that is not mid-frame. This is the whole-track decode the oracle already
+/// pays for at load, and Song Atlas's is deliberately *not* folded into it — see
+/// [`ensure_song_atlas_map`].
+///
+/// A file that will not decode leaves the envelope `None` and warns, which is what
+/// the C does. The strip then says "Waveform unavailable" rather than drawing a
+/// flat line that would read as silence.
+fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
+    track.timeline_waveform = None;
+    let Some(decoded) = musializer_runtime::decode::whole_track(audio, &track.file_path) else {
+        eprintln!(
+            "warning: waveform preview could not decode {}",
+            track.file_path.display()
+        );
+        return;
+    };
+    let waveform = musializer_core::timing::track_timeline::Waveform::build(
+        &decoded.samples,
+        decoded.channels,
+        musializer_core::timing::track_timeline::MAX_BINS,
+    );
+    if !waveform.is_empty() {
+        track.timeline_waveform = Some(waveform);
+    }
+}
+
+/// Builds the current track's whole-song terrain if it is needed and not yet built
+/// (`ensure_song_atlas_map`, `plug.c:712-737`).
+///
+/// # Why this is lazy when the waveform above is eager
+///
+/// It looks like an inconsistency and it is the oracle's own arithmetic. Both need
+/// the same whole-track decode, so the tempting simplification is to decode once at
+/// load and build both — and that is wrong twice over. A five-minute stereo track
+/// is ~26M frames, so keeping the samples to build the atlas from later costs
+/// ~105 MB per open track; and building the atlas at load spends a second full
+/// decode plus an offline analysis pass on **every** track, when most sessions
+/// never select Song Atlas at all. The C pays the load-time decode once for the
+/// envelope, which every track needs, and defers the atlas to the first frame that
+/// would draw it.
+///
+/// The preview stream is paused across the decode and resumed after
+/// (`plug.c:719-731`). That is not politeness: this runs inside the frame loop and
+/// takes long enough that the stream's buffer would underrun, so without it the
+/// first Song Atlas frame is paid for with an audible gap.
+///
+/// `song_atlas_map_attempted` is set *before* the attempt, so a track whose decode
+/// fails is not retried on every subsequent frame.
+fn ensure_song_atlas_map(audio: &RaylibAudio, app: &mut App, music: Option<&Music<'_>>) -> bool {
+    let Some(track) = app.workspace.current() else {
+        return false;
+    };
+    if track.atlas_map().is_some() {
+        return true;
+    }
+    if track.song_atlas_map_attempted {
+        return false;
+    }
+    let path = track.file_path.clone();
+
+    let resume = music.is_some_and(|m| m.is_stream_playing());
+    if resume {
+        if let Some(m) = music {
+            m.pause_stream();
+        }
+    }
+    let built = build_song_atlas_map(audio, &path);
+    if resume {
+        if let Some(m) = music {
+            // `UpdateMusicStream` before the resume, exactly as the C orders it
+            // (`plug.c:729-730`): the buffer drained while the decode ran, and
+            // resuming a starved stream before refilling it is the click this
+            // pause was supposed to prevent.
+            m.update_stream();
+            m.resume_stream();
+        }
+    }
+
+    let Some(track) = app.workspace.current_mut() else {
+        return false;
+    };
+    track.song_atlas_map_attempted = true;
+    match built {
+        Some(map) => {
+            let valid = map.is_valid();
+            track.song_atlas_map = Some(map);
+            valid
+        }
+        None => {
+            eprintln!(
+                "warning: whole-song map could not be prepared for {}",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
+/// The decode-and-build half, with no borrow of `App` held across it.
+fn build_song_atlas_map(
+    audio: &RaylibAudio,
+    path: &Path,
+) -> Option<musializer_core::audio::song_atlas_map::SongAtlasMap> {
+    let decoded = musializer_runtime::decode::whole_track(audio, path)?;
+    musializer_core::audio::song_atlas_map::SongAtlasMap::build(
+        &decoded.samples,
+        decoded.channels,
+        decoded.sample_rate,
+    )
+    .ok()
+}
+
+/// Imports an image as ASCII Field's glyph grid (`plug_load_ascii_image`,
+/// `plug.c:894-930`).
+///
+/// The order is the oracle's and it matters: canonicalize, hash, *then* decode. A
+/// file that cannot be identified is refused before any state moves, so a failed
+/// import leaves the previous grid intact rather than clearing it — which is what
+/// makes re-running `--ascii-image` with a typo harmless.
+///
+/// With no track open the grid lands in [`App::pending_ascii`] and is handed to the
+/// next track that opens, exactly as `p->ascii_cells` is (`plug.c:825-839`).
+fn import_ascii_image(app: &mut App, path: &Path) -> Result<(usize, usize), String> {
+    let canonical = project_files::canonicalize_existing_file(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let sha256 = project_files::sha256_file_hex(&canonical)
+        .map_err(|error| format!("{}: {error}", canonical.display()))?;
+    let decoded = musializer_runtime::decode::image_rgba8(&canonical)
+        .map_err(|error| format!("{}: {error}", canonical.display()))?;
+    let grid = ascii_art::Grid::from_rgba8(
+        &decoded.pixels,
+        decoded.width,
+        decoded.height,
+        ascii_art::GRID_MAX_COLUMNS,
+        ascii_art::GRID_MAX_ROWS,
+    )
+    .ok_or_else(|| {
+        format!(
+            "{}: a {}x{} image could not be fitted to a glyph grid",
+            canonical.display(),
+            decoded.width,
+            decoded.height
+        )
+    })?;
+
+    let dimensions = (grid.columns(), grid.rows());
+    let image = workspace::AsciiImage {
+        grid: Some(grid),
+        columns: dimensions.0,
+        rows: dimensions.1,
+        path: canonical,
+        sha256,
+    };
+    match app.workspace.current_mut() {
+        Some(track) => {
+            track.ascii = Some(image);
+            // An imported image is project content, so it dirties the project the
+            // same way an edit does (`mark_project_dirty`, `plug.c:920`).
+            track.project_dirty = true;
+        }
+        None => app.pending_ascii = Some(image),
+    }
+    Ok(dimensions)
+}
+
+/// Fills in a restored image's glyph cells by decoding the file again.
+///
+/// A `.musi` records the image's *identity* — path, hash and dimensions — not its
+/// converted cells, so opening a project has to re-run the conversion. The
+/// dimensions are then a cross-check rather than an input: if the file on disk fits
+/// to a different grid than the project recorded, the hash already matched, so the
+/// disagreement means the conversion changed and the recorded dimensions are the
+/// stale half.
+fn decode_ascii_grid(image: &mut workspace::AsciiImage) {
+    let Ok(decoded) = musializer_runtime::decode::image_rgba8(&image.path) else {
+        eprintln!(
+            "warning: bundled ASCII image could not be decoded: {}",
+            image.path.display()
+        );
+        return;
+    };
+    let Some(grid) = ascii_art::Grid::from_rgba8(
+        &decoded.pixels,
+        decoded.width,
+        decoded.height,
+        ascii_art::GRID_MAX_COLUMNS,
+        ascii_art::GRID_MAX_ROWS,
+    ) else {
+        eprintln!(
+            "warning: bundled ASCII image could not be fitted to a glyph grid: {}",
+            image.path.display()
+        );
+        return;
+    };
+    image.columns = grid.columns();
+    image.rows = grid.rows();
+    image.grid = Some(grid);
+}
+
 /// Reports a stage the rewrite has not built, on stderr and in the tray, and
 /// fails the exit status.
 ///
@@ -1299,6 +1556,14 @@ fn open_track<'audio>(
         .map_err(|error| format!("could not prepare the track: {error}"))?;
     track.transport_seekable =
         musializer_core::timing::track_timeline::path_is_seekable(Some(path_str));
+    // At load, before the track is in the workspace, which is where the C does it
+    // too (`plug.c:820`, inside `add_track` and before the count is bumped).
+    load_timeline_waveform(audio, &mut track);
+
+    // Any new track claims a pending import, first or not (`plug.c:825-839`).
+    if let Some(image) = app.pending_ascii.take() {
+        track.ascii = Some(image);
+    }
 
     let was_empty = app.workspace.current().is_none();
     if was_empty {
@@ -1708,7 +1973,17 @@ fn open_project<'audio>(
         );
     }
 
-    let index = app.workspace.push(opened.track);
+    let mut track = opened.track;
+    // The same load-time preprocessing a plain audio file gets. A project's track
+    // reaches the workspace through a different door, and the envelope is derived
+    // from the audio rather than stored in the `.musi`, so it has to be built on
+    // both paths or the strip is blank for exactly the tracks that carry authored
+    // work.
+    load_timeline_waveform(audio, &mut track);
+    if let Some(image) = track.ascii.as_mut() {
+        decode_ascii_grid(image);
+    }
+    let index = app.workspace.push(track);
     // `push` only selects when the workspace was empty, but opening a project
     // always makes its track current (`plug.c:5031`). The audio bind is
     // `select_track`'s either way, so this is one call rather than two paths.
@@ -1979,6 +2254,54 @@ impl Report {
                 None => println!("project:         none (audio only)"),
             },
             None => println!("project:         no track"),
+        }
+        // The three whole-track derivations, each one distinguishing "the scene
+        // drew" from "the scene had something to draw". Every one of them is a
+        // surface that looks plausible when it is empty: ASCII Field falls back to a
+        // procedural spectrogram, Song Atlas to a live idle terrain, and the
+        // timeline strip to a flat lane. Without these lines a capture of an
+        // unwired import is indistinguishable from a capture of a working one —
+        // which is exactly how all three sat unwired for two bands.
+        match app.workspace.current() {
+            None => println!("waveform:        no track"),
+            Some(track) => match &track.timeline_waveform {
+                Some(waveform) => println!("waveform:        {} bins", waveform.len()),
+                None => println!("waveform:        unavailable (decode failed)"),
+            },
+        }
+        match app.workspace.current() {
+            None => println!("atlas:           no track"),
+            Some(track) => match (track.atlas_map(), track.song_atlas_map_attempted) {
+                (Some(map), _) => println!(
+                    "atlas:           {} slices, {} onsets",
+                    map.slices().len(),
+                    map.slices().iter().filter(|slice| slice.onset).count()
+                ),
+                (None, true) => println!("atlas:           attempted, unavailable"),
+                // Not a failure. The map is built at the first frame that would
+                // draw it, so on any other scene this is the correct state and the
+                // line says which of the two it is.
+                (None, false) => println!("atlas:           not needed by this scene"),
+            },
+        }
+        match app.workspace.current() {
+            None => println!("ascii:           no track"),
+            Some(track) => match (track.ascii_grid(), &track.ascii) {
+                (Some(grid), _) => println!(
+                    "ascii:           {}x{} glyphs from {}",
+                    grid.columns(),
+                    grid.rows(),
+                    track
+                        .ascii
+                        .as_ref()
+                        .map_or_else(|| "?".into(), |image| image.path.display().to_string())
+                ),
+                (None, Some(image)) => println!(
+                    "ascii:           {}x{} recorded, not decoded",
+                    image.columns, image.rows
+                ),
+                (None, None) => println!("ascii:           none (procedural mode)"),
+            },
         }
         println!("panel:           {}", app.shell.panel.label());
         // Evidence, not existence: the Assist panel draws the same box whether

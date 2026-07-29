@@ -515,8 +515,8 @@ pub fn rectangle(rect: UiRect) -> Rectangle {
     Rectangle::new(rect.x, rect.y, rect.width, rect.height)
 }
 
-fn brightness(color: Color, amount: f32) -> Color {
-    // raylib's `ColorBrightness` for the two cases the widgets use.
+/// raylib's `ColorBrightness`, which the safe API only exposes for images.
+pub(crate) fn brightness(color: Color, amount: f32) -> Color {
     let scale = |channel: u8| -> u8 {
         let value = f32::from(channel) / 255.0;
         let value = if amount < 0.0 {
@@ -529,7 +529,7 @@ fn brightness(color: Color, amount: f32) -> Color {
     Color::new(scale(color.r), scale(color.g), scale(color.b), color.a)
 }
 
-fn alpha(color: Color, amount: f32) -> Color {
+pub(crate) fn alpha(color: Color, amount: f32) -> Color {
     Color::new(
         color.r,
         color.g,

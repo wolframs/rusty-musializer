@@ -394,6 +394,54 @@ impl Track {
     pub fn has_unsaved_work(&self) -> bool {
         self.project_dirty
     }
+
+    /// Whether Song Atlas can be reached on this track at all
+    /// (`track_uses_song_atlas`, `plug.c:738-748`).
+    ///
+    /// The export path asks this rather than looking at the live scene, because a
+    /// windowed render can pass through a Song Atlas cue the preview never showed —
+    /// and the map has to exist before the first frame that needs it, since an
+    /// export cannot pause to decode.
+    #[must_use]
+    pub fn uses_song_atlas(&self) -> bool {
+        if self.base_scene == SceneId::SongAtlas {
+            return true;
+        }
+        if !self.scene_switches.enabled {
+            return false;
+        }
+        let atlas = SceneId::SongAtlas.index() as u32;
+        self.scene_switches
+            .cues()
+            .iter()
+            .any(|cue| cue.scene_index == atlas)
+    }
+
+    /// The whole-track terrain if it is ready to draw, `None` otherwise
+    /// (`song_atlas_map_valid`, `plug.c:715`).
+    ///
+    /// Validity rather than presence: [`SongAtlasMap::is_valid`] is what the C
+    /// checks at both call sites, and a map that built to zero slices would
+    /// otherwise be handed to the scene as if it were terrain.
+    #[must_use]
+    pub fn atlas_map(&self) -> Option<&SongAtlasMap> {
+        self.song_atlas_map.as_ref().filter(|map| map.is_valid())
+    }
+
+    /// The imported glyph grid if there is one to draw (`renderer->ascii_cells`,
+    /// `plug.c:1316-1318`).
+    ///
+    /// Populated rather than merely present, which is `ascii_art_grid_is_populated`
+    /// (`ascii_art.c:433-436`) — the check the C makes before saving one, so it is
+    /// the same notion of "there is an image here".
+    #[must_use]
+    pub fn ascii_grid(&self) -> Option<&AsciiGrid> {
+        self.ascii
+            .as_ref()?
+            .grid
+            .as_ref()
+            .filter(|grid| grid.is_populated())
+    }
 }
 
 /// The open tracks and which one is current (`track.h:91-95`, plus `plug.c`'s

@@ -209,12 +209,29 @@ pub fn owner(id: SceneId) -> &'static str {
 /// One owner for the whole application: a shader loaded per scene switch would
 /// leak a program every time somebody pressed Tab. Scenes that need their own
 /// resources get a field here rather than loading them inside `draw`.
+/// Whole-track data a scene draws but the renderer does not own.
+///
+/// Both of these belong to the **track** in the oracle (`track->song_atlas_map`,
+/// `track->ascii_cells`), and that is not incidental. A renderer-owned atlas map
+/// would keep track A's terrain under track B after a switch, and a
+/// renderer-owned glyph grid would do the same with an imported image — a parity
+/// bug visible on screen, and one the type system can rule out instead by making
+/// these borrowed for the duration of a single frame.
+#[derive(Clone, Copy, Default)]
+pub struct TrackAssets<'a> {
+    /// `renderer->song_atlas_map` (`scene.h:62`). `None` before the whole-track
+    /// preprocessing has run, and Song Atlas draws its live idle terrain then
+    /// rather than nothing.
+    pub atlas_map: Option<&'a musializer_core::audio::song_atlas_map::SongAtlasMap>,
+    /// `renderer->ascii_cells` (`scene.h:59-61`). `None` until `--ascii-image` or
+    /// the project's bundled image has been decoded, and ASCII Field draws its
+    /// procedural rolling spectrogram then — its other documented mode rather than
+    /// a degraded one.
+    pub ascii_grid: Option<&'a musializer_core::scenes::ascii_field::ascii_art::Grid>,
+}
+
 pub struct SceneRenderer {
     circle: scenes::spectrum::CircleShader,
-    /// Song Atlas's whole-track terrain, built once per track rather than per
-    /// frame. `None` until track load runs the preprocessing, and Song Atlas draws
-    /// its idle terrain in the meantime rather than nothing.
-    atlas_map: Option<musializer_core::audio::song_atlas_map::SongAtlasMap>,
 }
 
 impl SceneRenderer {
@@ -224,7 +241,6 @@ impl SceneRenderer {
     ) -> Result<Self, String> {
         Ok(Self {
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
-            atlas_map: None,
         })
     }
 
@@ -248,6 +264,7 @@ impl SceneRenderer {
         fonts: &Faces,
         instance: &SceneInstance,
         frame: &SceneFrame<'_>,
+        assets: TrackAssets<'_>,
         boundary: Rectangle,
         pixel_scale: f32,
     ) {
@@ -268,23 +285,25 @@ impl SceneRenderer {
             }
             SceneId::AsciiField => {
                 if let Some(state) = state_of(instance, id) {
-                    // `None` until `--ascii-image` is wired: without a grid the
-                    // scene is a procedural rolling spectrogram, which is its other
-                    // documented mode rather than a degraded one.
-                    scenes::ascii_field::draw(d, state, frame, boundary, pixel_scale, None);
+                    scenes::ascii_field::draw(
+                        d,
+                        state,
+                        frame,
+                        boundary,
+                        pixel_scale,
+                        assets.ascii_grid,
+                    );
                 }
             }
             SceneId::SongAtlas => {
                 if let Some(state) = state_of(instance, id) {
-                    // `None` until whole-track preprocessing runs at load; the
-                    // scene draws its idle terrain rather than nothing.
                     scenes::song_atlas::draw(
                         d,
                         state,
                         frame,
                         boundary,
                         pixel_scale,
-                        self.atlas_map.as_ref(),
+                        assets.atlas_map,
                     );
                 }
             }

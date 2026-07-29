@@ -36,7 +36,7 @@ use musializer_core::audio::{AudioAnalyzerConfig, ChannelMode};
 use musializer_core::timing::render_export::{
     self, Quality, RenderExportConfig, RenderExportError,
 };
-use raylib::core::audio::{RaylibAudio, Wave};
+use raylib::core::audio::RaylibAudio;
 
 use super::ffmpeg::{Encoder, ExportConfig, ExportQuality, FinishError, Finished, FrameError};
 use crate::project_files::existing_files_alias;
@@ -314,7 +314,7 @@ impl RenderJob {
         let sample_rate = wave.sample_rate();
         let channels = wave.channels();
         let audio_frames = u64::from(wave.frame_count());
-        let samples = decoded_samples(&wave).ok_or(RenderStartError::DecodeSamples)?;
+        let samples = crate::decode::wave_samples(&wave).ok_or(RenderStartError::DecodeSamples)?;
 
         let plan = RenderPlan::resolve(
             audio_frames,
@@ -713,41 +713,6 @@ fn reserve_staging(destination: &str) -> Option<(u64, PathBuf)> {
         }
     }
     None
-}
-
-/// Every decoded sample of a wave, interleaved.
-///
-/// # The raylib-rs bug this exists for
-///
-/// `Wave::load_samples` builds its slice as `(pointer, self.frameCount)`
-/// (`raylib-5.5.1/src/core/audio.rs:261-268`), but `LoadWaveSamples` allocates
-/// and fills `frameCount * channels` floats
-/// (`vendor/raylib-5.5/src/raudio.c:1299-1310`). For any stereo track the safe
-/// wrapper therefore hands back **exactly half the audio**, silently: an export
-/// built on it would analyze the first half of the track spread across the whole
-/// timeline. This is the same class of defect as `load_font_from_memory`'s
-/// codepoint miscount, and it gets the same treatment — call the ffi directly
-/// and take the length from the format, not from the wrapper.
-fn decoded_samples(wave: &Wave<'_>) -> Option<Vec<f32>> {
-    let count = (wave.frame_count() as usize).checked_mul(wave.channels() as usize)?;
-    if count == 0 {
-        return Some(Vec::new());
-    }
-    // SAFETY: `**wave` is a bitwise copy of the `ffi::Wave` this `Wave` owns and
-    // is only read; the owner outlives the call, so its `data` pointer is live.
-    // `LoadWaveSamples` returns a fresh allocation of exactly
-    // `frameCount * channels` floats or null, which is checked before the slice
-    // is formed, and the allocation is handed straight back to
-    // `UnloadWaveSamples` after the copy — so nothing borrowed here escapes.
-    unsafe {
-        let pointer = raylib::ffi::LoadWaveSamples(**wave);
-        if pointer.is_null() {
-            return None;
-        }
-        let samples = std::slice::from_raw_parts(pointer, count).to_vec();
-        raylib::ffi::UnloadWaveSamples(pointer);
-        Some(samples)
-    }
 }
 
 #[cfg(test)]

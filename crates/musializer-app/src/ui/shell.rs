@@ -1107,7 +1107,115 @@ impl Shell {
         }
     }
 
-    /// The timeline strip: waveform lane placeholder, ticks, playhead, scrubber.
+    /// The track's amplitude envelope behind the timeline
+    /// (`draw_timeline_waveform`, `plug.c:2696-2751`).
+    ///
+    /// One vertical line per pixel column, each spanning the min and max of every
+    /// envelope bin the column covers — so a zoomed-out view of a five-minute track
+    /// shows peaks rather than whatever a single sampled bin happened to hold. The
+    /// bin range per column comes from [`TimelineView::seconds_at`] at the column's
+    /// two edges, which is what keeps the envelope aligned with the ticks and the
+    /// playhead under zoom instead of merely near them.
+    ///
+    /// `end = first + 1` when the ranges collapse (`plug.c:2729`): zoomed in far
+    /// enough, several columns fall inside one bin, and without that floor they
+    /// would each draw an empty span and the envelope would vanish exactly where it
+    /// is being inspected most closely.
+    fn waveform_lane(
+        &self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        strip: UiRect,
+        duration: f64,
+    ) {
+        let centre = strip.y + strip.height * 0.5;
+        d.draw_line_ex(
+            Vector2::new(strip.x, centre),
+            Vector2::new(strip.x + strip.width, centre),
+            1.0,
+            widgets::alpha(color::ui_muted(), 0.28),
+        );
+
+        let bins = input
+            .workspace
+            .current()
+            .and_then(|track| track.timeline_waveform.as_ref())
+            .map_or(&[][..], |waveform| waveform.bins());
+        if bins.is_empty()
+            || strip.width < 1.0
+            || strip.height < 4.0
+            || !duration.is_finite()
+            || duration <= 0.0
+        {
+            // Said, not left blank. A flat lane and an undecodable file look
+            // identical, and one of them means the track will export silence.
+            let message = "Waveform unavailable";
+            let font = input.fonts.ui();
+            let width = widgets::measure(font, message, metric::UI_FONT_CAPTION);
+            widgets::draw_text(
+                d,
+                font,
+                message,
+                strip.x + (strip.width - width) * 0.5,
+                centre - metric::UI_FONT_CAPTION * 0.5,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            return;
+        }
+
+        let columns = (strip.width.floor() as usize).clamp(1, 4096);
+        let amplitude = (strip.height * 0.43).max(1.0);
+        let bins_per_second = bins.len() as f64 / duration;
+        for column in 0..columns {
+            let start = self.timeline.seconds_at(
+                f64::from(strip.x) + column as f64,
+                f64::from(strip.x),
+                f64::from(strip.width),
+                duration,
+            );
+            let end = self.timeline.seconds_at(
+                f64::from(strip.x) + column as f64 + 1.0,
+                f64::from(strip.x),
+                f64::from(strip.width),
+                duration,
+            );
+            let mut first = (start * bins_per_second) as usize;
+            if first >= bins.len() {
+                first = bins.len() - 1;
+            }
+            let mut last = (end * bins_per_second) as usize;
+            if last <= first {
+                last = first + 1;
+            }
+            let last = last.min(bins.len());
+
+            // Seeded at zero, not at the first bin, which is the C's own choice
+            // (`plug.c:2733-2734`): every column's span therefore includes the
+            // centre line, so a quiet passage draws a thin line rather than a
+            // detached sliver floating above or below it.
+            let mut minimum = 0.0f32;
+            let mut maximum = 0.0f32;
+            for bin in &bins[first..last] {
+                minimum = minimum.min(bin.minimum);
+                maximum = maximum.max(bin.maximum);
+            }
+            let x = strip.x + (column as f32 + 0.5) * strip.width / columns as f32;
+            let peak = minimum.abs().max(maximum.abs()).min(1.0);
+            let colour = widgets::alpha(
+                widgets::brightness(color::accent(), -0.18 + peak * 0.24),
+                0.38 + peak * 0.48,
+            );
+            d.draw_line_ex(
+                Vector2::new(x, centre - maximum * amplitude),
+                Vector2::new(x, centre - minimum * amplitude),
+                1.0,
+                colour,
+            );
+        }
+    }
+
+    /// The timeline strip: waveform lane, ticks, playhead, scrubber.
     ///
     /// Every seconds↔pixel conversion goes through [`TimelineView`] so the ticks,
     /// the playhead and the scrubber cannot disagree about where a moment is
@@ -1177,6 +1285,7 @@ impl Shell {
         }
         d.draw_rectangle_rec(widgets::rectangle(strip), color::ui_raised());
         d.draw_rectangle_lines_ex(widgets::rectangle(strip), 1.0, color::ui_rule());
+        self.waveform_lane(d, input, strip, duration);
 
         if duration <= 0.0 {
             widgets::draw_text(
@@ -1230,19 +1339,30 @@ impl Shell {
                         1.0,
                         color::ui_rule(),
                     );
+                    // Top of the lane, and never at zero (`plug.c:3066-3069`).
+                    // Both of those were guesses until the waveform landed
+                    // underneath and made them checkable: the label at zero sits on
+                    // the lane's left edge and is clipped to half a timestamp, and
+                    // at the bottom the labels compete with the loudest part of the
+                    // envelope instead of with its quiet centre. The height gate is
+                    // the oracle's too — a short lane drops labels rather than
+                    // printing them across the waveform.
+                    //
                     // Not smaller than UI_FONT_CAPTION: the 11 px labels in an
                     // earlier capture rendered the colon and the point as boxes
                     // in raylib's 10 px bitmap font. A tick label nobody can read
                     // is a tick label that is not there.
-                    widgets::draw_text(
-                        d,
-                        input.fonts.ui(),
-                        &widgets::format_timestamp(tick),
-                        x + 3.0,
-                        strip.y + strip.height - 16.0,
-                        metric::UI_FONT_CAPTION,
-                        color::ui_muted(),
-                    );
+                    if tick > 0.0 && strip.height >= 48.0 {
+                        widgets::draw_text(
+                            d,
+                            input.fonts.ui(),
+                            &widgets::format_timestamp(tick),
+                            x + 4.0,
+                            strip.y + 4.0,
+                            metric::UI_FONT_CAPTION,
+                            color::ui_muted(),
+                        );
+                    }
                 }
                 tick += step;
             }
@@ -1259,6 +1379,15 @@ impl Shell {
                 Vector2::new(playhead, strip.y),
                 Vector2::new(playhead, strip.y + strip.height),
                 2.0,
+                color::accent(),
+            );
+            // The grab handle at the top (`plug.c:3109-3112`). A bare line was
+            // enough to read while the lane was empty; over an envelope in the same
+            // accent colour it is not, which is presumably why the oracle has one.
+            d.draw_triangle(
+                Vector2::new(playhead - 5.0, strip.y),
+                Vector2::new(playhead, strip.y + 7.0),
+                Vector2::new(playhead + 5.0, strip.y),
                 color::accent(),
             );
         }
