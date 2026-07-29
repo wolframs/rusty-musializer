@@ -2415,3 +2415,129 @@ prerequisite, and doing it mid-fan-out would risk numeric parity for no benefit.
 into the panel's content rectangle and printed it over the timeline's ticks; the
 oracle's box starts below the strip (`strip.y + strip.height + 28.0`). No test
 would have found it.
+
+#### Agent G — the route editor row, and route persistence
+
+**(b) is complete and verified. (a) draws, is captured at both window sizes, and
+edits a draft — but it cannot commit one**, because committing needs two
+`ShellCommand` variants and the fan-out rules put `shell.rs` and `main.rs`
+off-limits. What is needed to close that is listed under "Four seams" below, and
+every one of them is a few lines in a file only the integration owner may touch.
+
+##### (b) The six functions moved, and a seventh copy died with them
+
+`mapping_is_constant`, `constant_mapping`, `mappings_supported`,
+`export_mappings`, `import_mappings` and `parse_route_spec` (plus
+`ROUTE_SPEC_MAX_BYTES`) are now in `core::scene::routes`, together, with their
+tests. **No `pub use` re-export was left behind** — there are four call sites in
+the tree and updating them was smaller than leaving two spellings of one home.
+`MAX_MAPPINGS_PER_SCENE` and `capacity::PARAMETER` stayed in `project::model`,
+because they are `.musi` schema bounds the project validator also reads.
+
+**`cli.rs` had a second, independent implementation of the `--route` grammar.**
+Its own doc comment asked for exactly this — "if a `ParameterMapping::parse_spec`
+lands there, this should delegate to it rather than keep a second copy, a
+duplicated grammar drifts" — so it now does. The two differed in ways nobody
+would have found by reading: the CLI copy rejected an empty spec explicitly and
+never bounded the parameter key against the mapping's 64-byte buffer. Both
+reached the same answer, but only by accident of two other checks.
+
+`tools/differential_route_persistence.sh` is the harness. **381 lines, zero
+delta.** It checks the four things together rather than one at a time, which is
+the point: `.musi` v1 has one representation for "this parameter has a value", so
+a slider constant is a full-range RMS mapping with equal output endpoints and a
+route is the same struct with unequal ones. The constant rule and the route rule
+are two halves of one decision, and a harness that split them could pass while a
+parameter became eligible as both. It dumps the parse grammar over 35 specs
+(every optional-token permutation, every rejection the grammar owes, and the
+64/65-byte key boundary), every descriptor of every scene exported as constants,
+the same export with five routes replacing slots in place, the full import back,
+and hand-built probes for the cases export cannot reach — a duplicate parameter,
+an unknown one, and three mappings that are *almost* the canonical constant.
+
+**Not wired into `tools/verify.sh`** — that file is shared. Add:
+`tools/differential_route_persistence.sh` beside the other three.
+
+##### (a) The row
+
+The editor **area** is the oracle's exactly: `24+26+40+40+70+26+32+4` px, plus 24
+for the band stepper, and the drawing advances its cursor by those same numbers in
+that order. The row *around* it diverges and the reason is written at
+`ROUTE_EDITOR_ROW_HEADER`: the C's setting row is 76 px with a 29 px header and
+12 px of trailing rule space, so its expanded row is `area + 41`; this inspector's
+row is 46 px with a 22 px header and a 4 px gap, so its expanded row is
+`area + 26`. Copying the 41 would put 15 px of nothing under a block that already
+ends in 4 px of its own.
+
+Three things about the row that are behaviour rather than pixels:
+
+- **The label and the readout are drawn for every row, expanded included**
+  (`plug.c:6156-6190`). The first version drew them only for collapsed rows,
+  which left the one row the user is working on as the only one that did not say
+  what value it currently produces. A capture caught it.
+- **A routed setting is not a slider.** It shows the summary and the live meter,
+  and the whole zone is a hit target that opens the editor (`plug.c:6197-6215`).
+  Before this, a routed row drew a slider that appeared to move on its own.
+- **A dirty draft refuses the `~` button and says why** rather than being
+  replaced (`plug.c:6174-6178`). That is the entire reason the draft exists.
+
+##### Four seams, and the exact lines that close them
+
+Each is marked `SEAM n:` in `ui/panels/tune.rs`, so `grep -n 'SEAM ' ` finds all
+of them.
+
+1. **The draft has nowhere to live.** It sits in a `thread_local RefCell` in
+   `tune.rs` — the only global mutable state in the application crate, and it
+   should not survive. Add `pub route_editor: RouteEditorState` and
+   `route_editor_track: usize` to `Shell`; `with_editor`/`peek_editor` are the
+   only two functions that touch it.
+2. **Apply and Remove cannot commit.** They draw with the oracle's enable rules
+   (Apply live only for a valid draft that is dirty or never committed; Remove
+   only with a committed route behind it; Close reads `Discard` while dirty) and
+   push `ShellCommand::NotImplemented` on click. They need
+   `ShellCommand::ApplyRoute { scene, route: ParameterMapping }` and
+   `ShellCommand::RemoveRoute { scene, parameter: String }`, handled in `main.rs`
+   through `app.routes_mut()` followed by `mark_project_dirty` (`plug.c:5852`,
+   `:5862`). Two lines here become the push; the rest is already written.
+3. **The live source values are not in `ShellInput`.** `main.rs` builds a
+   `RouteSources` for the frame loop and hands the shell only `rms`, so RMS reads
+   live and the other four sources honestly report `no signal` — the C's own
+   wording for an unavailable source. `pub route_sources: RouteSources<'a>` on
+   `ShellInput` and `Shell::live_value` becomes one call. Until then the band
+   source's meter and the transfer graph's live dot are dark, which is visible in
+   the `route-editor-band-*` captures.
+4. **`--ui-probe route=KEY` is applied from `tune.rs`, not `main.rs`.** The key
+   is parsed and resolved in `cli.rs` (a typo fails the command line, which the
+   headless check asserts on), but honouring it means re-reading `argv` through
+   the same `parse_ui_probe`. Move it to `main.rs`'s probe block and both
+   `apply_route_probe` and the `probe_applied` flag go.
+
+Also still to hook in, and named in W1's note as G's line to add:
+`confirm_close` in `main.rs` should weigh an open route edit.
+`ui::panels::tune::route_edit_is_dirty()` exists for exactly that call and is
+`#[allow(dead_code)]` until it is made.
+
+##### The captures, and what they assert
+
+`tools/headless_check.sh` grew a "the route editor row" section: three states —
+collapsed, opened onto a committed band route, opened fresh on an unrouted
+setting — at 1280x720 and at the 960x640 minimum, plus a negative control that a
+mistyped `route=` key exits non-zero.
+
+The evidence line is `route editor: <key> open row=<h>px source=<S> committed=<n>`,
+printed from `tune.rs` because `Report::print` is in `main.rs`. The check asserts
+the exact heights, 312 for the band draft and 288 for the fresh one, because a
+24 px difference is what proves the editor opened onto the *right* draft rather
+than merely opening. If `Report::print` ever takes this over, that is the wording.
+
+##### Two things a later session would otherwise re-derive
+
+- **`route_editor_height` is not handed the workspace**, so it cannot check the
+  track slot the draft is keyed against. The slot is cached on the host at the
+  top of `inspector`. Without that, a hidden draft belonging to another track
+  reshapes this track's list — which `route_editor_targets` is track-scoped
+  specifically to prevent (`route_editor_state.c:101-114`), and there is a test.
+- **The C's `parse_route_spec` accepts a 64-byte parameter key and rejects 65**,
+  because `MUSI_PROJECT_PARAMETER_CAPACITY` is 65 *with* the NUL. `capacity::PARAMETER`
+  is 64 and the Rust check is `> capacity::PARAMETER`, which is the same boundary.
+  It reads like an off-by-one and is not; the harness pins both sides of it.
