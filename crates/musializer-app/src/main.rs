@@ -55,6 +55,7 @@ mod ui;
 mod workspace;
 
 use cli::{Action, Cli, Outcome};
+use ui::panels::assist::{AssistController, AssistEffect};
 use ui::panels::export::ExportSession;
 use ui::shell::{Shell, ShellCommand, ShellInput};
 use workspace::{Track, Workspace};
@@ -175,6 +176,15 @@ fn run() -> Result<std::process::ExitCode, String> {
         shell: Shell::new(),
     };
 
+    // The Assist supervisor. `find_assist_helper` probes relative to the
+    // executable's directory, which is raylib's `GetApplicationDirectory()`.
+    let application_directory = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut assist = AssistController::new(&application_directory);
+    app.workspace.assist.helper_available = assist.helper_available();
+
     // The shared preset store, read once (`plug.c:8397-8410`). A store that
     // cannot be read is not fatal: the library stays empty and writes are
     // refused, so a recoverable file is never overwritten by an empty one.
@@ -274,14 +284,6 @@ fn run() -> Result<std::process::ExitCode, String> {
     }
 
     // Step 5: the stages the rewrite has not built.
-    if options.analysis_bridge.is_some() {
-        unimplemented_action(
-            &mut options,
-            &mut app,
-            "--analysis-bridge",
-            "the analysis bridge importer is Agent B's",
-        );
-    }
     if options.reload_once {
         unimplemented_action(
             &mut options,
@@ -290,6 +292,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             "hot reload is an explicit first-pass non-goal",
         );
     }
+    let mut assist_probe_misplaced = false;
     if let Some(probe) = options.ui_probe.as_ref() {
         // Only the parts of the probe that have a surface to open are honoured;
         // the rest is reported rather than silently ignored, because a capture
@@ -300,13 +303,12 @@ fn run() -> Result<std::process::ExitCode, String> {
         if probe.panel == cli::UiPanel::Tune {
             app.shell.inspector_open = true;
         }
-        if probe.assist_confirmation {
-            unimplemented_action(
-                &mut options,
-                &mut app,
-                "--ui-probe",
-                "assist= needs a panel that is still a stub",
-            );
+        // `assist=confirm` arms the review step (`plug.c:3807-3810`). It needs
+        // `panel=assist`, because arming a step in a panel nobody can see would
+        // photograph the wrong state.
+        assist_probe_misplaced = probe.assist_confirmation && probe.panel != cli::UiPanel::Assist;
+        if probe.assist_confirmation && !assist_probe_misplaced {
+            app.workspace.assist.set_confirmation_pending(true);
         }
     }
 
@@ -359,6 +361,57 @@ fn run() -> Result<std::process::ExitCode, String> {
                 if let Some(open) = music.as_ref() {
                     open.pause_stream();
                 }
+            }
+        }
+    }
+
+    if assist_probe_misplaced {
+        unimplemented_action(
+            &mut options,
+            &mut app,
+            "--ui-probe",
+            "assist=confirm needs panel=assist",
+        );
+    }
+
+    // `--analysis-bridge`, after every input is resolved, exactly where the C
+    // applies it (`musializer.c:579-586`). It applies rather than staging: a
+    // batch entry point with no review step must not leave the result unapplied.
+    if let Some(path) = options.analysis_bridge.clone() {
+        match assist.import_bridge(&path, &mut app.workspace, 0.0) {
+            Ok(notices) => {
+                for notice in notices {
+                    app.shell
+                        .notify(notice.severity, &notice.title, &notice.detail);
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: could not load command-line analysis bridge {}: {error}",
+                    path.display()
+                );
+                options.error = true;
+            }
+        }
+    }
+
+    // `--ui-probe lyrics-file=` selects the sheet the next lyrics run will use
+    // (`plug.c:3812-3823`).
+    if let Some(path) = options
+        .ui_probe
+        .as_ref()
+        .and_then(|probe| probe.lyrics_reference_path.clone())
+    {
+        if app.workspace.current().is_none() || !path.is_file() {
+            eprintln!(
+                "warning: could not apply --ui-probe lyrics-file={}; it needs a loaded track and an existing file",
+                path.display()
+            );
+            options.error = true;
+        } else {
+            for notice in assist.set_lyric_sheet(&mut app.workspace, &path) {
+                app.shell
+                    .notify(notice.severity, &notice.title, &notice.detail);
             }
         }
     }
@@ -538,6 +591,13 @@ fn run() -> Result<std::process::ExitCode, String> {
         }
         if let Some(music) = music.as_ref() {
             music.update_stream();
+        }
+
+        // The Assist supervisor, polled before anything is drawn so the panel
+        // shows this frame's job state rather than last frame's.
+        for notice in assist.poll(&mut app.workspace) {
+            app.shell
+                .notify(notice.severity, &notice.title, &notice.detail);
         }
 
         let drained = audio_bridge::drain_interleaved(&mut scratch);
@@ -938,6 +998,40 @@ fn run() -> Result<std::process::ExitCode, String> {
             }
         }
 
+        // The Assist panel's request, drained once the drawing pair has closed:
+        // every one of these spawns, signals, reads a file or edits a track.
+        if let Some(request) = app.workspace.assist.take_request() {
+            let now = rl.get_time();
+            let outcome = assist.handle(request, &mut app.workspace, now);
+            for notice in outcome.notices {
+                app.shell
+                    .notify(notice.severity, &notice.title, &notice.detail);
+            }
+            match outcome.effect {
+                None => {}
+                Some(AssistEffect::Clipboard(path)) => rl.set_clipboard_text(&path).unwrap_or(()),
+                Some(AssistEffect::ChooseLyricSheet) => {
+                    let dialog = FileDialog::new("Choose authored lyrics")
+                        .with_filter(dialogs::filters::LYRIC_TEXT);
+                    match dialog.pick_file() {
+                        // Cancellation is deliberately silent.
+                        Ok(None) => {}
+                        Ok(Some(path)) => {
+                            for notice in assist.set_lyric_sheet(&mut app.workspace, &path) {
+                                app.shell
+                                    .notify(notice.severity, &notice.title, &notice.detail);
+                            }
+                        }
+                        Err(error) => app.shell.notify(
+                            Severity::Warning,
+                            "No file picker is available",
+                            &format!("{error}. Pass --ui-probe lyrics-file= instead."),
+                        ),
+                    }
+                }
+            }
+        }
+
         report.frames += 1;
 
         // Autosave, polled after the frame like the C's (`plug.c:7580-7583`).
@@ -1035,6 +1129,10 @@ fn run() -> Result<std::process::ExitCode, String> {
     // Detach before the Music drops, so raylib's per-stream processor list never
     // holds a callback for a freed stream. The same function every track switch
     // goes through, so there is one place where that order is written down.
+    // Before the window goes, so a helper tree is never orphaned by an exit.
+    if !assist.shutdown() {
+        eprintln!("warning: the Assist helper could not be reaped promptly");
+    }
     close_audio(&mut music, &mut app, &mut scratch);
 
     report.print(
@@ -1043,6 +1141,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         analyzer.band_count(),
         requested_scene,
         &fonts,
+        &assist,
     );
 
     // `exit_status = command_line_error ? 1 : 0` (`musializer.c:618`).
@@ -1519,7 +1618,7 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
     // The other five conditions the C weighs — an open lyric draft, an open route
     // edit, staged Assist suggestions, a running analysis and a running export —
     // belong to Agents I, G, J and H. Each adds a line to this list.
-    if dirty == 0 && !route_edit && !exporting {
+    if dirty == 0 && !route_edit && !exporting && !app.workspace.assist.blocks_close() {
         return true;
     }
     // The C builds this list line by line from six conditions (`plug.c:7222-7247`).
@@ -1529,8 +1628,15 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
     if route_edit {
         items.push_str("\n- Apply or discard the open audio-route edit.");
     }
+    // The C's order (`plug.c:7222-7241`).
+    if app.workspace.assist.candidate.is_some() {
+        items.push_str("\n- Apply or discard the validated Assist result.");
+    }
     if exporting {
         items.push_str("\n- Cancel the running video export.");
+    }
+    if app.workspace.assist.is_active() {
+        items.push_str("\n- Cancel the running analysis job.");
     }
     if dirty > 0 {
         items.push_str(&format!(
@@ -1797,6 +1903,7 @@ impl Report {
         band_count: usize,
         requested_scene: Option<SceneId>,
         fonts: &Faces,
+        assist: &AssistController,
     ) {
         let dropped = audio_bridge::ring().map_or(0, |ring| ring.dropped());
         println!("--- slice report ---");
@@ -1874,6 +1981,25 @@ impl Report {
             None => println!("project:         no track"),
         }
         println!("panel:           {}", app.shell.panel.label());
+        // Evidence, not existence: the Assist panel draws the same box whether
+        // the helper was found or not, and whether the confirmation step is
+        // armed or not. This line is what a capture asserts on.
+        {
+            let session = &app.workspace.assist;
+            println!(
+                "assist:          helper={} state={:?} body={:?} mode={} confirm={} staged={} sheet={:?}",
+                match assist.helper() {
+                    Some(path) => path.display().to_string(),
+                    None => "not found".to_string(),
+                },
+                session.job_state,
+                session.panel_content(),
+                session.mode().argument(),
+                session.confirmation_pending(),
+                session.candidate.is_some(),
+                ui::panels::assist::resolve_lyric_reference(app.workspace.current()).0,
+            );
+        }
         // `headless_check.sh` greps this: how many cues the editor is showing and
         // which pane is open, which a screenshot of a scrolled list cannot say.
         println!(

@@ -570,9 +570,570 @@ pub fn timeline_height(screen_height: f32, toolbar_height: f32, panel_height: f3
     }
 }
 
+// ---------------------------------------------------------------------------
+// The panel's own state and geometry.
+//
+// **Owner: Agent J.** Everything above this line is the port of
+// `assist_ui_state.c`. What follows is the state the *panel* needs, which the C
+// keeps as sixteen `p->assist_*` fields on its single global `Plug`
+// (`plug.c:304-317`) and composes into a status line inline at `:2274-2337`.
+// Both come here rather than into the drawing code for the usual reason: a
+// status line and a button rectangle that only exist inside a `BeginDrawing`
+// pair cannot be asserted without a window.
+// ---------------------------------------------------------------------------
+
+use core::cell::Cell;
+
+use crate::project::analysis_candidate::{AnalysisCandidate, Lanes};
+use crate::ui::workspace_layout::UiRect;
+
+/// Which job artifact a Copy button puts on the clipboard
+/// (`draw_assist_artifact_actions`, `plug.c:2069-2110`).
+///
+/// The widths are the oracle's and they are not free: the three buttons share
+/// one fitted label size, so changing one changes the others' typography.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AssistArtifact {
+    Bridge,
+    Log,
+    Folder,
+}
+
+impl AssistArtifact {
+    /// The three, in the oracle's order.
+    pub const ALL: [AssistArtifact; 3] = [
+        AssistArtifact::Bridge,
+        AssistArtifact::Log,
+        AssistArtifact::Folder,
+    ];
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            AssistArtifact::Bridge => "Copy result",
+            AssistArtifact::Log => "Copy log",
+            AssistArtifact::Folder => "Copy folder",
+        }
+    }
+
+    #[must_use]
+    pub fn width(self) -> f32 {
+        match self {
+            AssistArtifact::Bridge | AssistArtifact::Folder => 98.0,
+            AssistArtifact::Log => 86.0,
+        }
+    }
+}
+
+/// Which lanes a mode is authorized to replace (`assist_mode_lanes`,
+/// `plug.c:3387-3397`).
+///
+/// A free function rather than a method on [`AssistMode`] because it is the one
+/// place the panel's mode vocabulary meets the candidate's lane vocabulary, and
+/// naming that seam is worth more than the convenience.
+#[must_use]
+pub fn mode_lanes(mode: AssistMode) -> Lanes {
+    match mode {
+        AssistMode::Lyrics => Lanes::lyrics_only(),
+        AssistMode::Sections => Lanes {
+            lyrics: false,
+            sections: true,
+            semantics: false,
+        },
+        AssistMode::Mimo => Lanes {
+            lyrics: false,
+            sections: false,
+            semantics: true,
+        },
+        AssistMode::All => Lanes::ALL,
+    }
+}
+
+/// What a click in the Assist panel asks the frame loop to do.
+///
+/// Deliberately payload-free and [`Copy`]: it travels through a [`Cell`] on
+/// [`AssistSession`], and a request that carried an owned path would need a
+/// `RefCell` and could then be observed half-taken. Every action's operand is
+/// either the session's own state or the current track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssistRequest {
+    /// Start the selected workflow on the current track.
+    Start,
+    /// The confirmation step's Cancel: forget the arming, start nothing.
+    DismissConfirmation,
+    /// SIGTERM the running helper's process group.
+    CancelJob,
+    /// Apply the staged candidate. The panel arms
+    /// [`AssistSession::apply_confirmation_pending`] on the first press itself;
+    /// this is only sent on the second.
+    Apply,
+    /// Drop the staged candidate, changing nothing.
+    Discard,
+    /// Open a picker for an authored lyric sheet.
+    ChooseLyricSheet,
+    /// Forget the chosen sheet, falling back to sibling discovery.
+    ClearLyricSheet,
+    /// Put an artifact path on the clipboard.
+    Copy(AssistArtifact),
+}
+
+/// Everything the Assist panel draws from and asks for, in one place.
+///
+/// This is the C's `p->assist_*` group (`plug.c:304-317`) minus the process
+/// handle, which lives with the supervisor in `musializer-runtime`. Splitting it
+/// there is what keeps this half raylib-free, OS-free and testable.
+///
+/// # Why three fields carry a `Cell`
+///
+/// A panel is drawn from a `&`-borrow of the application's state, because the
+/// drawing pair also needs `&mut` of the widget claim table and of the raylib
+/// handle. Three pieces of state are *purely* the panel's own — which workflow
+/// is selected, whether the confirmation step is armed, and whether Apply has
+/// been pressed once — and a click on them must take effect in the same frame or
+/// the button will not appear to respond.
+///
+/// So those three are [`Cell`]s the panel may write through a shared borrow,
+/// plus one more holding the [`AssistRequest`] the frame loop drains *after* the
+/// pair closes. Everything else is written only by the frame loop, which holds
+/// `&mut`. The rule is worth stating because it is the whole safety argument:
+/// **nothing that owns a process, a file or a track is behind a `Cell`.**
+///
+/// This is not `Rc<RefCell<_>>` shared ownership — there is exactly one
+/// `AssistSession` and it has one owner. It is a one-frame intent channel.
+#[derive(Clone, Debug)]
+pub struct AssistSession {
+    /// The selected workflow (`p->assist_mode`).
+    mode: Cell<AssistMode>,
+    /// The review step is armed (`p->assist_confirmation_pending`).
+    confirmation_pending: Cell<bool>,
+    /// Apply has been pressed once (`p->assist_apply_confirmation_pending`).
+    apply_confirmation_pending: Cell<bool>,
+    /// What the panel asked for this frame, drained by the frame loop.
+    request: Cell<Option<AssistRequest>>,
+
+    /// The supervised job's lifecycle (`p->assist_job_state`).
+    pub job_state: AssistJobState,
+    /// Which track the running job targets (`p->assist_track_index`).
+    pub job_track: Option<usize>,
+    /// Seconds on the application clock when the job started
+    /// (`p->assist_started_at`).
+    pub started_at: f64,
+
+    /// The staged, inert result (`p->assist_candidate`).
+    pub candidate: Option<AnalysisCandidate>,
+    /// The mode that produced it (`p->assist_candidate_mode`).
+    pub candidate_mode: AssistMode,
+    /// The track it targets (`p->assist_candidate_track_index`).
+    pub candidate_track: Option<usize>,
+    /// The first staged lyric, kept as text so the panel does not have to reach
+    /// into the candidate's document to draw one line.
+    pub candidate_first_lyric: String,
+
+    /// `p->assist_bridge_path`, `p->assist_log_path`, `p->assist_output_dir`.
+    /// Empty when this job produced no such artifact.
+    pub bridge_path: String,
+    pub log_path: String,
+    pub output_dir: String,
+    /// `p->assist_failure_detail`.
+    pub failure_detail: String,
+    /// Whether `tools/external_analysis.py` was found (`find_assist_helper`).
+    /// Resolved once at startup rather than per frame, because the C's per-frame
+    /// `FileExists` probe is a syscall inside the drawing pair.
+    pub helper_available: bool,
+}
+
+impl Default for AssistSession {
+    fn default() -> Self {
+        Self {
+            mode: Cell::new(AssistMode::Lyrics),
+            confirmation_pending: Cell::new(false),
+            apply_confirmation_pending: Cell::new(false),
+            request: Cell::new(None),
+            job_state: AssistJobState::Idle,
+            job_track: None,
+            started_at: 0.0,
+            candidate: None,
+            candidate_mode: AssistMode::Lyrics,
+            candidate_track: None,
+            candidate_first_lyric: String::new(),
+            bridge_path: String::new(),
+            log_path: String::new(),
+            output_dir: String::new(),
+            failure_detail: String::new(),
+            helper_available: false,
+        }
+    }
+}
+
+impl AssistSession {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> AssistMode {
+        self.mode.get()
+    }
+
+    /// Selecting a workflow also arms the review step, exactly as the C's mode
+    /// button does (`plug.c:2266-2269`): a mode button is not "set the mode", it
+    /// is "propose this run".
+    pub fn select_mode(&self, mode: AssistMode) {
+        self.mode.set(mode);
+        self.confirmation_pending.set(true);
+    }
+
+    #[must_use]
+    pub fn confirmation_pending(&self) -> bool {
+        self.confirmation_pending.get()
+    }
+
+    /// Used by `--ui-probe assist=confirm` and by the frame loop when a job ends.
+    pub fn set_confirmation_pending(&self, pending: bool) {
+        self.confirmation_pending.set(pending);
+    }
+
+    #[must_use]
+    pub fn apply_confirmation_pending(&self) -> bool {
+        self.apply_confirmation_pending.get()
+    }
+
+    pub fn set_apply_confirmation_pending(&self, pending: bool) {
+        self.apply_confirmation_pending.set(pending);
+    }
+
+    /// Records what the panel asked for. Last write in a frame wins, which is
+    /// correct: two Assist actions cannot be pressed in one frame, because the
+    /// widget claim table awards a release to exactly one button.
+    pub fn request(&self, request: AssistRequest) {
+        self.request.set(Some(request));
+    }
+
+    /// Drains the pending request. Called by the frame loop once the drawing
+    /// pair has closed, because every one of these blocks: a picker is modal, a
+    /// spawn touches the filesystem, an apply rewrites the track.
+    pub fn take_request(&self) -> Option<AssistRequest> {
+        self.request.take()
+    }
+
+    /// `assist_start_block` with this session's own facts.
+    #[must_use]
+    pub fn start_block(&self) -> AssistStartBlock {
+        start_block(
+            self.helper_available,
+            self.job_state,
+            self.candidate.is_some(),
+        )
+    }
+
+    /// `assist_panel_content` with this session's own facts.
+    #[must_use]
+    pub fn panel_content(&self) -> AssistPanelContent {
+        panel_content(
+            self.job_state,
+            self.confirmation_pending.get(),
+            self.candidate.is_some(),
+        )
+    }
+
+    /// Whether a helper process is still alive for this session.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.job_state.is_active()
+    }
+
+    /// Whether quitting now would lose something the user has not decided about.
+    ///
+    /// The quit guard weighs this (`plug_confirm_close`, `plug.c:7200-7250`): a
+    /// staged result is undecided work and a running job is a process tree that
+    /// will be killed. A terminal state with nothing staged is neither.
+    #[must_use]
+    pub fn blocks_close(&self) -> bool {
+        self.candidate.is_some() || self.job_state.is_active()
+    }
+
+    /// Everything a finished, discarded or applied job leaves behind, cleared.
+    ///
+    /// The artifact paths deliberately survive: the C keeps them so the Copy
+    /// buttons still work after a failure, which is the case they exist for
+    /// (`plug.c:2532-2538`).
+    pub fn clear_candidate(&mut self) {
+        self.candidate = None;
+        self.candidate_track = None;
+        self.candidate_first_lyric.clear();
+        self.confirmation_pending.set(false);
+        self.apply_confirmation_pending.set(false);
+        self.job_state = AssistJobState::Idle;
+    }
+
+    /// The path a Copy button would put on the clipboard, or `""`.
+    #[must_use]
+    pub fn artifact_path(&self, artifact: AssistArtifact) -> &str {
+        match artifact {
+            AssistArtifact::Bridge => &self.bridge_path,
+            AssistArtifact::Log => &self.log_path,
+            AssistArtifact::Folder => &self.output_dir,
+        }
+    }
+}
+
+/// How the status line should read (`plug.c:2332-2337`).
+///
+/// A tone rather than a colour, because the palette is raylib-side. The mapping
+/// is the C's `status_color` ladder and its order is load-bearing: a failure
+/// outranks a staged result, which outranks a completed-but-empty run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssistStatusTone {
+    Ink,
+    Accent,
+    Warning,
+    Danger,
+    Success,
+}
+
+/// The facts the status line is composed from.
+///
+/// A struct rather than twelve arguments, and borrowed rather than owned so the
+/// caller can hand it slices of state it already has.
+#[derive(Clone, Copy, Debug)]
+pub struct AssistStatusInputs<'a> {
+    pub session_mode: AssistMode,
+    pub job_state: AssistJobState,
+    pub confirmation_pending: bool,
+    pub helper_available: bool,
+    /// Seconds the running job has been alive. Ignored unless running.
+    pub elapsed_seconds: f64,
+    pub candidate_mode: Option<AssistMode>,
+    /// `track_display_name` of the candidate's target, the job's target and the
+    /// current track. `"missing track"` is the C's own placeholder for an index
+    /// that no longer names a track (`plug.c:2277`).
+    pub candidate_track_name: &'a str,
+    pub job_track_name: &'a str,
+    pub current_track_name: &'a str,
+    pub failure_detail: &'a str,
+    /// `GetFileName(p->assist_log_path)`, or empty.
+    pub log_file_name: &'a str,
+}
+
+/// One line naming exactly what the panel is doing (`plug.c:2274-2337`).
+///
+/// The whole `if`/`else if` ladder comes across in the C's order, because the
+/// order *is* the precedence: a staged result outranks a running job, which
+/// outranks an armed confirmation, which outranks a missing helper.
+///
+/// Two details worth not losing. The C truncates the failure detail to 250
+/// characters with `%.250s` — reproduced, because an unbounded helper message
+/// would run off the panel rather than wrap. And the elapsed clock is
+/// `%02u:%02u`, minutes and seconds with no hours, which is honest for a job
+/// that stops at 40:00.
+#[must_use]
+pub fn status_line(inputs: &AssistStatusInputs<'_>) -> (String, AssistStatusTone) {
+    let text = if let Some(mode) = inputs.candidate_mode {
+        format!(
+            "{} result  |  Validated  |  {}",
+            mode.display_name(),
+            inputs.candidate_track_name
+        )
+    } else if matches!(
+        inputs.job_state,
+        AssistJobState::Cancelling | AssistJobState::TimingOut | AssistJobState::Failing
+    ) {
+        let action = match inputs.job_state {
+            AssistJobState::TimingOut => "Stopping at the 40:00 job deadline",
+            AssistJobState::Failing => "Verifying process-tree cleanup",
+            _ => "Cancelling",
+        };
+        format!(
+            "{action} {}  |  {}",
+            inputs.session_mode.display_name(),
+            inputs.job_track_name
+        )
+    } else if inputs.job_state == AssistJobState::Running {
+        let elapsed = if inputs.elapsed_seconds.is_finite() && inputs.elapsed_seconds > 0.0 {
+            inputs.elapsed_seconds
+        } else {
+            0.0
+        };
+        format!(
+            "{}  |  {}  |  {:02}:{:02} elapsed",
+            inputs.session_mode.display_name(),
+            inputs.job_track_name,
+            (elapsed / 60.0) as u32,
+            (elapsed % 60.0) as u32,
+        )
+    } else if inputs.confirmation_pending {
+        let setup = if inputs.job_state == AssistJobState::Failed {
+            "Last launch failed; review and retry"
+        } else {
+            "Review before starting"
+        };
+        format!(
+            "{}  |  {}  |  {setup}{}",
+            inputs.session_mode.display_name(),
+            inputs.current_track_name,
+            if inputs.helper_available {
+                ""
+            } else {
+                "  |  Helper unavailable"
+            }
+        )
+    } else if !inputs.helper_available {
+        AssistStartBlock::HelperUnavailable.reason().to_string()
+    } else {
+        match inputs.job_state {
+            AssistJobState::Cancelled => {
+                "Analysis cancelled  |  Editor content unchanged".to_string()
+            }
+            AssistJobState::TimedOut => {
+                "40:00 job deadline reached  |  Editor content unchanged".to_string()
+            }
+            AssistJobState::Failed => {
+                let detail = if inputs.failure_detail.is_empty() {
+                    "The helper exited before producing a validated result."
+                } else {
+                    inputs.failure_detail
+                };
+                format!(
+                    "Analysis failed  |  {}{}{}",
+                    truncate_bytes(detail, 250),
+                    if inputs.log_file_name.is_empty() {
+                        ""
+                    } else {
+                        "  |  Log: "
+                    },
+                    inputs.log_file_name
+                )
+            }
+            AssistJobState::Succeeded => format!(
+                "{} completed  |  No editor changes found",
+                inputs.session_mode.display_name()
+            ),
+            _ => "Ready  |  Select a workflow to review its data boundary".to_string(),
+        }
+    };
+
+    let tone = if inputs.job_state == AssistJobState::Failed {
+        AssistStatusTone::Danger
+    } else if inputs.candidate_mode.is_some() {
+        AssistStatusTone::Success
+    } else if inputs.job_state == AssistJobState::Succeeded || inputs.confirmation_pending {
+        AssistStatusTone::Warning
+    } else if inputs.job_state.is_active() {
+        AssistStatusTone::Accent
+    } else {
+        AssistStatusTone::Ink
+    };
+    (text, tone)
+}
+
+/// `%.Ns` on a UTF-8 string: at most `limit` bytes, cut on a character boundary.
+///
+/// C counts bytes and would happily split a multi-byte sequence; Rust cannot, so
+/// the cut moves back to the nearest boundary. The difference is invisible for
+/// the ASCII the helper produces and is the only safe reading of the C's bound.
+fn truncate_bytes(text: &str, limit: usize) -> &str {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// The confirmation step's four buttons, in panel coordinates
+/// (`plug.c:2352-2408`).
+///
+/// `choose` and `clear` are only *drawn* when [`Self::reference_room`] is true.
+/// That is not cosmetic and the C says why at `:2371-2372`: a control painted
+/// past the panel edge still claims presses from whatever is underneath it,
+/// which is the same click-hijack this repository already paid for once in
+/// `workspace_layout`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AssistConfirmationButtons {
+    pub choose: UiRect,
+    pub clear: UiRect,
+    /// Whether `choose` and `clear` fit beside the reference label.
+    pub reference_room: bool,
+    pub start: UiRect,
+    pub cancel: UiRect,
+}
+
+/// Places them (`plug.c:2366-2387`).
+///
+/// `padding`, `gap` and `button_height` are parameters rather than constants
+/// because the palette and metrics live app-side; passing them keeps this
+/// function pure and lets a test drive the boundary case directly.
+#[must_use]
+pub fn confirmation_buttons(
+    panel: UiRect,
+    layout: &AssistUiLayout,
+    padding: f32,
+    gap: f32,
+    button_height: f32,
+) -> AssistConfirmationButtons {
+    let action_y = panel.y + layout.content_y;
+    let reference_present = layout.reference_y > 0.0;
+    let reference_y = panel.y + layout.reference_y;
+
+    let choose = UiRect::new(
+        panel.x + panel.width - padding - 152.0,
+        reference_y - 4.0,
+        152.0,
+        button_height,
+    );
+    let clear = UiRect::new(choose.x - 84.0 - gap, choose.y, 84.0, button_height);
+    let reference_room = reference_present && clear.x > panel.x + padding + 240.0;
+
+    // With the reference row present the Start button sits 40 px below it;
+    // without it, 48 px below the workflow text (`plug.c:2341`, `:2385`).
+    let start_offset = if reference_present {
+        layout.reference_y - layout.content_y + 40.0
+    } else {
+        48.0
+    };
+    let start = UiRect::new(
+        panel.x + padding,
+        action_y + start_offset,
+        144.0,
+        button_height,
+    );
+    let cancel = UiRect::new(start.x + start.width + gap, start.y, 94.0, button_height);
+
+    AssistConfirmationButtons {
+        choose,
+        clear,
+        reference_room,
+        start,
+        cancel,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status(inputs: &AssistStatusInputs<'_>) -> String {
+        status_line(inputs).0
+    }
+
+    fn idle_status<'a>() -> AssistStatusInputs<'a> {
+        AssistStatusInputs {
+            session_mode: AssistMode::Lyrics,
+            job_state: AssistJobState::Idle,
+            confirmation_pending: false,
+            helper_available: true,
+            elapsed_seconds: 0.0,
+            candidate_mode: None,
+            candidate_track_name: "missing track",
+            job_track_name: "missing track",
+            current_track_name: "kitty.mp3",
+            failure_detail: "",
+            log_file_name: "",
+        }
+    }
 
     #[test]
     fn assist_start_guards_report_one_truthful_reason() {
@@ -812,5 +1373,268 @@ mod tests {
         // C also refused a NULL path, a NULL output and a zero capacity. The last
         // two are unrepresentable here; the empty path is still refused.
         assert_eq!(lyric_sibling_path(""), None);
+    }
+
+    #[test]
+    fn a_mode_authorizes_exactly_the_lanes_it_produces() {
+        // `assist_mode_lanes` (plug.c:3387-3397). Getting one of these wrong
+        // would let a Sections run replace the lyric lane.
+        assert_eq!(mode_lanes(AssistMode::Lyrics), Lanes::lyrics_only());
+        assert_eq!(
+            mode_lanes(AssistMode::Sections),
+            Lanes {
+                lyrics: false,
+                sections: true,
+                semantics: false
+            }
+        );
+        assert_eq!(
+            mode_lanes(AssistMode::Mimo),
+            Lanes {
+                lyrics: false,
+                sections: false,
+                semantics: true
+            }
+        );
+        assert_eq!(mode_lanes(AssistMode::All), Lanes::ALL);
+        for mode in AssistMode::ALL {
+            assert!(mode_lanes(mode).is_valid(), "{mode:?} authorizes nothing");
+        }
+        // The lyric-reference control is offered exactly where the lane it feeds
+        // is authorized.
+        for mode in AssistMode::ALL {
+            assert_eq!(mode.uses_lyric_reference(), mode_lanes(mode).lyrics);
+        }
+    }
+
+    #[test]
+    fn selecting_a_workflow_proposes_it_rather_than_merely_setting_it() {
+        // plug.c:2266-2269 — a mode button arms the review step. Setting the mode
+        // silently would make the badge change with no visible next step.
+        let session = AssistSession::new();
+        assert_eq!(session.mode(), AssistMode::Lyrics);
+        assert!(!session.confirmation_pending());
+        session.select_mode(AssistMode::Mimo);
+        assert_eq!(session.mode(), AssistMode::Mimo);
+        assert!(session.confirmation_pending());
+    }
+
+    #[test]
+    fn a_request_survives_exactly_one_drain() {
+        let session = AssistSession::new();
+        assert_eq!(session.take_request(), None);
+        session.request(AssistRequest::Start);
+        session.request(AssistRequest::Copy(AssistArtifact::Log));
+        assert_eq!(
+            session.take_request(),
+            Some(AssistRequest::Copy(AssistArtifact::Log)),
+            "last write in a frame wins"
+        );
+        assert_eq!(session.take_request(), None, "and it is not replayed");
+    }
+
+    #[test]
+    fn the_quit_guard_sees_a_staged_result_and_a_live_job() {
+        let mut session = AssistSession::new();
+        assert!(!session.blocks_close());
+        session.job_state = AssistJobState::Running;
+        assert!(session.blocks_close());
+        session.job_state = AssistJobState::Failed;
+        assert!(
+            !session.blocks_close(),
+            "a finished failure is not undecided work"
+        );
+    }
+
+    #[test]
+    fn clearing_a_candidate_keeps_the_artifacts_it_left_behind() {
+        // plug.c:2532-2538: the Copy buttons exist for exactly the runs that went
+        // wrong, so discarding the result must not take the log with it.
+        let mut session = AssistSession::new();
+        session.log_path = "/tmp/a/lyrics-1.log".to_string();
+        session.bridge_path = "/tmp/a/lyrics-1.bridge.tsv".to_string();
+        session.job_state = AssistJobState::Succeeded;
+        session.candidate_track = Some(3);
+        session.set_apply_confirmation_pending(true);
+        session.clear_candidate();
+        assert_eq!(session.job_state, AssistJobState::Idle);
+        assert!(!session.apply_confirmation_pending());
+        assert_eq!(session.candidate_track, None);
+        assert_eq!(
+            session.artifact_path(AssistArtifact::Log),
+            "/tmp/a/lyrics-1.log"
+        );
+        assert_eq!(session.artifact_path(AssistArtifact::Folder), "");
+    }
+
+    #[test]
+    fn the_status_line_follows_the_oracles_precedence() {
+        // The ladder at plug.c:2274-2331, top to bottom. Each case must beat the
+        // ones below it, which is why every one of these sets the state a lower
+        // branch would also have matched.
+        let mut inputs = idle_status();
+        assert!(status(&inputs).starts_with("Ready  |  Select a workflow"));
+        assert_eq!(status_line(&inputs).1, AssistStatusTone::Ink);
+
+        inputs.helper_available = false;
+        assert_eq!(
+            status(&inputs),
+            AssistStartBlock::HelperUnavailable.reason()
+        );
+
+        inputs = idle_status();
+        inputs.confirmation_pending = true;
+        assert_eq!(
+            status(&inputs),
+            "Timed lyrics  |  kitty.mp3  |  Review before starting"
+        );
+        assert_eq!(status_line(&inputs).1, AssistStatusTone::Warning);
+        inputs.helper_available = false;
+        assert!(status(&inputs).ends_with("  |  Helper unavailable"));
+        inputs.helper_available = true;
+        inputs.job_state = AssistJobState::Failed;
+        assert!(status(&inputs).contains("Last launch failed; review and retry"));
+        assert_eq!(
+            status_line(&inputs).1,
+            AssistStatusTone::Danger,
+            "a failed launch stays red even while the retry is armed"
+        );
+
+        inputs = idle_status();
+        inputs.job_state = AssistJobState::Running;
+        inputs.job_track_name = "kitty.mp3";
+        inputs.elapsed_seconds = 605.0;
+        inputs.confirmation_pending = true;
+        assert_eq!(
+            status(&inputs),
+            "Timed lyrics  |  kitty.mp3  |  10:05 elapsed"
+        );
+        // The tone ladder and the text ladder disagree here, and that is the
+        // oracle's (`plug.c:2332-2337` puts `confirmation_pending` *above*
+        // `active`, while `:2288` puts running above pending). A job started from
+        // the review step therefore reads as running in amber, not accent, until
+        // the arming is cleared. Reproduced rather than tidied: it is only a
+        // colour, and two ladders that were "corrected" into one would change what
+        // a running job looks like.
+        assert_eq!(status_line(&inputs).1, AssistStatusTone::Warning);
+        inputs.confirmation_pending = false;
+        assert_eq!(status_line(&inputs).1, AssistStatusTone::Accent);
+        inputs.confirmation_pending = true;
+
+        inputs.job_state = AssistJobState::TimingOut;
+        assert!(status(&inputs).starts_with("Stopping at the 40:00 job deadline Timed lyrics"));
+        inputs.job_state = AssistJobState::Failing;
+        assert!(status(&inputs).starts_with("Verifying process-tree cleanup"));
+        inputs.job_state = AssistJobState::Cancelling;
+        assert!(status(&inputs).starts_with("Cancelling Timed lyrics"));
+
+        inputs.candidate_mode = Some(AssistMode::All);
+        inputs.candidate_track_name = "kitty.mp3";
+        assert_eq!(
+            status(&inputs),
+            "Full assist result  |  Validated  |  kitty.mp3",
+            "a staged result outranks everything"
+        );
+        assert_eq!(status_line(&inputs).1, AssistStatusTone::Success);
+    }
+
+    #[test]
+    fn a_terminal_run_says_what_it_left_alone() {
+        let mut inputs = idle_status();
+        inputs.job_state = AssistJobState::Cancelled;
+        assert_eq!(
+            status(&inputs),
+            "Analysis cancelled  |  Editor content unchanged"
+        );
+        inputs.job_state = AssistJobState::TimedOut;
+        assert!(status(&inputs).starts_with("40:00 job deadline reached"));
+        inputs.job_state = AssistJobState::Succeeded;
+        assert_eq!(
+            status(&inputs),
+            "Timed lyrics completed  |  No editor changes found"
+        );
+        assert_eq!(status_line(&inputs).1, AssistStatusTone::Warning);
+    }
+
+    #[test]
+    fn a_failure_names_its_log_and_is_bounded() {
+        let mut inputs = idle_status();
+        inputs.job_state = AssistJobState::Failed;
+        assert_eq!(
+            status(&inputs),
+            "Analysis failed  |  The helper exited before producing a validated result."
+        );
+        inputs.failure_detail = "whisper.cpp is not installed";
+        inputs.log_file_name = "lyrics-1234-0000000000000001.log";
+        assert_eq!(
+            status(&inputs),
+            "Analysis failed  |  whisper.cpp is not installed  |  Log: \
+             lyrics-1234-0000000000000001.log"
+        );
+        // `%.250s`: a helper that prints an essay must not run off the panel.
+        let essay = "x".repeat(400);
+        inputs.failure_detail = &essay;
+        inputs.log_file_name = "";
+        assert_eq!(status(&inputs).len(), "Analysis failed  |  ".len() + 250);
+    }
+
+    #[test]
+    fn truncation_never_splits_a_character() {
+        // C counts bytes. Rust cannot cut mid-sequence, so the bound moves back
+        // to a boundary rather than panicking.
+        let text = "aa\u{00e9}bb";
+        assert_eq!(truncate_bytes(text, 2), "aa");
+        assert_eq!(truncate_bytes(text, 3), "aa");
+        assert_eq!(truncate_bytes(text, 4), "aa\u{00e9}");
+        assert_eq!(truncate_bytes(text, 99), text);
+    }
+
+    #[test]
+    fn the_reference_controls_are_dropped_rather_than_drawn_past_the_edge() {
+        // plug.c:2371-2372. A control painted outside the panel still claims the
+        // press, which is the click hijack `workspace_layout` was written for.
+        let layout = ui_layout(948.0, AssistPanelContent::Confirmation, true);
+        let wide = confirmation_buttons(
+            UiRect::new(0.0, 100.0, 948.0, layout.required_height),
+            &layout,
+            10.0,
+            8.0,
+            36.0,
+        );
+        assert!(wide.reference_room);
+        assert!(wide.choose.x + wide.choose.width <= 948.0 - 10.0 + 0.01);
+        assert!(wide.clear.x + wide.clear.width < wide.choose.x);
+
+        // A narrow embedder: the label stays, the buttons go.
+        let narrow_layout = ui_layout(480.0, AssistPanelContent::Confirmation, true);
+        let narrow = confirmation_buttons(
+            UiRect::new(0.0, 0.0, 480.0, narrow_layout.required_height),
+            &narrow_layout,
+            10.0,
+            8.0,
+            36.0,
+        );
+        assert!(!narrow.reference_room);
+
+        // Start and Cancel never overlap, at either width.
+        for buttons in [wide, narrow] {
+            assert!(!buttons.start.overlaps(buttons.cancel));
+        }
+    }
+
+    #[test]
+    fn start_sits_below_the_reference_row_only_when_there_is_one() {
+        // Without the row the offset is a flat 48 px; with it, 40 px below the
+        // row's own top (`plug.c:2341`, `:2385`).
+        let panel = UiRect::new(0.0, 0.0, 948.0, 400.0);
+        let without = ui_layout(948.0, AssistPanelContent::Confirmation, false);
+        let with = ui_layout(948.0, AssistPanelContent::Confirmation, true);
+        let a = confirmation_buttons(panel, &without, 10.0, 8.0, 36.0);
+        let b = confirmation_buttons(panel, &with, 10.0, 8.0, 36.0);
+        assert_eq!(a.start.y, without.content_y + 48.0);
+        assert_eq!(b.start.y, with.reference_y + 40.0);
+        assert!(b.start.y > a.start.y, "the row pushes Start down, not up");
+        // And the whole block still lands inside the height the layout asked for.
+        assert!(b.start.y + b.start.height <= with.required_height + 0.01);
     }
 }

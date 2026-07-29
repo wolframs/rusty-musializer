@@ -244,7 +244,8 @@ impl Shell {
     /// draws the rows is the panel that asks for the height. A stub asks for
     /// nothing extra, which is why opening one does not shrink the preview.
     #[must_use]
-    pub fn timeline_height(&self, window_height: f32) -> f32 {
+    pub fn timeline_height(&self, window: (f32, f32), workspace: &Workspace) -> f32 {
+        let window_height = window.1;
         // The manual event row is reserved before it is measured, which is why
         // its height is a constant as well as a return value.
         //
@@ -261,10 +262,12 @@ impl Shell {
         match self.panel {
             UiPanel::None | UiPanel::Tune => events + DEFAULT_TIMELINE_HEIGHT,
             UiPanel::Export => events + WorkspaceFrame::export_timeline_height(window_height),
+            // Both full-band editors take the band to themselves, for the same
+            // arithmetic reason: their chrome budgets are the oracle's, and the
+            // oracle spends that budget on a controls row this rewrite has
+            // already moved into the toolbar.
             UiPanel::Lyrics => self.lyrics.timeline_height(window_height, 0.0),
-            // Assist is still a stub, and a panel that draws no rows must not
-            // reserve height it never uses.
-            UiPanel::Assist => events + DEFAULT_TIMELINE_HEIGHT,
+            UiPanel::Assist => self.assist_timeline_height(window, &workspace.assist),
         }
     }
 
@@ -283,7 +286,7 @@ impl Shell {
                 input.window.1,
                 self.inspector_open,
                 input.workspace.len(),
-                self.timeline_height(input.window.1),
+                self.timeline_height(input.window, input.workspace),
             )
         }
     }
@@ -1430,20 +1433,22 @@ mod tests {
         // as the fan-out landed — Lyrics and Export were on the stub side of it
         // until their agents finished — and each time this test is what said so.
         let mut shell = Shell::new();
-        let baseline = shell.timeline_height(720.0);
-        for panel in [UiPanel::Assist, UiPanel::Tune] {
-            shell.panel = panel;
-            assert_eq!(
-                shell.timeline_height(720.0),
-                baseline,
-                "{panel:?} reserved height for a panel it does not draw"
-            );
-        }
-        // Export and Lyrics both draw real rows, and ask for the room.
-        for panel in [UiPanel::Export, UiPanel::Lyrics] {
+        let workspace = crate::workspace::Workspace::new();
+        let baseline = shell.timeline_height((1280.0, 720.0), &workspace);
+        // Tune is the inspector, not a bottom panel: it draws no rows down here.
+        shell.panel = UiPanel::Tune;
+        assert_eq!(
+            shell.timeline_height((1280.0, 720.0), &workspace),
+            baseline,
+            "Tune reserved height for rows it never draws"
+        );
+        // Every panel that draws rows asks for the room. This list has grown
+        // once per agent as the fan-out landed, and each time this test is what
+        // said the old one had expired.
+        for panel in [UiPanel::Export, UiPanel::Lyrics, UiPanel::Assist] {
             shell.panel = panel;
             assert!(
-                shell.timeline_height(1080.0) > baseline,
+                shell.timeline_height((1280.0, 1080.0), &workspace) > baseline,
                 "{panel:?} draws rows but did not ask for their height"
             );
         }

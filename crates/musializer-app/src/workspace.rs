@@ -60,6 +60,7 @@ use musializer_core::scenes::ascii_field::ascii_art::Grid as AsciiGrid;
 use musializer_core::timing::render_export::RenderExportConfig;
 use musializer_core::timing::track_identity;
 use musializer_core::timing::track_timeline::Waveform;
+use musializer_core::ui::assist_ui_state::AssistSession;
 
 /// An ASCII source image bound to a track (`track.h`'s `ascii_cells`,
 /// `ascii_columns`, `ascii_rows`, `ascii_image_path`, `ascii_image_sha256`).
@@ -415,6 +416,22 @@ pub struct Workspace {
     pending_events: EventTimeline,
     /// `p->next_event_id` (`plug.c:1062`).
     pending_next_event_id: u64,
+    /// The one Assist session (Agent J). The C's sixteen `p->assist_*` fields
+    /// minus the process handle, which stays in `ui::panels::assist`.
+    ///
+    /// It rides with the track list because it names its target by index
+    /// (`p->assist_track_index`, `p->assist_candidate_track_index`), and both are
+    /// indices into `tracks`.
+    ///
+    /// Agent J preferred moving this to `Shell` — as the route editor, the
+    /// lyrics editor and the font browser all were — which would let the four
+    /// `Cell`s inside it go. Not taken, and the reason is risk rather than
+    /// disagreement: it is a sixty-call-site refactor of a panel that is
+    /// delivered, tested and captured, done at the end of a merge. The `Cell`s
+    /// guard a payload-free one-frame intent channel and nothing that owns a
+    /// process, a file or a track, so what they buy is small and what they cost
+    /// is smaller. Worth doing; not worth doing untested.
+    pub assist: AssistSession,
 }
 
 impl Default for Workspace {
@@ -426,6 +443,7 @@ impl Default for Workspace {
             current: None,
             pending_events: EventTimeline::new(),
             pending_next_event_id: 1,
+            assist: AssistSession::default(),
         }
     }
 }

@@ -138,7 +138,10 @@ impl Shell {
         // Not drawn over the lyrics editor: see `Shell::timeline_height` for why
         // the band cannot afford both, and why that is the oracle's arithmetic
         // rather than a preference.
-        if self.panel == crate::cli::UiPanel::Lyrics {
+        if matches!(
+            self.panel,
+            crate::cli::UiPanel::Lyrics | crate::cli::UiPanel::Assist
+        ) {
             return 0.0;
         }
         use geometry::{CAPTION_GAP, CLEAR_WIDTH, CONTROLS_HEIGHT, MARGIN, MARKER_WIDTHS};

@@ -3184,3 +3184,134 @@ and Import** of a `.lyrics.tsv` (`:1084-1140`) need a save/open dialog command.
 The codec underneath them, `LyricsDocument::bridge_export`/`bridge_import`, is
 ported and tested. They are drawn **disabled** rather than absent, per "missing
 beats pretending".
+#### Agent J — the Assist panel, `--analysis-bridge`, and `--ui-probe assist=`
+
+Landed: the panel and all six of its bodies, the job controller, the bridge
+importer, the `<stem>.lyrics.txt` reference row, and a differential harness for
+`assist_ui_state.c` that did not exist before. **Three seams need the integration
+owner**, and they are listed at the bottom of this note with exact diffs; without
+them the panel draws a one-line "needs a taller timeline" box rather than the
+panel, and `--ui-probe assist=` still reports "not implemented".
+
+##### The state lives on `Workspace`, and that is the fan-out's fault, not a design view
+
+The C keeps sixteen `p->assist_*` fields on its global `Plug`, whose counterpart
+here is `main.rs`'s `App`. `core::ui::assist_ui_state::AssistSession` is that
+group minus the process handle, and it is a field of `Workspace` for one reason:
+**`ShellInput` already carries `&Workspace` and `ui/shell.rs` is the file no leaf
+agent in this fan-out may edit.** Agent G got `Shell.route_editor` and
+`ShellCommand::ApplyRoute` from the owner at merge; the symmetric answer here is
+`Shell.assist` and `ShellCommand::Assist(AssistRequest)`, and moving it is
+mechanical — the diff is at the bottom. It rides with the track list at least
+honestly: there is exactly one session and both of its indices index `tracks`.
+
+Because the panel therefore sees the session through a shared borrow, four fields
+carry a `Cell`: the selected mode, the two confirmation flags, and the
+`AssistRequest` the frame loop drains after the drawing pair closes. **Nothing
+that owns a process, a file or a track is behind a `Cell`**, and `AssistRequest`
+is deliberately payload-free and `Copy` so it can never be observed half-taken.
+This is a one-frame intent channel, not `Rc<RefCell<_>>` shared ownership. Moving
+the session onto `Shell` deletes all four.
+
+##### What the differential harness found, and what it did not
+
+`tools/differential_assist_ui.sh` compares 341 decisions — every mode string, the
+whole guard ladder over every reachable combination, the six bodies, the layout at
+eight widths, the timeout arithmetic and twelve stem-rule paths — against
+`assist_ui_state.c`. It passed on the first run, so Agent F's port was already
+exact. That is worth recording rather than deleting: the harness is now the
+contract, and the stem rule in particular has to keep matching Python `pathlib`'s
+because the helper is Python and a disagreement means the panel says "found"
+about a file the run never opens.
+
+**It cannot cover the status line**, which is the panel's other big transcription
+(`plug.c:2274-2337`) and lives in `plug.c` rather than in a separable module.
+Unit tests carry it instead, and they pin the one thing that looks like a bug:
+the C's *text* ladder puts a running job above an armed confirmation (`:2288`)
+while its *colour* ladder puts the confirmation above the job (`:2332-2337`), so a
+job started from the review step reads as running but in amber. Reproduced, not
+tidied — two ladders "corrected" into one would change what a running job looks
+like.
+
+##### Four things about the port worth not rediscovering
+
+- **`--analysis-bridge` applies immediately; it does not stage.** Everything else
+  in this module stages, so this looks wrong until you notice the flag is a batch
+  entry point with no review step: a staged result would sit unapplied and the
+  exit status would be a lie (`plug.c:3689-3722`).
+- **The digest guard is passed; the duration guard is not.** `analysis_bridge::parse`
+  is given the audio SHA-256 and `None` for the duration, because the container
+  and the decoder disagree by an MP3 encoder-padding tail. That difference is
+  bounded separately at 0.25 s (`plug.c:3466-3475`), and the lyric and section
+  lanes are then re-timed onto the *decoded* duration.
+- **Lane provenance replaces in place.** Three lane kinds, eight `.musi` slots:
+  appending instead of replacing would let three runs of one workflow overflow a
+  bound the format cannot represent. And `provenance.provider` is left empty
+  because the C leaves it zeroed — inventing one writes a field the frozen C never
+  does.
+- **The workspace directory hash is the oracle's djb2 over the path plus the eight
+  bytes of the duration**, reproduced exactly rather than replaced with a Rust
+  hasher, so the Python helper's measured and model caches survive a switch
+  between the two implementations.
+
+##### The capture, and what it changed
+
+`tools/headless_check.sh` gained an Assist section: six frames at 720p and at the
+960x640 minimum, across Ready / Confirmation / Confirmation-with-a-chosen-sheet,
+with and without a helper. The report's new `assist:` line is the evidence,
+because the panel draws the same box either way; it names the resolved helper, the
+job state, which body is showing and which of the three lyric references resolved.
+The section **skips loudly** while the seams below are unapplied, rather than
+failing an otherwise-green `verify.sh`.
+
+The capture changed the design twice, and no test would have:
+
+- the first version asked for a **constant** timeline height (the tallest body,
+  once) so the preview would not jump four times during a run. The frame showed a
+  half-empty panel in the Ready state *and* a missing tracks rail, because the
+  sidebar has a floor below which it cannot host the tracks panel at all. It now
+  recomputes per body, as the C does.
+- the panel now clamps its drawn box to `required_height` rather than filling the
+  band. That is what makes the degraded, unwired state read as one honest line
+  instead of an empty box.
+
+**A trap for the next fan-out:** every agent's `tools/headless_check.sh` defaults
+to Xvfb `:77`. Two agents running it at once tear down each other's display
+mid-run, and the symptom is a stream of `SIGSEGV`s from raylib failing to reach a
+server that vanished — which looks exactly like a bug in whatever you just wrote.
+`MUSIALIZER_CAPTURE_DISPLAY=:87` is the escape hatch and it already exists.
+
+##### Still missing, and it is not mine to fix
+
+**`tools/external_analysis.py` is not in this repository.** The C ships it; here
+`find_assist_helper` finds nothing, so every workflow button is disabled and the
+status line says "Assist helper script not found in this installation." The panel
+is correct — that *is* what the oracle draws with no helper — but Assist cannot
+actually run in this build until the helper is packaged. `MUSIALIZER_ASSIST_HELPER`
+is the override, and the capture uses a stub through it so the enabled row is
+photographed too.
+
+Also deferred, each waiting on another agent: `lyric_editor_has_unsaved_draft` is
+hardcoded `false` in the two places the oracle consults it (Agent I), so the
+"finish the active lyric draft" refusal cannot fire yet; and there is no tooltip
+widget, so a disabled workflow button's reason goes on the status line instead of
+under the cursor.
+
+##### The seams
+
+1. **`ui/shell.rs`** — `timeline_height` gains the window pair and the workspace,
+   and the Assist arm calls `self.assist_timeline_height(window, &workspace.assist)`
+   (defined in `ui/panels/assist.rs`). Without it the panel gets 49 px, which is
+   below the 80 px the oracle refuses to draw at (`plug.c:3132`).
+2. **`main.rs`** — construct one `AssistController`, poll it per frame, drain
+   `workspace.assist.take_request()` after the drawing pair, honour
+   `--analysis-bridge` and `--ui-probe assist=`/`lyrics-file=`, call `shutdown()`
+   before the window closes, and print the `assist:` report line.
+3. **`main.rs`'s `confirm_close`** — two more lines, in the C's own order
+   (`plug.c:7222-7241`): `"- Apply or discard the validated Assist result."` when
+   `workspace.assist.candidate.is_some()`, and `"- Cancel the running analysis
+   job."` when `workspace.assist.is_active()`. `AssistSession::blocks_close()`
+   answers both at once for the early return.
+
+Both diffs were applied, verified by capture, and then reverted; they are in Agent
+J's final report verbatim.

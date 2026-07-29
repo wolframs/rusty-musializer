@@ -543,6 +543,181 @@ else
 fi
 fi
 
+# ---------------------------------------------------------------------------
+# The Assist panel (Agent J).
+#
+# Its three interesting states are unreachable from the panel sweep above: the
+# default body is Ready, and the confirmation step -- the one the panel exists
+# for, because it names the lyric sheet a run will use -- only appears once a
+# workflow has been proposed. `--ui-probe assist=confirm` is what reaches it,
+# and `lyrics-file=` is what makes the reference row say something other than
+# "none chosen".
+#
+# The report's `assist:` line is the evidence, because the panel draws the same
+# box whether the helper was found or not: it names the resolved helper, the job
+# state, which of the six bodies is showing, and whether anything is staged.
+# ---------------------------------------------------------------------------
+echo "=== the Assist panel ==="
+# Deliberately NOT beside the fixture: `<stem>.lyrics.txt` is what the helper
+# discovers on its own, and a sheet sitting there would make every capture read
+# "found beside the audio" whether the probe worked or not.
+ASSIST_SHEET="$OUT_DIR/authored-lyrics.txt"
+printf 'a first line\na second line\n' >"$ASSIST_SHEET"
+# A stand-in for tools/external_analysis.py, which this repository does not ship.
+# `MUSIALIZER_ASSIST_HELPER` is the oracle's own override (`plug.c:2051-2056`),
+# and without it the workflow buttons are only ever photographed disabled.
+ASSIST_HELPER="$OUT_DIR/fake_external_analysis.py"
+printf 'raise SystemExit(0)\n' >"$ASSIST_HELPER"
+
+assist_capture() {
+    # assist_capture NAME SIZE EXPECT_BODY EXPECT_HELPER [extra --ui-probe keys]
+    local name="$1" size="$2" expect="$3" helper="$4" extra="${5:-}"
+    local out="$OUT_DIR/$name.png"
+    local log="$OUT_DIR/$name.txt"
+    local spec="panel=assist,play=1"
+    [ -n "$extra" ] && spec="$spec,$extra"
+    local helper_env=("MUSIALIZER_ASSIST_HELPER=")
+    [ "$helper" = "found" ] && helper_env=("MUSIALIZER_ASSIST_HELPER=$ASSIST_HELPER")
+    set +e
+    env -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        "${helper_env[@]}" \
+        ./target/debug/musializer "$FIXTURE" \
+            --size "$size" \
+            --probe-frames 30 \
+            --probe-shot "$out" \
+            --ui-probe "$spec" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    local line
+    line="$(sed -n 's/^assist: *//p' "$log")"
+    printf '%-28s %-9s exit=%s %s\n' "$name" "$size" "$status" "${line:-<no assist line>}"
+    if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
+        echo "FAIL: $name did not produce a frame, or exited $status" >&2
+        return 1
+    fi
+    # Evidence, not existence: the body the probe asked for is the body drawn,
+    # and the helper the environment named is the helper that was resolved.
+    case "$line" in
+        *"body=$expect"*) ;;
+        *)
+            echo "FAIL: $name expected body=$expect, got: ${line:-<absent>}" >&2
+            return 1
+            ;;
+    esac
+    case "$helper:$line" in
+        "found:helper=$ASSIST_HELPER"*) ;;
+        "missing:helper=not found"*) ;;
+        *)
+            echo "FAIL: $name expected a $helper helper, got: ${line:-<absent>}" >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# The panel draws from `ui/panels/assist.rs`, but reaching its states and
+# reporting them needs the `main.rs` and `shell.rs` seams in Agent J's NOTE
+# ENTRIES section. Until those land there is no `assist:` line to assert on, and
+# a check that silently passed would be worse than one that says why it did not
+# run. This is loud rather than fatal so an unrelated `verify.sh` stays readable.
+set +e
+env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer "$FIXTURE" --size 1280x720 --probe-frames 3 \
+    >"$OUT_DIR/assist-probe.txt" 2>&1
+set -e
+ASSIST_WIRED=0
+grep -q '^assist:' "$OUT_DIR/assist-probe.txt" && ASSIST_WIRED=1
+
+if [ "$ASSIST_WIRED" -eq 0 ]; then
+    echo "SKIPPED: the report has no 'assist:' line, so the Assist panel is not"
+    echo "         reachable from a probe yet. Apply the main.rs and shell.rs"
+    echo "         seams in REWRITE_PLAN.md's '#### Agent J' note, then rerun."
+fi
+
+for size in 1280x720 960x640; do
+    [ "$ASSIST_WIRED" -eq 0 ] && break
+    # Without a helper: every workflow button disabled, and the status line says
+    # why. This is what a real installation of this build looks like today.
+    assist_capture "assist-ready-$size" "$size" Ready missing || SWEEP_FAILED=1
+    # With one: the workflow row is live and the confirmation step can arm.
+    assist_capture "assist-confirm-$size" "$size" Confirmation found \
+        "assist=confirm" || SWEEP_FAILED=1
+    # And with an authored sheet chosen, which is the row the panel exists for.
+    assist_capture "assist-sheet-$size" "$size" Confirmation found \
+        "assist=confirm,lyrics-file=$ASSIST_SHEET" || SWEEP_FAILED=1
+done
+
+# The panel that names a sheet must actually have taken it. A run that ignored
+# `lyrics-file=` would draw an identical-looking panel reading "none chosen", so
+# the report says which of the three references resolved.
+for size in 1280x720 960x640; do
+    [ "$ASSIST_WIRED" -eq 0 ] && break
+    case "$(sed -n 's/^assist: *//p' "$OUT_DIR/assist-sheet-$size.txt")" in
+        *"sheet=Chosen"*) ;;
+        *)
+            echo "FAIL: --ui-probe lyrics-file= did not select the sheet at $size" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    case "$(sed -n 's/^assist: *//p' "$OUT_DIR/assist-confirm-$size.txt")" in
+        *"sheet=None"*) ;;
+        *)
+            echo "FAIL: a run with no sheet chosen claimed one at $size" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+done
+
+# `assist=confirm` without `panel=assist` must be refused rather than quietly
+# arming a step in a panel nobody can see (`musializer.c:128-130`).
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer "$FIXTURE" \
+        --size 1280x720 --probe-frames 5 \
+        --ui-probe "panel=export,assist=confirm" \
+    >"$OUT_DIR/assist-misplaced.txt" 2>&1
+MISPLACED_STATUS=$?
+set -e
+echo "assist=confirm without panel=assist: exit=$MISPLACED_STATUS (1 expected)"
+if [ "$MISPLACED_STATUS" -eq 0 ] && [ "$ASSIST_WIRED" -eq 1 ]; then
+    echo "FAIL: assist=confirm was honoured outside the Assist panel" >&2
+    SWEEP_FAILED=1
+fi
+
+echo "=== the analysis bridge importer ==="
+# `--analysis-bridge` applies rather than staging, so the evidence is that the
+# track's lyric lane changed. A bridge for other audio must be refused, which is
+# the guard the whole format exists for.
+BRIDGE_DIR="$OUT_DIR/bridge"
+rm -rf "$BRIDGE_DIR"
+mkdir -p "$BRIDGE_DIR"
+BRIDGE_LOG="$OUT_DIR/analysis-bridge.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer "$FIXTURE" \
+        --analysis-bridge "$BRIDGE_DIR/absent.bridge.tsv" \
+        --size 1280x720 --probe-frames 5 \
+    >"$BRIDGE_LOG" 2>&1
+BRIDGE_STATUS=$?
+set -e
+echo "absent bridge: exit=$BRIDGE_STATUS (1 expected)"
+if [ "$BRIDGE_STATUS" -eq 0 ]; then
+    # Unconditional: the flag errors either way today -- unwired it reports
+    # "not implemented", wired it reports "the bridge is not there" -- so a zero
+    # exit means it silently accepted a file that does not exist.
+    echo "FAIL: --analysis-bridge accepted a file that is not there" >&2
+    SWEEP_FAILED=1
+fi
+
+
 echo "=== a routed setting ==="
 # Routes are applied after every input is resolved, and the report prints how
 # many landed on the active scene.

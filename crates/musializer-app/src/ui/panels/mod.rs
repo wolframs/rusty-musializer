@@ -30,73 +30,8 @@ pub mod fonts;
 pub mod lyrics;
 pub mod tune;
 
-use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::Face;
-use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
-
-use super::theme::{color, metric};
-use super::widgets;
-
-/// Names a surface that is not built yet, in the space it would occupy.
-///
-/// A blank region is indistinguishable from a broken one, and the panel that
-/// says "not built yet" is the one a reviewer can act on. Shared so every
-/// unfilled surface says it the same way — and so that deleting the last call to
-/// it is a visible, checkable event.
-///
-/// The geometry is not incidental. The box starts **below** the timeline strip
-/// (`strip.y + strip.height + 28.0`), because the panel and the strip share one
-/// band and the extra height an open panel asks for is the space underneath. A
-/// first attempt at this split drew into `content` directly and printed the
-/// stub over the timeline's ticks — which a capture showed and no test would
-/// have.
-pub fn stub(
-    d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
-    content: UiRect,
-    strip: UiRect,
-    title: &str,
-    detail: &str,
-) {
-    let top = strip.y + strip.height + 28.0;
-    let area = UiRect::new(
-        content.x + metric::UI_PANEL_PADDING,
-        top,
-        content.width - metric::UI_PANEL_PADDING * 2.0,
-        (content.y + content.height - top - metric::UI_PANEL_PADDING).max(0.0),
-    );
-    if area.is_empty() {
-        return;
-    }
-    widgets::fill(d, area, color::ui_raised());
-    d.draw_rectangle_lines_ex(widgets::rectangle(area), 1.0, color::ui_warning());
-    widgets::draw_text(
-        d,
-        font,
-        title,
-        area.x + 8.0,
-        area.y + 8.0,
-        metric::UI_FONT_CAPTION,
-        color::ui_warning(),
-    );
-    widgets::draw_text(
-        d,
-        font,
-        "not built yet",
-        area.x + 8.0,
-        area.y + 26.0,
-        metric::UI_FONT_LABEL,
-        color::ui_ink(),
-    );
-    if area.height > 62.0 {
-        widgets::draw_text(
-            d,
-            font,
-            detail,
-            area.x + 8.0,
-            area.y + 48.0,
-            metric::UI_FONT_CAPTION,
-            color::ui_muted(),
-        );
-    }
-}
+// `stub()` used to live here: one shared "not built yet" box, so every unfilled
+// surface said so the same way. Every panel it served — Export, Lyrics, Assist,
+// and the font browser pane — is now real, so it has no callers and is gone.
+// That deletion was the point of sharing it: the last call disappearing is a
+// visible, checkable event rather than a slow fade.

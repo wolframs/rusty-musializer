@@ -265,6 +265,20 @@ impl WorkspaceFrame {
             EXPORT_PANEL_TIMELINE_HEIGHT
         }
     }
+
+    /// The width the Assist panel's layout is measured against
+    /// (`plug.c:7674`: `workspace_width - 12.0f`).
+    ///
+    /// **Owner: Agent J.** It is the workspace width, not the window width, so an
+    /// open inspector really does narrow the panel — which at the 960 px minimum
+    /// is what drops the mode grid to two rows and makes the panel taller. That
+    /// is the case worth reproducing rather than approximating with a constant.
+    #[must_use]
+    pub fn assist_panel_width(window_width: f32, inspector_open: bool) -> f32 {
+        let widths = ShellWidths::layout(window_width, inspector_open)
+            .unwrap_or_else(|| ShellWidths::fallback(window_width));
+        (widths.workspace_width - 12.0).max(0.0)
+    }
 }
 
 /// Where the welcome screen's pieces go (`plug.c:7769-7830`).
@@ -576,6 +590,30 @@ mod tests {
         );
         // A short window floors at 150 rather than pushing the preview negative.
         assert_eq!(WorkspaceFrame::export_timeline_height(300.0), 150.0);
+    }
+
+    #[test]
+    fn the_assist_panel_is_measured_against_the_workspace_not_the_window() {
+        // `workspace_width - 12` (`plug.c:7674`). An open inspector narrows it,
+        // and at the 960 px minimum that is what pushes the mode grid to two rows
+        // — the case a constant would have hidden.
+        use musializer_core::ui::assist_ui_state::{self, AssistPanelContent};
+
+        let wide = WorkspaceFrame::assist_panel_width(1280.0, false);
+        let narrow = WorkspaceFrame::assist_panel_width(960.0, true);
+        assert!(narrow < wide);
+        assert_eq!(
+            assist_ui_state::ui_layout(wide, AssistPanelContent::Ready, false).mode_rows,
+            1
+        );
+        assert_eq!(
+            assist_ui_state::ui_layout(narrow, AssistPanelContent::Ready, false).mode_rows,
+            2,
+            "the inspector at the minimum window is what makes the grid wrap"
+        );
+        // A degenerate window still answers with a non-negative width rather
+        // than poisoning the layout with a negative one.
+        assert!(WorkspaceFrame::assist_panel_width(1.0, true) >= 0.0);
     }
 
     #[test]
