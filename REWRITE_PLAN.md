@@ -3315,3 +3315,120 @@ under the cursor.
 
 Both diffs were applied, verified by capture, and then reverted; they are in Agent
 J's final report verbatim.
+
+---
+
+#### Band 2, items M and N — the three whole-track derivations
+
+Landed in one commit, because they turned out to be the same item three times and
+the two the plan named were the two that shared a call site.
+
+##### The plan said "at track load". The `.c` says otherwise
+
+The brief for M was one line: "run `SongAtlasMap::build` at track load into
+`SceneRenderer::atlas_map`. Both sides exist and are verified; this is a call
+site." Two of those three clauses were wrong, and reading `plug.c` rather than the
+plan is what caught it.
+
+`load_timeline_waveform` (`plug.c:688-709`) runs at track load and **resets** the
+atlas map, explicitly without building it. `ensure_song_atlas_map`
+(`:712-737`) builds at the first frame that would draw it, gated on
+`p->scene.id == SCENE_SONG_ATLAS` (`:1313-1315`), and export hoists the build to
+start (`:6945-6955`).
+
+The reason is arithmetic, and it is why this is not a mechanism choice free to be
+"simplified":
+
+- A five-minute stereo track is ~26M frames. Keeping the decoded samples around so
+  the atlas can be built from them later costs ~105 MB **per open track**.
+- Building at load instead spends a second whole-file decode plus a full offline
+  analysis pass on every track opened, when most sessions never select Song Atlas
+  at all.
+
+So the C pays the load-time decode exactly once, for the envelope every track
+needs, and defers the atlas. This follows it. The preview pauses the audio stream
+across the decode and calls `UpdateMusicStream` *before* resuming (`:729-730`) —
+not politeness: the build runs inside the frame loop, the buffer drains while it
+works, and resuming a starved stream is an audible click.
+
+##### The third gap, which no item named
+
+The plan listed two scene gaps. There were three. `Track::timeline_waveform` was
+`None` at every call site and `shell.rs` said "waveform lane placeholder" in a doc
+comment — the timeline strip had been drawing an empty lane since the shell was
+written, and nothing had noticed.
+
+It is the same shape as the other two, and it is how the pattern became visible:
+**all three fed an `Option` argument that was always `None`, and all three have a
+fallback that photographs as content.** ASCII Field draws a procedural rolling
+spectrogram, Song Atlas a live idle ring, the strip a flat lane. Every capture
+passed. Nothing exited non-zero. This is now a trap entry in `AGENTS.md`, because
+the general form is worth more than the three instances: a surface with a
+legitimate empty mode cannot be checked by photographing it.
+
+The fix is a report line per derivation, naming what the surface *had*:
+
+```
+waveform:        2048 bins
+atlas:           72 slices, 3 onsets       # or "not needed by this scene"
+ascii:           54x54 glyphs from …       # or "none (procedural mode)"
+```
+
+The atlas line's two negative forms are deliberate: "attempted, unavailable"
+distinguishes a failed build from "not needed by this scene", and the headless
+check asserts *both* — that Song Atlas builds one, and that Spectrum does not. The
+second assertion is the one that would catch someone "simplifying" the laziness
+away.
+
+##### The map moved from the renderer to the track
+
+The brief named `SceneRenderer::atlas_map` as the destination. That field was a
+parity bug waiting to happen: the oracle keys the map off `track->song_atlas_map`,
+and a renderer-owned one would keep track A's terrain under track B after a switch.
+`Track` already had the field (unread, which is what `workspace.rs`'s
+`#![allow(dead_code)]` was holding open). It is now read, along with `ascii`, through
+a `TrackAssets<'_>` borrowed for one frame — so the type system rules out the
+cross-track leak rather than a reviewer having to.
+
+##### `runtime::decode`, and the third raylib-rs slice defect
+
+All three derivations need a whole file in memory, so the three loaders live in one
+new module. The `unsafe` island **moved** there from `render_job` rather than
+multiplying — `decoded_samples` is gone and its one caller now calls
+`decode::wave_samples`.
+
+While writing the image half, the safe wrapper turned out to have the family defect
+for the third time: `Image::get_image_data` calls `LoadImageColors` and forms a
+slice from the returned pointer with no null check, so an undecodable image is a
+null dereference rather than an error. Three wrappers in this family have now been
+checked and all three were wrong. `AGENTS.md`'s standing advice — assume the next
+one is wrong until checked — held.
+
+One check in `image_rgba8` is worth not deleting: `ImageFormat` is a **no-op** on a
+format it cannot convert, so the code compares `GetPixelDataSize` against
+`width * height * 4` afterwards. Without it, a format left alone at four bytes per
+pixel by luck reads as a successful conversion.
+
+##### Two tick-label divergences the envelope made visible
+
+Both were invisible while the lane was empty, and both were guesses corrected to
+the oracle once there was something behind them:
+
+- Labels go at the **top** of the lane (`plug.c:3069`), not the bottom. At the
+  bottom they compete with the loudest part of the envelope instead of its quiet
+  centre.
+- The label at **zero is skipped** (`plug.c:3066`). It is drawn at the lane's left
+  edge and clipped to half a timestamp — which is exactly what the first capture
+  showed.
+
+The playhead also gained the oracle's grab triangle (`:3109-3112`). A bare line was
+legible over an empty lane and is not over an envelope in the same accent colour,
+which is presumably why the oracle has one.
+
+##### Item O gained two required harnesses
+
+The definition of done says every pure module with a C counterpart gets a
+differential harness, and item O says every module ported without one must have
+acquired one by the gate. Wiring M and N surfaced two that had not:
+`song_atlas_map.c` and `ascii_art.c`. Both are pure and both now have observable
+output, which is what makes the omission worth fixing rather than noting.

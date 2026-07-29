@@ -127,7 +127,8 @@ comment stating why it holds. Current islands:
 | `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
 | `runtime::process::process_group` | `std`'s `Child::kill` sends only `SIGKILL`, to only one process. `SIGTERM` and process-group delivery need `kill(2)`, and `libc` is not a dependency | One block wrapping a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`. Both arguments pass by value, nothing is written through a pointer, and every caller passes a pid it owns as a live `Child` (or its negation) |
 | `runtime::font` | raylib-rs's safe `load_font_from_memory` takes the glyph set as a `&str` and passes `str::len()` — a **byte** count — as the codepoint count, so a multi-byte set makes raylib read past the array. And `GetFontDefault` is a non-owning handle that `Font`'s `Drop` would unload | Four blocks, all inside `rasterize` and `default_face`, and every face goes through them — the three built-in ones and a project's imported one. `LoadFontFromMemory` gets both lengths from the slices themselves, and raylib copies out what it needs before returning, so a heap buffer read from disk is as safe as an `include_bytes!` array; the result goes straight into `Font::from_raw`, whose `Drop` is `UnloadFont`. The default face is wrapped in `WeakFont`, whose drop is a no-op. `GenTextureMipmaps` borrows the font's own texture field so the level count is written back where `SetTextureFilter` reads it |
-| `runtime::process::render_job::decoded_samples` | raylib-rs's safe `Wave::load_samples` builds its slice as `(pointer, frameCount)` while `LoadWaveSamples` allocates `frameCount * channels` floats, so for any stereo track it hands back exactly half the decoded audio — silently | One block. The count comes from the wave's own format, the pointer is null-checked before a slice is formed, the slice is copied into a `Vec` inside the block, and the allocation goes straight back to `UnloadWaveSamples`. Nothing borrowed escapes, and the `ffi::Wave` it is called with is a bitwise copy of one whose owner outlives the call |
+| `runtime::decode::wave_samples` | raylib-rs's safe `Wave::load_samples` builds its slice as `(pointer, frameCount)` while `LoadWaveSamples` allocates `frameCount * channels` floats, so for any stereo track it hands back exactly half the decoded audio — silently | One block. The count comes from the wave's own format, the pointer is null-checked before a slice is formed, the slice is copied into a `Vec` inside the block, and the allocation goes straight back to `UnloadWaveSamples`. Nothing borrowed escapes, and the `ffi::Wave` it is called with is a bitwise copy of one whose owner outlives the call |
+| `runtime::decode::image_rgba8` | reading a decoded image's pixels needs `Image::data`, and the safe alternative — `get_image_data` — forms a slice from `LoadImageColors` without null-checking the pointer, which is the third instance of the same defect | One block. `ImageFormat` converts to `UNCOMPRESSED_R8G8B8A8` first, and the length is `GetPixelDataSize` — the same function raylib itself sizes the buffer with — checked against `width * height * 4` before the slice is formed, so a format `ImageFormat` silently declined to convert is refused rather than misread. The pointer is null-checked, the `Image` owning the allocation is still in scope (its `Drop` is `UnloadImage`), and `to_vec` copies before the block ends |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
@@ -176,9 +177,23 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
   its slice as `(pointer, frameCount)`, but `LoadWaveSamples` allocates
   `frameCount * channels` floats. For any stereo track the safe wrapper hands back
   **half the decoded audio** with no error, which in an export would spread the
-  first half of the track across the whole timeline. `render_job::decoded_samples`
+  first half of the track across the whole timeline. `decode::wave_samples`
   calls the ffi directly and takes the length from the wave's format. Assume the
   next raylib-rs wrapper that returns a slice has the same defect until checked.
+- **That assumption paid off: `Image::get_image_data` is the third one.** It forms
+  its slice from `LoadImageColors` and never null-checks the pointer, so an
+  undecodable image is a null dereference rather than an error. Three wrappers in
+  this family have now been checked and all three were wrong, which is why
+  `runtime::decode` exists as one place with all of them — the fourth belongs there
+  too. Every length in it comes from the format the loader reports.
+- **A fallback that looks like content hides an unwired feature indefinitely.**
+  Three whole-track derivations — the timeline envelope, Song Atlas's terrain and
+  the ASCII glyph grid — were drawn through an `Option` that was `None` at every
+  call site for two whole bands. Nothing failed: ASCII Field drew its procedural
+  spectrogram, Song Atlas its live idle ring, and the strip a flat lane, and each
+  photographed as a perfectly plausible picture. Captures did not catch it and
+  could not. A report line naming what the surface *had* is what catches it, so a
+  scene that can draw without its data must say which one it did.
 
 ## Before implementation work
 
@@ -318,16 +333,16 @@ look for the difference list. Parity is declared *with* these, not despite them.
 
 ## Still to be filled in
 
-Bands 0 and 1 of `REWRITE_PLAN.md`'s completion plan are landed. **Every bottom
-panel is real** — the shared "not built yet" box is deleted, and that deletion
-was designed to be exactly the checkable event it turned out to be. What remains:
+Bands 0 and 1 are landed, and so are Band 2's items M and N. **Every bottom panel
+is real** — the shared "not built yet" box is deleted — and **every scene now draws
+its own data**: the Song Atlas terrain, the ASCII glyph grid and the timeline
+envelope are all built and wired, where all three were previously drawing a
+fallback that photographed as content. What remains:
 
 - **`tools/external_analysis.py` is not in this repository.** The C ships it, so
   Assist draws correctly but cannot run: every workflow button is disabled and
   the status line says why, which is precisely what the oracle draws with no
   helper. Packaging it is real parity work.
-- Whole-track Song Atlas preprocessing at load, and `--ascii-image` → a glyph
-  grid (Band 2, items M and N).
 - The parity gate (item O) and its three open questions: the three
   version-string spellings, the `%.17g` float-spelling difference Agent L's
   harness found, and the bidirectional `.musi` round trip against the frozen C.

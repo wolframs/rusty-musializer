@@ -226,8 +226,11 @@ fn run() -> Result<std::process::ExitCode, String> {
             // scene they asked for, drawing its procedural mode.
             Action::AsciiImage(path) => {
                 match import_ascii_image(&mut app, &path) {
+                    // Not prefixed `ascii:` — that key belongs to the slice
+                    // report, and a check grepping for it would otherwise match
+                    // this line too and assert on the wrong one.
                     Ok((columns, rows)) => println!(
-                        "ascii: imported {} as {columns}x{rows} glyphs",
+                        "ascii import:    {} as {columns}x{rows} glyphs",
                         path.display()
                     ),
                     // A refused import is a failed exit status, not a warning
