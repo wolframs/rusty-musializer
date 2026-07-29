@@ -42,6 +42,7 @@ is never touched.
 | `differential_assist_ui.sh` | 341 policy decisions exact |
 | `differential_preset_store.sh` | 11 scene tokens, 44 presets, 3660 bytes of store JSON |
 | `differential_song_atlas_map.sh` | 912 slices, 29374 values, largest delta **0** |
+| `differential_ascii_art.sh` | 39263 cells, 329738 values, largest delta **0** |
 
 **This is the pattern to copy for every pure module.** A number to compare beats
 a paragraph of reasoning about whether a port is faithful, and it catches the
@@ -63,6 +64,15 @@ control also exposed a hole in the comparator itself — `nan` and `inf` *parse*
 floats in Python, and `abs(nan - nan) > tolerance` is `False`, so those columns had
 been passing unconditionally. Perturb, watch it fail, revert byte-for-byte, and
 prove the tree is clean.
+
+**Where the two sides cannot express the same rejection, pin the asymmetry as an
+expected pair.** The C takes bare pointers and Rust takes slices, so each can refuse
+an input the other cannot even represent: the C rejects a `NULL` buffer, and Rust
+rejects a 15-byte buffer for a 2x2 image that the C has no length parameter to
+notice. The `ascii_art` harness asserts those as four named pairs — including
+*deliberately not* calling the C with the truncated buffer, since that would read
+past the end — rather than quietly excluding the cases. An untested rejection path
+is where a difference hides.
 
 Adding one: put the C harness in `tests/differential/`, the Rust side in
 `crates/musializer-core/examples/` (examples need no manifest entry, so they
