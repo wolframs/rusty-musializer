@@ -2415,3 +2415,104 @@ prerequisite, and doing it mid-fan-out would risk numeric parity for no benefit.
 into the panel's content rectangle and printed it over the timeline's ticks; the
 oracle's box starts below the strip (`strip.y + strip.height + 28.0`). No test
 would have found it.
+
+#### Agent H — export panel and `--render`
+
+The export panel, the progress screen, the FFmpeg job and the fast-forward
+window are built and evidenced. **`--render` is still refused**, because wiring
+it needs `main.rs`, which the fan-out does not edit; the diff is in the handover
+below and the flag keeps reporting "not implemented" until it is applied.
+
+**What landed**
+
+- `runtime::process::render_job` — one export from decode to publication:
+  `RenderPlan` (pure frame/sample bounds), `RenderJob` (encoder, decoded audio,
+  staging WAV, frame cursor) and `RenderCompletion`. One new `pub mod` line in
+  `process/mod.rs`; nothing else in Band 1 adds a module there.
+- `ui/panels/export.rs` — the panel (`draw_export_panel`, `plug.c:2543-2659`),
+  the progress screen (`rendering_screen`'s drawing half), the destination
+  picker, and `ExportSession`, which is the export loop itself.
+- `runtime/examples/export_probe.rs` plus a new `=== the export transport ===`
+  section in `tools/headless_check.sh`.
+
+**The one claim worth stating as a number.** A windowed export is byte-identical
+to the same frames of a full render, and the check now proves it: a full run
+digests frames 30..60 and a `--window 1.0 1.0` run digests everything it
+encoded, and the two hashes match. The same export twice is also byte-identical
+at the *file* level — x264 with fixed `-preset`/`-crf` and this argv is
+reproducible, and the MP4 muxer writes no timestamp that varies. That is
+stronger than the plan asked for and it is worth keeping: if a later change
+makes only the frames match and not the file, something started writing a clock
+into the container.
+
+**A second raylib-rs slice bug, same shape as the font one.** `Wave::load_samples`
+reports its length as `frameCount` while `LoadWaveSamples` allocates
+`frameCount * channels`. On a stereo track the safe wrapper returns half the
+audio, silently — an export built on it would analyze the first half of the
+track spread across the whole timeline, which no test that checks frame *counts*
+would catch. `render_job::decoded_samples` calls the ffi directly; the row is in
+`AGENTS.md`'s inventory and the trap is in its list. **Assume the next raylib-rs
+wrapper that hands back a slice has the same defect until someone reads it.**
+
+**Divergences, all mechanism rather than behaviour**
+
+- `WaveCrop` instead of the C's aliased `staged_wave` (`plug.c:7053-7060`). The C
+  points a shallow `Wave` at the middle of its own decoded buffer; `WaveCrop`
+  reallocates. Same bytes on disk, one extra copy of the slice, and no second
+  owner of a buffer that is about to be freed.
+- The staging nonce is a module-level `AtomicU64` rather than a field on a global
+  plug struct. Same guarantee — unique within the process, paired with the pid.
+- `Encoder`'s `ExportConfig` gained no `From` impl. The conversion lives in
+  `render_job` so `core::timing::render_export` keeps no dependency on the
+  runtime crate; Agent E's boundary note asked for the conversion, not for its
+  direction.
+- The export unit tests **do not fork**. `ffmpeg.rs` has an `EXEC_LOCK` because
+  writing a script while another thread forks makes the writer's own `exec` fail
+  with `ETXTBSY`; a second module forking from outside that lock would
+  reintroduce the flake into *another agent's* tests. So the job's tests use
+  `encoder: None` and cover the plan and the cursor, the encoder's lifecycle
+  stays covered where it already was, and the real encoder is exercised end to
+  end by the probe.
+- The progress screen's "not built yet" equivalent is `PANEL_WIRED`, a `const
+  bool` in `export.rs`. While it is false the panel draws a warning line on its
+  header row and every click still emits `ShellCommand::NotImplemented`, so no
+  control silently does nothing. Flip it with the `main.rs` diff.
+
+**Two captures corrected the panel, and no test would have.** The unwired warning
+line was first drawn below the quality detail, which falls outside a 193 px panel
+at 1280x720; moved to the footer row it printed through the summary at 960x640.
+It now rides the header line, the only row in the box that is empty at every
+supported size.
+
+**What `main.rs` still owes** (the handover diff, in order)
+
+1. `ShellCommand::SetRenderConfig(RenderExportConfig)` and `::StartRender`, then
+   `export.rs`'s `dispatch` body and `PANEL_WIRED`. **No cancel command:**
+   cancellation happens on the progress screen, which `ExportSession` draws and
+   reads in the same tick, so it never travels through `main.rs`.
+2. A `let mut export: Option<ExportSession> = None;` beside `music`, and at the
+   top of the frame loop: if it is `Some`, call `tick` and `continue`, clearing
+   it when `tick` returns `true`.
+3. `--render` / `--render-window` / `--resolution` / `--fps` / `--quality`
+   replacing `unimplemented_action("--render", …)`.
+4. `confirm_close` gaining the export line the C has (`plug.c:7242-7244`).
+
+Until (1) and (2) land, the panel draws and photographs but cannot start an
+export; the transport is checked through the probe instead.
+
+**The diff was applied once, compiled, exercised and reverted.** `--render` at
+320x240/30/balanced produced a 120-frame MP4 of the four-second fixture,
+`--render-window 1.0 1.0` produced exactly 30, two full runs were byte-identical
+(`32ca1b7b…`), a 20 s fixture at 1280x720 High produced 600 frames through the
+real scene renderer, no staging file survived any of them, and the progress
+screen was photographed with `x11grab` — the only way to reach it, since
+`--probe-shot` fires after the loop an export replaces. `main.rs`, `shell.rs`
+and the two panel lines are back as they were; the handover is in Agent H's
+report.
+
+**One thing the capture of that screen fixed.** Its detail line and destination
+path were drawn in `color::ui_muted`, which is contrast-checked against the two
+*light* surfaces and reads as barely-there grey on the near-black export screen.
+They are now the oracle's own `ColorAlpha(WHITE, 0.72)` and `0.52`
+(`plug.c:7957`, `:7968`). The lesson generalises: **the palette has no dark-surface
+entries, so anything drawn over `COLOR_BACKGROUND` has to say so explicitly.**

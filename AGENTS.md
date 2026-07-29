@@ -127,6 +127,7 @@ comment stating why it holds. Current islands:
 | `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
 | `runtime::process::process_group` | `std`'s `Child::kill` sends only `SIGKILL`, to only one process. `SIGTERM` and process-group delivery need `kill(2)`, and `libc` is not a dependency | One block wrapping a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`. Both arguments pass by value, nothing is written through a pointer, and every caller passes a pid it owns as a live `Child` (or its negation) |
 | `runtime::font` | raylib-rs's safe `load_font_from_memory` takes the glyph set as a `&str` and passes `str::len()` — a **byte** count — as the codepoint count, so a multi-byte set makes raylib read past the array. And `GetFontDefault` is a non-owning handle that `Font`'s `Drop` would unload | Three blocks. `LoadFontFromMemory` gets both lengths from the slices themselves; the result goes straight into `Font::from_raw`, whose `Drop` is `UnloadFont`. The default face is wrapped in `WeakFont`, whose drop is a no-op. `GenTextureMipmaps` borrows the font's own texture field so the level count is written back where `SetTextureFilter` reads it |
+| `runtime::process::render_job::decoded_samples` | raylib-rs's safe `Wave::load_samples` builds its slice as `(pointer, frameCount)` while `LoadWaveSamples` allocates `frameCount * channels` floats, so for any stereo track it hands back exactly half the decoded audio — silently | One block. The count comes from the wave's own format, the pointer is null-checked before a slice is formed, the slice is copied into a `Vec` inside the block, and the allocation goes straight back to `UnloadWaveSamples`. Nothing borrowed escapes, and the `ffi::Wave` it is called with is a bitwise copy of one whose owner outlives the call |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
@@ -171,6 +172,13 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
   set as `&str` and passes `str::len()`, a byte count, as the count of `i32`s. Fine
   for ASCII, wrong for anything else. `runtime::font` calls the ffi directly for
   this reason; do not "simplify" it back to the safe wrapper.
+- **raylib-rs's `Wave::load_samples` miscounts samples, the same way.** It builds
+  its slice as `(pointer, frameCount)`, but `LoadWaveSamples` allocates
+  `frameCount * channels` floats. For any stereo track the safe wrapper hands back
+  **half the decoded audio** with no error, which in an export would spread the
+  first half of the track across the whole timeline. `render_job::decoded_samples`
+  calls the ffi directly and takes the length from the wave's format. Assume the
+  next raylib-rs wrapper that returns a slice has the same defect until checked.
 
 ## Before implementation work
 

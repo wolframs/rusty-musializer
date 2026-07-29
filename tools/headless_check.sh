@@ -189,6 +189,20 @@ for panel in none tune export lyrics; do
     done
 done
 
+# The export panel is built, so unlike the stubs it is held to exiting 0 and to
+# saying which panel it opened. `panel:` is the line that distinguishes "drew a
+# box" from "opened the export panel" — a stub would print the same picture size
+# and the same exit status.
+for size in 1280x720 960x640; do
+    log="$OUT_DIR/panel-export-$size.txt"
+    line="$(sed -n 's/^panel: *//p' "$log" 2>/dev/null || true)"
+    echo "export panel at $size: panel=${line:-<absent>}"
+    if [ "$line" != "export" ]; then
+        echo "FAIL: the export panel did not open at $size" >&2
+        SWEEP_FAILED=1
+    fi
+done
+
 echo "=== the welcome screen, with no track open ==="
 # The one surface every other capture in this file cannot reach, because they all
 # pass a fixture. It is also the first thing a new user sees, so a regression here
@@ -346,6 +360,113 @@ case "${OPEN_VERDICT:-absent}" in
         SWEEP_FAILED=1
         ;;
 esac
+
+echo "=== the export transport ==="
+# The two claims a screenshot cannot make, and the two `cargo test` must not
+# make either because it may not depend on an external encoder:
+#
+#   1. an export is deterministic — the same project produces the same bytes;
+#   2. a windowed export is bit-identical to the same frames of a full render,
+#      which is what the fast-forward before `render_start_frame` exists for.
+#
+# `examples/export_probe.rs` runs the real RenderJob over the real FFmpeg and
+# prints digests. FFmpeg is an expected external tool here: this script already
+# calls ffprobe above, so its absence is a failure rather than a skip.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "FAIL: ffmpeg is not on PATH; the export transport cannot be checked" >&2
+    SWEEP_FAILED=1
+else
+cargo build --quiet -p musializer-runtime --example export_probe
+EXPORT_DIR="$OUT_DIR/export"
+rm -rf "$EXPORT_DIR"
+mkdir -p "$EXPORT_DIR"
+
+run_export() {
+    # run_export NAME [extra args...]
+    local name="$1"
+    shift
+    set +e
+    env -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/examples/export_probe \
+            --audio "$FIXTURE" \
+            --out "$EXPORT_DIR/$name.mp4" \
+            "$@" \
+        >"$EXPORT_DIR/$name.txt" 2>&1
+    local status=$?
+    set -e
+    if [ "$status" -ne 0 ]; then
+        echo "FAIL: export probe $name exited $status" >&2
+        sed -n 's/^export_probe: /  /p' "$EXPORT_DIR/$name.txt" >&2 || true
+        return 1
+    fi
+    return 0
+}
+
+export_field() {
+    sed -n "s/^export: .*$1=\\([^ ]*\\).*/\\1/p" "$EXPORT_DIR/$2.txt" | head -1
+}
+
+# The fixture is FIXTURE_SECONDS long at 30 fps, and frames 30..60 are the
+# second of it that the windowed run below asks for.
+EXPECTED_FRAMES=$((FIXTURE_SECONDS * 30))
+EXPORT_OK=1
+run_export full-a --digest-range 30 60 || EXPORT_OK=0
+run_export full-b --digest-range 30 60 || EXPORT_OK=0
+run_export window --window 1.0 1.0 || EXPORT_OK=0
+
+if [ "$EXPORT_OK" -ne 1 ]; then
+    SWEEP_FAILED=1
+else
+    FULL_A_FILE="$(export_field file-sha256 full-a)"
+    FULL_B_FILE="$(export_field file-sha256 full-b)"
+    FULL_A_FRAMES="$(export_field frames-sha256 full-a)"
+    FULL_B_FRAMES="$(export_field frames-sha256 full-b)"
+    FULL_A_RANGE="$(export_field range-sha256 full-a)"
+    WINDOW_FRAMES_HASH="$(export_field frames-sha256 window)"
+    ENCODED_FULL="$(export_field encoded full-a)"
+    ENCODED_WINDOW="$(export_field encoded window)"
+    COUNTED_FULL="$(ffprobe -v error -select_streams v:0 -count_frames \
+        -show_entries stream=nb_read_frames -of csv=p=0 "$EXPORT_DIR/full-a.mp4")"
+    COUNTED_WINDOW="$(ffprobe -v error -select_streams v:0 -count_frames \
+        -show_entries stream=nb_read_frames -of csv=p=0 "$EXPORT_DIR/window.mp4")"
+
+    echo "export frames:      wrote $ENCODED_FULL, container holds $COUNTED_FULL (expected $EXPECTED_FRAMES)"
+    echo "window frames:      wrote $ENCODED_WINDOW, container holds $COUNTED_WINDOW (expected 30)"
+    echo "determinism:        $FULL_A_FILE"
+    echo "                    $FULL_B_FILE"
+    echo "fast-forward:       full[30..60] $FULL_A_RANGE"
+    echo "                    windowed     $WINDOW_FRAMES_HASH"
+
+    # Four claims, each of which a clean exit would not make.
+    if [ "$ENCODED_FULL" != "$EXPECTED_FRAMES" ] || [ "$COUNTED_FULL" != "$EXPECTED_FRAMES" ]; then
+        echo "FAIL: a full export should be exactly $EXPECTED_FRAMES frames" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$ENCODED_WINDOW" != "30" ] || [ "$COUNTED_WINDOW" != "30" ]; then
+        echo "FAIL: a one-second window at 30 fps should be exactly 30 frames" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ -z "$FULL_A_FILE" ] || [ "$FULL_A_FILE" != "$FULL_B_FILE" ] \
+        || [ "$FULL_A_FRAMES" != "$FULL_B_FRAMES" ]; then
+        echo "FAIL: the same export twice was not byte-identical" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ -z "$WINDOW_FRAMES_HASH" ] || [ "$FULL_A_RANGE" != "$WINDOW_FRAMES_HASH" ]; then
+        echo "FAIL: a windowed export did not reproduce the same frames of a full render" >&2
+        SWEEP_FAILED=1
+    fi
+    # Nothing may be left beside the destination: the staging WAV and the
+    # in-progress .part.mp4 are both hidden siblings, and a retained one is how a
+    # user finds a mystery file next week.
+    LEFTOVERS="$(find "$EXPORT_DIR" -name '.musializer-*' 2>/dev/null | head -3)"
+    if [ -n "$LEFTOVERS" ]; then
+        echo "FAIL: staging files survived the export: $LEFTOVERS" >&2
+        SWEEP_FAILED=1
+    fi
+fi
+fi
 
 echo "=== a routed setting ==="
 # Routes are applied after every input is resolved, and the report prints how

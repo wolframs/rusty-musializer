@@ -12,3 +12,6 @@ pub mod ffmpeg;
 pub mod font_import;
 pub mod process_group;
 pub mod publish;
+// Agent H. One line, added rather than requested, because a module cannot
+// register itself; nothing else in Band 1 adds a module here.
+pub mod render_job;
