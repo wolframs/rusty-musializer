@@ -1,7 +1,14 @@
 //! The interface and caption faces.
 //!
-//! Port of `load_assets`' font half (`../musializer/src/plug.c:8060-8137`) and of
-//! `ui_font` / `caption_face` (`plug.c:340-365`).
+//! Port of `load_assets`' font half (`../musializer/src/plug.c:8060-8137`), of
+//! `ui_font` / `caption_face` (`plug.c:340-365`), and of
+//! `caption_imported_font_load` / `_unload` (`plug.c:371-427`).
+//!
+//! **Four faces, which is the oracle's count.** Space Grotesk is rasterized
+//! twice — once at the interface subset and once at the full curated caption set
+//! — Alegreya once, and a project's imported face is rasterized on demand and
+//! keyed by the path it came from. [`Faces::caption`] is the seam that picks
+//! between them, and it is the whole of `caption_face`.
 //!
 //! Two things here are behaviour rather than decoration:
 //!
@@ -23,7 +30,10 @@
 //! started from the wrong directory is a failure mode worth deleting rather than
 //! reproducing. The shaders are already embedded for the same reason.
 
+use std::path::{Path, PathBuf};
+
 use musializer_core::project::caption_layout;
+use musializer_core::project::model::CaptionFace;
 use raylib::prelude::{RaylibFont, WeakFont};
 use raylib::text::Font;
 use raylib::{RaylibHandle, RaylibThread};
@@ -34,6 +44,13 @@ use raylib::{RaylibHandle, RaylibThread};
 /// and mipmaps. Rasterizing per size would be sharper and would also mean an
 /// atlas rebuild every time a row of buttons agreed on a new fitted size.
 pub const FONT_SIZE: i32 = 64;
+
+/// Largest face this build will rasterize
+/// (`CAPTION_IMPORTED_FONT_BYTE_LIMIT`, `plug.c:369`).
+///
+/// Well above any Google Fonts family — the biggest CJK entries are a few
+/// megabytes — and far below a size that would make the atlas build a hang.
+pub const IMPORTED_FACE_BYTE_LIMIT: u64 = 32 * 1024 * 1024;
 
 /// Space Grotesk Regular, SIL OFL 1.1. See `resources/fonts/SpaceGrotesk-OFL.txt`.
 const SPACE_GROTESK: &[u8] = include_bytes!("../../../resources/fonts/SpaceGrotesk-Regular.otf");
@@ -92,11 +109,23 @@ impl RaylibFont for Face {}
 pub struct Faces {
     ui: Face,
     caption: Face,
+    /// Space Grotesk at the **full** curated caption set — `p->caption_alt_font`
+    /// (`plug.c:353`). Not the interface face: that one carries only the
+    /// codepoints the chrome draws, so typesetting a caption with it would drop
+    /// Greek and Cyrillic without saying so (`plug.c:346-349`).
+    caption_alt: Face,
+    /// The project's imported face, and the path it was rasterized from
+    /// (`p->caption_imported_font` / `_path`, `plug.c:371-427`).
+    ///
+    /// The path is the *key*, not a label: `caption_imported_font_load` returns
+    /// early when it is asked for the face it already holds, which is what stops
+    /// a per-frame reload from leaking an atlas every frame.
+    imported: Option<(PathBuf, Face)>,
 }
 
 impl Faces {
-    /// Rasterizes the interface and caption faces, falling back to raylib's
-    /// default for either one that will not load.
+    /// Rasterizes the interface and both built-in caption faces, falling back to
+    /// raylib's default for any one that will not load.
     ///
     /// Never fails: a missing face is a degraded interface, not a reason to
     /// refuse to start. `load_assets` in the C has the same shape.
@@ -132,18 +161,40 @@ impl Faces {
             },
             Face::Loaded,
         );
+        // The second Space Grotesk atlas. It costs a full 2,000-codepoint atlas
+        // and it is the only thing that makes `MUSI_CAPTION_FACE_SPACE_GROTESK`
+        // mean anything: falling back to the interface face here would quietly
+        // typeset a Cyrillic lyric as missing-glyph boxes.
+        let caption_alt = rasterize(rl, thread, ".otf", SPACE_GROTESK, &caption_codepoints)
+            .map_or_else(
+                || {
+                    eprintln!(
+                        "FONT: Space Grotesk caption face unavailable; captions asking for it \
+                         will fall back to Alegreya"
+                    );
+                    default_face()
+                },
+                Face::Loaded,
+            );
 
-        Self { ui, caption }
+        Self {
+            ui,
+            caption,
+            caption_alt,
+            imported: None,
+        }
     }
 
-    /// Every face is the fallback. The constructor a headless test can build
-    /// without a GPU — and the state the application ends up in when the atlas
-    /// build fails, so it is worth being able to name.
+    /// Every built-in face is the fallback. The constructor a headless test can
+    /// build without a GPU — and the state the application ends up in when the
+    /// atlas build fails, so it is worth being able to name.
     #[must_use]
     pub fn fallback_only() -> Self {
         Self {
             ui: default_face(),
             caption: default_face(),
+            caption_alt: default_face(),
+            imported: None,
         }
     }
 
@@ -153,21 +204,109 @@ impl Faces {
         &self.ui
     }
 
-    /// The caption face: Alegreya, at the full curated glyph set
-    /// (`caption_face`'s default arm, `plug.c:361-364`).
+    /// The face a caption style asks for, with a defined fallback.
     ///
-    /// Deliberately not the interface face. The interface atlas carries only the
-    /// codepoints the chrome needs, so typesetting a caption with it would drop
-    /// Greek and Cyrillic without saying so.
+    /// This is `caption_face` (`plug.c:350-364`) exactly, including its fallback
+    /// rule: a style naming a face this build could not rasterize gets
+    /// **Alegreya**, not raylib's default. raylib's bitmap face has none of the
+    /// curated glyph coverage and would silently drop every accent.
     ///
-    /// The C has a third face — Space Grotesk at the full caption set, for
-    /// `MUSI_CAPTION_FACE_SPACE_GROTESK` — and a fourth for a project's imported
-    /// face. Both are selected by caption style, which is not wired yet, and a
-    /// 64 px atlas of 2,000 codepoints is not worth carrying for a selector
-    /// nothing can reach.
+    /// Threaded explicitly rather than reached for through a `GuiSetFont`-style
+    /// implicit face, which is what makes the fallback reachable in a test.
+    #[must_use]
+    pub fn caption_for(&self, face: CaptionFace) -> &Face {
+        match face {
+            CaptionFace::SpaceGrotesk if self.caption_alt.is_loaded() => &self.caption_alt,
+            CaptionFace::Imported => self
+                .imported
+                .as_ref()
+                .map_or(&self.caption, |(_, face)| face),
+            _ => &self.caption,
+        }
+    }
+
+    /// The caption default: Alegreya at the full curated set
+    /// (`caption_face`'s final arm, `plug.c:360-363`).
+    ///
+    /// Deliberately **not** the interface face, whose atlas carries only the
+    /// codepoints the chrome needs. A scene drawing a *project's* captions must
+    /// go through [`Faces::caption_for`] with that track's
+    /// [`CaptionFace`] instead; this is the answer for a caller that has no
+    /// style to consult, which today is the cadence scene's own overlay.
     #[must_use]
     pub fn caption(&self) -> &Face {
-        &self.caption
+        self.caption_for(CaptionFace::Alegreya)
+    }
+
+    /// The path the imported face was rasterized from, or `None`
+    /// (`p->caption_imported_font_path`).
+    #[must_use]
+    pub fn imported_path(&self) -> Option<&Path> {
+        self.imported.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    /// Rasterizes an already-verified face (`caption_imported_font_load`,
+    /// `plug.c:383-427`).
+    ///
+    /// **The caller owns the promise that these bytes matched their recorded
+    /// digest.** This only decides whether raylib can make an atlas out of them,
+    /// and answers honestly when it cannot — which is the same division of labour
+    /// the C draws, and the reason nothing here re-reads a manifest.
+    ///
+    /// Idempotent for a path already loaded, because the alternative is an atlas
+    /// leaked on every frame that asks.
+    pub fn load_imported(
+        &mut self,
+        rl: &mut RaylibHandle,
+        thread: &RaylibThread,
+        path: &Path,
+    ) -> bool {
+        if self.imported_path() == Some(path) {
+            return true;
+        }
+        self.clear_imported();
+
+        if !imported_face_size_is_usable(path) {
+            // The C's own wording (`plug.c:407`).
+            eprintln!("FONT: imported caption face is not a usable size");
+            return false;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            return false;
+        };
+        let codepoints: Vec<i32> = caption_layout::font_codepoints()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|point| point as i32)
+            .collect();
+        if codepoints.is_empty() {
+            return false;
+        }
+        // The stored name is content-addressed, so the extension is the only
+        // thing that tells raylib which loader to use. A face that arrived
+        // without one is tried as a TrueType, which is what every path that
+        // writes here produces (`plug.c:411-415`).
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| ".ttf".to_string(), |value| format!(".{value}"));
+
+        match rasterize(rl, thread, &extension, &bytes, &codepoints) {
+            None => false,
+            Some(font) => {
+                self.imported = Some((path.to_path_buf(), Face::Loaded(font)));
+                true
+            }
+        }
+    }
+
+    /// Drops the imported face and the path that named it
+    /// (`caption_imported_font_unload`, `plug.c:371-378`).
+    ///
+    /// The GPU atlas goes with it: [`Font`]'s `Drop` is `UnloadFont`.
+    pub fn clear_imported(&mut self) {
+        self.imported = None;
     }
 
     /// One line naming which faces are real, for the slice report.
@@ -175,20 +314,30 @@ impl Faces {
     /// Evidence rather than assertion: "the font loaded" is the kind of claim a
     /// clean exit cannot support, and a fallback to the 10 px bitmap face is
     /// exactly the regression that would otherwise be noticed by eye weeks later.
+    /// The imported slot reports its *path*, because "an imported face is loaded"
+    /// and "the imported face the project names is loaded" are different claims.
     #[must_use]
     pub fn describe(&self) -> String {
+        let fallback = "raylib default (FALLBACK)";
         format!(
-            "ui={}, caption={}",
+            "ui={}, caption={}, caption-alt={}, imported={}",
             if self.ui.is_loaded() {
                 "Space Grotesk"
             } else {
-                "raylib default (FALLBACK)"
+                fallback
             },
             if self.caption.is_loaded() {
                 "Alegreya"
             } else {
-                "raylib default (FALLBACK)"
+                fallback
             },
+            if self.caption_alt.is_loaded() {
+                "Space Grotesk"
+            } else {
+                fallback
+            },
+            self.imported_path()
+                .map_or_else(|| "none".to_string(), |path| path.display().to_string()),
         )
     }
 }
@@ -206,6 +355,19 @@ pub fn ui_codepoint(codepoint: u32) -> bool {
         || (0x20A0..=0x20CF).contains(&codepoint)
         || (0x2100..=0x214F).contains(&codepoint)
         || (0x2190..=0x2199).contains(&codepoint)
+}
+
+/// The size gate from `caption_imported_font_load` (`plug.c:405-409`), split out
+/// because it is the half of that function reachable without a window.
+///
+/// Zero bytes is what a worker killed mid-write leaves behind, and anything over
+/// [`IMPORTED_FACE_BYTE_LIMIT`] is what would turn an atlas build into a hang.
+/// A directory or a missing file is neither, and both answer `false`.
+#[must_use]
+pub fn imported_face_size_is_usable(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| {
+        metadata.is_file() && metadata.len() > 0 && metadata.len() <= IMPORTED_FACE_BYTE_LIMIT
+    })
 }
 
 fn default_face() -> Face {
@@ -237,8 +399,11 @@ fn rasterize(
     // SAFETY: `LoadFontFromMemory` reads `bytes.len()` bytes from `bytes` and
     // `codepoints.len()` `i32`s from `codepoints`, and both lengths are passed
     // from the slices themselves, so neither read can run past its allocation.
-    // `bytes` is a `'static` `include_bytes!` array and `codepoints` outlives the
-    // call. Passing a null glyph array with a zero count is raylib's documented
+    // Both borrows outlive the call, which is what matters here and is all that
+    // matters: `bytes` is an `include_bytes!` array for the three built-in faces
+    // and a heap `Vec` read from disk for an imported one, and raylib copies out
+    // what it needs before returning either way — it keeps no pointer into the
+    // buffer. Passing a null glyph array with a zero count is raylib's documented
     // "use the default 95-glyph set" request, which is the right answer when the
     // curated table is unavailable. The returned struct owns GPU and heap
     // allocations, which is why it is immediately handed to `Font::from_raw`
@@ -343,6 +508,80 @@ mod tests {
                 "U+{point:04X} crept into the interface set"
             );
         }
+    }
+
+    #[test]
+    fn the_caption_seam_falls_back_to_alegreya_and_never_to_the_bitmap_face() {
+        // `caption_face`'s rule (`plug.c:350-364`), asserted on the one
+        // configuration a headless test can build: nothing rasterized. Every
+        // style must still resolve, and must resolve to the *same* face — the
+        // Alegreya slot — rather than to raylib's default by a different route.
+        //
+        // This is the check that would have caught a `caption()` that returned
+        // the interface face for `SpaceGrotesk`: the interface atlas has no
+        // Greek, so a caption typeset with it silently loses glyphs.
+        let faces = Faces::fallback_only();
+        for face in [
+            CaptionFace::Alegreya,
+            CaptionFace::SpaceGrotesk,
+            CaptionFace::Imported,
+        ] {
+            assert!(
+                std::ptr::eq(faces.caption_for(face), faces.caption()),
+                "{face:?} did not fall back to the caption default"
+            );
+        }
+        assert_eq!(faces.imported_path(), None);
+        // `Imported` with nothing imported is a state the model forbids
+        // (`CaptionStyle::validate`) but the renderer still has to survive,
+        // because the style and the asset are written in two steps.
+        assert!(!faces.caption_for(CaptionFace::Imported).is_loaded());
+    }
+
+    #[test]
+    fn describe_names_all_four_slots_so_a_capture_carries_the_answer() {
+        let faces = Faces::fallback_only();
+        let line = faces.describe();
+        for key in ["ui=", "caption=", "caption-alt=", "imported="] {
+            assert!(line.contains(key), "{key} missing from {line:?}");
+        }
+        // A fallback must be loud. `tools/headless_check.sh` greps this line, and
+        // a silent revert to the 10 px bitmap face is exactly the regression it
+        // exists to catch.
+        assert!(line.contains("FALLBACK"));
+        assert!(line.contains("imported=none"));
+    }
+
+    #[test]
+    fn an_imported_face_that_is_not_a_usable_size_is_refused_without_a_window() {
+        // The size gate runs before raylib is involved at all
+        // (`plug.c:405-409`), which is what makes it testable here. A zero-byte
+        // file is what a worker killed mid-write leaves behind, and a file over
+        // the ceiling is the one that would turn the atlas build into a hang.
+        let mut faces = Faces::fallback_only();
+        let directory =
+            std::env::temp_dir().join(format!("musializer-face-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("scratch");
+        let empty = directory.join("empty.ttf");
+        std::fs::write(&empty, b"").expect("write");
+
+        // `load_imported` needs a `RaylibHandle` it can only get from a window, so
+        // the reachable half here is the refusal path — which is the half with the
+        // interesting rules. That the caller must own the digest promise is the
+        // other half, and it is the caller's test.
+        assert!(!imported_face_size_is_usable(&empty));
+        assert!(!imported_face_size_is_usable(&directory.join("absent.ttf")));
+        assert!(!imported_face_size_is_usable(&directory));
+        std::fs::write(&empty, b"not a font, but a plausible size").expect("write");
+        assert!(imported_face_size_is_usable(&empty));
+
+        // Clearing an empty slot is a no-op rather than a panic, which is what
+        // `font_service_clear_import` (`plug.c:1914-1923`) relies on: it clears
+        // unconditionally, without first asking whether anything is loaded.
+        faces.clear_imported();
+        assert_eq!(faces.imported_path(), None);
+
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
