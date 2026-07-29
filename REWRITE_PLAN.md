@@ -3003,3 +3003,184 @@ path were drawn in `color::ui_muted`, which is contrast-checked against the two
 They are now the oracle's own `ColorAlpha(WHITE, 0.72)` and `0.52`
 (`plug.c:7957`, `:7968`). The lesson generalises: **the palette has no dark-surface
 entries, so anything drawn over `COLOR_BACKGROUND` has to say so explicitly.**
+#### Agent I — the lyrics editor, and text entry
+
+Item I of Band 1. `ui/panels/lyrics.rs`, `ui/text_input.rs`,
+`core::ui::text_edit`, a `LaneCues` impl in `core::ui::lyric_lane_edit`, plus
+`tools/seed_lyric_fixture.py` and a lyrics block in `tools/headless_check.sh`.
+
+##### The scaffold was wrong about the oracle, and the correction matters
+
+`text_edit.rs`'s scaffold said "the frozen C has no text entry: lyric text
+arrives through the analysis bridge or a `.musi`, never through a keystroke."
+That is not so. `lyric_editor_ui_text_input_update` (`lyrics_editor_ui.c:177-217`)
+**is** text entry, and the rules it defines are parity rather than invention:
+characters land through `GetCharPressed`, `KEY_BACKSPACE` removes one *code
+point* by walking continuation bytes (`:166-175`), `KEY_ESCAPE` defocuses,
+`Ctrl+V` appends through `lyrics_text_append` — all or nothing, line breaks
+flattened to spaces, a notice either way — and `Ctrl+Enter` applies. Focus is
+recomputed from **every** left press, so clicking elsewhere defocuses (`:1366`).
+A chord must not also type its own letter, and characters are drained either way
+so a chord cannot leave one queued for the next frame (`:204-207`). All of that is
+reproduced.
+
+What the C does not have is a **caret you can move**. Its drawn caret is a rule at
+`MeasureTextEx(whole string).x` (`:1380-1385`) — always at the end, so there is no
+way to fix a typo in the middle of a cue except to delete back to it. Caret
+motion, selection, word motion, cut and copy, click-to-place, drag-to-select and
+the horizontal scroll that keeps the caret on screen are therefore invention, and
+this is the record of it.
+
+##### Text-entry design decisions, with no oracle behind them
+
+- **Byte offsets, never character counts.** `TextEdit` holds `caret` and `anchor`
+  as byte offsets, always on a character boundary. `set_caret` **snaps** rather
+  than asserting, because its two callers are a pixel measurement and a paste and
+  neither has any reason to produce a boundary — and a `&str` index that is not
+  one panics, which would turn a mis-measured click into a crash. A test walks a
+  buffer of two-, three- and four-byte characters and pins the reported offsets at
+  `[0, 2, 4, 6, 8, 12]`.
+- **The field cannot produce text the model would refuse.** That is the property
+  this module exists for, and it is a test:
+  `every_buffer_the_lyric_field_can_produce_is_one_the_model_accepts` sweeps
+  U+0000..U+00FF plus four higher code points through `insert_char`, and six
+  fragments through the paste path, checking every accepted result against
+  `project::lyrics::validate_text` — which is itself checked against the C.
+  **One deliberate exception, named in the test:** the empty buffer, which
+  `validate_text` refuses and the field must allow, because you cannot retype a
+  cue without first emptying it. The panel resolves it by **withholding Apply**
+  rather than offering it and answering with an error afterwards, which is why
+  `LyricEditor::draft_edit` returns an `Option`.
+- **`TextRules` is data, not a trait.** Two fields in this application
+  (`LYRIC_CUE`, and the ASCII-only `ascii_query` that the font browser's search
+  box wants) and both are described by a byte bound and one flag. A trait object
+  would buy nothing and cost the ability to compare two rule sets in a test.
+- **Tab is not typeable into a cue**, even though `validate_text` permits one in
+  *stored* text. A narrowing, not a widening, so the invariant above still holds,
+  and a single-line field with no tab stops has nothing to do with one. A tab
+  arriving in a **paste** still flattens to a space, exactly as
+  `lyrics_text_append` does it.
+- **A plain Left/Right with a live selection collapses to its near edge** rather
+  than moving one code point from the caret. Every text field gets this wrong at
+  least once, so it has its own test.
+- **A double-click in a run of separators selects that run**, not the neighbouring
+  word — the same rule applied to the other class of character, which is what
+  makes double-clicking a gap between words do something predictable. raylib has
+  no double-click signal, so a second press *inside an existing selection* is what
+  `TextField` treats as one.
+- **The apostrophe is a word character.** "don't" is one word in a lyric, and
+  ctrl+left stopping inside it would be wrong far more often than it was right.
+- **`offset_at_x` is O(n) in `measure` calls, deliberately.** It runs on a click
+  over at most 511 bytes, and a cached advance table would be one more thing that
+  can disagree with the glyphs actually on screen.
+- **The field claims no `active_button_id`.** A selection drag holding the claim
+  every button in the application needs is the stranded-claim failure this
+  codebase already knows about, so the drag is tracked in the field the way
+  `Shell::scrubbing` tracks the scrubber. The caption sliders skip the shared
+  claim for the same reason, which is also the C's choice and its stated reason.
+
+##### Two structural divergences in the panel
+
+- **The cue lane sits at the top of the lyrics panel, not inside the timeline
+  strip.** The oracle draws it in the strip and defends its presses by claiming
+  `LYRIC_LANE_GESTURE_ID` out of the shared `active_button_id` (`:255`), because
+  the scrubber's hit region covers the lane and would otherwise seek on every
+  drag. Here the scrubber is `Shell::scrubbing`, a **private** field set before
+  this panel is reached, so there is no claim to take and no way to gate it from a
+  panel file. The lane is drawn immediately below the strip instead, at the same
+  `x`, the same width and reading the same `Shell::timeline`, so every block stays
+  aligned under the ticks it belongs to.
+- **Every edit leaves as a `LyricsEdit`, not as a mutation.** The panel is handed
+  `&Workspace` and could not write to the document if it wanted to.
+  `LyricEditor::take_pending` is drained by `main.rs`, and each variant is applied
+  through the model's own validating entry point — which is what makes it safe for
+  the panel to be optimistic about geometry it clamped a frame ago. They live in
+  the panel rather than as `ShellCommand` variants because they are a panel's
+  private vocabulary and six new variants in a shared enum is a merge conflict in
+  the file every agent touches.
+  - A consequence worth knowing: Apply on a **new** cue has to bind the form to a
+    cue that does not exist yet. It works because `LyricsDocument::insert`
+    allocates `next_id` deterministically for `id == 0`, so the panel predicts the
+    id. `the_form_predicts_exactly_the_id_the_document_will_allocate` pins that;
+    if the two ever diverge, the form silently binds to nothing and the next Apply
+    writes an `Update` against a missing id.
+  - Likewise a committed lane drag moves the *draft* by the same numbers the edit
+    carries, rather than re-reading the cue the way the C does (`:347-349`),
+    because the write has not landed yet. Leaving the draft behind would make an
+    untouched form read as dirty and block every panel change.
+
+##### The chrome budget is exactly the oracle's, and a capture is why
+
+`lyrics_editor_layout::panel_height` protects the sidebar by subtracting
+`LYRIC_EDITOR_TIMELINE_CHROME` (158) from the window before deciding what the
+panel may take. **A shell that spends more than 158 above and below the panel
+quietly breaks that guarantee**, and this one did, by one pixel: at 1280x720 with
+six cues the tracks panel vanished entirely, because the sidebar came out at 300
+against a 301 floor. The lane gap is 5 px rather than 6 for that reason, and there
+is now a `const _: () = assert!(...)` tying `CHROME_ABOVE_PANEL +
+PANEL_BOTTOM_PADDING + LANE_HEIGHT + LANE_GAP` to the oracle's constant, so the
+next person to move a control there finds out at compile time. No test would have
+found it; the capture did.
+
+A second capture found the other one. Without the `Shell::timeline_height` hook
+below, the band stays at `DEFAULT_TIMELINE_HEIGHT`, the editor gets 21 px, and it
+drew its cue list, its pane toggle and its whole action row **off the bottom of
+the framebuffer** — `workspace_layout.h:7-19`'s exact defect. There is now an
+`EDITOR_MINIMUM_HEIGHT` guard: below it the panel draws one warning line and
+registers no widgets at all.
+
+##### `LaneCues for LyricsDocument`
+
+The three lines `lyric_lane_edit`'s module comment promised, written in that file
+rather than in `project::lyrics` so the model stays unaware of the interface.
+The provided `index_of`, `find` and `shift_headroom` are deliberately **not**
+overridden with the document's own faster versions: the point of the trait is that
+the lane's rules were tested against the same implementations the application
+runs, and a second `shift_headroom` is a second thing that can be wrong.
+
+##### No differential harness, and why
+
+Nothing new here is pure logic with a C counterpart. `lyrics_editor_layout` and
+`lyric_lane_edit` were already ported *with* the C's own suites transcribed;
+`text_edit` has no counterpart at all, because the caret it describes does not
+exist in the oracle. The acceptance rules that **do** come from the C are pinned
+against `project::lyrics`, which is the module a harness would have to compare
+against anyway. `project::lyrics`'s bridge export/import is still a harness worth
+having, and is unclaimed.
+
+##### The `.musi` fixture question has an answer
+
+`tools/seed_lyric_fixture.py`. `headless_check.sh` saves a project from the
+synthetic sweep and the script writes cues into it — generated, never committed,
+which is what the plan's open question asked for. Editing the file in place is
+safe because **every digest in a `.musi` is over an asset — the audio, the face,
+the licence — and never over the document**, so the lyrics array carries none. If
+that stops being true the capture says so, because the open path verifies every
+digest before a `Track` exists.
+
+##### What Agent I could not do from a panel file
+
+Three hooks are `shell.rs` and `main.rs` edits, which this fan-out does not make.
+All three were written, verified by capture, and then reverted; the code they call
+is in place and carries `#[allow(dead_code)]` with this note as the reason.
+
+1. **`Shell` needs `pub lyrics: LyricEditor`.** Until it does, the editor lives in
+   a `thread_local!` `RefCell` at the bottom of `ui/panels/lyrics.rs`, borrowed
+   for exactly one panel draw and never held across a call into another agent's
+   code. It is a deviation from this codebase's stated shape, and it is written
+   down there rather than hidden, because a deviation nobody records is one nobody
+   removes. Every method already takes the editor by reference, so closing it is
+   three lines.
+2. **`Shell::timeline_height` must answer `UiPanel::Lyrics` with
+   `LyricEditor::timeline_height`**, or the panel never gets the height its form
+   needs, at any window size.
+3. **`main.rs`** must drain `take_pending()` into the current track, call
+   `apply_probe` for `lyric=`/`style=`/`fonts=`/`lyrics-file=`, drop those four
+   from the `unimplemented_action` list, and print `describe()` as a `lyrics:`
+   report line — which `headless_check.sh` already greps for.
+
+Also open, and both are `ShellCommand` variants rather than panel work: **Export
+and Import** of a `.lyrics.tsv` (`:1084-1140`) need a save/open dialog command.
+The codec underneath them, `LyricsDocument::bridge_export`/`bridge_import`, is
+ported and tested. They are drawn **disabled** rather than absent, per "missing
+beats pretending".

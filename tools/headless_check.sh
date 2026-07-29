@@ -202,6 +202,77 @@ for size in 1280x720 960x640; do
         SWEEP_FAILED=1
     fi
 done
+echo "=== the lyrics editor, over a project that actually has cues ==="
+# The panel loop above photographs the editor over the bare sweep, which has no
+# lyrics: an empty cue list is a real state and worth a frame, but it cannot show
+# the list, the cue lane, the bound form, or the caption pane. So a project is
+# generated here and seeded with synthetic cues.
+#
+# Generated, not committed: the repository rule is synthetic fixtures only, and
+# the plan's open question about the `.musi` fixture strategy asks for exactly
+# this. See tools/seed_lyric_fixture.py for why editing the file in place is safe.
+LYRIC_DIR="$OUT_DIR/lyrics"
+rm -rf "$LYRIC_DIR"
+mkdir -p "$LYRIC_DIR"
+cp "$FIXTURE" "$LYRIC_DIR/source.wav"
+LYRIC_PROJECT="$LYRIC_DIR/cues.musi"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer "$LYRIC_DIR/source.wav" \
+        --save-project "$LYRIC_PROJECT" \
+    >"$LYRIC_DIR/save.txt" 2>&1
+LYRIC_SAVE=$?
+set -e
+if [ "$LYRIC_SAVE" -ne 0 ] || [ ! -f "$LYRIC_PROJECT" ]; then
+    echo "FAIL: could not build the lyric fixture project" >&2
+    SWEEP_FAILED=1
+else
+    python3 tools/seed_lyric_fixture.py "$LYRIC_PROJECT"
+
+    # capture() passes $FIXTURE, so these run the binary directly.
+    lyric_capture() {
+        # lyric_capture NAME SIZE PROBE
+        local name="$1" size="$2" probe="$3"
+        local out="$OUT_DIR/$name.png"
+        local log="$OUT_DIR/$name.txt"
+        set +e
+        env -u WAYLAND_DISPLAY \
+            DISPLAY="$DISPLAY_NUM" \
+            PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+            ./target/debug/musializer --project "$LYRIC_PROJECT" \
+                --size "$size" \
+                --probe-frames 30 \
+                --probe-shot "$out" \
+                --ui-probe "$probe" \
+            >"$log" 2>&1
+        local status=$?
+        set -e
+        printf '%-26s %-9s exit=%s ' "$name" "$size" "$status"
+        if [ ! -f "$out" ]; then
+            echo "FAIL (no frame)"
+            return 1
+        fi
+        # The line the picture cannot assert on its own: which pane is showing,
+        # which cue the form is bound to, and whether the draft is dirty. Absent
+        # until `main.rs` prints it — see REWRITE_PLAN.md's Agent I note.
+        echo "lyrics=$(sed -n 's/^lyrics: *//p' "$log" | head -1)"
+        return "$status"
+    }
+
+    for size in 1280x720 960x640; do
+        lyric_capture "lyrics-cues-$size" "$size" "panel=lyrics,play=1" \
+            || echo "  (note: the lyric editor needs its shell.rs and main.rs hooks; see the Agent I note)"
+        lyric_capture "lyrics-selected-$size" "$size" "panel=lyrics,lyric=3,play=1" \
+            || echo "  (note: --ui-probe lyric= needs its main.rs hook)"
+        lyric_capture "lyrics-style-$size" "$size" "panel=lyrics,style=caption,play=1" \
+            || echo "  (note: --ui-probe style= needs its main.rs hook)"
+    done
+    lyric_capture "lyrics-fonts-1280x720" 1280x720 \
+        "panel=lyrics,style=caption,fonts=consent,play=1" \
+        || echo "  (note: the font pane is Agent K's; this frame shows the seam, not the browser)"
+fi
 
 echo "=== the welcome screen, with no track open ==="
 # The one surface every other capture in this file cannot reach, because they all
