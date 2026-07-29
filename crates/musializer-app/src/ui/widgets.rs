@@ -562,6 +562,8 @@ pub mod id {
     /// panel would let a press claimed on one be released by the other across a
     /// track load.
     pub const WELCOME: u32 = 6;
+    /// The export panel's controls.
+    pub const EXPORT: u32 = 7;
 }
 
 #[cfg(test)]

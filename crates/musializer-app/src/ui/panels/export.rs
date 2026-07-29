@@ -20,11 +20,8 @@
 //!
 //! # The integration seam
 //!
-//! This fan-out does not edit `shell.rs`, so the two commands this panel wants —
-//! set the render configuration, and start — have no `ShellCommand` variants
-//! yet. [`dispatch`] is the one function that changes when they land, and
-//! [`PANEL_WIRED`] is the flag that stops the panel claiming to work before
-//! then. Everything else in this file is final.
+//! [`dispatch`] is the one function that reaches `main.rs`, through
+//! `ShellCommand::SetRenderConfig` and `::StartRender`.
 //!
 //! There is deliberately no *cancel* command: cancellation happens on the
 //! progress screen, which [`ExportSession`] draws and reads in the same tick, so
@@ -39,14 +36,7 @@
 //! handles it needs, and `main.rs`'s share is one call.
 
 // Everything below [`ExportSession`] is reachable only from `main.rs`, and this
-// fan-out does not edit `main.rs`. The allow goes with [`PANEL_WIRED`]: both
-// come off in the same merge, and a `dead_code` warning that is expected teaches
-// nothing while it hides one that is not.
-#![allow(
-    dead_code,
-    reason = "the export session's callers are the main.rs hooks Agent H hands over as a diff"
-)]
-
+// fan-out does not edit `main.rs`.
 use std::path::{Path, PathBuf};
 
 use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
@@ -75,15 +65,7 @@ use crate::scene_host;
 /// is an edit to a file six agents share. The value continues that module's
 /// sequence and the integration owner is asked to fold it in at merge; the
 /// numbers are what must not collide, and 7 is free.
-const EXPORT_WIDGETS: u32 = 7;
-
-/// Whether [`dispatch`] can reach `main.rs` yet.
-///
-/// `false` until the two `ShellCommand` variants land. While it is false the
-/// panel draws an extra line saying so, because a control that silently does
-/// nothing is worse than one that explains itself — and because a capture then
-/// shows the state honestly.
-const PANEL_WIRED: bool = false;
+const EXPORT_WIDGETS: u32 = widgets::id::EXPORT;
 
 /// What the export panel asked for this frame.
 ///
@@ -100,25 +82,11 @@ pub(crate) enum ExportRequest {
 }
 
 /// The single seam between this panel and `main.rs`.
-///
-/// **Integration owner:** replace the body with
-///
-/// ```ignore
-/// match request {
-///     ExportRequest::Configure(config) => commands.push(ShellCommand::SetRenderConfig(config)),
-///     ExportRequest::Start => commands.push(ShellCommand::StartRender),
-/// }
-/// ```
-///
-/// and flip [`PANEL_WIRED`]. Nothing else in this file changes.
 fn dispatch(request: &ExportRequest, commands: &mut Vec<ShellCommand>) {
-    if PANEL_WIRED {
-        return;
+    match request {
+        ExportRequest::Configure(config) => commands.push(ShellCommand::SetRenderConfig(*config)),
+        ExportRequest::Start => commands.push(ShellCommand::StartRender),
     }
-    let _ = request;
-    commands.push(ShellCommand::NotImplemented(
-        "Export (the panel is built; its ShellCommand wiring is not)",
-    ));
 }
 
 /// Which resolution preset a configuration matches, if any
@@ -202,22 +170,6 @@ impl Shell {
             metric::UI_FONT_HEADER,
             color::accent(),
         );
-        // The unwired notice rides the header line, right of the title, which is
-        // the only row in this box that is empty at *every* supported size. Two
-        // captures found the alternatives: below the quality detail it falls
-        // outside a 193 px panel at 1280x720, and on the footer row it prints
-        // through the summary at 960x640.
-        if !PANEL_WIRED {
-            widgets::draw_text(
-                &mut clip,
-                font,
-                "not wired: the controls below need ShellCommand::SetRenderConfig and ::StartRender",
-                boundary.x + 90.0,
-                boundary.y + padding + 4.0,
-                13.0,
-                color::ui_warning(),
-            );
-        }
         widgets::draw_text(
             &mut clip,
             font,
@@ -1130,28 +1082,23 @@ mod tests {
         assert_eq!(Quality::High.supersample_factor(), 2);
     }
 
-    /// The seam's contract while it is unwired: every request still produces a
-    /// visible command, so no control silently does nothing.
+    /// The seam's contract: every request produces a command, so no control
+    /// silently does nothing.
     #[test]
-    fn an_unwired_control_still_reports_itself() {
+    fn every_control_reaches_the_application() {
+        // A click must never be swallowed. This test replaces one Agent H wrote
+        // to assert the opposite while the panel had no `ShellCommand`s to reach
+        // — it asserted `!PANEL_WIRED` deliberately, so that flipping the flag
+        // would break it and force this rewrite rather than let a stale premise
+        // pass quietly.
         let mut commands = Vec::new();
         dispatch(&ExportRequest::Start, &mut commands);
         dispatch(
             &ExportRequest::Configure(RenderExportConfig::default()),
             &mut commands,
         );
-        assert_eq!(commands.len(), 2, "a click must never be swallowed");
-        assert!(commands
-            .iter()
-            .all(|command| matches!(command, ShellCommand::NotImplemented(_))));
-        // A constant assertion on purpose: it is the reminder that this test's
-        // premise expires, and the compiler is the only thing that will notice.
-        #[allow(
-            clippy::assertions_on_constants,
-            reason = "the flag is a merge marker; asserting it is how this test announces its own expiry"
-        )]
-        {
-            assert!(!PANEL_WIRED, "flip this with the main.rs diff, not alone");
-        }
+        assert_eq!(commands.len(), 2);
+        assert!(matches!(commands[0], ShellCommand::StartRender));
+        assert!(matches!(commands[1], ShellCommand::SetRenderConfig(_)));
     }
 }

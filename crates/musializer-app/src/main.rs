@@ -39,6 +39,7 @@ use musializer_core::project::preset_store::{
 use musializer_core::scene::routes::{RouteSources, RouteTable};
 use musializer_core::scene::settings;
 use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneId, SceneInstance, SceneSettings};
+use musializer_core::timing::render_export::{Quality as RenderQuality, RenderExportConfig};
 use musializer_core::ui::notice::Severity;
 use musializer_runtime::audio_bridge;
 use musializer_runtime::font::Faces;
@@ -54,6 +55,7 @@ mod ui;
 mod workspace;
 
 use cli::{Action, Cli, Outcome};
+use ui::panels::export::ExportSession;
 use ui::shell::{Shell, ShellCommand, ShellInput};
 use workspace::{Track, Workspace};
 
@@ -272,14 +274,6 @@ fn run() -> Result<std::process::ExitCode, String> {
     }
 
     // Step 5: the stages the rewrite has not built.
-    if options.render.is_some() {
-        unimplemented_action(
-            &mut options,
-            &mut app,
-            "--render",
-            "FFmpeg export supervision is Agent E's",
-        );
-    }
     if options.analysis_bridge.is_some() {
         unimplemented_action(
             &mut options,
@@ -295,11 +289,6 @@ fn run() -> Result<std::process::ExitCode, String> {
             "--reload-once",
             "hot reload is an explicit first-pass non-goal",
         );
-    }
-    if let Some(quality) = quality {
-        // Parsed and reported, so a script can see its value was understood even
-        // though the encoder that would honour it is Agent E's.
-        eprintln!("note: render quality {} parsed but unused", quality.name());
     }
     if let Some(probe) = options.ui_probe.as_ref() {
         // Only the parts of the probe that have a surface to open are honoured;
@@ -435,7 +424,80 @@ fn run() -> Result<std::process::ExitCode, String> {
     // `--save-project` without `--render` skips the main loop entirely
     // (`musializer.c:617`, `:637`). The save itself is Agent B's and already
     // reported above; honouring the skip keeps the exit path identical.
+    // Render configuration onto the current track (`plug_configure_render`,
+    // `plug.c:7145-7169`). Width and height move together, a zero means "leave
+    // it", and an invalid result is refused whole rather than half-applied.
+    if !options.error
+        && (options.resolution.is_some() || options.fps.is_some() || quality.is_some())
+    {
+        let mut config = app
+            .workspace
+            .current()
+            .map_or_else(RenderExportConfig::default, |track| track.render_config);
+        if let Some((width, height)) = options.resolution {
+            if width != 0 && height != 0 {
+                config.width = width;
+                config.height = height;
+            }
+        }
+        if let Some(fps) = options.fps {
+            if fps != 0 {
+                config.fps = fps;
+            }
+        }
+        if let Some(named) = quality {
+            config.set_quality(match named {
+                cli::Quality::Balanced => RenderQuality::Balanced,
+                cli::Quality::High => RenderQuality::High,
+                cli::Quality::Master => RenderQuality::Master,
+            });
+        }
+        // The name the *command line* used, so a rejection names the flag value
+        // the user typed rather than the enum it resolved to.
+        let requested = quality.map_or("unchanged", cli::Quality::name);
+        match config.validate() {
+            Ok(()) => {
+                if let Some(track) = app.workspace.current_mut() {
+                    track.render_config = config;
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "warning: invalid render configuration ({}x{} at {} fps, quality {requested}): {error}",
+                    config.width, config.height, config.fps
+                );
+                options.error = true;
+            }
+        }
+    }
+
+    let mut export: Option<ExportSession> = None;
+    // `--render` runs the export and exits (`musializer.c:650`), where an export
+    // started from the panel returns to the workspace.
+    let exit_after_render = options.render.is_some();
     let mut running = !options.exit_after_save();
+    if let Some(destination) = options.render.clone() {
+        if options.error {
+            // An earlier stage already failed; rendering on top of it would
+            // produce a file the command line did not describe.
+            running = false;
+        } else {
+            export = ExportSession::begin(
+                &mut rl,
+                &thread,
+                &audio,
+                music.as_ref(),
+                &mut app,
+                &mut analyzer,
+                &destination,
+                options.render_window,
+            );
+            if export.is_none() {
+                running = false;
+                options.error = true;
+            }
+        }
+    }
     // Set once the close guard has warned with no dialog available; see
     // `confirm_close`.
     let mut close_warned = false;
@@ -444,8 +506,30 @@ fn run() -> Result<std::process::ExitCode, String> {
         // flag as it reads it (`rcore_desktop_glfw.c`), which is what lets the
         // C's `WindowShouldClose() && plug_confirm_close()` refuse a quit without
         // re-asking every frame afterwards (`musializer.c:638`).
-        if rl.window_should_close() && confirm_close(&mut app, &mut close_warned) {
+        if rl.window_should_close() && confirm_close(&mut app, export.is_some(), &mut close_warned)
+        {
             break;
+        }
+        // An export replaces the frame loop while it runs: it owns the window,
+        // the analyzer and the scene for the duration, and draws its own progress
+        // screen (`musializer.c:641-651`).
+        if export.is_some() {
+            let finished = export.as_mut().expect("just checked").tick(
+                &mut rl,
+                &thread,
+                music.as_ref(),
+                &mut app,
+                &mut analyzer,
+                &mut renderer,
+                &fonts,
+            );
+            if finished {
+                export = None;
+                if exit_after_render {
+                    running = false;
+                }
+            }
+            continue;
         }
         if let Some(music) = music.as_ref() {
             music.update_stream();
@@ -691,6 +775,26 @@ fn run() -> Result<std::process::ExitCode, String> {
                                     |name| name.to_string_lossy().into_owned()
                                 )
                             ),
+                        );
+                    }
+                }
+                ShellCommand::SetRenderConfig(config) => {
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.render_config = config;
+                        track.mark_dirty(rl.get_time());
+                    }
+                }
+                ShellCommand::StartRender => {
+                    if let Some(destination) = ui::panels::export::ask_for_destination(&mut app) {
+                        export = ExportSession::begin(
+                            &mut rl,
+                            &thread,
+                            &audio,
+                            music.as_ref(),
+                            &mut app,
+                            &mut analyzer,
+                            &destination,
+                            None,
                         );
                     }
                 }
@@ -1374,7 +1478,7 @@ fn mark_current_track_dirty(app: &mut App, now_seconds: f64) {
 /// refuses the **first** request and says why, in the tray and on stderr, and
 /// honours the second. That is finite, it never loses work without having said
 /// so, and it is the smallest invention that satisfies both halves.
-fn confirm_close(app: &mut App, already_warned: &mut bool) -> bool {
+fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> bool {
     let dirty = app
         .workspace
         .tracks()
@@ -1385,7 +1489,7 @@ fn confirm_close(app: &mut App, already_warned: &mut bool) -> bool {
     // The other five conditions the C weighs — an open lyric draft, an open route
     // edit, staged Assist suggestions, a running analysis and a running export —
     // belong to Agents I, G, J and H. Each adds a line to this list.
-    if dirty == 0 && !route_edit {
+    if dirty == 0 && !route_edit && !exporting {
         return true;
     }
     // The C builds this list line by line from six conditions (`plug.c:7222-7247`).
@@ -1394,6 +1498,9 @@ fn confirm_close(app: &mut App, already_warned: &mut bool) -> bool {
     let mut items = String::new();
     if route_edit {
         items.push_str("\n- Apply or discard the open audio-route edit.");
+    }
+    if exporting {
+        items.push_str("\n- Cancel the running video export.");
     }
     if dirty > 0 {
         items.push_str(&format!(

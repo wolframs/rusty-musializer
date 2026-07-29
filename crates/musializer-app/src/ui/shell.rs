@@ -85,6 +85,15 @@ pub enum ShellCommand {
     /// silently ignored, so the notice tray can say so by name — a stub that
     /// says nothing is indistinguishable from a bug.
     NotImplemented(&'static str),
+    /// The export panel's preset rows write through the current track
+    /// (`plug.c:2569-2572`).
+    SetRenderConfig(musializer_core::timing::render_export::RenderExportConfig),
+    /// Ask for a destination and start an export (`plug.c:7120-7138`).
+    ///
+    /// There is deliberately no matching Cancel: cancellation is read on the
+    /// progress screen, which the session draws and answers in the same tick, so
+    /// it never has to travel through `main.rs`.
+    StartRender,
     /// The manual event row's outcome (`plug.c:2834-2971`).
     ManualEvent(ManualEventAction),
     /// The shared preset block's outcome (`plug.c:5979-6100`).
