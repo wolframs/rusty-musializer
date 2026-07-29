@@ -470,6 +470,126 @@ pub fn merge(
     Ok((imported, skipped))
 }
 
+// ---------------------------------------------------------------------------
+// The shared preset block's policy (Agent L).
+//
+// `plug.c:5979-6100`, with the drawing taken out. The block lives inside the
+// tuning inspector rather than in a panel of its own, and its whole visible
+// behaviour — which preset is selected, what the Save button is called, when
+// Delete is armed — is decided here so a test can drive it.
+// ---------------------------------------------------------------------------
+
+/// What the preset block needs to draw one frame.
+///
+/// Borrowed and read-only, like everything else the shell is handed: the block
+/// returns [`PresetAction`]s and the application is what mutates the library.
+#[derive(Clone, Copy, Debug)]
+pub struct SharedPresetsView<'a> {
+    pub library: &'a PresetLibrary,
+    /// The selected index *within the active scene*, before clamping. Pass it
+    /// through [`clamp_selection`] before indexing.
+    pub selected: usize,
+    /// False when the store file was rejected at startup. Mutations are then
+    /// refused rather than overwriting a recoverable file
+    /// (`shared_presets_editable`, `plug.c:4200-4209`).
+    pub editable: bool,
+    /// Whether `Delete` is armed for this exact (scene, selection) pair.
+    ///
+    /// The caller disarms it when either changes, which is `plug.c:5983-5987`:
+    /// an armed Delete must not survive paging to a different preset, or the
+    /// second click would remove something the user never armed.
+    pub delete_armed: bool,
+}
+
+/// What the preset block asks the application to do.
+///
+/// Every index is the one the block was looking at when it was clicked, so a
+/// selection that moved between the frame and the handler cannot delete the
+/// wrong preset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresetAction {
+    /// `<` and `>` (`plug.c:6020-6027`).
+    Select(usize),
+    /// `Load`: apply the preset's values to the editable settings
+    /// (`plug.c:6053-6059`).
+    Apply(usize),
+    /// `Save` / `Save new` (`scene_settings_save_new_preset`, `plug.c:4226-4237`).
+    SaveNew,
+    /// `Update`: replace the selected preset's values with the current ones
+    /// (`plug.c:6060-6066`).
+    Replace(usize),
+    /// First click on `Delete` (`plug.c:6073-6076`).
+    ArmDelete(usize),
+    /// Second click (`plug.c:6077-6085`).
+    Delete(usize),
+}
+
+/// `plug.c:5981-5982`: an empty scene selects zero, and a selection past the end
+/// falls back to the last preset rather than indexing out of range.
+#[must_use]
+pub fn clamp_selection(count: usize, selected: usize) -> usize {
+    if count == 0 {
+        0
+    } else {
+        selected.min(count - 1)
+    }
+}
+
+/// `<` and `>` (`plug.c:6021`, `:6026`): wraps in both directions.
+///
+/// Wrapping rather than stopping at the ends is deliberate in the C — with at
+/// most eight presets per scene, a pair of arrows that dead-ends is a pair of
+/// arrows the user has to look at to use.
+#[must_use]
+pub fn step_selection(count: usize, selected: usize, forward: bool) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let selected = clamp_selection(count, selected);
+    if forward {
+        (selected + 1) % count
+    } else {
+        (selected + count - 1) % count
+    }
+}
+
+/// Where the selection lands after a removal (`plug.c:6081-6084`).
+///
+/// The C only steps back when the old index is now past the end, which keeps the
+/// selection on the preset that *moved into* the deleted slot — deleting down a
+/// list therefore stays put rather than walking backwards.
+#[must_use]
+pub fn selection_after_remove(remaining: usize, selected: usize) -> usize {
+    if selected > 0 && selected >= remaining {
+        selected - 1
+    } else {
+        selected
+    }
+}
+
+/// The name a new preset gets (`plug.c:4232-4234`).
+///
+/// The allocator's *next* id, not the count: two presets are never named the
+/// same even after one in the middle is deleted, because ids are never reused.
+#[must_use]
+pub fn generated_name(library: &PresetLibrary) -> String {
+    format!("Preset {}", library.next_id())
+}
+
+/// The `Save` button's label (`save_label`, `plug.c:6047-6048`).
+///
+/// `"Full"` rather than a disabled `"Save"` because a quarter-width cell
+/// ellipsized `"Save new"` to `"Save ne…"`, and a word that says *why* the button
+/// is inert beats a truncated one that does not.
+#[must_use]
+pub fn save_label(count: usize) -> &'static str {
+    if count >= PRESETS_PER_SCENE {
+        "Full"
+    } else {
+        "Save"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,5 +952,62 @@ mod tests {
         assert_eq!(after.snapshot, replacement);
         assert!(!library.replace_snapshot(SceneId::Loom, 9, &replacement));
         assert!(!library.replace_snapshot(SceneId::Loom, 0, &SettingsSnapshot::default()));
+    }
+
+    #[test]
+    fn the_selection_clamps_rather_than_indexing_past_the_end() {
+        assert_eq!(clamp_selection(0, 0), 0);
+        assert_eq!(clamp_selection(0, 5), 0);
+        assert_eq!(clamp_selection(3, 0), 0);
+        assert_eq!(clamp_selection(3, 2), 2);
+        assert_eq!(clamp_selection(3, 9), 2);
+    }
+
+    #[test]
+    fn the_arrows_wrap_in_both_directions() {
+        assert_eq!(step_selection(3, 0, false), 2);
+        assert_eq!(step_selection(3, 2, true), 0);
+        assert_eq!(step_selection(3, 1, true), 2);
+        assert_eq!(step_selection(3, 1, false), 0);
+        // An out-of-range selection is clamped before it steps, so a stale index
+        // cannot walk further out.
+        assert_eq!(step_selection(3, 99, true), 0);
+        assert_eq!(step_selection(0, 4, true), 0);
+        assert_eq!(step_selection(0, 4, false), 0);
+    }
+
+    #[test]
+    fn removing_keeps_the_selection_on_the_preset_that_moved_up() {
+        // Deleting index 1 of three leaves two, and index 1 is still legal: it
+        // now names what used to be index 2 (plug.c:6081-6084).
+        assert_eq!(selection_after_remove(2, 1), 1);
+        // Deleting the last one has to step back.
+        assert_eq!(selection_after_remove(1, 1), 0);
+        assert_eq!(selection_after_remove(0, 0), 0);
+    }
+
+    #[test]
+    fn a_new_presets_name_comes_from_the_allocator_not_the_count() {
+        let mut library = PresetLibrary::new();
+        assert_eq!(generated_name(&library), "Preset 1");
+        library
+            .push(SceneId::Loom, "one", &snapshot_of(SceneId::Loom, 0.1))
+            .unwrap();
+        assert_eq!(generated_name(&library), "Preset 2");
+        // Removing does not lower the allocator, so the next name is still 3 —
+        // which is what keeps two presets from ever sharing a name.
+        library.remove(SceneId::Loom, 0);
+        assert_eq!(generated_name(&library), "Preset 2");
+        library
+            .push(SceneId::Loom, "two", &snapshot_of(SceneId::Loom, 0.2))
+            .unwrap();
+        assert_eq!(generated_name(&library), "Preset 3");
+    }
+
+    #[test]
+    fn the_save_button_says_full_rather_than_ellipsizing() {
+        assert_eq!(save_label(0), "Save");
+        assert_eq!(save_label(PRESETS_PER_SCENE - 1), "Save");
+        assert_eq!(save_label(PRESETS_PER_SCENE), "Full");
     }
 }

@@ -47,7 +47,30 @@ impl EventType {
             _ => None,
         }
     }
+
+    /// The lane colour for this kind (`event_type_color`, `plug.c:1521-1530`).
+    ///
+    /// Packed `0xRRGGBBAA` and raylib-free for the same reason the workspace
+    /// palette is (`ui_palette.h`'s header note): a colour that exists only as a
+    /// raylib `Color` is invisible to a contrast sweep. These live *here* rather
+    /// than in the application's `theme` because they identify an **event type**,
+    /// not a piece of chrome — the manual event row, the timeline markers and the
+    /// lyric lane all have to agree about what colour a cue is, and the only
+    /// thing all three share is this enum.
+    #[must_use]
+    pub const fn rgba(self) -> u32 {
+        match self {
+            EventType::Lyric => 0xEC59_BEFF,
+            EventType::Semantic => 0xF2BE_42FF,
+            EventType::Cue => 0x3FDC_ABFF,
+            EventType::Custom => 0x976F_F1FF,
+        }
+    }
 }
+
+/// The colour an unrecognized event type draws in: raylib's `GRAY`, which is the
+/// C's `default:` arm (`plug.c:1528`).
+pub const UNKNOWN_EVENT_RGBA: u32 = 0x8282_82FF;
 
 /// One recorded event (`event_timeline.h:21-28`).
 ///

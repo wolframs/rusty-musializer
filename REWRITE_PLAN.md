@@ -2826,3 +2826,80 @@ photographs the browsing body with a generated list. Assert on the
 `font browser:` report line, not on the pixels: `consent=not asked` versus
 `consent=granted` and `families=N` are the two facts a screenshot cannot prove on
 its own.
+#### Agent L — the manual event row and the preset UI
+
+Both surfaces are drawn and their policy is ported, tested and differentially
+verified. **Neither is reachable yet**: `event_row` and `preset_block` are
+complete functions with no call site, because their callers are `shell.rs` and
+`tune.rs` and a leaf agent edits neither. The wiring is a `ShellCommand` pair, a
+`ShellInput` field and three call sites, all listed in Agent L's report.
+
+**The C's event row is not this rewrite's event row, deliberately.** The oracle
+seats `Lyrics` / `Assist` / `Export` in it (`plug.c:2830`); this rewrite already
+seats them in the toolbar. Drawing them in both places would put two controls in
+charge of one open panel — which is the exact defect the C's own comment at
+`plug.c:2884-2887` records having fixed. So the row is the three marker buttons
+and `Clear manual`, laid out through the same `TimelineBand` at the same widths.
+
+**The undo buffer is per track, where the C keeps one global pair.** In the
+frozen C you can clear track A's lane, select track B, click `Undo clear`, and
+`event_timeline_replace(&track->manual_events, &p->event_undo)` moves A's markers
+onto B (`plug.c:2944`). Nothing in a `.musi` distinguishes the two designs, so by
+`AGENTS.md`'s parity test it is a mechanism choice and the safe mechanism wins.
+`Track` therefore carries one `ManualClear`, whose whole state machine lives in
+`project::event_timeline` and is tested there against the `.c`.
+
+**The honesty is a caption, not a tooltip.** A manual marker carries one value,
+so `semantic_lane::sample` — which requires the four-value analysis payload —
+skips it and only Constellation's generic event path reads it. The C says so on
+hover; this rewrite has no tooltip widget, and a claim only a hover can reveal is
+a claim no capture can review, so the row prints it under the buttons together
+with the live marker count. That count is what a headless check should assert on:
+it separates "the row drew" from "the row recorded".
+
+**`--event` needed a pending lane, not a track.** The command-line actions run
+before an input is resolved (`main.rs` step 3), so every `--event` lands with no
+track open. `Workspace` now carries `p->event_timeline`/`p->next_event_id`'s
+equivalent and hands it to the first track that becomes current, emptying it —
+`plug.c:844-851` exactly, including that a *second* track inherits nothing.
+
+##### `tools/differential_preset_store.sh` is new, and it found something
+
+Four contracts against `preset_store.c`: the derived scene tokens, the
+`default_path` environment precedence, the store document's bytes, and `merge`'s
+(imported, skipped) counts. It passes — 11 scene tokens, 44 presets, 3660 bytes
+of store JSON — but only after the comparison was told to normalize JSON number
+*spelling*:
+
+**C writes `.musi` and store numbers with `%.17g` (`project_io.c:48`); this
+rewrite writes Rust's shortest round-tripping form.** `0.40000000596046448`
+against `0.4000000059604645`. `project::io::write_f64`'s doc comment records that
+as a deliberate divergence — "byte identical JSON is an explicit non-goal" — and
+this harness is the first thing to actually exercise it. The values are
+identical, every field name, field order and id matches byte for byte, and the C
+reads either spelling back to the same float. **It is still worth a decision at
+the parity gate**, because it is the one place a file written here is not the
+file the oracle would have written, and the C's own preset comment leans on
+old files round-tripping "byte-stable" (`plug.c:4240-4243`).
+
+Two smaller notes from building it: the harness's `%.9g` emulation is worth
+keeping right (nine significant digits is exactly `f32` round-trip, so equal
+prints mean equal values), and the fixture generator is duplicated across the two
+sides on purpose — a shared one hides the difference being looked for.
+
+##### What is still missing, and who has to do it
+
+- **`crates/musializer-runtime/src/preset_files.rs` exists but is not
+  registered.** `lib.rs` is off-limits to a leaf agent. It needs one line:
+  `pub mod preset_files;`. Verified green with the line applied, then reverted;
+  until it is registered its six tests do not run and clippy does not see it.
+- **The shared library is not loaded or saved at startup yet.** `preset_files`
+  is the filesystem half and `preset_store::merge` is `shared_presets_adopt`
+  (`plug.c:4244-4265`), but `App` has no `shared_presets` field and nothing calls
+  either. The preset block therefore has no data source until `main.rs` grows
+  one.
+- **The row's `+ Scene` path is ported but unexercised**: `Track::record_scene_cue`
+  is `plug.c:1979-2030` with tests, and nothing calls it until the row is wired.
+- **No capture yet.** Neither surface is in `tools/headless_check.sh`, because
+  neither is reachable. Add both when the call sites land — the marker count in
+  the caption is the assertable line.
