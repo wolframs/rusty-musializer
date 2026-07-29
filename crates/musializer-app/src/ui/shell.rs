@@ -147,6 +147,13 @@ pub struct Shell {
     /// Which of the timeline's own controls the pointer is dragging, so a scrub
     /// that leaves the strip keeps scrubbing.
     scrubbing: bool,
+    /// The font browser's catalogue, query, selection and consent, plus the
+    /// importer it drives.
+    ///
+    /// On `Shell` because it outlives a frame and because the pane is drawn from
+    /// inside another agent's panel — threading it through that call would make
+    /// the lyrics editor carry state it has no business knowing about.
+    pub font_browser: super::panels::fonts::FontBrowser,
     /// The route editor's draft, and the track slot it is keyed against.
     ///
     /// Lives here rather than in `panels::tune` because a draft outlives a frame
@@ -186,6 +193,7 @@ impl Shell {
             scrubbing: false,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
+            font_browser: super::panels::fonts::FontBrowser::new(),
         }
     }
 

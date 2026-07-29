@@ -72,7 +72,7 @@ const WORKSPACE_ROOT: &str = "./build/fonts";
 /// One object rather than fields scattered across the shell, because the pane is
 /// the only reader of any of it and because the `Drop` that reaps an abandoned
 /// helper needs somewhere to live.
-pub(crate) struct FontBrowser {
+pub struct FontBrowser {
     view: BrowserView,
     importer: FontImporter,
     /// A verified download waiting to be rasterized and written into the current
@@ -210,16 +210,22 @@ impl Shell {
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
-        browser: &mut FontBrowser,
         area: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) {
         // Nothing here asks the application for anything: every control acts on
         // the importer the pane owns, and the one result that has to leave goes
-        // through `take_import`. The parameter stays because the seam is the
-        // shell's and the caption style form's "Remove" button will need it.
+        // through `take_import`. `commands` stays because the caption style
+        // form's "Remove" button will need it.
         let _ = commands;
-        draw_font_browser(&mut self.widgets, d, input, browser, area);
+        // Split borrow rather than a method call: `draw_font_browser` needs the
+        // widget set and the browser at once, and both are fields of `self`.
+        let Shell {
+            widgets,
+            font_browser,
+            ..
+        } = self;
+        draw_font_browser(widgets, d, input, font_browser, area);
     }
 }
 
