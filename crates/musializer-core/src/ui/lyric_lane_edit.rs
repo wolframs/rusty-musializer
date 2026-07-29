@@ -24,6 +24,8 @@
 //! `lyrics_shift_headroom` (`lyrics.c:387-414`), the only lyrics operation the
 //! lane calls that is not a plain lookup.
 
+use crate::project::lyrics::LyricsDocument;
+
 use super::timeline_view::TimelineView;
 
 /// How many cues one gesture can move together (`lyric_lane_edit.h:20-24`).
@@ -149,6 +151,33 @@ pub trait LaneCues {
         };
         let forward = self.duration_seconds() - latest_end;
         Some((backward, if forward > 0.0 { forward } else { 0.0 }))
+    }
+}
+
+/// The three lines the module comment promised.
+///
+/// Written here rather than in `project::lyrics` so the model stays unaware of
+/// the interface: `ui` may depend on `project`, and the reverse would make the
+/// document's own tests carry a lane's vocabulary. The provided methods —
+/// `index_of`, `find`, `shift_headroom` — are deliberately **not** overridden
+/// with the document's own faster versions: the point of the trait is that the
+/// lane's rules were tested against the same implementations the application
+/// runs, and a second `shift_headroom` is a second thing that can be wrong.
+impl LaneCues for LyricsDocument {
+    fn cue_count(&self) -> usize {
+        self.len()
+    }
+
+    fn cue_at(&self, index: usize) -> Option<LaneCue> {
+        self.cues().get(index).map(|cue| LaneCue {
+            id: cue.id,
+            start_seconds: cue.start_seconds,
+            end_seconds: cue.end_seconds,
+        })
+    }
+
+    fn duration_seconds(&self) -> f64 {
+        LyricsDocument::duration_seconds(self)
     }
 }
 
@@ -960,5 +989,47 @@ mod tests {
         let (backward, forward) = edge.shift_headroom(&[1]).expect("cue 1 resolves");
         expect_near(backward, 0.0, 1e-9);
         expect_near(forward, 0.0, 1e-9);
+    }
+
+    /// The real document behind the trait.
+    ///
+    /// Index order is the contract two of the rules depend on — the hit test
+    /// walks it backwards, and a shift+click range is a contiguous index range —
+    /// so it is asserted against the document that actually keeps the cues rather
+    /// than only against the `Vec` the tests above use.
+    #[test]
+    fn a_lyrics_document_presents_its_cues_to_the_lane_in_canonical_order() {
+        use crate::project::lyrics::{LyricCue, LyricsDocument};
+
+        let mut document = LyricsDocument::new(TRACK).expect("a positive duration");
+        // Inserted out of order on purpose: the lane is promised canonical order,
+        // not insertion order.
+        for start in [30.0, 10.0, 20.0] {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 1.0,
+                    text: format!("cue at {start}"),
+                })
+                .expect("the fixture cues are valid");
+        }
+        assert_eq!(document.cue_count(), 3);
+        let starts: Vec<f64> = (0..document.cue_count())
+            .map(|index| document.cue_at(index).expect("in range").start_seconds)
+            .collect();
+        assert_eq!(starts, vec![10.0, 20.0, 30.0]);
+        assert_eq!(document.cue_at(3), None);
+        expect_near(LaneCues::duration_seconds(&document), TRACK, 1e-12);
+
+        // The ids came out of the document, so a selection over them resolves.
+        let second = document.cue_at(1).expect("in range").id;
+        let mut selection = LyricLaneSelection::new();
+        assert!(selection.apply(&document, second, LyricLaneClick::Replace));
+        let (backward, forward) = document
+            .shift_headroom(selection.ids())
+            .expect("a live id resolves");
+        expect_near(backward, 20.0, 1e-9);
+        expect_near(forward, TRACK - 21.0, 1e-9);
     }
 }
