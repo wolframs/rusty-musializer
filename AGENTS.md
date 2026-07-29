@@ -318,28 +318,23 @@ look for the difference list. Parity is declared *with* these, not despite them.
 
 ## Still to be filled in
 
-Band 0 of `REWRITE_PLAN.md`'s completion plan is landed: `app::Workspace`, the
-`.musi` open/save wiring, and the `ui/panels/` scaffold. What remains is Band 1
-and Band 2 of that plan:
+Bands 0 and 1 of `REWRITE_PLAN.md`'s completion plan are landed. **Every bottom
+panel is real** — the shared "not built yet" box is deleted, and that deletion
+was designed to be exactly the checkable event it turned out to be. What remains:
 
-- The Export, Lyrics, Assist and font-browser surfaces. Their state and layout
-  policy are ported; the panels are stubs in `ui/panels/` that say so by name.
-- The route editor row inside the tuning inspector, and moving six persistence
-  functions out of `project::model` into `core::scene::routes`. **Move them
-  wholesale** — splitting the constant rule from the route rule lets one
-  parameter persist as both.
-- The manual event row and the preset UI.
-- ~~`runtime::font`'s two faces becoming four~~ — **done.** `Faces` carries the
-  interface subset, Alegreya, Space Grotesk at the full caption set, and a
-  project's imported face keyed by its path; `Faces::caption_for` is
-  `caption_face` (`plug.c:350-364`). The caption *style* selector that chooses
-  between them is the lyrics editor's, and the pane that imports the fourth is
-  `ui/panels/fonts.rs`, which needs two call sites in shared files before it
-  draws — see the Agent K note in `REWRITE_PLAN.md`.
-- Whole-track Song Atlas preprocessing at load, and `--ascii-image` → a glyph grid.
-- Text entry. There is no caret, no selection and no clipboard anywhere in this
-  codebase; the lyrics editor needs one and it is the last piece of real UI
-  engineering in the rewrite.
+- **`tools/external_analysis.py` is not in this repository.** The C ships it, so
+  Assist draws correctly but cannot run: every workflow button is disabled and
+  the status line says why, which is precisely what the oracle draws with no
+  helper. Packaging it is real parity work.
+- Whole-track Song Atlas preprocessing at load, and `--ascii-image` → a glyph
+  grid (Band 2, items M and N).
+- The parity gate (item O) and its three open questions: the three
+  version-string spellings, the `%.17g` float-spelling difference Agent L's
+  harness found, and the bidirectional `.musi` round trip against the frozen C.
+- Two deferrals recorded with their reasons rather than left silent:
+  `Workspace::assist` would rather live on `Shell` with four `Cell`s deleted
+  (see `workspace.rs`), and autosave writes only the current track because only
+  it has a bound stream to read the sample rate from — the C autosaves all.
 
 `REWRITE_PLAN.md`'s **"COMPLETION PLAN (session 3 onward)"** is the ordered
 version, and the NOTE ENTRIES below it record what each landed item changed about
