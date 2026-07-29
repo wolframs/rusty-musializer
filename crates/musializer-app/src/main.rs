@@ -99,11 +99,24 @@ fn run() -> Result<std::process::ExitCode, String> {
             return Ok(std::process::ExitCode::SUCCESS);
         }
         Outcome::Version => {
-            // Three spellings of the version exist in the C, from three separate
-            // literals. This build claims none of them; see REWRITE_PLAN.md's
-            // open question.
+            // Resolved at the parity gate, and the resolution is a split.
+            //
+            // The C has three spellings of one version, from three separate
+            // literals: `Musializer 2026.07` in the help header
+            // (`musializer.c:255`), `musializer 2026.07` from `--version`
+            // (`:323`), and `musializer-2026.07` in a saved `.musi`
+            // (`plug.c:4293`). Only the third is a **file field**, so only the
+            // third is not negotiable — `project::APPLICATION_VERSION` is that
+            // literal exactly, and a differential round trip holds it there.
+            //
+            // The other two are prose, and this build deliberately does not claim
+            // them. Impersonating the frozen binary's version would make the two
+            // indistinguishable to a script at exactly the point where they still
+            // differ by a documented list (no microphone capture, no hot reload,
+            // Linux only). The parity target is named rather than claimed, so the
+            // line is still greppable for it.
             println!(
-                "musializer-rs {} (raylib {raylib_version})",
+                "musializer-rs {} (parity target musializer 2026.07, raylib {raylib_version})",
                 env!("CARGO_PKG_VERSION")
             );
             return Ok(std::process::ExitCode::SUCCESS);

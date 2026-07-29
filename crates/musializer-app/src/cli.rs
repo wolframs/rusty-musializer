@@ -736,8 +736,12 @@ fn parse_probe_flag(text: &str) -> Option<bool> {
 /// `--version` prints `musializer 2026.07` in lowercase and a saved `.musi`
 /// records `musializer-2026.07` with a hyphen — **three spellings of one
 /// version, from three separate literals** (`musializer.c:255`, `:323`,
-/// `plug.c:4293`). This build does not yet claim any of them; see the open
-/// question in `REWRITE_PLAN.md`.
+/// `plug.c:4293`).
+///
+/// Settled at the parity gate: only the third is a field in a file, so only the
+/// third is held byte-exact (`project::APPLICATION_VERSION`). These two are prose,
+/// and this build names the parity target instead of claiming to be it — see the
+/// `Outcome::Version` arm in `main.rs` for the reasoning.
 pub fn help_text(program: &str) -> String {
     format!(
         "\

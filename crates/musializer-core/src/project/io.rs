@@ -134,8 +134,26 @@ fn write_string(out: &mut String, value: &str) {
 /// (`project_io.c:46-55`). Rust's `Display` for `f64` is locale-independent and
 /// emits the shortest representation that round-trips, so both the locale fix-up
 /// and the 17-digit padding are unnecessary. The bytes differ from C's in places
-/// (`0.1` rather than `0.10000000000000001`); the *values* do not, and byte
-/// identical JSON is an explicit non-goal.
+/// (`0.1` rather than `0.10000000000000001`); the *values* do not.
+///
+/// # Why this is not a parity bug
+///
+/// It was carried as an open question to the parity gate, because `AGENTS.md`'s test
+/// is "visible in a `.musi` file" and a spelling difference is visible in the bytes.
+/// What settles it is that **nothing in the oracle ever hashes or byte-compares a
+/// `.musi`.** Every `sha256` in the C project is over an *asset* — the audio, an
+/// imported font, its licence, the ASCII source image — and the project file itself
+/// is only ever parsed. So the C reads `0.1`, gets the same double it wrote, and has
+/// no way to notice.
+///
+/// The requirement the gate actually states is a **bidirectional round trip with no
+/// field lost**, which is about values, and `tools/differential_project_io.sh` is
+/// what holds it. Export determinism is the place bit-identity is required, and an
+/// MP4 is not a `.musi`.
+///
+/// Not merely harmless, either: a `.musi` is meant to be readable by the person who
+/// authored it — the same reason colours are written as `"ffffffff"` rather than
+/// `4294967295` two functions down.
 fn write_f64(out: &mut String, value: f64) {
     out.push_str(&format!("{value}"));
 }

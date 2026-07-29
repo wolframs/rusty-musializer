@@ -22,13 +22,13 @@ cargo run --bin make-fixture-wav -- build/x.wav 8   # synthetic fixture audio
 
 tools/headless_check.sh            # the self-check: private Xvfb, evidence
 tools/install-linux-launcher.sh    # per-user desktop entry; --uninstall removes it
-tools/differential_analyzer.sh     # the Rust analyzer vs the frozen C analyzer
-tools/differential_settings.sh     # the Rust settings table vs the frozen C
+tools/differential_*.sh            # one per ported pure module, vs the frozen C
+                                   #   verify.sh runs all of them; see the table below
 ```
 
 ## Differential testing against the oracle
 
-Both scripts compile the relevant `../musializer/src/*.c` with output going into
+Every script compiles the relevant `../musializer/src/*.c` with output going into
 our own `build/`. The oracle is read, never written, and its own build directory
 is never touched.
 
@@ -36,6 +36,12 @@ is never touched.
 | --- | --- |
 | `differential_analyzer.sh` | 104 bands agree to 4e-10 (float print precision) |
 | `differential_settings.sh` | all 81 descriptors match exactly |
+| `differential_routes.sh` | 380 rows, including the clamp asymmetry |
+| `differential_route_persistence.sh` | 381 lines: parse grammar and the both-ways pairing |
+| `differential_event_merge.sh` | 12 cases, 15 merged events, ids and ordering exact |
+| `differential_assist_ui.sh` | 341 policy decisions exact |
+| `differential_preset_store.sh` | 11 scene tokens, 44 presets, 3660 bytes of store JSON |
+| `differential_song_atlas_map.sh` | 912 slices, 29374 values, largest delta **0** |
 
 **This is the pattern to copy for every pure module.** A number to compare beats
 a paragraph of reasoning about whether a port is faithful, and it catches the
@@ -48,9 +54,20 @@ intrinsics may differ in the last bits. Duplicate the fixture generator between
 the C and Rust sides rather than sharing it — a shared generator can hide the
 difference you are looking for.
 
+**Build a negative control, and record what it caught.** A harness that has never
+failed proves nothing, and the two most recent ones both earned this rule: the
+Song Atlas harness was checked by moving the onset threshold 0.62 → 0.60, which
+made 20 `onset` flags disagree, and by perturbing a loudness coefficient by 1e-7,
+which made 17389 floats disagree with a smallest delta of 1.9e-9. Writing that
+control also exposed a hole in the comparator itself — `nan` and `inf` *parse* as
+floats in Python, and `abs(nan - nan) > tolerance` is `False`, so those columns had
+been passing unconditionally. Perturb, watch it fail, revert byte-for-byte, and
+prove the tree is clean.
+
 Adding one: put the C harness in `tests/differential/`, the Rust side in
 `crates/musializer-core/examples/` (examples need no manifest entry, so they
-never collide with a parallel agent), and the driver in `tools/`.
+never collide with a parallel agent), and the driver in `tools/`. Add the name to
+`tools/verify.sh`'s loop and a row above.
 
 `tools/headless_check.sh` is how this project checks its own work without
 occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`
