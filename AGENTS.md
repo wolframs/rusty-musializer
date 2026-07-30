@@ -45,6 +45,7 @@ is never touched.
 | `differential_ascii_art.sh` | 39263 cells, 329738 values, largest delta **0** |
 | `differential_project_io.sh` | 1650 values, **both `.musi` round trips**, largest delta **0** |
 | `differential_timeline_view.sh` | 30865 records, 204953 values, largest delta **0** |
+| `differential_layout.sh` | 27547 records, 527187 values, largest delta **0** |
 
 **This is the pattern to copy for every pure module.** A number to compare beats
 a paragraph of reasoning about whether a port is faithful, and it catches the
@@ -66,6 +67,30 @@ control also exposed a hole in the comparator itself — `nan` and `inf` *parse*
 floats in Python, and `abs(nan - nan) > tolerance` is `False`, so those columns had
 been passing unconditionally. Perturb, watch it fail, revert byte-for-byte, and
 prove the tree is clean.
+
+**A unit test suite ported from the oracle is not a substitute, and there is now a
+measurement rather than an opinion.** The `layout` harness was written because
+`ui/timeline_view.rs` had **1** exact assertion where `test_timeline_view.c` pins 32,
+and `workspace_layout`/`timeline_layout` were similarly range-heavy. Its two negative
+controls both left the ports' own unit tests **fully green**:
+
+| perturbation | the harness | the module's unit tests |
+| --- | --- | --- |
+| `>=` → `>` in `workspace_layout`'s mode ladder | 431 values fail | **9 passed** |
+| `margin * 2.0` → `* 2.0625` in `timeline_layout` (1/16 px) | 14673 values fail | **7 passed** |
+
+The second is the instructive one: the tightest unit expectation gives `scale` a 1e-3
+tolerance, and 0.375 px spread over a 628 px row lands inside it. So the rule is not
+"prefer harnesses"; it is that a **property assertion cannot pin a value**. `assert!(x
+>= MIN)` and `assert!(rect.contains(inner))` are satisfied by wrong formulas, and a
+layout error is invisible in a capture because everything moves together and still
+looks self-coherent. Where the oracle pinned a number, pin the number — and prefer a
+differential comparison, because a hand-transcribed expectation can be mistyped or
+(worse) copied from our own output, and would then pass forever.
+
+Both harnesses found **no disagreement**: the ports were right. That is the other half
+of the point — a harness on a suspected module converts "we cannot tell" into "it is
+correct", which is worth as much as finding a bug.
 
 **Where the two sides cannot express the same rejection, pin the asymmetry as an
 expected pair.** The C takes bare pointers and Rust takes slices, so each can refuse
