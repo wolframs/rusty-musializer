@@ -172,8 +172,7 @@ fn run() -> Result<std::process::ExitCode, String> {
     // Starts in the oracle's no-track configuration and is reconfigured from the
     // file's sample rate once a track loads, mirroring `analyzer_configure`.
     // 200 KiB of arrays, so it is boxed.
-    let mut analyzer = AudioAnalyzer::boxed(AudioAnalyzerConfig::idle())
-        .map_err(|error| format!("could not create the analyzer: {error}"))?;
+    let mut analysis = Analysis::idle()?;
 
     let mut app = App {
         scene: SceneInstance::new(
@@ -366,7 +365,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             if let Err(error) = open_track(
                 &audio,
                 path,
-                &mut analyzer,
+                &mut analysis,
                 &mut music,
                 &mut app,
                 &mut scratch,
@@ -381,7 +380,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             if let Err(error) = open_project(
                 &audio,
                 path,
-                &mut analyzer,
+                &mut analysis,
                 &mut music,
                 &mut app,
                 &mut scratch,
@@ -578,7 +577,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                 &audio,
                 music.as_ref(),
                 &mut app,
-                &mut analyzer,
+                &mut analysis,
                 &destination,
                 options.render_window,
             );
@@ -609,7 +608,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                 &thread,
                 music.as_ref(),
                 &mut app,
-                &mut analyzer,
+                &mut analysis,
                 &mut renderer,
                 &fonts,
             );
@@ -634,15 +633,16 @@ fn run() -> Result<std::process::ExitCode, String> {
 
         let drained = audio_bridge::drain_interleaved(&mut scratch);
         if drained > 0 {
-            let consumed =
-                analyzer.push_interleaved(&scratch[..drained * audio_bridge::MIXED_CHANNELS]);
+            let consumed = analysis
+                .analyzer
+                .push_interleaved(&scratch[..drained * audio_bridge::MIXED_CHANNELS]);
             report.consumed_frames += consumed as u64;
         }
 
         // The scene clock is the frame delta, which is what preview and export
         // must agree on.
         let delta = rl.get_frame_time();
-        if analyzer.analyze(delta) {
+        if analysis.analyzer.analyze(delta) {
             report.analyzed_frames += 1;
         }
 
@@ -659,10 +659,18 @@ fn run() -> Result<std::process::ExitCode, String> {
             .map_or(0.0, |track| track.duration_seconds);
         let playing = music.as_ref().is_some_and(|m| m.is_stream_playing());
 
-        let spectrum = analyzer.spectrum();
+        let spectrum = analysis.analyzer.spectrum();
         let mut audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
         report.peak_seen = report.peak_seen.max(audio_frame.peak);
-        audio_frame.beat_phase = 0.0; // Agent A's beat tracker lands here.
+        audio_frame.track_beat(&mut analysis.beat, time_seconds);
+        report.beat_phase_low = report.beat_phase_low.min(audio_frame.beat_phase);
+        report.beat_phase_high = report.beat_phase_high.max(audio_frame.beat_phase);
+        report.beat_interval_last = analysis.beat.interval_seconds();
+        report.beat_intervals_learned = analysis.beat.learned_intervals();
+        report.flux_seen = report.flux_seen.max(audio_frame.spectral_flux);
+        if audio_frame.onset {
+            report.onsets_seen += 1;
+        }
 
         // Which band is loudest. Reported so a headless check can assert that the
         // spectrum *moved* rather than that it merely drew something: with a swept
@@ -701,7 +709,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         let band_centre_hz = spectrum
             .band_first_bin
             .get(report.peak_band_last)
-            .map_or(0.0, |&bin| analyzer.bin_frequency(bin as usize));
+            .map_or(0.0, |&bin| analysis.analyzer.bin_frequency(bin as usize));
 
         // Before the draw, and only for the scene that needs it
         // (`scene_render`, `plug.c:1313-1315`). Placed here rather than inside the
@@ -888,6 +896,13 @@ fn run() -> Result<std::process::ExitCode, String> {
                 ShellCommand::Seek(seconds) => {
                     if let Some(music) = music.as_ref() {
                         music.seek_stream(seconds as f32);
+                        // A seek is a time discontinuity, so the learned tempo
+                        // anchor no longer refers to the audio under the playhead
+                        // (`seek_track_to` calls `fft_clean`, `plug.c:2673`). The
+                        // tracker would reject the backwards jump and reset itself
+                        // anyway; doing it here means a *forward* seek is handled
+                        // too, which it would otherwise accept as a long interval.
+                        analysis.beat.reset();
                     }
                 }
                 ShellCommand::SelectScene(id) => app.select_scene(id),
@@ -909,7 +924,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     if let Err(error) = open_track(
                         &audio,
                         &path,
-                        &mut analyzer,
+                        &mut analysis,
                         &mut music,
                         &mut app,
                         &mut scratch,
@@ -942,7 +957,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                             &audio,
                             music.as_ref(),
                             &mut app,
-                            &mut analyzer,
+                            &mut analysis,
                             &destination,
                             None,
                         );
@@ -982,7 +997,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     if let Err(error) = select_track(
                         &audio,
                         index,
-                        &mut analyzer,
+                        &mut analysis,
                         &mut music,
                         &mut app,
                         &mut scratch,
@@ -998,7 +1013,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     }
                 }
                 ShellCommand::OpenAudio => {
-                    open_audio_dialog(&audio, &mut analyzer, &mut music, &mut app, &mut scratch)
+                    open_audio_dialog(&audio, &mut analysis, &mut music, &mut app, &mut scratch)
                 }
                 ShellCommand::OpenProject => {
                     let dialog = FileDialog::new("Open Musializer project")
@@ -1010,7 +1025,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                             if let Err(error) = open_project(
                                 &audio,
                                 &path,
-                                &mut analyzer,
+                                &mut analysis,
                                 &mut music,
                                 &mut app,
                                 &mut scratch,
@@ -1137,7 +1152,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     let swapped = open_track(
                         &audio,
                         &path,
-                        &mut analyzer,
+                        &mut analysis,
                         &mut music,
                         &mut app,
                         &mut scratch,
@@ -1147,7 +1162,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                         select_track(
                             &audio,
                             index,
-                            &mut analyzer,
+                            &mut analysis,
                             &mut music,
                             &mut app,
                             &mut scratch,
@@ -1198,7 +1213,7 @@ fn run() -> Result<std::process::ExitCode, String> {
     report.print(
         raylib_version,
         &app,
-        analyzer.band_count(),
+        analysis.analyzer.band_count(),
         requested_scene,
         &fonts,
         &assist,
@@ -1224,6 +1239,49 @@ fn run() -> Result<std::process::ExitCode, String> {
 /// handed to the first track that loads (`plug.c:852-853`). Everything else lives
 /// on the [`Track`], because every close guard, dirty flag and editor draft in
 /// the C is per-track.
+/// The two pieces of per-stream analysis state, which must be reset together.
+///
+/// They are one type because separating them is the bug this exists to prevent.
+/// The C keeps `analyzer` and `beat_tracker` adjacent on `Plug` and resets both in
+/// the same two functions (`fft_reset` `plug.c:443-449`, `fft_clean` `:473-478`).
+/// Here they were separate, only the analyzer was threaded through the eight
+/// functions that rebind audio, and the beat tracker was left with **no caller at
+/// all** — fully ported, unit-tested, and never run, while `beat_phase` stayed
+/// hardcoded to `0.0` in the frame loop and the CLI went on advertising
+/// `--route parameter:beat_phase:...` as a working source.
+///
+/// Pairing them makes "reset both" structural instead of remembered: there is no
+/// longer a way to reconfigure the analyzer without the tracker following, because
+/// [`Self::reconfigure`] is the only way to do it.
+struct Analysis {
+    /// 200 KiB of arrays, so it is boxed.
+    analyzer: Box<AudioAnalyzer>,
+    beat: musializer_core::audio::beat_tracker::BeatTracker,
+}
+
+impl Analysis {
+    /// The pre-track state, at the idle configuration (`analyzer_configure`'s
+    /// starting point; the real rate arrives with the first stream).
+    fn idle() -> Result<Self, String> {
+        Ok(Self {
+            analyzer: AudioAnalyzer::boxed(AudioAnalyzerConfig::idle())
+                .map_err(|error| format!("could not create the analyzer: {error}"))?,
+            beat: musializer_core::audio::beat_tracker::BeatTracker::default(),
+        })
+    }
+
+    /// Rebinds the analyzer and resets the beat tracker with it (`fft_reset`).
+    ///
+    /// A tempo learned from the previous track must not carry into this one, and
+    /// the anchor is an absolute time that the new stream's clock does not share.
+    fn reconfigure(&mut self, config: AudioAnalyzerConfig) -> Result<(), String> {
+        *self.analyzer = *AudioAnalyzer::boxed(config)
+            .map_err(|error| format!("could not configure the analyzer: {error}"))?;
+        self.beat.reset();
+        Ok(())
+    }
+}
+
 struct App {
     scene: SceneInstance,
     workspace: Workspace,
@@ -1548,7 +1606,7 @@ fn unimplemented_action(options: &mut Cli, app: &mut App, flag: &str, detail: &s
 fn open_track<'audio>(
     audio: &'audio RaylibAudio,
     path: &Path,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut Analysis,
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
@@ -1591,7 +1649,7 @@ fn open_track<'audio>(
     let index = app.workspace.push(track);
 
     if was_empty {
-        bind_current_audio(audio, analyzer, music, app, scratch, play)?;
+        bind_current_audio(audio, analysis, music, app, scratch, play)?;
     }
     Ok(index)
 }
@@ -1607,7 +1665,7 @@ fn open_track<'audio>(
 /// the device's rate instead shifts every band.
 fn bind_current_audio<'audio>(
     audio: &'audio RaylibAudio,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut Analysis,
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
@@ -1620,7 +1678,7 @@ fn bind_current_audio<'audio>(
     // Opened before the teardown, so a file deleted since it was added leaves the
     // previous track playing rather than leaving silence.
     let opened = open_music(audio, &track.file_path)?;
-    bind_audio(opened, analyzer, music, app, scratch, play)
+    bind_audio(opened, analysis, music, app, scratch, play)
 }
 
 /// Opens a stream without binding it to anything.
@@ -1635,7 +1693,7 @@ fn open_music<'audio>(audio: &'audio RaylibAudio, path: &Path) -> Result<Music<'
 /// Swaps an already-opened stream in as the one the analyzer hears.
 fn bind_audio<'audio>(
     opened: Music<'audio>,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut Analysis,
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
@@ -1644,8 +1702,7 @@ fn bind_audio<'audio>(
     close_audio(music, app, scratch);
 
     let file_sample_rate = opened.stream.sampleRate;
-    *analyzer = *AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(file_sample_rate))
-        .map_err(|error| format!("could not configure the analyzer: {error}"))?;
+    analysis.reconfigure(AudioAnalyzerConfig::preview(file_sample_rate))?;
     if play {
         opened.play_stream();
     }
@@ -1692,7 +1749,7 @@ fn close_audio(music: &mut Option<Music<'_>>, app: &mut App, scratch: &mut [f32]
 /// user answers.
 fn open_audio_dialog<'audio>(
     audio: &'audio RaylibAudio,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut Analysis,
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
@@ -1703,7 +1760,7 @@ fn open_audio_dialog<'audio>(
         // notice saying so would be noise.
         Ok(None) => {}
         Ok(Some(path)) => {
-            if let Err(error) = open_track(audio, &path, analyzer, music, app, scratch, true) {
+            if let Err(error) = open_track(audio, &path, analysis, music, app, scratch, true) {
                 app.shell.notify(
                     Severity::Error,
                     "Audio could not be loaded",
@@ -1968,7 +2025,7 @@ enum Input {
 fn open_project<'audio>(
     audio: &'audio RaylibAudio,
     path: &Path,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut Analysis,
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
@@ -2009,9 +2066,9 @@ fn open_project<'audio>(
             (track.base_scene, track.scene_seed)
         };
         app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
-        bind_current_audio(audio, analyzer, music, app, scratch, true)?;
+        bind_current_audio(audio, analysis, music, app, scratch, true)?;
     } else {
-        select_track(audio, index, analyzer, music, app, scratch)?;
+        select_track(audio, index, analysis, music, app, scratch)?;
     }
     app.shell.notify(
         Severity::Info,
@@ -2116,7 +2173,7 @@ fn ask_for_project_path(app: &mut App) -> Option<PathBuf> {
 fn select_track<'audio>(
     audio: &'audio RaylibAudio,
     index: usize,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut Analysis,
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
@@ -2136,7 +2193,7 @@ fn select_track<'audio>(
 
     app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
     app.workspace.select(index);
-    bind_audio(opened, analyzer, music, app, scratch, true)
+    bind_audio(opened, analysis, music, app, scratch, true)
 }
 
 /// The slice report. `tools/headless_check.sh` reads this, and its shape is the
@@ -2150,6 +2207,18 @@ struct Report {
     peak_band_last: usize,
     peak_band_low: usize,
     peak_band_high: usize,
+    /// The range of `beat_phase` seen across the run.
+    ///
+    /// A *range*, not a last value, because that is the difference between "the
+    /// beat tracker ran" and "the beat tracker advanced". The bug this line exists
+    /// for left `beat_phase` at a constant `0.0`, which any single-sample readout
+    /// would have reported as a perfectly plausible phase.
+    beat_phase_low: f32,
+    beat_phase_high: f32,
+    beat_interval_last: f64,
+    beat_intervals_learned: usize,
+    onsets_seen: u64,
+    flux_seen: f32,
     reopened: Option<Reopen>,
 }
 
@@ -2175,6 +2244,12 @@ impl Default for Report {
             peak_band_last: 0,
             peak_band_low: usize::MAX,
             peak_band_high: 0,
+            beat_phase_low: f32::MAX,
+            beat_phase_high: f32::MIN,
+            beat_interval_last: 0.0,
+            beat_intervals_learned: 0,
+            onsets_seen: 0,
+            flux_seen: 0.0,
             reopened: None,
         }
     }
@@ -2212,6 +2287,43 @@ impl Report {
         );
         println!("bands:           {band_count}");
         println!("peak seen:       {:.4}", self.peak_seen);
+        // Evidence, not existence. `beat_phase` is a documented route source and it
+        // was hardcoded to 0.0 for two bands with the tracker never called, so this
+        // reports the *range* — a phase that never moves is the failure, and a
+        // single value cannot show it.
+        if self.beat_phase_low > self.beat_phase_high {
+            println!("beat phase:      never sampled");
+        } else {
+            println!(
+                // `learned` disambiguates the interval, which is otherwise not
+                // evidence at all: the tracker's default interval is 0.500s, and
+                // the synthetic fixture's 2 Hz pulse is also 0.500s. Without the
+                // count, "interval 0.500s" reads identically whether a tempo was
+                // learned from the audio or never learned at all.
+                "beat phase:      {:.4}..{:.4} (interval {:.3}s, {} learned)",
+                self.beat_phase_low,
+                self.beat_phase_high,
+                self.beat_interval_last,
+                self.beat_intervals_learned
+            );
+        }
+        // The tracker's *input*, which is what separates "onset detection is broken"
+        // from "this audio taught the tracker nothing". On the synthetic sweep those
+        // are genuinely different and only this line tells them apart: onsets **do**
+        // fire (8 of 200 frames, peak flux 0.1013 against the 0.08 threshold), and
+        // `0 learned` is still correct, because the pulse's onsets land in adjacent
+        // frames and a ~0.017s gap is below the 0.25s minimum plausible beat
+        // interval. That is the oracle's own rejection
+        // (`beat_tracker.c`'s interval window), so the phase free-runs at the
+        // neutral 120 BPM — which is what a capture of this fixture should show.
+        println!(
+            "onsets:          {} of {} frames, peak flux {:.4} (threshold {:.2})",
+            self.onsets_seen,
+            self.frames,
+            self.flux_seen,
+            musializer_core::scene::ONSET_FLUX_THRESHOLD
+        );
+        {}
         let moved = self.peak_band_low != usize::MAX && self.peak_band_high > self.peak_band_low;
         if self.peak_band_low == usize::MAX {
             println!("peak band:       never established");

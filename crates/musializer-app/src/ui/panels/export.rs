@@ -39,7 +39,7 @@
 // fan-out does not edit `main.rs`.
 use std::path::{Path, PathBuf};
 
-use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
+use musializer_core::audio::AudioAnalyzerConfig;
 use musializer_core::scene::routes::RouteSources;
 use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneInstance};
 use musializer_core::timing::render_export::{FrameRate, Quality, RenderExportConfig, Resolution};
@@ -645,7 +645,7 @@ impl ExportSession {
         audio: &'audio RaylibAudio,
         music: Option<&Music<'audio>>,
         app: &mut crate::App,
-        analyzer: &mut AudioAnalyzer,
+        analysis: &mut crate::Analysis,
         destination: &Path,
         window: Option<(f64, f64)>,
     ) -> Option<Self> {
@@ -679,7 +679,7 @@ impl ExportSession {
                     "Export surface could not be created",
                     "Try a lower resolution or Balanced quality.",
                 );
-                restore_preview(music, app, analyzer, restore_position, restore_playing);
+                restore_preview(music, app, analysis, restore_position, restore_playing);
                 return None;
             }
         };
@@ -699,7 +699,7 @@ impl ExportSession {
                     "Export was not started",
                     &format!("{error}. The source and any previous destination were preserved."),
                 );
-                restore_preview(music, app, analyzer, restore_position, restore_playing);
+                restore_preview(music, app, analysis, restore_position, restore_playing);
                 return None;
             }
         };
@@ -708,8 +708,8 @@ impl ExportSession {
         // (`plug.c:7094`), and the scene restarts from the track's seed so that
         // the export does not inherit whatever state the preview had wandered
         // into (`plug.c:7019`).
-        match AudioAnalyzer::boxed(job.analyzer_config()) {
-            Ok(configured) => *analyzer = *configured,
+        match analysis.reconfigure(job.analyzer_config()) {
+            Ok(()) => {}
             Err(error) => {
                 app.shell.notify(
                     Severity::Error,
@@ -717,7 +717,7 @@ impl ExportSession {
                     &format!("The analyzer could not be configured for export: {error}"),
                 );
                 let _ = job.finish(true);
-                restore_preview(music, app, analyzer, restore_position, restore_playing);
+                restore_preview(music, app, analysis, restore_position, restore_playing);
                 return None;
             }
         }
@@ -770,7 +770,7 @@ impl ExportSession {
         thread: &RaylibThread,
         music: Option<&Music<'_>>,
         app: &mut crate::App,
-        analyzer: &mut AudioAnalyzer,
+        analysis: &mut crate::Analysis,
         renderer: &mut scene_host::SceneRenderer,
         fonts: &Faces,
     ) -> bool {
@@ -781,10 +781,10 @@ impl ExportSession {
         // one extra tick so the screen can say "Finishing encoder", and only
         // then does a frame get drawn.
         if self.job().cancel_requested() {
-            return self.conclude(true, music, app, analyzer);
+            return self.conclude(true, music, app, analysis);
         }
         if self.job().is_complete() && self.job_mut().begin_finishing() {
-            return self.conclude(false, music, app, analyzer);
+            return self.conclude(false, music, app, analysis);
         }
 
         let mut failure: Option<(&'static str, String)> = None;
@@ -799,7 +799,7 @@ impl ExportSession {
                 let mut steps = self.job().batch_size();
                 while steps > 0 && !self.job().is_complete() {
                     steps -= 1;
-                    match self.step(&mut d, thread, app, analyzer, renderer, fonts) {
+                    match self.step(&mut d, thread, app, analysis, renderer, fonts) {
                         Ok(drew) => {
                             // A drawn frame ends the tick; only skipped frames
                             // batch (`plug.c:8055`).
@@ -821,7 +821,7 @@ impl ExportSession {
             // A transport failure must never publish whatever partial stream the
             // encoder accepted, even if the child then exits zero
             // (`plug.c:8042-8044`).
-            return self.conclude(true, music, app, analyzer);
+            return self.conclude(true, music, app, analysis);
         }
         false
     }
@@ -839,7 +839,7 @@ impl ExportSession {
         d: &mut RaylibDrawHandle<'_>,
         thread: &RaylibThread,
         app: &mut crate::App,
-        analyzer: &mut AudioAnalyzer,
+        analysis: &mut crate::Analysis,
         renderer: &mut scene_host::SceneRenderer,
         fonts: &Faces,
     ) -> Result<bool, (&'static str, String)> {
@@ -850,13 +850,18 @@ impl ExportSession {
             )
         })?;
         if !samples.is_empty() {
-            analyzer.push_interleaved(samples);
+            analysis.analyzer.push_interleaved(samples);
         }
         let delta = self.job().scene_delta();
-        analyzer.analyze(delta);
+        analysis.analyzer.analyze(delta);
 
-        let spectrum = analyzer.spectrum();
-        let audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
+        let spectrum = analysis.analyzer.spectrum();
+        let mut audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
+        // The export's own clock, not the stream's — there is no stream. Routed
+        // parameters staying preview/export identical is a stated invariant, so a
+        // `beat_phase` route has to advance here exactly as it does in the preview,
+        // and both go through the one `track_beat`.
+        audio_frame.track_beat(&mut analysis.beat, self.job().scene_time());
         let sources = RouteSources::from_audio(&audio_frame);
         let base = *app.settings();
         let routed = app.routes().apply(app.scene.id(), &sources, &base);
@@ -967,7 +972,7 @@ impl ExportSession {
         cancel: bool,
         music: Option<&Music<'_>>,
         app: &mut crate::App,
-        analyzer: &mut AudioAnalyzer,
+        analysis: &mut crate::Analysis,
     ) -> bool {
         // `finish` consumes the job, which is why the field is an `Option`: this
         // is the one place it becomes `None`, and the caller drops the session
@@ -1013,7 +1018,7 @@ impl ExportSession {
         restore_preview(
             music,
             app,
-            analyzer,
+            analysis,
             self.restore_position,
             self.restore_playing,
         );
@@ -1061,7 +1066,7 @@ fn offline_render_target(
 fn restore_preview(
     music: Option<&Music<'_>>,
     app: &mut crate::App,
-    analyzer: &mut AudioAnalyzer,
+    analysis: &mut crate::Analysis,
     position: f32,
     playing: bool,
 ) {
@@ -1072,11 +1077,10 @@ fn restore_preview(
     let Some(music) = music else {
         return;
     };
-    if let Ok(configured) =
-        AudioAnalyzer::boxed(AudioAnalyzerConfig::preview(music.stream.sampleRate))
-    {
-        *analyzer = *configured;
-    }
+    // Back to the preview configuration, and the beat tracker resets with it: the
+    // export just drove the analyzer over the whole track, so the tempo it learned
+    // belongs to an offline pass rather than to the stream about to resume.
+    let _ = analysis.reconfigure(AudioAnalyzerConfig::preview(music.stream.sampleRate));
     music.update_stream();
     music.play_stream();
     if position > 0.0 {

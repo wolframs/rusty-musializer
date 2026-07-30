@@ -180,6 +180,38 @@ impl<'a> SceneAudioFrame<'a> {
             onset: flux > ONSET_FLUX_THRESHOLD,
         }
     }
+
+    /// Fills in [`Self::beat_phase`] from a tracker (`plug.c:1139-1144`).
+    ///
+    /// Separate from [`Self::from_spectrum`] because the tracker is stateful and
+    /// this type is not, but it belongs *next* to it: `beat_phase` is a documented
+    /// route source, so a caller that builds a frame and forgets this leaves
+    /// `--route parameter:beat_phase:...` evaluating a constant zero forever. That
+    /// is exactly what happened — the tracker was ported with tests and had no
+    /// caller at all, while the CLI advertised the source.
+    ///
+    /// Preview and export must both call it, which is the reason it is one method
+    /// on the shared type rather than two copies of four lines: routed parameters
+    /// staying preview/export identical is a stated invariant, and a beat that only
+    /// advanced in the preview would break it silently.
+    ///
+    /// A rejected update **resets** the tracker rather than being ignored
+    /// (`plug.c:1141-1143`). The tracker refuses a non-monotonic or non-finite
+    /// time, which is precisely the seek case, and a stale anchor would otherwise
+    /// keep producing a phase that no longer refers to the audio.
+    pub fn track_beat(
+        &mut self,
+        tracker: &mut crate::audio::beat_tracker::BeatTracker,
+        time_seconds: f64,
+    ) {
+        match tracker.update(time_seconds, self.onset, self.spectral_flux) {
+            Some(phase) => self.beat_phase = phase,
+            None => {
+                tracker.reset();
+                self.beat_phase = 0.0;
+            }
+        }
+    }
 }
 
 /// The onset threshold on spectral flux (`../musializer/src/plug.c:1139`).

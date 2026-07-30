@@ -810,6 +810,33 @@ capture "route-loom-weight" 1280x720 \
     --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' || SWEEP_FAILED=1
 sed -n 's/^routes: */routes on the active scene: /p' "$OUT_DIR/route-loom-weight.txt"
 
+# `beat_phase` is the one route source with a stateful producer behind it, and it
+# spent two bands hardcoded to 0.0 with the beat tracker never called at all —
+# ported, unit-tested against a C trace, and unreachable. The CLI advertised it the
+# whole time. So this asserts the *range*: a source stuck at any single value,
+# including a plausible-looking one, is the failure being guarded against.
+capture "route-loom-beat" 1280x720 \
+    --scene loom --route 'loom.weight:beat_phase:0:0:1:0.4:2.2:linear' || SWEEP_FAILED=1
+beat_line="$(sed -n 's/^beat phase: *//p' "$OUT_DIR/route-loom-beat.txt" 2>/dev/null || true)"
+onset_line="$(sed -n 's/^onsets: *//p' "$OUT_DIR/route-loom-beat.txt" 2>/dev/null || true)"
+echo "beat phase: ${beat_line:-<absent>}"
+echo "onsets:     ${onset_line:-<absent>}"
+case "$beat_line" in
+    'never sampled'*)
+        echo "FAIL: the beat tracker was never called" >&2
+        SWEEP_FAILED=1
+        ;;
+    0.0000..0.0000*)
+        echo "FAIL: beat_phase never advanced — the route source is a constant" >&2
+        SWEEP_FAILED=1
+        ;;
+    *..*) : ;;
+    *)
+        echo "FAIL: the beat phase line was not in the expected form" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+
 echo "=== the route editor row, inside the Tune inspector ==="
 # Three states of the same row, at 720p and at the 960x640 minimum, because the
 # expanded editor is the tallest thing the inspector ever hosts and the minimum
