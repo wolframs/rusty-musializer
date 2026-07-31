@@ -2,13 +2,13 @@
 
 The Rust rewrite of Musializer. The C repository is feature frozen.
 
-**The application is built and runs.** All ten scenes draw from their own data,
-`.musi` projects open and save, video exports through FFmpeg, every bottom panel is
-real, and `tools/verify.sh` is 19 passed / 0 failed — thirteen differential
-harnesses against the frozen C plus a headless capture gate. `REWRITE_PLAN.md`'s
-"Where this actually stands" is the current list of what is left; the largest item
-is packaging `tools/external_analysis.py`, without which Assist draws but cannot
-run.
+**The application is built and runs.** All ten scenes draw, `.musi` projects open
+and save, video exports through FFmpeg, every bottom panel is real, and
+`tools/verify.sh` is 19 passed / 0 failed — thirteen differential harnesses
+against the frozen C plus a headless capture gate. The sole live completion queue
+is `FEATURE_PARITY_PLAN.md`. It records the application-boundary gaps those gates
+do not cover, including project lanes not reaching `SceneFrame`, automatic scene
+plans not being driven, and the missing external support bundle.
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
 
@@ -310,18 +310,15 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
 ## Before implementation work
 
-Read `REWRITE_PLAN.md`. Start with **"COMPLETION PLAN (session 3 onward)"** at the
-bottom — it supersedes the phase sketches for everything that remains, and it
-carries the dependency order, the fan-out agreements, and the definition of done
-every item is held to. The older "Handoff: start here" and the source ownership
-map describe the port that has already happened. The plan
-also carries the frozen commit, the crate boundaries, the invariants that
-survive the rewrite, and a NOTE ENTRIES section at the bottom recording what
-has already been done, decided, or gone wrong.
+Read `FEATURE_PARITY_PLAN.md` first. It is the only current task list and carries
+the dependency order, acceptance evidence and complete C-to-Rust feature ledger.
+Claim and update work there; do not create another completion plan.
 
-Read the notes before assuming any section describes reality — the prose
-describes the plan, the notes describe what happened. Add a note when you learn
-something a later session would otherwise rediscover.
+Read `REWRITE_PLAN.md` only for historical design reasoning and NOTE ENTRIES about
+work that already happened. Its phase sketches, source-ownership map and agent
+handoffs describe the completed fan-out and are not current instructions. Add
+historical investigation detail there only when a later session would otherwise
+rediscover it; add every live task to `FEATURE_PARITY_PLAN.md`.
 
 ## The behavioral oracle
 
@@ -499,44 +496,16 @@ look for the difference list. Parity is declared *with* these, not despite them.
   A build-flag feature of the frozen binary; nothing else depends on it, and it
   needs a second audio path the bridge does not have.
 - **Hot reload.** An explicit first-pass non-goal since the fork.
-- **Windows and macOS.** Linux-first hobby rewrite.
+- **Non-Linux platforms, including Windows, macOS and OpenBSD.** Linux-first
+  hobby rewrite.
 
 ## Still to be filled in
 
-Bands 0, 1 and 2 are all landed. **Every bottom panel is real** — the shared "not
-built yet" box is deleted — and **every scene draws its own data**: the Song Atlas
-terrain, the ASCII glyph grid and the timeline envelope were all previously
-drawing a fallback that photographed as content, and all three are now wired.
+`FEATURE_PARITY_PLAN.md` is the authoritative ordered list. In short, the critical
+path is: feed persisted project lanes into preview/export frames; drive automatic
+scene plans and cue settings; complete dirty/draft/autosave behavior; restore the
+remaining image, lyric-document and timeline workflows; package the full Python,
+schema and prompt support bundle; then run the expanded integration gate.
 
-Item O's three open questions are **settled**: the bidirectional `.musi` round trip
-is a harness (1650 values, both directions, delta 0), the `%.17g` float-spelling
-difference is recorded as a non-parity-bug in `project::io::write_f64`'s doc with
-the reasoning, and the version string is decided
-(`musializer-rs 0.1.0 (parity target musializer 2026.07, raylib 5.5)`).
-
-What remains:
-
-- **`tools/external_analysis.py` is not in this repository.** The C ships it, so
-  Assist draws correctly but cannot run: every workflow button is disabled and
-  the status line says why, which is precisely what the oracle draws with no
-  helper. Packaging it is real parity work, and it is the largest remaining gap.
-- **Item O's harness bullet**, but reframed by measurement rather than counted.
-  "Every pure module ported without a harness has since acquired one" is not
-  literally true, and the useful question is not how many are missing — it is
-  which modules have evidence that could distinguish a right formula from a
-  plausible wrong one. See the measured table above: two negative controls left
-  their modules' unit tests fully green. `beat_tracker` was chosen by that test
-  and found a real parity bug on the first run.
-- Two deferrals recorded with their reasons rather than left silent:
-  `Workspace::assist` would rather live on `Shell` with four `Cell`s deleted
-  (see `workspace.rs`), and autosave writes only the current track because only
-  it has a bound stream to read the sample rate from — the C autosaves all.
-- One known flake, named rather than left to be rediscovered:
-  `process::ffmpeg::tests::a_completed_encode_is_published_by_rename` failed once
-  under a full parallel `cargo test` and does not reproduce in isolation or in
-  repeated runs. It predates the current work and looks like a filesystem race in
-  the test itself.
-
-`REWRITE_PLAN.md`'s **"COMPLETION PLAN (session 3 onward)"** is the ordered
-version, and the NOTE ENTRIES below it record what each landed item changed about
-the plan it was written from.
+Do not duplicate that checklist here. The deliberate exclusions immediately
+above and the rules throughout this guide remain authoritative.

@@ -2,8 +2,8 @@
 
 ## Status
 
-The C repository is feature frozen. **The rewrite is built and runs**; what
-remains is listed under "Where this actually stands" immediately below.
+The C repository is feature frozen. **The rewrite is built and runs**; current
+work is tracked only in `FEATURE_PARITY_PLAN.md`.
 
 Source reference:
 
@@ -24,46 +24,30 @@ The objective is a fun, usable Rust Musializer, based on the hobby-C-project.
 
 ## Where this actually stands
 
-**Last updated 2026-07-31.** Read this before anything else in this file, because
-most of what follows was written before the port existed and describes a plan
-rather than the tree.
+**Historical document.** The one current, ordered task list is now
+[`FEATURE_PARITY_PLAN.md`](FEATURE_PARITY_PLAN.md). It consolidates every live
+feature gap, inherited handoff, deliberate exclusion and final gate against the
+frozen C oracle. Do not treat the phase sketches or completion plan below as an
+active queue.
 
-Bands 0, 1 and 2 are landed and committed on `master`. The application builds,
-opens a window, plays audio, draws all ten scenes from their own data, opens and
-saves `.musi` projects, exports video through FFmpeg, and carries every bottom
-panel for real — there is no shared "not built yet" box left. `tools/verify.sh`
-is **19 passed, 0 failed**, including thirteen differential harnesses against the
-frozen C and a headless capture gate.
+At the 2026-07-31 audit baseline, Bands 0, 1 and 2 were landed, the Rust head was
+`e32705c`, and `tools/verify.sh` was **19 passed, 0 failed**. The audit nevertheless
+found application-boundary gaps not covered by those gates: project lyrics,
+semantic data and merged events do not reach preview/export frames; automatic
+scene plans are persisted but not driven; and several C workflows and durability
+guards remain incomplete. Those findings and their dependency order live only in
+the feature-parity plan.
 
-What is left, in the order a session should probably take it:
+The NOTE ENTRIES below remain the record of what actually happened. Keep them as
+history and evidence; add or close current work in `FEATURE_PARITY_PLAN.md`.
 
-1. **Package `tools/external_analysis.py`.** The C ships it and this repository
-   does not, so Assist draws correctly but every workflow button is disabled. This
-   is the largest remaining *parity* gap and it is real work, not a stub.
-2. **Item O's harness bullet**, reframed. See the session-3 note "Item O, part
-   two": the question is not how many modules lack a harness, it is which modules
-   have evidence that could distinguish a right formula from a plausible wrong
-   one. `beat_tracker` was picked by that test and found a real parity bug.
-3. **Two recorded deferrals**, both with their reasons in the code:
-   `Workspace::assist` wants to live on `Shell` with four `Cell`s deleted (see
-   `workspace.rs`), and autosave writes only the current track because only it has
-   a bound stream to read the sample rate from — the C autosaves all.
-
-Everything deliberately *not* built is in `AGENTS.md` under "Not built, and not
-going to be", which is where a user would look for the difference list.
-
-The NOTE ENTRIES sections are the only record of what actually happened. Read them
-before assuming any section above describes reality — the prose describes the
-plan, the notes describe the outcome, and the two have diverged more than once.
-
-### Handoff: how this file was originally organised
+### Handoff: how this historical file was originally organised
 
 The rest of this document is the plan as written at the start, kept because the
 reasoning in it is still the reasoning the code follows. Two navigation notes:
 
-- **"COMPLETION PLAN (session 3 onward)"** supersedes the phase sketches for
-  everything that remains, and carries the dependency order and the definition of
-  done each item was held to.
+- **"COMPLETION PLAN (session 3 onward)"** superseded the original phase sketches
+  during session 3. It is now itself superseded by `FEATURE_PARITY_PLAN.md`.
 - The **source ownership map** and the fleet layout describe a fan-out that has
   already happened. They are history, not instructions.
 
@@ -842,12 +826,12 @@ the frozen C project on every Rust iteration.
 
 - [x] User announces feature freeze.
 - [x] Frozen C commit recorded above.
-- [ ] `AGENTS.md` expanded with the actual Cargo commands and crate map.
-- [ ] Rust/raylib binding choice proven by the vertical slice.
+- [x] `AGENTS.md` expanded with the actual Cargo commands and crate map.
+- [x] Rust/raylib binding choice proven by the vertical slice.
 - [x] Shared types assigned to the integration owner.
 - [x] Six workstreams assigned disjoint files.
-- [ ] Synthetic fixtures copied or regenerated without private material.
-- [ ] P0 and P1 achieved before broad scene translation.
+- [x] Synthetic fixtures copied or regenerated without private material.
+- [x] P0 and P1 achieved before broad scene translation.
 
 Then release the token goblins.
 
@@ -2000,7 +1984,7 @@ than it looks.** Three parts, two of them done:
   a staged copy every frame in `main.rs`, and the inspector already shows a routed
   row in accent with a "routed" readout.
 - [DONE] The **editor state**: `core::ui::route_editor_state` is ported.
-- [TODO] The **editor UI** — and it needs no design work, which this note
+- [COMPLETED LATER] The **editor UI** — and it needs no design work, which this note
   originally got wrong. It is **not** a new panel and it is **not** the toolbar's
   `+ Feel` / `+ Scene` / `+ Custom` row (those are manual *event* markers, a
   different feature). The route editor expands **the setting's own row inside the
@@ -2011,7 +1995,7 @@ than it looks.** Three parts, two of them done:
   close/context-change guards. All of that is specified in
   `route_editor_state.h:10-16` and already ported. What is missing is the drawing
   and the widget wiring, nothing more.
-- [TODO] The **persistence half**. Six functions Agent B left in
+- [COMPLETED LATER] The **persistence half**. Six functions Agent B left in
   `project::model` belong in `scene::routes`: `mapping_is_constant`,
   `constant_mapping`, `mappings_supported`, `export_mappings`,
   `import_mappings`, `parse_route_spec`. Move them wholesale — splitting the
@@ -2142,25 +2126,25 @@ Keep what worked and close what did not:
 
 ### Definition of done — applies to every item
 
-An item is done when **all** of these hold. This is the checklist that would have
-caught the font gap and the missing welcome screen.
+An item was held to all of the following. This historical checklist is retained
+for rationale; its live successor is in `FEATURE_PARITY_PLAN.md`.
 
-- [ ] It draws, and `tools/headless_check.sh` **captures it** at 1280x720 *and*
+- It draws, and `tools/headless_check.sh` **captures it** at 1280x720 *and*
       at the 960x640 minimum. A surface nothing photographs does not get reviewed.
-- [ ] The capture is reachable: if the state needs a probe flag to reach, the flag
+- The capture is reachable: if the state needs a probe flag to reach, the flag
       exists. `--ui-probe` already carries `panel=`, `assist=`, `lyric=`, `style=`,
       `fonts=`, `lyrics-file=` and they currently report "not implemented" —
       honouring them *is* part of the item.
-- [ ] The report prints **evidence, not existence**: a line a script can assert
+- The report prints **evidence, not existence**: a line a script can assert
       on, distinguishing "drew something" from "did the thing". Follow the
       `fonts:` and `reopen:` lines.
-- [ ] Anything with a C counterpart that is pure gets a **differential harness**
+- Anything with a C counterpart that is pure gets a **differential harness**
       (`tests/differential/` + `crates/musializer-core/examples/` + `tools/`). The
       pattern found a seven-way error in a module that looked finished.
-- [ ] `cargo clippy --all-targets` silent, `cargo fmt --check` clean, no new
+- `cargo clippy --all-targets` silent, `cargo fmt --check` clean, no new
       `unsafe` without a `SAFETY:` comment *and* a row in `AGENTS.md`.
-- [ ] `tools/verify.sh` green, oracle still clean at `9300af9`.
-- [ ] Divergences from the oracle recorded with their reason, per `AGENTS.md`'s
+- `tools/verify.sh` green, oracle still clean at `9300af9`.
+- Divergences from the oracle recorded with their reason, per `AGENTS.md`'s
       parity section.
 
 ### The work

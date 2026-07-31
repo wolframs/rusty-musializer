@@ -78,10 +78,12 @@ the layout, analysis and state-machine code testable without a window.
 
 `AGENTS.md` is the working guide: architecture decisions, the `unsafe` inventory,
 the differential testing method, and an explicit list of what is deliberately not
-built. `REWRITE_PLAN.md` carries the plan and a running record of what actually
-happened, which is not always the same thing.
+built. [`FEATURE_PARITY_PLAN.md`](FEATURE_PARITY_PLAN.md) is the sole current
+completion queue and C-to-Rust feature ledger. `REWRITE_PLAN.md` is the historical
+plan and running record of what actually happened, which is not always the same
+thing.
 
-Deliberately not built: microphone capture, hot reload, Windows and macOS.
+Deliberately not built: microphone capture, hot reload and non-Linux platforms.
 
 ## Licence
 
