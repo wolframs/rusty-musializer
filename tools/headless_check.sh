@@ -11,6 +11,8 @@
 #   - WAYLAND_DISPLAY unset, so GLFW cannot pick the operator's compositor;
 #   - PULSE_SERVER pointed at a path that cannot resolve, so a check never opens
 #     a client stream on the audio server the operator is using;
+#   - every application launch also passes --mute, which leaves decoded/analyzer
+#     PCM intact while forcing raylib's process-local master output to zero;
 #   - every artifact under build/, which .gitignore excludes.
 #
 # Usage:
@@ -82,7 +84,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" \
+    ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 \
         --probe-frames "$PROBE_FRAMES" \
         --probe-shot "$SHOT" \
@@ -152,7 +154,7 @@ capture() {
     env -u WAYLAND_DISPLAY \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer "$FIXTURE" \
+        ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -260,7 +262,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" \
+    ./target/debug/musializer --mute "$FIXTURE" \
         --probe-frames 10 --scene ascii --ascii-image "$BAD_IMAGE" \
     >"$OUT_DIR/ascii-image-refused.txt" 2>&1
 bad_status=$?
@@ -318,7 +320,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$LYRIC_DIR/source.wav" \
+    ./target/debug/musializer --mute "$LYRIC_DIR/source.wav" \
         --save-project "$LYRIC_PROJECT" \
     >"$LYRIC_DIR/save.txt" 2>&1
 LYRIC_SAVE=$?
@@ -339,7 +341,7 @@ else
         env -u WAYLAND_DISPLAY \
             DISPLAY="$DISPLAY_NUM" \
             PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-            ./target/debug/musializer --project "$LYRIC_PROJECT" \
+            ./target/debug/musializer --mute --project "$LYRIC_PROJECT" \
                 --size "$size" \
                 --probe-frames 30 \
                 --probe-shot "$out" \
@@ -384,7 +386,7 @@ for size in 1280x720 960x640; do
     env -u WAYLAND_DISPLAY \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer \
+        ./target/debug/musializer --mute \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -419,7 +421,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" \
+    ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 \
         --probe-frames 120 \
         --probe-reopen "$FIXTURE_TWO" \
@@ -477,7 +479,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$PROJECT_DIR/source.wav" \
+    ./target/debug/musializer --mute "$PROJECT_DIR/source.wav" \
         --save-project "$PROJECT" \
     >"$SAVE_LOG" 2>&1
 SAVE_STATUS=$?
@@ -498,7 +500,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --project "$PROJECT" \
+    ./target/debug/musializer --mute --project "$PROJECT" \
         --size 1280x720 \
         --probe-frames 90 \
         --probe-shot "$OUT_DIR/project-open.png" \
@@ -677,7 +679,7 @@ assist_capture() {
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         "${helper_env[@]}" \
-        ./target/debug/musializer "$FIXTURE" \
+        ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -720,7 +722,7 @@ assist_capture() {
 set +e
 env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" --size 1280x720 --probe-frames 3 \
+    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --probe-frames 3 \
     >"$OUT_DIR/assist-probe.txt" 2>&1
 set -e
 ASSIST_WIRED=0
@@ -772,7 +774,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" \
+    ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 --probe-frames 5 \
         --ui-probe "panel=export,assist=confirm" \
     >"$OUT_DIR/assist-misplaced.txt" 2>&1
@@ -796,7 +798,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" \
+    ./target/debug/musializer --mute "$FIXTURE" \
         --analysis-bridge "$BRIDGE_DIR/absent.bridge.tsv" \
         --size 1280x720 --probe-frames 5 \
     >"$BRIDGE_LOG" 2>&1
@@ -840,7 +842,7 @@ hud_state() {
     env -u WAYLAND_DISPLAY \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer "$FIXTURE" \
+        ./target/debug/musializer --mute "$FIXTURE" \
             --size 1280x720 --probe-frames 10 --probe-shot "$out" "$@" \
         >"$OUT_DIR/$name.txt" 2>&1
     local status=$?
@@ -995,7 +997,7 @@ set +e
 env -u WAYLAND_DISPLAY \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer "$FIXTURE" \
+    ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 --probe-frames 5 \
         --ui-probe "panel=tune,route=loom.wieght" \
     >"$OUT_DIR/route-editor-typo.txt" 2>&1

@@ -32,6 +32,30 @@ tools/differential_*.sh            # one per ported pure module, vs the frozen C
                                    #   verify.sh runs all of them; see the table below
 ```
 
+## Test audio must never reach the operator's headphones
+
+At the start of any session that may run the application, scene probes or UI
+tests, identify every command that can initialize playback and confirm its mute
+mechanism **before launching it**. The required outcome is zero audible output
+from this process, not quieter test audio.
+
+- Pass `--mute` to every direct application invocation used for testing. It sets
+  raylib's master output volume to zero while leaving decoded samples, the audio
+  callback, analyzer input and scene PCM unchanged. Do not make a fixture silent
+  or zero its samples to achieve quiet playback; that invalidates the test.
+- Use `tools/headless_check.sh` for scene/UI automation when possible. It already
+  points `PULSE_SERVER` at an unresolvable private path in addition to using the
+  application's mute path, so it cannot reach the operator's real audio sink.
+- `cargo test` and pure differential harnesses do not open an audio device. If a
+  new test or helper does, give it an explicit per-process mute/null sink and
+  document why the PCM path remains real.
+- Never change the desktop, device or system-wide volume as test setup. That
+  mutates the operator's session and can still race with another process. Silence
+  must be scoped to the Musializer process under test.
+- If a command cannot be proven silent without changing the PCM being tested, do
+  not run it on the operator's session. Adapt it to `--mute`, isolate its sink, or
+  use the existing Xvfb/headless path first.
+
 ## Differential testing against the oracle
 
 Every script compiles the relevant `../musializer/src/*.c` with output going into
