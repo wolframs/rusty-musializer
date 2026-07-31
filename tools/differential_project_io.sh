@@ -66,7 +66,7 @@ OUT_DIR="build/differential/project_io"
 mkdir -p "$OUT_DIR"
 
 for source in project_io.c project.c sha256.c event_timeline.c lyrics.c \
-              scene_routes.c scene_settings.c; do
+              scene_routes.c scene_settings.c scene_event_merge.c semantic_lane.c; do
     if [ ! -f "$ORACLE_SRC/$source" ]; then
         echo "error: oracle source not found at $ORACLE_SRC/$source" >&2
         exit 1
@@ -87,6 +87,8 @@ cc -O2 -std=c99 -Wall -Wextra \
     "$ORACLE_SRC/lyrics.c" \
     "$ORACLE_SRC/scene_routes.c" \
     "$ORACLE_SRC/scene_settings.c" \
+    "$ORACLE_SRC/scene_event_merge.c" \
+    "$ORACLE_SRC/semantic_lane.c" \
     -lm
 
 echo "=== building the Rust side ==="

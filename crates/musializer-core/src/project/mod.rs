@@ -9,6 +9,7 @@ pub mod assets;
 pub mod caption_layout;
 pub mod editor_draft;
 pub mod event_timeline;
+pub mod frame_lanes;
 pub mod io;
 pub mod lyrics;
 pub mod model;

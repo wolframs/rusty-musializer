@@ -1,6 +1,6 @@
 //! The export panel, the progress screen, and the session that drives them.
 //!
-//! **Owner: Agent H.** C sources: `draw_export_panel` (`plug.c:2543-2659`),
+//! C sources: `draw_export_panel` (`plug.c:2543-2659`),
 //! `start_rendering_track_to` (`:6863-7118`), `start_rendering_track`
 //! (`:7120-7138`), `rendering_screen` (`:7873-8058`) and
 //! `finish_rendering_track` (`:7252-7280`), over `render_export.c` and
@@ -30,18 +30,15 @@
 //! # Why the session is not in `main.rs`
 //!
 //! `main.rs` owns the window, the audio device and the analyzer, and the export
-//! loop needs all three — but it needs them for eight lines, and putting the
-//! loop there would put the oracle's most order-sensitive code in the file
-//! nobody in a fan-out may touch. So the session takes `&mut crate::App` and the
-//! handles it needs, and `main.rs`'s share is one call.
-
-// Everything below [`ExportSession`] is reachable only from `main.rs`, and this
-// fan-out does not edit `main.rs`.
+//! loop needs all three only at the session boundary. Keeping the transport here
+//! makes `main.rs`'s share one call while preview and export still use the same
+//! project-frame builder.
 use std::path::{Path, PathBuf};
 
 use musializer_core::audio::AudioAnalyzerConfig;
+use musializer_core::project::frame_lanes::SceneFrameTiming;
 use musializer_core::scene::routes::RouteSources;
-use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneInstance};
+use musializer_core::scene::{SceneAudioFrame, SceneInstance};
 use musializer_core::timing::render_export::{FrameRate, Quality, RenderExportConfig, Resolution};
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
@@ -61,10 +58,8 @@ use crate::scene_host;
 
 /// Widget id namespace for this panel.
 ///
-/// A local constant rather than a row in `widgets::id`, because adding one there
-/// is an edit to a file six agents share. The value continues that module's
-/// sequence and the integration owner is asked to fold it in at merge; the
-/// numbers are what must not collide, and 7 is free.
+/// Kept beside the panel because only its controls use this namespace; the value
+/// aliases the central allocation so collisions remain testable in one place.
 const EXPORT_WIDGETS: u32 = widgets::id::EXPORT;
 
 /// What the export panel asked for this frame.
@@ -592,6 +587,10 @@ pub(crate) struct ExportSession {
     /// back to it (`plug.c:6918-6919`, restored at `:7276-7279`).
     restore_position: f32,
     restore_playing: bool,
+    /// The first encoded frame names the project data it saw. A rendered picture
+    /// cannot prove which lane produced it, and the same line lets the headless
+    /// gate compare export with a parked preview at the identical scene time.
+    reported_frame_lanes: bool,
 }
 
 /// Builds any whole-track data the export's frames will need, before the first one
@@ -736,6 +735,7 @@ impl ExportSession {
             pixels,
             restore_position,
             restore_playing,
+            reported_frame_lanes: false,
         })
     }
 
@@ -870,15 +870,36 @@ impl ExportSession {
             .workspace
             .current()
             .map_or(0.0, |track| track.duration_seconds);
-        let frame = SceneFrame {
-            time_seconds: self.job().scene_time(),
-            duration_seconds,
-            delta_seconds: delta,
-            frame_index: self.job().frame_index(),
-            audio: audio_frame,
-            settings: effective,
-            ..SceneFrame::idle(effective)
-        };
+        let time_seconds = self.job().scene_time();
+        let frame_lanes = crate::project_frame_lanes(app.workspace.current(), time_seconds);
+        let lane_status = frame_lanes.status();
+        let frame = frame_lanes.scene_frame(
+            SceneFrameTiming {
+                time_seconds,
+                duration_seconds,
+                delta_seconds: delta,
+                frame_index: self.job().frame_index(),
+            },
+            audio_frame,
+            effective,
+        );
+
+        if self.job().draws_this_frame() && !self.reported_frame_lanes {
+            println!(
+                "export frame lanes: t={time_seconds:.3} lyric={} semantic={} source={} merged-events={}",
+                lane_status
+                    .lyric_id
+                    .map_or_else(|| "none".to_owned(), |id| id.to_string()),
+                if lane_status.semantic_available {
+                    "available"
+                } else {
+                    "unavailable"
+                },
+                lane_status.semantic_source_id,
+                lane_status.merged_event_count,
+            );
+            self.reported_frame_lanes = true;
+        }
 
         if !self.job().draws_this_frame() {
             // Prepared, not drawn: this is what makes a windowed export
@@ -914,6 +935,7 @@ impl ExportSession {
                         scene_host::TrackAssets {
                             atlas_map: track.atlas_map(),
                             ascii_grid: track.ascii_grid(),
+                            caption_style: Some(&track.caption_style),
                         }
                     });
             renderer.draw(
@@ -1139,8 +1161,8 @@ mod tests {
     /// silently does nothing.
     #[test]
     fn every_control_reaches_the_application() {
-        // A click must never be swallowed. This test replaces one Agent H wrote
-        // to assert the opposite while the panel had no `ShellCommand`s to reach
+        // A click must never be swallowed. This replaces the temporary test that
+        // asserted the opposite while the panel had no `ShellCommand`s to reach
         // — it asserted `!PANEL_WIRED` deliberately, so that flipping the flag
         // would break it and force this rewrite rather than let a stale premise
         // pass quietly.

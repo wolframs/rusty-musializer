@@ -73,7 +73,7 @@ is never touched.
 | `differential_preset_store.sh` | 11 scene tokens, 44 presets, 3660 bytes of store JSON |
 | `differential_song_atlas_map.sh` | 912 slices, 29374 values, largest delta **0** |
 | `differential_ascii_art.sh` | 39263 cells, 329738 values, largest delta **0** |
-| `differential_project_io.sh` | 1650 values, **both `.musi` round trips**, largest delta **0** |
+| `differential_project_io.sh` | 2550 values, **both `.musi` round trips** plus frame-lane boundaries, largest delta **0** |
 | `differential_timeline_view.sh` | 30865 records, 204953 values, largest delta **0** |
 | `differential_layout.sh` | 27547 records, 527187 values, largest delta **0** |
 | `differential_beat_tracker.sh` | 12352 records, 123522 values, largest delta **0** — **found a parity bug** |

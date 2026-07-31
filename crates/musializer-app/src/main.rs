@@ -33,12 +33,14 @@ use std::path::{Path, PathBuf};
 
 use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
 use musializer_core::project::event_timeline::ManualEventAction;
+use musializer_core::project::frame_lanes::{FrameLaneStatus, ProjectFrameLanes, SceneFrameTiming};
+use musializer_core::project::model::CaptionFace;
 use musializer_core::project::preset_store::{
     self, PresetAction, PresetLibrary, SharedPresetsView,
 };
 use musializer_core::scene::routes::{RouteSources, RouteTable};
 use musializer_core::scene::settings;
-use musializer_core::scene::{SceneAudioFrame, SceneFrame, SceneId, SceneInstance, SceneSettings};
+use musializer_core::scene::{SceneAudioFrame, SceneId, SceneInstance, SceneSettings};
 use musializer_core::scenes::ascii_field::ascii_art;
 use musializer_core::timing::render_export::{Quality as RenderQuality, RenderExportConfig};
 use musializer_core::ui::notice::Severity;
@@ -74,6 +76,65 @@ use workspace::{Track, Workspace};
 /// Per-track seeds come from [`Workspace::inherited_scene`]; this is only the
 /// value the very first track inherits.
 const DEFAULT_SCENE_SEED: u64 = 0x4D55_5349_414C_495A;
+
+/// Samples every project-owned scene lane through one preview/export path.
+///
+/// This is the application-boundary half of the oracle's `make_scene_frame`
+/// (`plug.c:1115-1185`). The returned value owns its merged events and copied
+/// lyric, so neither caller can accidentally borrow a previous track's view.
+pub(crate) fn project_frame_lanes(track: Option<&Track>, time_seconds: f64) -> ProjectFrameLanes {
+    let lanes = track.map_or_else(ProjectFrameLanes::empty, |track| {
+        ProjectFrameLanes::build(
+            time_seconds,
+            &track.lyrics,
+            &track.semantic_events,
+            &track.manual_events,
+        )
+    });
+    if let Some(error) = lanes.merge_error() {
+        // The C reports the same failure through TraceLog and clears the view
+        // (`plug.c:1102-1110`). A corrupt in-memory lane should be impossible
+        // after project validation, but if that invariant is ever broken it must
+        // be visible and must not draw stale events.
+        eprintln!("EVENTS: could not build merged scene view: {error}");
+    }
+    lanes
+}
+
+/// Keeps the one GPU imported-face slot synchronized with the current track.
+///
+/// Project open verifies the bytes and records their runtime path before this is
+/// called. Rasterization remains a window-owned operation, so it happens here,
+/// before either preview or export begins drawing (`plug.c:383-427`, `:4971-4990`).
+fn sync_caption_face(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    fonts: &mut Faces,
+    app: &mut App,
+    last_request: &mut Option<PathBuf>,
+) {
+    let request = app.workspace.current().and_then(|track| {
+        (track.caption_style.face == CaptionFace::Imported)
+            .then(|| track.caption_font_path.clone())
+            .flatten()
+    });
+    if *last_request == request {
+        return;
+    }
+    *last_request = request.clone();
+    match request {
+        None => fonts.clear_imported(),
+        Some(path) if fonts.load_imported(rl, thread, &path) => {}
+        Some(path) => app.shell.notify(
+            Severity::Warning,
+            "Project caption font could not be read",
+            &format!(
+                "{} was verified as a project asset but could not be rasterized. Captions use Alegreya for this session.",
+                path.display()
+            ),
+        ),
+    }
+}
 
 fn main() -> std::process::ExitCode {
     match run() {
@@ -178,7 +239,8 @@ fn run() -> Result<std::process::ExitCode, String> {
 
     // After the window, because the atlas is a GPU upload. Never fails: a face
     // that will not rasterize falls back to raylib's default and says so.
-    let fonts = Faces::load(&mut rl, &thread);
+    let mut fonts = Faces::load(&mut rl, &thread);
+    let mut caption_font_request = None;
 
     let mut renderer = scene_host::SceneRenderer::load(&mut rl, &thread)?;
 
@@ -549,8 +611,8 @@ fn run() -> Result<std::process::ExitCode, String> {
     let mut report = Report::default();
 
     // `--save-project` without `--render` skips the main loop entirely
-    // (`musializer.c:617`, `:637`). The save itself is Agent B's and already
-    // reported above; honouring the skip keeps the exit path identical.
+    // (`musializer.c:617`, `:637`). The save itself was already reported above;
+    // honouring the skip keeps the exit path identical.
     // Render configuration onto the current track (`plug_configure_render`,
     // `plug.c:7145-7169`). Width and height move together, a zero means "leave
     // it", and an invalid result is refused whole rather than half-applied.
@@ -598,6 +660,15 @@ fn run() -> Result<std::process::ExitCode, String> {
         }
     }
 
+    // CLI export begins before the ordinary frame loop, so synchronize once here
+    // as well as at the top of each interactive frame.
+    sync_caption_face(
+        &mut rl,
+        &thread,
+        &mut fonts,
+        &mut app,
+        &mut caption_font_request,
+    );
     let mut export: Option<ExportSession> = None;
     // `--render` runs the export and exits (`musializer.c:650`), where an export
     // started from the panel returns to the workspace.
@@ -629,6 +700,13 @@ fn run() -> Result<std::process::ExitCode, String> {
     // `confirm_close`.
     let mut close_warned = false;
     while running {
+        sync_caption_face(
+            &mut rl,
+            &thread,
+            &mut fonts,
+            &mut app,
+            &mut caption_font_request,
+        );
         // Reasserted every frame rather than set once, so the tooltip a capture is
         // after is in the shot regardless of how many frames the run lasts — and
         // so a window that only gets its geometry after the first frame cannot
@@ -740,15 +818,18 @@ fn run() -> Result<std::process::ExitCode, String> {
         let routed = app.routes().apply(app.scene.id(), &sources, &base);
         let effective = routed.as_ref().unwrap_or(&base);
 
-        let frame = SceneFrame {
-            time_seconds,
-            duration_seconds,
-            delta_seconds: delta,
-            frame_index: report.frames,
-            audio: audio_frame,
-            settings: effective,
-            ..SceneFrame::idle(effective)
-        };
+        let frame_lanes = project_frame_lanes(app.workspace.current(), time_seconds);
+        report.frame_lanes = frame_lanes.status();
+        let frame = frame_lanes.scene_frame(
+            SceneFrameTiming {
+                time_seconds,
+                duration_seconds,
+                delta_seconds: delta,
+                frame_index: report.frames,
+            },
+            audio_frame,
+            effective,
+        );
         app.scene.update(&frame);
 
         let band_centre_hz = spectrum
@@ -773,6 +854,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     scene_host::TrackAssets {
                         atlas_map: track.atlas_map(),
                         ascii_grid: track.ascii_grid(),
+                        caption_style: Some(&track.caption_style),
                     }
                 });
 
@@ -2315,6 +2397,8 @@ struct Report {
     beat_intervals_learned: usize,
     onsets_seen: u64,
     flux_seen: f32,
+    /// Project-owned evidence attached to the most recently drawn preview frame.
+    frame_lanes: FrameLaneStatus,
     reopened: Option<Reopen>,
 }
 
@@ -2346,6 +2430,7 @@ impl Default for Report {
             beat_intervals_learned: 0,
             onsets_seen: 0,
             flux_seen: 0.0,
+            frame_lanes: FrameLaneStatus::default(),
             reopened: None,
         }
     }
@@ -2479,6 +2564,19 @@ impl Report {
             },
             None => println!("project:         no track"),
         }
+        println!(
+            "frame lanes:     lyric={} semantic={} source={} merged-events={}",
+            self.frame_lanes
+                .lyric_id
+                .map_or_else(|| "none".to_owned(), |id| id.to_string()),
+            if self.frame_lanes.semantic_available {
+                "available"
+            } else {
+                "unavailable"
+            },
+            self.frame_lanes.semantic_source_id,
+            self.frame_lanes.merged_event_count,
+        );
         // The three whole-track derivations, each one distinguishing "the scene
         // drew" from "the scene had something to draw". Every one of them is a
         // surface that looks plausible when it is empty: ASCII Field falls back to a

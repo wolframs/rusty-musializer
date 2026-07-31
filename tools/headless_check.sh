@@ -356,22 +356,211 @@ else
         fi
         # The line the picture cannot assert on its own: which pane is showing,
         # which cue the form is bound to, and whether the draft is dirty. Absent
-        # until `main.rs` prints it — see REWRITE_PLAN.md's Agent I note.
+        # until `main.rs` prints it, so the report is asserted as well as the PNG.
         echo "lyrics=$(sed -n 's/^lyrics: *//p' "$log" | head -1)"
         return "$status"
     }
 
     for size in 1280x720 960x640; do
-        lyric_capture "lyrics-cues-$size" "$size" "panel=lyrics,play=1" \
-            || echo "  (note: the lyric editor needs its shell.rs and main.rs hooks; see the Agent I note)"
-        lyric_capture "lyrics-selected-$size" "$size" "panel=lyrics,lyric=3,play=1" \
-            || echo "  (note: --ui-probe lyric= needs its main.rs hook)"
-        lyric_capture "lyrics-style-$size" "$size" "panel=lyrics,style=caption,play=1" \
-            || echo "  (note: --ui-probe style= needs its main.rs hook)"
+        lyric_capture "lyrics-cues-$size" "$size" "panel=lyrics,play=1" || SWEEP_FAILED=1
+        lyric_capture "lyrics-selected-$size" "$size" "panel=lyrics,lyric=3,play=1" || SWEEP_FAILED=1
+        lyric_capture "lyrics-style-$size" "$size" "panel=lyrics,style=caption,play=1" || SWEEP_FAILED=1
     done
     lyric_capture "lyrics-fonts-1280x720" 1280x720 \
         "panel=lyrics,style=caption,fonts=consent,play=1" \
-        || echo "  (note: the font pane is Agent K's; this frame shows the seam, not the browser)"
+        || SWEEP_FAILED=1
+fi
+
+echo "=== project-aware scene frames and shared captions ==="
+# A generated project whose three authored lanes all have an observable reader:
+# long UTF-8 lyrics reach the shared overlay, semantics modulate the scene, and
+# manual plus semantic events reach Constellation through the canonical merge.
+# Every application launch below is both process-muted and pointed at the private
+# unreachable Pulse server; the WAV and decoded PCM remain unchanged.
+if [ ! -f "$LYRIC_PROJECT" ]; then
+    echo "FAIL: the seeded project-lane fixture is unavailable" >&2
+    SWEEP_FAILED=1
+else
+FRAME_LANE_DIR="$OUT_DIR/frame-lanes"
+rm -rf "$FRAME_LANE_DIR"
+mkdir -p "$FRAME_LANE_DIR"
+
+make_frame_lane_variant() {
+    # make_frame_lane_variant NAME SCENE BOX [DROPPED_LANE]
+    local name="$1" scene="$2" box="$3" dropped="${4:-}"
+    local directory="$FRAME_LANE_DIR/$name"
+    mkdir -p "$directory"
+    cp "$LYRIC_PROJECT" "$directory/cues.musi"
+    cp -a "$LYRIC_DIR/cues.assets" "$directory/cues.assets"
+    local args=("$directory/cues.musi" --scene "$scene" --box "$box")
+    if [ -n "$dropped" ]; then
+        args+=(--drop "$dropped")
+    fi
+    python3 tools/seed_lyric_fixture.py "${args[@]}" >"$directory/seed.txt"
+}
+
+frame_lane_capture() {
+    # frame_lane_capture NAME
+    local name="$1"
+    local directory="$FRAME_LANE_DIR/$name"
+    set +e
+    env -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer --mute --project "$directory/cues.musi" \
+            --size 1280x720 \
+            --hud=0 \
+            --probe-frames 12 \
+            --probe-shot "$directory/preview.png" \
+            --ui-probe "time=1,play=0" \
+        >"$directory/preview.txt" 2>&1
+    local status=$?
+    set -e
+    local lanes scene
+    lanes="$(sed -n 's/^frame lanes: *//p' "$directory/preview.txt" | head -1)"
+    scene="$(sed -n 's/^scene: *//p' "$directory/preview.txt" | head -1)"
+    echo "$name: exit=$status scene=${scene:-<absent>} lanes=${lanes:-<absent>}"
+    if [ "$status" -ne 0 ] || [ ! -f "$directory/preview.png" ] || [ -z "$lanes" ]; then
+        return 1
+    fi
+}
+
+# Required scene surfaces, plus the two remaining box modes. Cadence receives the
+# lyric in its own scene composition and therefore intentionally has no shared box.
+make_frame_lane_variant shared-caption spectrum plate
+make_frame_lane_variant cadence cadence plate
+make_frame_lane_variant loom loom plate
+make_frame_lane_variant full constellation plate
+make_frame_lane_variant box-none spectrum none
+make_frame_lane_variant box-shadow spectrum shadow
+for name in shared-caption cadence loom full box-none box-shadow; do
+    frame_lane_capture "$name" || SWEEP_FAILED=1
+done
+
+FULL_LANES="$(sed -n 's/^frame lanes: *//p' "$FRAME_LANE_DIR/full/preview.txt" | head -1)"
+if [ "$FULL_LANES" != "lyric=1 semantic=available source=11 merged-events=4" ]; then
+    echo "FAIL: the seeded frame did not carry all project lanes: $FULL_LANES" >&2
+    SWEEP_FAILED=1
+fi
+IMPORTED_LINE="$(sed -n 's/^fonts: *//p' "$FRAME_LANE_DIR/full/preview.txt" | head -1)"
+case "$IMPORTED_LINE" in
+    *"imported="*"cues.assets/fonts/"*) : ;;
+    *)
+        echo "FAIL: the generated project did not rasterize its imported caption face: $IMPORTED_LINE" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+
+# All three box modes must paint differently. The composition unit test pins the
+# layout rule; these hashes prove each mode reached the GPU draw path.
+NONE_HASH="$(sha256sum "$FRAME_LANE_DIR/box-none/preview.png" | cut -d' ' -f1)"
+SHADOW_HASH="$(sha256sum "$FRAME_LANE_DIR/box-shadow/preview.png" | cut -d' ' -f1)"
+PLATE_HASH="$(sha256sum "$FRAME_LANE_DIR/shared-caption/preview.png" | cut -d' ' -f1)"
+echo "caption boxes: none=$NONE_HASH shadow=$SHADOW_HASH plate=$PLATE_HASH"
+if [ "$NONE_HASH" = "$SHADOW_HASH" ] || [ "$NONE_HASH" = "$PLATE_HASH" ] \
+    || [ "$SHADOW_HASH" = "$PLATE_HASH" ]; then
+    echo "FAIL: at least two caption box modes produced the same preview" >&2
+    SWEEP_FAILED=1
+fi
+
+# Lane-removal negative controls. Each variant differs by one JSON lane only;
+# report shape names what disappeared, while the hashes prove the loss is visible.
+make_frame_lane_variant no-lyrics constellation plate lyrics
+make_frame_lane_variant no-semantic constellation plate semantic
+make_frame_lane_variant no-manual constellation plate manual
+for name in no-lyrics no-semantic no-manual; do
+    frame_lane_capture "$name" || SWEEP_FAILED=1
+done
+if [ "$(sed -n 's/^frame lanes: *//p' "$FRAME_LANE_DIR/no-lyrics/preview.txt" | head -1)" \
+        != "lyric=none semantic=available source=11 merged-events=4" ]; then
+    echo "FAIL: dropping lyrics did not remove only the active lyric" >&2
+    SWEEP_FAILED=1
+fi
+if [ "$(sed -n 's/^frame lanes: *//p' "$FRAME_LANE_DIR/no-semantic/preview.txt" | head -1)" \
+        != "lyric=1 semantic=unavailable source=0 merged-events=2" ]; then
+    echo "FAIL: dropping semantics did not remove the semantic sample and events" >&2
+    SWEEP_FAILED=1
+fi
+if [ "$(sed -n 's/^frame lanes: *//p' "$FRAME_LANE_DIR/no-manual/preview.txt" | head -1)" \
+        != "lyric=1 semantic=available source=11 merged-events=2" ]; then
+    echo "FAIL: dropping manual events did not remove only the manual half of the merge" >&2
+    SWEEP_FAILED=1
+fi
+
+FULL_PREVIEW_HASH="$(sha256sum "$FRAME_LANE_DIR/full/preview.png" | cut -d' ' -f1)"
+for name in no-lyrics no-semantic no-manual; do
+    negative_hash="$(sha256sum "$FRAME_LANE_DIR/$name/preview.png" | cut -d' ' -f1)"
+    echo "preview negative control $name: $negative_hash"
+    if [ "$negative_hash" = "$FULL_PREVIEW_HASH" ]; then
+        echo "FAIL: dropping $name did not change the parked preview" >&2
+        SWEEP_FAILED=1
+    fi
+done
+
+# Repeat the full parked preview byte-for-byte: the same seed, time and project
+# must not depend on wall clock or mutable state inherited from another capture.
+cp "$FRAME_LANE_DIR/full/preview.png" "$FRAME_LANE_DIR/full/preview-first.png"
+frame_lane_capture full || SWEEP_FAILED=1
+FULL_REPEAT_HASH="$(sha256sum "$FRAME_LANE_DIR/full/preview.png" | cut -d' ' -f1)"
+if [ "$FULL_REPEAT_HASH" != "$FULL_PREVIEW_HASH" ]; then
+    echo "FAIL: the parked seeded preview was not deterministic" >&2
+    SWEEP_FAILED=1
+fi
+
+run_project_lane_export() {
+    # run_project_lane_export FIXTURE_NAME RUN_NAME
+    local fixture="$1" run="$2"
+    local directory="$FRAME_LANE_DIR/$fixture"
+    local output="$FRAME_LANE_DIR/$run.mp4"
+    set +e
+    env -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer --mute --project "$directory/cues.musi" \
+            --render "$output" --render-window 1 0.2 \
+            --resolution 640x360 --fps 30 --quality balanced \
+        >"$FRAME_LANE_DIR/$run-export.txt" 2>&1
+    local status=$?
+    set -e
+    if [ "$status" -ne 0 ] || [ ! -f "$output" ]; then
+        echo "FAIL: project-lane export $run exited $status" >&2
+        return 1
+    fi
+    ffmpeg -v error -y -i "$output" -frames:v 1 "$FRAME_LANE_DIR/$run-frame.png"
+}
+
+EXPORT_LANES_OK=1
+run_project_lane_export full full-a || EXPORT_LANES_OK=0
+run_project_lane_export full full-b || EXPORT_LANES_OK=0
+run_project_lane_export no-lyrics no-lyrics || EXPORT_LANES_OK=0
+run_project_lane_export no-semantic no-semantic || EXPORT_LANES_OK=0
+run_project_lane_export no-manual no-manual || EXPORT_LANES_OK=0
+if [ "$EXPORT_LANES_OK" -ne 1 ]; then
+    SWEEP_FAILED=1
+else
+    FULL_EXPORT_HASH="$(sha256sum "$FRAME_LANE_DIR/full-a-frame.png" | cut -d' ' -f1)"
+    FULL_EXPORT_REPEAT="$(sha256sum "$FRAME_LANE_DIR/full-b-frame.png" | cut -d' ' -f1)"
+    echo "project export determinism: $FULL_EXPORT_HASH / $FULL_EXPORT_REPEAT"
+    if [ "$FULL_EXPORT_HASH" != "$FULL_EXPORT_REPEAT" ]; then
+        echo "FAIL: the seeded project export was not deterministic" >&2
+        SWEEP_FAILED=1
+    fi
+    for name in no-lyrics no-semantic no-manual; do
+        negative_hash="$(sha256sum "$FRAME_LANE_DIR/$name-frame.png" | cut -d' ' -f1)"
+        echo "export negative control $name: $negative_hash"
+        if [ "$negative_hash" = "$FULL_EXPORT_HASH" ]; then
+            echo "FAIL: dropping $name did not change the exported frame" >&2
+            SWEEP_FAILED=1
+        fi
+    done
+    PREVIEW_PAYLOAD="$(sed -n 's/^frame lanes: *//p' "$FRAME_LANE_DIR/full/preview.txt" | head -1)"
+    EXPORT_PAYLOAD="$(sed -n 's/^export frame lanes: t=[^ ]* //p' "$FRAME_LANE_DIR/full-a-export.txt" | head -1)"
+    echo "preview/export frame data: preview=[$PREVIEW_PAYLOAD] export=[$EXPORT_PAYLOAD]"
+    if [ "$PREVIEW_PAYLOAD" != "$EXPORT_PAYLOAD" ]; then
+        echo "FAIL: preview and export saw different project lanes at t=1" >&2
+        SWEEP_FAILED=1
+    fi
+fi
 fi
 
 echo "=== the welcome screen, with no track open ==="
@@ -640,7 +829,7 @@ fi
 fi
 
 # ---------------------------------------------------------------------------
-# The Assist panel (Agent J).
+# The Assist panel.
 #
 # Its three interesting states are unreachable from the panel sweep above: the
 # default body is Ready, and the confirmation step -- the one the panel exists
@@ -715,10 +904,8 @@ assist_capture() {
 }
 
 # The panel draws from `ui/panels/assist.rs`, but reaching its states and
-# reporting them needs the `main.rs` and `shell.rs` seams in Agent J's NOTE
-# ENTRIES section. Until those land there is no `assist:` line to assert on, and
-# a check that silently passed would be worse than one that says why it did not
-# run. This is loud rather than fatal so an unrelated `verify.sh` stays readable.
+# reporting them needs the live `main.rs` and `shell.rs` seams. The report below
+# verifies those seams rather than treating a drawn panel body as sufficient.
 set +e
 env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
@@ -731,7 +918,7 @@ grep -q '^assist:' "$OUT_DIR/assist-probe.txt" && ASSIST_WIRED=1
 if [ "$ASSIST_WIRED" -eq 0 ]; then
     echo "SKIPPED: the report has no 'assist:' line, so the Assist panel is not"
     echo "         reachable from a probe yet. Apply the main.rs and shell.rs"
-    echo "         seams in REWRITE_PLAN.md's '#### Agent J' note, then rerun."
+    echo "         live application seams, then rerun."
 fi
 
 for size in 1280x720 960x640; do

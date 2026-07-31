@@ -47,7 +47,8 @@ The following are already delivered and must stay green:
 - Audio playback, analyzer and beat tracker
 - Per-scene settings, routes, route persistence and preset model/UI
 - Multi-track workspace and `.musi` open/save with asset verification
-- Bidirectional C/Rust `.musi` differential round trips: 1,650 values, delta 0
+- Bidirectional C/Rust `.musi` differential round trips and frame-lane boundary
+  selection: 2,550 values, delta 0
 - FFmpeg export, deterministic full/windowed rendering and publication
 - Lyrics editor, caption-style editor and local/imported font runtime support
 - Assist UI/state/controller and analysis-bridge import
@@ -90,17 +91,17 @@ P4 honesty and gate
 
 ### A1 — one project-aware `SceneFrame` path
 
-- [ ] Replace the preview and export uses of `..SceneFrame::idle(effective)` with
+- [x] Replace the preview and export uses of `..SceneFrame::idle(effective)` with
       one shared frame-building path.
-- [ ] At `time_seconds`, sample the current track's semantic lane with
+- [x] At `time_seconds`, sample the current track's semantic lane with
       `project::semantic_lane::sample`.
-- [ ] Select the active lyric with `LyricsDocument::at_time`.
-- [ ] Merge manual and semantic events through `SceneEventMerge`; preserve the
+- [x] Select the active lyric with `LyricsDocument::at_time`.
+- [x] Merge manual and semantic events through `SceneEventMerge`; preserve the
       C ordering and semantic-id qualification already pinned by the differential
       harness.
-- [ ] Feed the same semantic, lyric and merged-event view to preview and export.
-- [ ] Preserve the no-track behavior: default semantics, no lyric, empty events.
-- [ ] Define failure behavior visibly. An invalid merge must be reported and use
+- [x] Feed the same semantic, lyric and merged-event view to preview and export.
+- [x] Preserve the no-track behavior: default semantics, no lyric, empty events.
+- [x] Define failure behavior visibly. An invalid merge must be reported and use
       an empty frame view; it must not retain a prior track's events.
 
 Observable closure:
@@ -113,28 +114,42 @@ Observable closure:
 
 ### A2 — shared lyric captions
 
-- [ ] Port the application-side `draw_scene_lyric_overlay` composition using the
+- [x] Port the application-side `draw_scene_lyric_overlay` composition using the
       existing `caption_layout` and `runtime::font` machinery.
-- [ ] Draw the shared overlay after every scene except Cadence, which owns its
+- [x] Draw the shared overlay after every scene except Cadence, which owns its
       lyric composition just as the C app does.
-- [ ] Honor the project's caption anchor, width, size, margin, text/box colors,
+- [x] Honor the project's caption anchor, width, size, margin, text/box colors,
       box mode and imported caption face in both preview and export.
-- [ ] Keep the overlay resolution-independent through the export pixel scale.
-- [ ] Add evidence for long UTF-8 text, the three-line/ellipsis contract, all box
+- [x] Keep the overlay resolution-independent through the export pixel scale.
+- [x] Add evidence for long UTF-8 text, the three-line/ellipsis contract, all box
       modes, a non-default anchor and an imported face.
 
 ### A3 — frame-boundary evidence
 
-- [ ] Generate a synthetic `.musi` containing lyrics, semantic events and manual
+- [x] Generate a synthetic `.musi` containing lyrics, semantic events and manual
       events; do not commit user media.
-- [ ] Add a headless report line naming the active lyric id, semantic availability
+- [x] Add a headless report line naming the active lyric id, semantic availability
       and merged event count.
-- [ ] Capture at least one shared-caption scene, Cadence, Loom and Constellation.
-- [ ] Export selected frames and assert that seeded project lanes change the
+- [x] Capture at least one shared-caption scene, Cadence, Loom and Constellation.
+- [x] Export selected frames and assert that seeded project lanes change the
       output. Include a negative control that drops one lane and demonstrably
       changes the evidence.
-- [ ] Confirm the same fixture written by C and Rust produces equivalent lane
+- [x] Confirm the same fixture written by C and Rust produces equivalent lane
       selection at boundary timestamps.
+
+Completion evidence (2026-08-01, `Complete project-aware scene rendering`, this
+commit): `ProjectFrameLanes` is the shared preview/export constructor and owns a
+fresh merge so an invalid lane logs its error and exposes zero events. The pure
+suite pins no-track state, exact lyric/semantic boundaries, canonical ids/order,
+UTF-8 three-line ellipsis, all box modes, a non-default anchor and 2x export
+scaling. `tools/headless_check.sh` generates the `.musi` and bundled imported face,
+captures Spectrum, Cadence, Loom and Constellation, reports
+`lyric=1 semantic=available source=11 merged-events=4` in both preview and export
+at `t=1.000`, and repeats both full outputs deterministically. Removing lyrics,
+semantics or manual events changes both preview and export hashes and changes only
+the named report fields. The expanded bidirectional project harness compares 510
+values per path / 2,550 total at delta 0; its 1 ms-early lyric negative control
+produced four boundary failures in each direct comparison (12 discrepancies).
 
 ## P0 — automatic scene plans and cue semantics
 

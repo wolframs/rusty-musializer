@@ -3546,3 +3546,33 @@ convention as the C repository, per `../forgejo-sync-prompt.md`. The
 `worktree-agent-*` branches from the fan-out are **local only** and deliberately
 not pushed — they are all merged into `master` and pushing eighteen of them would
 be noise. They are also safe to delete whenever the operator wants.
+
+## NOTE ENTRY — 2026-08-01 — project-aware frame boundary and captions
+
+A1-A3 closed as one slice. Preview and export had each built a `SceneFrame` by
+overlaying clock/audio onto `SceneFrame::idle`, so every persisted project lane
+was erased at the last application boundary even though all of its pure models
+and scene readers were complete. `ProjectFrameLanes` now owns a fresh canonical
+merge plus the sampled semantic/lyric state and is the only constructor both
+paths use. Fresh ownership is the failure policy: a rejected merge is logged and
+empty, and cannot retain a previous track's event buffer.
+
+The genuinely surprising adjacent gap was imported caption faces. Project open
+already verified and restored `Track::caption_font_path`, and `runtime::font`
+already had the correct rasterizer/fallback, but nothing synchronized the path
+into the GPU face slot. A verified imported project therefore rendered in
+Alegreya without saying that its chosen face had never been attempted. The cache
+is now synchronized before CLI export and before interactive drawing, once per
+track/path request.
+
+Evidence is application-boundary evidence, not a compile claim. The generated
+project carries a long Greek/Cyrillic/Latin cue, two semantic events, two manual
+events, a top-left style and a bundled imported Alegreya. At `t=1.000`, preview
+and export both report lyric 1, semantic source 11 and four merged events. Dropping
+each lane independently changes both preview and export hashes; full runs repeat
+exactly. The project differential now samples six exact lyric/semantic boundaries
+after every C/Rust write/read/rewrite path: 510 values per comparison, 2,550
+total, delta 0. Its negative control sampled lyrics 1 ms early and caught all four
+affected boundaries in each direct comparison, 12 discrepancies total. The
+fixture lane-removal controls also caught the expected report and image changes
+for lyrics, semantics and manual events separately.

@@ -1,14 +1,12 @@
 //! The drawing halves of the scenes.
 //!
-//! **Owned per file:** Agent C owns the first five, Agent D the last five.
-//! This `mod.rs` belongs to the integration owner.
-//!
 //! Deterministic state lives in `musializer_core::scenes`; only code that needs
-//! raylib belongs here. Both scene agents draw lines through
-//! `musializer_runtime::draw` rather than each inventing line drawing.
+//! raylib belongs here. Scene modules share `musializer_runtime::draw`, while
+//! the application-side caption composition lives beside them.
 
 pub mod ascii_field;
 pub mod cadence;
+pub mod caption;
 pub mod constellation;
 pub mod loom;
 pub mod orbital_lattice;

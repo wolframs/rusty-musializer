@@ -59,6 +59,8 @@
 
 #include "project.h"
 #include "project_io.h"
+#include "scene_event_merge.h"
+#include "semantic_lane.h"
 
 /* ------------------------------------------------------------------------- */
 /* The dump                                                                  */
@@ -154,6 +156,42 @@ static void dump_events(const char *prefix, const Event_Timeline *timeline)
         dump_uint(key("%s.%zu.value_count", prefix, i), event->value_count);
         for (size_t j = 0; j < event->value_count; ++j) {
             dump_real(key("%s.%zu.value.%zu", prefix, i, j), (double)event->values[j]);
+        }
+    }
+}
+
+static void dump_frame_lanes(const Musi_Project *project)
+{
+    static const double times[] = {0.0, 1.5, 4.25, 8.0, 12.5, 187.3125};
+    Scene_Event_Merge merged;
+    Event_Timeline_Result result = scene_event_merge_build(
+        &merged, &project->manual_events, &project->semantic_events);
+    if (result != EVENT_TIMELINE_OK) {
+        fprintf(stderr, "frame lane merge failed: %d\n", (int)result);
+        exit(2);
+    }
+    Event_Timeline_View events = scene_event_merge_view(&merged);
+    for (size_t i = 0; i < sizeof(times)/sizeof(times[0]); ++i) {
+        Semantic_Frame semantic = {0};
+        (void)semantic_lane_sample(event_timeline_view(&project->semantic_events),
+                                   times[i], &semantic);
+        const Lyric_Cue *lyric = lyrics_at_time(&project->lyrics, times[i]);
+        dump_real(key("frame_lane.%zu.time", i), times[i]);
+        dump_uint(key("frame_lane.%zu.lyric_id", i), lyric != NULL ? lyric->id : 0);
+        dump_bool(key("frame_lane.%zu.semantic.available", i), semantic.available);
+        dump_uint(key("frame_lane.%zu.semantic.source_id", i), semantic.source_id);
+        dump_real(key("frame_lane.%zu.semantic.energy", i), semantic.energy);
+        dump_real(key("frame_lane.%zu.semantic.tension", i), semantic.tension);
+        dump_real(key("frame_lane.%zu.semantic.valence", i), semantic.valence);
+        dump_real(key("frame_lane.%zu.semantic.confidence", i), semantic.confidence);
+        dump_uint(key("frame_lane.%zu.events.count", i), events.count);
+        for (size_t j = 0; j < events.count; ++j) {
+            const Event_Record *event = &events.events[j];
+            dump_real(key("frame_lane.%zu.events.%zu.time", i, j),
+                      event->timestamp_seconds);
+            dump_uint(key("frame_lane.%zu.events.%zu.id", i, j), event->id);
+            dump_enum(key("frame_lane.%zu.events.%zu.type", i, j),
+                      event_type_name(event->type));
         }
     }
 }
@@ -305,6 +343,7 @@ static void dump_project(const Musi_Project *project)
 
     dump_events("semantic_events", &project->semantic_events);
     dump_events("manual_events", &project->manual_events);
+    dump_frame_lanes(project);
 }
 
 /* ------------------------------------------------------------------------- */

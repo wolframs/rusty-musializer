@@ -46,6 +46,7 @@ use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use musializer_core::project::event_timeline::EventTimeline;
+use musializer_core::project::frame_lanes::{ProjectFrameLanes, SceneFrameTiming};
 use musializer_core::project::io;
 use musializer_core::project::lyrics::{LyricCue, LyricsDocument};
 use musializer_core::project::model::{
@@ -57,6 +58,7 @@ use musializer_core::project::model::{
 use musializer_core::scene::events::{EventRecord, EventType, VALUE_CAPACITY};
 use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping};
 use musializer_core::scene::settings::MAX_CONTROLS;
+use musializer_core::scene::{SceneAudioFrame, SceneSettings};
 
 // ---------------------------------------------------------------------------
 // The dump
@@ -193,6 +195,72 @@ fn dump_events(prefix: &str, timeline: &EventTimeline) {
             dump_real(
                 &format!("{prefix}.{index}.value.{position}"),
                 f64::from(*value),
+            );
+        }
+    }
+}
+
+/// The application-boundary selection made from the project that was just read.
+/// These times pin every lyric start/end and the semantic cue boundary at 12.5.
+fn dump_frame_lanes(project: &Project) {
+    let settings = SceneSettings::new();
+    for (index, time_seconds) in [0.0, 1.5, 4.25, 8.0, 12.5, FIXTURE_DURATION]
+        .into_iter()
+        .enumerate()
+    {
+        let prefix = format!("frame_lane.{index}");
+        let lanes = ProjectFrameLanes::build(
+            time_seconds,
+            &project.lyrics,
+            &project.semantic_events,
+            &project.manual_events,
+        );
+        let status = lanes.status();
+        let frame = lanes.scene_frame(
+            SceneFrameTiming {
+                time_seconds,
+                duration_seconds: project.audio.duration_seconds,
+                ..SceneFrameTiming::default()
+            },
+            SceneAudioFrame::default(),
+            &settings,
+        );
+        dump_real(&format!("{prefix}.time"), time_seconds);
+        dump_uint(&format!("{prefix}.lyric_id"), status.lyric_id.unwrap_or(0));
+        dump_bool(
+            &format!("{prefix}.semantic.available"),
+            status.semantic_available,
+        );
+        dump_uint(
+            &format!("{prefix}.semantic.source_id"),
+            status.semantic_source_id,
+        );
+        dump_real(
+            &format!("{prefix}.semantic.energy"),
+            f64::from(frame.semantic.energy),
+        );
+        dump_real(
+            &format!("{prefix}.semantic.tension"),
+            f64::from(frame.semantic.tension),
+        );
+        dump_real(
+            &format!("{prefix}.semantic.valence"),
+            f64::from(frame.semantic.valence),
+        );
+        dump_real(
+            &format!("{prefix}.semantic.confidence"),
+            f64::from(frame.semantic.confidence),
+        );
+        dump_uint(&format!("{prefix}.events.count"), frame.events.len() as u64);
+        for (event_index, event) in frame.events.events.iter().enumerate() {
+            dump_real(
+                &format!("{prefix}.events.{event_index}.time"),
+                event.timestamp_seconds,
+            );
+            dump_uint(&format!("{prefix}.events.{event_index}.id"), event.id);
+            dump_enum(
+                &format!("{prefix}.events.{event_index}.type"),
+                event_type_name(event.event_type),
             );
         }
     }
@@ -389,6 +457,7 @@ fn dump_project(project: &Project) {
 
     dump_events("semantic_events", &project.semantic_events);
     dump_events("manual_events", &project.manual_events);
+    dump_frame_lanes(project);
 }
 
 // ---------------------------------------------------------------------------

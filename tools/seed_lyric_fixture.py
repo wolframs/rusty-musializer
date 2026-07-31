@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
-"""Puts synthetic lyric cues into a generated `.musi`, so the lyrics editor has
-something to photograph.
+"""Seed a generated `.musi` with synthetic frame-boundary evidence.
 
-The repository rule is synthetic fixtures only, and `REWRITE_PLAN.md` records the
-open question this answers: a round-trip fixture has to be *generated*, not
-committed from a real project. So `tools/headless_check.sh` saves a project from
-the synthetic sweep, this script writes cues into it, and the capture opens the
-result.
-
-Editing the file in place is safe because every digest in a `.musi` is over an
-*asset* — the audio, the imported face, the licence — and never over the
-document. The lyrics array carries none, which is why the project still opens and
-validates afterwards. If that ever stops being true, the capture will say so: the
-open path verifies every digest before a `Track` exists.
+The project itself is first written by Musializer from the synthetic sweep WAV,
+so this helper only fills the authored lanes and copies a first-party-shipped
+font into the generated asset bundle. No user media or durable fixture enters the
+repository. Asset digests cover bytes, not the JSON document, so these edits are
+safe and project open verifies every copied file before a `Track` exists.
 """
 
+import argparse
+import hashlib
 import json
 import pathlib
-import sys
+import shutil
 
-# Six lines, six cues: enough that the list scrolls at the 960x640 minimum and
-# does not at 1280x720, which is the difference the two captures exist to show.
+
+LONG_UTF8 = (
+    "Καλημέρα κόσμε — мир продолжает звучать; the seeded caption keeps wrapping "
+    "until the third line ends honestly with an ellipsis instead of losing this final clause"
+)
+
 LINES = [
-    "Hold the line, the sweep is rising",
+    LONG_UTF8,
     "Every band a step above",
     "Count the pulse, it never lies",
     "Down again to where we started",
@@ -31,13 +30,60 @@ LINES = [
 ]
 
 
+def digest(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def bundle_font(project_path: pathlib.Path) -> dict:
+    root = pathlib.Path(__file__).resolve().parents[1]
+    # Alegreya's shipped file carries the Greek and Cyrillic used by LONG_UTF8.
+    # Loading the same family through the imported slot still exercises the
+    # verified project-asset path without turning missing glyphs into evidence.
+    source = root / "resources/fonts/Alegreya-Regular.ttf"
+    licence_source = root / "resources/fonts/OFL.txt"
+    asset_root = project_path.with_suffix("").with_name(project_path.stem + ".assets")
+    font_dir = asset_root / "fonts"
+    font_dir.mkdir(parents=True, exist_ok=True)
+
+    font_sha = digest(source)
+    licence_sha = digest(licence_source)
+    bundled_font = font_dir / f"{font_sha}.otf"
+    bundled_licence = font_dir / f"{licence_sha}.txt"
+    shutil.copyfile(source, bundled_font)
+    shutil.copyfile(licence_source, bundled_licence)
+    relative_root = asset_root.name
+    return {
+        "path": f"{relative_root}/fonts/{bundled_font.name}",
+        "sha256": font_sha,
+        "family": "Seeded Alegreya",
+        "licence_path": f"{relative_root}/fonts/{bundled_licence.name}",
+        "licence_sha256": licence_sha,
+        "licence_name": "OFL-1.1",
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("project", type=pathlib.Path)
+    parser.add_argument(
+        "--drop",
+        choices=("lyrics", "semantic", "manual"),
+        help="negative control: omit exactly one project lane",
+    )
+    parser.add_argument("--box", choices=("none", "shadow", "plate"), default="plate")
+    parser.add_argument(
+        "--scene",
+        choices=("spectrum", "cadence", "loom", "constellation"),
+        default="constellation",
+    )
+    return parser.parse_args()
+
+
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} PROJECT.musi", file=sys.stderr)
-        return 2
-    path = pathlib.Path(sys.argv[1])
-    project = json.loads(path.read_text())
+    args = parse_args()
+    project = json.loads(args.project.read_text())
     duration = float(project["audio"]["duration_seconds"])
+
     cues = []
     for index, text in enumerate(LINES):
         start = 0.4 + index * 1.25
@@ -53,11 +99,77 @@ def main() -> int:
             }
         )
     if not cues:
-        print("the fixture is too short to hold a cue", file=sys.stderr)
-        return 1
-    project["lyrics"] = {"next_id": len(cues) + 1, "cues": cues}
-    path.write_text(json.dumps(project, indent=2))
-    print(f"seeded {len(cues)} lyric cues into {path}")
+        raise SystemExit("the fixture is too short to hold a cue")
+
+    project["lyrics"] = (
+        {"next_id": 1, "cues": []}
+        if args.drop == "lyrics"
+        else {"next_id": len(cues) + 1, "cues": cues}
+    )
+    project["semantic_events"] = (
+        []
+        if args.drop == "semantic"
+        else [
+            {
+                "timestamp_seconds": 0.0,
+                "id": 11,
+                "type": "semantic",
+                "values": [0.82, 0.91, -0.72, 0.97],
+            },
+            {
+                "timestamp_seconds": 2.0,
+                "id": 12,
+                "type": "semantic",
+                "values": [0.18, 0.23, 0.78, 0.88],
+            },
+        ]
+    )
+    project["manual_events"] = (
+        []
+        if args.drop == "manual"
+        else [
+            {
+                "timestamp_seconds": 0.5,
+                "id": 21,
+                "type": "cue",
+                "values": [0.33],
+            },
+            {
+                "timestamp_seconds": 1.0,
+                "id": 22,
+                "type": "custom",
+                "values": [0.66],
+            },
+        ]
+    )
+    project["caption_style"] = {
+        "face": "imported",
+        "box": args.box,
+        "anchor": "top_left",
+        "size_scale": 0.062,
+        "margin_scale": 0.055,
+        "width_scale": 0.34,
+        "text_rgba": "f8f2ffff",
+        "box_rgba": "120d2bd8",
+        "font": bundle_font(args.project),
+    }
+    project["scenes"][0]["scene_type"] = args.scene
+    project["output"].update(
+        {
+            "width": 640,
+            "height": 360,
+            "fps_numerator": 30,
+            "fps_denominator": 1,
+            "quality": "balanced",
+        }
+    )
+    args.project.write_text(json.dumps(project, indent=2) + "\n")
+    print(
+        f"seeded {len(project['lyrics']['cues'])} lyrics, "
+        f"{len(project['semantic_events'])} semantic events, "
+        f"{len(project['manual_events'])} manual events, "
+        f"box={args.box}, scene={args.scene}, drop={args.drop or 'none'}"
+    )
     return 0
 
 

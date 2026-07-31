@@ -1,8 +1,8 @@
 //! Binding and drawing the ten scenes.
 //!
-//! **This is the hookup point for Agents C and D.** Everything a scene needs to
-//! become visible goes through the two tables below, and each table has exactly
-//! one line per scene. Adding a scene is two edits, both marked `HOOKUP`.
+//! This is the registry and application-overlay crossing. Everything a scene
+//! needs to become visible goes through the descriptor/draw tables below, and
+//! the project lyric overlay is composed once after the selected draw arm.
 //!
 //! ## Why this file exists
 //!
@@ -14,9 +14,10 @@
 //! itself has to live *here*, because it is the only place that can see both
 //! halves.
 //!
-//! ## What is stubbed and what that means
+//! ## Future scene additions
 //!
-//! A scene whose deterministic half has not landed yet gets
+//! All ten current scenes are complete. A future scene whose deterministic half
+//! has not landed yet starts with
 //! [`StatelessScene`], and a scene whose drawing half has not landed yet gets
 //! [`draw_placeholder`] — a labelled card naming the scene and the C file it
 //! comes from. That is deliberate: **compilation beats completeness**, and a
@@ -37,12 +38,10 @@ use crate::scenes;
 /// stale state instead of reinterpreting it. Placeholder entries sit at 0 so a
 /// real port is always a visible bump.
 ///
-/// **HOOKUP (Agents C and D):** replace the `make_state` closure with your
-/// scene's constructor, e.g.
-/// `make_state: |seed| Box::new(musializer_core::scenes::loom::LoomState::new(seed))`,
-/// and bump `state_version` to 1. Spectrum genuinely has no state — the C sets no
-/// `update` for it (`scene_spectrum.c:149-154`) — so its `StatelessScene` is the
-/// finished article, not a stub.
+/// A future scene replaces its initial stateless closure with its state
+/// constructor and bumps `state_version`. Spectrum genuinely has no state — the
+/// C sets no `update` for it (`scene_spectrum.c:149-154`) — so its
+/// `StatelessScene` is the finished article, not a stub.
 #[must_use]
 pub fn descriptor(id: SceneId) -> SceneDescriptor {
     match id {
@@ -52,7 +51,6 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             state_version: 1,
             make_state: |_seed| Box::new(StatelessScene::new(SceneId::Spectrum)),
         },
-        // Agent C's four.
         SceneId::PulseField => SceneDescriptor {
             id,
             state_version: 1,
@@ -75,7 +73,6 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             state_version: 1,
             make_state: |seed| Box::new(core_scenes::song_atlas::SongAtlasState::new(seed)),
         },
-        // Agent D's five.
         SceneId::SpectralTerrarium => SceneDescriptor {
             id,
             state_version: 1,
@@ -190,20 +187,6 @@ pub fn oracle_source(id: SceneId) -> &'static str {
     }
 }
 
-/// Which agent owns a scene's port, for the placeholder card.
-#[must_use]
-#[allow(dead_code)]
-pub fn owner(id: SceneId) -> &'static str {
-    match id {
-        SceneId::Spectrum
-        | SceneId::PulseField
-        | SceneId::OrbitalLattice
-        | SceneId::AsciiField
-        | SceneId::SongAtlas => "Agent C",
-        _ => "Agent D",
-    }
-}
-
 /// GPU resources the drawing halves share.
 ///
 /// One owner for the whole application: a shader loaded per scene switch would
@@ -228,6 +211,9 @@ pub struct TrackAssets<'a> {
     /// procedural rolling spectrogram then — its other documented mode rather than
     /// a degraded one.
     pub ascii_grid: Option<&'a musializer_core::scenes::ascii_field::ascii_art::Grid>,
+    /// Project caption typography for the shared application overlay. `None`
+    /// only when there is no track, in which case there is no lyric either.
+    pub caption_style: Option<&'a musializer_core::project::model::CaptionStyle>,
 }
 
 pub struct SceneRenderer {
@@ -250,8 +236,7 @@ impl SceneRenderer {
     /// fixed-pixel details supersample without changing composition
     /// (`../musializer/src/scene.h:64-66`).
     ///
-    /// **HOOKUP (Agents C and D):** replace your scene's arm. If your drawing
-    /// half needs the deterministic state, recover it from `instance.state()`
+    /// A future drawing half recovers deterministic state from `instance.state()`
     /// with `as_any().downcast_ref::<YourState>()` — that downcast hook exists on
     /// [`musializer_core::scene::SceneState`] precisely for this crossing.
     #[allow(
@@ -338,12 +323,24 @@ impl SceneRenderer {
                 }
             }
         }
+        if id != SceneId::Cadence {
+            if let Some(style) = assets.caption_style {
+                scenes::caption::draw_scene_lyric_overlay(
+                    d,
+                    frame.lyric,
+                    fonts.caption_for(style.face),
+                    boundary,
+                    pixel_scale,
+                    style,
+                );
+            }
+        }
     }
 }
 
 /// A labelled card standing in for an unported scene.
 ///
-/// It names the scene, its C source and its owner, because a screenshot of a
+/// It names the scene and its C source, because a screenshot of a
 /// black rectangle cannot tell "not ported yet" from "ported and broken". It also
 /// draws a thin audio-reactive bar so the *host* — analyzer, bridge, frame loop —
 /// is still visibly working behind the missing scene.
@@ -386,7 +383,7 @@ pub fn draw_placeholder(d: &mut RaylibDrawHandle<'_>, id: SceneId, boundary: Rec
         Color::get_color(0x8fa1b8ff),
     );
     d.draw_text(
-        &format!("drawing half not ported yet ({})", owner(id)),
+        "drawing half not ported yet",
         x as i32 + 16,
         y as i32 + 74,
         16,
@@ -409,7 +406,7 @@ mod tests {
     fn every_scene_has_a_descriptor_whose_state_agrees_with_its_id() {
         // The debug assertion inside SceneInstance::new checks this too, but only
         // in a debug build of the binary. Pinning it here means a mis-wired
-        // HOOKUP arm fails in `cargo test` rather than at runtime.
+        // registry arm fails in `cargo test` rather than at runtime.
         for id in SceneId::ALL {
             let instance = SceneInstance::new(descriptor(id), 7);
             assert_eq!(instance.id(), id, "{}", id.stable_name());
@@ -488,10 +485,9 @@ mod tests {
     }
 
     #[test]
-    fn every_scene_names_a_c_source_and_an_owner() {
+    fn every_scene_names_its_c_source() {
         for id in SceneId::ALL {
             assert!(oracle_source(id).ends_with(".c"), "{}", id.stable_name());
-            assert!(owner(id).starts_with("Agent"), "{}", id.stable_name());
         }
     }
 }
