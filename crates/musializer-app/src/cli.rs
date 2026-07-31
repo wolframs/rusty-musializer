@@ -204,6 +204,19 @@ pub struct UiProbe {
     pub seek_seconds: Option<f64>,
     /// Host-side window geometry, not plug state (`musializer.c:238-243`).
     pub size: Option<(u32, u32)>,
+    /// `hover=XxY`: park the pointer at a window coordinate.
+    ///
+    /// **Invented, and the only way a tooltip can be reviewed.** A headless run has
+    /// no pointer — `GetMousePosition` is the origin forever — so every hover state
+    /// in this interface was unphotographable, which by this project's own rule
+    /// means unreviewed. That rule has been paid for twice already: the welcome
+    /// screen ran a whole session in raylib's bitmap face because no capture
+    /// included it, and three whole-track derivations drew plausible fallbacks for
+    /// two bands for the same reason.
+    ///
+    /// Parks rather than moves: the position is reasserted every frame, so the tip
+    /// is in the shot regardless of how many frames the run lasts.
+    pub hover: Option<(f32, f32)>,
 }
 
 /// `fonts=` in a `--ui-probe` spec (`musializer.c:202-217`).
@@ -249,6 +262,13 @@ pub struct Cli {
     /// depends on them and on the report they produce.
     pub probe_frames: Option<u32>,
     pub probe_shot: Option<PathBuf>,
+    /// `--hud`: start with the diagnostic readout drawn over the preview.
+    ///
+    /// `None` means "decide from context", which is a probe run turning it on and
+    /// an interactive run leaving it off. Three-valued rather than a `bool` so that
+    /// `--hud=0` can turn it off *during* a probe run, which is how a capture of
+    /// the clean preview is taken.
+    pub hud: Option<bool>,
     /// Reopen this track halfway through a `--probe-frames` run.
     ///
     /// Exists to make the runtime track-swap path — detach, drop, drain, rebind
@@ -451,7 +471,7 @@ where
                 Some(probe) => cli.ui_probe = Some(probe),
                 None => cli.warn(
                     "Invalid --ui-probe spec; expected comma-separated panel=, \
-                     fullscreen=, time=, route=, or size= pairs",
+                     fullscreen=, play=, time=, route=, hover=XxY, or size= pairs",
                 ),
             },
 
@@ -460,6 +480,12 @@ where
                 Some(frames) => cli.probe_frames = Some(frames),
                 None => cli.warn("--probe-frames needs a positive frame count"),
             },
+            // Not the oracle's: its readout has no toggle because it has no
+            // readout. Spelled with an optional value so a probe run can turn the
+            // HUD back off, which is the only way to photograph a clean preview.
+            "--hud" => cli.hud = Some(true),
+            "--hud=1" | "--hud=on" => cli.hud = Some(true),
+            "--hud=0" | "--hud=off" => cli.hud = Some(false),
             "--probe-shot" => match value_of(&argv, i) {
                 Some(path) => cli.probe_shot = Some(PathBuf::from(path)),
                 None => cli.warn("--probe-shot needs a path"),
@@ -713,10 +739,24 @@ pub fn parse_ui_probe(spec: &str) -> Option<UiProbe> {
             "lyrics-file" => probe.lyrics_reference_path = Some(PathBuf::from(value)),
             "time" => probe.seek_seconds = Some(parse_seconds(value)?),
             "size" => probe.size = Some(parse_resolution(value)?),
+            "hover" => probe.hover = Some(parse_point(value)?),
             _ => return None,
         }
     }
     Some(probe)
+}
+
+/// `XxY` for `hover=`. Floats, because a control's centre rarely lands on an
+/// integer and a capture script should be able to say where it aimed.
+///
+/// Separated by `x` rather than a comma, matching `size=WxH`: the spec itself is
+/// comma-separated, so `hover=1121,449` parses as two broken pairs — which is what
+/// it did on the first run, and the warning said only "invalid spec".
+fn parse_point(text: &str) -> Option<(f32, f32)> {
+    let (x, y) = text.split_once('x')?;
+    let x: f32 = x.trim().parse().ok()?;
+    let y: f32 = y.trim().parse().ok()?;
+    (x.is_finite() && y.is_finite()).then_some((x, y))
 }
 
 /// `parse_ui_probe_flag` (`musializer.c:121-126`). Exactly `0` or `1`.
@@ -775,6 +815,7 @@ Export:
 
 Diagnostics:
   --mute                  Start with the output volume at zero
+  --hud[=0|1]             Draw the diagnostic readout over the preview (also H)
   --reload-once           Exercise one hot-reload handoff (unsupported)
   --ui-probe SPEC         Open a workspace panel and park the transport
                           for reproducible headless UI capture. SPEC is
@@ -815,6 +856,22 @@ Diagnostics:
 
 #[cfg(test)]
 mod tests {
+    /// `hover=` is separated by `x`, not by a comma.
+    ///
+    /// The spec itself is comma-separated, so `hover=1121,449` splits into two
+    /// broken pairs and the whole probe is rejected with a message that names no
+    /// key. That cost a capture round-trip to diagnose, which is exactly the sort
+    /// of thing a two-line test stops the next person paying for.
+    #[test]
+    fn a_hover_point_uses_the_same_separator_as_a_size() {
+        let probe = parse_ui_probe("play=1,hover=1121x449").expect("valid spec");
+        assert_eq!(probe.hover, Some((1121.0, 449.0)));
+        assert!(probe.playing);
+        assert_eq!(parse_ui_probe("hover=1121,449"), None);
+        assert_eq!(parse_ui_probe("hover=nonsense"), None);
+        assert_eq!(parse_ui_probe("hover=1x"), None);
+    }
+
     use super::*;
     use musializer_core::scene::routes::{AnalysisSource, Interpolation};
 

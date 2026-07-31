@@ -114,6 +114,15 @@ case "${FONT_LINE:-absent}" in
         exit 1
         ;;
 esac
+# The icon face separately, because its fallback is not a degraded face but a
+# *different interface*: the transport row draws text labels instead. That is a
+# deliberate, working fallback rather than a failure, so the check reports which
+# one is on screen rather than refusing — but silently photographing the wrong
+# one for weeks is exactly the failure mode this project keeps paying for.
+case "$FONT_LINE" in
+    *"icons=Font Awesome"*) echo "icons: the icon row" ;;
+    *) echo "FAIL: the icon face did not load, so the row fell back to text labels" >&2; exit 1 ;;
+esac
 
 echo "=== screenshot ==="
 ffprobe -v error -show_entries stream=width,height,pix_fmt \
@@ -802,6 +811,90 @@ if [ "$BRIDGE_STATUS" -eq 0 ]; then
     SWEEP_FAILED=1
 fi
 
+
+echo "=== the transport row: icons, volume, tooltips, fine seek ==="
+# None of this is in the frozen C, which is exactly why it needs photographing:
+# there is no oracle to compare against, so a capture and a report line are the
+# only evidence that the row does what it claims.
+#
+# Both sizes on purpose. At 960x640 with the inspector open the toolbar is about
+# 440 px, which is where `transport_bar` sheds the fine-seek group and the band
+# hands the timecode to the timeline panel. That is a *reachable* state, not a
+# hypothetical one, and it is the one a capture is most likely to catch drifting.
+TRANSPORT_FAILED=0
+for size in 1280x720 960x640; do
+    capture "transport-$size" "$size" --ui-probe "play=1" || TRANSPORT_FAILED=1
+    capture "transport-tune-$size" "$size" --ui-probe "panel=tune,play=1" || TRANSPORT_FAILED=1
+done
+
+# The readout is off unless asked for, and a probe run asks for it by itself so
+# that every capture above still carries its own evidence. Both halves are
+# checked, because "off by default" and "on in a probe" are separate claims and
+# getting either wrong silently changes what every other capture here means.
+hud_state() {
+    # hud_state NAME EXPECT [extra args...]
+    local name="$1" expect="$2"
+    shift 2
+    local out="$OUT_DIR/$name.png"
+    set +e
+    env -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer "$FIXTURE" \
+            --size 1280x720 --probe-frames 10 --probe-shot "$out" "$@" \
+        >"$OUT_DIR/$name.txt" 2>&1
+    local status=$?
+    set -e
+    # The readout is drawn, not printed, so the picture is the only witness. The
+    # line sits in the top-left of the preview on a near-black background; a
+    # bright pixel there means text, and none means a clean preview.
+    local ink
+    ink="$(ffprobe -v error -f lavfi \
+        -i "movie=$out,crop=560:24:332:10,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+    ink="${ink:-0}"
+    local got="off"
+    [ "${ink%%.*}" -gt 120 ] 2>/dev/null && got="on"
+    printf '%-22s exit=%s readout=%s (peak luma %s)\n' "$name" "$status" "$got" "$ink"
+    if [ "$got" != "$expect" ]; then
+        echo "FAIL: $name expected the readout $expect and it was $got" >&2
+        return 1
+    fi
+    [ "$status" -eq 0 ]
+}
+
+hud_state hud-probe-default on || TRANSPORT_FAILED=1
+hud_state hud-forced-off off --hud=0 || TRANSPORT_FAILED=1
+hud_state hud-forced-on on --hud || TRANSPORT_FAILED=1
+
+# A tooltip, which no earlier capture in this file could photograph at all: a
+# headless run has no pointer, so every hover state in this interface was
+# unreviewable. `--ui-probe hover=XxY` parks it, and the probe zeroes the dwell so
+# the tip is in frame one rather than depending on how long the run lasted.
+#
+# The coordinates are the mute button's centre in the 1280x720 layout. If the row
+# is ever re-laid-out they stop naming that control, and the check below is what
+# says so — a tooltip that stopped appearing would otherwise be invisible.
+capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=1121x449" || TRANSPORT_FAILED=1
+TIP_INK="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:30:1050:400,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+# The tip is white on near-black, drawn over the preview's dark background. A dark
+# minimum is the box; without the tip that region is the preview's own dark too,
+# so the discriminating measure is the *bright* text inside it.
+TIP_TEXT="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:30:1050:400,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "tooltip-mute            box luma min=${TIP_INK:-?} text luma max=${TIP_TEXT:-?}"
+if [ "${TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null; then
+    echo "FAIL: no tooltip text where the mute button's tip should be" >&2
+    TRANSPORT_FAILED=1
+fi
+
+if [ "$TRANSPORT_FAILED" -ne 0 ]; then
+    echo "FAIL: the transport row checks did not pass" >&2
+    exit 1
+fi
 
 echo "=== a routed setting ==="
 # Routes are applied after every input is resolved, and the report prints how

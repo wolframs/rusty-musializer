@@ -295,6 +295,21 @@ impl Default for LyricEditor {
 }
 
 impl LyricEditor {
+    /// Whether the cue text field is taking keystrokes.
+    ///
+    /// Exposed so [`crate::ui::shell::Shell`] can stand its global shortcuts down
+    /// while someone is typing. Without it, composing a lyric would toggle
+    /// playback on every space, mute on every `m`, and scrub the track on every
+    /// arrow — the shell reads those keys before this panel is drawn, so the panel
+    /// cannot defend itself.
+    ///
+    /// A predicate rather than a public field: the shell has no business reaching
+    /// into the editor's text state, and this is the only question it needs.
+    #[must_use]
+    pub fn is_typing(&self) -> bool {
+        self.text.is_focused()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {

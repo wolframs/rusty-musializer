@@ -22,4 +22,5 @@ pub mod scroll_list;
 pub mod text_edit;
 pub mod timeline_layout;
 pub mod timeline_view;
+pub mod transport_bar;
 pub mod workspace_layout;

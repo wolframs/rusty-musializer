@@ -160,6 +160,22 @@ fn run() -> Result<std::process::ExitCode, String> {
     let audio = RaylibAudio::init_audio_device()
         .map_err(|error| format!("could not initialize the audio device: {error}"))?;
 
+    // Output volume, and mute as a separate flag rather than a volume of zero.
+    //
+    // Two values because unmuting has to restore the level the user set, and a
+    // single `volume` that mute wrote zero into would have lost it. The device only
+    // ever sees the product, which `apply_volume` below is the one place that
+    // computes — a second caller multiplying these itself is how the mute button
+    // and the slider would come to disagree.
+    //
+    // Not in `App`: it is the state of the audio device, not of the workspace, and
+    // nothing that gets saved to a `.musi` should be able to reach it.
+    let mut volume = 1.0f32;
+    let mut muted = false;
+    let apply_volume = |audio: &RaylibAudio, volume: f32, muted: bool| {
+        audio.set_master_volume(if muted { 0.0 } else { volume.clamp(0.0, 1.0) });
+    };
+
     // After the window, because the atlas is a GPU upload. Never fails: a face
     // that will not rasterize falls back to raylib's default and says so.
     let fonts = Faces::load(&mut rl, &thread);
@@ -230,7 +246,15 @@ fn run() -> Result<std::process::ExitCode, String> {
     let mut input: Option<Input> = None;
     for action in std::mem::take(&mut options.actions) {
         match action {
-            Action::Mute => audio.set_master_volume(0.0),
+            // Sets the *flag*, where the oracle sets the device volume directly
+            // (`musializer.c:399-405`). The observable startup state is identical
+            // — silence — but this way the transport row's mute button can undo
+            // it, where a device volume of zero would leave the button showing
+            // "unmute" over a slider that had already lost the level.
+            Action::Mute => {
+                muted = true;
+                apply_volume(&audio, volume, muted);
+            }
             Action::SelectScene(id) => app.select_scene(id),
             // The scene is selected whether or not the import succeeds, which is
             // the oracle's order (`musializer.c:413-422` selects unconditionally
@@ -323,6 +347,14 @@ fn run() -> Result<std::process::ExitCode, String> {
             "hot reload is an explicit first-pass non-goal",
         );
     }
+    // The readout's default, decided once. A probe run turns it on because a
+    // capture that carries its own evidence is why the line exists; an interactive
+    // run leaves it off because it is a developer HUD. `--hud=0|1` overrides both,
+    // which is how a capture of the clean preview is taken.
+    app.shell.hud_visible = options.hud.unwrap_or(options.probe_frames.is_some());
+
+    // Where `--ui-probe hover=X,Y` parks the pointer, reasserted every frame.
+    let mut hover_at: Option<(f32, f32)> = None;
     let mut assist_probe_misplaced = false;
     if let Some(probe) = options.ui_probe.as_ref() {
         // Only the parts of the probe that have a surface to open are honoured;
@@ -331,6 +363,12 @@ fn run() -> Result<std::process::ExitCode, String> {
         // to prevent (`musializer.c:128-130`).
         app.shell.panel = probe.panel;
         app.shell.fullscreen = probe.fullscreen;
+        // A capture with no dwell time cannot photograph a tooltip, and a tooltip
+        // nothing photographs does not get reviewed — the rule this repository has
+        // already been bitten by twice. Zeroed rather than shortened so the tip is
+        // in frame one, independent of how many frames the run happens to last.
+        app.shell.widgets.tooltip_delay = 0.0;
+        hover_at = probe.hover;
         if probe.panel == cli::UiPanel::Tune {
             app.shell.inspector_open = true;
         }
@@ -591,6 +629,13 @@ fn run() -> Result<std::process::ExitCode, String> {
     // `confirm_close`.
     let mut close_warned = false;
     while running {
+        // Reasserted every frame rather than set once, so the tooltip a capture is
+        // after is in the shot regardless of how many frames the run lasts — and
+        // so a window that only gets its geometry after the first frame cannot
+        // leave the pointer somewhere else.
+        if let Some((x, y)) = hover_at {
+            rl.set_mouse_position(Vector2::new(x, y));
+        }
         // Exactly once per frame: raylib's `WindowShouldClose` clears the GLFW
         // flag as it reads it (`rcore_desktop_glfw.c`), which is what lets the
         // C's `WindowShouldClose() && plug_confirm_close()` refuse a quit without
@@ -751,6 +796,8 @@ fn run() -> Result<std::process::ExitCode, String> {
             band_count: spectrum.band_count(),
             peak_band: report.peak_band_last,
             rms: frame.audio.rms,
+            volume,
+            muted,
         };
         // With no track open the C draws the welcome screen instead of the
         // workspace (`preview_screen`, `plug.c:7769`), so the workspace frame is
@@ -799,6 +846,15 @@ fn run() -> Result<std::process::ExitCode, String> {
             // A one-line readout, so a headless capture carries its own evidence
             // rather than needing a separate log to be trusted.
             //
+            // **Off unless asked for.** It is a developer HUD — a frame counter, a
+            // band index, a consumed-sample count — and leaving it over a music
+            // visualiser by default is the interface explaining itself to the wrong
+            // audience. `H`, the transport row's readout button and `--hud` all turn
+            // it on, and a probe run turns it on by itself: a capture that carries
+            // its own evidence is the whole reason the line was written, and making
+            // twenty capture sites each remember a flag would be how one of them
+            // silently stops carrying it.
+            //
             // Two things about it are corrections a capture forced, and no test
             // would have: it used to be drawn at the window origin, where the
             // tracks panel covered its left half, and it used to run past the
@@ -827,7 +883,12 @@ fn run() -> Result<std::process::ExitCode, String> {
             // raylib's default: this line is the evidence a capture is read for,
             // and it was the last thing on screen still rendering in the bitmap
             // face.
-            if layout.preview.is_empty() {
+            if !app.shell.hud_visible {
+                // Nothing drawn. The `readout` above is still built, because the
+                // report at the end of the run prints from the same figures and a
+                // probe that produced no numbers would be indistinguishable from
+                // one that produced wrong ones.
+            } else if layout.preview.is_empty() {
                 ui::widgets::draw_text(
                     &mut d,
                     fonts.ui(),
@@ -884,6 +945,21 @@ fn run() -> Result<std::process::ExitCode, String> {
 
         for command in commands {
             match command {
+                ShellCommand::SetVolume(value) => {
+                    volume = value.clamp(0.0, 1.0);
+                    // Moving the slider unmutes. A slider that visibly moved while
+                    // nothing became audible is the control lying about what it
+                    // did, and every media player resolves it this way.
+                    muted = false;
+                    apply_volume(&audio, volume, muted);
+                }
+                ShellCommand::ToggleMute => {
+                    muted = !muted;
+                    apply_volume(&audio, volume, muted);
+                }
+                ShellCommand::SetFullscreen(on) => {
+                    set_window_fullscreen(&mut rl, on, options.probe_frames.is_some());
+                }
                 ShellCommand::TogglePlay => {
                     if let Some(music) = music.as_ref() {
                         if music.is_stream_playing() {
@@ -1679,6 +1755,26 @@ fn bind_current_audio<'audio>(
     // previous track playing rather than leaving silence.
     let opened = open_music(audio, &track.file_path)?;
     bind_audio(opened, analysis, music, app, scratch, play)
+}
+
+/// Takes the window in or out of fullscreen, unless this is a probe run.
+///
+/// The `headless` guard is not caution, it is a rule this repository has already
+/// paid for. Probe runs happen on a private Xvfb with no window manager; asking
+/// for a fullscreen toggle there means asking a compositor that is not present to
+/// restack the window, and the size the capture then photographs is not the size
+/// it was asked for. The shell's own layout flag has already switched either way,
+/// so `--ui-probe fullscreen=1` still photographs the expanded workspace — which
+/// is the thing a capture is for.
+///
+/// raylib's `ToggleFullscreen` is a real display-mode change rather than a
+/// borderless resize, which is why it is a command handled out here with
+/// `&mut RaylibHandle` rather than something the shell could do for itself.
+fn set_window_fullscreen(rl: &mut RaylibHandle, on: bool, headless: bool) {
+    if headless || rl.is_window_fullscreen() == on {
+        return;
+    }
+    rl.toggle_fullscreen();
 }
 
 /// Opens a stream without binding it to anything.

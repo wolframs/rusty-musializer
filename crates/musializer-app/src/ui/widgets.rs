@@ -54,6 +54,28 @@ pub enum ButtonStyle {
     Danger,
 }
 
+/// How long the pointer must rest on a control before its tooltip appears.
+///
+/// Long enough that sweeping the pointer across a row does not strobe fifteen
+/// boxes, short enough to feel like an answer. Not in [`metric`] because it is a
+/// duration rather than a dimension, and nothing in the oracle's theme has one —
+/// tooltips are an addition here, not a port.
+pub const TOOLTIP_DELAY_SECONDS: f64 = 0.35;
+
+/// A tooltip waiting to be drawn, with the control it belongs to.
+///
+/// Deferred rather than drawn where it is requested, because a tooltip has to
+/// sit above everything: drawn in place it would be painted over by the next
+/// panel, and the toolbar is the *first* thing the shell draws.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tooltip {
+    pub text: String,
+    /// The control's box, which the tooltip is positioned against rather than
+    /// against the pointer — a tip that follows the cursor is harder to read and
+    /// impossible to photograph deterministically.
+    pub anchor: UiRect,
+}
+
 /// Widget state that outlives a single call.
 ///
 /// The C keeps this inside the global `Plug` struct and passes it to every widget
@@ -66,17 +88,87 @@ pub struct Widgets {
     /// Set when any widget was interacted with this frame, so the caller can
     /// tell "the user did something" from "the user moved the mouse".
     pub interacted: bool,
+    /// The control the pointer is resting on, and when it arrived.
+    ///
+    /// Keyed by widget id rather than by rectangle so that a control which moves —
+    /// the transport button changing width as its label goes Play/Pause — does not
+    /// restart its own dwell.
+    hovered_id: u64,
+    hovered_since: f64,
+    /// This frame's tooltip, claimed by the last widget to ask. Last rather than
+    /// first because later widgets are drawn on top, so the one the user can
+    /// actually see is the one that should speak.
+    pending_tooltip: Option<Tooltip>,
+    /// Zeroed by the probe harness so a capture does not depend on how many
+    /// frames it happened to run for. A tooltip nothing can photograph
+    /// deterministically is a tooltip no capture reviews.
+    pub tooltip_delay: f64,
 }
 
 impl Widgets {
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            tooltip_delay: TOOLTIP_DELAY_SECONDS,
+            ..Self::default()
+        }
     }
 
     /// Call once per frame, before any widget.
     pub fn begin_frame(&mut self) {
         self.interacted = false;
+        self.pending_tooltip = None;
+    }
+
+    /// Offers a tooltip for the control `id` just drew.
+    ///
+    /// Called *after* the button, with the state it returned, so the widget
+    /// vocabulary stays the C's and nothing that does not want a tooltip has to
+    /// pass one. `text` should name the control and its shortcut — "Mute [M]" —
+    /// because the tooltip is the only place a shortcut is written down now that
+    /// the transport row draws icons.
+    ///
+    /// Returns nothing: the tooltip is drawn later, by whoever owns the frame.
+    pub fn hint(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        state: ButtonState,
+        id: u64,
+        anchor: UiRect,
+        text: &str,
+    ) {
+        if !state.hovered || text.is_empty() || anchor.is_empty() {
+            // Only the *hovered* widget may clear the dwell, or a row of
+            // neighbours would each reset it in turn and the tip would never
+            // appear.
+            if self.hovered_id == id {
+                self.hovered_id = 0;
+            }
+            return;
+        }
+        let now = d.get_time();
+        if self.hovered_id != id {
+            self.hovered_id = id;
+            self.hovered_since = now;
+        }
+        // A press dismisses the tip: the user has stopped asking what the control
+        // is and started using it, and a tip hanging over a control being dragged
+        // covers the thing it is explaining.
+        if state.pressed {
+            return;
+        }
+        if now - self.hovered_since >= self.tooltip_delay {
+            self.pending_tooltip = Some(Tooltip {
+                text: text.to_string(),
+                anchor,
+            });
+        }
+    }
+
+    /// This frame's tooltip, if one is due.
+    #[must_use]
+    pub fn tooltip(&self) -> Option<&Tooltip> {
+        self.pending_tooltip.as_ref()
     }
 
     /// `ui_widgets_button_with_id` (`ui_widgets.c:139-160`).
@@ -286,9 +378,9 @@ impl Widgets {
         d.draw_circle_v(
             Vector2::new(knob_x, boundary.y + boundary.height * 0.5),
             if state.hovered || state.pressed {
-                8.0
+                SLIDER_KNOB_RADIUS
             } else {
-                6.0
+                SLIDER_KNOB_RADIUS - 2.0
             },
             color::accent(),
         );
@@ -308,6 +400,86 @@ impl Widgets {
         None
     }
 }
+
+/// Where a tooltip's box goes, given its anchor and the window.
+///
+/// Pure arithmetic and separate from the drawing so it can be tested without a
+/// window, which is the only way the two edge rules below get checked: a tip that
+/// runs off the right of the screen and a tip that would be clipped by the top are
+/// both states a capture reaches only by accident.
+///
+/// Prefers **above** the control, because every control that has a tooltip today
+/// lives in the toolbar or the timeline — near the bottom of the window — and a
+/// tip drawn below them would be half off-screen.
+#[must_use]
+pub fn tooltip_box(anchor: UiRect, text_width: f32, window: (f32, f32)) -> UiRect {
+    let width = text_width + TOOLTIP_PADDING_X * 2.0;
+    let height = metric::UI_FONT_CAPTION + TOOLTIP_PADDING_Y * 2.0;
+
+    // Centred on the control, then pushed back inside the window. Clamping the
+    // left edge after centring rather than choosing a side means a tip on a
+    // corner control stays adjacent to it instead of jumping across the screen.
+    let centred = anchor.x + (anchor.width - width) * 0.5;
+    let x = centred.clamp(
+        TOOLTIP_MARGIN,
+        (window.0 - width - TOOLTIP_MARGIN).max(TOOLTIP_MARGIN),
+    );
+
+    let above = anchor.y - height - TOOLTIP_GAP;
+    let y = if above >= TOOLTIP_MARGIN {
+        above
+    } else {
+        // No room above: below, and if there is no room there either, clamped —
+        // an overlapping tooltip is still readable, an off-screen one is not.
+        (anchor.y + anchor.height + TOOLTIP_GAP).min(window.1 - height - TOOLTIP_MARGIN)
+    };
+    UiRect::new(x, y, width, height)
+}
+
+const TOOLTIP_PADDING_X: f32 = 9.0;
+const TOOLTIP_PADDING_Y: f32 = 6.0;
+const TOOLTIP_GAP: f32 = 6.0;
+const TOOLTIP_MARGIN: f32 = 4.0;
+
+/// Draws a tooltip above everything else.
+///
+/// Ink-on-white is the chrome's pairing; a tooltip inverts it — white on ink — so
+/// that it reads as floating rather than as another panel. That pair is one of the
+/// palette's contrast-checked ones.
+pub fn draw_tooltip(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &Face,
+    tooltip: &Tooltip,
+    window: (f32, f32),
+) {
+    let size = metric::UI_FONT_CAPTION;
+    let text_width = measure(font, &tooltip.text, size);
+    let boundary = tooltip_box(tooltip.anchor, text_width, window);
+    if boundary.is_empty() {
+        return;
+    }
+    let rect = rectangle(boundary);
+    d.draw_rectangle_rec(rect, color::ui_ink());
+    d.draw_rectangle_lines_ex(rect, 1.0, alpha(color::white(), 0.18));
+    draw_text(
+        d,
+        font,
+        &tooltip.text,
+        boundary.x + TOOLTIP_PADDING_X,
+        boundary.y + TOOLTIP_PADDING_Y,
+        size,
+        color::white(),
+    );
+}
+
+/// The slider knob's radius when hovered, which is its largest.
+///
+/// Public because the knob is centred on the value's position, so at 0 and 1 half
+/// of it hangs *outside* the track's rectangle. A caller placing a slider hard
+/// against a neighbour has to inset by this much or the knob will overlap it — a
+/// capture at 960 px with the inspector open is what found that, with a
+/// full-volume knob touching the fullscreen button.
+pub const SLIDER_KNOB_RADIUS: f32 = 8.0;
 
 /// `ui_widgets_slider_get_value` (`ui_widgets.c:295-302`).
 #[must_use]
@@ -564,6 +736,14 @@ pub mod id {
     pub const WELCOME: u32 = 6;
     /// The export panel's controls.
     pub const EXPORT: u32 = 7;
+    /// The transport row's fine-seek group. A namespace of its own rather than
+    /// more `TOOLBAR` indices, so that shedding the group cannot renumber the
+    /// buttons that stay — a press claimed before a resize would otherwise be
+    /// released by whichever control inherited its index.
+    pub const SEEK: u32 = 8;
+    /// The transport row's right-hand cluster: readout toggle, mute, volume,
+    /// fullscreen. Separate for the same reason as SEEK.
+    pub const UTILITY: u32 = 9;
 }
 
 #[cfg(test)]

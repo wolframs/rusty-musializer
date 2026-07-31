@@ -22,10 +22,12 @@ use musializer_core::ui::row_typography;
 use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
+use musializer_core::ui::transport_bar;
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
 use musializer_runtime::font::{Face, Faces};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
 
+use super::icons;
 use super::shell_layout::{WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
@@ -98,6 +100,25 @@ pub enum ShellCommand {
     ManualEvent(ManualEventAction),
     /// The shared preset block's outcome (`plug.c:5979-6100`).
     Preset(PresetAction),
+    /// Output volume in `[0, 1]`, from the transport row's slider.
+    ///
+    /// Not in the oracle, which has only `--mute` at startup
+    /// (`musializer.c:399-405`). A command rather than shell state because the
+    /// volume lives on raylib's audio device, and the shell may not hold a handle
+    /// to it — the same reason `OpenAudio` is a command.
+    SetVolume(f32),
+    /// Flip the output between muted and the stored volume.
+    ///
+    /// Separate from `SetVolume(0.0)` so that unmuting can restore the level the
+    /// user had set rather than guessing one.
+    ToggleMute,
+    /// Take the *window* in or out of fullscreen.
+    ///
+    /// The shell has already switched its own layout by the time this is emitted;
+    /// this is only the part that needs `&mut RaylibHandle`, which does not exist
+    /// inside a drawing pair. Split that way so the headless probe can take the
+    /// expanded layout without making a window call that Xvfb cannot serve.
+    SetFullscreen(bool),
 }
 
 /// What the shell needs to know to draw one frame.
@@ -139,6 +160,11 @@ pub struct ShellInput<'a> {
     pub band_count: usize,
     pub peak_band: usize,
     pub rms: f32,
+    /// The stored output volume in `[0, 1]`, which is what the slider shows even
+    /// while muted — mute is a toggle the user expects to undo, and a slider that
+    /// zeroed itself would lose the level they set.
+    pub volume: f32,
+    pub muted: bool,
 }
 
 /// What the toolbar managed to place, so the timeline knows what is left to it.
@@ -160,6 +186,14 @@ pub struct Shell {
     /// Which bottom panel is open. [`UiPanel::None`] is the plain timeline.
     pub panel: UiPanel,
     pub fullscreen: bool,
+    /// Whether the diagnostic readout is drawn over the preview.
+    ///
+    /// **Off by default**, unlike every earlier build of this rewrite. The line is
+    /// a developer HUD — frame counter, band index, consumed sample count — and
+    /// leaving it over a music visualiser by default is the interface explaining
+    /// itself to the wrong audience. The probe harness turns it back on, because a
+    /// capture that carries its own evidence is the reason it was written.
+    pub hud_visible: bool,
     pub notices: NoticeQueue,
     pub timeline: TimelineView,
     /// Which of the timeline's own controls the pointer is dragging, so a scrub
@@ -215,6 +249,7 @@ impl Shell {
             inspector_open: false,
             panel: UiPanel::None,
             fullscreen: false,
+            hud_visible: false,
             timeline: TimelineView::new(0.0),
             scrubbing: false,
             track_scroll: ScrollState::new(),
@@ -318,6 +353,13 @@ impl Shell {
             }
         }
         self.notice_tray(d, input.fonts.ui(), frame.preview);
+
+        // Last, and deliberately so: a tooltip belongs above everything, and the
+        // toolbar that owns most of them is the *first* thing drawn. Requested
+        // where the control is and drawn here is the only ordering that works.
+        if let Some(tooltip) = self.widgets.tooltip().cloned() {
+            widgets::draw_tooltip(d, input.fonts.ui(), &tooltip, input.window);
+        }
 
         self.notices.tick(f64::from(d.get_frame_time()));
         commands
@@ -539,13 +581,52 @@ impl Shell {
     ) {
         use raylib::consts::KeyboardKey as Key;
 
+        // A text field takes every key, including Space and the arrows. Without
+        // this, typing a lyric line would scrub the track and toggle playback
+        // under the cursor.
+        if self.text_entry_has_focus() {
+            return;
+        }
+
         // The C's bindings (`ui_theme.h:60-64`), plus Tab for scene cycling,
         // which the C spells with its own scene shortcuts.
         if d.is_key_pressed(Key::KEY_SPACE) {
             commands.push(ShellCommand::TogglePlay);
         }
         if d.is_key_pressed(Key::KEY_F) {
-            self.fullscreen = !self.fullscreen;
+            self.set_fullscreen(!self.fullscreen, commands);
+        }
+        // Escape leaves fullscreen but does not enter it — the convention every
+        // media player follows, and the one that makes Escape safe to press.
+        if d.is_key_pressed(Key::KEY_ESCAPE) && self.fullscreen {
+            self.set_fullscreen(false, commands);
+        }
+        if d.is_key_pressed(Key::KEY_M) {
+            commands.push(ShellCommand::ToggleMute);
+        }
+        if d.is_key_pressed(Key::KEY_H) {
+            self.hud_visible = !self.hud_visible;
+        }
+
+        // Fine positioning. These are the bindings the seek buttons' tooltips
+        // name, evaluated through the same `transport_bar` helpers the buttons
+        // use, so a click and a keypress cannot disagree about what Ctrl means.
+        if input.duration_seconds > 0.0 {
+            if d.is_key_pressed(Key::KEY_HOME) {
+                commands.push(ShellCommand::Seek(0.0));
+            }
+            if d.is_key_pressed(Key::KEY_END) {
+                commands.push(ShellCommand::Seek(input.duration_seconds));
+            }
+            // Repeating rather than press-only: holding an arrow to scan through a
+            // track is the reason a 0.1 s step is useful at all.
+            let held = |key| d.is_key_pressed(key) || d.is_key_pressed_repeat(key);
+            let back = held(Key::KEY_LEFT);
+            let forward = held(Key::KEY_RIGHT);
+            if back != forward {
+                let sign = if back { -1.0 } else { 1.0 };
+                commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
+            }
         }
         if d.is_key_pressed(Key::KEY_TAB) {
             let shift = d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT);
@@ -560,7 +641,7 @@ impl Shell {
         }
     }
 
-    /// The transport row (`toolbar`, `plug.c:7366-7420`).
+    /// The transport row (`toolbar`, `plug.c:7366-7420`), extended.
     ///
     /// Placement goes through [`TimelineBand`], the ported band policy, rather
     /// than through arithmetic beside it. That module exists because the control
@@ -575,6 +656,22 @@ impl Shell {
     /// timecode can sit beside them, and whether even the minimum scale overflows.
     /// The last is *reported* rather than hidden, and this caller is what then
     /// drops something.
+    ///
+    /// # What is not the oracle's
+    ///
+    /// The C's row is six text buttons and a timecode. This one adds a fine-seek
+    /// group and a right-hand utility cluster — volume, the diagnostic readout
+    /// toggle, fullscreen — and draws every control as an icon. All of that is
+    /// invention, and it is only affordable because icons are square: eleven
+    /// controls occupy less of the row than the oracle's six labels did.
+    ///
+    /// The cost of icons is discoverability, paid for in two places rather than
+    /// waved at. Every control carries a tooltip naming it and its shortcut
+    /// ([`super::icons`]), and every control has a text fallback for the build
+    /// where the icon atlas did not load. The band still owns the middle; the
+    /// cluster arithmetic is [`transport_bar`], which is raylib-free so that the
+    /// widths where controls are shed can be swept in a test instead of found by
+    /// resizing a window.
     fn toolbar(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -595,15 +692,17 @@ impl Shell {
         );
 
         let has_track = input.workspace.current().is_some();
-        let labels: [&str; 6] = [
-            if input.playing { "Pause" } else { "Play" },
-            "Tune",
-            "Export",
-            "Lyrics",
-            "Assist",
-            if self.fullscreen { "Windowed" } else { "Full" },
-        ];
         let font = input.fonts.ui();
+        let control_size = transport_bar::CONTROL_SIZE;
+        let row_y = bar.y + (bar.height - control_size) * 0.5;
+
+        // The right-hand cluster is placed first because it is measured from the
+        // window's right edge, and everything else is laid out against what it
+        // leaves. Volume is only offered when there is a stream to set it on.
+        let utilities = transport_bar::utilities(bar, row_y, has_track);
+        let middle_right = utilities.map_or(bar.x + bar.width, |cluster| cluster.left_edge);
+        let middle_width = (middle_right - bar.x).max(0.0);
+
         let timecode = format!(
             "{} / {}",
             widgets::format_timestamp(input.time_seconds),
@@ -611,103 +710,167 @@ impl Shell {
         );
         let timecode_width = widgets::measure(font, &timecode, metric::UI_FONT_VALUE);
 
-        // Each button's *natural* width: what its own label needs at the label
-        // size, plus the row padding. The band scales them together, so neighbours
-        // stay proportional instead of each shrinking to fit itself — which is the
-        // defect `ui_row_typography.h:9-13` describes.
-        let mut natural = [0.0f32; 6];
-        for (index, label) in labels.iter().enumerate() {
-            natural[index] = widgets::measure(font, label, metric::UI_FONT_LABEL)
-                + row_typography::UI_ROW_LABEL_PADDING
-                + 8.0;
-        }
+        // The middle group, richest first. The seek trio is shed before the panel
+        // buttons and the panel buttons before the transport button, which is the
+        // order `transport_bar` documents: every seek action has a keyboard
+        // binding, so dropping the group costs no capability, and the transport
+        // button is the one control the row cannot do without.
+        let transport = if input.playing {
+            icons::PAUSE
+        } else {
+            icons::PLAY
+        };
+        let panels = [icons::TUNE, icons::EXPORT, icons::LYRICS, icons::ASSIST];
+        let seek = [icons::SEEK_START, icons::SEEK_BACK, icons::SEEK_FORWARD];
 
-        let row_y = bar.y + (bar.height - metric::UI_BUTTON_HEIGHT) * 0.5;
-        let Some(band) = TimelineBand::layout(
-            bar.x,
-            row_y,
-            bar.width,
-            metric::UI_BUTTON_HEIGHT,
-            metric::UI_CONTROL_GAP,
-            &natural,
-            // No trailing "Clear manual" button in the transport row, so the
-            // band's clear slot is zero-width here.
-            0.0,
-            timecode_width,
-        ) else {
+        // Natural widths. With the icon face loaded every control is a square, so
+        // the row is uniform; on the text fallback each button asks for what its
+        // word needs and the band scales them together, which is the same
+        // `ui_row_typography.h:9-13` rule the oracle's row follows.
+        let natural = |control: &icons::Control| -> f32 {
+            if input.fonts.icons_available() {
+                control_size
+            } else {
+                widgets::measure(font, control.text, metric::UI_FONT_LABEL)
+                    + row_typography::UI_ROW_LABEL_PADDING
+                    + 8.0
+            }
+        };
+
+        let mut group: Vec<icons::Control> = Vec::with_capacity(8);
+        let mut band = None;
+        // Three candidate compositions, tried richest first. `TimelineBand::fits`
+        // is what rejects one — it is the same "even the minimum scale overflows"
+        // answer the oracle's row consults, so the shedding here and the scaling
+        // there cannot disagree about what a row can hold.
+        for candidate in [
+            [&[transport][..], &seek[..], &panels[..]].concat(),
+            [&[transport][..], &panels[..]].concat(),
+            vec![transport],
+        ] {
+            let widths: Vec<f32> = candidate.iter().map(natural).collect();
+            let Some(laid) = TimelineBand::layout(
+                bar.x,
+                row_y,
+                middle_width,
+                control_size,
+                metric::UI_CONTROL_GAP,
+                &widths,
+                // No trailing "Clear manual" button in the transport row, so the
+                // band's clear slot is zero-width here.
+                0.0,
+                timecode_width,
+            ) else {
+                continue;
+            };
+            if laid.fits || candidate.len() == 1 {
+                group = candidate;
+                band = Some(laid);
+                break;
+            }
+        }
+        let Some(band) = band else {
             return ToolbarResult::default();
         };
 
-        // `fits == false` means even TIMELINE_BAND_MIN_SCALE overflows, so
-        // something has to go rather than be squeezed into illegibility. The
-        // transport button is the one control the row cannot do without, so
-        // everything else goes — and the timecode moves to the timeline panel,
-        // which is the fallback home the band's `timecode_inline == false` asks
-        // for.
-        let full_row = band.fits;
-        let count = if full_row { labels.len() } else { 1 };
+        let widths: Vec<f32> = group.iter().map(natural).collect();
+        let scaled: Vec<f32> = widths.iter().map(|width| width * band.scale).collect();
+        let fallback_labels: Vec<&str> = group.iter().map(|control| control.text).collect();
+        // One size for the whole row, whichever face it is drawn in.
+        let font_size = if input.fonts.icons_available() {
+            control_size * 0.5 * band.scale
+        } else {
+            widgets::row_font_size(font, &fallback_labels, &scaled, control_size)
+        };
 
         let mut cursor = bar.x + metric::UI_CONTROL_GAP;
-        let scaled: Vec<f32> = natural[..count]
-            .iter()
-            .map(|width| width * band.scale)
-            .collect();
-        let label_slice = &labels[..count];
-        let font_size =
-            widgets::row_font_size(font, label_slice, &scaled, metric::UI_BUTTON_HEIGHT);
-
-        for (index, label) in label_slice.iter().enumerate() {
-            let boundary = UiRect::new(cursor, row_y, scaled[index], metric::UI_BUTTON_HEIGHT);
+        for (index, control) in group.iter().enumerate() {
+            let boundary = UiRect::new(cursor, row_y, scaled[index], control_size);
             cursor += scaled[index] + metric::UI_CONTROL_GAP * band.scale;
 
-            let selected = match index {
-                1 => self.inspector_open,
-                2 => self.panel == UiPanel::Export,
-                3 => self.panel == UiPanel::Lyrics,
-                4 => self.panel == UiPanel::Assist,
-                5 => self.fullscreen,
-                _ => false,
+            // The seek group and the panel buttons are numbered by *what they are*
+            // rather than by their position in the row, because the row's
+            // composition changes with the window width. An id that moved with the
+            // layout would let a press claimed before a resize be released by
+            // whichever control inherited the index.
+            let (namespace, slot, selected) = match control {
+                c if *c == icons::SEEK_START => (widgets::id::SEEK, 0, false),
+                c if *c == icons::SEEK_BACK => (widgets::id::SEEK, 1, false),
+                c if *c == icons::SEEK_FORWARD => (widgets::id::SEEK, 2, false),
+                c if *c == icons::TUNE => (widgets::id::TOOLBAR, 1, self.inspector_open),
+                c if *c == icons::EXPORT => {
+                    (widgets::id::TOOLBAR, 2, self.panel == UiPanel::Export)
+                }
+                c if *c == icons::LYRICS => {
+                    (widgets::id::TOOLBAR, 3, self.panel == UiPanel::Lyrics)
+                }
+                c if *c == icons::ASSIST => {
+                    (widgets::id::TOOLBAR, 4, self.panel == UiPanel::Assist)
+                }
+                _ => (widgets::id::TOOLBAR, 0, false),
             };
-            // Play needs a track; the panels do too. Drawn disabled rather than
-            // hidden, so the control names the feature even when it cannot run.
-            if index < 5 && !has_track {
+
+            // Every control here needs a track. Drawn disabled rather than hidden,
+            // so the control names the feature even when it cannot run — and the
+            // tooltip still answers, which is the one thing a disabled button can
+            // usefully do.
+            let (face, glyph) = icons::glyph(input.fonts, control);
+            if !has_track {
                 self.widgets
-                    .disabled_button(d, font, boundary, label, Some(font_size));
+                    .disabled_button(d, face, boundary, &glyph, Some(font_size));
                 continue;
             }
-            let id = widgets::widget_id(widgets::id::TOOLBAR, index as u32);
+            let id = widgets::widget_id(namespace, slot);
             let state = self.widgets.text_button(
                 d,
-                input.fonts.ui(),
+                face,
                 id,
                 boundary,
-                label,
+                &glyph,
                 selected,
                 ButtonStyle::Neutral,
                 Some(font_size),
             );
+            self.widgets.hint(d, state, id, boundary, control.tip);
             if !state.clicked {
                 continue;
             }
-            match index {
-                0 => commands.push(ShellCommand::TogglePlay),
-                1 => self.inspector_open = !self.inspector_open,
-                2 => self.toggle_panel(UiPanel::Export, "Export", commands),
-                3 => self.toggle_panel(UiPanel::Lyrics, "Lyrics", commands),
-                4 => self.toggle_panel(UiPanel::Assist, "Assist", commands),
-                5 => self.fullscreen = !self.fullscreen,
-                _ => {}
+            match control {
+                c if *c == icons::SEEK_START => commands.push(ShellCommand::Seek(0.0)),
+                c if *c == icons::SEEK_BACK || *c == icons::SEEK_FORWARD => {
+                    let sign = if *control == icons::SEEK_BACK {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
+                }
+                c if *c == icons::TUNE => self.inspector_open = !self.inspector_open,
+                c if *c == icons::EXPORT => {
+                    self.toggle_panel(UiPanel::Export, "Export", commands);
+                }
+                c if *c == icons::LYRICS => {
+                    self.toggle_panel(UiPanel::Lyrics, "Lyrics", commands);
+                }
+                c if *c == icons::ASSIST => {
+                    self.toggle_panel(UiPanel::Assist, "Assist", commands);
+                }
+                _ => commands.push(ShellCommand::TogglePlay),
             }
+        }
+
+        if let Some(cluster) = utilities {
+            self.utility_cluster(d, input, cluster, font_size, has_track, commands);
         }
 
         // The timecode goes where the band put it, and only if the band said it
         // fits there. Drawing it at `bar.x + bar.width - width` regardless is the
         // exact mistake `timeline_layout.h` was written to stop.
-        let timecode_inline = band.timecode_inline && full_row && !band.timecode.is_empty();
+        let timecode_inline = band.timecode_inline && !band.timecode.is_empty();
         if timecode_inline {
             widgets::draw_text(
                 d,
-                input.fonts.ui(),
+                font,
                 &timecode,
                 band.timecode.x,
                 band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5,
@@ -725,7 +888,7 @@ impl Shell {
         let meter_right = if timecode_inline {
             band.timecode.x - metric::UI_CONTROL_GAP
         } else {
-            bar.x + bar.width - metric::UI_CONTROL_GAP
+            middle_right - metric::UI_CONTROL_GAP
         };
         let meter = UiRect::new(
             cursor,
@@ -750,7 +913,7 @@ impl Shell {
             if meter.width > 190.0 {
                 widgets::draw_text(
                     d,
-                    input.fonts.ui(),
+                    font,
                     &format!(
                         "{} bands  peak {}  rms {:.3}",
                         input.band_count, input.peak_band, input.rms
@@ -764,6 +927,167 @@ impl Shell {
         }
 
         ToolbarResult { timecode_inline }
+    }
+
+    /// The right-hand cluster: readout toggle, mute, volume, fullscreen.
+    ///
+    /// Split out because the middle group and this one shed controls for different
+    /// reasons — the middle against the band's scale floor, this one against the
+    /// window's right edge — and interleaving the two made the one function
+    /// impossible to follow.
+    fn utility_cluster(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        cluster: transport_bar::UtilityCluster,
+        font_size: f32,
+        has_track: bool,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        let icon_button = |shell: &mut Self,
+                           d: &mut RaylibDrawHandle<'_>,
+                           slot: u32,
+                           boundary: UiRect,
+                           control: &icons::Control,
+                           selected: bool,
+                           enabled: bool|
+         -> bool {
+            let (face, glyph) = icons::glyph(input.fonts, control);
+            if !enabled {
+                shell
+                    .widgets
+                    .disabled_button(d, face, boundary, &glyph, Some(font_size));
+                return false;
+            }
+            let id = widgets::widget_id(widgets::id::UTILITY, slot);
+            let state = shell.widgets.text_button(
+                d,
+                face,
+                id,
+                boundary,
+                &glyph,
+                selected,
+                ButtonStyle::Neutral,
+                Some(font_size),
+            );
+            shell.widgets.hint(d, state, id, boundary, control.tip);
+            state.clicked
+        };
+
+        if let Some(boundary) = cluster.readout {
+            // Always enabled: the readout is the one control that is *more* useful
+            // with no track open, because "no track" is one of the things it says.
+            if icon_button(
+                self,
+                d,
+                0,
+                boundary,
+                &icons::READOUT,
+                self.hud_visible,
+                true,
+            ) {
+                self.hud_visible = !self.hud_visible;
+            }
+        }
+
+        if let Some(boundary) = cluster.mute {
+            let control = icons::Control {
+                icon: icons::volume_icon(input.volume, input.muted),
+                ..if input.muted {
+                    icons::UNMUTE
+                } else {
+                    icons::MUTE
+                }
+            };
+            if icon_button(self, d, 1, boundary, &control, input.muted, has_track) {
+                commands.push(ShellCommand::ToggleMute);
+            }
+        }
+
+        if let Some(boundary) = cluster.volume {
+            // Inset by the knob's radius at each end. `slider` centres the knob on
+            // the value's position, so at 0 and 1 half of it hangs outside the rect
+            // it was given — and a capture at 960 px with the inspector open showed
+            // exactly that: a full-volume knob touching the fullscreen button
+            // beside it. The layout module reserves the box; this is the drawing's
+            // own business, so it is corrected here rather than by widening the
+            // reservation.
+            let inset = widgets::SLIDER_KNOB_RADIUS;
+            let boundary = UiRect::new(
+                boundary.x + inset,
+                boundary.y,
+                (boundary.width - inset * 2.0).max(1.0),
+                boundary.height,
+            );
+            // The slider shows the *stored* volume even while muted, rather than
+            // dropping to zero: mute is a toggle the user expects to undo, and a
+            // slider that zeroed itself would lose the level they had set.
+            let id = widgets::widget_id(widgets::id::UTILITY, 2);
+            if let Some(value) = self.widgets.slider(d, id, boundary, input.volume) {
+                commands.push(ShellCommand::SetVolume(value));
+            }
+            // No `hint` here: a slider explains itself by moving, and a tooltip
+            // over one being dragged covers the thing it describes.
+        }
+
+        let control = if self.fullscreen {
+            icons::WINDOWED
+        } else {
+            icons::FULLSCREEN
+        };
+        if icon_button(
+            self,
+            d,
+            3,
+            cluster.fullscreen,
+            &control,
+            self.fullscreen,
+            true,
+        ) {
+            self.set_fullscreen(!self.fullscreen, commands);
+        }
+    }
+
+    /// Whether any text field is taking keystrokes.
+    ///
+    /// The shell reads the keyboard before any panel is drawn, so a panel with a
+    /// focused field cannot defend itself — it has already lost the keypress by the
+    /// time it runs. This is the guard, and it has to be asked *here*.
+    ///
+    /// The lyrics cue field is the only one today. The font browser's query is a
+    /// hit-tested region rather than a [`super::text_input::TextField`], so it does
+    /// not appear; when it becomes one, it belongs in this list.
+    fn text_entry_has_focus(&self) -> bool {
+        self.lyrics.is_typing()
+    }
+
+    /// The position a nudge button asks for, honouring the modifier keys.
+    ///
+    /// Shared with the keyboard path so a click and an arrow key cannot disagree
+    /// about what Ctrl means — the tooltip states the ladder, and a tooltip that
+    /// lies is worse than none.
+    fn nudge_target(&self, d: &RaylibDrawHandle<'_>, input: &ShellInput<'_>, sign: f64) -> f64 {
+        use raylib::consts::KeyboardKey as Key;
+        let fine = d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL);
+        let coarse = d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT);
+        let step = transport_bar::seek_step_seconds(fine, coarse) * sign;
+        transport_bar::nudged(input.time_seconds, step, input.duration_seconds)
+    }
+
+    /// Enters or leaves fullscreen, keeping the layout and the window in step.
+    ///
+    /// Two things happen and they are not the same thing: the shell's own
+    /// `fullscreen` flag switches the workspace to the expanded layout, and the
+    /// command asks `main.rs` to toggle the *window*. The second has to be a
+    /// command because it needs `&mut RaylibHandle`, which does not exist inside a
+    /// drawing pair — and because the headless probe must be able to take the
+    /// layout without the window call, which would fail or hang under Xvfb.
+    fn set_fullscreen(&mut self, on: bool, commands: &mut Vec<ShellCommand>) {
+        if self.fullscreen == on {
+            return;
+        }
+        self.fullscreen = on;
+        commands.push(ShellCommand::SetFullscreen(on));
     }
 
     fn toggle_panel(
@@ -1437,6 +1761,35 @@ impl Shell {
             metric::UI_FONT_CAPTION,
             color::ui_muted(),
         );
+
+        // The fine-positioning ladder, written where the positioning happens.
+        //
+        // It is here rather than only in the seek buttons' tooltips because the
+        // seek group is the *first* thing the transport row sheds: below about
+        // 700 px of toolbar those three buttons are gone, and with them the only
+        // place their modifiers were named. The keys still work, so a line that
+        // disappears with the buttons would hide a working feature — the exact
+        // shape of failure this repository has a rule about.
+        //
+        // Drawn only when there is room beside the zoom readout, since printing
+        // through it would be worse than not saying so.
+        let zoom_width = widgets::measure(input.fonts.ui(), &zoom_label, metric::UI_FONT_CAPTION);
+        let hint =
+            "Arrows: 1 s  \u{00b7}  Ctrl: 0.1 s  \u{00b7}  Shift: 10 s  \u{00b7}  Home/End: ends";
+        let hint_width = widgets::measure(input.fonts.ui(), hint, metric::UI_FONT_CAPTION);
+        let hint_x = strip.x + zoom_width + 24.0;
+        if hint_x + hint_width <= strip.x + strip.width - 92.0 {
+            widgets::draw_text(
+                d,
+                input.fonts.ui(),
+                hint,
+                hint_x,
+                strip.y + strip.height + 4.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_disabled(),
+            );
+        }
+
         let reset = UiRect::new(
             strip.x + strip.width - 84.0,
             strip.y + strip.height + 2.0,
@@ -1596,44 +1949,41 @@ mod tests {
         assert_eq!(commands.len(), 1);
     }
 
-    /// The toolbar's own band, computed the way [`Shell::toolbar`] computes it but
-    /// with a stubbed text measurer, so the policy is assertable without a window.
+    /// The toolbar's own band, computed the way [`Shell::toolbar`] computes it.
     ///
-    /// The measurer is the default font's rough average advance at the label size
-    /// (raylib's default face is a fixed 10x10 cell, so ~0.5 em per character is
-    /// close). Exactness is not the point — the point is that the *policy* is
-    /// exercised at the sizes a capture showed to be tight.
-    fn toolbar_band(bar_width: f32, playing: bool, fullscreen: bool) -> TimelineBand {
-        let labels = [
-            if playing { "Pause" } else { "Play" },
-            "Tune",
-            "Export",
-            "Lyrics",
-            "Assist",
-            if fullscreen { "Windowed" } else { "Full" },
-        ];
-        let measure = |text: &str, size: f32| text.chars().count() as f32 * size * 0.5;
-        let mut natural = [0.0f32; 6];
-        for (index, label) in labels.iter().enumerate() {
-            natural[index] =
-                measure(label, metric::UI_FONT_LABEL) + row_typography::UI_ROW_LABEL_PADDING + 8.0;
-        }
-        let timecode_width = measure("00:00.000 / 00:00.000", metric::UI_FONT_VALUE);
+    /// `controls` is how many icon buttons the row is trying to seat: 8 for the
+    /// full composition (transport, the seek trio, four panels), 5 with the seek
+    /// trio shed, 1 for the transport button alone.
+    ///
+    /// With the icon face loaded every control is a square, so unlike the oracle's
+    /// text row there is nothing to measure — which is why this helper no longer
+    /// needs the stubbed measurer the old one carried.
+    fn toolbar_band(bar_width: f32, controls: usize) -> Option<TimelineBand> {
+        use musializer_core::ui::transport_bar;
+
+        let bar = UiRect::new(0.0, 0.0, bar_width, metric::HUD_BUTTON_SIZE);
+        let utilities = transport_bar::utilities(bar, 0.0, true);
+        let middle = utilities.map_or(bar_width, |cluster| cluster.left_edge - bar.x);
+        let widths = vec![transport_bar::CONTROL_SIZE; controls];
+        // The default face's rough average advance at the value size; the timecode
+        // is the one thing in this row still measured as text.
+        let timecode_width =
+            "00:00.000 / 00:00.000".chars().count() as f32 * metric::UI_FONT_VALUE * 0.5;
         TimelineBand::layout(
+            bar.x,
             0.0,
-            0.0,
-            bar_width,
-            metric::UI_BUTTON_HEIGHT,
+            middle.max(0.0),
+            transport_bar::CONTROL_SIZE,
             metric::UI_CONTROL_GAP,
-            &natural,
+            &widths,
+            // No trailing "Clear manual" button in the transport row.
             0.0,
             timecode_width,
         )
-        .expect("the band accepts these inputs")
     }
 
     #[test]
-    fn the_toolbar_never_squeezes_its_labels_below_the_legibility_floor() {
+    fn the_toolbar_never_squeezes_its_controls_below_the_legibility_floor() {
         // The band's contract: it will shrink to TIMELINE_BAND_MIN_SCALE and no
         // further, and it says so through `fits`. A capture at 960x640 with the
         // inspector open — a 440 px toolbar — is what caught the old arithmetic
@@ -1641,7 +1991,7 @@ mod tests {
         use musializer_core::ui::timeline_layout::TIMELINE_BAND_MIN_SCALE;
 
         for width in [440.0f32, 640.0, 960.0, 1280.0] {
-            let band = toolbar_band(width, false, false);
+            let band = toolbar_band(width, 5).expect("the band accepts these inputs");
             assert!(
                 band.scale >= TIMELINE_BAND_MIN_SCALE,
                 "{width}px scaled to {} — below the legibility floor",
@@ -1655,52 +2005,51 @@ mod tests {
     fn a_narrow_toolbar_moves_the_timecode_out_rather_than_over_the_buttons() {
         // The whole reason the band exists. At the narrow end the timecode must
         // not be inline, and the timeline panel is then responsible for it —
-        // which is why `ToolbarResult` travels.
-        let narrow = toolbar_band(440.0, false, false);
-        let wide = toolbar_band(1280.0, false, false);
+        // which is why `ToolbarResult` travels. A capture at 960x640 with the
+        // inspector open shows exactly that handover.
+        let narrow = toolbar_band(440.0, 8).expect("valid");
+        let wide = toolbar_band(1280.0, 8).expect("valid");
         assert!(
             !narrow.timecode_inline || !narrow.fits,
             "a 440 px band claimed room for both the row and the timecode"
         );
         assert!(wide.timecode_inline, "a 1280 px band should seat both");
         assert!(wide.fits);
-        // Inline or not, the timecode rect never overlaps the control row.
-        if wide.timecode_inline {
-            assert!(!wide.controls.overlaps(wide.timecode));
-        }
+        assert!(!wide.controls.overlaps(wide.timecode));
     }
 
     #[test]
-    fn the_toolbar_row_stays_inside_the_bar_at_every_supported_width() {
-        // A sweep, because the interesting failures are at the two boundaries: the
-        // one where the band stops seating the timecode inline, and the one where
-        // it stops fitting at all.
+    fn the_toolbar_sheds_whole_groups_rather_than_overflowing() {
+        // `fits == false` does not mean the band returned something that fits. It
+        // means the band has already scaled to its floor and the row still
+        // overflows, so **the caller has to drop controls**
+        // (`timeline_layout.h:45-47`). `Shell::toolbar` responds by trying three
+        // compositions richest-first, and the invariant is that the last of them —
+        // the lone transport button — always fits.
         //
-        // Note what `fits == false` does *not* mean: it does not mean the band
-        // returns something that fits. It means the band has already scaled to its
-        // floor and the row still overflows, so **the caller has to drop
-        // controls** (`timeline_layout.h:45-47`). This test found that the first
-        // time round by asserting the wrong thing, which is worth recording: at
-        // 300 px the band honestly reports a 322 px row. `Shell::toolbar` responds
-        // by drawing the transport button alone, and that is the invariant below.
-        for width in 300..=1920 {
+        // Swept rather than spot-checked because the interesting widths are the two
+        // boundaries, and neither is where anyone would guess.
+        for width in 200..=1920 {
             let bar = width as f32;
-            let band = toolbar_band(bar, true, true);
+            let chosen = [8usize, 5, 1].into_iter().find_map(|count| {
+                let band = toolbar_band(bar, count)?;
+                (band.fits || count == 1).then_some((count, band))
+            });
+            let Some((count, band)) = chosen else {
+                // Too narrow even for the utility cluster's fullscreen button; the
+                // row draws nothing, which is honest rather than degenerate.
+                continue;
+            };
             if band.fits {
                 assert!(
                     band.controls_width <= bar + 0.01,
-                    "{width}px: the band said a {}px row fits, and it does not",
+                    "{width}px: the band said a {}px row of {count} fits, and it does not",
                     band.controls_width
                 );
             } else {
-                // What the shell actually draws in this case: one scaled button.
-                let transport = toolbar_band(bar, true, true).scale
-                    * (metric::UI_FONT_LABEL * 0.5 * 5.0
-                        + row_typography::UI_ROW_LABEL_PADDING
-                        + 8.0);
-                assert!(
-                    transport + metric::UI_CONTROL_GAP * 2.0 <= bar,
-                    "{width}px: even the lone transport button does not fit"
+                assert_eq!(
+                    count, 1,
+                    "{width}px settled on {count} controls that do not fit"
                 );
             }
             if band.timecode_inline && band.fits {
@@ -1712,6 +2061,43 @@ mod tests {
                     !band.controls.overlaps(band.timecode),
                     "{width}px: the timecode prints through the controls"
                 );
+            }
+        }
+    }
+
+    /// The utility cluster and the middle group must never overlap, at any width.
+    ///
+    /// They are laid out by two different modules against opposite edges of the
+    /// same bar, which is precisely the arrangement `timeline_layout.h:12-21`
+    /// records as having printed one group through the other in the C.
+    #[test]
+    fn the_middle_group_never_reaches_into_the_utility_cluster() {
+        use musializer_core::ui::transport_bar;
+
+        for width in 200..=1920 {
+            let bar = UiRect::new(0.0, 0.0, width as f32, metric::HUD_BUTTON_SIZE);
+            let Some(cluster) = transport_bar::utilities(bar, 0.0, true) else {
+                continue;
+            };
+            for count in [8usize, 5, 1] {
+                let Some(band) = toolbar_band(width as f32, count) else {
+                    continue;
+                };
+                if !band.fits && count != 1 {
+                    continue;
+                }
+                let leftmost = [cluster.readout, cluster.mute, cluster.volume]
+                    .into_iter()
+                    .flatten()
+                    .chain(std::iter::once(cluster.fullscreen))
+                    .map(|rect| rect.x)
+                    .fold(f32::MAX, f32::min);
+                assert!(
+                    band.controls.x + band.controls.width <= leftmost + 0.01,
+                    "{width}px with {count} controls: the row reaches {} into a cluster starting at {leftmost}",
+                    band.controls.x + band.controls.width
+                );
+                break;
             }
         }
     }

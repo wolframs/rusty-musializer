@@ -58,6 +58,109 @@ const SPACE_GROTESK: &[u8] = include_bytes!("../../../resources/fonts/SpaceGrote
 /// Alegreya Regular, SIL OFL 1.1. See `resources/fonts/OFL.txt`.
 const ALEGREYA: &[u8] = include_bytes!("../../../resources/fonts/Alegreya-Regular.ttf");
 
+/// Font Awesome 4, SIL OFL 1.1. See `resources/fonts/FontAwesome-OFL.txt`.
+///
+/// A fourth face, and the first thing in this build that is **not** in the frozen
+/// C — the oracle's chrome is text-labelled throughout. It is here because a
+/// transport row is the one place where a glyph is more legible than its name at
+/// the sizes the row shrinks to, and because every icon it draws is paired with a
+/// tooltip that spells the label out, so nothing is only available as a picture.
+const FONT_AWESOME: &[u8] = include_bytes!("../../../resources/fonts/FontAwesome.otf");
+
+/// The icons the chrome draws, and the only codepoints the icon atlas carries.
+///
+/// An enum rather than bare `char` constants because the atlas is built from
+/// [`Icon::ALL`]: adding a variant and forgetting to rasterize it would draw a
+/// missing-glyph box, and that failure would look like a font bug rather than a
+/// one-line omission. The same list is therefore both the vocabulary and the
+/// atlas request, which is the only way they cannot drift.
+///
+/// Codepoints are Font Awesome 4's Private Use Area assignments. They are not
+/// Unicode semantics — U+F04B is "play" only because this font says so — so the
+/// names here are the contract and the numbers are an implementation detail of
+/// the vendored face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Icon {
+    Play,
+    Pause,
+    /// The render/export control, drawn as a film reel.
+    Film,
+    VolumeOff,
+    VolumeDown,
+    VolumeUp,
+    /// Enter fullscreen.
+    Expand,
+    /// Leave fullscreen.
+    Compress,
+    /// Jump to the start of the track.
+    StepBackward,
+    /// Nudge the position backwards.
+    ChevronLeft,
+    /// Nudge the position forwards.
+    ChevronRight,
+    /// The tuning inspector.
+    Sliders,
+    /// The lyrics panel.
+    FileText,
+    /// The assist panel.
+    Magic,
+    /// The diagnostic readout toggle.
+    Info,
+}
+
+impl Icon {
+    /// Every icon, which is exactly what the atlas is built over.
+    pub const ALL: [Icon; 15] = [
+        Icon::Play,
+        Icon::Pause,
+        Icon::Film,
+        Icon::VolumeOff,
+        Icon::VolumeDown,
+        Icon::VolumeUp,
+        Icon::Expand,
+        Icon::Compress,
+        Icon::StepBackward,
+        Icon::ChevronLeft,
+        Icon::ChevronRight,
+        Icon::Sliders,
+        Icon::FileText,
+        Icon::Magic,
+        Icon::Info,
+    ];
+
+    /// The Font Awesome 4 codepoint.
+    #[must_use]
+    pub fn codepoint(self) -> u32 {
+        match self {
+            Icon::Play => 0xF04B,
+            Icon::Pause => 0xF04C,
+            Icon::Film => 0xF008,
+            Icon::VolumeOff => 0xF026,
+            Icon::VolumeDown => 0xF027,
+            Icon::VolumeUp => 0xF028,
+            Icon::Expand => 0xF065,
+            Icon::Compress => 0xF066,
+            Icon::StepBackward => 0xF048,
+            Icon::ChevronLeft => 0xF053,
+            Icon::ChevronRight => 0xF054,
+            Icon::Sliders => 0xF1DE,
+            Icon::FileText => 0xF0F6,
+            Icon::Magic => 0xF0D0,
+            Icon::Info => 0xF05A,
+        }
+    }
+
+    /// The codepoint as a `char`, which is what a draw call needs.
+    ///
+    /// Infallible by construction: every value above is a valid scalar in the
+    /// Private Use Area, and the test at the bottom of this module proves it for
+    /// all of [`Icon::ALL`] rather than leaving it to inspection.
+    #[must_use]
+    pub fn glyph(self) -> char {
+        char::from_u32(self.codepoint()).unwrap_or('\u{FFFD}')
+    }
+}
+
 /// A face to draw with: either one this module rasterized, or raylib's default.
 ///
 /// One concrete type rather than `Option<Font>` at every call site, because the
@@ -114,6 +217,13 @@ pub struct Faces {
     /// codepoints the chrome draws, so typesetting a caption with it would drop
     /// Greek and Cyrillic without saying so (`plug.c:346-349`).
     caption_alt: Face,
+    /// Font Awesome at the fifteen codepoints in [`Icon::ALL`], and nothing else.
+    ///
+    /// Fifteen glyphs rather than the face's ~600: an atlas costs space per
+    /// *requested* codepoint whether or not the face has a glyph, and this face is
+    /// asked for so little that the atlas is smaller than any of the other three by
+    /// two orders of magnitude.
+    icons: Face,
     /// The project's imported face, and the path it was rasterized from
     /// (`p->caption_imported_font` / `_path`, `plug.c:371-427`).
     ///
@@ -177,10 +287,28 @@ impl Faces {
                 Face::Loaded,
             );
 
+        // The icon atlas. A failure here is the one fallback that is *not*
+        // survivable by drawing something slightly wrong: raylib's default face has
+        // no Private Use Area glyphs at all, so every icon button would draw an
+        // empty box. `Face::is_loaded` is what the toolbar consults to fall back to
+        // text labels instead, and `describe` reports it either way.
+        let icon_codepoints: Vec<i32> = Icon::ALL
+            .iter()
+            .map(|icon| icon.codepoint() as i32)
+            .collect();
+        let icons = rasterize(rl, thread, ".otf", FONT_AWESOME, &icon_codepoints).map_or_else(
+            || {
+                eprintln!("FONT: icon face unavailable; the chrome will use text labels");
+                default_face()
+            },
+            Face::Loaded,
+        );
+
         Self {
             ui,
             caption,
             caption_alt,
+            icons,
             imported: None,
         }
     }
@@ -194,6 +322,7 @@ impl Faces {
             ui: default_face(),
             caption: default_face(),
             caption_alt: default_face(),
+            icons: default_face(),
             imported: None,
         }
     }
@@ -202,6 +331,26 @@ impl Faces {
     #[must_use]
     pub fn ui(&self) -> &Face {
         &self.ui
+    }
+
+    /// The icon face, or the fallback if it would not rasterize.
+    ///
+    /// Callers must check [`Face::is_loaded`] before drawing a glyph through it.
+    /// This is the one face where the fallback cannot approximate the real thing:
+    /// raylib's default has no Private Use Area coverage, so an icon drawn through
+    /// it is an empty box rather than a slightly wrong letterform.
+    #[must_use]
+    pub fn icons(&self) -> &Face {
+        &self.icons
+    }
+
+    /// Whether icon buttons can be drawn at all.
+    ///
+    /// The seam that makes the text fallback reachable in a test, rather than only
+    /// on a machine where the atlas build fails.
+    #[must_use]
+    pub fn icons_available(&self) -> bool {
+        self.icons.is_loaded()
     }
 
     /// The face a caption style asks for, with a defined fallback.
@@ -320,7 +469,7 @@ impl Faces {
     pub fn describe(&self) -> String {
         let fallback = "raylib default (FALLBACK)";
         format!(
-            "ui={}, caption={}, caption-alt={}, imported={}",
+            "ui={}, caption={}, caption-alt={}, icons={}, imported={}",
             if self.ui.is_loaded() {
                 "Space Grotesk"
             } else {
@@ -335,6 +484,15 @@ impl Faces {
                 "Space Grotesk"
             } else {
                 fallback
+            },
+            // Named separately because its fallback is not a degraded face but a
+            // *different interface*: the toolbar draws text labels instead, and a
+            // reader of this line should be able to tell which one they are looking
+            // at in a capture.
+            if self.icons.is_loaded() {
+                format!("Font Awesome ({} glyphs)", Icon::ALL.len())
+            } else {
+                format!("{fallback}, chrome falls back to text labels")
             },
             self.imported_path()
                 .map_or_else(|| "none".to_string(), |path| path.display().to_string()),
@@ -600,5 +758,38 @@ mod tests {
             &[0x00, 0x01, 0x00, 0x00],
             "Alegreya is not a TrueType file"
         );
+        assert_eq!(
+            &FONT_AWESOME[..4],
+            b"OTTO",
+            "Font Awesome is not a CFF OpenType file"
+        );
+    }
+
+    /// The atlas is built from [`Icon::ALL`], so a variant missing from it is a
+    /// glyph the face was never asked for — which draws as an empty box at a size
+    /// nobody notices until a capture is reviewed.
+    #[test]
+    fn every_icon_is_in_the_atlas_request_exactly_once() {
+        let mut seen = std::collections::BTreeSet::new();
+        for icon in Icon::ALL {
+            assert!(
+                seen.insert(icon.codepoint()),
+                "{icon:?} shares a codepoint with an earlier variant"
+            );
+            // Private Use Area. Not a range check for its own sake: a codepoint
+            // that strayed out of it would be a real Unicode character, which
+            // Space Grotesk might well have — so the icon would draw as a letter
+            // rather than as an obvious box, and look deliberate.
+            assert!(
+                (0xE000..=0xF8FF).contains(&icon.codepoint()),
+                "{icon:?} is outside the Private Use Area"
+            );
+            assert_ne!(
+                icon.glyph(),
+                '\u{FFFD}',
+                "{icon:?} is not a valid Unicode scalar"
+            );
+        }
+        assert_eq!(seen.len(), Icon::ALL.len());
     }
 }
