@@ -2,7 +2,8 @@
 
 ## Status
 
-The C repository is feature frozen. Implementation may begin.
+The C repository is feature frozen. **The rewrite is built and runs**; what
+remains is listed under "Where this actually stands" immediately below.
 
 Source reference:
 
@@ -21,37 +22,54 @@ describe behaviour and which describe intent.
 This is a rewrite powered by coding-agent parallelism and abundant token budget.
 The objective is a fun, usable Rust Musializer, based on the hobby-C-project.
 
-## Handoff: start here
+## Where this actually stands
 
-If you are the session picking this up, you are the integration owner. Nothing
-has been built yet.
+**Last updated 2026-07-31.** Read this before anything else in this file, because
+most of what follows was written before the port existed and describes a plan
+rather than the tree.
 
-State of `rusty-musializer` at handoff:
+Bands 0, 1 and 2 are landed and committed on `master`. The application builds,
+opens a window, plays audio, draws all ten scenes from their own data, opens and
+saves `.musi` projects, exports video through FFmpeg, and carries every bottom
+panel for real — there is no shared "not built yet" box left. `tools/verify.sh`
+is **19 passed, 0 failed**, including thirteen differential harnesses against the
+frozen C and a headless capture gate.
 
-- Branch `master`, **zero commits**. `AGENTS.md`, its `CLAUDE.md` symlink, and
-  this file are untracked. There is no Cargo workspace, no `.gitignore`, and no
-  code.
-- Everything below the vertical slice is unstarted. No note entry claims
-  otherwise; the NOTE ENTRIES section at the bottom is the only record of what
-  has actually happened, so read it before assuming a section describes
-  reality.
+What is left, in the order a session should probably take it:
 
-Your first moves, in order, before any parallel work:
+1. **Package `tools/external_analysis.py`.** The C ships it and this repository
+   does not, so Assist draws correctly but every workflow button is disabled. This
+   is the largest remaining *parity* gap and it is real work, not a stub.
+2. **Item O's harness bullet**, reframed. See the session-3 note "Item O, part
+   two": the question is not how many modules lack a harness, it is which modules
+   have evidence that could distinguish a right formula from a plausible wrong
+   one. `beat_tracker` was picked by that test and found a real parity bug.
+3. **Two recorded deferrals**, both with their reasons in the code:
+   `Workspace::assist` wants to live on `Shell` with four `Cell`s deleted (see
+   `workspace.rs`), and autosave writes only the current track because only it has
+   a bound stream to read the sample rate from — the C autosaves all.
 
-1. Read `AGENTS.md` here and `../musializer/CURRENT_FILE_POINTERS.md` there.
-2. Commit the current documents so the fleet has a base commit to branch from.
-   Add a `.gitignore` covering `target/`, audio, video, and caches first.
-3. Do Phase 0's remaining inventory. It is small and it calibrates everything
-   after it.
-4. Build the vertical slice yourself with one runtime-focused agent. Phase 1 is
-   a go/no-go gate on the binding choice; do not fan out six agents before a
-   window opens and Spectrum reacts.
-5. Land the shared contracts listed under "Shared contracts land first".
-6. Only then brief agents A-F from the ownership map and let them run.
+Everything deliberately *not* built is in `AGENTS.md` under "Not built, and not
+going to be", which is where a user would look for the difference list.
 
-Do not start by auditing the C architecture again. The map exists: this file
-for the plan, `CURRENT_FILE_POINTERS.md` for the documents, and the ownership
-table below for the files.
+The NOTE ENTRIES sections are the only record of what actually happened. Read them
+before assuming any section above describes reality — the prose describes the
+plan, the notes describe the outcome, and the two have diverged more than once.
+
+### Handoff: how this file was originally organised
+
+The rest of this document is the plan as written at the start, kept because the
+reasoning in it is still the reasoning the code follows. Two navigation notes:
+
+- **"COMPLETION PLAN (session 3 onward)"** supersedes the phase sketches for
+  everything that remains, and carries the dependency order and the definition of
+  done each item was held to.
+- The **source ownership map** and the fleet layout describe a fan-out that has
+  already happened. They are history, not instructions.
+
+Do not start by auditing the C architecture again. The map exists: this file for
+the plan, `../musializer/CURRENT_FILE_POINTERS.md` for the documents, and the
+ownership table below for the files.
 
 ## The vibe contract
 
@@ -3432,3 +3450,115 @@ differential harness, and item O says every module ported without one must have
 acquired one by the gate. Wiring M and N surfaced two that had not:
 `song_atlas_map.c` and `ascii_art.c`. Both are pure and both now have observable
 output, which is what makes the omission worth fixing rather than noting.
+
+#### Item O, part one — the three open questions are settled
+
+All three of item O's "known unknowns" now have answers on evidence rather than
+judgement, and the two `.musi` round trips are a harness rather than a claim.
+
+- **The `.musi` round trip, both directions**, is `differential_project_io.sh`:
+  1650 values, both directions, largest delta **0**. The fixture strategy question
+  answered itself — the harness *generates* its fixture on both sides, so nothing
+  from a real project is committed and the repository rule holds.
+- **The `%.17g` float-spelling difference** Agent L's harness found is recorded in
+  `project::io::write_f64`'s doc under a "# Why this is not a parity bug" heading.
+  The short version: nothing in the oracle hashes or byte-compares a `.musi`, so
+  a differently spelled float that parses to the same double is not observable.
+- **The version strings** are decided: `musializer-rs 0.1.0 (parity target
+  musializer 2026.07, raylib 5.5)`. It names what it is a rewrite *of*, which the
+  C's three spellings do not have to do.
+
+#### Item O, part two — the harness checklist, and the measurement that reframed it
+
+The gate's third bullet — "every pure module ported without one has since acquired
+one" — was the item most likely to be waved through, so it got measured instead.
+
+`timeline_view` and `layout` (covering `workspace_layout` + `timeline_layout`) were
+chosen because their ports' own tests were mostly **property assertions**:
+`is_finite()`, `span <= duration + 1e-9`, `rect.contains(inner)`. Both harnesses
+found **no disagreement** — the ports were right. What their negative controls
+proved is that the unit tests could not have told anyone either way:
+
+| perturbation | the harness | the module's unit tests |
+| --- | --- | --- |
+| `>=` → `>` in `workspace_layout`'s mode ladder | 431 values fail | **9 passed** |
+| `margin * 2.0` → `* 2.0625` in `timeline_layout` (1/16 px) | 14673 values fail | **7 passed** |
+
+The second is the instructive one: the tightest unit expectation gives `scale` a
+1e-3 tolerance, and 0.375 px spread over a 628 px row fits inside it. So the rule
+this settles is **not** "prefer harnesses" — it is that a property assertion cannot
+pin a value, and a layout error is invisible in a capture because everything moves
+together and still looks self-coherent.
+
+That reframes the remaining checklist bullet. It is not "~35 modules lack
+harnesses"; it is "which modules have evidence that could distinguish a right
+formula from a plausible wrong one". A follow-up session picking this up should
+choose the next harness by that question, not by counting.
+
+#### `beat_tracker` — the harness that found a real parity bug
+
+Chosen by exactly that test. Its strongest evidence was a **hand-transcribed**
+eight-value table: `%.9g` phases pasted from a scratch C build that no longer
+exists, unre-derivable without redoing the work by hand. 8 pinned values became
+123522 compared ones, and the bug fell out immediately.
+
+`beat_tracker_update` returns false for two unrelated reasons — it refuses bad
+input *before* writing its out-parameter, or it computes a position inside
+`[0, 1)`, narrows it to a float that lands on exactly `1.0`, **writes that**, and
+refuses it afterwards (`beat_tracker.c:76-78`). `plug.c:1139-1144` keeps a
+`float beat_phase = 0.0f;`, passes its address, and uses whatever is in it either
+way. The port returned `Option<f32>`, had nowhere to put the `1.0`, and collapsed
+both to `0.0`. `beat_phase` is a documented route source, so the difference is
+visible in a rendered MP4.
+
+Three things worth carrying forward:
+
+- **It surfaced from writing the excuse down.** The first version of the harness
+  pinned it as an expected divergence, arguing it was an oracle quirk the port
+  deliberately did not reproduce. Reading the C's *caller* in order to justify that
+  sentence is what showed the sentence was false.
+- **The `Option` was the disguise.** Two refusals with different observable results
+  were indistinguishable at the type level. The fix is a three-variant
+  `BeatUpdate`, because the C's `(bool, out float)` pair carries information an
+  `Option` cannot.
+- **Not a corner case.** The grid reaches it 187 times in 12250 steps.
+
+#### The transport row — the first thing here that is not a port
+
+Operator request, 2026-07-31, and the first surface in this rewrite with no oracle
+behind it at all. Four additions landed as one decision, because icons are square
+and the row now carries eleven controls in less space than the C's six labels:
+
+- the diagnostic readout is **off by default** (`H`, its own button, `--hud[=0|1]`),
+  with probe runs defaulting it back on so captures keep carrying their evidence;
+- mute and a volume slider, and `Full` now toggles the OS window as well as the
+  layout;
+- tooltips naming every control **and its keyboard shortcut**, which is now the
+  only place a binding is written down;
+- `Start` / `-1 s` / `+1 s` plus arrows, Ctrl (0.1 s), Shift (10 s) and Home/End.
+
+`core::ui::transport_bar` holds the arithmetic, raylib-free, and earned that on its
+first run: the width sweep caught **mute vanishing and then reappearing** as the
+window narrowed, because dropping the volume slider freed enough room for it.
+Greedy placement cannot be monotone, so the cluster now picks a whole configuration
+from a ladder of strictly decreasing widths. The property to assert is monotonicity
+in width, not a shedding order.
+
+`--ui-probe hover=XxY` is new and is the reason any of this is reviewable: a
+headless run has no pointer, so every hover state in this interface was
+unphotographable. Two of this repository's three worst regressions were exactly
+that shape.
+
+**A follow-up session should know:** this row is now a *precedent*, not an
+exception. `AGENTS.md`'s negotiable/not-negotiable table has four new rows
+recording it, and the rule that admitted it is unchanged — none of it is visible
+in a `.musi`, a rendered MP4, a number, or the documented CLI grammar.
+
+#### The repository has remotes now
+
+`origin` → Forgejo (`git@192.168.128.108:wolfram/rusty-musializer.git`, private),
+`github` → `https://github.com/wolframs/rusty-musializer.git` (public). Same
+convention as the C repository, per `../forgejo-sync-prompt.md`. The
+`worktree-agent-*` branches from the fan-out are **local only** and deliberately
+not pushed — they are all merged into `master` and pushing eighteen of them would
+be noise. They are also safe to delete whenever the operator wants.

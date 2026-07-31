@@ -1,8 +1,14 @@
 # Repository guide for coding agents
 
-The Rust rewrite of Musializer. The C repository is feature frozen. The Cargo
-workspace exists and the Phase 1 vertical slice works: a window opens, audio
-plays through an allocation-free callback bridge, and Spectrum reacts to it.
+The Rust rewrite of Musializer. The C repository is feature frozen.
+
+**The application is built and runs.** All ten scenes draw from their own data,
+`.musi` projects open and save, video exports through FFmpeg, every bottom panel is
+real, and `tools/verify.sh` is 19 passed / 0 failed — thirteen differential
+harnesses against the frozen C plus a headless capture gate. `REWRITE_PLAN.md`'s
+"Where this actually stands" is the current list of what is left; the largest item
+is packaging `tools/external_analysis.py`, without which Assist draws but cannot
+run.
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
 
@@ -497,23 +503,39 @@ look for the difference list. Parity is declared *with* these, not despite them.
 
 ## Still to be filled in
 
-Bands 0 and 1 are landed, and so are Band 2's items M and N. **Every bottom panel
-is real** — the shared "not built yet" box is deleted — and **every scene now draws
-its own data**: the Song Atlas terrain, the ASCII glyph grid and the timeline
-envelope are all built and wired, where all three were previously drawing a
-fallback that photographed as content. What remains:
+Bands 0, 1 and 2 are all landed. **Every bottom panel is real** — the shared "not
+built yet" box is deleted — and **every scene draws its own data**: the Song Atlas
+terrain, the ASCII glyph grid and the timeline envelope were all previously
+drawing a fallback that photographed as content, and all three are now wired.
+
+Item O's three open questions are **settled**: the bidirectional `.musi` round trip
+is a harness (1650 values, both directions, delta 0), the `%.17g` float-spelling
+difference is recorded as a non-parity-bug in `project::io::write_f64`'s doc with
+the reasoning, and the version string is decided
+(`musializer-rs 0.1.0 (parity target musializer 2026.07, raylib 5.5)`).
+
+What remains:
 
 - **`tools/external_analysis.py` is not in this repository.** The C ships it, so
   Assist draws correctly but cannot run: every workflow button is disabled and
   the status line says why, which is precisely what the oracle draws with no
-  helper. Packaging it is real parity work.
-- The parity gate (item O) and its three open questions: the three
-  version-string spellings, the `%.17g` float-spelling difference Agent L's
-  harness found, and the bidirectional `.musi` round trip against the frozen C.
+  helper. Packaging it is real parity work, and it is the largest remaining gap.
+- **Item O's harness bullet**, but reframed by measurement rather than counted.
+  "Every pure module ported without a harness has since acquired one" is not
+  literally true, and the useful question is not how many are missing — it is
+  which modules have evidence that could distinguish a right formula from a
+  plausible wrong one. See the measured table above: two negative controls left
+  their modules' unit tests fully green. `beat_tracker` was chosen by that test
+  and found a real parity bug on the first run.
 - Two deferrals recorded with their reasons rather than left silent:
   `Workspace::assist` would rather live on `Shell` with four `Cell`s deleted
   (see `workspace.rs`), and autosave writes only the current track because only
   it has a bound stream to read the sample rate from — the C autosaves all.
+- One known flake, named rather than left to be rediscovered:
+  `process::ffmpeg::tests::a_completed_encode_is_published_by_rename` failed once
+  under a full parallel `cargo test` and does not reproduce in isolation or in
+  repeated runs. It predates the current work and looks like a filesystem race in
+  the test itself.
 
 `REWRITE_PLAN.md`'s **"COMPLETION PLAN (session 3 onward)"** is the ordered
 version, and the NOTE ENTRIES below it record what each landed item changed about
