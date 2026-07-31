@@ -46,6 +46,7 @@ is never touched.
 | `differential_project_io.sh` | 1650 values, **both `.musi` round trips**, largest delta **0** |
 | `differential_timeline_view.sh` | 30865 records, 204953 values, largest delta **0** |
 | `differential_layout.sh` | 27547 records, 527187 values, largest delta **0** |
+| `differential_beat_tracker.sh` | 12352 records, 123522 values, largest delta **0** — **found a parity bug** |
 
 **This is the pattern to copy for every pure module.** A number to compare beats
 a paragraph of reasoning about whether a port is faithful, and it catches the
@@ -91,6 +92,58 @@ differential comparison, because a hand-transcribed expectation can be mistyped 
 Both harnesses found **no disagreement**: the ports were right. That is the other half
 of the point — a harness on a suspected module converts "we cannot tell" into "it is
 correct", which is worth as much as finding a bug.
+
+**And then the next one found an actual bug, in the place the argument predicted.**
+`beat_tracker` was chosen for a harness because its port's strongest evidence was a
+*hand-transcribed* eight-value table — `%.9g` phases pasted from a scratch C build
+that no longer exists, unre-derivable without redoing the work. Replacing 8 pinned
+values with 123522 compared ones surfaced this:
+
+`beat_tracker_update` returns false for two unrelated reasons. It refuses bad input
+*before* writing its out-parameter; or it computes a position inside `[0, 1)`,
+narrows it to a float that lands on exactly `1.0`, **writes that**, and refuses it
+afterwards (`beat_tracker.c:76-78`). `plug.c:1139-1144` keeps a
+`float beat_phase = 0.0f;`, passes its address, and uses whatever is in it either
+way — so the scene frame gets `0.0` in the first case and `1.0` in the second. The
+port returned `Option<f32>`, had nowhere to put the `1.0`, and collapsed both to
+`0.0`. `beat_phase` is a documented route source, so that is visible in a rendered
+MP4.
+
+Three things about how it was found are worth copying:
+
+- **It surfaced from writing the excuse down.** The first version of the harness
+  pinned this as an expected divergence, with a comment arguing it was an oracle
+  quirk the port deliberately did not reproduce. Reading the C's *caller* to justify
+  that sentence is what showed the sentence was false. Pin asymmetries as named
+  pairs — and then go check the claim you wrote in the pair.
+- **The `Option` was the disguise.** `None` reads as "no value", so two refusals
+  with different observable results looked identical at the type level. The fix is a
+  three-variant `BeatUpdate`, because the C's `(bool, out float)` pair carries
+  information an `Option` cannot.
+- **It is not a corner case.** The grid hits it **187 times in 12250 steps**: any
+  tick that nearly divides the beat interval drifts the position a hair under a
+  whole multiple, and 2⁻²⁵ below 1.0 is enough. A 0.3 s tick against the neutral
+  0.5 s clock does it by the tenth step.
+
+Its two other negative controls behaved like `layout`'s — **10 unit tests green**
+against 3 and 732 failing harness values, for `>` → `>=` on the discontinuity
+threshold and for an exclusive upper bound on the credible-gap range. Neither test
+suite has a case for a gap of exactly 0.75 s or exactly 1.5 s, which is why.
+
+Two smaller lessons from the same build, both from checks failing *before* the port
+was suspected:
+
+- **Echo the inputs, so a drift between the duplicated generators fails in a key
+  column.** `3.4028235e38f` in C is a *float* literal widened to a `double`
+  parameter — a different number from the same decimal parsed as a double. The two
+  harnesses disagreed by 3.4e30 on the first run, in the echoed `time` column, and
+  it was mine, not the port's.
+- **Clippy's `excessive_precision` can be reporting a dead test.** A row feeding
+  `0.0399999991` as "the float just below the 0.04 floor" rounds back *to* `0.04f`,
+  so it duplicated the row above it and the boundary looked tested while going
+  untested. The real value has to be computed (`nextafterf` / `from_bits`), not
+  written as a decimal.
+
 
 **Where the two sides cannot express the same rejection, pin the asymmetry as an
 expected pair.** The C takes bare pointers and Rust takes slices, so each can refuse

@@ -31,6 +31,64 @@ const FAST_LEARNING_OBSERVATIONS: usize = 4;
 const FAST_WEIGHT: f64 = 0.42;
 const SLOW_WEIGHT: f64 = 0.20;
 
+/// The outcome of one [`BeatTracker::update`], mirroring the C's
+/// `(bool return, float *out)` pair exactly (`beat_tracker.c:32-79`).
+///
+/// This is three variants rather than an `Option<f32>` because the C's two false
+/// returns are **not** the same thing to a caller, and collapsing them was a
+/// parity bug this port shipped until the differential harness found it:
+///
+/// - Refused input returns false *before* writing anything, so `plug.c:1139`'s
+///   `float beat_phase = 0.0f;` keeps its zero.
+/// - A phase that leaves `[0, 1)` is written first and refused afterwards
+///   (`beat_tracker.c:76-78`), so that same local holds the out-of-range value —
+///   and `plug.c:1157`/`plug.c:1185` copy it into the scene frame regardless.
+///
+/// So a scene really can be handed a `beat_phase` of exactly 1.0, and since
+/// `beat_phase` is a documented route source (`--route parameter:beat_phase:...`)
+/// that is observable in a rendered MP4. An `Option` has nowhere to put the
+/// number, which is how the difference stayed invisible.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BeatUpdate {
+    /// A usable phase in `[0, 1)`; the C returns true.
+    Phase(f32),
+    /// The input was valid and a phase was computed, but narrowing it to `f32`
+    /// landed outside `[0, 1)` — in practice exactly `1.0`, from a position within
+    /// 2⁻²⁵ below a beat boundary. The C writes this and then returns false.
+    ///
+    /// Not exotic: accumulated tick drift reaches it whenever the frame interval
+    /// sits just under an exact multiple of the beat interval, and the harness's
+    /// grid hits it 187 times in 12250 steps.
+    OutOfRange(f32),
+    /// The input was refused before anything was computed: a non-finite or
+    /// negative `time_seconds`, or a non-finite or negative `onset_strength`. The
+    /// C leaves its out-parameter untouched.
+    Refused,
+}
+
+impl BeatUpdate {
+    /// The phase a caller should use, following `plug.c:1139-1144`: the computed
+    /// value in both non-refused cases, and the zero the C's local was initialised
+    /// with when the input was refused.
+    ///
+    /// Named for what it is rather than `unwrap_or(0.0)`, because the zero is the C
+    /// caller's initialiser and not a neutral default — reading it as one is what
+    /// made [`BeatUpdate::OutOfRange`] look like it could be folded in.
+    #[must_use]
+    pub fn phase_or_caller_default(self) -> f32 {
+        match self {
+            Self::Phase(phase) | Self::OutOfRange(phase) => phase,
+            Self::Refused => 0.0,
+        }
+    }
+
+    /// Whether the C's `beat_tracker_update` would have returned true.
+    #[must_use]
+    pub fn is_usable(self) -> bool {
+        matches!(self, Self::Phase(_))
+    }
+}
+
 /// Beat phase state (`beat_tracker.h:7-15`).
 ///
 /// [`Default`] is C's post-`beat_tracker_reset` state, so
@@ -124,9 +182,11 @@ impl BeatTracker {
 
     /// Advances the tracker to `time_seconds` and returns the beat phase.
     ///
-    /// Returns `None` for input C rejects (`beat_tracker.c:35-38`): a non-finite
-    /// or negative `time_seconds`, or a non-finite or negative `onset_strength`.
-    /// State is untouched in that case.
+    /// Returns [`BeatUpdate::Refused`] for input C rejects
+    /// (`beat_tracker.c:35-38`): a non-finite or negative `time_seconds`, or a
+    /// non-finite or negative `onset_strength`. State is untouched in that case.
+    /// See [`BeatUpdate`] for why that is distinct from
+    /// [`BeatUpdate::OutOfRange`].
     ///
     /// The behaviour, in the order the C performs it:
     ///
@@ -146,13 +206,13 @@ impl BeatTracker {
     ///
     /// Because the anchor moves to every accepted onset, the phase is continuous
     /// at the moment of an onset (it reads `0.0` there) rather than jumping.
-    pub fn update(&mut self, time_seconds: f64, onset: bool, onset_strength: f32) -> Option<f32> {
+    pub fn update(&mut self, time_seconds: f64, onset: bool, onset_strength: f32) -> BeatUpdate {
         if !time_seconds.is_finite()
             || time_seconds < 0.0
             || !onset_strength.is_finite()
             || onset_strength < 0.0
         {
-            return None;
+            return BeatUpdate::Refused;
         }
 
         if !self.initialized
@@ -200,14 +260,20 @@ impl BeatTracker {
         self.previous_time = time_seconds;
 
         // C writes `*phase` before this check and still returns false
-        // (`beat_tracker.c:77`), so a C caller that ignores the return value sees
-        // the same value Rust withholds here. It is defensive either way: the
-        // interval is kept inside [0.25, 1.5] by construction, so the division
-        // cannot produce a non-finite position.
+        // (`beat_tracker.c:76-78`), and `plug.c:1139-1144` then uses the written
+        // value — so the number has to survive the refusal, which is why this
+        // returns `OutOfRange(phase)` and not a bare rejection. An earlier version
+        // returned `None` here and lost it.
+        //
+        // The non-finite half is unreachable defence: `interval_seconds` is a convex
+        // combination of values in [0.25, 1.5] and never leaves it, so the division
+        // cannot produce a non-finite position. The `< 1.0` half is *not*
+        // unreachable — narrowing an f64 position within 2⁻²⁵ of a beat boundary
+        // gives exactly 1.0f.
         if phase.is_finite() && (0.0..1.0).contains(&phase) {
-            Some(phase)
+            BeatUpdate::Phase(phase)
         } else {
-            None
+            BeatUpdate::OutOfRange(phase)
         }
     }
 }
@@ -216,18 +282,40 @@ impl BeatTracker {
 mod tests {
     use super::*;
 
+    /// Asserts the update produced a usable phase and hands it over.
+    ///
+    /// A helper rather than `unwrap()` because the interesting failure is
+    /// [`BeatUpdate::OutOfRange`], and a bare unwrap would report it as "None"
+    /// rather than as the number the tracker refused.
+    #[track_caller]
+    fn usable(update: BeatUpdate) -> f32 {
+        match update {
+            BeatUpdate::Phase(phase) => phase,
+            BeatUpdate::OutOfRange(phase) => {
+                panic!("expected a usable phase, got one refused as out of range: {phase}")
+            }
+            BeatUpdate::Refused => panic!("expected a usable phase, but the input was refused"),
+        }
+    }
+
     #[test]
     fn rejects_non_finite_negative_time_and_negative_strength() {
         let mut tracker = BeatTracker::new();
-        assert_eq!(tracker.update(-1.0, false, 0.0), None);
-        assert_eq!(tracker.update(f64::NAN, false, 0.0), None);
-        assert_eq!(tracker.update(f64::INFINITY, false, 0.0), None);
-        assert_eq!(tracker.update(0.0, false, f32::NAN), None);
-        assert_eq!(tracker.update(0.0, false, f32::INFINITY), None);
-        assert_eq!(tracker.update(0.0, false, -0.1), None);
+        assert_eq!(tracker.update(-1.0, false, 0.0), BeatUpdate::Refused);
+        assert_eq!(tracker.update(f64::NAN, false, 0.0), BeatUpdate::Refused);
+        assert_eq!(
+            tracker.update(f64::INFINITY, false, 0.0),
+            BeatUpdate::Refused
+        );
+        assert_eq!(tracker.update(0.0, false, f32::NAN), BeatUpdate::Refused);
+        assert_eq!(
+            tracker.update(0.0, false, f32::INFINITY),
+            BeatUpdate::Refused
+        );
+        assert_eq!(tracker.update(0.0, false, -0.1), BeatUpdate::Refused);
         // Rejection is atomic: nothing above was initialized or anchored.
         assert_eq!(tracker, BeatTracker::default());
-        assert_eq!(tracker.update(0.0, false, 0.0), Some(0.0));
+        assert_eq!(tracker.update(0.0, false, 0.0), BeatUpdate::Phase(0.0));
     }
 
     /// The phase is in `[0, 1)` for every accepted input, which is the contract
@@ -240,9 +328,7 @@ mod tests {
             // A 5 ms tick with an onset every 23rd sample: a deliberately
             // uncooperative 6.9 BPM-ish pattern the folder cannot latch.
             let onset = step % 23 == 0;
-            let phase = tracker
-                .update(time, onset, 0.9)
-                .expect("finite non-negative time is always accepted");
+            let phase = usable(tracker.update(time, onset, 0.9));
             assert!(
                 (0.0..1.0).contains(&phase),
                 "phase {phase} escaped [0, 1) at t={time}"
@@ -256,9 +342,9 @@ mod tests {
         let mut tracker = BeatTracker::new();
         assert_eq!(tracker.interval_seconds(), 0.5);
         assert_eq!(tracker.bpm(), f64::from(DEFAULT_BPM));
-        assert_eq!(tracker.update(3.0, false, 0.0), Some(0.0));
-        assert_eq!(tracker.update(3.125, false, 0.0), Some(0.25));
-        let phase = tracker.update(3.499, false, 0.0).unwrap();
+        assert_eq!(tracker.update(3.0, false, 0.0), BeatUpdate::Phase(0.0));
+        assert_eq!(tracker.update(3.125, false, 0.0), BeatUpdate::Phase(0.25));
+        let phase = usable(tracker.update(3.499, false, 0.0));
         assert!(phase > 0.99 && phase < 1.0, "phase was {phase}");
         assert_eq!(tracker.learned_intervals(), 0);
     }
@@ -266,33 +352,33 @@ mod tests {
     #[test]
     fn credible_onset_intervals_are_learned_and_anchor_the_phase() {
         let mut tracker = BeatTracker::new();
-        assert_eq!(tracker.update(0.0, true, 0.2), Some(0.0));
-        assert_eq!(tracker.update(0.6, true, 0.2), Some(0.0));
-        assert_eq!(tracker.update(1.2, true, 0.2), Some(0.0));
+        assert_eq!(tracker.update(0.0, true, 0.2), BeatUpdate::Phase(0.0));
+        assert_eq!(tracker.update(0.6, true, 0.2), BeatUpdate::Phase(0.0));
+        assert_eq!(tracker.update(1.2, true, 0.2), BeatUpdate::Phase(0.0));
         assert_eq!(tracker.learned_intervals(), 2);
         // 0.5 -> 0.542 -> 0.56636, converging on the observed 0.6 s.
         assert!(tracker.interval_seconds() > 0.55);
         assert!(tracker.interval_seconds() < 0.60);
         // An accepted onset re-anchors, so the phase reads 0 exactly on it.
-        let phase = tracker.update(1.35, false, 0.0).unwrap();
+        let phase = usable(tracker.update(1.35, false, 0.0));
         assert!(phase > 0.25 && phase < 0.28, "phase was {phase}");
     }
 
     #[test]
     fn implausible_gaps_and_weak_onsets_are_ignored_entirely() {
         let mut tracker = BeatTracker::new();
-        assert_eq!(tracker.update(0.0, true, 0.2), Some(0.0));
+        assert_eq!(tracker.update(0.0, true, 0.2), BeatUpdate::Phase(0.0));
         // 0.1 s apart is 600 BPM: below MINIMUM_INTERVAL, so not an observation.
-        assert_eq!(tracker.update(0.1, true, 0.2), Some(0.2));
+        assert_eq!(tracker.update(0.1, true, 0.2), BeatUpdate::Phase(0.2));
         assert_eq!(tracker.learned_intervals(), 0);
         // Still anchored at the first onset, not at 0.1.
         assert_eq!(tracker.interval_seconds(), 0.5);
 
         // A sub-threshold strength is not an onset at all.
         let mut quiet = BeatTracker::new();
-        assert_eq!(quiet.update(0.0, true, 0.039), Some(0.0));
+        assert_eq!(quiet.update(0.0, true, 0.039), BeatUpdate::Phase(0.0));
         assert!(!quiet.has_onset(), "0.039 is below the 0.04 noise floor");
-        assert_eq!(quiet.update(0.5, true, 0.04), Some(0.0));
+        assert_eq!(quiet.update(0.5, true, 0.04), BeatUpdate::Phase(0.0));
         assert!(quiet.has_onset(), "0.04 is exactly at the floor and counts");
     }
 
@@ -307,7 +393,7 @@ mod tests {
 
         // A forward jump past 0.75 s re-anchors: the phase reads 0 at the seek
         // target, and the tempo estimate survives.
-        let phase = tracker.update(30.0, false, 0.0).unwrap();
+        let phase = usable(tracker.update(30.0, false, 0.0));
         assert_eq!(phase, 0.0);
         assert!(!tracker.has_onset(), "the phase reference is gone");
         assert_eq!(tracker.learned_intervals(), 0);
@@ -318,7 +404,7 @@ mod tests {
         );
 
         // A backwards jump does the same.
-        assert_eq!(tracker.update(0.5, false, 0.0), Some(0.0));
+        assert_eq!(tracker.update(0.5, false, 0.0), BeatUpdate::Phase(0.0));
     }
 
     /// `reset` is the public "forget everything" and is *not* the same as the
@@ -398,9 +484,7 @@ mod tests {
         let mut observed = Vec::new();
         for step in 0..40u32 {
             let onset = step % 24 == 0 || step == 35;
-            let phase = tracker
-                .update(time, onset, 0.5)
-                .expect("every step is accepted");
+            let phase = usable(tracker.update(time, onset, 0.5));
             if step % 5 == 0 {
                 observed.push((step, phase));
             }
@@ -422,6 +506,49 @@ mod tests {
             tracker.interval_seconds()
         );
         assert_eq!(tracker.learned_intervals(), 1);
+    }
+
+    /// A position inside `[0, 1)` as an `f64` can land on exactly `1.0` once
+    /// narrowed to `f32`, and the tracker then refuses a phase it computed itself.
+    ///
+    /// This is the case the port originally collapsed into `None` alongside a
+    /// refused input, which lost the number — and the C's caller *uses* the number
+    /// (`plug.c:1139-1144`), so the two rejections have different observable
+    /// results. Pinned separately from the differential harness because the
+    /// distinction is a decision about the API and not only about arithmetic.
+    ///
+    /// Not a contrived corner. `0.3`-second ticks against the neutral 0.5 s clock
+    /// reach it by accumulated drift alone, which is how the harness hits it 187
+    /// times in 12250 steps.
+    #[test]
+    fn a_phase_that_rounds_up_to_one_is_refused_but_still_reported() {
+        let mut tracker = BeatTracker::new();
+        assert_eq!(tracker.update(0.0, false, 0.0), BeatUpdate::Phase(0.0));
+        // 0.499999999995/0.5 is 0.99999999999, inside [0, 1) as an f64 and exactly
+        // 1.0 once narrowed.
+        let update = tracker.update(0.499_999_999_995, false, 0.0);
+        assert_eq!(update, BeatUpdate::OutOfRange(1.0));
+        assert!(!update.is_usable());
+        // The value survives the refusal, which is the whole point.
+        assert_eq!(update.phase_or_caller_default(), 1.0);
+        // A refused *input* is the other case, and its caller default is the zero
+        // the C's local was initialised with, not a phase.
+        let refused = tracker.update(f64::NAN, false, 0.0);
+        assert_eq!(refused, BeatUpdate::Refused);
+        assert_eq!(refused.phase_or_caller_default(), 0.0);
+
+        // Reached by plain accumulated drift: 0.3 added ten times is a hair under
+        // 3.0, so the position is a hair under 6.0 and the fraction rounds up.
+        let mut drifting = BeatTracker::new();
+        let mut time = 0.0f64;
+        let mut refusals = 0;
+        for _ in 0..11 {
+            if !drifting.update(time, false, 0.0).is_usable() {
+                refusals += 1;
+            }
+            time += 0.3;
+        }
+        assert_eq!(refusals, 1, "expected the tenth tick to round up to 1.0");
     }
 
     /// Octave folding is what stops a detector that fires twice per beat from

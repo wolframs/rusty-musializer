@@ -199,17 +199,31 @@ impl<'a> SceneAudioFrame<'a> {
     /// (`plug.c:1141-1143`). The tracker refuses a non-monotonic or non-finite
     /// time, which is precisely the seek case, and a stale anchor would otherwise
     /// keep producing a phase that no longer refers to the audio.
+    ///
+    /// The phase used on a rejection is *not* simply zero, and getting that wrong
+    /// was a parity bug the `beat_tracker` differential harness found. The C keeps a
+    /// local `float beat_phase = 0.0f;` and passes its address, so:
+    ///
+    /// - refused input → the tracker never writes, and the zero stands;
+    /// - a phase that narrowed to exactly 1.0 → the tracker writes it and *then*
+    ///   returns false, so the local holds 1.0, and `plug.c:1157`/`plug.c:1185`
+    ///   copy it into the scene frame anyway.
+    ///
+    /// [`phase_or_caller_default`] is that distinction; it is a named method rather
+    /// than an `unwrap_or(0.0)` here because the zero belongs to the C caller's
+    /// initialiser rather than being a neutral fallback.
+    ///
+    /// [`phase_or_caller_default`]:
+    ///     crate::audio::beat_tracker::BeatUpdate::phase_or_caller_default
     pub fn track_beat(
         &mut self,
         tracker: &mut crate::audio::beat_tracker::BeatTracker,
         time_seconds: f64,
     ) {
-        match tracker.update(time_seconds, self.onset, self.spectral_flux) {
-            Some(phase) => self.beat_phase = phase,
-            None => {
-                tracker.reset();
-                self.beat_phase = 0.0;
-            }
+        let update = tracker.update(time_seconds, self.onset, self.spectral_flux);
+        self.beat_phase = update.phase_or_caller_default();
+        if !update.is_usable() {
+            tracker.reset();
         }
     }
 }
@@ -426,6 +440,43 @@ impl SceneInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three outcomes of a tracker update reach [`SceneAudioFrame::beat_phase`]
+    /// differently, and this is the layer where the difference is observable: a
+    /// route reading `beat_phase` renders it.
+    ///
+    /// Pinned here rather than only in `beat_tracker`'s own tests because the bug
+    /// was in *this* function. It collapsed a refused input and an out-of-range
+    /// phase into the same zero, where `plug.c:1139-1144` distinguishes them by
+    /// keeping a local and passing its address.
+    #[test]
+    fn track_beat_reproduces_the_c_callers_three_outcomes() {
+        use crate::audio::beat_tracker::BeatTracker;
+
+        let mut tracker = BeatTracker::new();
+        let mut frame = SceneAudioFrame::default();
+
+        // A usable phase: 0.125 s into the neutral 0.5 s clock is a quarter beat.
+        frame.track_beat(&mut tracker, 0.0);
+        assert_eq!(frame.beat_phase, 0.0);
+        frame.track_beat(&mut tracker, 0.125);
+        assert_eq!(frame.beat_phase, 0.25);
+        assert_eq!(tracker.learned_intervals(), 0);
+
+        // A phase that narrows to exactly 1.0: refused by the tracker, and the C's
+        // caller uses it anyway. Not 0.0.
+        frame.track_beat(&mut tracker, 0.499_999_999_995);
+        assert_eq!(
+            frame.beat_phase, 1.0,
+            "the C's local holds the value the tracker wrote before refusing it"
+        );
+
+        // A refused *input*: the tracker never writes, so the C's local keeps the
+        // 0.0 it was initialised with.
+        frame.beat_phase = 0.5;
+        frame.track_beat(&mut tracker, f64::NAN);
+        assert_eq!(frame.beat_phase, 0.0);
+    }
 
     #[test]
     fn scene_ids_match_the_c_enum_values() {
