@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/scene-plan-v1.schema.json",
+  "title": "Musializer deterministic scene-switch plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "audio", "sources", "provenance", "sections"],
+  "properties": {
+    "schema_version": {"const": "musializer.scene-plan/v1"},
+    "lane": {"const": "scene_plan"},
+    "audio": {"type": "object"},
+    "sources": {"type": "array", "items": {"type": "object"}},
+    "provenance": {"type": "object"},
+    "sections": {
+      "type": "array", "minItems": 1,
+      "x-musializer-coverage": "contiguous-full-duration",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "start_seconds", "end_seconds", "recommended_scene", "transition_strength", "reasons"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^section-[0-9]{4}$"},
+          "start_seconds": {"type": "number", "minimum": 0},
+          "end_seconds": {"type": "number", "exclusiveMinimum": 0},
+          "recommended_scene": {"enum": ["spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium", "constellation", "cadence", "loom", "pentagram"]},
+          "transition_strength": {"type": "number", "minimum": 0, "maximum": 1},
+          "reasons": {"type": "array", "minItems": 1, "items": {"type": "object"}}
+        }
+      }
+    }
+  }
+}

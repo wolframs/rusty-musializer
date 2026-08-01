@@ -45,7 +45,7 @@ use musializer_core::ui::font_import_state::{
     self as font_state, BrowserLayout, BrowserView, FontImportPanel,
 };
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::Face;
+use musializer_runtime::font::UiFonts;
 use musializer_runtime::process::font_import::{
     describe_scripts, CatalogueEntry, FontImportOutcome, FontImporter, ImportManifest,
 };
@@ -302,7 +302,7 @@ fn draw_font_browser(
 fn draw_search_field(
     widgets: &mut Widgets,
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     browser: &mut FontBrowser,
     layout: BrowserLayout,
 ) {
@@ -354,7 +354,7 @@ fn draw_search_field(
 fn draw_family_list(
     widgets: &mut Widgets,
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     browser: &mut FontBrowser,
     layout: BrowserLayout,
 ) -> (usize, usize) {
@@ -466,7 +466,7 @@ fn draw_family_list(
 /// (`lyrics_editor_ui.c:806-810`).
 fn draw_count(
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     area: UiRect,
     shown: usize,
     matched: usize,
@@ -489,7 +489,7 @@ fn draw_count(
 fn draw_action_row(
     widgets: &mut Widgets,
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     browser: &mut FontBrowser,
     layout: BrowserLayout,
     allowed: bool,
@@ -556,7 +556,7 @@ fn draw_action_row(
 fn draw_font_consent(
     widgets: &mut Widgets,
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     browser: &mut FontBrowser,
     area: UiRect,
 ) {
@@ -613,7 +613,7 @@ fn draw_font_consent(
 fn draw_font_progress(
     widgets: &mut Widgets,
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     browser: &mut FontBrowser,
     area: UiRect,
     panel: FontImportPanel,
@@ -665,7 +665,7 @@ fn draw_font_progress(
 fn draw_font_failure(
     widgets: &mut Widgets,
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     browser: &mut FontBrowser,
     area: UiRect,
     allowed: bool,

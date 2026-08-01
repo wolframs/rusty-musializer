@@ -20,6 +20,7 @@ pub mod font;
 pub mod preset_files;
 pub mod process;
 pub mod project_files;
+pub mod support;
 
 pub use raylib;
 pub use raylib_sys;

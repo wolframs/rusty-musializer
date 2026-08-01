@@ -597,7 +597,9 @@ pub enum FontJobError {
 ///
 /// - **The candidate list**, because the layout differs between an extracted
 ///   distribution (`<appdir>/tools/…`) and a source run out of `./build`
-///   (`<appdir>/../tools/…`), with `./tools/…` as the final fallback.
+///   (`<appdir>/../tools/…`). Cargo adds one more directory level with
+///   `target/debug` or `target/release`, so the Rust source layout also probes
+///   `<appdir>/../../tools/…`, with `./tools/…` as the final fallback.
 /// - **`MUSIALIZER_FONT_HELPER` fails hard.** A set-but-missing override
 ///   returns `None`; it does **not** fall back to probing (`:1554-1558`). The
 ///   same is true of `MUSIALIZER_ASSIST_HELPER`. Somebody who points the
@@ -641,6 +643,11 @@ fn find_helper(
     let candidates = [
         application_directory.join("tools").join(file_name),
         application_directory
+            .join("..")
+            .join("tools")
+            .join(file_name),
+        application_directory
+            .join("..")
             .join("..")
             .join("tools")
             .join(file_name),
@@ -1822,7 +1829,7 @@ mod tests {
     }
 
     #[test]
-    fn the_helper_candidate_list_probes_both_layouts_in_order() {
+    fn the_helper_candidate_list_probes_distribution_and_source_layouts_in_order() {
         let scratch = Scratch::new("resolve");
         // Nothing anywhere: not found.
         assert_eq!(find_font_helper(&scratch.0), None);
@@ -1844,6 +1851,13 @@ mod tests {
         assert_eq!(
             find_font_helper(&source.join("build")),
             Some(source.join("build/../tools/google_fonts.py"))
+        );
+
+        // The Cargo source-run layout: <appdir>/../../tools/google_fonts.py.
+        std::fs::create_dir_all(source.join("target/debug")).unwrap();
+        assert_eq!(
+            find_font_helper(&source.join("target/debug")),
+            Some(source.join("target/debug/../../tools/google_fonts.py"))
         );
 
         // The Assist helper resolves the same way with a different filename.

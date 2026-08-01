@@ -118,6 +118,29 @@ impl SceneSwitchTimeline {
         self.active_index
     }
 
+    /// Replaces the active cue's captured settings without rewinding playback
+    /// (`commit_active_cue_settings`, `plug.c:1043-1052`).
+    ///
+    /// Unlike [`Self::replace`], this is an edit to the cue already playing, so
+    /// resetting `active_index` would make the same boundary fire again on the
+    /// next frame.
+    pub fn set_active_settings(&mut self, scene: SceneId, settings: &SettingsSnapshot) -> bool {
+        let Some(active) = self.active_index else {
+            return false;
+        };
+        let Some(cue) = self.cues.get_mut(active) else {
+            return false;
+        };
+        if cue.scene_index != scene.index() as u32
+            || !settings.captured
+            || !settings.is_valid_for(scene)
+        {
+            return false;
+        }
+        cue.settings = *settings;
+        true
+    }
+
     /// `scene_switch_reset` (`scene_switch.c:18-21`): forgets which cue is active
     /// without touching the plan, so the next [`Self::update`] re-reports a switch.
     pub fn reset(&mut self) {

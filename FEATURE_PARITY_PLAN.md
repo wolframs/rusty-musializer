@@ -55,6 +55,8 @@ The following are already delivered and must stay green:
 - Manual event capture, clear/undo and scene-cue model
 - Whole-track waveform, Song Atlas map and image-backed ASCII derivations
 - All bottom-panel layouts and the headless scene/panel capture sweep
+- Native-size Space Grotesk shell typography with compiler-enforced draw and
+  measurement boundaries
 
 The remaining work is concentrated at integration boundaries and missing product
 entry points. A green pure-module harness does not prove those boundaries.
@@ -83,7 +85,7 @@ P3 complete external bundle
   E1 support-file manifest -> E2 Assist -> E3 Google Fonts -> E4 dist/doctor
 
 P4 honesty and gate
-  F1 stale UI/status removal -> F2 stale handoff cleanup
+  F0 robust shell typography -> F1 stale UI/status removal -> F2 stale handoff cleanup
   G1 integration gates -> G2 final feature audit
 ```
 
@@ -155,27 +157,27 @@ produced four boundary failures in each direct comparison (12 discrepancies).
 
 ### B1 — drive automatic switching in preview and export
 
-- [ ] Apply `SceneSwitchTimeline::update` before frame construction on both paths.
-- [ ] Make `--auto-scenes` actually enable the imported/saved plan; reject an
+- [x] Apply `SceneSwitchTimeline::update` before frame construction on both paths.
+- [x] Make `--auto-scenes` actually enable the imported/saved plan; reject an
       empty plan with the oracle's observable behavior.
-- [ ] Replay accepted Assist section plans and enabled `.musi` scene plans.
-- [ ] Apply a cue's captured settings snapshot before audio routes, matching the
+- [x] Replay accepted Assist section plans and enabled `.musi` scene plans.
+- [x] Apply a cue's captured settings snapshot before audio routes, matching the
       C precedence: base/cue settings first, per-frame routing second.
-- [ ] Reset the switch cursor and cue-settings state on seek, track change,
+- [x] Reset the switch cursor and cue-settings state on seek, track change,
       project open, export start/end and plan enable/disable.
-- [ ] Keep preview and export scene selection identical for the same time.
+- [x] Keep preview and export scene selection identical for the same time.
 
 ### B2 — base-scene selection and manual `+ Scene` capture
 
-- [ ] When a user selects a different base scene, set the pending-selection state,
+- [x] When a user selects a different base scene, set the pending-selection state,
       remember the previous base scene and mark the project dirty.
-- [ ] Selecting a base scene while Auto scenes is enabled must disable playback of
+- [x] Selecting a base scene while Auto scenes is enabled must disable playback of
       the plan, retain its cues and explain that result in the notice tray.
-- [ ] The first manual scene cue recorded after time zero must backfill the former
+- [x] The first manual scene cue recorded after time zero must backfill the former
       base scene from zero before inserting the new cue.
-- [ ] Recording a cue must capture the selected scene's effective tuning snapshot,
+- [x] Recording a cue must capture the selected scene's effective tuning snapshot,
       clear the pending flag and apply the cue immediately at the playhead.
-- [ ] Tune edits made while a cue snapshot is active must update that cue rather
+- [x] Tune edits made while a cue snapshot is active must update that cue rather
       than silently changing only the base scene settings.
 
 ### B3 — scene-plan evidence
@@ -184,9 +186,22 @@ produced four boundary failures in each direct comparison (12 discrepancies).
       backward, fast-forward and a windowed export beginning after cue zero.
 - [ ] Assert selected scene id and a cue-specific setting, not merely the enabled
       flag or the words "automatic scene plan".
-- [ ] Prove a manual first cue at `t > 0` retains the prior base scene on
+- [x] Prove a manual first cue at `t > 0` retains the prior base scene on
       `[0, t)`.
-- [ ] Add a negative control that disables the call to `update` and is caught.
+- [x] Add a negative control that disables the call to `update` and is caught.
+
+Completion evidence (2026-08-01, operator-reported lyric deletion and PCM scene
+cue repair): the lyrics form now assigns disjoint widget ids to Apply, Discard,
+Delete and both timing rows. Reusing Delete's id for START -0.1 reproduced the
+failure and the new collision test failed 8/9 before restoration; the isolated
+Xvfb click now leaves 5 cues from the 6-cue fixture and clears the selection.
+`Track::advance_scene_plan` is the shared preview/export driver and installs a
+cue snapshot before routes. A two-cue 8-second project reports Loom after its
+4.0-second boundary in preview and in a 0.2-second windowed MP4 beginning at
+4.0; the same disabled project reaches Loom through `--auto-scenes`. Unit tests
+pin base-scene pending/backfill state, exact boundary transitions, seek-style
+reset and active-cue tuning. Returning before `SceneSwitchTimeline::update` made
+the boundary test fail (`None` versus `Some(Spectrum)`) and was reverted.
 
 ## P1 — durable edits, guards and autosave
 
@@ -280,19 +295,31 @@ produced four boundary failures in each direct comparison (12 discrepancies).
 
 ### E1 — define and copy the support bundle
 
-- [ ] Treat the C distribution's support-file list as the starting manifest, not
+Completed 2026-08-01 (working tree): source-bundle restoration depends only on
+the frozen oracle's reviewed first-party support files. E2/E3 consume the same
+manifest, while E4 will reuse it for archive staging.
+
+- [x] Treat the C distribution's support-file list as the starting manifest, not
       `external_analysis.py` alone.
-- [ ] Bring over and review the required Python modules, prompt, schemas and docs:
+- [x] Bring over and review the required Python modules, prompt, schemas and docs:
       `analysis_io.py`, `analyze_audio.py`, `external_analysis.py`,
       `google_fonts.py`, `import_whisper.py`, `lyric_align.py`,
       `mimo_openrouter.py`, `musializer_doctor.py`, the lyrics cleanup prompt and
       every schema those tools read or write.
-- [ ] Preserve the helpers as independent tools; first-party application code
+- [x] Preserve the helpers as independent tools; first-party application code
       remains Rust.
-- [ ] Remove C-build assumptions and resolve resources relative to the installed
+- [x] Remove C-build assumptions and resolve resources relative to the installed
       bundle without requiring the C checkout.
-- [ ] Add one authoritative Rust distribution-support manifest so install and
+- [x] Add one authoritative Rust distribution-support manifest so install and
       archive paths cannot drift.
+
+Evidence: all copied helper/assets matched the frozen files by SHA-256 before
+the doctor and user documentation were adapted to Cargo/Rust paths.
+`runtime::support::DISTRIBUTION_SUPPORT_FILES` names the bundle and tests every
+entry. `tools/support_bundle_check.sh` compiles all helpers, runs a real local
+Sections analysis over synthetic PCM, parses its bridge through Rust, dry-runs
+the model-authorized modes without credentials, and proves a headerless bridge
+fails as its negative control.
 
 ### E2 — make Assist runnable
 
@@ -303,7 +330,7 @@ produced four boundary failures in each direct comparison (12 discrepancies).
       distribution layouts.
 - [ ] Test cancellation, timeout, process-group cleanup, invalid bridge output,
       staging, Apply and Discard.
-- [ ] Keep a fake helper for deterministic lifecycle coverage, but add at least one
+- [x] Keep a fake helper for deterministic lifecycle coverage, but add at least one
       real support-bundle smoke test.
 
 ### E3 — make Google Fonts import runnable
@@ -328,12 +355,39 @@ produced four boundary failures in each direct comparison (12 discrepancies).
 
 ## P4 — honest status, stale handoffs and final gate
 
+### F0 — robust native-size shell typography
+
+Completed 2026-08-01 (working tree, operator-requested robustness sweep):
+
+- [x] Replace the single 64 px UI atlas with native Space Grotesk atlases for
+      every fitted 11--22 px size and the fixed 24, 28, 34, 38 and 84 px sizes.
+- [x] Route all ordinary shell drawing, measurement, buttons, text input and
+      panels through a distinct `UiFonts` type that cannot be used as a raw
+      raylib face. Keep caption faces and Font Awesome icons as explicit raw-face
+      exceptions.
+- [x] Quantize fitted rows before measurement, draw UI glyphs 1:1 without
+      mipmaps, and snap text origins and tracking to integer pixels.
+- [x] Report the native sizes used and fail the headless gate when any shell
+      label requests a scaled/non-native size.
+- [x] Exercise welcome, every scene and panel, preview/export and both supported
+      window sizes through the silent headless path.
+
+Evidence: changing `Faces::ui()` from `&Face` to `&UiFonts` first produced 61
+compile errors across raw draw, measure, fitted-row and helper boundaries, which
+made the retrofit inventory compiler-complete instead of search-pattern based.
+The full headless gate then collected 81 application font reports; every one
+loaded all 17 atlases and reported `non-native-requests=0`, while preview/export
+determinism and the existing scene contracts stayed green. As the runtime
+negative control, changing one welcome label from 15.0 to 15.5 px still rendered
+but reported three non-native requests, and the new gate rejected it. The source
+perturbation was reverted before the green run.
+
 ### F1 — remove false unfinished status
 
-- [ ] Stop `toggle_panel` from emitting `ShellCommand::NotImplemented` for the real
+- [x] Stop `toggle_panel` from emitting `ShellCommand::NotImplemented` for the real
       Export, Lyrics and Assist panels; delete the obsolete command if no genuine
       use remains.
-- [ ] Remove the scene-browser footer `* not ported yet` while every registered
+- [x] Remove the scene-browser footer `* not ported yet` while every registered
       scene reports a ported drawing path.
 - [ ] Replace stale "largest remaining gap" claims in status text with a pointer
       to this plan.
@@ -416,7 +470,7 @@ This is centralized dangling-work cleanup, not feature parity by itself:
 | Manual/semantic events | Models and row fit; scene/timeline consumption missing | A1, D4 |
 | Timeline | Waveform/zoom/scrub fit; lyric/events/pan missing | D4 |
 | ASCII image mode | CLI/project rendering fit; GUI and typed drop missing | D1-D2 |
-| Assist | UI/controller/bridge fit; shipped helper bundle absent | C2, E1-E2 |
+| Assist | UI/controller/bridge and source support bundle fit; packaged/live mode validation remains | C2, E2-E4 |
 | Google Fonts | UI/runtime fit; shipped helper bundle absent | E1, E3 |
 | FFmpeg export | Transport/determinism fit; project lanes/scene plans missing | A1-B3 |
 | CLI | Mostly fit; `--auto-scenes` ineffective; `--reload-once` excluded | B1-B3 |

@@ -1,0 +1,929 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/project-v1.schema.json",
+  "title": "Musializer project v1",
+  "description": "Canonical .musi project contract. Arrays are serialized in evaluation order. Cue ordering and non-overlap constraints described below are additionally enforced by the C validator.",
+  "$comment": "For the bounded C codec, every string maxLength is also the maximum UTF-8 byte count and U+0000 is forbidden. JSON Schema maxLength alone counts Unicode code points, so producers must honor this stricter portable representation rule.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "metadata",
+    "audio",
+    "output",
+    "deterministic_seed",
+    "scenes",
+    "cues",
+    "analysis_lanes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "musializer.project/v1"
+    },
+    "metadata": {
+      "$ref": "#/$defs/metadata"
+    },
+    "audio": {
+      "$ref": "#/$defs/audio_asset"
+    },
+    "ascii_image": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/ascii_image_asset"
+        }
+      ],
+      "default": null,
+      "description": "Optional project-bundled source image for the ASCII Field. Canonical writers emit null when no image is imported; early v1 files may omit this field."
+    },
+    "caption_style": {
+      "$ref": "#/$defs/caption_style",
+      "description": "Typography for the shared lyric caption overlay. Optional: early v1 files omit it and take the shipped defaults, which reproduce the appearance those files were authored against. Every measurement is a fraction of the frame, never a pixel count, so a project typeset against a preview window exports identically at any resolution."
+    },
+    "output": {
+      "$ref": "#/$defs/output_settings"
+    },
+    "deterministic_seed": {
+      "$ref": "#/$defs/uint64"
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "$ref": "#/$defs/scene"
+      },
+      "description": "Layer order is back to front. instance_id values must be unique."
+    },
+    "cues": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/parameter_cue"
+      },
+      "description": "Must be sorted by (start_seconds, cue_id), with unique cue_id values. Ranges are half-open [start_seconds,end_seconds); cues for the same scene and parameter must not overlap. At a cue end the to_value persists until the next matching cue."
+    },
+    "analysis_lanes": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/analysis_lane"
+      },
+      "description": "Optional provenance references for reproducibility and re-analysis. At most one reference of each kind is allowed. Each audio_sha256 must equal audio.sha256. Referenced artifacts are not required to reopen evaluated project data."
+    },
+    "lyrics": {
+      "$ref": "#/$defs/lyrics"
+    },
+    "scene_switches": {
+      "$ref": "#/$defs/scene_switches"
+    },
+    "scene_presets": {
+      "type": "array",
+      "maxItems": 80,
+      "items": {
+        "$ref": "#/$defs/scene_preset"
+      },
+      "default": [],
+      "description": "Named per-scene tuning snapshots saved by the editor. Canonical writers emit this field; early v1 readers default it to an empty library."
+    },
+    "semantic_events": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/semantic_event"
+      },
+      "default": [],
+      "description": "Embedded model-derived energy, tension, valence, and confidence values. Canonical writers emit this field. Readers treat its absence in early v1 files as an empty lane."
+    },
+    "manual_events": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/manual_event"
+      },
+      "description": "User-authored events only. Model-derived semantic events remain in semantic_events and must not be promoted into this authored lane."
+    }
+  },
+  "$defs": {
+    "analysis_lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path",
+        "sha256",
+        "audio_sha256",
+        "provenance"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "measured_signal",
+            "lyric_timing",
+            "semantic_score"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "audio_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      }
+    },
+    "ascii_image_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "columns",
+        "rows"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "columns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 96
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 54
+        }
+      }
+    },
+    "audio_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "path",
+        "sha256",
+        "duration_seconds",
+        "sample_rate",
+        "channels"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "imported",
+            "referenced"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "sample_rate": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 768000
+        },
+        "channels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        }
+      }
+    },
+    "caption_font_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "family",
+        "licence_path",
+        "licence_sha256",
+        "licence_name"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "description": "Project-relative path inside the sibling <stem>.assets/ bundle. Verified against sha256 before the face is used."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Display name for the control. Never used to locate the file."
+        },
+        "licence_path": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Project-relative path to the licence text bundled beside the face. Empty for a face imported from the user's own disk, whose terms this application cannot assert. Non-empty only together with licence_sha256 and licence_name."
+        },
+        "licence_sha256": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{64})?$",
+          "description": "Digest of the bundled licence text, verified before the text is shown. Empty exactly when licence_path is empty."
+        },
+        "licence_name": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Which terms these are, for example OFL-1.1. Required whenever a licence file is bundled: an unnamed licence tells a recipient that terms exist without telling them which."
+        }
+      }
+    },
+    "caption_rgba": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}$",
+      "description": "Colour as exactly eight lowercase hexadecimal digits, red-green-blue-alpha. Uppercase, a leading '#', and shorthand are rejected so one colour has one spelling."
+    },
+    "caption_style": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "face",
+        "box",
+        "anchor",
+        "size_scale",
+        "margin_scale",
+        "width_scale",
+        "text_rgba",
+        "box_rgba",
+        "font"
+      ],
+      "description": "All members are required once the object is present: a partially specified style would silently mix the author's intent with shipped defaults.",
+      "properties": {
+        "face": {
+          "enum": [
+            "alegreya",
+            "space_grotesk",
+            "imported"
+          ]
+        },
+        "box": {
+          "enum": [
+            "none",
+            "shadow",
+            "plate"
+          ],
+          "description": "none draws text alone, shadow offsets a copy behind it, plate is the rounded panel the product shipped with."
+        },
+        "anchor": {
+          "enum": [
+            "bottom_left",
+            "bottom_center",
+            "bottom_right",
+            "middle_left",
+            "middle_center",
+            "middle_right",
+            "top_left",
+            "top_center",
+            "top_right"
+          ]
+        },
+        "size_scale": {
+          "type": "number",
+          "minimum": 0.012,
+          "maximum": 0.3,
+          "description": "Caption type size as a fraction of frame height."
+        },
+        "margin_scale": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 0.4,
+          "description": "Inset from the anchored edges, as a fraction of frame height."
+        },
+        "width_scale": {
+          "type": "number",
+          "minimum": 0.2,
+          "maximum": 1.0,
+          "description": "Widest the caption box may become, as a fraction of frame width."
+        },
+        "text_rgba": {
+          "$ref": "#/$defs/caption_rgba"
+        },
+        "box_rgba": {
+          "$ref": "#/$defs/caption_rgba",
+          "description": "Plate fill, or shadow colour when box is \"shadow\". Ignored when box is \"none\"."
+        },
+        "font": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/caption_font_asset"
+            }
+          ],
+          "description": "Present exactly when face is \"imported\". Any other arrangement is a project whose captions cannot be reproduced from the file."
+        }
+      }
+    },
+    "lyric_cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "text"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 511
+        }
+      }
+    },
+    "lyrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "next_id",
+        "cues"
+      ],
+      "properties": {
+        "next_id": {
+          "$ref": "#/$defs/uint64"
+        },
+        "cues": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/lyric_cue"
+          }
+        }
+      },
+      "description": "Authoritative editable lyric content and timing. Cues are sorted by (start_seconds,end_seconds,id); overlaps are allowed."
+    },
+    "manual_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timestamp_seconds",
+        "id",
+        "type",
+        "values"
+      ],
+      "properties": {
+        "timestamp_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "type": {
+          "enum": [
+            "lyric",
+            "semantic",
+            "cue",
+            "custom"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parameter",
+        "source",
+        "band_index",
+        "input_min",
+        "input_max",
+        "output_min",
+        "output_max",
+        "interpolation",
+        "clamp"
+      ],
+      "properties": {
+        "parameter": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "source": {
+          "enum": [
+            "rms",
+            "peak",
+            "spectral_flux",
+            "beat_phase",
+            "band"
+          ]
+        },
+        "band_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "default": 0
+        },
+        "input_min": {
+          "type": "number"
+        },
+        "input_max": {
+          "type": "number"
+        },
+        "output_min": {
+          "type": "number"
+        },
+        "output_max": {
+          "type": "number"
+        },
+        "interpolation": {
+          "enum": [
+            "step",
+            "linear",
+            "smoothstep",
+            "ease_in",
+            "ease_out"
+          ]
+        },
+        "clamp": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "source": {
+                "not": {
+                  "const": "band"
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "band_index": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ],
+      "description": "input_max must be greater than input_min. Parameter names must be unique within their scene. clamp=false permits deterministic curve extrapolation."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "title",
+        "application_version"
+      ],
+      "properties": {
+        "project_id": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "author": {
+          "type": "string",
+          "maxLength": 128,
+          "default": ""
+        },
+        "created_utc": {
+          "type": "string",
+          "maxLength": 32,
+          "default": ""
+        },
+        "modified_utc": {
+          "type": "string",
+          "maxLength": 32,
+          "default": ""
+        },
+        "application_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        }
+      }
+    },
+    "output_settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "fps_numerator",
+        "fps_denominator",
+        "start_seconds",
+        "end_seconds",
+        "format"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 16384,
+          "default": 1920
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 16384,
+          "default": 1080
+        },
+        "fps_numerator": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 240240,
+          "default": 30
+        },
+        "fps_denominator": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1001,
+          "default": 1
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "format": {
+          "enum": [
+            "mp4_h264",
+            "mkv_h264",
+            "webm_vp9",
+            "mov_prores",
+            "png_sequence"
+          ],
+          "default": "mp4_h264"
+        },
+        "quality": {
+          "enum": [
+            "balanced",
+            "high",
+            "master"
+          ],
+          "default": "high",
+          "description": "Durable export-quality intent. Supersampling and encoder details are derived and are not serialized separately."
+        }
+      },
+      "description": "end_seconds must be greater than start_seconds and no greater than audio.duration_seconds. FPS is the exact rational fps_numerator/fps_denominator and must not exceed 240. The current editor supports integer FPS only and rejects other valid v1 rationals without rewriting them."
+    },
+    "parameter_cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cue_id",
+        "target_scene_id",
+        "parameter",
+        "start_seconds",
+        "end_seconds",
+        "from_value",
+        "to_value",
+        "interpolation"
+      ],
+      "properties": {
+        "cue_id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "target_scene_id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "parameter": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "from_value": {
+          "type": "number"
+        },
+        "to_value": {
+          "type": "number"
+        },
+        "interpolation": {
+          "enum": [
+            "step",
+            "linear",
+            "smoothstep",
+            "ease_in",
+            "ease_out"
+          ]
+        }
+      },
+      "description": "target_scene_id must identify a scene; end_seconds must be greater than start_seconds and no greater than audio.duration_seconds."
+    },
+    "positive_uint64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter",
+        "adapter_version",
+        "schema_version"
+      ],
+      "properties": {
+        "adapter": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "adapter_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "schema_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 128,
+          "default": ""
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 128,
+          "default": ""
+        },
+        "prompt_version": {
+          "type": "string",
+          "maxLength": 64,
+          "default": ""
+        }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "scene_type",
+        "enabled",
+        "start_seconds",
+        "end_seconds",
+        "opacity",
+        "blend_mode",
+        "mappings"
+      ],
+      "properties": {
+        "instance_id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "scene_type": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "opacity": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blend_mode": {
+          "enum": [
+            "normal",
+            "add",
+            "multiply",
+            "screen"
+          ]
+        },
+        "mappings": {
+          "type": "array",
+          "maxItems": 120,
+          "items": {
+            "$ref": "#/$defs/mapping"
+          }
+        }
+      },
+      "description": "end_seconds must be greater than start_seconds and no greater than audio.duration_seconds."
+    },
+    "scene_preset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scene_name",
+        "name",
+        "settings"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "scene_name": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "settings": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "scene_switch_cue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "scene_name",
+        "strength"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "scene_name": {
+          "$ref": "#/$defs/stable_name"
+        },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "settings": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "number"
+          },
+          "default": [],
+          "description": "Scene-specific tuning values captured when this cue was authored. Empty only for early v1 projects."
+        }
+      }
+    },
+    "scene_switches": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "cues"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "cues": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/scene_switch_cue"
+          }
+        }
+      },
+      "description": "Suggested scene sequence. Nonempty cues form contiguous full-duration coverage; enabled is the durable user opt-in."
+    },
+    "semantic_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timestamp_seconds",
+        "id",
+        "type",
+        "values"
+      ],
+      "properties": {
+        "timestamp_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "id": {
+          "$ref": "#/$defs/positive_uint64"
+        },
+        "type": {
+          "const": "semantic"
+        },
+        "values": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "energy"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "tension"
+            },
+            {
+              "type": "number",
+              "minimum": -1,
+              "maximum": 1,
+              "description": "valence"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "confidence"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stable_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "uint64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    }
+  }
+}

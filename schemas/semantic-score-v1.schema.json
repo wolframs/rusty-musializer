@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/semantic-score-v1.schema.json",
+  "title": "Musializer MiMo SemanticScore v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "audio", "provenance", "global", "segments"],
+  "properties": {
+    "schema_version": {"const": "musializer.semantic-score/v1"},
+    "lane": {"const": "semantic_interpretation"},
+    "audio": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sha256", "duration_seconds"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "provenance": {"$ref": "analysis-provenance-v1.schema.json"},
+    "global": {"$ref": "#/$defs/creative"},
+    "segments": {
+      "type": "array",
+      "minItems": 1,
+      "description": "A contiguous, ordered, non-overlapping partition from 0 through audio.duration_seconds. This cross-item coverage rule is enforced by the adapter.",
+      "x-musializer-coverage": "contiguous-full-duration",
+      "items": {
+        "allOf": [
+          {"$ref": "#/$defs/creative"},
+          {"type": "object", "required": ["start_seconds", "end_seconds"]}
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "creative": {
+      "type": "object", "additionalProperties": false,
+      "required": ["summary", "moods", "energy", "tension", "valence", "motion", "textures", "imagery", "palette", "scene_cues", "confidence"],
+      "properties": {
+        "start_seconds": {"type": "number", "minimum": 0},
+        "end_seconds": {"type": "number", "minimum": 0},
+        "summary": {"type": "string"},
+        "moods": {"type": "array", "items": {"type": "string"}},
+        "energy": {"type": "number", "minimum": 0, "maximum": 1},
+        "tension": {"type": "number", "minimum": 0, "maximum": 1},
+        "valence": {"type": "number", "minimum": -1, "maximum": 1},
+        "motion": {"type": "array", "items": {"type": "string"}},
+        "textures": {"type": "array", "items": {"type": "string"}},
+        "imagery": {"type": "array", "items": {"type": "string"}},
+        "palette": {"type": "array", "items": {"type": "string"}},
+        "scene_cues": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}

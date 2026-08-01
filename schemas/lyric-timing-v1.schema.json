@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/lyric-timing-v1.schema.json",
+  "title": "Musializer imported lyric timing v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "audio", "provenance", "words", "lines"],
+  "properties": {
+    "schema_version": {"const": "musializer.lyric-timing/v1"},
+    "lane": {"const": "lyrics"},
+    "audio": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sha256", "duration_seconds"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "provenance": {"$ref": "analysis-provenance-v1.schema.json"},
+    "words": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/timedText"}
+    },
+    "lines": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/timedText"}
+    }
+  },
+  "$defs": {
+    "timedText": {
+      "type": "object", "additionalProperties": false,
+      "required": ["start_seconds", "end_seconds", "text", "confidence", "corrected"],
+      "properties": {
+        "start_seconds": {"type": "number", "minimum": 0},
+        "end_seconds": {"type": "number", "minimum": 0},
+        "text": {"type": "string"},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "corrected": {"type": "boolean"}
+      }
+    }
+  }
+}

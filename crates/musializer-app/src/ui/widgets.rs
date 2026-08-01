@@ -19,7 +19,7 @@
 //!   visible defect in the workspace (`ui_row_typography.h:9-13`). The shared
 //!   size comes from [`musializer_core::ui::row_typography`].
 //!
-//! Text is drawn and measured through [`Face`], the interface face
+//! Text is drawn and measured through [`UiFonts`], the native-size interface bank
 //! [`musializer_runtime::font`] loads, so every widget agrees with the one place
 //! that knows how wide a string is. Passing the face explicitly rather than
 //! reaching for `get_font_default()` inside each helper is the C's shape too
@@ -28,7 +28,7 @@
 
 use musializer_core::ui::row_typography;
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::Face;
+use musializer_runtime::font::{Face, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibFont, Rectangle, Vector2};
 
 use super::theme::{color, metric};
@@ -52,6 +52,12 @@ pub enum ButtonStyle {
     // re-deriving the colour ramp later would be worse than an allow here.
     #[allow(dead_code)]
     Danger,
+}
+
+#[derive(Clone, Copy)]
+enum LabelFont<'a> {
+    Ui(&'a UiFonts),
+    Exact(&'a Face),
 }
 
 /// How long the pointer must rest on a control before its tooltip appears.
@@ -219,7 +225,7 @@ impl Widgets {
     pub fn text_button(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
+        font: &UiFonts,
         id: u64,
         boundary: UiRect,
         label: &str,
@@ -242,7 +248,61 @@ impl Widgets {
     pub fn text_button_in(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        id: u64,
+        boundary: UiRect,
+        hit: UiRect,
+        label: &str,
+        selected: bool,
+        style: ButtonStyle,
+        font_size: Option<f32>,
+    ) -> ButtonState {
+        self.button_with_label(
+            d,
+            LabelFont::Ui(font),
+            id,
+            boundary,
+            hit,
+            label,
+            selected,
+            style,
+            font_size,
+        )
+    }
+
+    /// The toolbar's icon-face exception. Ordinary labels cannot call this: a
+    /// raw [`Face`] here is reserved for Font Awesome glyphs, while every textual
+    /// control goes through [`Self::text_button`] and the native UI bank.
+    #[allow(clippy::too_many_arguments)]
+    pub fn icon_button(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
         font: &Face,
+        id: u64,
+        boundary: UiRect,
+        glyph: &str,
+        selected: bool,
+        style: ButtonStyle,
+        font_size: f32,
+    ) -> ButtonState {
+        self.button_with_label(
+            d,
+            LabelFont::Exact(font),
+            id,
+            boundary,
+            boundary,
+            glyph,
+            selected,
+            style,
+            Some(font_size),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn button_with_label(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: LabelFont<'_>,
         id: u64,
         boundary: UiRect,
         hit: UiRect,
@@ -316,7 +376,7 @@ impl Widgets {
     pub fn disabled_button(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
+        font: &UiFonts,
         boundary: UiRect,
         label: &str,
         font_size: Option<f32>,
@@ -329,10 +389,36 @@ impl Widgets {
         d.draw_rectangle_lines_ex(rect, 1.0, color::ui_rule());
         draw_button_label(
             d,
-            font,
+            LabelFont::Ui(font),
             boundary,
             label,
             font_size,
+            0.0,
+            color::ui_disabled(),
+        );
+    }
+
+    /// Disabled counterpart to [`Self::icon_button`].
+    pub fn disabled_icon_button(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &Face,
+        boundary: UiRect,
+        glyph: &str,
+        font_size: f32,
+    ) {
+        if boundary.is_empty() {
+            return;
+        }
+        let rect = rectangle(boundary);
+        d.draw_rectangle_rec(rect, color::ui_surface());
+        d.draw_rectangle_lines_ex(rect, 1.0, color::ui_rule());
+        draw_button_label(
+            d,
+            LabelFont::Exact(font),
+            boundary,
+            glyph,
+            Some(font_size),
             0.0,
             color::ui_disabled(),
         );
@@ -448,7 +534,7 @@ const TOOLTIP_MARGIN: f32 = 4.0;
 /// palette's contrast-checked ones.
 pub fn draw_tooltip(
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     tooltip: &Tooltip,
     window: (f32, f32),
 ) {
@@ -499,15 +585,16 @@ pub fn slider_value(x: f32, low: f32, high: f32) -> f32 {
 /// what makes it linear in font size — the property `font_size` needs to scale a
 /// measured width into a fitted size.
 #[must_use]
-pub fn row_font_size(font: &Face, labels: &[&str], widths: &[f32], box_height: f32) -> f32 {
-    let base = row_typography::base_font_size(box_height);
-    row_typography::font_size(
+pub fn row_font_size(font: &UiFonts, labels: &[&str], widths: &[f32], box_height: f32) -> f32 {
+    let base = font.native_size(row_typography::base_font_size(box_height));
+    let fitted = row_typography::font_size(
         labels,
         widths,
         base,
         row_typography::UI_ROW_MIN_FONT_SIZE,
         |text| measure(font, text, base),
-    )
+    );
+    font.native_size(fitted)
 }
 
 /// Text width in pixels, at zero spacing.
@@ -519,7 +606,7 @@ pub fn row_font_size(font: &Face, labels: &[&str], widths: &[f32], box_height: f
 /// searching.
 ///
 #[must_use]
-pub fn measure(font: &Face, text: &str, font_size: f32) -> f32 {
+pub fn measure(font: &UiFonts, text: &str, font_size: f32) -> f32 {
     font.measure_text(text, font_size, 0.0).x
 }
 
@@ -529,7 +616,7 @@ pub fn measure(font: &Face, text: &str, font_size: f32) -> f32 {
 )]
 fn draw_button_label(
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: LabelFont<'_>,
     boundary: UiRect,
     label: &str,
     font_size: Option<f32>,
@@ -543,9 +630,13 @@ fn draw_button_label(
     if base <= 0.0 {
         return;
     }
-    let size = font_size
-        .filter(|value| *value > 0.0)
-        .unwrap_or_else(|| row_font_size(font, &[label], &[boundary.width], boundary.height));
+    let size = match font {
+        LabelFont::Ui(font) => font_size.filter(|value| *value > 0.0).map_or_else(
+            || row_font_size(font, &[label], &[boundary.width], boundary.height),
+            |value| font.native_size(value),
+        ),
+        LabelFont::Exact(_) => font_size.filter(|value| *value > 0.0).unwrap_or(base),
+    };
     let available = boundary.width - row_typography::UI_ROW_LABEL_PADDING;
     // Ellipsize rather than shrink without end. A box too narrow even for the
     // ellipsis still gets the ellipsis: a missing label reads as a bug, a clipped
@@ -553,7 +644,10 @@ fn draw_button_label(
     let (fitted, truncated) = row_typography::truncate_label(
         label,
         available,
-        Some(|text: &str| measure(font, text, size)),
+        Some(|text: &str| match font {
+            LabelFont::Ui(font) => measure(font, text, size),
+            LabelFont::Exact(font) => font.measure_text(text, size, 0.0).x,
+        }),
         row_typography::UI_ROW_LABEL_CAPACITY,
     );
     // U+2026 is in the interface face's codepoint set
@@ -564,21 +658,27 @@ fn draw_button_label(
     // reading "Pau?" and "Exp?" on the toolbar, which no test could have since
     // the truncation itself was correct. So the substitution survives, guarded:
     // it is now reachable only on the fallback face.
-    let fitted = if truncated && !font.is_loaded() {
+    let loaded = match font {
+        LabelFont::Ui(font) => font.all_loaded(),
+        LabelFont::Exact(font) => font.is_loaded(),
+    };
+    let fitted = if truncated && !loaded {
         fitted.replace('\u{2026}', "...")
     } else {
         fitted
     };
-    let width = measure(font, &fitted, size);
-    draw_text(
-        d,
-        font,
-        &fitted,
-        boundary.x + (boundary.width - width) * 0.5,
-        boundary.y + (boundary.height - size) * 0.5 + press_offset,
-        size,
-        tint,
+    let width = match font {
+        LabelFont::Ui(font) => measure(font, &fitted, size),
+        LabelFont::Exact(font) => font.measure_text(&fitted, size, 0.0).x,
+    };
+    let position = Vector2::new(
+        (boundary.x + (boundary.width - width) * 0.5).round(),
+        (boundary.y + (boundary.height - size) * 0.5 + press_offset).round(),
     );
+    match font {
+        LabelFont::Ui(font) => draw_text(d, font, &fitted, position.x, position.y, size, tint),
+        LabelFont::Exact(font) => d.draw_text_ex(font, &fitted, position, size, 0.0, tint),
+    }
 }
 
 /// Draws text at a float position and size, which raylib's `draw_text` cannot do.
@@ -591,14 +691,21 @@ fn draw_button_label(
 /// different type that merely implements the same trait.
 pub fn draw_text<D: RaylibDraw>(
     d: &mut D,
-    font: &Face,
+    font: &UiFonts,
     text: &str,
     x: f32,
     y: f32,
     font_size: f32,
     tint: Color,
 ) {
-    d.draw_text_ex(font, text, Vector2::new(x, y), font_size, 0.0, tint);
+    font.draw_text(
+        d,
+        text,
+        Vector2::new(x.round(), y.round()),
+        font_size,
+        0.0,
+        tint,
+    );
 }
 
 /// Text with letter spacing, for the few places the C asks for tracking.
@@ -614,7 +721,7 @@ pub fn draw_text<D: RaylibDraw>(
 )]
 pub fn draw_text_tracked(
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     text: &str,
     x: f32,
     y: f32,
@@ -622,11 +729,23 @@ pub fn draw_text_tracked(
     spacing: f32,
     tint: Color,
 ) {
-    d.draw_text_ex(font, text, Vector2::new(x, y), font_size, spacing, tint);
+    font.draw_text(
+        d,
+        text,
+        Vector2::new(x.round(), y.round()),
+        font_size,
+        spacing.round(),
+        tint,
+    );
 }
 
 /// A titled panel background: surface fill, a hairline border, and a header rule.
-pub fn panel(d: &mut RaylibDrawHandle<'_>, font: &Face, boundary: UiRect, title: &str) -> UiRect {
+pub fn panel(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &UiFonts,
+    boundary: UiRect,
+    title: &str,
+) -> UiRect {
     if boundary.is_empty() {
         return boundary;
     }

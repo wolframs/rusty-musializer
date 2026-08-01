@@ -25,11 +25,10 @@
 //!    [`Shell::with_editor`]/[`Shell::peek_editor`]. It was a `thread_local`
 //!    while that field did not exist — Agent G flagged it as something that
 //!    should not survive the merge, and it did not.
-//! 2. **Apply and Remove need `&mut RouteTable`.** The shell only ever sees
-//!    `&Workspace`, and the two [`ShellCommand`]s that would carry the commit do
-//!    not exist yet. Both buttons therefore draw with the oracle's enable rules
-//!    and say so by name through [`ShellCommand::NotImplemented`] — "missing
-//!    beats pretending" — rather than being hidden or silently doing nothing.
+//! 2. **Apply and Remove need `&mut RouteTable`.** The shell only sees
+//!    `&Workspace`, so [`ShellCommand::ApplyRoute`] and
+//!    [`ShellCommand::RemoveRoute`] carry the commit back to `main.rs` after the
+//!    drawing pair closes.
 //! 3. **The live source values are not in [`ShellInput`].** `main.rs` builds a
 //!    `RouteSources` for the frame loop but hands the shell only `rms`. So RMS
 //!    reads live and the other four sources honestly report `no signal`, which is
@@ -158,6 +157,14 @@ impl Shell {
 impl Shell {
     pub(crate) fn route_edit_is_dirty(&self) -> bool {
         self.peek_editor(|host| host.state.is_dirty())
+    }
+
+    /// Whether preview must keep the scene hosting the inline route editor
+    /// visible (`route_editor_open_for_active_track`, `plug.c:574-578`).
+    pub(crate) fn route_editor_open_for_active_track(&self, track_slot: Option<usize>) -> bool {
+        track_slot.is_some_and(|slot| {
+            self.peek_editor(|host| host.state.is_open() && host.track_slot == slot)
+        })
     }
 }
 
@@ -491,7 +498,7 @@ impl Shell {
     ) {
         let font = input.fonts.ui();
         let summary = ascii_fallback(
-            font.is_loaded(),
+            font.all_loaded(),
             &route_editor_state::summary(route, descriptor.precision),
         );
         widgets::draw_text(
@@ -595,7 +602,7 @@ impl Shell {
                 "LIVE {} {:.3} {} {:.*}",
                 route_editor_state::source_label(draft.source),
                 live,
-                arrow(font.is_loaded()),
+                arrow(font.all_loaded()),
                 descriptor.precision as usize,
                 mapped
             ),
@@ -722,7 +729,7 @@ impl Shell {
                 font,
                 &format!(
                     "{name}  {anchor_input:.2} {} {:.*}",
-                    arrow(font.is_loaded()),
+                    arrow(font.all_loaded()),
                     descriptor.precision as usize,
                     anchor_output
                 ),
@@ -738,7 +745,7 @@ impl Shell {
                 pair_width,
                 20.0,
             );
-            let arrow_glyph = arrow(font.is_loaded());
+            let arrow_glyph = arrow(font.all_loaded());
             let arrow_size = widgets::measure(font, arrow_glyph, 14.0);
             widgets::draw_text(
                 d,

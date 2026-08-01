@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.invalid/schemas/font-import-v1.schema.json",
+  "title": "Musializer font import manifest v1",
+  "description": "What tools/google_fonts.py wrote after retrieving one caption face. The application re-computes both digests against the files on disk before either is trusted; this manifest is a description of a download, never a warrant for it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "family",
+    "source",
+    "font_path",
+    "font_sha256",
+    "font_bytes",
+    "licence_path",
+    "licence_sha256",
+    "licence_name"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "musializer.font-import/v1"
+    },
+    "family": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9 '+.-]*$",
+      "description": "The family as Google Fonts names it. A display label only: the bytes are identified by their digest."
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^https://fonts\\.gstatic\\.com/",
+      "description": "Where the face came from, recorded so a surprising result can be traced. Constrained to the declared host."
+    },
+    "font_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The downloaded TrueType file, in the job's own output directory."
+    },
+    "font_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "font_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 33554432,
+      "description": "Size of the face. Bounded so a redirect to something enormous fails before it fills a disk."
+    },
+    "licence_path": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The terms the family is distributed under. Always present: a face whose licence could not be retrieved is refused rather than bundled without it, because copying it into a shareable project is redistribution."
+    },
+    "licence_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "licence_name": {
+      "enum": [
+        "OFL-1.1",
+        "Apache-2.0",
+        "UFL-1.0"
+      ],
+      "description": "Which terms these are, taken from the directory google/fonts sorts the family into rather than guessed from the text."
+    }
+  }
+}

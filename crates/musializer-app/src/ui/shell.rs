@@ -24,7 +24,7 @@ use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::transport_bar;
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
-use musializer_runtime::font::{Face, Faces};
+use musializer_runtime::font::{Faces, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
 
 use super::icons;
@@ -32,7 +32,6 @@ use super::shell_layout::{WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT}
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
-use crate::scene_host;
 use crate::workspace::Workspace;
 
 /// What the shell asks the application to do.
@@ -83,10 +82,6 @@ pub enum ShellCommand {
     SaveProject,
     /// Always ask for a destination (`save_project_as`, `plug.c:4615-4639`).
     SaveProjectAs,
-    /// A panel the rewrite has not built yet. Carried as a command rather than
-    /// silently ignored, so the notice tray can say so by name — a stub that
-    /// says nothing is indistinguishable from a bug.
-    NotImplemented(&'static str),
     /// The export panel's preset rows write through the current track
     /// (`plug.c:2569-2572`).
     SetRenderConfig(musializer_core::timing::render_export::RenderExportConfig),
@@ -814,23 +809,42 @@ impl Shell {
             // so the control names the feature even when it cannot run — and the
             // tooltip still answers, which is the one thing a disabled button can
             // usefully do.
-            let (face, glyph) = icons::glyph(input.fonts, control);
+            let glyph = icons::glyph(input.fonts, control);
             if !has_track {
-                self.widgets
-                    .disabled_button(d, face, boundary, &glyph, Some(font_size));
+                match &glyph {
+                    icons::Glyph::Icon(face, text) => self
+                        .widgets
+                        .disabled_icon_button(d, face, boundary, text, font_size),
+                    icons::Glyph::Text(font, text) => {
+                        self.widgets
+                            .disabled_button(d, font, boundary, text, Some(font_size))
+                    }
+                }
                 continue;
             }
             let id = widgets::widget_id(namespace, slot);
-            let state = self.widgets.text_button(
-                d,
-                face,
-                id,
-                boundary,
-                &glyph,
-                selected,
-                ButtonStyle::Neutral,
-                Some(font_size),
-            );
+            let state = match &glyph {
+                icons::Glyph::Icon(face, text) => self.widgets.icon_button(
+                    d,
+                    face,
+                    id,
+                    boundary,
+                    text,
+                    selected,
+                    ButtonStyle::Neutral,
+                    font_size,
+                ),
+                icons::Glyph::Text(font, text) => self.widgets.text_button(
+                    d,
+                    font,
+                    id,
+                    boundary,
+                    text,
+                    selected,
+                    ButtonStyle::Neutral,
+                    Some(font_size),
+                ),
+            };
             self.widgets.hint(d, state, id, boundary, control.tip);
             if !state.clicked {
                 continue;
@@ -847,13 +861,13 @@ impl Shell {
                 }
                 c if *c == icons::TUNE => self.inspector_open = !self.inspector_open,
                 c if *c == icons::EXPORT => {
-                    self.toggle_panel(UiPanel::Export, "Export", commands);
+                    self.toggle_panel(UiPanel::Export);
                 }
                 c if *c == icons::LYRICS => {
-                    self.toggle_panel(UiPanel::Lyrics, "Lyrics", commands);
+                    self.toggle_panel(UiPanel::Lyrics);
                 }
                 c if *c == icons::ASSIST => {
-                    self.toggle_panel(UiPanel::Assist, "Assist", commands);
+                    self.toggle_panel(UiPanel::Assist);
                 }
                 _ => commands.push(ShellCommand::TogglePlay),
             }
@@ -952,24 +966,43 @@ impl Shell {
                            selected: bool,
                            enabled: bool|
          -> bool {
-            let (face, glyph) = icons::glyph(input.fonts, control);
+            let glyph = icons::glyph(input.fonts, control);
             if !enabled {
-                shell
-                    .widgets
-                    .disabled_button(d, face, boundary, &glyph, Some(font_size));
+                match &glyph {
+                    icons::Glyph::Icon(face, text) => shell
+                        .widgets
+                        .disabled_icon_button(d, face, boundary, text, font_size),
+                    icons::Glyph::Text(font, text) => {
+                        shell
+                            .widgets
+                            .disabled_button(d, font, boundary, text, Some(font_size))
+                    }
+                }
                 return false;
             }
             let id = widgets::widget_id(widgets::id::UTILITY, slot);
-            let state = shell.widgets.text_button(
-                d,
-                face,
-                id,
-                boundary,
-                &glyph,
-                selected,
-                ButtonStyle::Neutral,
-                Some(font_size),
-            );
+            let state = match &glyph {
+                icons::Glyph::Icon(face, text) => shell.widgets.icon_button(
+                    d,
+                    face,
+                    id,
+                    boundary,
+                    text,
+                    selected,
+                    ButtonStyle::Neutral,
+                    font_size,
+                ),
+                icons::Glyph::Text(font, text) => shell.widgets.text_button(
+                    d,
+                    font,
+                    id,
+                    boundary,
+                    text,
+                    selected,
+                    ButtonStyle::Neutral,
+                    Some(font_size),
+                ),
+            };
             shell.widgets.hint(d, state, id, boundary, control.tip);
             state.clicked
         };
@@ -1090,18 +1123,12 @@ impl Shell {
         commands.push(ShellCommand::SetFullscreen(on));
     }
 
-    fn toggle_panel(
-        &mut self,
-        panel: UiPanel,
-        name: &'static str,
-        commands: &mut Vec<ShellCommand>,
-    ) {
+    fn toggle_panel(&mut self, panel: UiPanel) {
         if self.panel == panel {
             self.panel = UiPanel::None;
             return;
         }
         self.panel = panel;
-        commands.push(ShellCommand::NotImplemented(name));
     }
 
     /// The tracks rail (`tracks_panel`, `plug.c`).
@@ -1397,37 +1424,9 @@ impl Shell {
                 ButtonStyle::Neutral,
                 Some(font_size),
             );
-            // A scene whose drawing half is still a placeholder is marked, so the
-            // browser does not promise ten finished scenes.
-            if !scene_host::drawing_is_ported(id) {
-                d.draw_circle_v(
-                    Vector2::new(boundary.x + boundary.width - 8.0, boundary.y + 8.0),
-                    3.0,
-                    color::ui_warning(),
-                );
-                // The badge is a drawn dot rather than a glyph on purpose: the
-                // footer legend below has to be ASCII because raylib's default
-                // font stops at 126, and "*" is the closest honest stand-in for
-                // the C's U+00B7 until the imported face lands.
-            }
             if state.clicked && id != input.scene {
                 commands.push(ShellCommand::SelectScene(id));
             }
-        }
-
-        // The footer names what the badge means, because an unexplained dot is
-        // worse than no dot.
-        let footer_y = content.y + content.height - 22.0;
-        if footer_y > content.y {
-            widgets::draw_text(
-                d,
-                input.fonts.ui(),
-                "* not ported yet",
-                content.x + padding,
-                footer_y,
-                metric::UI_FONT_CAPTION,
-                color::ui_muted(),
-            );
         }
     }
 
@@ -1842,7 +1841,7 @@ impl Shell {
 
     /// The notice tray, over the preview's bottom-left corner
     /// (`notice_tray`, `plug.c`).
-    fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, font: &Face, preview: UiRect) {
+    fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, font: &UiFonts, preview: UiRect) {
         if preview.is_empty() || self.notices.is_empty() {
             return;
         }
@@ -1937,16 +1936,12 @@ mod tests {
     }
 
     #[test]
-    fn toggling_a_panel_twice_returns_to_the_timeline() {
+    fn toggling_a_real_panel_twice_returns_to_the_timeline_without_a_stub_notice() {
         let mut shell = Shell::new();
-        let mut commands = Vec::new();
-        shell.toggle_panel(UiPanel::Export, "Export", &mut commands);
+        shell.toggle_panel(UiPanel::Export);
         assert_eq!(shell.panel, UiPanel::Export);
-        assert_eq!(commands, vec![ShellCommand::NotImplemented("Export")]);
-        shell.toggle_panel(UiPanel::Export, "Export", &mut commands);
+        shell.toggle_panel(UiPanel::Export);
         assert_eq!(shell.panel, UiPanel::None);
-        // Closing does not re-announce.
-        assert_eq!(commands.len(), 1);
     }
 
     /// The toolbar's own band, computed the way [`Shell::toolbar`] computes it.

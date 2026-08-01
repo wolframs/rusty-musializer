@@ -3576,3 +3576,28 @@ total, delta 0. Its negative control sampled lyrics 1 ms early and caught all fo
 affected boundaries in each direct comparison, 12 discrepancies total. The
 fixture lane-removal controls also caught the expected report and image changes
 for lyrics, semantics and manual events separately.
+
+## NOTE ENTRY — 2026-08-01 — native-size shell typography retrofit
+
+The inconsistent edge quality in shell labels was not a fallback-font problem.
+Every label used Space Grotesk, but one 64 px atlas was scaled over the shell's
+11--84 px range with bilinear filtering and nearest-level mip selection. Crossing
+a mip threshold changed the effective source raster abruptly, while fractional
+origins made otherwise identical sizes sample different texel phases.
+
+The useful retrofit technique was to change `Faces::ui()` from `&Face` to a
+distinct `UiFonts` bank *before* editing call sites. That intentionally broke the
+build in 61 places and enumerated the raw draw, measure, fitted-row and helper
+boundaries that a grep for `draw_text` would have missed. Ordinary UI widgets now
+accept only `UiFonts`; the caption and Font Awesome paths are explicit raw-face
+exceptions. The bank covers every integer fitted size from 11 through 22 plus the
+fixed 24, 28, 34, 38 and 84 px display sizes, draws them without mipmaps at 1:1,
+and snaps origins to pixels.
+
+Captures carry the second half of the contract. `Faces::describe` reports used
+native sizes and counts non-native requests, and the headless gate rejects any
+nonzero count across all of its successful runs. A 15.0 to 15.5 px perturbation
+was visually plausible but produced three non-native requests and failed that
+check; the full unperturbed sweep produced 81 reports with zero. This is why the
+type boundary and runtime report are both retained: the compiler catches raw-face
+bypasses, while the report catches a newly introduced fractional design size.

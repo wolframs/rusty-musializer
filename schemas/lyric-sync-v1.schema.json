@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/lyric-sync-v1.schema.json",
+  "title": "Musializer known-lyrics synchronization v1",
+  "description": "Deterministic alignment of authored reference lyrics to Whisper word evidence. Display text is authored truth; timing is acoustic evidence; estimated windows are flagged, never silent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "aligner_version", "audio", "reference", "provenance", "lines", "unmatched", "structure", "unreliable_evidence", "statistics"],
+  "properties": {
+    "schema_version": {"const": "musializer.lyric-sync/v1"},
+    "lane": {"const": "lyric_sync"},
+    "aligner_version": {"type": "string", "minLength": 1, "maxLength": 16},
+    "audio": {"type": "object"},
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "sha256"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1, "maxLength": 256},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "provenance": {"type": "object"},
+    "lines": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/line"}
+    },
+    "unmatched": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference_line_index", "text", "reason"],
+        "properties": {
+          "reference_line_index": {"type": "integer", "minimum": 0},
+          "text": {"type": "string", "minLength": 1, "maxLength": 512},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
+    "structure": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference_line_index", "kind", "text"],
+        "properties": {
+          "reference_line_index": {"type": "integer", "minimum": 0},
+          "kind": {"enum": ["section", "event", "delivery"]},
+          "text": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      }
+    },
+    "unreliable_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_seconds", "end_seconds"],
+        "properties": {
+          "start_seconds": {"type": "number", "minimum": 0},
+          "end_seconds": {"type": "number", "exclusiveMinimum": 0}
+        }
+      }
+    },
+    "statistics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference_lines", "matched_lines", "estimated_lines", "unmatched_lines", "matched_tokens", "reference_tokens"],
+      "properties": {
+        "reference_lines": {"type": "integer", "minimum": 0},
+        "matched_lines": {"type": "integer", "minimum": 0},
+        "estimated_lines": {"type": "integer", "minimum": 0},
+        "unmatched_lines": {"type": "integer", "minimum": 0},
+        "matched_tokens": {"type": "integer", "minimum": 0},
+        "reference_tokens": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "$defs": {
+    "line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_seconds", "end_seconds", "text", "kind", "reference_line_index", "confidence", "estimated", "uncertain"],
+      "properties": {
+        "start_seconds": {"type": "number", "minimum": 0},
+        "end_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "text": {"type": "string", "minLength": 1, "maxLength": 512},
+        "kind": {"enum": ["lyric", "backing"]},
+        "reference_line_index": {"type": "integer", "minimum": 0},
+        "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "estimated": {"type": "boolean"},
+        "uncertain": {"type": "boolean"}
+      }
+    }
+  }
+}

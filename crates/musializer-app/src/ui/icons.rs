@@ -19,7 +19,7 @@
 //! no tooltip would be a mystery button, and one added with no fallback would be
 //! invisible on a machine where the atlas failed.
 
-use musializer_runtime::font::{Face, Faces, Icon};
+use musializer_runtime::font::{Face, Faces, Icon, UiFonts};
 
 /// One control in the transport row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,17 +85,22 @@ pub fn volume_icon(volume: f32, muted: bool) -> Icon {
     }
 }
 
-/// The face a control's glyph should be drawn with, and the string to draw.
+/// The font path and string a control should draw.
 ///
 /// One function so that no caller can pick the icon face and then draw the text
 /// fallback through it, or the reverse — which would render either an empty box or
 /// a word in a font with no letters.
+pub enum Glyph<'a> {
+    Icon(&'a Face, String),
+    Text(&'a UiFonts, String),
+}
+
 #[must_use]
-pub fn glyph<'a>(fonts: &'a Faces, control: &Control) -> (&'a Face, String) {
+pub fn glyph<'a>(fonts: &'a Faces, control: &Control) -> Glyph<'a> {
     if fonts.icons_available() {
-        (fonts.icons(), control.icon.glyph().to_string())
+        Glyph::Icon(fonts.icons(), control.icon.glyph().to_string())
     } else {
-        (fonts.ui(), control.text.to_string())
+        Glyph::Text(fonts.ui(), control.text.to_string())
     }
 }
 

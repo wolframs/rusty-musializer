@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/analysis-cache-v1.schema.json",
+  "title": "Musializer remote analysis cache envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "cache_key", "request", "raw_response", "normalized"],
+  "properties": {
+    "schema_version": {"const": "musializer.analysis-cache/v1"},
+    "cache_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request": {"type": "object"},
+    "raw_response": {},
+    "normalized": {"$ref": "semantic-score-v1.schema.json"}
+  }
+}

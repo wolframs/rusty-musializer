@@ -34,6 +34,27 @@ rather than read from disk at runtime.
 
 FFmpeg is required at runtime for video export only, as an external executable.
 
+## Assisted analysis
+
+The panel, state machine, validation, staging, and project application paths are
+Rust. The evidence-producing workflows remain independent first-party Python
+tools under `tools/`: they supervise FFmpeg, NumPy, whisper.cpp, Codex, and the
+explicit MiMo/OpenRouter request rather than placing those dependencies inside
+the renderer.
+
+The local **Scene changes** workflow needs Python 3.10+, NumPy, and FFmpeg.
+Timed lyrics additionally needs whisper.cpp and either authored lyrics or Codex;
+MiMo modes additionally need explicit OpenRouter authorization. Inspect the
+current machine without starting a model or network request with:
+
+```sh
+python3 tools/musializer_doctor.py
+python3 tools/musializer_doctor.py --require local_lyrics
+```
+
+See `tools/ANALYSIS_ADAPTERS.md` for discovery paths, privacy boundaries, and
+the lower-level commands.
+
 ## Checking it
 
 ```sh

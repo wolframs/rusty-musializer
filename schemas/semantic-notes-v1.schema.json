@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/semantic-notes-v1.schema.json",
+  "title": "Imported free-form MiMo interpretation notes v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "audio", "provenance", "text"],
+  "properties": {
+    "schema_version": {"const": "musializer.semantic-notes/v1"},
+    "lane": {"const": "semantic_interpretation_notes"},
+    "audio": {"type": "object"},
+    "provenance": {"type": "object"},
+    "text": {"type": "string", "minLength": 1}
+  }
+}

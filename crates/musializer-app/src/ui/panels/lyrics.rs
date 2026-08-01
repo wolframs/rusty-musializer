@@ -45,7 +45,7 @@ use musializer_core::ui::lyrics_editor_layout::{self, LYRIC_EDITOR_ROW_HEIGHT};
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::text_edit::{TextEditError, TextRules};
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::Face;
+use musializer_runtime::font::UiFonts;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
 
 use super::super::shell::{Shell, ShellCommand, ShellInput};
@@ -127,6 +127,20 @@ mod ns {
     pub const CAPTION: u32 = 18;
     /// One per cue, keyed by cue id, so a row keeps its id across a scroll.
     pub const ROWS: u32 = 19;
+}
+
+/// Indices inside [`ns::FORM`].
+///
+/// These are deliberately separated by row. Delete used to be index 2 while
+/// the START row also began at index 2; the START decrement button therefore
+/// consumed Delete's release before Delete was drawn, making the visible
+/// control impossible to click.
+mod form_id {
+    pub const APPLY: u32 = 0;
+    pub const DISCARD: u32 = 1;
+    pub const DELETE: u32 = 2;
+    pub const START_TIME: u32 = 10;
+    pub const END_TIME: u32 = 20;
 }
 
 /// The amber a lyric block is drawn in (`lyrics_editor_ui.c:998`).
@@ -1376,7 +1390,7 @@ impl Shell {
             true,
             playhead,
             duration,
-            2,
+            form_id::START_TIME,
         );
         self.time_row(
             d,
@@ -1388,7 +1402,7 @@ impl Shell {
             false,
             playhead,
             duration,
-            6,
+            form_id::END_TIME,
         );
         editor.draft_start = start;
         editor.draft_end = end;
@@ -1459,7 +1473,7 @@ impl Shell {
                     .text_button(
                         d,
                         font,
-                        widgets::widget_id(ns::FORM, 0),
+                        widgets::widget_id(ns::FORM, form_id::APPLY),
                         apply,
                         draft_labels[0],
                         false,
@@ -1480,7 +1494,7 @@ impl Shell {
             .text_button(
                 d,
                 font,
-                widgets::widget_id(ns::FORM, 1),
+                widgets::widget_id(ns::FORM, form_id::DISCARD),
                 discard,
                 discard_label,
                 false,
@@ -1497,7 +1511,7 @@ impl Shell {
                 .text_button(
                     d,
                     font,
-                    widgets::widget_id(ns::FORM, 2),
+                    widgets::widget_id(ns::FORM, form_id::DELETE),
                     remove,
                     draft_labels[2],
                     false,
@@ -1539,7 +1553,7 @@ impl Shell {
     fn time_row(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
+        font: &UiFonts,
         boundary: UiRect,
         label: &str,
         value: &mut f64,
@@ -1968,7 +1982,7 @@ impl Shell {
     fn choice_row(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
+        font: &UiFonts,
         id: u64,
         row: UiRect,
         labels: &[&str],
@@ -2127,7 +2141,7 @@ fn index_of<T: PartialEq + Copy>(all: &[T], value: T) -> usize {
 /// `:523-529`).
 fn caption_label(
     d: &mut RaylibDrawHandle<'_>,
-    font: &Face,
+    font: &UiFonts,
     text: &str,
     x: f32,
     y: f32,
@@ -2445,6 +2459,25 @@ mod tests {
         assert_eq!(editor.take_pending().len(), 1);
         assert!(!editor.has_pending());
         assert!(editor.take_pending().is_empty());
+    }
+
+    #[test]
+    fn every_lyrics_form_control_has_a_distinct_widget_id() {
+        let mut ids = vec![
+            form_id::APPLY,
+            form_id::DISCARD,
+            form_id::DELETE,
+            form_id::START_TIME,
+            form_id::START_TIME + 1,
+            form_id::START_TIME + 2,
+            form_id::END_TIME,
+            form_id::END_TIME + 1,
+            form_id::END_TIME + 2,
+        ];
+        let control_count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), control_count);
     }
 
     #[test]

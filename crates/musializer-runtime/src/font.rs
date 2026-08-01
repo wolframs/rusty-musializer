@@ -4,11 +4,13 @@
 //! `ui_font` / `caption_face` (`plug.c:340-365`), and of
 //! `caption_imported_font_load` / `_unload` (`plug.c:371-427`).
 //!
-//! **Four faces, which is the oracle's count.** Space Grotesk is rasterized
-//! twice — once at the interface subset and once at the full curated caption set
-//! — Alegreya once, and a project's imported face is rasterized on demand and
-//! keyed by the path it came from. [`Faces::caption`] is the seam that picks
-//! between them, and it is the whole of `caption_face`.
+//! The four logical face slots match the oracle, but the interface slot is a
+//! native-size bank rather than one scaled texture. Space Grotesk is rasterized
+//! at every shell size over the interface subset and once at 64 px over the full
+//! curated caption set; Alegreya is rasterized once, and a project's imported
+//! face is rasterized on demand and keyed by the path it came from.
+//! [`Faces::caption`] is the seam that picks among caption faces, and it is the
+//! whole of `caption_face`.
 //!
 //! Two things here are behaviour rather than decoration:
 //!
@@ -30,20 +32,32 @@
 //! started from the wrong directory is a failure mode worth deleting rather than
 //! reproducing. The shaders are already embedded for the same reason.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use musializer_core::project::caption_layout;
 use musializer_core::project::model::CaptionFace;
-use raylib::prelude::{RaylibFont, WeakFont};
+use raylib::prelude::{Color, RaylibDraw, RaylibFont, Vector2, WeakFont};
 use raylib::text::Font;
 use raylib::{RaylibHandle, RaylibThread};
 
-/// Rasterization size for every face (`FONT_SIZE`, `plug.c:104`).
+/// Rasterization size for captions and icons (`FONT_SIZE`, `plug.c:104`).
 ///
-/// One atlas per face at 64 px, scaled down at draw time with bilinear filtering
-/// and mipmaps. Rasterizing per size would be sharper and would also mean an
-/// atlas rebuild every time a row of buttons agreed on a new fitted size.
+/// Caption styles can request continuous sizes, so those faces retain the
+/// oracle's 64 px mipmapped atlas. The interface uses [`UI_FONT_SIZES`] instead.
 pub const FONT_SIZE: i32 = 64;
+
+/// Native raster sizes for interface text.
+///
+/// The shell's fixed typography uses 11--19, 24, 28, 34, 38 and 84 px. Fitted
+/// button rows can land anywhere from their 11 px floor through the 22 px cap,
+/// so that interval is complete rather than sampled. Every resolved UI draw is
+/// quantized down to one of these sizes and rendered 1:1 from its matching
+/// atlas. That removes the old 64 px atlas's discrete mip-level changes and
+/// makes integer pixel snapping meaningful.
+pub const UI_FONT_SIZES: [i32; 17] = [
+    11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 28, 34, 38, 84,
+];
 
 /// Largest face this build will rasterize
 /// (`CAPTION_IMPORTED_FONT_BYTE_LIMIT`, `plug.c:369`).
@@ -204,13 +218,149 @@ impl AsMut<raylib_sys::Font> for Face {
 
 impl RaylibFont for Face {}
 
-/// Every face the application draws with.
+/// One native-size interface atlas selected for a draw or measurement.
+///
+/// Deliberately does not implement [`RaylibFont`]. Shell code must resolve UI
+/// typography through [`UiFonts`] instead of accidentally treating the bank as
+/// the old single face; changing `Faces::ui()` to this type makes the compiler
+/// enumerate every raw-face assumption in the application.
+#[derive(Clone, Copy)]
+struct UiFontRef<'a> {
+    face: &'a Face,
+    size: f32,
+}
+
+/// Space Grotesk rasterized at every size the application chrome can use.
+///
+/// `Cell` records coverage for the headless report. It is diagnostic state, not
+/// drawing state: resolving the same label twice returns the same face and size,
+/// so preview/export determinism does not depend on it.
+pub struct UiFonts {
+    faces: Vec<(i32, Face)>,
+    used_mask: Cell<u32>,
+    non_native_requests: Cell<u64>,
+}
+
+impl UiFonts {
+    fn new(faces: Vec<(i32, Face)>) -> Self {
+        debug_assert_eq!(faces.len(), UI_FONT_SIZES.len());
+        Self {
+            faces,
+            used_mask: Cell::new(0),
+            non_native_requests: Cell::new(0),
+        }
+    }
+
+    /// Largest native size not exceeding `requested`, with the bank's endpoints
+    /// as clamps. Fitted rows use this to quantize *before* measuring, preserving
+    /// their guarantee that every label fits.
+    #[must_use]
+    pub fn native_size(&self, requested: f32) -> f32 {
+        native_ui_size(requested) as f32
+    }
+
+    /// Resolves a requested design size to its native atlas and records whether
+    /// a caller bypassed size quantization.
+    #[must_use]
+    fn resolve(&self, requested: f32) -> UiFontRef<'_> {
+        let native = native_ui_size(requested);
+        let index = UI_FONT_SIZES
+            .iter()
+            .position(|&size| size == native)
+            .expect("native UI size must belong to the raster bank");
+        self.used_mask.set(self.used_mask.get() | (1u32 << index));
+        if !requested.is_finite() || (requested - native as f32).abs() > 0.001 {
+            self.non_native_requests
+                .set(self.non_native_requests.get().saturating_add(1));
+        }
+        UiFontRef {
+            face: &self.faces[index].1,
+            size: native as f32,
+        }
+    }
+
+    /// Measures through the same native atlas and size the draw call will use.
+    #[must_use]
+    pub fn measure_text(&self, text: &str, requested: f32, spacing: f32) -> Vector2 {
+        let resolved = self.resolve(requested);
+        resolved
+            .face
+            .measure_text(text, resolved.size, spacing.round())
+    }
+
+    /// Draws native-size UI text on integer pixel origins.
+    pub fn draw_text<D: RaylibDraw>(
+        &self,
+        d: &mut D,
+        text: &str,
+        position: Vector2,
+        requested: f32,
+        spacing: f32,
+        tint: Color,
+    ) {
+        let resolved = self.resolve(requested);
+        d.draw_text_ex(
+            resolved.face,
+            text,
+            Vector2::new(position.x.round(), position.y.round()),
+            resolved.size,
+            spacing.round(),
+            tint,
+        );
+    }
+
+    #[must_use]
+    pub fn all_loaded(&self) -> bool {
+        self.faces.iter().all(|(_, face)| face.is_loaded())
+    }
+
+    #[must_use]
+    pub fn loaded_count(&self) -> usize {
+        self.faces
+            .iter()
+            .filter(|(_, face)| face.is_loaded())
+            .count()
+    }
+
+    /// Coverage evidence for captures: the sizes actually used and whether any
+    /// caller asked the draw layer to rescale instead of quantizing first.
+    #[must_use]
+    pub fn usage_report(&self) -> String {
+        let mask = self.used_mask.get();
+        let used = UI_FONT_SIZES
+            .iter()
+            .enumerate()
+            .filter_map(|(index, size)| ((mask & (1u32 << index)) != 0).then_some(size.to_string()))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "native-sizes=[{used}] non-native-requests={}",
+            self.non_native_requests.get()
+        )
+    }
+}
+
+/// Pure size policy shared by the GPU bank and its tests.
+#[must_use]
+pub fn native_ui_size(requested: f32) -> i32 {
+    if !requested.is_finite() {
+        return UI_FONT_SIZES[0];
+    }
+    UI_FONT_SIZES
+        .iter()
+        .copied()
+        .rev()
+        .find(|&size| size as f32 <= requested + 0.001)
+        .unwrap_or(UI_FONT_SIZES[0])
+}
+
+/// Every logical face slot the application draws with.
 ///
 /// Loaded once and borrowed for the rest of the run. A face loaded per frame — or
 /// per scene switch — leaks a GPU atlas each time, which is the same mistake
 /// `SceneRenderer` exists to prevent for shaders.
 pub struct Faces {
-    ui: Face,
+    ui: UiFonts,
     caption: Face,
     /// Space Grotesk at the **full** curated caption set — `p->caption_alt_font`
     /// (`plug.c:353`). Not the interface face: that one carries only the
@@ -256,13 +406,32 @@ impl Faces {
         let caption_codepoints: Vec<i32> =
             curated.iter().copied().map(|point| point as i32).collect();
 
-        let ui = rasterize(rl, thread, ".otf", SPACE_GROTESK, &ui_codepoints).map_or_else(
-            || {
-                // The C's own wording (`plug.c:8087-8088`).
-                eprintln!("FONT: Space Grotesk UI face unavailable; using raylib default");
-                default_face()
-            },
-            Face::Loaded,
+        let ui = UiFonts::new(
+            UI_FONT_SIZES
+                .iter()
+                .copied()
+                .map(|size| {
+                    let face = rasterize_at(
+                        rl,
+                        thread,
+                        ".otf",
+                        SPACE_GROTESK,
+                        &ui_codepoints,
+                        size,
+                        false,
+                    )
+                    .map_or_else(
+                        || {
+                            eprintln!(
+                                "FONT: Space Grotesk UI face unavailable at {size}px; using raylib default"
+                            );
+                            default_face()
+                        },
+                        Face::Loaded,
+                    );
+                    (size, face)
+                })
+                .collect(),
         );
         let caption = rasterize(rl, thread, ".ttf", ALEGREYA, &caption_codepoints).map_or_else(
             || {
@@ -319,7 +488,13 @@ impl Faces {
     #[must_use]
     pub fn fallback_only() -> Self {
         Self {
-            ui: default_face(),
+            ui: UiFonts::new(
+                UI_FONT_SIZES
+                    .iter()
+                    .copied()
+                    .map(|size| (size, default_face()))
+                    .collect(),
+            ),
             caption: default_face(),
             caption_alt: default_face(),
             icons: default_face(),
@@ -327,9 +502,9 @@ impl Faces {
         }
     }
 
-    /// The interface face (`ui_font`, `plug.c:340-344`).
+    /// The native-size interface face bank.
     #[must_use]
-    pub fn ui(&self) -> &Face {
+    pub fn ui(&self) -> &UiFonts {
         &self.ui
     }
 
@@ -469,12 +644,17 @@ impl Faces {
     pub fn describe(&self) -> String {
         let fallback = "raylib default (FALLBACK)";
         format!(
-            "ui={}, caption={}, caption-alt={}, icons={}, imported={}",
-            if self.ui.is_loaded() {
-                "Space Grotesk"
+            "ui={}, {}, caption={}, caption-alt={}, icons={}, imported={}",
+            if self.ui.all_loaded() {
+                format!("Space Grotesk ({} native sizes)", UI_FONT_SIZES.len())
             } else {
-                fallback
+                format!(
+                    "{}/{} Space Grotesk sizes loaded ({fallback})",
+                    self.ui.loaded_count(),
+                    UI_FONT_SIZES.len()
+                )
             },
+            self.ui.usage_report(),
             if self.caption.is_loaded() {
                 "Alegreya"
             } else {
@@ -551,6 +731,18 @@ fn rasterize(
     bytes: &[u8],
     codepoints: &[i32],
 ) -> Option<Font> {
+    rasterize_at(rl, thread, file_type, bytes, codepoints, FONT_SIZE, true)
+}
+
+fn rasterize_at(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    file_type: &str,
+    bytes: &[u8],
+    codepoints: &[i32],
+    pixel_size: i32,
+    generate_mipmaps: bool,
+) -> Option<Font> {
     let _ = (rl, thread); // Proof a window exists; raylib needs one for the atlas.
     let c_file_type = std::ffi::CString::new(file_type).ok()?;
 
@@ -572,7 +764,7 @@ fn rasterize(
             c_file_type.as_ptr(),
             bytes.as_ptr(),
             bytes.len() as i32,
-            FONT_SIZE,
+            pixel_size,
             if codepoints.is_empty() {
                 std::ptr::null_mut()
             } else {
@@ -589,10 +781,10 @@ fn rasterize(
     // unloaded or copied elsewhere, so this transfers sole ownership.
     let mut font = unsafe { Font::from_raw(raw) };
 
-    // Mipmaps and bilinear filtering, because every face is rasterized once at
-    // 64 px and drawn at 13-38 px (`plug.c:8085-8086`). Without them the
-    // downscale aliases badly enough that small labels look broken rather than
-    // small.
+    // Caption faces retain the oracle's mipmapped 64 px atlas because their
+    // project style may request any continuous size. UI faces are native-size
+    // atlases and deliberately skip mipmaps: selecting another level would
+    // recreate the discontinuity this bank exists to remove.
     //
     // The order and the `&mut` are both load-bearing. `GenTextureMipmaps` writes
     // the new level count back through its pointer, and `SetTextureFilter` reads
@@ -610,7 +802,9 @@ fn rasterize(
         // Named, because `Font` implements `AsRef` for both the ffi font and its
         // texture and the inferred one would be a coin flip.
         let raw_font: &mut raylib_sys::Font = font.as_mut();
-        raylib_sys::GenTextureMipmaps(&mut raw_font.texture);
+        if generate_mipmaps {
+            raylib_sys::GenTextureMipmaps(&mut raw_font.texture);
+        }
         raylib_sys::SetTextureFilter(
             raw_font.texture,
             raylib_sys::TextureFilter::TEXTURE_FILTER_BILINEAR as i32,
@@ -622,6 +816,42 @@ fn rasterize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ui_native_sizes_cover_every_fixed_and_fitted_shell_size() {
+        assert!(UI_FONT_SIZES.windows(2).all(|pair| pair[0] < pair[1]));
+        for size in 11..=22 {
+            assert!(
+                UI_FONT_SIZES.contains(&size),
+                "fitted row size {size} has no native atlas"
+            );
+        }
+        for size in [24, 28, 34, 38, 84] {
+            assert!(
+                UI_FONT_SIZES.contains(&size),
+                "fixed shell size {size} has no native atlas"
+            );
+        }
+    }
+
+    #[test]
+    fn ui_size_resolution_quantizes_down_and_reports_bypasses() {
+        assert_eq!(native_ui_size(10.0), 11);
+        assert_eq!(native_ui_size(18.72), 18);
+        assert_eq!(native_ui_size(22.99), 22);
+        assert_eq!(native_ui_size(23.99), 22);
+        assert_eq!(native_ui_size(24.0), 24);
+        assert_eq!(native_ui_size(100.0), 84);
+        assert_eq!(native_ui_size(f32::NAN), 11);
+
+        let faces = Faces::fallback_only();
+        let _ = faces.ui.resolve(15.0);
+        let _ = faces.ui.resolve(18.72);
+        assert_eq!(
+            faces.ui.usage_report(),
+            "native-sizes=[15,18] non-native-requests=1"
+        );
+    }
 
     #[test]
     fn the_interface_set_is_a_strict_subset_of_the_caption_set() {

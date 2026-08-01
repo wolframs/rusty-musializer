@@ -317,7 +317,9 @@ fn run() -> Result<std::process::ExitCode, String> {
                 muted = true;
                 apply_volume(&audio, volume, muted);
             }
-            Action::SelectScene(id) => app.select_scene(id),
+            Action::SelectScene(id) => {
+                app.select_scene(id, 0.0);
+            }
             // The scene is selected whether or not the import succeeds, which is
             // the oracle's order (`musializer.c:413-422` selects unconditionally
             // after reporting). A user who mistyped the filename still lands on the
@@ -344,7 +346,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                         options.error = true;
                     }
                 }
-                app.select_scene(SceneId::AsciiField);
+                app.select_scene(SceneId::AsciiField, 0.0);
             }
             // `plug_record_event` (`plug.c:1055-1069`). No track is open yet —
             // the actions run before an input is resolved — so this lands in the
@@ -522,6 +524,27 @@ fn run() -> Result<std::process::ExitCode, String> {
                     path.display()
                 );
                 options.error = true;
+            }
+        }
+    }
+
+    // `--auto-scenes` is evaluated after the project/bridge input, because it
+    // enables the plan those stages supplied (`musializer.c:585-589`). An empty
+    // plan is a command-line failure, not a successful no-op.
+    if options.auto_scenes {
+        if options.error {
+            eprintln!("warning: could not enable automatic scene switching");
+        } else {
+            match app.workspace.current_mut() {
+                Some(track) if !track.scene_switches.is_empty() => {
+                    track.scene_switches.enabled = true;
+                    track.scene_switches.reset();
+                    track.cue_settings_active = false;
+                }
+                _ => {
+                    eprintln!("warning: could not enable automatic scene switching");
+                    options.error = true;
+                }
             }
         }
     }
@@ -781,6 +804,16 @@ fn run() -> Result<std::process::ExitCode, String> {
             .current()
             .map_or(0.0, |track| track.duration_seconds);
         let playing = music.as_ref().is_some_and(|m| m.is_stream_playing());
+
+        // Scene-plan selection and its settings snapshot precede routing. Keep a
+        // scene with an inline route editor visible during preview, exactly as
+        // the oracle does; export has no editor and always advances its plan.
+        let route_editor_open = app
+            .shell
+            .route_editor_open_for_active_track(app.workspace.current_index());
+        if !route_editor_open {
+            app.apply_auto_scene_switch(time_seconds);
+        }
 
         let spectrum = analysis.analyzer.spectrum();
         let mut audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
@@ -1061,9 +1094,15 @@ fn run() -> Result<std::process::ExitCode, String> {
                         // anyway; doing it here means a *forward* seek is handled
                         // too, which it would otherwise accept as a long interval.
                         analysis.beat.reset();
+                        if let Some(track) = app.workspace.current_mut() {
+                            track.scene_switches.reset();
+                            track.cue_settings_active = false;
+                        }
                     }
                 }
-                ShellCommand::SelectScene(id) => app.select_scene(id),
+                ShellCommand::SelectScene(id) => {
+                    app.select_scene(id, rl.get_time());
+                }
                 ShellCommand::SetSetting {
                     scene,
                     index,
@@ -1071,9 +1110,20 @@ fn run() -> Result<std::process::ExitCode, String> {
                 } => {
                     // `set` refuses a value the descriptor rejects, so a bad
                     // slider cannot smuggle one past the bounds.
-                    app.settings_mut().set(scene, index, value);
+                    if app.settings_mut().set(scene, index, value) {
+                        if let Some(track) = app.workspace.current_mut() {
+                            track.commit_active_cue_settings(scene);
+                            track.mark_dirty(rl.get_time());
+                        }
+                    }
                 }
-                ShellCommand::ResetScene(scene) => app.settings_mut().reset_scene(scene),
+                ShellCommand::ResetScene(scene) => {
+                    app.settings_mut().reset_scene(scene);
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.commit_active_cue_settings(scene);
+                        track.mark_dirty(rl.get_time());
+                    }
+                }
                 ShellCommand::LoadTrack(path) => {
                     // Drop-to-open, which the welcome screen promises in so many
                     // words. It used to answer "restart with…", because the loop
@@ -1220,13 +1270,6 @@ fn run() -> Result<std::process::ExitCode, String> {
                             ),
                         }
                     }
-                }
-                ShellCommand::NotImplemented(what) => {
-                    app.shell.notify(
-                        Severity::Info,
-                        "Not built yet",
-                        &format!("{what} is still a stub in the Rust rewrite."),
-                    );
                 }
             }
         }
@@ -1516,9 +1559,9 @@ impl App {
 
     /// Binds a scene, seeded from the current track (`scene_seed_for_track`,
     /// `plug.c:611-614`; used at `:987` and `:1354`).
-    fn select_scene(&mut self, id: SceneId) {
+    fn select_scene(&mut self, id: SceneId, now_seconds: f64) -> bool {
         if self.scene.id() == id {
-            return;
+            return false;
         }
         let seed = self
             .workspace
@@ -1529,8 +1572,37 @@ impl App {
         // restores this scene rather than the one the previous track left behind
         // (`plug.c:5265-5268`).
         if let Some(track) = self.workspace.current_mut() {
-            track.previous_base_scene = track.base_scene;
-            track.base_scene = id;
+            let disabled_plan = track.scene_switches.enabled && !track.scene_switches.is_empty();
+            let kept_cues = track.scene_switches.len();
+            track.select_base_scene(id);
+            track.mark_dirty(now_seconds);
+            let detail = if disabled_plan {
+                format!(
+                    "{} is now the track's base scene. Auto scenes was turned off; its {kept_cues} cues are kept for when you re-enable it.",
+                    id.display_name()
+                )
+            } else {
+                format!("{} is now the track's base scene.", id.display_name())
+            };
+            self.shell
+                .notify(Severity::Info, "Base scene changed", &detail);
+        }
+        true
+    }
+
+    /// Binds the scene selected by the current track's automatic plan without
+    /// changing that track's base-scene selection (`apply_auto_scene_switch`,
+    /// `plug.c:997-1023`).
+    fn apply_auto_scene_switch(&mut self, time_seconds: f64) {
+        let Some(track) = self.workspace.current_mut() else {
+            return;
+        };
+        let seed = track.scene_seed;
+        let Some(scene) = track.advance_scene_plan(time_seconds) else {
+            return;
+        };
+        if self.scene.id() != scene {
+            self.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
         }
     }
 }
@@ -1879,6 +1951,11 @@ fn bind_audio<'audio>(
 ) -> Result<(), String> {
     close_audio(music, app, scratch);
 
+    if let Some(track) = app.workspace.current_mut() {
+        track.scene_switches.reset();
+        track.cue_settings_active = false;
+    }
+
     let file_sample_rate = opened.stream.sampleRate;
     analysis.reconfigure(AudioAnalyzerConfig::preview(file_sample_rate))?;
     if play {
@@ -1966,6 +2043,7 @@ fn handle_manual_event(app: &mut App, action: ManualEventAction, time: f64, now:
     let Some(track) = app.workspace.current_mut() else {
         return;
     };
+    let mut apply_scene_plan = false;
     match action {
         Action::Record(event) => {
             if track.record_manual_event(event).is_ok() {
@@ -1973,7 +2051,10 @@ fn handle_manual_event(app: &mut App, action: ManualEventAction, time: f64, now:
             }
         }
         Action::RecordSceneCue => match track.record_scene_cue(scene, time) {
-            Ok(()) => track.mark_dirty(now),
+            Ok(()) => {
+                track.mark_dirty(now);
+                apply_scene_plan = true;
+            }
             Err(error) => {
                 let detail = error.to_string();
                 app.shell
@@ -1995,6 +2076,14 @@ fn handle_manual_event(app: &mut App, action: ManualEventAction, time: f64, now:
                 .undo(&mut track.manual_events, &mut track.next_manual_event_id);
             track.mark_dirty(now);
         }
+    }
+    if apply_scene_plan {
+        app.apply_auto_scene_switch(time);
+        app.shell.notify(
+            Severity::Success,
+            "Scene cue captured",
+            "The scene and its current tuning will load at this playhead position.",
+        );
     }
 }
 
@@ -2018,7 +2107,10 @@ fn handle_preset(app: &mut App, action: PresetAction, now: f64) {
             if let Some(preset) = app.shared_presets.presets(scene).get(index) {
                 let snapshot = preset.snapshot;
                 if app.settings_mut().apply_snapshot(scene, &snapshot) {
-                    mark_current_track_dirty(app, now);
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.commit_active_cue_settings(scene);
+                        track.mark_dirty(now);
+                    }
                 }
             }
         }

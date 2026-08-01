@@ -32,7 +32,7 @@
 
 use musializer_core::ui::text_edit::{Motion, Select, TextEdit, TextEditError, TextRules};
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::Face;
+use musializer_runtime::font::UiFonts;
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
 
 use super::theme::color;
@@ -130,7 +130,7 @@ impl TextField {
     pub fn draw(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
+        font: &UiFonts,
         boundary: UiRect,
         font_size: f32,
         placeholder: &str,

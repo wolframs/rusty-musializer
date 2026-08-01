@@ -862,6 +862,8 @@ impl ExportSession {
         // `beat_phase` route has to advance here exactly as it does in the preview,
         // and both go through the one `track_beat`.
         audio_frame.track_beat(&mut analysis.beat, self.job().scene_time());
+        let time_seconds = self.job().scene_time();
+        app.apply_auto_scene_switch(time_seconds);
         let sources = RouteSources::from_audio(&audio_frame);
         let base = *app.settings();
         let routed = app.routes().apply(app.scene.id(), &sources, &base);
@@ -870,7 +872,6 @@ impl ExportSession {
             .workspace
             .current()
             .map_or(0.0, |track| track.duration_seconds);
-        let time_seconds = self.job().scene_time();
         let frame_lanes = crate::project_frame_lanes(app.workspace.current(), time_seconds);
         let lane_status = frame_lanes.status();
         let frame = frame_lanes.scene_frame(

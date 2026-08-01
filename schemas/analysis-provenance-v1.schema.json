@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/analysis-provenance-v1.schema.json",
+  "title": "Musializer analysis provenance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["adapter", "adapter_version", "source_kind", "audio_sha256", "schema_version"],
+  "properties": {
+    "adapter": {"type": "string", "minLength": 1},
+    "adapter_version": {"type": "string", "minLength": 1},
+    "source_kind": {"enum": ["whisper_import", "mimo_openrouter"]},
+    "audio_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "schema_version": {"type": "string", "minLength": 1},
+    "model": {"type": "string"},
+    "provider": {"type": ["string", "null"]},
+    "prompt_version": {"type": ["string", "null"]},
+    "request_settings": {"type": "object"},
+    "generation": {"type": "object"}
+  }
+}

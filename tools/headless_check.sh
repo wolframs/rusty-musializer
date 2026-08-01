@@ -116,6 +116,13 @@ case "${FONT_LINE:-absent}" in
         exit 1
         ;;
 esac
+case "$FONT_LINE" in
+    *"ui=Space Grotesk (17 native sizes)"*"non-native-requests=0"*) : ;;
+    *)
+        echo "FAIL: the shell did not use the complete native-size UI font bank: $FONT_LINE" >&2
+        exit 1
+        ;;
+esac
 # The icon face separately, because its fallback is not a degraded face but a
 # *different interface*: the transport row draws text labels instead. That is a
 # deliberate, working fallback rather than a failure, so the check reports which
@@ -848,12 +855,6 @@ echo "=== the Assist panel ==="
 # "found beside the audio" whether the probe worked or not.
 ASSIST_SHEET="$OUT_DIR/authored-lyrics.txt"
 printf 'a first line\na second line\n' >"$ASSIST_SHEET"
-# A stand-in for tools/external_analysis.py, which this repository does not ship.
-# `MUSIALIZER_ASSIST_HELPER` is the oracle's own override (`plug.c:2051-2056`),
-# and without it the workflow buttons are only ever photographed disabled.
-ASSIST_HELPER="$OUT_DIR/fake_external_analysis.py"
-printf 'raise SystemExit(0)\n' >"$ASSIST_HELPER"
-
 assist_capture() {
     # assist_capture NAME SIZE EXPECT_BODY EXPECT_HELPER [extra --ui-probe keys]
     local name="$1" size="$2" expect="$3" helper="$4" extra="${5:-}"
@@ -861,10 +862,10 @@ assist_capture() {
     local log="$OUT_DIR/$name.txt"
     local spec="panel=assist,play=1"
     [ -n "$extra" ] && spec="$spec,$extra"
-    local helper_env=("MUSIALIZER_ASSIST_HELPER=")
-    [ "$helper" = "found" ] && helper_env=("MUSIALIZER_ASSIST_HELPER=$ASSIST_HELPER")
+    local helper_env=()
+    [ "$helper" = "missing" ] && helper_env=("MUSIALIZER_ASSIST_HELPER=$OUT_DIR/absent-assist-helper.py")
     set +e
-    env -u WAYLAND_DISPLAY \
+    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         "${helper_env[@]}" \
@@ -893,8 +894,8 @@ assist_capture() {
             ;;
     esac
     case "$helper:$line" in
-        "found:helper=$ASSIST_HELPER"*) ;;
         "missing:helper=not found"*) ;;
+        source:*"/tools/external_analysis.py"*) ;;
         *)
             echo "FAIL: $name expected a $helper helper, got: ${line:-<absent>}" >&2
             return 1
@@ -907,7 +908,7 @@ assist_capture() {
 # reporting them needs the live `main.rs` and `shell.rs` seams. The report below
 # verifies those seams rather than treating a drawn panel body as sufficient.
 set +e
-env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
     ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --probe-frames 3 \
     >"$OUT_DIR/assist-probe.txt" 2>&1
@@ -923,15 +924,17 @@ fi
 
 for size in 1280x720 960x640; do
     [ "$ASSIST_WIRED" -eq 0 ] && break
-    # Without a helper: every workflow button disabled, and the status line says
-    # why. This is what a real installation of this build looks like today.
-    assist_capture "assist-ready-$size" "$size" Ready missing || SWEEP_FAILED=1
-    # With one: the workflow row is live and the confirmation step can arm.
-    assist_capture "assist-confirm-$size" "$size" Confirmation found \
+    # The real source bundle is the normal path: the workflow row is live and
+    # the confirmation step can arm without an environment override.
+    assist_capture "assist-ready-$size" "$size" Ready source || SWEEP_FAILED=1
+    assist_capture "assist-confirm-$size" "$size" Confirmation source \
         "assist=confirm" || SWEEP_FAILED=1
     # And with an authored sheet chosen, which is the row the panel exists for.
-    assist_capture "assist-sheet-$size" "$size" Confirmation found \
+    assist_capture "assist-sheet-$size" "$size" Confirmation source \
         "assist=confirm,lyrics-file=$ASSIST_SHEET" || SWEEP_FAILED=1
+    # Negative control: a set-but-invalid override fails hard and must not fall
+    # back to the source helper.
+    assist_capture "assist-missing-$size" "$size" Ready missing || SWEEP_FAILED=1
 done
 
 # The panel that names a sheet must actually have taken it. A run that ignored
@@ -1197,6 +1200,30 @@ if [ "$TYPO_STATUS" -eq 0 ]; then
 fi
 
 if [ "$ROUTE_EDITOR_FAILED" -ne 0 ]; then
+    SWEEP_FAILED=1
+fi
+
+# Every successful application run prints this after its last frame, so this is
+# broader than the first Spectrum capture above: welcome, every scene, every
+# panel, preview and export all have to keep shell text on native atlases. The
+# `UiFonts` type makes raw-face bypasses compile errors; this runtime half catches
+# a new fractional design size that still reaches the bank but would otherwise be
+# quantized without anybody noticing.
+FONT_REPORTS="$(rg --no-filename '^fonts:' "$OUT_DIR" --glob '*.txt' || true)"
+FONT_REPORT_COUNT="$(printf '%s\n' "$FONT_REPORTS" | sed '/^$/d' | wc -l)"
+echo "native UI font reports: $FONT_REPORT_COUNT"
+if [ "$FONT_REPORT_COUNT" -eq 0 ]; then
+    echo "FAIL: no application run reported UI font usage" >&2
+    SWEEP_FAILED=1
+fi
+if printf '%s\n' "$FONT_REPORTS" | rg -q 'non-native-requests=[1-9][0-9]*'; then
+    echo "FAIL: a shell label requested a scaled/non-native UI font size" >&2
+    printf '%s\n' "$FONT_REPORTS" | rg 'non-native-requests=[1-9][0-9]*' >&2
+    SWEEP_FAILED=1
+fi
+if printf '%s\n' "$FONT_REPORTS" | rg -v -q 'ui=Space Grotesk \(17 native sizes\).*non-native-requests=0'; then
+    echo "FAIL: an application run did not report the complete native-size UI bank" >&2
+    printf '%s\n' "$FONT_REPORTS" | rg -v 'ui=Space Grotesk \(17 native sizes\).*non-native-requests=0' >&2
     SWEEP_FAILED=1
 fi
 

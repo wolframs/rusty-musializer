@@ -386,6 +386,64 @@ impl Track {
         Ok(())
     }
 
+    /// Makes `scene` the track's base scene (`track_select_base_scene`,
+    /// `plug.c:963-977`).
+    ///
+    /// A base-scene choice and an automatic switch are distinct operations. The
+    /// choice therefore remembers the former base for the first `+ Scene` cue,
+    /// disables automatic playback without deleting its cues, and rewinds the
+    /// plan cursor.
+    pub fn select_base_scene(&mut self, scene: SceneId) {
+        if self.base_scene != scene {
+            self.previous_base_scene = self.base_scene;
+            self.scene_selection_pending = true;
+        }
+        self.base_scene = scene;
+        self.scene_switches.enabled = false;
+        self.scene_switches.reset();
+        self.cue_settings_active = false;
+    }
+
+    /// Applies the automatic scene cue covering `time_seconds`, if the plan just
+    /// crossed a boundary (`apply_auto_scene_switch`, `plug.c:997-1023`).
+    ///
+    /// The returned id is the scene instance the composition root must bind.
+    /// Cue settings are installed here first; audio routes are evaluated later
+    /// by the preview/export frame path, preserving the oracle's precedence.
+    pub fn advance_scene_plan(&mut self, time_seconds: f64) -> Option<SceneId> {
+        let scene_index = match self.scene_switches.update(time_seconds) {
+            Ok(Some(scene_index)) => scene_index,
+            Ok(None) => {
+                if !self.scene_switches.enabled {
+                    self.cue_settings_active = false;
+                }
+                return None;
+            }
+            Err(_) => return None,
+        };
+        let scene = SceneId::from_index(scene_index as usize)?;
+        let active = self.scene_switches.active_index()?;
+        let cue = *self.scene_switches.cues().get(active)?;
+        self.playback_scene_settings = self.scene_settings;
+        self.cue_settings_active = cue.settings.captured
+            && self
+                .playback_scene_settings
+                .apply_snapshot(scene, &cue.settings);
+        Some(scene)
+    }
+
+    /// Persists an inspector edit into the cue whose snapshot is currently
+    /// driving playback (`commit_active_cue_settings`, `plug.c:1043-1052`).
+    pub fn commit_active_cue_settings(&mut self, scene: SceneId) -> bool {
+        if !self.cue_settings_active {
+            return false;
+        }
+        let Some(snapshot) = self.playback_scene_settings.capture(scene) else {
+            return false;
+        };
+        self.scene_switches.set_active_settings(scene, &snapshot)
+    }
+
     /// True when this track has unsaved project work.
     ///
     /// A track that was never part of a project is never dirty, which is what
@@ -851,5 +909,58 @@ mod tests {
             SceneId::Loom.index() as u32
         );
         assert!(!track.scene_selection_pending);
+    }
+
+    #[test]
+    fn base_selection_stages_the_previous_scene_and_keeps_old_cues() {
+        let mut track = track("/tmp/a.wav");
+        track
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .expect("initial plan");
+        assert!(track.scene_switches.enabled);
+
+        track.select_base_scene(SceneId::Loom);
+        assert_eq!(track.previous_base_scene, SceneId::Spectrum);
+        assert_eq!(track.base_scene, SceneId::Loom);
+        assert!(track.scene_selection_pending);
+        assert!(!track.scene_switches.enabled);
+        assert_eq!(track.scene_switches.len(), 1, "the plan is retained");
+        assert_eq!(track.scene_switches.active_index(), None);
+        assert!(!track.cue_settings_active);
+    }
+
+    #[test]
+    fn scene_plan_switches_at_boundaries_and_installs_cue_settings() {
+        let mut track = track("/tmp/a.wav");
+        track.select_base_scene(SceneId::Loom);
+        track
+            .record_scene_cue(SceneId::Loom, 4.0)
+            .expect("backfilled plan");
+        assert_eq!(track.scene_switches.len(), 2);
+
+        assert_eq!(track.advance_scene_plan(0.0), Some(SceneId::Spectrum));
+        assert!(track.cue_settings_active);
+        assert_eq!(track.advance_scene_plan(3.999), None);
+        assert_eq!(track.advance_scene_plan(4.0), Some(SceneId::Loom));
+        assert!(track.cue_settings_active);
+
+        track.scene_switches.reset();
+        assert_eq!(track.advance_scene_plan(1.0), Some(SceneId::Spectrum));
+    }
+
+    #[test]
+    fn tuning_the_active_cue_updates_its_snapshot_without_retriggering_it() {
+        let mut track = track("/tmp/a.wav");
+        track
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .expect("one cue plan");
+        assert_eq!(track.advance_scene_plan(0.0), Some(SceneId::Spectrum));
+        assert!(track
+            .playback_scene_settings
+            .set(SceneId::Spectrum, 0, 0.75));
+        assert!(track.commit_active_cue_settings(SceneId::Spectrum));
+        assert_eq!(track.scene_switches.active_index(), Some(0));
+        assert_eq!(track.scene_switches.cues()[0].settings.values[0], 0.75);
+        assert_eq!(track.advance_scene_plan(1.0), None);
     }
 }

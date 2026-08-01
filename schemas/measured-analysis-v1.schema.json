@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://musializer.local/schemas/measured-analysis-v1.schema.json",
+  "title": "Musializer offline measured-audio analysis v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "lane", "cache_key", "audio", "analysis", "provenance", "pulse_estimate", "frames", "summary"],
+  "properties": {
+    "schema_version": {"const": "musializer.measured-analysis/v1"},
+    "lane": {"const": "measured_audio"},
+    "cache_key": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "audio": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "duration_seconds", "analysis_sample_rate", "channels"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "analysis_sample_rate": {"type": "integer", "minimum": 8000, "maximum": 192000},
+        "channels": {"enum": [1, 2]}
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["analyzer_version", "sample_rate", "channels", "window_size", "hop_size", "window_function", "band_edges_hz"],
+      "properties": {
+        "analyzer_version": {"const": "1"},
+        "sample_rate": {"type": "integer", "minimum": 8000, "maximum": 192000},
+        "channels": {"enum": [1, 2]},
+        "window_size": {"type": "integer", "minimum": 64},
+        "hop_size": {"type": "integer", "minimum": 1},
+        "window_function": {"const": "hann"},
+        "band_edges_hz": {"$ref": "#/$defs/bandEdges"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapter", "adapter_version", "source_kind", "audio_sha256", "schema_version", "model", "provider", "prompt_version", "request_settings", "generation"],
+      "properties": {
+        "adapter": {"const": "tools/analyze_audio.py"},
+        "adapter_version": {"const": "1"},
+        "source_kind": {"const": "offline_measured_analysis"},
+        "audio_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "schema_version": {"const": "musializer.measured-analysis/v1"},
+        "model": {"type": "null"},
+        "provider": {"type": "null"},
+        "prompt_version": {"type": "null"},
+        "request_settings": {"type": "object"},
+        "generation": {"type": "object", "maxProperties": 0}
+      }
+    },
+    "pulse_estimate": {"$ref": "#/$defs/pulseEstimate"},
+    "frames": {
+      "type": "array",
+      "minItems": 1,
+      "x-musializer-order": "ascending-time-within-duration",
+      "items": {"$ref": "#/$defs/frame"}
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["global", "resolutions", "sections"],
+      "properties": {
+        "global": {"$ref": "#/$defs/featureSummary"},
+        "resolutions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["bin_seconds", "bins"],
+            "properties": {
+              "bin_seconds": {"type": "number", "exclusiveMinimum": 0},
+              "bins": {
+                "type": "array",
+                "minItems": 1,
+                "x-musializer-coverage": "contiguous-full-duration",
+                "items": {"$ref": "#/$defs/intervalSummary"}
+              }
+            }
+          }
+        },
+        "sections": {
+          "type": "array",
+          "minItems": 1,
+          "x-musializer-coverage": "contiguous-full-duration",
+          "items": {
+            "allOf": [
+              {"$ref": "#/$defs/intervalSummary"},
+              {
+                "type": "object",
+                "required": ["index"],
+                "properties": {"index": {"type": "integer", "minimum": 0}}
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "unit": {"type": "number", "minimum": 0, "maximum": 1},
+    "bands": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sub_bass", "bass", "low_mid", "mid", "upper_mid", "presence", "brilliance"],
+      "properties": {
+        "sub_bass": {"$ref": "#/$defs/unit"},
+        "bass": {"$ref": "#/$defs/unit"},
+        "low_mid": {"$ref": "#/$defs/unit"},
+        "mid": {"$ref": "#/$defs/unit"},
+        "upper_mid": {"$ref": "#/$defs/unit"},
+        "presence": {"$ref": "#/$defs/unit"},
+        "brilliance": {"$ref": "#/$defs/unit"}
+      }
+    },
+    "bandEdges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sub_bass", "bass", "low_mid", "mid", "upper_mid", "presence", "brilliance"],
+      "properties": {
+        "sub_bass": {"const": [20.0, 60.0]},
+        "bass": {"const": [60.0, 250.0]},
+        "low_mid": {"const": [250.0, 500.0]},
+        "mid": {"const": [500.0, 2000.0]},
+        "upper_mid": {"const": [2000.0, 4000.0]},
+        "presence": {"const": [4000.0, 6000.0]},
+        "brilliance": {"const": [6000.0, 12000.0]}
+      }
+    },
+    "pulseEstimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bpm", "confidence", "phase_seconds"],
+      "properties": {
+        "bpm": {"type": ["number", "null"], "minimum": 55, "maximum": 190},
+        "confidence": {"$ref": "#/$defs/unit"},
+        "phase_seconds": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["time_seconds", "rms", "peak", "bands", "spectral_centroid", "spectral_flux", "onset_strength", "onset", "pulse"],
+      "properties": {
+        "time_seconds": {"type": "number", "minimum": 0},
+        "rms": {"$ref": "#/$defs/unit"},
+        "peak": {"$ref": "#/$defs/unit"},
+        "bands": {"$ref": "#/$defs/bands"},
+        "spectral_centroid": {"$ref": "#/$defs/unit"},
+        "spectral_flux": {"$ref": "#/$defs/unit"},
+        "onset_strength": {"$ref": "#/$defs/unit"},
+        "onset": {"type": "boolean"},
+        "pulse": {"$ref": "#/$defs/unit"}
+      }
+    },
+    "featureSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rms_mean", "rms_max", "peak_max", "centroid_mean", "flux_mean", "onset_max", "bands_mean"],
+      "properties": {
+        "rms_mean": {"$ref": "#/$defs/unit"},
+        "rms_max": {"$ref": "#/$defs/unit"},
+        "peak_max": {"$ref": "#/$defs/unit"},
+        "centroid_mean": {"$ref": "#/$defs/unit"},
+        "flux_mean": {"$ref": "#/$defs/unit"},
+        "onset_max": {"$ref": "#/$defs/unit"},
+        "bands_mean": {"$ref": "#/$defs/bands"}
+      }
+    },
+    "intervalSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_seconds", "end_seconds", "features"],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "start_seconds": {"type": "number", "minimum": 0},
+        "end_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "features": {"$ref": "#/$defs/featureSummary"}
+      }
+    }
+  }
+}
