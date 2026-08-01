@@ -86,7 +86,7 @@ crates/
   musializer-app/     the binary, CLI, scene drawing, UI
 vendor/               upstream raylib source and a bindgen header shim
 resources/            first-party shaders; third-party fonts with their licences
-docs/                 CLI grammar, settings tables, schemas, environment variables
+docs/                 architecture, implementation guides, contracts, investigations
 packaging/linux/      desktop entry and MIME package templates
 tools/                verification scripts, the headless gate, the launcher
 ```
@@ -94,6 +94,13 @@ tools/                verification scripts, the headless gate, the launcher
 `musializer-core` is deliberately free of raylib handles, OS process handles,
 global mutable state and filesystem side effects. That constraint is what makes
 the layout, analysis and state-machine code testable without a window.
+
+## Documentation
+
+[`docs/README.md`](docs/README.md) is the documentation index. Start with the
+[`code architecture`](docs/CODE_ARCHITECTURE.md) for crate boundaries and primary
+data flows, or the [`Assist pipeline`](docs/ASSIST_PIPELINE.md) for automatic
+analysis, lyrics alignment, validation, staging, and trust boundaries.
 
 ## Notes
 
