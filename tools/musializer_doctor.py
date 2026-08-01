@@ -180,7 +180,8 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
     ))
 
     lyric_assets = (
-        "tools/import_whisper.py", "prompts/lyrics_cleanup_system.md",
+        "tools/import_whisper.py", "tools/force_align_lyrics.py",
+        "prompts/lyrics_cleanup_system.md",
         "schemas/codex-lyric-review-output-v1.schema.json",
         "schemas/lyric-review-v1.schema.json",
         "schemas/lyric-timing-v1.schema.json",
@@ -244,6 +245,24 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
         required_for=("local_lyrics",),
         detail=str(whisper_model) if whisper_model_ok else
                "set MUSIALIZER_WHISPER_MODEL or install ggml-medium.en.bin",
+    ))
+    align_python = (external_analysis._default_alignment_python()
+                    if external_analysis is not None else None)
+    align_model = (external_analysis._default_alignment_model()
+                   if external_analysis is not None else None)
+    checks.append(_check(
+        "alignment_python", align_python is not None,
+        "MMS forced-alignment Python runtime",
+        required_for=("local_lyrics",),
+        detail=(str(align_python) if align_python else
+                "set MUSIALIZER_ALIGN_PYTHON or install the lyrics-align runtime"),
+    ))
+    checks.append(_check(
+        "alignment_model", bool(align_model and align_model.is_file()),
+        "MMS forced-alignment acoustic model",
+        required_for=("local_lyrics",),
+        detail=(str(align_model) if align_model and align_model.is_file() else
+                "run the forced-align helper once to install the MMS_FA model"),
     ))
 
     # This is the sole credential read. Membership is checked, never the value.

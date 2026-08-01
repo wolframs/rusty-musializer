@@ -12,6 +12,7 @@ for helper in \
     tools/analysis_io.py \
     tools/analyze_audio.py \
     tools/external_analysis.py \
+    tools/force_align_lyrics.py \
     tools/google_fonts.py \
     tools/import_whisper.py \
     tools/lyric_align.py \
@@ -19,6 +20,8 @@ for helper in \
     tools/musializer_doctor.py; do
     python3 -m py_compile "$helper"
 done
+
+python3 -m unittest discover -s tests -p 'test_*.py'
 
 SUPPORT_CHECK_DIR=$(mktemp -d)
 trap 'rm -rf -- "$SUPPORT_CHECK_DIR"' EXIT HUP INT TERM

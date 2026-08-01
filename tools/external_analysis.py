@@ -35,6 +35,7 @@ from analysis_io import (
     sha256_file,
 )
 from import_whisper import normalize_whisper
+import force_align_lyrics
 import lyric_align
 import mimo_openrouter as mimo_adapter
 
@@ -45,6 +46,7 @@ CODEX_OUTPUT_SCHEMA = ROOT / "schemas" / "codex-lyric-review-output-v1.schema.js
 LYRIC_REVIEW_VERSION = "musializer.lyric-review/v1"
 LYRIC_PROMPT_VERSION = "lyrics_cleanup_system/v2"
 LYRIC_SYNC_VERSION = lyric_align.LYRIC_SYNC_VERSION
+FORCED_ALIGNER = ROOT / "tools" / "force_align_lyrics.py"
 # The model may emit up to this many characters per reviewed line; the
 # deterministic splitter then reduces cues to display size. The C editor
 # rejects cue text at 512 bytes, so both bounds stay far inside it.
@@ -355,7 +357,13 @@ def whisper_request(
         "-t", str(threads if threads is not None else _whisper_thread_count()),
     ]
     if dtw_model:
-        whisper.extend(["--dtw", dtw_model])
+        # whisper.cpp's CLI defaults flash attention on, while the library
+        # explicitly disables its experimental DTW token timestamps whenever
+        # flash attention is active. Asking for both therefore succeeds but
+        # silently emits the ordinary heuristic token times. Make the selected
+        # timing backend real rather than merely recording `dtw_model` in
+        # provenance.
+        whisper.extend(["--no-flash-attn", "--dtw", dtw_model])
     return decode, whisper
 
 
@@ -371,8 +379,6 @@ def run_whisper(
         raise AnalysisValidationError("audio, Whisper executable, and model must be files")
     audio_sha = sha256_file(audio)
     model_sha = sha256_file(model)
-    if dtw_model is None:
-        dtw_model = _dtw_model_name(model.name)
     with tempfile.TemporaryDirectory(prefix="musializer-whisper-") as temporary:
         prefix = Path(temporary) / "transcription"
         decode, whisper = whisper_request(
@@ -400,13 +406,17 @@ def run_whisper(
         raw = read_json(produced)
         normalized = normalize_whisper(
             raw, audio_sha256=audio_sha, audio_duration=audio_duration,
-            model=model.name,
+            model=model.name, prefer_dtw=bool(dtw_model),
         )
         normalized["provenance"]["adapter"] = "tools/external_analysis.py"
         normalized["provenance"]["adapter_version"] = ADAPTER_VERSION
         normalized["provenance"]["request_settings"] = {
             "language": language, "dtw_model": dtw_model,
             "model_sha256": model_sha, "gpu_requested": True,
+            "timing_backend": ("dtw_no_flash_attention" if dtw_model
+                               else "token_onsets_flash_attention"),
+            "word_timing": ("dtw_centers_v1" if dtw_model
+                            else "token_onsets_v1"),
         }
         normalized["provenance"]["generation"] = {
             "raw_whisper_sha256": canonical_sha256(raw),
@@ -1118,10 +1128,17 @@ def _whisper_cache_accepts(
         return False
     if model is not None:
         if not model.is_file(): return False
-        dtw_model = _dtw_model_name(model.name)
+        # Assist deliberately uses flash-attention decoding plus bounded token
+        # onsets. DTW remains an explicit lower-level diagnostic option because
+        # disabling flash attention caused severe repetition loops on singing.
+        dtw_model = None
         expected_settings = {
             "language": "en", "dtw_model": dtw_model,
             "model_sha256": sha256_file(model), "gpu_requested": True,
+            "timing_backend": ("dtw_no_flash_attention" if dtw_model
+                               else "token_onsets_flash_attention"),
+            "word_timing": ("dtw_centers_v1" if dtw_model
+                            else "token_onsets_v1"),
         }
         if settings != expected_settings or provenance.get("model") != model.name:
             return False
@@ -1238,11 +1255,59 @@ def _default_whisper_paths() -> tuple[Path | None, Path | None]:
     )
 
 
+def _default_alignment_python() -> Path | None:
+    configured = os.environ.get("MUSIALIZER_ALIGN_PYTHON")
+    candidates = (
+        Path(configured).expanduser() if configured else None,
+        Path.home() / ".local/share/musializer/lyrics-align/.venv/bin/python",
+    )
+    return next(
+        (candidate for candidate in candidates
+         if candidate is not None and candidate.is_file()
+         and (os.name == "nt" or os.access(candidate, os.X_OK))),
+        None,
+    )
+
+
+def _default_alignment_model() -> Path:
+    torch_home = Path(os.environ.get("TORCH_HOME", Path.home() / ".cache/torch"))
+    return torch_home / "hub/checkpoints/model.pt"
+
+
+def _alignment_cache_accepts(
+    document: dict[str, Any], *, source_sha256: str,
+) -> bool:
+    refinement = document.get("timing_refinement")
+    return (
+        isinstance(refinement, dict)
+        and refinement.get("adapter") == "tools/force_align_lyrics.py"
+        and refinement.get("alignment_version") == force_align_lyrics.ALIGNMENT_VERSION
+        and refinement.get("model") == force_align_lyrics.MODEL_ID
+        and refinement.get("source_sha256") == source_sha256
+    )
+
+
+def run_forced_alignment(
+    audio: Path, source: Path, output: Path, *, audio_duration: float,
+    align_python: Path, timeout: float, runner: Runner = subprocess.run,
+) -> dict[str, Any]:
+    command = [
+        str(align_python), str(FORCED_ALIGNER), str(audio), str(source), str(output),
+        "--duration", f"{audio_duration:.9f}",
+    ]
+    _run(command, timeout=timeout, env=_safe_local_env(), runner=runner)
+    result = read_json(output)
+    if not _alignment_cache_accepts(result, source_sha256=sha256_file(source)):
+        raise RuntimeError("forced aligner produced an invalid lyric lane")
+    return result
+
+
 def run_assist(
     audio: Path, output_dir: Path, *, audio_duration: float, mode: str,
     bridge_path: Path | None = None, whisper_bin: Path | None = None,
     whisper_model: Path | None = None, codex_bin: str = "codex",
-    codex_model: str | None = None, semantic_cache: Path | None = None,
+    codex_model: str | None = None, align_python: Path | None = None,
+    semantic_cache: Path | None = None,
     lyrics_file: Path | None = None,
     zdr: bool = False, external_timeout: float = 2400.0,
     dry_run: bool = False, runner: Runner = subprocess.run,
@@ -1261,6 +1326,7 @@ def run_assist(
         "lyrics": output_dir / "lyrics.whisper.json",
         "sync": output_dir / "lyrics.sync.json",
         "review": output_dir / "lyrics.review.json",
+        "aligned": output_dir / "lyrics.aligned.json",
         "semantic": semantic_cache or output_dir / "semantic.cache.json",
         "plan": output_dir / "scene-plan.json",
         "bridge": bridge_path or output_dir / "analysis.bridge.tsv",
@@ -1269,15 +1335,18 @@ def run_assist(
     detected_bin, detected_model = _default_whisper_paths()
     whisper_bin = whisper_bin or detected_bin
     whisper_model = whisper_model or detected_model
+    align_python = align_python or _default_alignment_python()
     actions = ["measured", "plan", "bridge"]
     if mode in {"lyrics", "all"}:
-        actions[1:1] = ["whisper", "lyric_sync_or_codex_review"]
+        actions[1:1] = [
+            "whisper", "lyric_sync_or_codex_review", "ctc_forced_alignment"]
     if mode in {"mimo", "all"}: actions[1:1] = ["mimo_openrouter"]
     if dry_run:
         return {
             "dry_run": True, "mode": mode, "audio_sha256": audio_sha,
             "actions": actions, "paths": {key: str(value) for key, value in paths.items()},
             "whisper_configured": bool(whisper_bin and whisper_model),
+            "forced_alignment_configured": bool(align_python),
             "external_timeout_seconds": external_timeout,
             "credentials": "environment only; omitted",
         }
@@ -1321,8 +1390,13 @@ def run_assist(
             cache_status["lyrics"] = "generated"
         else: cache_status["lyrics"] = "reused"
         source_sha = sha256_file(paths["lyrics"])
+        if align_python is None or not FORCED_ALIGNER.is_file():
+            raise AnalysisValidationError(
+                "MMS forced alignment is not configured; set "
+                "MUSIALIZER_ALIGN_PYTHON or install the local lyrics-align runtime")
         reference = discover_reference_lyrics(
             audio, override=lyrics_file, runner=runner)
+        timing_source_path: Path
         if reference is not None:
             # Authored lyrics exist: display text is already decided, so the
             # deterministic aligner replaces the Codex wording review.
@@ -1337,7 +1411,7 @@ def run_assist(
                 lyrics = run_lyric_sync(paths["lyrics"], reference, paths["sync"])
                 cache_status["sync"] = "generated"
             else: cache_status["sync"] = "reused"
-            lyrics_lane_path = paths["sync"]
+            timing_source_path = paths["sync"]
         else:
             lyrics = _cache_matches(
                 paths["review"], LYRIC_REVIEW_VERSION, audio_sha,
@@ -1352,7 +1426,25 @@ def run_assist(
                 )
                 cache_status["review"] = "generated"
             else: cache_status["review"] = "reused"
-            lyrics_lane_path = paths["review"]
+            timing_source_path = paths["review"]
+
+        timing_source_sha = sha256_file(timing_source_path)
+        aligned = _cache_matches(
+            paths["aligned"], lyrics["schema_version"], audio_sha,
+            accept=lambda value: _alignment_cache_accepts(
+                value, source_sha256=timing_source_sha),
+        )
+        if aligned is None:
+            aligned = run_forced_alignment(
+                audio, timing_source_path, paths["aligned"],
+                audio_duration=measured_duration, align_python=align_python,
+                timeout=external_timeout, runner=runner,
+            )
+            cache_status["alignment"] = "generated"
+        else:
+            cache_status["alignment"] = "reused"
+        lyrics = aligned
+        lyrics_lane_path = paths["aligned"]
     elif mode == "sections":
         # Scene changes may use already-established local lyric evidence, but
         # never trigger lyric generation and never inherit a semantic lane.
@@ -1364,6 +1456,7 @@ def run_assist(
         )
         if whisper_lane is not None:
             source_sha = sha256_file(paths["lyrics"])
+            timing_source_path: Path | None = None
             lyrics = _cache_matches(
                 paths["sync"], LYRIC_SYNC_VERSION, audio_sha,
                 accept=lambda value: _sync_cache_accepts(
@@ -1371,7 +1464,7 @@ def run_assist(
                 ),
             )
             if lyrics is not None:
-                lyrics_lane_path = paths["sync"]
+                timing_source_path = paths["sync"]
             else:
                 lyrics = _cache_matches(
                     paths["review"], LYRIC_REVIEW_VERSION, audio_sha,
@@ -1380,7 +1473,18 @@ def run_assist(
                     ),
                 )
                 if lyrics is not None:
-                    lyrics_lane_path = paths["review"]
+                    timing_source_path = paths["review"]
+            if lyrics is not None and timing_source_path is not None:
+                aligned = _cache_matches(
+                    paths["aligned"], lyrics["schema_version"], audio_sha,
+                    accept=lambda value: _alignment_cache_accepts(
+                        value, source_sha256=sha256_file(timing_source_path)),
+                )
+                if aligned is not None:
+                    lyrics = aligned
+                    lyrics_lane_path = paths["aligned"]
+                else:
+                    lyrics_lane_path = timing_source_path
 
     semantic: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
@@ -1480,7 +1584,8 @@ def main(argv: list[str] | None = None) -> int:
     assist.add_argument("--mode", choices=("lyrics", "sections", "mimo", "all"), required=True)
     assist.add_argument("--bridge", type=Path); assist.add_argument("--whisper-bin", type=Path)
     assist.add_argument("--whisper-model", type=Path); assist.add_argument("--codex-bin", default="codex")
-    assist.add_argument("--codex-model"); assist.add_argument("--semantic-cache", type=Path)
+    assist.add_argument("--codex-model"); assist.add_argument("--align-python", type=Path)
+    assist.add_argument("--semantic-cache", type=Path)
     assist.add_argument("--lyrics-file", type=Path)
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
     assist.add_argument("--new-process-group", action="store_true", help=argparse.SUPPRESS)
@@ -1523,7 +1628,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.audio, args.output_dir, audio_duration=args.duration, mode=args.mode,
                 bridge_path=args.bridge, whisper_bin=args.whisper_bin,
                 whisper_model=args.whisper_model, codex_bin=args.codex_bin,
-                codex_model=args.codex_model, semantic_cache=args.semantic_cache,
+                codex_model=args.codex_model, align_python=args.align_python,
+                semantic_cache=args.semantic_cache,
                 lyrics_file=args.lyrics_file,
                 zdr=args.zdr, external_timeout=args.timeout, dry_run=args.dry_run,
             )

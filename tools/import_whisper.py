@@ -73,11 +73,23 @@ def _timed_text(
     }
 
 
-_SPECIAL_TOKEN = re.compile(r"^\[_.*_\]$")
+# whisper.cpp emits controls such as `[_BEG_]` *and* timestamp tokens such as
+# `[_TT_700]`. The previous pattern required an underscore immediately before
+# `]`, so every timestamp token was joined onto the segment's final word and
+# stretched that word to the coarse segment boundary.
+_SPECIAL_TOKEN = re.compile(r"^\[_.*\]$")
+# whisper.cpp reports experimental DTW time as one centisecond-resolution
+# acoustic moment per decoded token, not as an interval. A small symmetric pad
+# turns the first/last moments of a BPE word into a usable evidence window when
+# a caller explicitly opts into DTW. The normal singing path uses heuristic
+# token *onsets*: its interval ends routinely stretch through long instrumental
+# gaps, while onsets stayed close to the audible words in the real-track audit.
+_DTW_TOKEN_PAD_SECONDS = 0.10
+_TOKEN_TAIL_MAX_SECONDS = 0.50
 
 
 def _aggregate_remotion_tokens(
-    tokens: Any, audio_duration: float, field: str
+    tokens: Any, audio_duration: float, field: str, *, prefer_dtw: bool = False,
 ) -> list[dict[str, Any]]:
     """Join whisper.cpp BPE tokens into display words.
 
@@ -97,9 +109,29 @@ def _aggregate_remotion_tokens(
         token_text = text(token_item.get("text", ""), f"{token_field}.text")
         if not token_text or _SPECIAL_TOKEN.fullmatch(token_text):
             continue
-        normalized = _timed_text(token_item, audio_duration, token_field)
-        if normalized is None:
+        raw_start, raw_end = _seconds(token_item, token_field)
+        start = clamp(raw_start, 0, audio_duration, f"{token_field}.start")
+        end = clamp(raw_end, 0, audio_duration, f"{token_field}.end")
+        # Token heuristics sometimes report an end before the onset (especially
+        # at a segment boundary). The onset and token text remain useful; give
+        # that token a minimal provisional interval instead of erasing it.
+        if end <= start:
+            end = min(audio_duration, start + 0.01)
+        if end <= start:
             continue
+        normalized = {
+            "start_seconds": start,
+            "end_seconds": end,
+            "text": token_text.strip(),
+            "confidence": _confidence(token_item),
+            "corrected": False,
+        }
+        raw_dtw = token_item.get("t_dtw")
+        if (isinstance(raw_dtw, (int, float)) and not isinstance(raw_dtw, bool)
+                and raw_dtw >= 0):
+            normalized["_dtw_center_seconds"] = clamp(
+                raw_dtw / 100.0, 0.0, audio_duration,
+                f"{token_field}.t_dtw")
         starts_word = bool(str(token_item.get("text", ""))[:1].isspace())
         if current and starts_word:
             groups.append(current)
@@ -112,9 +144,19 @@ def _aggregate_remotion_tokens(
     for group in groups:
         confidences = [part["confidence"] for part in group if part["confidence"] is not None]
         confidence = sum(confidences) / len(confidences) if confidences else None
+        centers = [part["_dtw_center_seconds"] for part in group
+                   if "_dtw_center_seconds" in part]
+        if prefer_dtw and centers:
+            start = max(0.0, min(centers) - _DTW_TOKEN_PAD_SECONDS)
+            end = min(audio_duration, max(centers) + _DTW_TOKEN_PAD_SECONDS)
+        else:
+            onsets = [part["start_seconds"] for part in group]
+            start = min(onsets)
+            raw_end = max(part["end_seconds"] for part in group)
+            end = min(raw_end, max(onsets) + _TOKEN_TAIL_MAX_SECONDS)
         combined = {
-            "start_seconds": group[0]["start_seconds"],
-            "end_seconds": group[-1]["end_seconds"],
+            "start_seconds": start,
+            "end_seconds": end,
             "text": "".join(part["text"] for part in group).strip(),
             "confidence": confidence,
             "corrected": False,
@@ -131,6 +173,7 @@ def normalize_whisper(
     audio_duration: float,
     model: str = "unknown",
     corrected_lines: list[dict[str, Any]] | None = None,
+    prefer_dtw: bool = False,
 ) -> dict[str, Any]:
     audio_duration = duration(audio_duration)
     audio_sha256 = audio_hash(audio_sha256)
@@ -188,7 +231,10 @@ def normalize_whisper(
         if not isinstance(segment, dict):
             raise AnalysisValidationError(f"{field} must be an object")
         words.extend(
-            _aggregate_remotion_tokens(segment.get("tokens", []), audio_duration, f"{field}.tokens")
+            _aggregate_remotion_tokens(
+                segment.get("tokens", []), audio_duration, f"{field}.tokens",
+                prefer_dtw=prefer_dtw,
+            )
         )
 
     if corrected_lines is not None:
@@ -234,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--duration", required=True, type=float)
     parser.add_argument("--model", default="unknown")
     parser.add_argument("--corrected-lines", type=Path)
+    parser.add_argument("--prefer-dtw", action="store_true")
     args = parser.parse_args(argv)
     try:
         corrected = read_json(args.corrected_lines) if args.corrected_lines else None
@@ -243,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
             audio_duration=args.duration,
             model=args.model,
             corrected_lines=corrected,
+            prefer_dtw=args.prefer_dtw,
         )
         atomic_write_json(args.output, normalized)
     except (OSError, ValueError) as error:

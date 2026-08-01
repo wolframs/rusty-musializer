@@ -18,6 +18,7 @@ pub const DISTRIBUTION_SUPPORT_FILES: &[&str] = &[
     "tools/analysis_io.py",
     "tools/analyze_audio.py",
     "tools/external_analysis.py",
+    "tools/force_align_lyrics.py",
     "tools/google_fonts.py",
     "tools/import_whisper.py",
     "tools/lyric_align.py",

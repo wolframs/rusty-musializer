@@ -36,7 +36,7 @@ from typing import Any, Sequence
 from analysis_io import AnalysisValidationError, duration
 
 LYRIC_SYNC_VERSION = "musializer.lyric-sync/v1"
-ALIGNER_VERSION = "1"
+ALIGNER_VERSION = "4"
 
 # Hard input bounds. A full-length song is a few hundred lines and well under
 # a thousand words; these caps keep the O(ref * hyp) alignment matrix small
@@ -59,6 +59,18 @@ LOOP_MINIMUM_SECONDS = 12.0
 # three absolute matches) before its window is trusted.
 DIRECT_MATCH_MINIMUM_RATIO = 1.0 / 3.0
 DIRECT_MATCH_STRONG_HITS = 3
+# A line's matching words must form one acoustic phrase. Whisper can emit a
+# correct word during an instrumental intro and then recognize the actual line
+# twenty seconds later; taking the min/max of every match turned that one
+# outlier into a twenty-second caption. A pause longer than this starts a new
+# candidate cluster, and only the best-supported cluster times the line.
+DIRECT_MATCH_MAX_WORD_GAP_SECONDS = 5.0
+# When a global match is discarded as a remote outlier, a locally repeated
+# occurrence of that same token can replace it only this close to the retained
+# phrase. This recovers a real line-initial word without reopening the global
+# repeated-chorus ambiguity.
+DIRECT_MATCH_RECOVERY_MARGIN_SECONDS = 2.0
+DIRECT_MATCH_NEARBY_WORD_MARGIN_SECONDS = 0.75
 # Below this coverage a timed line keeps its window but is flagged uncertain.
 CONFIDENT_MATCH_RATIO = 0.6
 MINIMUM_CUE_SECONDS = 0.5
@@ -106,7 +118,8 @@ _DELIVERY_MARKERS = frozenset({
     "layered", "pitched", "chipper", "bouncy", "relieved", "soft", "softly",
     "quiet", "quieter", "sweet", "cute", "beat", "pause", "silence",
     "instrumental", "glitching", "malfunctioning", "adorable", "peppy",
-    "unrepentant", "excitement", "energy",
+    "unrepentant", "excitement", "energy", "intro", "verse", "prechorus",
+    "chorus", "refrain", "bridge", "breakdown", "interlude", "outro", "coda",
 })
 
 
@@ -337,6 +350,31 @@ def _evidence_words(document: dict[str, Any]) -> list[dict[str, Any]]:
     return lines if isinstance(lines, list) else []
 
 
+def _coherent_match_cluster(
+    windows: Sequence[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Return the densest time-coherent cluster of matches for one line."""
+    if not windows:
+        return []
+    ordered = sorted(windows)
+    clusters: list[list[tuple[float, float]]] = [[ordered[0]]]
+    for window in ordered[1:]:
+        if window[0] - clusters[-1][-1][1] > DIRECT_MATCH_MAX_WORD_GAP_SECONDS:
+            clusters.append([])
+        clusters[-1].append(window)
+
+    # More corroborating words wins. For equal support, prefer the tighter
+    # phrase; stable input order then makes an exact tie choose the earlier one.
+    return min(
+        clusters,
+        key=lambda cluster: (
+            -len(cluster),
+            cluster[-1][1] - cluster[0][0],
+            cluster[0][0],
+        ),
+    )
+
+
 def sync_lyrics(
     reference_text: str,
     whisper_document: dict[str, Any],
@@ -386,13 +424,97 @@ def sync_lyrics(
 
     starts: list[float | None] = [None] * len(timeable)
     ends: list[float | None] = [None] * len(timeable)
-    hits = [0] * len(timeable)
+    matches: list[list[tuple[int, int]]] = [[] for _ in timeable]
     for ref_index, hyp_index in pairs:
         owner = token_owner[ref_index]
-        start, end = evidence_windows[hyp_index]
-        starts[owner] = start if starts[owner] is None else min(starts[owner], start)
-        ends[owner] = end if ends[owner] is None else max(ends[owner], end)
-        hits[owner] += 1
+        matches[owner].append((ref_index, hyp_index))
+
+    hits = [0] * len(timeable)
+    discarded_outlier_tokens = 0
+    recovered_outlier_tokens = 0
+    recovered_nearby_tokens = 0
+    globally_used_evidence = {hyp_index for _, hyp_index in pairs}
+    for position, match_indices in enumerate(matches):
+        windows = [evidence_windows[hyp_index]
+                   for _, hyp_index in match_indices]
+        cluster = _coherent_match_cluster(windows)
+        if not cluster:
+            continue
+        remaining_cluster = list(cluster)
+        discarded: list[tuple[int, int]] = []
+        for ref_index, hyp_index in match_indices:
+            window = evidence_windows[hyp_index]
+            if window in remaining_cluster:
+                remaining_cluster.remove(window)
+            else:
+                discarded.append((ref_index, hyp_index))
+
+        # Global alignment can spend a reference token on a remote false
+        # occurrence. After that match is rejected, recover only an otherwise
+        # unused occurrence of the same token immediately beside the retained
+        # phrase. This is deliberately local; searching the whole song again
+        # would recreate the repeated-chorus ambiguity the global pass solved.
+        cluster_start = min(start for start, _ in cluster)
+        cluster_end = max(end for _, end in cluster)
+        recovered_for_line = 0
+        for ref_index, _ in discarded:
+            ref_token = reference_tokens[ref_index]
+            candidates: list[tuple[float, float, int]] = []
+            for hyp_index, (hyp_token, window) in enumerate(
+                zip(evidence_tokens, evidence_windows)
+            ):
+                if hyp_index in globally_used_evidence:
+                    continue
+                start, end = window
+                if (end < cluster_start - DIRECT_MATCH_RECOVERY_MARGIN_SECONDS or
+                        start > cluster_end + DIRECT_MATCH_RECOVERY_MARGIN_SECONDS):
+                    continue
+                similarity = token_similarity(ref_token, hyp_token)
+                if similarity <= 0.0:
+                    continue
+                distance = (cluster_start - end if end < cluster_start else
+                            start - cluster_end if start > cluster_end else 0.0)
+                candidates.append((-similarity, distance, hyp_index))
+            if not candidates:
+                continue
+            _, _, recovered_index = min(candidates)
+            globally_used_evidence.add(recovered_index)
+            cluster.append(evidence_windows[recovered_index])
+            recovered_outlier_tokens += 1
+            recovered_for_line += 1
+
+        discarded_outlier_tokens += len(discarded) - recovered_for_line
+
+        # A substituted or badly recognized boundary word may have no lexical
+        # similarity at all (authored "skys", heard "stars"). If an otherwise
+        # unused evidence word directly touches an incomplete matched phrase,
+        # include its acoustic window. Words already claimed by any aligned
+        # line are excluded, so this cannot steal the last word of a neighbor.
+        missing_slots = max(0, len(timeable[position]["tokens"]) - len(cluster))
+        for _ in range(missing_slots):
+            cluster_start = min(start for start, _ in cluster)
+            cluster_end = max(end for _, end in cluster)
+            nearby: list[tuple[float, int]] = []
+            for hyp_index, (start, end) in enumerate(evidence_windows):
+                if hyp_index in globally_used_evidence:
+                    continue
+                if end <= cluster_start:
+                    gap = cluster_start - end
+                elif start >= cluster_end:
+                    gap = start - cluster_end
+                else:
+                    gap = 0.0
+                if gap <= DIRECT_MATCH_NEARBY_WORD_MARGIN_SECONDS:
+                    nearby.append((gap, hyp_index))
+            if not nearby:
+                break
+            _, recovered_index = min(nearby)
+            globally_used_evidence.add(recovered_index)
+            cluster.append(evidence_windows[recovered_index])
+            recovered_nearby_tokens += 1
+        starts[position] = min(start for start, _ in cluster)
+        ends[position] = max(end for _, end in cluster)
+        hits[position] = len(cluster)
 
     # Demote weak direct matches to interpolation candidates.
     for position, line in enumerate(timeable):
@@ -474,7 +596,10 @@ def sync_lyrics(
             "matched_lines": len(matched_lines),
             "estimated_lines": len(estimated),
             "unmatched_lines": len(unmatched_lines),
-            "matched_tokens": len(pairs),
+            "matched_tokens": sum(hits),
+            "discarded_outlier_tokens": discarded_outlier_tokens,
+            "recovered_outlier_tokens": recovered_outlier_tokens,
+            "recovered_nearby_tokens": recovered_nearby_tokens,
             "reference_tokens": len(reference_tokens),
         },
     }
@@ -626,7 +751,13 @@ def _interpolate_gaps(
             crosses_garbage = any(
                 start_flagged < next_start and end_flagged > previous_end
                 for start_flagged, end_flagged in unreliable)
-            if 0.0 < gap <= MAX_INTERPOLATION_GAP_SECONDS and not crosses_garbage:
+            # Every interpolated cue must fit before MINIMUM_CUE_SECONDS is
+            # enforced below. Without this capacity check, four missing chorus
+            # lines squeezed into a 0.5 s gap became four overlapping 0.5 s
+            # captions and looked like confident timing rather than a hole.
+            enough_room = gap >= len(run) * MINIMUM_CUE_SECONDS
+            if (0.0 < gap <= MAX_INTERPOLATION_GAP_SECONDS and enough_room
+                    and not crosses_garbage):
                 weights = [max(1, len(timeable[index]["tokens"]))
                            for index in run]
                 total_weight = sum(weights)

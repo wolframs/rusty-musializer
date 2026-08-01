@@ -84,6 +84,8 @@ Whisper caches include the adapter version, model file hash, language, timing
 model, and measured duration; lyric sync caches include the Whisper evidence
 hash, the reference text hash, and the aligner version; Codex reviews include
 the Whisper source hash, selected model, and repository prompt version/hash;
+forced-alignment caches include the selected sync/review lane hash, MMS model
+identity, alignment algorithm version, and timing policy;
 MiMo caches include its model, prompt, output schema, audio metadata, routing,
 fallback, and ZDR request settings. A mismatch regenerates that stage and its
 downstream products while leaving still-valid upstream evidence reusable.
@@ -100,12 +102,29 @@ The order was measured on sung material: turbo recovered strictly more lyric
 lines than full large-v3 (which suppressed loud ensemble passages) with no
 hallucination loops, at roughly a seventh of the CPU cost.
 Whisper receives a temporary FFmpeg-decoded 16 kHz mono WAV, requests full
-JSON plus model-aligned token timing using the exact whisper.cpp `--dtw`
-preset name (quantization suffixes are stripped; models without a known
-preset run without DTW rather than failing), runs with one worker thread per
-host CPU, leaves GPU/flash attention enabled by the configured whisper.cpp
-build, and defaults to a one-hour timeout. The umbrella timeout is at least
-ten minutes and defaults to 40 minutes so MiMo's bounded retries can finish.
+JSON, runs with one worker thread per host CPU, keeps GPU/flash attention
+enabled, and defaults to a one-hour timeout. Its token onsets are retained as
+provisional text/order evidence, with obviously stretched interval ends capped.
+They are **not published as final cue boundaries**: real produced-song audits
+found first-word onsets commonly 0.5-1.1 seconds early and occasionally 3-5
+seconds early. After authored sync or Codex text review, the CUDA MMS_FA CTC
+acoustic model teacher-forces the decided display text in one bounded request
+per cue and writes `lyrics.aligned.json`, including word-level acoustic evidence.
+It never changes authored wording or order; weak or implausibly displaced
+alignments retain their provisional timing and are marked uncertain. A
+no-reference phrase is omitted only when weak Whisper and MMS evidence agree, or
+when two identical candidates claim the same acoustic span. Full-mix and
+Demucs-vocal-stem controls normally agreed within 0.02 seconds; the recorded
+outliers were repeated phrases and were adjudicated against the independent
+metadata/no-metadata path rather than averaged away. Configure its Python with
+`MUSIALIZER_ALIGN_PYTHON` or install it at
+`~/.local/share/musializer/lyrics-align/.venv/bin/python`; the model uses the
+normal Torch cache. The lower-level `whisper --dtw-model` option remains
+diagnostic-only: it disables flash attention as whisper.cpp requires and
+imports its centisecond `t_dtw` moments, but real repeated-song tests made that
+decoding path hallucinate loops and collapse many tokens onto the same moment.
+The umbrella timeout is at least ten minutes and defaults to 40 minutes so the
+local alignment and MiMo's bounded retries can finish.
 
 `--dry-run` performs no child process or network call and emits a credential-
 free action description. Child processes are argv arrays without a shell.

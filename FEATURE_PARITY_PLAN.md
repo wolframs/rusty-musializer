@@ -474,6 +474,15 @@ fails as its negative control.
 
 ### E2 — make Assist runnable
 
+Lyrics-timing evidence added 2026-08-01: the local `lyrics` path now follows
+Whisper/reference review with CUDA MMS forced alignment and publishes only the
+refined lane. Two embedded-metadata tracks and audio-identical tag-stripped
+copies complete end to end, including native bridge parsing, independent
+Demucs-vocal controls, remote phrase-count audits, and targeted negative
+controls. The full methodology and metrics are in
+`docs/LYRICS_TIMING_INVESTIGATION.md`. This closes the timing investigation but
+does not close E2's remaining discovery, lifecycle, staging, or UI work.
+
 - [ ] Verify all local/offline Assist modes without network credentials.
 - [ ] Verify explicit Codex/OpenRouter paths only when opted in; never copy
       credentials into fixtures, logs or the repository.
