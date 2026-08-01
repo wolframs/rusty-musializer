@@ -237,15 +237,17 @@ struct UiFontRef<'a> {
 /// so preview/export determinism does not depend on it.
 pub struct UiFonts {
     faces: Vec<(i32, Face)>,
+    scale: f32,
     used_mask: Cell<u32>,
     non_native_requests: Cell<u64>,
 }
 
 impl UiFonts {
-    fn new(faces: Vec<(i32, Face)>) -> Self {
+    fn new(faces: Vec<(i32, Face)>, scale: f32) -> Self {
         debug_assert_eq!(faces.len(), UI_FONT_SIZES.len());
         Self {
             faces,
+            scale,
             used_mask: Cell::new(0),
             non_native_requests: Cell::new(0),
         }
@@ -257,6 +259,12 @@ impl UiFonts {
     #[must_use]
     pub fn native_size(&self, requested: f32) -> f32 {
         native_ui_size(requested) as f32
+    }
+
+    /// Physical pixels per logical UI unit for this atlas bank.
+    #[must_use]
+    pub fn scale(&self) -> f32 {
+        self.scale
     }
 
     /// Resolves a requested design size to its native atlas and records whether
@@ -283,9 +291,8 @@ impl UiFonts {
     #[must_use]
     pub fn measure_text(&self, text: &str, requested: f32, spacing: f32) -> Vector2 {
         let resolved = self.resolve(requested);
-        resolved
-            .face
-            .measure_text(text, resolved.size, spacing.round())
+        let spacing = snap_logical(spacing, self.scale);
+        resolved.face.measure_text(text, resolved.size, spacing)
     }
 
     /// Draws native-size UI text on integer pixel origins.
@@ -299,12 +306,16 @@ impl UiFonts {
         tint: Color,
     ) {
         let resolved = self.resolve(requested);
+        let position = Vector2::new(
+            snap_logical(position.x, self.scale),
+            snap_logical(position.y, self.scale),
+        );
         d.draw_text_ex(
             resolved.face,
             text,
-            Vector2::new(position.x.round(), position.y.round()),
+            position,
             resolved.size,
-            spacing.round(),
+            snap_logical(spacing, self.scale),
             tint,
         );
     }
@@ -334,10 +345,15 @@ impl UiFonts {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "native-sizes=[{used}] non-native-requests={}",
+            "scale={:.2} native-sizes=[{used}] non-native-requests={}",
+            self.scale,
             self.non_native_requests.get()
         )
     }
+}
+
+fn snap_logical(value: f32, scale: f32) -> f32 {
+    (value * scale).round() / scale
 }
 
 /// Pure size policy shared by the GPU bank and its tests.
@@ -390,6 +406,11 @@ impl Faces {
     /// Never fails: a missing face is a degraded interface, not a reason to
     /// refuse to start. `load_assets` in the C has the same shape.
     pub fn load(rl: &mut RaylibHandle, thread: &RaylibThread) -> Self {
+        Self::load_with_ui_scale(rl, thread, 1.0)
+    }
+
+    /// Load the shell bank for `ui_scale` physical pixels per logical unit.
+    pub fn load_with_ui_scale(rl: &mut RaylibHandle, thread: &RaylibThread, ui_scale: f32) -> Self {
         let curated = caption_layout::font_codepoints().unwrap_or_default();
 
         // `ui_font_codepoint` (`plug.c:429-436`) applied to the curated set, which
@@ -406,33 +427,7 @@ impl Faces {
         let caption_codepoints: Vec<i32> =
             curated.iter().copied().map(|point| point as i32).collect();
 
-        let ui = UiFonts::new(
-            UI_FONT_SIZES
-                .iter()
-                .copied()
-                .map(|size| {
-                    let face = rasterize_at(
-                        rl,
-                        thread,
-                        ".otf",
-                        SPACE_GROTESK,
-                        &ui_codepoints,
-                        size,
-                        false,
-                    )
-                    .map_or_else(
-                        || {
-                            eprintln!(
-                                "FONT: Space Grotesk UI face unavailable at {size}px; using raylib default"
-                            );
-                            default_face()
-                        },
-                        Face::Loaded,
-                    );
-                    (size, face)
-                })
-                .collect(),
-        );
+        let ui = load_ui_fonts(rl, thread, &ui_codepoints, ui_scale);
         let caption = rasterize(rl, thread, ".ttf", ALEGREYA, &caption_codepoints).map_or_else(
             || {
                 eprintln!("FONT: Alegreya caption face unavailable; using raylib default");
@@ -482,6 +477,22 @@ impl Faces {
         }
     }
 
+    /// Rebuild only the shell bank when a window crosses a scale rung. Caption
+    /// and imported faces are project assets and remain untouched.
+    pub fn set_ui_scale(&mut self, rl: &mut RaylibHandle, thread: &RaylibThread, ui_scale: f32) {
+        if (self.ui.scale() - ui_scale).abs() < 0.001 {
+            return;
+        }
+        let curated = caption_layout::font_codepoints().unwrap_or_default();
+        let codepoints: Vec<i32> = curated
+            .iter()
+            .copied()
+            .filter(|&codepoint| ui_codepoint(codepoint))
+            .map(|codepoint| codepoint as i32)
+            .collect();
+        self.ui = load_ui_fonts(rl, thread, &codepoints, ui_scale);
+    }
+
     /// Every built-in face is the fallback. The constructor a headless test can
     /// build without a GPU — and the state the application ends up in when the
     /// atlas build fails, so it is worth being able to name.
@@ -494,6 +505,7 @@ impl Faces {
                     .copied()
                     .map(|size| (size, default_face()))
                     .collect(),
+                1.0,
             ),
             caption: default_face(),
             caption_alt: default_face(),
@@ -680,6 +692,49 @@ impl Faces {
     }
 }
 
+fn load_ui_fonts(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    codepoints: &[i32],
+    requested_scale: f32,
+) -> UiFonts {
+    let scale = if requested_scale.is_finite() {
+        requested_scale.clamp(1.0, 2.0)
+    } else {
+        1.0
+    };
+    UiFonts::new(
+        UI_FONT_SIZES
+            .iter()
+            .copied()
+            .map(|logical_size| {
+                let pixel_size = (logical_size as f32 * scale).round() as i32;
+                let face = rasterize_at(
+                    rl,
+                    thread,
+                    ".otf",
+                    SPACE_GROTESK,
+                    codepoints,
+                    pixel_size,
+                    false,
+                )
+                .map_or_else(
+                    || {
+                        eprintln!(
+                            "FONT: Space Grotesk UI face unavailable at {pixel_size}px \
+                             ({logical_size}px logical, {scale:.2}x); using raylib default"
+                        );
+                        default_face()
+                    },
+                    Face::Loaded,
+                );
+                (logical_size, face)
+            })
+            .collect(),
+        scale,
+    )
+}
+
 /// `ui_font_codepoint` (`../musializer/src/plug.c:429-436`): the codepoint ranges
 /// the interface itself draws.
 ///
@@ -849,7 +904,7 @@ mod tests {
         let _ = faces.ui.resolve(18.72);
         assert_eq!(
             faces.ui.usage_report(),
-            "native-sizes=[15,18] non-native-requests=1"
+            "scale=1.00 native-sizes=[15,18] non-native-requests=1"
         );
     }
 

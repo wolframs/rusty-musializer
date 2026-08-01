@@ -61,6 +61,35 @@ The following are already delivered and must stay green:
 The remaining work is concentrated at integration boundaries and missing product
 entry points. A green pure-module harness does not prove those boundaries.
 
+## Operator-requested UI scale and workspace resizing
+
+Added 2026-08-01. This is a product extension rather than a parity gap: scale
+1.0 and every automatic split must retain the frozen layout, while larger UI
+scales and user-sized splits are Rust-side capabilities.
+
+- [x] Introduce an explicit logical UI coordinate space, stepped UI scale and
+      deterministic command-line/probe override. Keep scene/export pixels
+      independent from shell scale.
+- [x] Rasterize Space Grotesk at the physical sizes each scale needs while
+      measuring and laying out in logical units; do not magnify the 1x atlases.
+- [x] Map pointer and scissor coordinates through the same scale boundary as
+      drawing, and report the effective scale in headless evidence.
+- [x] Add draggable sidebar, Tune-inspector and bottom-panel splitters. Preserve
+      the existing content-aware layout as Auto, clamp every user split against
+      the preview and panel floors, and reset a split by double-clicking it.
+- [x] Persist scale and split preferences per user, outside `.musi`; a corrupt
+      preference file must survive unread and must not be overwritten.
+- [x] Keep all existing 1x gates green and add silent headless captures at 125%,
+      150% and a 2560x1440 window, including font, hit-target, clipping and
+      splitter evidence.
+
+Completed 2026-08-01. `tools/verify.sh` is 20 passed / 0 failed. The private-Xvfb
+gate covers 100%, 125%, explicit 150%, 1440p Auto selecting 150%, custom logical
+splits, and a scaled tooltip hit target; the three new layout frames were also
+inspected at original resolution. Every UI font report used a scale-matched
+native atlas with zero non-native requests. The scene and export paths remain in
+framebuffer pixels outside the shell camera.
+
 ## Ordered completion map
 
 Work in order. P0 establishes the shared render path on which later assertions

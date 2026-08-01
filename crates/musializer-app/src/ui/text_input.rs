@@ -33,7 +33,7 @@
 use musializer_core::ui::text_edit::{Motion, Select, TextEdit, TextEditError, TextRules};
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::UiFonts;
-use raylib::prelude::{RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
+use raylib::prelude::{RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::theme::color;
 use super::widgets;
@@ -154,7 +154,8 @@ impl TextField {
             self.focused = false;
             self.dragging = false;
         } else {
-            let mouse = d.get_mouse_position();
+            let scale = super::scale::UiScale::new(font.scale()).unwrap_or_default();
+            let mouse = scale.mouse(d);
             let inside = boundary.contains_point(mouse.x, mouse.y);
             // The C sets focus from every press, not only from one inside the
             // box, which is what makes clicking elsewhere defocus
@@ -232,12 +233,8 @@ impl TextField {
         if inner.width <= 0.0 || inner.height <= 0.0 {
             return event;
         }
-        let mut clip = d.begin_scissor_mode(
-            inner.x as i32,
-            inner.y as i32,
-            inner.width as i32,
-            inner.height as i32,
-        );
+        let scale = super::scale::UiScale::new(font.scale()).unwrap_or_default();
+        let mut clip = widgets::begin_scissor(d, inner, scale);
         if self.edit.is_empty() && !placeholder.is_empty() {
             widgets::draw_text(
                 &mut clip,

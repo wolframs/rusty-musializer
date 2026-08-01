@@ -229,9 +229,36 @@ fn run() -> Result<std::process::ExitCode, String> {
         audio.set_master_volume(if muted { 0.0 } else { volume.clamp(0.0, 1.0) });
     };
 
+    let ui_preferences_path = ui::preferences::default_path();
+    let (ui_preferences, mut ui_preferences_editable, ui_preferences_warning) =
+        match ui_preferences_path.as_deref() {
+            None => (
+                ui::preferences::UiPreferences::default(),
+                false,
+                Some("No per-user configuration directory could be derived.".to_string()),
+            ),
+            Some(path) => match ui::preferences::load(path) {
+                Ok(preferences) => (preferences.unwrap_or_default(), true, None),
+                Err(error) => (
+                    ui::preferences::UiPreferences::default(),
+                    false,
+                    Some(format!(
+                        "{}: {error}. UI changes remain session-only so the file is not overwritten.",
+                        path.display()
+                    )),
+                ),
+            },
+        };
+    let physical_window = (rl.get_screen_width() as f32, rl.get_screen_height() as f32);
+    let mut ui_scale = ui::scale::effective_scale(
+        options.ui_scale.unwrap_or(ui_preferences.scale),
+        physical_window,
+        rl.get_window_scale_dpi(),
+    );
+
     // After the window, because the atlas is a GPU upload. Never fails: a face
     // that will not rasterize falls back to raylib's default and says so.
-    let mut fonts = Faces::load(&mut rl, &thread);
+    let mut fonts = Faces::load_with_ui_scale(&mut rl, &thread, ui_scale.value());
     let mut caption_font_request = None;
 
     let mut renderer = scene_host::SceneRenderer::load(&mut rl, &thread)?;
@@ -258,8 +285,16 @@ fn run() -> Result<std::process::ExitCode, String> {
         presets_editable: false,
         preset_selection: 0,
         preset_delete_armed: false,
-        shell: Shell::new(),
+        shell: Shell::with_preferences(ui_preferences),
     };
+    app.shell.set_ui_scale_override(options.ui_scale);
+    if let Some(detail) = ui_preferences_warning {
+        app.shell.notify(
+            Severity::Warning,
+            "UI preferences are session-only",
+            &detail,
+        );
+    }
 
     // The Assist supervisor. `find_assist_helper` probes relative to the
     // executable's directory, which is raylib's `GetApplicationDirectory()`.
@@ -562,6 +597,15 @@ fn run() -> Result<std::process::ExitCode, String> {
             rl.set_window_position(0, 0);
             app.shell.panel = probe.panel;
             app.shell.fullscreen = probe.fullscreen;
+            if let Some(width) = probe.sidebar_width {
+                app.shell.ui_preferences.sidebar_width = Some(width);
+            }
+            if let Some(width) = probe.inspector_width {
+                app.shell.ui_preferences.inspector_width = Some(width);
+            }
+            if let Some(height) = probe.timeline_height {
+                app.shell.ui_preferences.timeline_height = Some(height);
+            }
             app.shell.widgets.tooltip_delay = 0.0;
             hover_at = probe.hover;
             if probe.panel == cli::UiPanel::Tune {
@@ -700,6 +744,16 @@ fn run() -> Result<std::process::ExitCode, String> {
     // `confirm_close`.
     let mut close_warned = false;
     while running {
+        let physical_window = (rl.get_screen_width() as f32, rl.get_screen_height() as f32);
+        let resolved_scale = ui::scale::effective_scale(
+            app.shell.ui_scale_preference(),
+            physical_window,
+            rl.get_window_scale_dpi(),
+        );
+        if resolved_scale != ui_scale {
+            fonts.set_ui_scale(&mut rl, &thread, resolved_scale.value());
+            ui_scale = resolved_scale;
+        }
         sync_caption_face(
             &mut rl,
             &thread,
@@ -869,7 +923,8 @@ fn run() -> Result<std::process::ExitCode, String> {
                 });
 
         let shell_input = ShellInput {
-            window: (rl.get_screen_width() as f32, rl.get_screen_height() as f32),
+            window: ui_scale.logical_size(physical_window),
+            ui_scale,
             fonts: &fonts,
             scene: app.scene.id(),
             settings: &base,
@@ -898,7 +953,8 @@ fn run() -> Result<std::process::ExitCode, String> {
         if app.workspace.current().is_none() {
             let mut d = rl.begin_drawing(&thread);
             d.clear_background(ui::theme::color::ui_surface());
-            commands = app.shell.draw_welcome(&mut d, &shell_input);
+            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+            commands = app.shell.draw_welcome(&mut ui_draw, &shell_input);
         } else {
             let layout = app.shell.layout(&shell_input);
 
@@ -915,7 +971,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             // rectangle so a scene that draws past its boundary cannot paint over
             // a panel (`plug.c:7712-7716`).
             if !layout.preview.is_empty() {
-                let preview = ui::widgets::rectangle(layout.preview);
+                let preview = ui::widgets::rectangle(ui_scale.physical_rect(layout.preview));
                 let mut scissor = d.begin_scissor_mode(
                     preview.x as i32,
                     preview.y as i32,
@@ -933,7 +989,8 @@ fn run() -> Result<std::process::ExitCode, String> {
                 );
             }
 
-            commands = app.shell.draw(&mut d, &layout, &shell_input);
+            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+            commands = app.shell.draw(&mut ui_draw, &layout, &shell_input);
 
             // A one-line readout, so a headless capture carries its own evidence
             // rather than needing a separate log to be trusted.
@@ -982,7 +1039,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                 // one that produced wrong ones.
             } else if layout.preview.is_empty() {
                 ui::widgets::draw_text(
-                    &mut d,
+                    &mut ui_draw,
                     fonts.ui(),
                     &readout,
                     12.0,
@@ -992,12 +1049,8 @@ fn run() -> Result<std::process::ExitCode, String> {
                 );
             } else {
                 let preview = ui::widgets::rectangle(layout.preview);
-                let mut scissor = d.begin_scissor_mode(
-                    preview.x as i32,
-                    preview.y as i32,
-                    preview.width as i32,
-                    preview.height as i32,
-                );
+                let mut scissor =
+                    ui::widgets::begin_scissor(&mut ui_draw, layout.preview, ui_scale);
                 ui::widgets::draw_text(
                     &mut scissor,
                     fonts.ui(),
@@ -1051,6 +1104,23 @@ fn run() -> Result<std::process::ExitCode, String> {
                 }
                 ShellCommand::SetFullscreen(on) => {
                     set_window_fullscreen(&mut rl, on, options.probe_frames.is_some());
+                }
+                ShellCommand::SaveUiPreferences(preferences) => {
+                    if ui_preferences_editable {
+                        if let Some(path) = ui_preferences_path.as_deref() {
+                            if let Err(error) = ui::preferences::save(path, preferences) {
+                                ui_preferences_editable = false;
+                                app.shell.notify(
+                                    Severity::Warning,
+                                    "UI preferences could not be saved",
+                                    &format!(
+                                        "{}: {error}. Further changes remain session-only.",
+                                        path.display()
+                                    ),
+                                );
+                            }
+                        }
+                    }
                 }
                 ShellCommand::TogglePlay => {
                     if let Some(music) = music.as_ref() {
@@ -2548,6 +2618,10 @@ impl Default for Report {
     }
 }
 
+fn format_optional_ui_size(value: Option<f32>) -> String {
+    value.map_or_else(|| "auto".to_string(), |value| format!("{value:.0}"))
+}
+
 impl Report {
     fn observe_peak_band(&mut self, band: usize) {
         self.peak_band_last = band;
@@ -2572,6 +2646,13 @@ impl Report {
         // face is the kind of regression that gets noticed by eye weeks later, and
         // `tools/headless_check.sh` greps this line.
         println!("fonts:           {}", fonts.describe());
+        println!(
+            "ui layout:       scale={} sidebar={} inspector={} timeline={}",
+            (fonts.ui().scale() * 100.0).round() as u16,
+            format_optional_ui_size(app.shell.ui_preferences.sidebar_width),
+            format_optional_ui_size(app.shell.ui_preferences.inspector_width),
+            format_optional_ui_size(app.shell.ui_preferences.timeline_height),
+        );
         println!("frames rendered: {}", self.frames);
         println!("analyzer runs:   {}", self.analyzed_frames);
         println!(

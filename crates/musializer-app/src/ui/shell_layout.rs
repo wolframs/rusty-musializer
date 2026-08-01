@@ -52,6 +52,14 @@ pub struct ShellWidths {
     pub tracks_width: f32,
 }
 
+/// User-sized split positions in logical UI units. `None` keeps the existing
+/// content-aware automatic policy exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LayoutOverrides {
+    pub inspector_width: Option<f32>,
+    pub tracks_width: Option<f32>,
+}
+
 impl ShellWidths {
     /// The C's fallback when the layout cannot be computed: the whole window is
     /// workspace and the rail is its fixed 320 px (`plug.c:7573-7577`).
@@ -122,6 +130,36 @@ impl ShellWidths {
             tracks_width,
         })
     }
+
+    /// Automatic layout plus optional user splits. The automatic path returns
+    /// [`Self::layout`] unchanged so scale 1.0 remains the frozen baseline.
+    #[must_use]
+    pub fn layout_with_overrides(
+        window_width: f32,
+        inspector_open: bool,
+        overrides: LayoutOverrides,
+    ) -> Option<Self> {
+        let mut widths = Self::layout(window_width, inspector_open)?;
+        if inspector_open {
+            if let Some(requested) = overrides.inspector_width.filter(|v| v.is_finite()) {
+                let mut inspector = requested.clamp(240.0, 520.0);
+                if window_width - inspector < 620.0 {
+                    inspector = window_width - 620.0;
+                }
+                if inspector < 240.0 {
+                    inspector = 240.0;
+                }
+                widths.inspector_width = inspector;
+                widths.workspace_width = (window_width - inspector).max(0.0);
+            }
+        }
+        if let Some(requested) = overrides.tracks_width.filter(|v| v.is_finite()) {
+            let preview_floor = 480.0f32.max(widths.workspace_width * 0.30);
+            let maximum = (widths.workspace_width - preview_floor).max(168.0);
+            widths.tracks_width = requested.clamp(168.0, 520.0).min(maximum);
+        }
+        Some(widths)
+    }
 }
 
 /// Every region of one workspace frame, in window coordinates.
@@ -160,7 +198,26 @@ impl WorkspaceFrame {
         track_count: usize,
         timeline_height: f32,
     ) -> Self {
-        let widths = ShellWidths::layout(window_width, inspector_open)
+        Self::layout_with_overrides(
+            window_width,
+            window_height,
+            inspector_open,
+            track_count,
+            timeline_height,
+            LayoutOverrides::default(),
+        )
+    }
+
+    #[must_use]
+    pub fn layout_with_overrides(
+        window_width: f32,
+        window_height: f32,
+        inspector_open: bool,
+        track_count: usize,
+        timeline_height: f32,
+        overrides: LayoutOverrides,
+    ) -> Self {
+        let widths = ShellWidths::layout_with_overrides(window_width, inspector_open, overrides)
             .unwrap_or_else(|| ShellWidths::fallback(window_width));
         let toolbar_height = metric::HUD_BUTTON_SIZE;
 
@@ -451,6 +508,47 @@ mod tests {
         // Preview + toolbar + timeline account for the full height.
         let total = frame.preview.height + frame.toolbar.height + frame.timeline.height;
         assert!((total - 720.0).abs() < 0.01, "got {total}");
+    }
+
+    #[test]
+    fn empty_overrides_preserve_the_automatic_layout_exactly() {
+        for (width, inspector) in [(960.0, false), (960.0, true), (1920.0, true)] {
+            assert_eq!(
+                ShellWidths::layout_with_overrides(width, inspector, LayoutOverrides::default()),
+                ShellWidths::layout(width, inspector)
+            );
+        }
+    }
+
+    #[test]
+    fn user_splits_are_logical_sizes_and_keep_the_preview_primary() {
+        let frame = WorkspaceFrame::layout_with_overrides(
+            1920.0,
+            1080.0,
+            true,
+            3,
+            330.0,
+            LayoutOverrides {
+                inspector_width: Some(440.0),
+                tracks_width: Some(400.0),
+            },
+        );
+        assert_eq!(frame.widths.inspector_width, 440.0);
+        assert_eq!(frame.widths.tracks_width, 400.0);
+        assert_eq!(frame.preview.width, 1080.0);
+        assert_eq!(frame.timeline.height, 330.0);
+
+        let constrained = ShellWidths::layout_with_overrides(
+            960.0,
+            true,
+            LayoutOverrides {
+                inspector_width: Some(520.0),
+                tracks_width: Some(520.0),
+            },
+        )
+        .unwrap();
+        assert!(constrained.workspace_width - constrained.tracks_width >= 288.0);
+        assert!(constrained.inspector_width >= 240.0);
     }
 
     #[test]

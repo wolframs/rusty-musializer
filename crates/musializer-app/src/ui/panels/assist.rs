@@ -69,7 +69,7 @@ use musializer_runtime::process::assist::{
 };
 use musializer_runtime::process::font_import::find_assist_helper;
 use musializer_runtime::project_files::sha256_file_hex;
-use raylib::prelude::{RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt};
+use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
 
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
@@ -1075,11 +1075,15 @@ impl Shell {
 
         // One scissor around the whole body, as the C does (`plug.c:2172-2175`),
         // so a long helper message cannot print outside the panel it belongs to.
-        let mut clip = d.begin_scissor_mode(
-            boundary.x as i32 + 1,
-            boundary.y as i32 + 1,
-            (boundary.width - 2.0).max(0.0) as i32,
-            (boundary.height - 2.0).max(0.0) as i32,
+        let mut clip = widgets::begin_scissor(
+            d,
+            UiRect::new(
+                boundary.x + 1.0,
+                boundary.y + 1.0,
+                (boundary.width - 2.0).max(0.0),
+                (boundary.height - 2.0).max(0.0),
+            ),
+            input.ui_scale,
         );
 
         widgets::draw_text(

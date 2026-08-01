@@ -25,10 +25,12 @@ use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::transport_bar;
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
 use musializer_runtime::font::{Faces, UiFonts};
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::icons;
-use super::shell_layout::{WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
+use super::preferences::UiPreferences;
+use super::scale::{UiScale, UiScalePreference};
+use super::shell_layout::{LayoutOverrides, WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
@@ -118,6 +120,8 @@ pub enum ShellCommand {
     /// inside a drawing pair. Split that way so the headless probe can take the
     /// expanded layout without making a window call that Xvfb cannot serve.
     SetFullscreen(bool),
+    /// Persist workstation UI state outside the current `.musi` project.
+    SaveUiPreferences(UiPreferences),
 }
 
 /// What the shell needs to know to draw one frame.
@@ -126,6 +130,7 @@ pub enum ShellCommand {
 /// anything it is handed.
 pub struct ShellInput<'a> {
     pub window: (f32, f32),
+    pub ui_scale: UiScale,
     /// The faces to draw and measure with. Borrowed rather than owned for the same
     /// reason as everything else here, and travelling in the input rather than as a
     /// separate parameter so that no panel can measure a string with one face and
@@ -224,6 +229,17 @@ pub struct Shell {
     /// function statics, which is why its list code can only ever serve one panel;
     /// per-list state here is what lets the same policy serve the browsers too.
     track_scroll: ScrollState,
+    pub ui_preferences: UiPreferences,
+    ui_scale_override: Option<UiScalePreference>,
+    split_drag: Option<SplitKind>,
+    last_split_press: Option<(SplitKind, f64)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SplitKind {
+    Sidebar,
+    Inspector,
+    Timeline,
 }
 
 impl Default for Shell {
@@ -235,6 +251,11 @@ impl Default for Shell {
 impl Shell {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_preferences(UiPreferences::default())
+    }
+
+    #[must_use]
+    pub fn with_preferences(ui_preferences: UiPreferences) -> Self {
         // No startup notice. There used to be a persistent one saying "Drop an
         // audio file on the window to begin", because an empty workspace that says
         // nothing teaches a new user nothing. `draw_welcome` says all of that
@@ -255,7 +276,20 @@ impl Shell {
             route_editor: super::panels::tune::EditorHost::default(),
             font_browser: super::panels::fonts::FontBrowser::new(),
             lyrics: super::panels::lyrics::LyricEditor::new(),
+            ui_preferences,
+            ui_scale_override: None,
+            split_drag: None,
+            last_split_press: None,
         }
+    }
+
+    pub fn set_ui_scale_override(&mut self, preference: Option<UiScalePreference>) {
+        self.ui_scale_override = preference;
+    }
+
+    #[must_use]
+    pub fn ui_scale_preference(&self) -> UiScalePreference {
+        self.ui_scale_override.unwrap_or(self.ui_preferences.scale)
     }
 
     /// Pushes a notice, dropping the result: the overflow policy in
@@ -305,6 +339,24 @@ impl Shell {
         }
     }
 
+    fn resolved_timeline_height(&self, window: (f32, f32), workspace: &Workspace) -> f32 {
+        let automatic = self.timeline_height(window, workspace);
+        let Some(requested) = self.ui_preferences.timeline_height else {
+            return automatic;
+        };
+        let minimum = match self.panel {
+            UiPanel::None | UiPanel::Tune => super::panels::events::EVENT_ROW_HEIGHT + 150.0,
+            UiPanel::Export => 260.0,
+            // 121 chrome + 10 bottom + 22 lane + 5 gap + the form's 223 px.
+            UiPanel::Lyrics => 381.0,
+            // Assist has no scrolling body, so its measured content remains the
+            // floor; resizing can give it room, never clip an action.
+            UiPanel::Assist => automatic,
+        };
+        let maximum = (window.1 - metric::HUD_BUTTON_SIZE - 150.0).max(minimum);
+        requested.clamp(minimum, maximum)
+    }
+
     /// Draws one frame of chrome and returns what the user asked for.
     ///
     /// The preview rectangle is returned alongside so the caller can draw the
@@ -315,13 +367,29 @@ impl Shell {
         if self.fullscreen {
             WorkspaceFrame::fullscreen(input.window.0, input.window.1, true)
         } else {
-            WorkspaceFrame::layout(
-                input.window.0,
-                input.window.1,
-                self.inspector_open,
-                input.workspace.len(),
-                self.timeline_height(input.window, input.workspace),
-            )
+            let timeline = self.resolved_timeline_height(input.window, input.workspace);
+            let overrides = LayoutOverrides {
+                inspector_width: self.ui_preferences.inspector_width,
+                tracks_width: self.ui_preferences.sidebar_width,
+            };
+            if overrides == LayoutOverrides::default() {
+                WorkspaceFrame::layout(
+                    input.window.0,
+                    input.window.1,
+                    self.inspector_open,
+                    input.workspace.len(),
+                    timeline,
+                )
+            } else {
+                WorkspaceFrame::layout_with_overrides(
+                    input.window.0,
+                    input.window.1,
+                    self.inspector_open,
+                    input.workspace.len(),
+                    timeline,
+                    overrides,
+                )
+            }
         }
     }
 
@@ -332,7 +400,10 @@ impl Shell {
         input: &ShellInput<'_>,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
-        self.widgets.begin_frame();
+        self.widgets.begin_frame(input.ui_scale);
+        if self.fullscreen {
+            d.set_mouse_cursor(raylib::consts::MouseCursor::MOUSE_CURSOR_DEFAULT);
+        }
 
         self.dropped_files(d, &mut commands);
         self.keyboard(d, input, &mut commands);
@@ -350,6 +421,7 @@ impl Shell {
             if self.inspector_open {
                 self.inspector(d, frame, input, &mut commands);
             }
+            self.splitters(d, frame, input, &mut commands);
         }
         self.notice_tray(d, input.fonts.ui(), frame.preview);
 
@@ -381,7 +453,7 @@ impl Shell {
         input: &ShellInput<'_>,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
-        self.widgets.begin_frame();
+        self.widgets.begin_frame(input.ui_scale);
         self.dropped_files(d, &mut commands);
 
         let (w, h) = input.window;
@@ -579,6 +651,37 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         use raylib::consts::KeyboardKey as Key;
+
+        let control = d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL);
+        if control {
+            let plus = d.is_key_pressed(Key::KEY_EQUAL) || d.is_key_pressed(Key::KEY_KP_ADD);
+            let minus = d.is_key_pressed(Key::KEY_MINUS) || d.is_key_pressed(Key::KEY_KP_SUBTRACT);
+            let auto = d.is_key_pressed(Key::KEY_ZERO) || d.is_key_pressed(Key::KEY_KP_0);
+            if auto {
+                self.ui_scale_override = None;
+                self.ui_preferences.scale = UiScalePreference::Auto;
+                self.notify(
+                    Severity::Success,
+                    "UI scale: Auto",
+                    "The desktop scale and window size now choose the shell scale.",
+                );
+                commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+            } else if plus != minus {
+                let scale = if plus {
+                    input.ui_scale.next()
+                } else {
+                    input.ui_scale.previous()
+                };
+                self.ui_scale_override = None;
+                self.ui_preferences.scale = UiScalePreference::Fixed(scale);
+                self.notify(
+                    Severity::Success,
+                    &format!("UI scale: {}%", scale.percent()),
+                    "The scene and exported video resolution are unchanged.",
+                );
+                commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+            }
+        }
 
         // A text field takes every key, including Space and the arrows. Without
         // this, typing a lyric line would scrub the track and toggle playback
@@ -1135,6 +1238,116 @@ impl Shell {
         self.panel = panel;
     }
 
+    /// Draggable workspace boundaries. Geometry remains a pure layout concern;
+    /// this is only the immediate-mode gesture that updates its optional inputs.
+    fn splitters(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        use raylib::consts::{MouseButton, MouseCursor};
+
+        if input.workspace.current().is_none() {
+            return;
+        }
+        const HIT: f32 = 8.0;
+        let sidebar = UiRect::new(
+            frame.preview.x - HIT * 0.5,
+            0.0,
+            HIT,
+            frame.timeline.y.max(0.0),
+        );
+        let inspector = self
+            .inspector_open
+            .then(|| UiRect::new(frame.inspector.x - HIT * 0.5, 0.0, HIT, input.window.1));
+        let timeline = UiRect::new(
+            0.0,
+            frame.timeline.y - HIT * 0.5,
+            frame.widths.workspace_width,
+            HIT,
+        );
+        let mouse = input.ui_scale.mouse(d);
+        let hovered = inspector
+            .filter(|rect| rect.contains_point(mouse.x, mouse.y))
+            .map(|_| SplitKind::Inspector)
+            .or_else(|| {
+                sidebar
+                    .contains_point(mouse.x, mouse.y)
+                    .then_some(SplitKind::Sidebar)
+            })
+            .or_else(|| {
+                timeline
+                    .contains_point(mouse.x, mouse.y)
+                    .then_some(SplitKind::Timeline)
+            });
+
+        if d.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT) {
+            if let Some(kind) = hovered {
+                let now = d.get_time();
+                let double = self
+                    .last_split_press
+                    .is_some_and(|(last, time)| last == kind && now - time <= 0.35);
+                self.last_split_press = Some((kind, now));
+                if double {
+                    match kind {
+                        SplitKind::Sidebar => self.ui_preferences.sidebar_width = None,
+                        SplitKind::Inspector => self.ui_preferences.inspector_width = None,
+                        SplitKind::Timeline => self.ui_preferences.timeline_height = None,
+                    }
+                    self.split_drag = None;
+                    self.notify(
+                        Severity::Success,
+                        "Panel size: Auto",
+                        "The content-aware workspace split has been restored.",
+                    );
+                    commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+                } else {
+                    self.split_drag = Some(kind);
+                }
+            }
+        }
+
+        if let Some(kind) = self.split_drag {
+            if d.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+                match kind {
+                    SplitKind::Sidebar => {
+                        self.ui_preferences.sidebar_width = Some(mouse.x.clamp(168.0, 520.0))
+                    }
+                    SplitKind::Inspector => {
+                        self.ui_preferences.inspector_width =
+                            Some((input.window.0 - mouse.x).clamp(240.0, 520.0))
+                    }
+                    SplitKind::Timeline => {
+                        self.ui_preferences.timeline_height =
+                            Some((input.window.1 - mouse.y).clamp(80.0, 4096.0))
+                    }
+                }
+            } else {
+                self.split_drag = None;
+                commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+            }
+        }
+
+        let active = self.split_drag.or(hovered);
+        d.set_mouse_cursor(match active {
+            Some(SplitKind::Timeline) => MouseCursor::MOUSE_CURSOR_RESIZE_NS,
+            Some(SplitKind::Sidebar | SplitKind::Inspector) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
+            None => MouseCursor::MOUSE_CURSOR_DEFAULT,
+        });
+
+        for (kind, rect) in [
+            (SplitKind::Sidebar, sidebar),
+            (SplitKind::Timeline, timeline),
+        ] {
+            draw_splitter(d, rect, kind, active);
+        }
+        if let Some(rect) = inspector {
+            draw_splitter(d, rect, SplitKind::Inspector, active);
+        }
+    }
+
     /// The tracks rail (`tracks_panel`, `plug.c`).
     ///
     /// Drawn only when the layout says the panel can host its own action row. The
@@ -1277,7 +1490,7 @@ impl Shell {
         }
         let metrics = ListMetrics::measure(frame.tracks.width, area.height, 0.0, count);
 
-        let mouse = d.get_mouse_position();
+        let mouse = input.ui_scale.mouse(d);
         let over_panel = frame.tracks.contains_point(mouse.x, mouse.y);
         if over_panel {
             self.track_scroll.wheel(d.get_mouse_wheel_move(), &metrics);
@@ -1319,12 +1532,7 @@ impl Shell {
         // Scissor mode is GL state, so drawing through the parent handle inside
         // the pair is still clipped; the handle type only enforces the begin/end
         // pairing. Opened once around the whole list rather than per row.
-        let mut clip = d.begin_scissor_mode(
-            area.x as i32,
-            area.y as i32,
-            area.width as i32,
-            area.height as i32,
-        );
+        let mut clip = widgets::begin_scissor(d, area, input.ui_scale);
         for (index, name) in input.workspace.display_names().enumerate() {
             let (row_y, row_height) = metrics.row_offset(index, self.track_scroll.offset());
             let top = area.y + row_y;
@@ -1630,7 +1838,7 @@ impl Shell {
 
         // Wheel zoom about the pointer, so the moment under the cursor does not
         // slide away (`timeline_view.h:43-47`).
-        let mouse = d.get_mouse_position();
+        let mouse = input.ui_scale.mouse(d);
         let over_strip = mouse.x >= strip.x
             && mouse.x <= strip.x + strip.width
             && mouse.y >= strip.y
@@ -1903,6 +2111,41 @@ impl Shell {
                 );
             }
             y -= row_height + 4.0;
+        }
+    }
+}
+
+fn draw_splitter(
+    d: &mut RaylibDrawHandle<'_>,
+    hit: UiRect,
+    kind: SplitKind,
+    active: Option<SplitKind>,
+) {
+    let selected = active == Some(kind);
+    let tint = if selected {
+        color::accent()
+    } else {
+        color::ui_rule()
+    };
+    let thickness = if selected { 2.0 } else { 1.0 };
+    match kind {
+        SplitKind::Sidebar | SplitKind::Inspector => {
+            let x = hit.x + hit.width * 0.5;
+            d.draw_line_ex(
+                Vector2::new(x, hit.y),
+                Vector2::new(x, hit.y + hit.height),
+                thickness,
+                tint,
+            );
+        }
+        SplitKind::Timeline => {
+            let y = hit.y + hit.height * 0.5;
+            d.draw_line_ex(
+                Vector2::new(hit.x, y),
+                Vector2::new(hit.x + hit.width, y),
+                thickness,
+                tint,
+            );
         }
     }
 }

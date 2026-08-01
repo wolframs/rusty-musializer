@@ -29,8 +29,12 @@
 use musializer_core::ui::row_typography;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::{Face, UiFonts};
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibFont, Rectangle, Vector2};
+use raylib::prelude::{
+    Color, RaylibDraw, RaylibDrawHandle, RaylibFont, RaylibScissorMode, RaylibScissorModeExt,
+    Rectangle, Vector2,
+};
 
+use super::scale::UiScale;
 use super::theme::{color, metric};
 
 /// Button interaction state (`Button_State`, `ui_widgets.h:34-39`).
@@ -109,6 +113,7 @@ pub struct Widgets {
     /// frames it happened to run for. A tooltip nothing can photograph
     /// deterministically is a tooltip no capture reviews.
     pub tooltip_delay: f64,
+    ui_scale: UiScale,
 }
 
 impl Widgets {
@@ -121,9 +126,10 @@ impl Widgets {
     }
 
     /// Call once per frame, before any widget.
-    pub fn begin_frame(&mut self) {
+    pub fn begin_frame(&mut self, ui_scale: UiScale) {
         self.interacted = false;
         self.pending_tooltip = None;
+        self.ui_scale = ui_scale;
     }
 
     /// Offers a tooltip for the control `id` just drew.
@@ -187,7 +193,7 @@ impl Widgets {
         if boundary.is_empty() {
             return ButtonState::default();
         }
-        let mouse = d.get_mouse_position();
+        let mouse = self.ui_scale.mouse(d);
         let hovered = mouse.x >= boundary.x
             && mouse.x <= boundary.x + boundary.width
             && mouse.y >= boundary.y
@@ -476,7 +482,7 @@ impl Widgets {
         // dragging past the end feel like a slider rather than a switch.
         if self.active_button_id == id && d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
             self.interacted = true;
-            let mouse = d.get_mouse_position();
+            let mouse = self.ui_scale.mouse(d);
             return Some(slider_value(
                 mouse.x,
                 boundary.x,
@@ -804,6 +810,22 @@ pub fn fill<D: RaylibDraw>(d: &mut D, rect: UiRect, tint: Color) {
 #[must_use]
 pub fn rectangle(rect: UiRect) -> Rectangle {
     Rectangle::new(rect.x, rect.y, rect.width, rect.height)
+}
+
+/// Begin a framebuffer scissor for a logical UI rectangle. Camera transforms do
+/// not affect raylib scissors, so every UI clip must cross this boundary.
+pub fn begin_scissor<'a, D: RaylibDraw>(
+    d: &'a mut D,
+    boundary: UiRect,
+    scale: UiScale,
+) -> RaylibScissorMode<'a, D> {
+    let physical = scale.physical_rect(boundary);
+    d.begin_scissor_mode(
+        physical.x as i32,
+        physical.y as i32,
+        physical.width as i32,
+        physical.height as i32,
+    )
 }
 
 /// raylib's `ColorBrightness`, which the safe API only exposes for images.

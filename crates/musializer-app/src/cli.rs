@@ -41,6 +41,8 @@ use musializer_core::scene::events::{EventRecord, EventType, VALUE_CAPACITY};
 use musializer_core::scene::routes::{self, ParameterMapping};
 use musializer_core::scene::{settings, SceneId};
 
+use crate::ui::scale::UiScalePreference;
+
 /// Host-side cap on `--route` occurrences (`COMMAND_LINE_ROUTE_CAPACITY`,
 /// `musializer.c:11`). The 257th warns and errors.
 pub const ROUTE_CAPACITY: usize = 256;
@@ -198,6 +200,12 @@ pub struct UiProbe {
     pub seek_seconds: Option<f64>,
     /// Host-side window geometry, not plug state (`musializer.c:238-243`).
     pub size: Option<(u32, u32)>,
+    /// Diagnostic-only workspace split positions in logical UI units. These let
+    /// the capture gate review layouts that are otherwise reachable only by a
+    /// pointer drag.
+    pub sidebar_width: Option<f32>,
+    pub inspector_width: Option<f32>,
+    pub timeline_height: Option<f32>,
     /// `hover=XxY`: park the pointer at a window coordinate.
     ///
     /// **Invented, and the only way a tooltip can be reviewed.** A headless run has
@@ -243,6 +251,8 @@ pub struct Cli {
     pub auto_scenes: bool,
     pub reload_once: bool,
     pub ui_probe: Option<UiProbe>,
+    /// Rust-side shell scaling. CLI wins over the per-user preference file.
+    pub ui_scale: Option<UiScalePreference>,
 
     /// One shared error flag, as in the C (`musializer.c:384`). Once set it
     /// poisons the later stages by short-circuit and the process exits 1.
@@ -469,6 +479,11 @@ where
                 ),
             },
 
+            "--ui-scale" => match value_of(&argv, i).and_then(UiScalePreference::parse) {
+                Some(scale) => cli.ui_scale = Some(scale),
+                None => cli.warn("--ui-scale wants auto, 100, 125, 150, 175, or 200"),
+            },
+
             // The slice's diagnostics. Not part of the oracle's surface.
             "--probe-frames" => match value_of(&argv, i).and_then(parse_positive_u32) {
                 Some(frames) => cli.probe_frames = Some(frames),
@@ -535,6 +550,7 @@ fn takes_one_value(flag: &str) -> bool {
             | "--save-project"
             | "--analysis-bridge"
             | "--ui-probe"
+            | "--ui-scale"
             | "--probe-frames"
             | "--probe-shot"
             | "--probe-reopen"
@@ -728,11 +744,19 @@ pub fn parse_ui_probe(spec: &str) -> Option<UiProbe> {
             "lyrics-file" => probe.lyrics_reference_path = Some(PathBuf::from(value)),
             "time" => probe.seek_seconds = Some(parse_seconds(value)?),
             "size" => probe.size = Some(parse_resolution(value)?),
+            "sidebar" => probe.sidebar_width = Some(parse_split_position(value)?),
+            "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
+            "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
             "hover" => probe.hover = Some(parse_point(value)?),
             _ => return None,
         }
     }
     Some(probe)
+}
+
+fn parse_split_position(text: &str) -> Option<f32> {
+    let value: f32 = text.parse().ok()?;
+    (value.is_finite() && (80.0..=4096.0).contains(&value)).then_some(value)
 }
 
 /// `XxY` for `hover=`. Floats, because a control's centre rarely lands on an
@@ -804,6 +828,8 @@ Export:
 
 Diagnostics:
   --mute                  Start with the output volume at zero
+  --ui-scale VALUE        Shell scale: auto, 100, 125, 150, 175, or 200
+                          (Ctrl+- / Ctrl+0 / Ctrl++ also adjust it)
   --hud[=0|1]             Draw the diagnostic readout over the preview (also H)
   --reload-once           Exercise one hot-reload handoff (unsupported)
   --ui-probe SPEC         Open a workspace panel and park the transport
@@ -811,6 +837,8 @@ Diagnostics:
                           comma-separated key=value pairs:
                           panel=none|tune|export|lyrics|assist,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
+                          sidebar=PX, inspector=PX, timeline-height=PX
+                          set logical split positions for capture,
                           assist=confirm arms the Assist confirmation
                           prompt, lyric=N selects the nth lyric cue
                           (needs panel=assist),
@@ -1183,7 +1211,8 @@ mod tests {
     fn ui_probe_parses_every_documented_key() {
         let probe = parse_ui_probe(
             "panel=assist,assist=confirm,lyric=3,play=1,fullscreen=0,\
-             time=12.5,zoom=4,size=960x640,lyrics-file=/tmp/a.txt",
+             time=12.5,zoom=4,size=960x640,sidebar=400,inspector=440,\
+             timeline-height=330,lyrics-file=/tmp/a.txt",
         )
         .unwrap();
         assert_eq!(probe.panel, UiPanel::Assist);
@@ -1194,6 +1223,9 @@ mod tests {
         assert_eq!(probe.seek_seconds, Some(12.5));
         assert_eq!(probe.timeline_zoom, Some(4.0));
         assert_eq!(probe.size, Some((960, 640)));
+        assert_eq!(probe.sidebar_width, Some(400.0));
+        assert_eq!(probe.inspector_width, Some(440.0));
+        assert_eq!(probe.timeline_height, Some(330.0));
         assert_eq!(
             probe.lyrics_reference_path,
             Some(PathBuf::from("/tmp/a.txt"))
@@ -1260,6 +1292,23 @@ mod tests {
         assert!(parse_ui_probe("assist=cancel").is_none());
         // time= is parse_seconds: finite and non-negative.
         assert!(parse_ui_probe("time=-1").is_none());
+        assert!(parse_ui_probe("sidebar=79").is_none());
+        assert!(parse_ui_probe("sidebar=80").is_some());
+        assert!(parse_ui_probe("timeline-height=4096").is_some());
+        assert!(parse_ui_probe("inspector=4097").is_none());
+        assert!(parse_ui_probe("sidebar=nan").is_none());
+    }
+
+    #[test]
+    fn ui_scale_accepts_only_the_supported_rungs() {
+        for value in ["auto", "100", "125", "150", "175", "200"] {
+            let cli = parsed(&["--ui-scale", value]);
+            assert!(cli.ui_scale.is_some(), "{value}");
+            assert!(!cli.error, "{value}");
+        }
+        for value in ["0", "110", "225", "wide"] {
+            assert!(parsed(&["--ui-scale", value]).error, "{value}");
+        }
     }
 
     #[test]

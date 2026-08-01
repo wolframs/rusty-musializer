@@ -17,6 +17,8 @@
 
 pub mod icons;
 pub mod panels;
+pub mod preferences;
+pub mod scale;
 pub mod shell;
 pub mod shell_layout;
 pub mod text_input;

@@ -46,7 +46,7 @@ use musializer_runtime::font::Faces;
 use musializer_runtime::process::ffmpeg::{ffmpeg_available, Finished};
 use musializer_runtime::process::render_job::{RenderJob, RenderRequest};
 use raylib::prelude::{
-    Color, Music, RaylibAudio, RaylibDraw, RaylibDrawHandle, RaylibHandle, RaylibScissorModeExt,
+    Color, Music, RaylibAudio, RaylibDraw, RaylibDrawHandle, RaylibHandle, RaylibMode2DExt,
     RaylibTexture2D, RaylibTextureModeExt, RaylibThread, RenderTexture2D,
 };
 
@@ -149,12 +149,7 @@ impl Shell {
         d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
         // Everything inside is clipped to the box, so a narrow window cuts a
         // label off rather than printing it across the tracks rail.
-        let mut clip = d.begin_scissor_mode(
-            boundary.x as i32,
-            boundary.y as i32,
-            boundary.width as i32,
-            boundary.height as i32,
-        );
+        let mut clip = widgets::begin_scissor(d, boundary, input.ui_scale);
 
         widgets::draw_text(
             &mut clip,
@@ -415,10 +410,13 @@ impl Shell {
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         fonts: &Faces,
+        ui_scale: super::super::scale::UiScale,
         job: &RenderJob,
     ) -> bool {
-        let (w, h) = (d.get_screen_width() as f32, d.get_screen_height() as f32);
+        let (w, h) =
+            ui_scale.logical_size((d.get_screen_width() as f32, d.get_screen_height() as f32));
         let font = fonts.ui();
+        self.widgets.begin_frame(ui_scale);
         d.clear_background(color::background());
 
         let window_frames = job.plan().encoded_frames();
@@ -489,8 +487,11 @@ impl Shell {
         // The destination, clipped rather than truncated: a long path is worth
         // showing the start of.
         {
-            let mut clip =
-                d.begin_scissor_mode(bar.x as i32, bar.y as i32 + 27, bar.width as i32, 24);
+            let mut clip = widgets::begin_scissor(
+                d,
+                UiRect::new(bar.x, bar.y + 27.0, bar.width, 24.0),
+                ui_scale,
+            );
             widgets::draw_text(
                 &mut clip,
                 font,
@@ -790,7 +791,13 @@ impl ExportSession {
         let mut failure: Option<(&'static str, String)> = None;
         {
             let mut d = rl.begin_drawing(thread);
-            let cancelled = app.shell.export_progress(&mut d, fonts, self.job());
+            let ui_scale =
+                super::super::scale::UiScale::new(fonts.ui().scale()).unwrap_or_default();
+            let cancelled = {
+                let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+                app.shell
+                    .export_progress(&mut ui_draw, fonts, ui_scale, self.job())
+            };
             if cancelled {
                 self.job_mut().request_cancel();
             }

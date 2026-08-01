@@ -46,7 +46,7 @@ use musializer_core::ui::notice::Severity;
 use musializer_core::ui::text_edit::{TextEditError, TextRules};
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::UiFonts;
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Vector2};
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::DEFAULT_TIMELINE_HEIGHT;
@@ -751,7 +751,7 @@ impl Shell {
         if lane.is_empty() {
             return;
         }
-        self.lane_gesture(d, editor, track, lane);
+        self.lane_gesture(d, input.ui_scale, editor, track, lane);
 
         widgets::fill(d, lane, color::ui_raised());
         d.draw_line_ex(
@@ -762,7 +762,7 @@ impl Shell {
         );
 
         let view = self.timeline;
-        let mouse = d.get_mouse_position();
+        let mouse = input.ui_scale.mouse(d);
         // No hover highlight while a gesture is in flight, which is the C's
         // `*active_button_id == 0` guard (`:1006-1009`) expressed against the one
         // claim this lane actually has.
@@ -876,6 +876,7 @@ impl Shell {
     fn lane_gesture(
         &mut self,
         d: &RaylibDrawHandle<'_>,
+        ui_scale: super::super::scale::UiScale,
         editor: &mut LyricEditor,
         track: &Track,
         lane: UiRect,
@@ -883,7 +884,7 @@ impl Shell {
         use raylib::consts::KeyboardKey as Key;
         use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
 
-        let mouse = d.get_mouse_position();
+        let mouse = ui_scale.mouse(d);
         let view = self.timeline;
         let mode = if d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL)
         {
@@ -1136,7 +1137,7 @@ impl Shell {
         if editor.list_follow_selection {
             first = focus.saturating_sub(visible / 2);
         }
-        let mouse = d.get_mouse_position();
+        let mouse = input.ui_scale.mouse(d);
         if list.contains_point(mouse.x, mouse.y) {
             let wheel = d.get_mouse_wheel_move();
             if wheel != 0.0 {
@@ -1206,11 +1207,10 @@ impl Shell {
             // as much of it as the row holds (`:1249-1254`).
             let text_x = boundary.x + 90.0;
             if boundary.width > 100.0 {
-                let mut clip = d.begin_scissor_mode(
-                    text_x as i32,
-                    boundary.y as i32,
-                    (boundary.width - 94.0) as i32,
-                    boundary.height as i32,
+                let mut clip = widgets::begin_scissor(
+                    d,
+                    UiRect::new(text_x, boundary.y, boundary.width - 94.0, boundary.height),
+                    input.ui_scale,
                 );
                 widgets::draw_text(
                     &mut clip,
@@ -1916,6 +1916,7 @@ impl Shell {
             let bar = UiRect::new(right_x, row_y, slider_width, 22.0);
             if caption_slider(
                 d,
+                input.ui_scale,
                 &mut editor.style_drag,
                 drag_id,
                 bar,
@@ -2171,6 +2172,7 @@ fn caption_label(
 )]
 fn caption_slider(
     d: &mut RaylibDrawHandle<'_>,
+    ui_scale: super::super::scale::UiScale,
     drag: &mut u8,
     id: u8,
     track_rect: UiRect,
@@ -2211,7 +2213,7 @@ fn caption_slider(
         color::accent(),
     );
 
-    let mouse = d.get_mouse_position();
+    let mouse = ui_scale.mouse(d);
     if *drag == 0
         && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
         && track_rect.contains_point(mouse.x, mouse.y)

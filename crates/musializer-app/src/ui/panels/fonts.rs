@@ -308,7 +308,8 @@ fn draw_search_field(
 ) {
     let _ = widgets;
     let search = rect(layout.search);
-    let mouse = d.get_mouse_position();
+    let scale = super::super::scale::UiScale::new(font.scale()).unwrap_or_default();
+    let mouse = scale.mouse(d);
     if d.is_mouse_button_pressed(raylib::consts::MouseButton::MOUSE_BUTTON_LEFT) {
         // Focus follows the press, and a press anywhere else takes it away. The
         // field is not a widget with an id: it claims no press, so a click that
@@ -359,7 +360,8 @@ fn draw_family_list(
     layout: BrowserLayout,
 ) -> (usize, usize) {
     let list = rect(layout.list);
-    let mouse = d.get_mouse_position();
+    let scale = super::super::scale::UiScale::new(font.scale()).unwrap_or_default();
+    let mouse = scale.mouse(d);
     let wheel = d.get_mouse_wheel_move();
     let query = browser.view.query().to_string();
     let selected_family = browser.view.selected().map(str::to_string);

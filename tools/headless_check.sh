@@ -29,7 +29,9 @@ OUT_DIR="${1:-build/headless}"
 DISPLAY_NUM="${MUSIALIZER_CAPTURE_DISPLAY:-:77}"
 PROBE_FRAMES="${MUSIALIZER_PROBE_FRAMES:-240}"
 FIXTURE_SECONDS="${MUSIALIZER_FIXTURE_SECONDS:-8}"
-SCREEN_SIZE="1280x720x24"
+# Large enough to exercise the 1440p scale rung. Individual windows still use
+# their requested size, so the existing 720p/minimum captures stay comparable.
+SCREEN_SIZE="2560x1440x24"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -295,6 +297,33 @@ for panel in none tune export lyrics; do
             || echo "  (note: $panel at $size exits non-zero while its panel is a stub)"
     done
 done
+
+echo "=== scaled and user-sized workspace ==="
+capture "ui-scale-125-1600x900" 1600x900 --ui-scale 125 \
+    --ui-probe "panel=tune,play=1" || SWEEP_FAILED=1
+capture "ui-scale-150-2560x1440" 2560x1440 --ui-scale 150 \
+    --ui-probe "panel=tune,play=1" || SWEEP_FAILED=1
+capture "ui-auto-2560x1440" 2560x1440 \
+    --ui-probe "panel=tune,play=1" || SWEEP_FAILED=1
+capture "ui-splits-1920x1080" 1920x1080 --ui-scale 125 \
+    --ui-probe "panel=tune,play=1,sidebar=400,inspector=440,timeline-height=330" \
+    || SWEEP_FAILED=1
+
+scale_125="$(sed -n 's/^ui layout: *//p' "$OUT_DIR/ui-scale-125-1600x900.txt")"
+scale_150="$(sed -n 's/^ui layout: *//p' "$OUT_DIR/ui-scale-150-2560x1440.txt")"
+scale_auto="$(sed -n 's/^ui layout: *//p' "$OUT_DIR/ui-auto-2560x1440.txt")"
+split_layout="$(sed -n 's/^ui layout: *//p' "$OUT_DIR/ui-splits-1920x1080.txt")"
+echo "125% layout: ${scale_125:-<absent>}"
+echo "150% layout: ${scale_150:-<absent>}"
+echo "1440p Auto: ${scale_auto:-<absent>}"
+echo "user splits: ${split_layout:-<absent>}"
+case "$scale_125" in scale=125*) : ;; *) SWEEP_FAILED=1; echo "FAIL: 125% scale was not active" >&2 ;; esac
+case "$scale_150" in scale=150*) : ;; *) SWEEP_FAILED=1; echo "FAIL: 150% scale was not active" >&2 ;; esac
+case "$scale_auto" in scale=150*) : ;; *) SWEEP_FAILED=1; echo "FAIL: 1440p Auto did not select 150%" >&2 ;; esac
+case "$split_layout" in
+    *"sidebar=400"*"inspector=440"*"timeline=330"*) : ;;
+    *) SWEEP_FAILED=1; echo "FAIL: the requested workspace splits were not active" >&2 ;;
+esac
 
 # The export panel is built, so unlike the stubs it is held to exiting 0 and to
 # saying which panel it opened. `panel:` is the line that distinguishes "drew a
@@ -1288,6 +1317,21 @@ TIP_TEXT="$(ffprobe -v error -f lavfi \
 echo "tooltip-mute            box luma min=${TIP_INK:-?} text luma max=${TIP_TEXT:-?}"
 if [ "${TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null; then
     echo "FAIL: no tooltip text where the mute button's tip should be" >&2
+    TRANSPORT_FAILED=1
+fi
+
+# The same interaction after both axes are transformed by 125%. This is a hit
+# target check, not only another picture: if pointer conversion stays in physical
+# coordinates while the widgets move to logical ones, the parked pointer misses
+# Mute and this crop contains no bright tooltip text.
+capture "tooltip-mute-125" 1600x900 --ui-scale 125 \
+    --ui-probe "panel=tune,play=1,hover=978x562" || TRANSPORT_FAILED=1
+TIP_TEXT_125="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/tooltip-mute-125.png,crop=140:45:900:485,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "tooltip-mute-125        text luma max=${TIP_TEXT_125:-?}"
+if [ "${TIP_TEXT_125%%.*}" -lt 180 ] 2>/dev/null; then
+    echo "FAIL: the 125% pointer transform missed the mute button" >&2
     TRANSPORT_FAILED=1
 fi
 
