@@ -13,7 +13,7 @@ not a task list. `AGENTS.md` contains repository rules and deliberate exclusions
 
 - **Oracle:** `../musializer`, branch `master`, frozen commit
   `9300af942bd00d8c85fc4e3c8c02cf2b6356764f` (`9300af9`). It is read-only.
-- **Audited Rust baseline:** `e32705c`, 2026-07-31.
+- **Audited Rust baseline:** `a664b7d`, 2026-08-01.
 - **Baseline evidence:** `tools/verify.sh` is 19 passed / 0 failed: thirteen
   differential harnesses plus the headless capture gate.
 - **Feature parity means observable capability parity.** A C workflow must be
@@ -71,15 +71,18 @@ P3 packages the external product. P4 removes false status and proves the result.
 P0 project-aware frame path
   A1 frame lanes -> A2 lyric overlay -> A3 integration evidence
                   -> B1 automatic switching -> B2 cue semantics -> B3 evidence
+                                               -> B4 interactive control
 
 P1 durable editing
   C1 dirty marking -> C2 draft/context guards -> C3 reset workflow
-                   -> C4 all-track autosave
+                   -> C4 all-track autosave -> C5 project-preset adoption
 
 P2 missing entry points
   D1 drop dispatch -> D2 ASCII image UI
   D3 lyrics TSV import/export
-  D4 timeline information and pan
+  D4 timeline information, pan and transactional seek
+  D5 CLI execution semantics
+  D6 Tune reachability/toggles -> D7 keyboard workflows -> D8 actionable notices
 
 P3 complete external bundle
   E1 support-file manifest -> E2 Assist -> E3 Google Fonts -> E4 dist/doctor
@@ -139,8 +142,8 @@ Observable closure:
 - [x] Confirm the same fixture written by C and Rust produces equivalent lane
       selection at boundary timestamps.
 
-Completion evidence (2026-08-01, `Complete project-aware scene rendering`, this
-commit): `ProjectFrameLanes` is the shared preview/export constructor and owns a
+Completion evidence (2026-08-01, `84ad8bb`): `ProjectFrameLanes` is the shared
+preview/export constructor and owns a
 fresh merge so an invalid lane logs its error and exposes zero events. The pure
 suite pins no-track state, exact lyric/semantic boundaries, canonical ids/order,
 UTF-8 three-line ellipsis, all box modes, a non-default anchor and 2x export
@@ -190,8 +193,8 @@ produced four boundary failures in each direct comparison (12 discrepancies).
       `[0, t)`.
 - [x] Add a negative control that disables the call to `update` and is caught.
 
-Completion evidence (2026-08-01, operator-reported lyric deletion and PCM scene
-cue repair): the lyrics form now assigns disjoint widget ids to Apply, Discard,
+Completion evidence (2026-08-01, `a664b7d`, operator-reported lyric deletion and
+PCM scene cue repair): the lyrics form now assigns disjoint widget ids to Apply, Discard,
 Delete and both timing rows. Reusing Delete's id for START -0.1 reproduced the
 failure and the new collision test failed 8/9 before restoration; the isolated
 Xvfb click now leaves 5 cues from the 6-cue fixture and clears the selection.
@@ -202,6 +205,34 @@ cue snapshot before routes. A two-cue 8-second project reports Loom after its
 pin base-scene pending/backfill state, exact boundary transitions, seek-style
 reset and active-cue tuning. Returning before `SceneSwitchTimeline::update` made
 the boundary test fail (`None` versus `Some(Spectrum)`) and was reverted.
+
+### B4 — interactive automatic-scene control
+
+- [x] Add the C workflow's visible Auto-scenes On/Off control for a non-empty
+      saved or Assist-created plan; `--auto-scenes` must not be the only way to
+      enable it.
+- [x] Reset the switch cursor and cue-settings state on either transition, and
+      restore the base scene when disabling the plan.
+- [x] Retain the cues, mark the project dirty and report the cue count/state.
+- [x] Capture enabled and disabled states and prove that the next preview/export
+      frame follows the same plan state.
+
+Audit evidence: the C control and transition are at `plug.c:2207-2226`; the Rust
+Assist composition at `ui/panels/assist.rs:1089-1119` has no equivalent. The only
+production enable path is startup `--auto-scenes`.
+
+Completion evidence (2026-08-01, working tree): the Assist header now shows the
+C workflow's `Current auto scenes: On/Off (N)` button whenever the current track
+has a plan and the panel is at least 560 px wide. Its `ShellCommand` runs through
+one track transition that refuses an empty plan, retains every cue, rewinds the
+cursor, clears cue-specific settings, marks dirty and restores the base
+`SceneInstance` on disable. A unit test pins empty-plan refusal, cue retention and
+both-direction rewind. The silent Xvfb gate opens a generated two-cue project at
+5.0 seconds and captures both states: disabled reports `disabled (2 cues)` and
+Constellation, while `--auto-scenes` reports `enabled (2 cues)` and Loom; their
+frames differ. The gate first failed by refusing a copied project whose bundled
+audio directory was absent, proving the fixture still enforces asset identity;
+copying the content-addressed bundle produced the green run.
 
 ## P1 — durable edits, guards and autosave
 
@@ -247,6 +278,20 @@ the boundary test fail (`None` versus `Some(Spectrum)`) and was reverted.
 - [ ] Test two dirty tracks, a background track loaded from a project, failure of
       one save without suppressing another, and recovery after a failed save.
 
+### C5 — adopt project-carried presets
+
+- [ ] When a project opens, merge its embedded scene presets into the shared
+      preset library by scene and values, matching the C's deduplication rule.
+- [ ] Persist newly adopted presets and make them immediately visible in Tune.
+- [ ] Notify only when the shared library actually changes; a persistence failure
+      must not make the in-memory and on-disk libraries silently disagree.
+- [ ] Test reopening a project whose preset is absent, already present and equal
+      in name but different in values.
+
+Audit evidence: C calls `shared_presets_adopt` after hydration at
+`plug.c:4992-5005`; Rust hydrates `track.scene_presets` but `open_project` never
+merges them into `app.shared_presets`, which is the library Tune reads.
+
 ## P2 — missing C workflows and timeline affordances
 
 ### D1 — typed file-drop dispatch
@@ -285,17 +330,94 @@ the boundary test fail (`None` versus `Some(Spectrum)`) and was reverted.
 - [ ] Draw the merged manual/semantic event markers over the waveform lane.
 - [ ] Draw the lyric cue lane even when the Lyrics editor is closed.
 - [ ] Add Shift-wheel pan and middle-drag pan with robust pointer-claim release.
+- [ ] Make waveform scrubbing transactional: pause on press, track the target
+      while dragging, seek once on release and restore the prior play state.
+- [ ] On every transport discontinuity, clear queued pre-seek PCM and analyzer
+      history as well as beat, scene-clock, scene-plan and cue-settings state.
 - [ ] Keep wheel zoom anchored at the pointer and every lane aligned through the
       shared `TimelineView` conversion.
 - [ ] Give tick labels an opaque backing so waveform amplitude cannot erase their
       contrast.
 - [ ] Capture event colors, lyric spans, zoom, pan and an off-screen boundary.
 
+Audit evidence: C's press/drag/release contract is at `plug.c:3174-3199` and its
+full reset at `:2661-2678`. Rust currently emits `Seek` each drag frame
+(`ui/shell.rs:1723-1740`) and resets only beat/scene-plan state
+(`main.rs:1087-1101`).
+
+### D5 — CLI execution semantics
+
+- [x] Execute positional audio, `--project`, `--scene`, `--event` and
+      `--ascii-image` actions left-to-right instead of reducing them to one input.
+- [x] Preserve every successfully loaded audio track; apply deferred routes only
+      after all immediate input actions so they target the resulting project.
+- [x] Select ASCII Field only after a successful image import.
+- [x] Once any CLI error occurs, keep parsing for diagnostics but suppress the
+      later bridge, auto-scenes, save-project, UI-probe and render side effects
+      that the C suppresses.
+- [x] Add side-effect assertions for multiple inputs, interleaved actions, routes
+      accompanying a project and an early error followed by `--save-project`.
+
+Audit evidence: the C applies input actions immediately and defers only routes
+(`musializer.c:500-561`). Rust collects them into one `Option<Input>` and applies
+routes before opening it (`main.rs:307-382`, `:464-499`); later side effects also
+run despite `options.error` (`:510-632`).
+
+Completion evidence (2026-08-01, working tree): argv replay now owns the stream
+and opens every input at its position; only routes remain deferred. Render config
+precedes save, all later stages honor the shared error, startup mutations are
+marked clean across every loaded track, and unknown flags again follow the C's
+positional-audio arm. The headless negative control first reproduced all three
+principal failures — `1 open` with only the last input, failed ASCII selecting
+ASCII Field, and an error-returning command still publishing its project — then
+reported `2 open, current 0`, retained Loom, and left the destination absent.
+Additional gates pin a route applied after project hydration and a saved
+854x480/24 fps/master render config. Workspace/app tests are 138 passed and
+Clippy is warning-free.
+
+### D6 — Tune reachability and descriptor controls
+
+- [ ] Make the Tune inspector vertically scrollable with clipping, robust pointer
+      release and a visible position indicator so every descriptor remains
+      reachable at every supported window size and route-editor expansion.
+- [ ] Render `SettingKind::Toggle` as a labelled binary control rather than a
+      numeric slider; preserve the Song Atlas manual-count detail readout.
+- [ ] Capture the last descriptor, both toggle states and an expanded route row at
+      the minimum supported window size.
+
+Audit evidence: C scrolls and clips the inspector and branches for toggles
+(`plug.c:6116-6255`). Rust stops drawing when the next row does not fit and treats
+every unrouted descriptor as a slider (`ui/panels/tune.rs:281-415`).
+
+### D7 — keyboard workflows and discoverability
+
+- [ ] Restore Ctrl+S, Ctrl+Shift+S, R for Export and direct 1-0 scene selection,
+      using the same draft/context guards as the corresponding buttons.
+- [ ] Expose 1-0 in scene-tile tooltips; retain Tab cycling as a Rust addition.
+- [ ] Add input tests proving text entry suppresses every global shortcut.
+
+Audit evidence: C handles these at `plug.c:1382-1396` and `:7585-7610`. Rust's
+global keyboard path (`ui/shell.rs:571-637`) has transport, Tab and Tune bindings
+but none of those C workflows.
+
+### D8 — actionable notice tray
+
+- [ ] Allow application call sites to provide the full notice specification
+      instead of forcing every notice to be transient and pathless.
+- [ ] Restore wrapping, persistence, file paths/tooltips, Dismiss, Copy path,
+      Assist Retry and a `+N more` indicator for hidden notices.
+- [ ] Test clipboard/backend failure, overflow, long UTF-8 text and the retry
+      action; capture transient, persistent and path-bearing cards.
+
+Audit evidence: C's tray implements these actions at `plug.c:6663-6738`.
+`Shell::notify` discards persistence/path data and the Rust tray is text-only
+(`ui/shell.rs:257-268`, `:1842-1902`).
+
 ## P3 — package the complete external product
 
 ### E1 — define and copy the support bundle
 
-Completed 2026-08-01 (working tree): source-bundle restoration depends only on
+Completed 2026-08-01 (`a664b7d`): source-bundle restoration depends only on
 the frozen oracle's reviewed first-party support files. E2/E3 consume the same
 manifest, while E4 will reuse it for archive staging.
 
@@ -330,6 +452,11 @@ fails as its negative control.
       distribution layouts.
 - [ ] Test cancellation, timeout, process-group cleanup, invalid bridge output,
       staging, Apply and Discard.
+- [ ] Re-probe helper availability at the user decision boundary so installing or
+      removing support files updates the controls/status without restarting;
+      preserve hard failure for an explicitly set but missing helper override.
+- [ ] Keep Assist progress/review state visible in fullscreen with a non-exported
+      badge for running, cleanup, candidate-ready and failure/artifact states.
 - [x] Keep a fake helper for deterministic lifecycle coverage, but add at least one
       real support-bundle smoke test.
 
@@ -339,6 +466,13 @@ fails as its negative control.
 - [ ] Keep network consent once-per-run and never persist it.
 - [ ] Verify catalogue caching, host allow-list/redirect refusal, digest checks,
       licence publication, import into a project and project reopen.
+- [ ] Poll the importer once per application frame, including while the browser
+      pane is closed, and consume each verified import exactly once.
+- [ ] Apply an import transactionally: rasterize it, set the imported caption
+      face plus asset/runtime paths, mark dirty and notify success; rasterization
+      failure must preserve the prior face and project fields.
+- [ ] Re-probe helper availability when Browse/Fetch is requested rather than
+      caching startup state for the entire session.
 - [ ] Keep a fully offline fake/helper fixture for the default verification gate.
 
 ### E4 — installation, doctor and distribution
@@ -357,7 +491,7 @@ fails as its negative control.
 
 ### F0 — robust native-size shell typography
 
-Completed 2026-08-01 (working tree, operator-requested robustness sweep):
+Completed 2026-08-01 (`a664b7d`, operator-requested robustness sweep):
 
 - [x] Replace the single 64 px UI atlas with native Space Grotesk atlases for
       every fitted 11--22 px size and the fixed 24, 28, 34, 38 and 84 px sizes.
@@ -393,6 +527,10 @@ perturbation was reverted before the green run.
       to this plan.
 - [ ] Ensure intentionally unavailable actions name their real prerequisite
       (`helper missing`, `FFmpeg missing`, `no track`) rather than saying "stub".
+- [ ] Show truthful Saved/Unsaved/Save failed/No project file state in the Tracks
+      header, including lyric and route drafts.
+- [ ] Show Cadence's preview-only no-timed-lyrics guidance instead of leaving an
+      empty scene that resembles a broken renderer.
 
 ### F2 — retire completed agent seams without changing behavior
 
@@ -435,6 +573,9 @@ This is centralized dangling-work cleanup, not feature parity by itself:
       frame hashes/state reports.
 - [ ] Add a drop-dispatch test, lyric TSV test, autosave-multiple-tracks test and
       packaged-helper discovery test.
+- [ ] Add CLI ordering/side-effect, interactive scene-plan, project-preset
+      adoption, Tune overflow/toggle, transactional-seek and font-application
+      gates from D4-D8, B4, C5 and E3.
 - [ ] Every new gate gets a negative control; record what the perturbation broke.
 - [ ] Choose further differential harnesses by evidence weakness, not by counting
       modules. A property-only unit suite is the strongest candidate signal.
@@ -459,21 +600,24 @@ This is centralized dangling-work cleanup, not feature parity by itself:
 
 | C feature family | Current Rust state | Closure |
 | --- | --- | --- |
-| Ten scenes and audio reaction | Fit for audio/whole-track inputs; saved semantic/lyric/event inputs are unwired | A1-A3 |
-| Shared captions and Cadence lyrics | Models/layout/runtime exist; render integration missing | A1-A3 |
-| Automatic scene plans | Model, persistence and UI labels exist; playback/export driver missing | B1-B3 |
-| Manual scene cues | Capture model exists; base-selection/pending semantics incomplete | B2-B3 |
-| Settings/routes/presets | Core fit; dirty/cue/reset workflow incomplete | B2, C1, C3 |
-| `.musi` open/save | Differential round trip fit | C1-C4 guard/autosave completion |
+| Ten scenes and audio reaction | Fit, including saved semantic/lyric/event inputs | none; retain G1 evidence |
+| Shared captions and Cadence lyrics | Render integration fit; Cadence empty-state guidance missing | F1 |
+| Automatic scene plans | Fit in preview/export, CLI and the interactive Assist header | none; retain G1 evidence |
+| Manual scene cues | Capture/base/pending semantics fit; boundary evidence incomplete | B3 |
+| Settings/routes/presets | Core fit; dirty/reset, project-preset adoption and Tune control gaps remain | C1, C3, C5, D6 |
+| `.musi` open/save | Differential round trip fit | C1-C5 guard/autosave/adoption completion |
 | Multi-track workspace | Fit interactively | C2, C4 |
 | Lyrics editing | Editor fit; document import/export and broad draft guards missing | C2, D3 |
-| Manual/semantic events | Models and row fit; scene/timeline consumption missing | A1, D4 |
-| Timeline | Waveform/zoom/scrub fit; lyric/events/pan missing | D4 |
+| Manual/semantic events | Scene consumption fit; timeline markers missing | D4 |
+| Timeline | Waveform/zoom fit; lyric/events/pan and transactional seek missing | D4 |
 | ASCII image mode | CLI/project rendering fit; GUI and typed drop missing | D1-D2 |
-| Assist | UI/controller/bridge and source support bundle fit; packaged/live mode validation remains | C2, E2-E4 |
-| Google Fonts | UI/runtime fit; shipped helper bundle absent | E1, E3 |
-| FFmpeg export | Transport/determinism fit; project lanes/scene plans missing | A1-B3 |
-| CLI | Mostly fit; `--auto-scenes` ineffective; `--reload-once` excluded | B1-B3 |
+| Assist | UI/controller/bridge and source bundle fit; live/fullscreen/helper-state validation remains | C2, E2-E4 |
+| Google Fonts | Job/manifest verification exists; background polling and project application are unwired | E3 |
+| FFmpeg export | Project lanes and scene plans fit; remaining boundary evidence is B3 | B3 |
+| CLI | Documented flags and execution order fit; reload excluded | none |
+| Tune UI | Settings/routes/presets exist; scrolling and toggle presentation differ | D6 |
+| Keyboard workflows | Transport/fine-seek plus Rust additions fit; C save/export/direct-scene keys missing | D7 |
+| Notices/save status | Basic transient notices fit; actionable tray and save-state visibility missing | D8, F1 |
 | Linux launcher/MIME | Source install fit | E4 |
 | Self-contained distribution/doctor | Missing | E4 |
 | Microphone/hot reload/non-Linux | Deliberately excluded | none |
@@ -489,8 +633,8 @@ parallel task lists.
 | Completion-plan W1/W2 and G through O | Landed; retain NOTE ENTRIES as history. Remaining integration gaps have new A-G ids above |
 | Agent I: Lyrics panel call sites | Landed; only TSV import/export and broad draft guards remain, D3/C2 |
 | Agent J: Assist panel seams | Landed; real helper bundle and lyric-draft conflict remain, E2/C2 |
-| Agent K: font-browser seams | Landed; helper packaging remains, E3; stale dead-code comments go to F2 |
-| Agent L: event/preset call sites | Landed; frame/timeline consumption remains, A1/D4 |
+| Agent K: font-browser seams | UI/job controller landed; background polling and transactional project application remain E3; stale comments go to F2 |
+| Agent L: event/preset call sites | Event frame consumption landed; timeline markers remain D4 and project-preset adoption is C5 |
 | W1 note: autosave only current track | Active as C4 |
 | `Workspace::assist` ownership deferral | Optional structural cleanup F3, not a parity requirement |
 | Item O: add every possible harness | Reframed as risk-based evidence work in G1 |

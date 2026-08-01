@@ -16,8 +16,8 @@
 //! 1. `-h`/`--help`/`--version` pre-pass over all of `argv` — exits 0 before a
 //!    window opens, even when the rest of the line is invalid.
 //! 2. Window, minimum size, audio device.
-//! 3. The `argv` actions, left to right, so a later input overwrites an earlier
-//!    one.
+//! 3. The `argv` actions, left to right. Every input is opened at its position:
+//!    plain audio appends, while a project appends and becomes current.
 //! 4. **Then** the deferred routes, so a project hydration cannot overwrite a
 //!    route that appeared earlier in `argv` (`musializer.c:553-561`).
 //! 5. Render config, save, probe — each short-circuited by the shared error flag.
@@ -194,11 +194,10 @@ fn run() -> Result<std::process::ExitCode, String> {
     // would otherwise hide.
     let requested_scene = options.requested_scene();
 
-    let (width, height) = options
-        .ui_probe
-        .as_ref()
-        .and_then(|probe| probe.size)
-        .map_or(options.window, |(w, h)| (w as i32, h as i32));
+    // `--ui-probe size=` is applied with the rest of the probe after every CLI
+    // stage succeeds. Starting at that size here would make a failed command line
+    // mutate the window even though the C suppresses the probe whole.
+    let (width, height) = options.window;
 
     let (mut rl, thread) = raylib::init()
         .size(width, height)
@@ -211,13 +210,6 @@ fn run() -> Result<std::process::ExitCode, String> {
     // (`musializer.c:354`, `:599-601`).
     rl.set_window_min_size(cli::MIN_WINDOW.0, cli::MIN_WINDOW.1);
     rl.set_target_fps(60);
-    if options.ui_probe.is_some() {
-        // Park the window at the origin so a capture of a display sized to the
-        // window needs no guesswork about compositor placement
-        // (`musializer.c:605-607`).
-        rl.set_window_position(0, 0);
-    }
-
     let audio = RaylibAudio::init_audio_device()
         .map_err(|error| format!("could not initialize the audio device: {error}"))?;
 
@@ -304,8 +296,20 @@ fn run() -> Result<std::process::ExitCode, String> {
         },
     }
 
+    // Interleaved stereo scratch, drained from the ring each frame. It and the
+    // stream owner must exist before argv replay because input actions open at
+    // their actual positions; delaying these two was what forced the old
+    // single-slot `Option<Input>` model.
+    let mut scratch = vec![0.0f32; 4096 * audio_bridge::MIXED_CHANNELS];
+    let mut music: Option<Music<'_>> = None;
+    // A probe that asks for a parked transport gets an initially paused stream.
+    // The full probe is still applied later, after every gated CLI stage.
+    let play = !options
+        .ui_probe
+        .as_ref()
+        .is_some_and(|probe| !probe.playing);
+
     // Step 3: the argv actions, left to right.
-    let mut input: Option<Input> = None;
     for action in std::mem::take(&mut options.actions) {
         match action {
             // Sets the *flag*, where the oracle sets the device volume directly
@@ -320,19 +324,20 @@ fn run() -> Result<std::process::ExitCode, String> {
             Action::SelectScene(id) => {
                 app.select_scene(id, 0.0);
             }
-            // The scene is selected whether or not the import succeeds, which is
-            // the oracle's order (`musializer.c:413-422` selects unconditionally
-            // after reporting). A user who mistyped the filename still lands on the
-            // scene they asked for, drawing its procedural mode.
             Action::AsciiImage(path) => {
                 match import_ascii_image(&mut app, &path) {
                     // Not prefixed `ascii:` — that key belongs to the slice
                     // report, and a check grepping for it would otherwise match
                     // this line too and assert on the wrong one.
-                    Ok((columns, rows)) => println!(
-                        "ascii import:    {} as {columns}x{rows} glyphs",
-                        path.display()
-                    ),
+                    Ok((columns, rows)) => {
+                        println!(
+                            "ascii import:    {} as {columns}x{rows} glyphs",
+                            path.display()
+                        );
+                        // The C's `else if`: a failed import does not change the
+                        // scene (`musializer.c:413-420`).
+                        app.select_scene(SceneId::AsciiField, 0.0);
+                    }
                     // A refused import is a failed exit status, not a warning
                     // buried in a log: `--ascii-image` is a scripted flag, and a
                     // script that gets 0 back has been told the image is on screen.
@@ -346,13 +351,10 @@ fn run() -> Result<std::process::ExitCode, String> {
                         options.error = true;
                     }
                 }
-                app.select_scene(SceneId::AsciiField, 0.0);
             }
-            // `plug_record_event` (`plug.c:1055-1069`). No track is open yet —
-            // the actions run before an input is resolved — so this lands in the
-            // workspace's pending lane and is handed to the first track that
-            // opens (`plug.c:844-851`). The C reports a rejected record with the
-            // same message as a parse failure (`musializer.c:423-431`).
+            // `plug_record_event` (`plug.c:1055-1069`). Because inputs are opened
+            // in place, an event before the first one enters the pending lane and
+            // an event after one edits the then-current track.
             Action::RecordEvent(event) => {
                 if app.workspace.record_event(event).is_err() {
                     eprintln!(
@@ -361,11 +363,37 @@ fn run() -> Result<std::process::ExitCode, String> {
                     options.error = true;
                 }
             }
-            // The last input wins, exactly as in the C, and a project and an
-            // audio file compete for the same slot — which is why they share one
-            // variable rather than each having their own.
-            Action::OpenProject(path) => input = Some(Input::Project(path)),
-            Action::LoadTrack(path) => input = Some(Input::Audio(path)),
+            Action::OpenProject(path) => {
+                if let Err(error) = open_project(
+                    &audio,
+                    &path,
+                    &mut analysis,
+                    &mut music,
+                    &mut app,
+                    &mut scratch,
+                ) {
+                    eprintln!("warning: could not open {}: {error}", path.display());
+                    options.error = true;
+                } else if !play {
+                    if let Some(open) = music.as_ref() {
+                        open.pause_stream();
+                    }
+                }
+            }
+            Action::LoadTrack(path) => {
+                if let Err(error) = open_track(
+                    &audio,
+                    &path,
+                    &mut analysis,
+                    &mut music,
+                    &mut app,
+                    &mut scratch,
+                    play,
+                ) {
+                    eprintln!("warning: could not load {}: {error}", path.display());
+                    options.error = true;
+                }
+            }
         }
     }
 
@@ -402,15 +430,6 @@ fn run() -> Result<std::process::ExitCode, String> {
         }
     }
 
-    // Step 5: the stages the rewrite has not built.
-    if options.reload_once {
-        unimplemented_action(
-            &mut options,
-            &mut app,
-            "--reload-once",
-            "hot reload is an explicit first-pass non-goal",
-        );
-    }
     // The readout's default, decided once. A probe run turns it on because a
     // capture that carries its own evidence is why the line exists; an interactive
     // run leaves it off because it is a developer HUD. `--hud=0|1` overrides both,
@@ -419,226 +438,10 @@ fn run() -> Result<std::process::ExitCode, String> {
 
     // Where `--ui-probe hover=X,Y` parks the pointer, reasserted every frame.
     let mut hover_at: Option<(f32, f32)> = None;
-    let mut assist_probe_misplaced = false;
-    if let Some(probe) = options.ui_probe.as_ref() {
-        // Only the parts of the probe that have a surface to open are honoured;
-        // the rest is reported rather than silently ignored, because a capture
-        // script that photographs the wrong state is the failure this flag exists
-        // to prevent (`musializer.c:128-130`).
-        app.shell.panel = probe.panel;
-        app.shell.fullscreen = probe.fullscreen;
-        // A capture with no dwell time cannot photograph a tooltip, and a tooltip
-        // nothing photographs does not get reviewed — the rule this repository has
-        // already been bitten by twice. Zeroed rather than shortened so the tip is
-        // in frame one, independent of how many frames the run happens to last.
-        app.shell.widgets.tooltip_delay = 0.0;
-        hover_at = probe.hover;
-        if probe.panel == cli::UiPanel::Tune {
-            app.shell.inspector_open = true;
-        }
-        // `assist=confirm` arms the review step (`plug.c:3807-3810`). It needs
-        // `panel=assist`, because arming a step in a panel nobody can see would
-        // photograph the wrong state.
-        assist_probe_misplaced = probe.assist_confirmation && probe.panel != cli::UiPanel::Assist;
-        if probe.assist_confirmation && !assist_probe_misplaced {
-            app.workspace.assist.set_confirmation_pending(true);
-        }
-    }
 
-    // Interleaved stereo scratch, drained from the ring each frame. Sized for a
-    // long frame at 44.1 kHz so a hitch does not silently discard audio. Declared
-    // before the first track load because `close_audio` drains through it.
-    let mut scratch = vec![0.0f32; 4096 * audio_bridge::MIXED_CHANNELS];
-
-    // The Music must be dropped — and the processor detached — while the audio
-    // device and window are still alive. Getting that order wrong is one of the
-    // plan's named traps, which is why every transition goes through
-    // `bind_current_audio`/`close_audio` rather than being written out at each site.
-    let mut music: Option<Music<'_>> = None;
-    // `--ui-probe play=0` photographs a paused track. `is_some_and` rather than
-    // `is_none_or`, which needs a newer Rust than this workspace's MSRV.
-    let play = !options
-        .ui_probe
-        .as_ref()
-        .is_some_and(|probe| !probe.playing);
-    match input.as_ref() {
-        None => {}
-        Some(Input::Audio(path)) => {
-            if let Err(error) = open_track(
-                &audio,
-                path,
-                &mut analysis,
-                &mut music,
-                &mut app,
-                &mut scratch,
-                play,
-            ) {
-                // The C's `Could not load command-line track` (`:548`).
-                eprintln!("warning: could not load {}: {error}", path.display());
-                options.error = true;
-            }
-        }
-        Some(Input::Project(path)) => {
-            if let Err(error) = open_project(
-                &audio,
-                path,
-                &mut analysis,
-                &mut music,
-                &mut app,
-                &mut scratch,
-            ) {
-                // The C's `Could not load command-line project` (`musializer.c`).
-                eprintln!("warning: could not open {}: {error}", path.display());
-                options.error = true;
-            } else if !play {
-                if let Some(open) = music.as_ref() {
-                    open.pause_stream();
-                }
-            }
-        }
-    }
-
-    if assist_probe_misplaced {
-        unimplemented_action(
-            &mut options,
-            &mut app,
-            "--ui-probe",
-            "assist=confirm needs panel=assist",
-        );
-    }
-
-    // `--analysis-bridge`, after every input is resolved, exactly where the C
-    // applies it (`musializer.c:579-586`). It applies rather than staging: a
-    // batch entry point with no review step must not leave the result unapplied.
-    if let Some(path) = options.analysis_bridge.clone() {
-        match assist.import_bridge(&path, &mut app.workspace, 0.0) {
-            Ok(notices) => {
-                for notice in notices {
-                    app.shell
-                        .notify(notice.severity, &notice.title, &notice.detail);
-                }
-            }
-            Err(error) => {
-                eprintln!(
-                    "warning: could not load command-line analysis bridge {}: {error}",
-                    path.display()
-                );
-                options.error = true;
-            }
-        }
-    }
-
-    // `--auto-scenes` is evaluated after the project/bridge input, because it
-    // enables the plan those stages supplied (`musializer.c:585-589`). An empty
-    // plan is a command-line failure, not a successful no-op.
-    if options.auto_scenes {
-        if options.error {
-            eprintln!("warning: could not enable automatic scene switching");
-        } else {
-            match app.workspace.current_mut() {
-                Some(track) if !track.scene_switches.is_empty() => {
-                    track.scene_switches.enabled = true;
-                    track.scene_switches.reset();
-                    track.cue_settings_active = false;
-                }
-                _ => {
-                    eprintln!("warning: could not enable automatic scene switching");
-                    options.error = true;
-                }
-            }
-        }
-    }
-
-    // `--ui-probe lyrics-file=` selects the sheet the next lyrics run will use
-    // (`plug.c:3812-3823`).
-    if let Some(path) = options
-        .ui_probe
-        .as_ref()
-        .and_then(|probe| probe.lyrics_reference_path.clone())
-    {
-        if app.workspace.current().is_none() || !path.is_file() {
-            eprintln!(
-                "warning: could not apply --ui-probe lyrics-file={}; it needs a loaded track and an existing file",
-                path.display()
-            );
-            options.error = true;
-        } else {
-            for notice in assist.set_lyric_sheet(&mut app.workspace, &path) {
-                app.shell
-                    .notify(notice.severity, &notice.title, &notice.detail);
-            }
-        }
-    }
-
-    // `--save-project`, after every input is resolved so it saves what the rest
-    // of the command line actually produced (`musializer.c:571-577`).
-    if let Some(destination) = options.save_project.clone() {
-        match save_project_to(&mut app, music.as_ref(), &destination, false) {
-            Ok(()) => println!("saved {}", destination.display()),
-            Err(error) => {
-                eprintln!("warning: could not save {}: {error}", destination.display());
-                options.error = true;
-            }
-        }
-    }
-
-    if let Some(probe) = options.ui_probe.as_ref() {
-        // "a panel or seek probe needs a loaded, seekable track"
-        // (`musializer.c:609-611`).
-        if music.is_none() && (probe.panel != cli::UiPanel::None || probe.seek_seconds.is_some()) {
-            eprintln!(
-                "warning: could not apply --ui-probe state; a panel or seek probe needs a loaded, seekable track"
-            );
-            options.error = true;
-        }
-        if let (Some(music), Some(seconds)) = (music.as_ref(), probe.seek_seconds) {
-            music.seek_stream(seconds as f32);
-        }
-        if let (Some(music), Some(zoom)) = (music.as_ref(), probe.timeline_zoom) {
-            let duration = f64::from(music.get_time_length());
-            app.shell.timeline.reset(duration);
-            app.shell
-                .timeline
-                .zoom(duration, zoom, f64::from(music.get_time_played()));
-        }
-        // The lyrics editor's probe keys, which need the track they edit.
-        if let Some(track) = app.workspace.current_mut() {
-            let mut lyrics = std::mem::take(&mut app.shell.lyrics);
-            let honoured = lyrics.apply_probe(probe, track);
-            app.shell.lyrics = lyrics;
-            if !honoured {
-                eprintln!("warning: --ui-probe lyrics keys could not be applied");
-                options.error = true;
-            }
-        }
-        // Applied here with the rest of the probe, before the first frame, so the
-        // evidence line is printed once rather than being guarded by a flag on the
-        // draft. It needs the committed route, which needs the track.
-        if let Some(key) = probe.route_editor.clone() {
-            let slot = app.workspace.current_index().unwrap_or(0);
-            let scene = app.scene.id();
-            let committed = app
-                .routes()
-                .scene(scene)
-                .items()
-                .iter()
-                .find(|mapping| mapping.parameter == key)
-                .cloned();
-            let line = app
-                .shell
-                .open_route_editor_probe(&key, scene, slot, committed.as_ref());
-            println!("{line}");
-        }
-    }
-
-    let mut report = Report::default();
-
-    // `--save-project` without `--render` skips the main loop entirely
-    // (`musializer.c:617`, `:637`). The save itself was already reported above;
-    // honouring the skip keeps the exit path identical.
-    // Render configuration onto the current track (`plug_configure_render`,
-    // `plug.c:7145-7169`). Width and height move together, a zero means "leave
-    // it", and an invalid result is refused whole rather than half-applied.
+    // Render configuration is the first gated stage after deferred routes. It
+    // must precede `--save-project`, or a one-shot `--resolution`/`--fps` change
+    // is absent from the file the same command line asks us to write.
     if !options.error
         && (options.resolution.is_some() || options.fps.is_some() || quality.is_some())
     {
@@ -647,15 +450,11 @@ fn run() -> Result<std::process::ExitCode, String> {
             .current()
             .map_or_else(RenderExportConfig::default, |track| track.render_config);
         if let Some((width, height)) = options.resolution {
-            if width != 0 && height != 0 {
-                config.width = width;
-                config.height = height;
-            }
+            config.width = width;
+            config.height = height;
         }
         if let Some(fps) = options.fps {
-            if fps != 0 {
-                config.fps = fps;
-            }
+            config.fps = fps;
         }
         if let Some(named) = quality {
             config.set_quality(match named {
@@ -664,8 +463,6 @@ fn run() -> Result<std::process::ExitCode, String> {
                 cli::Quality::Master => RenderQuality::Master,
             });
         }
-        // The name the *command line* used, so a rejection names the flag value
-        // the user typed rather than the enum it resolved to.
         let requested = quality.map_or("unchanged", cli::Quality::name);
         match config.validate() {
             Ok(()) => {
@@ -682,6 +479,186 @@ fn run() -> Result<std::process::ExitCode, String> {
             }
         }
     }
+
+    // `--analysis-bridge`, after every input is resolved, exactly where the C
+    // applies it (`musializer.c:579-586`). It applies rather than staging: a
+    // batch entry point with no review step must not leave the result unapplied.
+    if let Some(path) = options.analysis_bridge.clone() {
+        if options.error {
+            eprintln!(
+                "warning: could not load command-line analysis bridge {}",
+                path.display()
+            );
+        } else {
+            match assist.import_bridge(&path, &mut app.workspace, 0.0) {
+                Ok(notices) => {
+                    for notice in notices {
+                        app.shell
+                            .notify(notice.severity, &notice.title, &notice.detail);
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not load command-line analysis bridge {}: {error}",
+                        path.display()
+                    );
+                    options.error = true;
+                }
+            }
+        }
+    }
+
+    // `--auto-scenes` is evaluated after the project/bridge input, because it
+    // enables the plan those stages supplied (`musializer.c:585-589`). An empty
+    // plan is a command-line failure, not a successful no-op.
+    if options.auto_scenes {
+        if options.error {
+            eprintln!("warning: could not enable automatic scene switching");
+        } else {
+            match app.workspace.current_mut() {
+                Some(track) if !track.scene_switches.is_empty() => {
+                    debug_assert!(track.set_auto_scenes(true));
+                }
+                _ => {
+                    eprintln!("warning: could not enable automatic scene switching");
+                    options.error = true;
+                }
+            }
+        }
+    }
+
+    // `--save-project`, after every input is resolved so it saves what the rest
+    // of the command line actually produced (`musializer.c:589-593`). Like the
+    // C, a prior error reports this stage as failed without touching the path.
+    if let Some(destination) = options.save_project.clone() {
+        if options.error {
+            eprintln!(
+                "warning: could not save command-line project: {}",
+                destination.display()
+            );
+        } else {
+            match save_project_to(&mut app, music.as_ref(), &destination, false) {
+                Ok(()) => println!("saved {}", destination.display()),
+                Err(error) => {
+                    eprintln!("warning: could not save {}: {error}", destination.display());
+                    options.error = true;
+                }
+            }
+        }
+    }
+
+    // Startup flags are configuration, not an operator edit. `--save-project`
+    // above is the opt-in persistence path; otherwise autosave must not commit a
+    // one-off scene, route or render setting after launch.
+    app.workspace.mark_command_line_state_clean();
+
+    // The probe is one late, gated stage in the C. Keep *all* of it here: panel
+    // state applied earlier was still a side effect after an unrelated CLI error.
+    if !options.error {
+        if let Some(probe) = options.ui_probe.clone() {
+            if let Some((width, height)) = probe.size {
+                rl.set_window_size(width as i32, height as i32);
+            }
+            rl.set_window_position(0, 0);
+            app.shell.panel = probe.panel;
+            app.shell.fullscreen = probe.fullscreen;
+            app.shell.widgets.tooltip_delay = 0.0;
+            hover_at = probe.hover;
+            if probe.panel == cli::UiPanel::Tune {
+                app.shell.inspector_open = true;
+            }
+            if probe.assist_confirmation {
+                if probe.panel == cli::UiPanel::Assist {
+                    app.workspace.assist.set_confirmation_pending(true);
+                } else {
+                    eprintln!(
+                        "warning: could not apply --ui-probe state; assist=confirm needs panel=assist"
+                    );
+                    options.error = true;
+                }
+            }
+
+            // `--ui-probe lyrics-file=` selects the sheet the next lyrics run
+            // will use (`plug.c:3812-3823`).
+            if let Some(path) = probe.lyrics_reference_path.as_ref() {
+                if app.workspace.current().is_none() || !path.is_file() {
+                    eprintln!(
+                        "warning: could not apply --ui-probe lyrics-file={}; it needs a loaded track and an existing file",
+                        path.display()
+                    );
+                    options.error = true;
+                } else {
+                    for notice in assist.set_lyric_sheet(&mut app.workspace, path) {
+                        app.shell
+                            .notify(notice.severity, &notice.title, &notice.detail);
+                    }
+                }
+            }
+
+            // "a panel or seek probe needs a loaded, seekable track"
+            // (`musializer.c:609-611`).
+            if music.is_none()
+                && (probe.panel != cli::UiPanel::None || probe.seek_seconds.is_some())
+            {
+                eprintln!(
+                    "warning: could not apply --ui-probe state; a panel or seek probe needs a loaded, seekable track"
+                );
+                options.error = true;
+            }
+            if let (Some(music), Some(seconds)) = (music.as_ref(), probe.seek_seconds) {
+                music.seek_stream(seconds as f32);
+            }
+            if let (Some(music), Some(zoom)) = (music.as_ref(), probe.timeline_zoom) {
+                let duration = f64::from(music.get_time_length());
+                app.shell.timeline.reset(duration);
+                app.shell
+                    .timeline
+                    .zoom(duration, zoom, f64::from(music.get_time_played()));
+            }
+            // The lyrics editor's probe keys, which need the track they edit.
+            if let Some(track) = app.workspace.current_mut() {
+                let mut lyrics = std::mem::take(&mut app.shell.lyrics);
+                let honoured = lyrics.apply_probe(&probe, track);
+                app.shell.lyrics = lyrics;
+                if !honoured {
+                    eprintln!("warning: --ui-probe lyrics keys could not be applied");
+                    options.error = true;
+                }
+            }
+            if let Some(key) = probe.route_editor.clone() {
+                let slot = app.workspace.current_index().unwrap_or(0);
+                let scene = app.scene.id();
+                let committed = app
+                    .routes()
+                    .scene(scene)
+                    .items()
+                    .iter()
+                    .find(|mapping| mapping.parameter == key)
+                    .cloned();
+                let line = app
+                    .shell
+                    .open_route_editor_probe(&key, scene, slot, committed.as_ref());
+                println!("{line}");
+            }
+        }
+    }
+
+    // Hot reload is an approved exclusion, but its failure is itself gated at
+    // the same late point where the C attempts the handoff.
+    if options.reload_once && !options.error {
+        unimplemented_action(
+            &mut options,
+            &mut app,
+            "--reload-once",
+            "hot reload is an explicit first-pass non-goal",
+        );
+    }
+
+    let mut report = Report::default();
+
+    // `--save-project` without `--render` skips the main loop entirely
+    // (`musializer.c:617`, `:637`). The save itself was already reported above;
+    // honouring the skip keeps the exit path identical.
 
     // CLI export begins before the ordinary frame loop, so synchronize once here
     // as well as at the top of each interactive frame.
@@ -1102,6 +1079,9 @@ fn run() -> Result<std::process::ExitCode, String> {
                 }
                 ShellCommand::SelectScene(id) => {
                     app.select_scene(id, rl.get_time());
+                }
+                ShellCommand::SetAutoScenes(enabled) => {
+                    app.set_auto_scenes(enabled, rl.get_time());
                 }
                 ShellCommand::SetSetting {
                     scene,
@@ -1587,6 +1567,53 @@ impl App {
             self.shell
                 .notify(Severity::Info, "Base scene changed", &detail);
         }
+        true
+    }
+
+    /// Applies the Assist header's automatic-scene toggle
+    /// (`plug.c:2207-2226`). The track model owns the retained plan and cursor;
+    /// this composition root owns the live scene instance and user notice.
+    fn set_auto_scenes(&mut self, enabled: bool, now_seconds: f64) -> bool {
+        let Some(track) = self.workspace.current_mut() else {
+            self.shell.notify(
+                Severity::Warning,
+                "Automatic scenes unavailable",
+                "Open a project with an automatic scene plan first.",
+            );
+            return false;
+        };
+        let base_scene = track.base_scene;
+        let seed = track.scene_seed;
+        let cue_count = track.scene_switches.len();
+        if !track.set_auto_scenes(enabled) {
+            self.shell.notify(
+                Severity::Warning,
+                "Automatic scenes unavailable",
+                "Add or apply at least one scene cue before enabling the plan.",
+            );
+            return false;
+        }
+        track.mark_dirty(now_seconds);
+
+        if !enabled {
+            self.scene = SceneInstance::new(scene_host::descriptor(base_scene), seed);
+        }
+        self.shell.notify(
+            Severity::Info,
+            if enabled {
+                "Automatic scenes enabled"
+            } else {
+                "Automatic scenes disabled"
+            },
+            &format!(
+                "The retained {cue_count}-cue plan is {}.",
+                if enabled {
+                    "driving preview and export"
+                } else {
+                    "off; the base scene is restored"
+                }
+            ),
+        );
         true
     }
 
@@ -2278,13 +2305,6 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
     }
 }
 
-/// What the command line asked to open. One slot, because a project and an audio
-/// file compete for it and the last one wins (`musializer.c:500-506`).
-enum Input {
-    Audio(PathBuf),
-    Project(PathBuf),
-}
-
 /// Opens a `.musi` and makes its track current (`open_project_path`,
 /// `plug.c:4665-5044`).
 ///
@@ -2655,6 +2675,18 @@ impl Report {
                 None => println!("project:         none (audio only)"),
             },
             None => println!("project:         no track"),
+        }
+        match app.workspace.current() {
+            None => println!("auto scenes:     no track"),
+            Some(track) => println!(
+                "auto scenes:     {} ({} cues)",
+                if track.scene_switches.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                track.scene_switches.len()
+            ),
         }
         println!(
             "frame lanes:     lyric={} semantic={} source={} merged-events={}",

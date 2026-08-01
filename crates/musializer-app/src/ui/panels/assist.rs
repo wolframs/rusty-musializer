@@ -1018,10 +1018,6 @@ impl Shell {
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) {
-        // The panel's requests travel on the session rather than as
-        // `ShellCommand`s, because `ShellCommand` lives in `ui/shell.rs`, which no
-        // leaf agent in this fan-out may edit. See Agent J's note.
-        let _ = commands;
         let padding = metric::UI_PANEL_PADDING;
         let gap = metric::UI_CONTROL_GAP;
         let top = strip.y + strip.height + 28.0;
@@ -1104,6 +1100,48 @@ impl Shell {
             metric::UI_FONT_VALUE,
             color::ui_muted(),
         );
+
+        // The saved/Assist-produced plan is useful only if it can be enabled
+        // again after a manual scene choice disabled it. Match the oracle's
+        // compact header control and keep it absent when there is no plan to
+        // operate on (`plug.c:2207-2226`).
+        if boundary.width >= 560.0 {
+            if let Some((enabled, cue_count)) = input
+                .workspace
+                .current()
+                .filter(|track| !track.scene_switches.is_empty())
+                .map(|track| (track.scene_switches.enabled, track.scene_switches.len()))
+            {
+                let label = format!(
+                    "Current auto scenes: {} ({cue_count})",
+                    if enabled { "On" } else { "Off" }
+                );
+                let toggle = UiRect::new(
+                    boundary.x + boundary.width - padding - 190.0,
+                    boundary.y + 8.0,
+                    190.0,
+                    metric::UI_BUTTON_HEIGHT,
+                );
+                let font_size =
+                    widgets::row_font_size(font, &[label.as_str()], &[toggle.width], toggle.height);
+                if self
+                    .widgets
+                    .text_button(
+                        &mut clip,
+                        font,
+                        widgets::widget_id(ASSIST_WIDGETS, 90),
+                        toggle,
+                        &label,
+                        enabled,
+                        ButtonStyle::Neutral,
+                        Some(font_size),
+                    )
+                    .clicked
+                {
+                    commands.push(ShellCommand::SetAutoScenes(!enabled));
+                }
+            }
+        }
 
         let start_block = input.workspace.assist.start_block();
         self.assist_modes(&mut clip, input, boundary, &layout, start_block);

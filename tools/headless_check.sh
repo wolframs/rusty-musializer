@@ -612,6 +612,85 @@ echo "=== the runtime track swap ==="
 # duration as well as in the audio-frame count.
 FIXTURE_TWO="$OUT_DIR/fixture-sweep-short.wav"
 cargo run --quiet --bin make-fixture-wav -- "$FIXTURE_TWO" 3
+
+echo "=== command-line action ordering ==="
+# Inputs are actions, not candidates for one eventual slot. The frozen C appends
+# both positional audio files and leaves the first one current; this report line
+# catches the old Rust reduction to `Option<Input>`, where only the second file
+# survived long enough to be opened.
+CLI_MULTI_LOG="$OUT_DIR/cli-multiple-inputs.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" "$FIXTURE_TWO" \
+        --probe-frames 1 \
+    >"$CLI_MULTI_LOG" 2>&1
+CLI_MULTI_STATUS=$?
+set -e
+CLI_MULTI_TRACKS="$(sed -n 's/^tracks: *//p' "$CLI_MULTI_LOG")"
+echo "multiple inputs: ${CLI_MULTI_TRACKS:-<absent>} (exit=$CLI_MULTI_STATUS)"
+case "${CLI_MULTI_TRACKS:-absent}" in
+    "2 open, current 0 "*) : ;;
+    *)
+        echo "FAIL: CLI inputs were not opened left-to-right: ${CLI_MULTI_TRACKS:-<absent>}" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+if [ "$CLI_MULTI_STATUS" -ne 0 ]; then
+    echo "FAIL: the multiple-input CLI run exited $CLI_MULTI_STATUS" >&2
+    SWEEP_FAILED=1
+fi
+
+# `--ascii-image` selects ASCII Field only after a successful import. A missing
+# file must leave the scene selected immediately before it alone. The run still
+# prints its report on failure, so this checks the state as well as the exit code.
+CLI_ASCII_LOG="$OUT_DIR/cli-failed-ascii.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute --scene loom \
+        --ascii-image "$OUT_DIR/cli-absent-image.png" \
+        --probe-frames 1 \
+    >"$CLI_ASCII_LOG" 2>&1
+CLI_ASCII_STATUS=$?
+set -e
+CLI_ASCII_SCENE="$(sed -n 's/^scene: *//p' "$CLI_ASCII_LOG")"
+echo "failed ASCII import: ${CLI_ASCII_SCENE:-<absent>} (exit=$CLI_ASCII_STATUS)"
+case "${CLI_ASCII_SCENE:-absent}" in
+    "loom (Loom)") : ;;
+    *)
+        echo "FAIL: a failed ASCII import changed the selected scene: ${CLI_ASCII_SCENE:-<absent>}" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+if [ "$CLI_ASCII_STATUS" -eq 0 ]; then
+    echo "FAIL: a missing command-line ASCII image exited successfully" >&2
+    SWEEP_FAILED=1
+fi
+
+# The C keeps parsing after an error but gates later durable side effects. This
+# was a particularly dangerous mismatch: Rust returned failure *and* wrote the
+# requested project, so a caller could not infer whether failure meant no output.
+CLI_BLOCKED_PROJECT="$OUT_DIR/cli-error-must-not-save.musi"
+CLI_BLOCKED_LOG="$OUT_DIR/cli-error-save.txt"
+rm -f "$CLI_BLOCKED_PROJECT"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" --fps 0 \
+        --save-project "$CLI_BLOCKED_PROJECT" \
+    >"$CLI_BLOCKED_LOG" 2>&1
+CLI_BLOCKED_STATUS=$?
+set -e
+echo "error-gated save: file=$([ -e "$CLI_BLOCKED_PROJECT" ] && echo PRESENT || echo absent) (exit=$CLI_BLOCKED_STATUS)"
+if [ "$CLI_BLOCKED_STATUS" -eq 0 ] || [ -e "$CLI_BLOCKED_PROJECT" ]; then
+    echo "FAIL: an earlier CLI error did not suppress --save-project" >&2
+    SWEEP_FAILED=1
+fi
+
 REOPEN_LOG="$OUT_DIR/reopen.txt"
 set +e
 env -u WAYLAND_DISPLAY \
@@ -687,6 +766,40 @@ if [ "$SAVE_STATUS" -ne 0 ] || [ ! -f "$PROJECT" ] || [ -z "$BUNDLED" ]; then
     SWEEP_FAILED=1
 fi
 
+# Render flags are configured before the save stage. The old Rust order wrote a
+# valid project with the defaults and only changed the in-memory config after the
+# file was already published, which an ordinary reopen could not distinguish.
+CONFIG_PROJECT="$PROJECT_DIR/configured.musi"
+CONFIG_LOG="$OUT_DIR/project-configured-save.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$PROJECT_DIR/source.wav" \
+        --resolution 854x480 --fps 24 --quality master \
+        --save-project "$CONFIG_PROJECT" \
+    >"$CONFIG_LOG" 2>&1
+CONFIG_STATUS=$?
+set -e
+if [ "$CONFIG_STATUS" -eq 0 ] && python3 - "$CONFIG_PROJECT" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    output = json.load(source)["output"]
+assert output["width"] == 854
+assert output["height"] == 480
+assert output["fps_numerator"] == 24
+assert output["fps_denominator"] == 1
+assert output["quality"] == "master"
+PY
+then
+    echo "saved render configuration: 854x480 at 24 fps, master"
+else
+    echo "FAIL: render flags were not applied before --save-project" >&2
+    SWEEP_FAILED=1
+fi
+
 # The source is removed before the reopen, so the run can only succeed by
 # reading the bundled copy. This is the assertion that makes the bundle mean
 # something rather than merely exist.
@@ -727,6 +840,30 @@ case "${OPEN_VERDICT:-absent}" in
         SWEEP_FAILED=1
         ;;
 esac
+
+# Routes are the one deliberately deferred argv family. They must be applied
+# after project hydration, while the scene action after that project remains an
+# immediate action. This run catches both halves of the ordering contract.
+PROJECT_ROUTE_LOG="$OUT_DIR/project-route.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute --project "$PROJECT" --scene loom \
+        --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
+        --probe-frames 1 \
+    >"$PROJECT_ROUTE_LOG" 2>&1
+PROJECT_ROUTE_STATUS=$?
+set -e
+PROJECT_ROUTE_SCENE="$(sed -n 's/^scene: *//p' "$PROJECT_ROUTE_LOG")"
+PROJECT_ROUTE_COUNT="$(sed -n 's/^routes: *//p' "$PROJECT_ROUTE_LOG")"
+echo "project + scene + deferred route: scene=${PROJECT_ROUTE_SCENE:-<absent>} routes=${PROJECT_ROUTE_COUNT:-<absent>} (exit=$PROJECT_ROUTE_STATUS)"
+if [ "$PROJECT_ROUTE_STATUS" -ne 0 ] \
+    || [ "$PROJECT_ROUTE_SCENE" != "loom (Loom)" ] \
+    || [ "$PROJECT_ROUTE_COUNT" != "1" ]; then
+    echo "FAIL: project hydration, scene action, and deferred route targeted different states" >&2
+    SWEEP_FAILED=1
+fi
 
 echo "=== the export transport ==="
 # The two claims a screenshot cannot make, and the two `cargo test` must not
@@ -957,6 +1094,77 @@ for size in 1280x720 960x640; do
             ;;
     esac
 done
+
+# The plan's interactive control lives in the Assist header. Seed a disabled
+# two-cue plan, then capture both header states at a playhead in the second cue.
+# `scene:` is the state beyond the label: disabled restores the saved base scene,
+# while enabled drives the same preview frame through Loom.
+AUTO_SCENE_DIR="$OUT_DIR/auto-scenes"
+rm -rf "$AUTO_SCENE_DIR"
+mkdir -p "$AUTO_SCENE_DIR"
+if [ ! -f "$LYRIC_PROJECT" ]; then
+    echo "FAIL: the generated project needed for the Auto-scenes gate is unavailable" >&2
+    SWEEP_FAILED=1
+else
+    cp "$LYRIC_PROJECT" "$AUTO_SCENE_DIR/plan.musi"
+    cp "$LYRIC_DIR/source.wav" "$AUTO_SCENE_DIR/source.wav"
+    # The generated project publishes its audio under this asset root; preserve
+    # that content-addressed path when the project document is copied.
+    cp -a "$LYRIC_DIR/cues.assets" "$AUTO_SCENE_DIR/cues.assets"
+    python3 tools/seed_lyric_fixture.py "$AUTO_SCENE_DIR/plan.musi" \
+        --scene constellation --scene-plan >"$AUTO_SCENE_DIR/seed.txt"
+
+    auto_scene_capture() {
+        # auto_scene_capture NAME [extra application arguments]
+        local name="$1"
+        shift
+        local shot="$AUTO_SCENE_DIR/$name.png"
+        local log="$AUTO_SCENE_DIR/$name.txt"
+        set +e
+        env -u WAYLAND_DISPLAY \
+            DISPLAY="$DISPLAY_NUM" \
+            PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+            ./target/debug/musializer --mute --project "$AUTO_SCENE_DIR/plan.musi" \
+                "$@" \
+                --size 1280x720 \
+                --probe-frames 12 \
+                --probe-shot "$shot" \
+                --ui-probe "panel=assist,time=5,play=0" \
+            >"$log" 2>&1
+        local status=$?
+        set -e
+        local state scene
+        state="$(sed -n 's/^auto scenes: *//p' "$log" | head -1)"
+        scene="$(sed -n 's/^scene: *//p' "$log" | head -1)"
+        echo "$name: exit=$status state=${state:-<absent>} scene=${scene:-<absent>}"
+        if [ "$status" -ne 0 ] || [ ! -f "$shot" ]; then
+            return 1
+        fi
+    }
+
+    auto_scene_capture disabled || SWEEP_FAILED=1
+    auto_scene_capture enabled --auto-scenes || SWEEP_FAILED=1
+
+    DISABLED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/disabled.txt" | head -1)"
+    ENABLED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
+    DISABLED_SCENE="$(sed -n 's/^scene: *//p' "$AUTO_SCENE_DIR/disabled.txt" | head -1)"
+    ENABLED_SCENE="$(sed -n 's/^scene: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
+    if [ "$DISABLED_STATE" != "disabled (2 cues)" ] \
+        || [ "$DISABLED_SCENE" != "constellation (Constellation)" ]; then
+        echo "FAIL: disabled Auto-scenes did not retain the plan and base scene" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$ENABLED_STATE" != "enabled (2 cues)" ] \
+        || [ "$ENABLED_SCENE" != "loom (Loom)" ]; then
+        echo "FAIL: enabled Auto-scenes did not drive the parked preview frame" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$(sha256sum "$AUTO_SCENE_DIR/disabled.png" | cut -d' ' -f1)" \
+        = "$(sha256sum "$AUTO_SCENE_DIR/enabled.png" | cut -d' ' -f1)" ]; then
+        echo "FAIL: enabled and disabled Auto-scenes captures were identical" >&2
+        SWEEP_FAILED=1
+    fi
+fi
 
 # `assist=confirm` without `panel=assist` must be refused rather than quietly
 # arming a step in a panel nobody can see (`musializer.c:128-130`).

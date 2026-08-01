@@ -76,6 +76,11 @@ def parse_args() -> argparse.Namespace:
         choices=("spectrum", "cadence", "loom", "constellation"),
         default="constellation",
     )
+    parser.add_argument(
+        "--scene-plan",
+        action="store_true",
+        help="seed a disabled two-cue automatic scene plan",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +158,29 @@ def main() -> int:
         "box_rgba": "120d2bd8",
         "font": bundle_font(args.project),
     }
+    if args.scene_plan:
+        midpoint = round(duration / 2.0, 3)
+        project["scene_switches"] = {
+            "enabled": False,
+            "cues": [
+                {
+                    "id": 101,
+                    "start_seconds": 0.0,
+                    "end_seconds": midpoint,
+                    "scene_name": "spectrum",
+                    "strength": 1.0,
+                    "settings": [],
+                },
+                {
+                    "id": 102,
+                    "start_seconds": midpoint,
+                    "end_seconds": duration,
+                    "scene_name": "loom",
+                    "strength": 1.0,
+                    "settings": [],
+                },
+            ],
+        }
     project["scenes"][0]["scene_type"] = args.scene
     project["output"].update(
         {
@@ -168,7 +196,8 @@ def main() -> int:
         f"seeded {len(project['lyrics']['cues'])} lyrics, "
         f"{len(project['semantic_events'])} semantic events, "
         f"{len(project['manual_events'])} manual events, "
-        f"box={args.box}, scene={args.scene}, drop={args.drop or 'none'}"
+        f"box={args.box}, scene={args.scene}, drop={args.drop or 'none'}, "
+        f"scene_plan={'2 cues' if args.scene_plan else 'unchanged'}"
     )
     return 0
 

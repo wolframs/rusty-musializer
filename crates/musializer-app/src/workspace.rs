@@ -404,6 +404,23 @@ impl Track {
         self.cue_settings_active = false;
     }
 
+    /// Enables or disables playback of the retained automatic scene plan
+    /// (`plug.c:2207-2226`).
+    ///
+    /// The plan itself is never deleted. Disabling drops an active cue snapshot;
+    /// the application owner restores the base scene because constructing a
+    /// `SceneInstance` is outside the project model. Enabling an empty plan is
+    /// refused, matching `plug_set_auto_scenes`.
+    pub fn set_auto_scenes(&mut self, enabled: bool) -> bool {
+        if enabled && self.scene_switches.is_empty() {
+            return false;
+        }
+        self.scene_switches.enabled = enabled;
+        self.scene_switches.reset();
+        self.cue_settings_active = false;
+        true
+    }
+
     /// Applies the automatic scene cue covering `time_seconds`, if the plan just
     /// crossed a boundary (`apply_auto_scene_switch`, `plug.c:997-1023`).
     ///
@@ -563,8 +580,8 @@ impl Workspace {
     /// `plug_record_event` (`plug.c:1055-1069`).
     ///
     /// Writes into the current track's lane, or into the pending one when no
-    /// track is open — which is the case every `--event` on the command line hits,
-    /// because the actions run before an input is resolved.
+    /// track is open. CLI actions execute in order, so the same `--event` spelling
+    /// reaches either side depending on whether an input preceded it.
     pub fn record_event(&mut self, event: EventRecord) -> Result<(), EventTimelineError> {
         match self.current {
             Some(index) => self.tracks[index].record_manual_event(event),
@@ -610,6 +627,20 @@ impl Workspace {
 
     pub fn current_mut(&mut self) -> Option<&mut Track> {
         self.current.map(|index| &mut self.tracks[index])
+    }
+
+    /// Clears dirtiness introduced while replaying startup flags
+    /// (`plug_mark_command_line_state_clean`, `plug.c:3857-3866`).
+    ///
+    /// `--save-project` runs before this call and is the explicit request to
+    /// persist those changes. Without it, a one-off `--scene` or render setting
+    /// must not be written back by autosave a moment after launch. Every loaded
+    /// track is cleared because argv can open more than one.
+    pub fn mark_command_line_state_clean(&mut self) {
+        for track in &mut self.tracks {
+            track.project_dirty = false;
+            track.project_dirty_since = 0.0;
+        }
     }
 
     #[must_use]
@@ -789,6 +820,28 @@ mod tests {
     }
 
     #[test]
+    fn command_line_cleanup_clears_every_loaded_track_without_hiding_failures() {
+        let mut workspace = Workspace::new();
+        workspace.push(track("/tmp/a.wav"));
+        workspace.push(track("/tmp/b.wav"));
+        for (index, seconds) in [3.0, 7.0].into_iter().enumerate() {
+            let track = workspace.get_mut(index).expect("two tracks");
+            track.mark_dirty(seconds);
+            track.project_autosave_failed = true;
+        }
+
+        workspace.mark_command_line_state_clean();
+
+        for track in workspace.tracks() {
+            assert!(!track.project_dirty);
+            assert_eq!(track.project_dirty_since, 0.0);
+            // The C only clears startup dirtiness. A recorded save failure is
+            // still actionable and must not disappear with it.
+            assert!(track.project_autosave_failed);
+        }
+    }
+
+    #[test]
     fn the_quit_guard_sees_a_dirty_track_anywhere_in_the_list() {
         let mut workspace = Workspace::new();
         workspace.push(track("/tmp/a.wav"));
@@ -852,8 +905,8 @@ mod tests {
 
     #[test]
     fn events_recorded_before_any_track_are_handed_to_the_first_one() {
-        // plug.c:844-851 — which is the only lane `--event` can reach, because
-        // the command-line actions run before an input is resolved.
+        // plug.c:844-851 — the pending side reached when `--event` precedes the
+        // first input. A later event reaches the current track instead.
         let mut workspace = Workspace::new();
         workspace.record_event(marker(1.0, 1)).unwrap();
         workspace.record_event(marker(2.0, 2)).unwrap();
@@ -927,6 +980,31 @@ mod tests {
         assert_eq!(track.scene_switches.len(), 1, "the plan is retained");
         assert_eq!(track.scene_switches.active_index(), None);
         assert!(!track.cue_settings_active);
+    }
+
+    #[test]
+    fn automatic_scene_toggle_retains_the_plan_and_rewinds_both_directions() {
+        let mut track = track("/tmp/a.wav");
+        assert!(
+            !track.set_auto_scenes(true),
+            "an empty plan cannot be enabled"
+        );
+        track
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .expect("one cue plan");
+        assert_eq!(track.advance_scene_plan(0.0), Some(SceneId::Spectrum));
+        assert!(track.cue_settings_active);
+
+        assert!(track.set_auto_scenes(false));
+        assert!(!track.scene_switches.enabled);
+        assert_eq!(track.scene_switches.len(), 1, "toggle never deletes cues");
+        assert_eq!(track.scene_switches.active_index(), None);
+        assert!(!track.cue_settings_active);
+
+        assert!(track.set_auto_scenes(true));
+        assert!(track.scene_switches.enabled);
+        assert_eq!(track.scene_switches.active_index(), None);
+        assert_eq!(track.advance_scene_plan(0.0), Some(SceneId::Spectrum));
     }
 
     #[test]

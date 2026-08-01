@@ -14,9 +14,9 @@
 //!    exit 0.
 //! 2. **Order is semantics.** The C applies most flags the instant it reaches
 //!    them, interleaved with input loading, so a later `--project` or positional
-//!    really does overwrite earlier state. That is why parsing produces an
-//!    ordered [`Action`] list rather than a flat struct of options: replaying the
-//!    list left to right is the only way to preserve it.
+//!    acts on the state left by everything before it. That is why parsing
+//!    produces an ordered [`Action`] list rather than a flat struct of options:
+//!    replaying the list left to right is the only way to preserve it.
 //! 3. **Routes are deliberately deferred** until every positional and
 //!    `--project` input is resolved (`musializer.c:433-452` for the deferral,
 //!    `:553-561` for the application, rationale at `:446-448`). A project
@@ -29,12 +29,6 @@
 //!
 //! ## Deliberate divergences from the oracle
 //!
-//! - **An unknown flag is an error here.** The C has no unknown-flag diagnostic
-//!   at all: any unrecognized `--flag` falls through to the positional arm and is
-//!   loaded as an audio path, so `musializer --typo` warns "Could not load
-//!   command-line track: --typo" (`musializer.c:546-550`). We keep the C's exit
-//!   status but say what actually happened. Recorded as intentional in
-//!   `REWRITE_PLAN.md`.
 //! - **Number syntax is Rust's, not `strtod`'s.** `str::parse` rejects leading
 //!   whitespace and hex float literals, both of which `strtod` accepts. Nobody
 //!   types `--fps " 30"`, and treating it as an error is the safer direction.
@@ -499,11 +493,6 @@ where
                 None => cli.warn("--size wants WIDTHxHEIGHT"),
             },
 
-            // Deliberate divergence: the C loads `--typo` as an audio path.
-            other if other.starts_with("--") => {
-                cli.warn(format!("Unknown option: {other}"));
-            }
-
             positional => {
                 // raylib's `IsFileExtension` is case-insensitive
                 // (`musializer.c:546`), so `.MUSI` is a project too.
@@ -950,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn inputs_keep_argv_order_so_a_later_one_can_overwrite_an_earlier_one() {
+    fn inputs_keep_argv_order_for_runtime_append_and_project_selection() {
         let cli = parsed(&["a.wav", "--project", "show.musi", "b.mp3"]);
         assert_eq!(
             cli.actions,
@@ -1280,13 +1269,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_flag_is_an_error_rather_than_an_audio_path() {
-        // The deliberate divergence. The C loads `--typo` as a track
-        // (`musializer.c:546-550`); we say what happened instead.
+    fn an_unknown_flag_is_an_audio_input_action_like_the_c() {
+        // There is no unknown-option arm: the runtime attempts to load this path
+        // and reports the ordinary track failure (`musializer.c:546-550`).
         let cli = parsed(&["--typo"]);
-        assert!(cli.error);
-        assert_eq!(cli.actions, vec![]);
-        assert!(cli.warnings.iter().any(|w| w.contains("Unknown option")));
+        assert!(!cli.error);
+        assert_eq!(
+            cli.actions,
+            vec![Action::LoadTrack(PathBuf::from("--typo"))]
+        );
+        assert!(cli.warnings.is_empty());
     }
 
     #[test]

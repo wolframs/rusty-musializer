@@ -52,6 +52,10 @@ pub enum ShellCommand {
         value: f32,
     },
     ResetScene(SceneId),
+    /// Enable or disable playback of the current track's retained automatic
+    /// scene plan. The composition root owns restoring the base scene when the
+    /// plan is disabled; the Assist panel only emits this durable intent.
+    SetAutoScenes(bool),
     /// A file the user dropped on the window.
     LoadTrack(PathBuf),
     /// Commit the route editor's draft onto the current track
