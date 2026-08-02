@@ -135,6 +135,46 @@ case "$FONT_LINE" in
     *) echo "FAIL: the icon face did not load, so the row fell back to text labels" >&2; exit 1 ;;
 esac
 
+# Analyzer-ring drops and audible output starvation are different queues. The
+# ordinary run must report neither, and the negative control below deliberately
+# stalls only the main/refill thread long enough to drain raylib's streaming
+# buffer. If the output counter stays at zero there, the instrumentation is not
+# measuring the silence-producing path it claims to measure.
+BASELINE_UNDERRUNS="$(sed -n 's/^output underruns: *//p' "$REPORT")"
+echo "output underruns: ${BASELINE_UNDERRUNS:-<absent>}"
+if [ "${BASELINE_UNDERRUNS:-missing}" != "0" ]; then
+    echo "FAIL: ordinary playback reported output starvation" >&2
+    exit 1
+fi
+
+echo "=== output-underrun negative control ==="
+UNDERRUN_REPORT="$OUT_DIR/output-underrun-negative-control.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" \
+        --size 960x640 \
+        --probe-frames 120 \
+        --ui-probe "play=1,audio-stall=750" \
+    >"$UNDERRUN_REPORT" 2>&1
+UNDERRUN_STATUS=$?
+set -e
+if [ "$UNDERRUN_STATUS" -ne 0 ]; then
+    echo "FAIL: output-underrun negative control exited $UNDERRUN_STATUS" >&2
+    cat "$UNDERRUN_REPORT"
+    exit "$UNDERRUN_STATUS"
+fi
+NEGATIVE_UNDERRUNS="$(sed -n 's/^output underruns: *//p' "$UNDERRUN_REPORT")"
+echo "negative-control underruns: ${NEGATIVE_UNDERRUNS:-<absent>}"
+case "${NEGATIVE_UNDERRUNS:-missing}" in
+    ''|*[!0-9]*|0)
+        echo "FAIL: the forced output starvation was not detected" >&2
+        cat "$UNDERRUN_REPORT"
+        exit 1
+        ;;
+esac
+
 echo "=== screenshot ==="
 ffprobe -v error -show_entries stream=width,height,pix_fmt \
     -of default=noprint_wrappers=1 "$SHOT"
@@ -181,8 +221,11 @@ capture() {
     verdict="$(sed -n 's/^scene request: *//p' "$log")"
     local drawing
     drawing="$(sed -n 's/^scene drawing: *//p' "$log")"
-    echo "scene=${verdict:-?} drawing=${drawing:-?}"
+    local underruns
+    underruns="$(sed -n 's/^output underruns: *//p' "$log")"
+    echo "scene=${verdict:-?} drawing=${drawing:-?} underruns=${underruns:-?}"
     [ "$status" -eq 0 ] || return 1
+    [ "${underruns:-missing}" = "0" ] || return 1
     case "$verdict" in
         MISMATCH*) return 1 ;;
     esac
@@ -194,6 +237,24 @@ SWEEP_FAILED=0
 for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram; do
     capture "scene-$scene" 1280x720 --scene "$scene" || SWEEP_FAILED=1
 done
+
+# The synthetic track's startup transient crosses Spectrum's onset threshold by
+# frame eight. The removed renderer pass used that boolean to paint a full-width
+# white gradient across the reflection floor — the short flash reported in both
+# preview and exports. Pin a quiet region far from the active bands. Negative
+# control: restoring the old pass raises this crop's YMAX from 21 to 55.
+capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
+    || SWEEP_FAILED=1
+SPECTRUM_ONSETS="$(sed -n 's/^onsets: *\([0-9][0-9]*\) .*/\1/p' "$OUT_DIR/spectrum-onset-floor.txt")"
+SPECTRUM_FLOOR="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:438,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "spectrum onset floor: onsets=${SPECTRUM_ONSETS:-?} peak-luma=${SPECTRUM_FLOOR:-?}"
+if [ "${SPECTRUM_ONSETS:-0}" -eq 0 ] 2>/dev/null \
+    || [ "${SPECTRUM_FLOOR%%.*}" -gt 30 ] 2>/dev/null; then
+    echo "FAIL: Spectrum's onset frame brightened the reflection floor" >&2
+    SWEEP_FAILED=1
+fi
 
 echo "=== long scene aliases ==="
 # The six long aliases are a separate code path from the ten stable names
@@ -1279,7 +1340,7 @@ hud_state() {
     # bright pixel there means text, and none means a clean preview.
     local ink
     ink="$(ffprobe -v error -f lavfi \
-        -i "movie=$out,crop=560:24:332:10,signalstats" \
+        -i "movie=$out,crop=760:24:390:10,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
     ink="${ink:-0}"
     local got="off"
@@ -1304,15 +1365,15 @@ hud_state hud-forced-on on --hud || TRANSPORT_FAILED=1
 # The coordinates are the mute button's centre in the 1280x720 layout. If the row
 # is ever re-laid-out they stop naming that control, and the check below is what
 # says so — a tooltip that stopped appearing would otherwise be invisible.
-capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=1121x449" || TRANSPORT_FAILED=1
+capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=1121x480" || TRANSPORT_FAILED=1
 TIP_INK="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:30:1050:400,signalstats" \
+    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:40:1050:420,signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
 # The tip is white on near-black, drawn over the preview's dark background. A dark
 # minimum is the box; without the tip that region is the preview's own dark too,
 # so the discriminating measure is the *bright* text inside it.
 TIP_TEXT="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:30:1050:400,signalstats" \
+    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:40:1050:420,signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 echo "tooltip-mute            box luma min=${TIP_INK:-?} text luma max=${TIP_TEXT:-?}"
 if [ "${TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null; then
@@ -1325,9 +1386,9 @@ fi
 # coordinates while the widgets move to logical ones, the parked pointer misses
 # Mute and this crop contains no bright tooltip text.
 capture "tooltip-mute-125" 1600x900 --ui-scale 125 \
-    --ui-probe "panel=tune,play=1,hover=978x562" || TRANSPORT_FAILED=1
+    --ui-probe "panel=tune,play=1,hover=978x599" || TRANSPORT_FAILED=1
 TIP_TEXT_125="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/tooltip-mute-125.png,crop=140:45:900:485,signalstats" \
+    -i "movie=$OUT_DIR/tooltip-mute-125.png,crop=140:45:900:535,signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 echo "tooltip-mute-125        text luma max=${TIP_TEXT_125:-?}"
 if [ "${TIP_TEXT_125%%.*}" -lt 180 ] 2>/dev/null; then

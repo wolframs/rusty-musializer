@@ -203,6 +203,12 @@ pub struct Shell {
     /// Which of the timeline's own controls the pointer is dragging, so a scrub
     /// that leaves the strip keeps scrubbing.
     scrubbing: bool,
+    /// The most recent drag position. Seeking is deliberately deferred until
+    /// release: repeatedly flushing and refilling a decoder while the pointer
+    /// moves is both audible and needlessly expensive.
+    scrub_target_seconds: Option<f64>,
+    /// Whether playback should resume after the release-time seek.
+    scrub_restore_playing: bool,
     /// The lyrics editor's draft, selection, panes and pending edits.
     ///
     /// Agent I had this in a `thread_local` while this field did not exist and
@@ -272,6 +278,8 @@ impl Shell {
             hud_visible: false,
             timeline: TimelineView::new(0.0),
             scrubbing: false,
+            scrub_target_seconds: None,
+            scrub_restore_playing: false,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
             font_browser: super::panels::fonts::FontBrowser::new(),
@@ -1937,9 +1945,10 @@ impl Shell {
         use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
         if over_strip && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
             self.scrubbing = true;
-        }
-        if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
-            self.scrubbing = false;
+            self.scrub_restore_playing = input.playing;
+            if input.playing {
+                commands.push(ShellCommand::TogglePlay);
+            }
         }
         if self.scrubbing {
             let seconds = self.timeline.seconds_at(
@@ -1948,7 +1957,16 @@ impl Shell {
                 f64::from(strip.width),
                 duration,
             );
-            commands.push(ShellCommand::Seek(seconds));
+            self.scrub_target_seconds = Some(seconds);
+            if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+                self.scrubbing = false;
+                if let Some(target) = self.scrub_target_seconds.take() {
+                    commands.push(ShellCommand::Seek(target));
+                }
+                if std::mem::take(&mut self.scrub_restore_playing) {
+                    commands.push(ShellCommand::TogglePlay);
+                }
+            }
         }
 
         // The zoom readout, so "why is the strip not the whole track" has an

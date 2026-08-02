@@ -112,6 +112,7 @@ fn sync_caption_face(
     fonts: &mut Faces,
     app: &mut App,
     last_request: &mut Option<PathBuf>,
+    music: Option<&Music<'_>>,
 ) {
     let request = app.workspace.current().and_then(|track| {
         (track.caption_style.face == CaptionFace::Imported)
@@ -121,18 +122,54 @@ fn sync_caption_face(
     if *last_request == request {
         return;
     }
-    *last_request = request.clone();
-    match request {
-        None => fonts.clear_imported(),
-        Some(path) if fonts.load_imported(rl, thread, &path) => {}
-        Some(path) => app.shell.notify(
-            Severity::Warning,
-            "Project caption font could not be read",
-            &format!(
-                "{} was verified as a project asset but could not be rasterized. Captions use Alegreya for this session.",
-                path.display()
+    with_preview_paused(music, || {
+        *last_request = request.clone();
+        match request {
+            None => fonts.clear_imported(),
+            Some(path) if fonts.load_imported(rl, thread, &path) => {}
+            Some(path) => app.shell.notify(
+                Severity::Warning,
+                "Project caption font could not be read",
+                &format!(
+                    "{} was verified as a project asset but could not be rasterized. Captions use Alegreya for this session.",
+                    path.display()
+                ),
             ),
-        ),
+        }
+    });
+}
+
+/// Runs synchronous preparation without allowing the preview stream to drain.
+///
+/// `UpdateMusicStream` before resume is essential: pausing prevents the device
+/// from consuming stale halves, and the refill prevents the first resumed block
+/// from being silence.
+fn with_preview_paused<T>(music: Option<&Music<'_>>, work: impl FnOnce() -> T) -> T {
+    let resume = music.is_some_and(Music::is_stream_playing);
+    if resume {
+        music.expect("resume implies a stream").pause_stream();
+    }
+    let result = work();
+    if resume {
+        let music = music.expect("resume implies a stream");
+        music.update_stream();
+        music.resume_stream();
+    }
+    result
+}
+
+/// The oracle derives scene delta from the transport clock, not render time.
+/// A seek or a long stall is a discontinuity and therefore produces a zero
+/// update rather than advancing state by a visible jump.
+fn scene_clock_delta(previous: &mut Option<f64>, time_seconds: f64) -> f32 {
+    let Some(earlier) = previous.replace(time_seconds) else {
+        return 0.0;
+    };
+    let elapsed = time_seconds - earlier;
+    if !(0.0..=0.5).contains(&elapsed) {
+        0.0
+    } else {
+        elapsed as f32
     }
 }
 
@@ -212,6 +249,11 @@ fn run() -> Result<std::process::ExitCode, String> {
     rl.set_target_fps(60);
     let audio = RaylibAudio::init_audio_device()
         .map_err(|error| format!("could not initialize the audio device: {error}"))?;
+    // raylib's default half-buffer is only sampleRate/30 (about 33 ms). The C
+    // build deliberately raises this to retain roughly 170-186 ms of refill
+    // headroom for synchronous editor work. It must be set before any Music is
+    // created because the size is copied into each new stream.
+    audio.set_audio_stream_buffer_size_default(8192);
 
     // Output volume, and mute as a separate flag rather than a volume of zero.
     //
@@ -223,7 +265,9 @@ fn run() -> Result<std::process::ExitCode, String> {
     //
     // Not in `App`: it is the state of the audio device, not of the workspace, and
     // nothing that gets saved to a `.musi` should be able to reach it.
-    let mut volume = 1.0f32;
+    // Match the frozen build's deliberately conservative startup level. This is
+    // still user-adjustable and independent of the process-local mute flag.
+    let mut volume = 0.5f32;
     let mut muted = false;
     let apply_volume = |audio: &RaylibAudio, volume: f32, muted: bool| {
         audio.set_master_volume(if muted { 0.0 } else { volume.clamp(0.0, 1.0) });
@@ -473,6 +517,8 @@ fn run() -> Result<std::process::ExitCode, String> {
 
     // Where `--ui-probe hover=X,Y` parks the pointer, reasserted every frame.
     let mut hover_at: Option<(f32, f32)> = None;
+    let mut audio_stall_ms: Option<u64> = None;
+    let mut scene_clock_previous: Option<f64> = None;
 
     // Render configuration is the first gated stage after deferred routes. It
     // must precede `--save-project`, or a one-shot `--resolution`/`--fps` change
@@ -608,6 +654,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             }
             app.shell.widgets.tooltip_delay = 0.0;
             hover_at = probe.hover;
+            audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
             }
@@ -650,7 +697,13 @@ fn run() -> Result<std::process::ExitCode, String> {
                 options.error = true;
             }
             if let (Some(music), Some(seconds)) = (music.as_ref(), probe.seek_seconds) {
-                music.seek_stream(seconds as f32);
+                seek_preview(
+                    music,
+                    &mut analysis,
+                    &mut app,
+                    seconds,
+                    &mut scene_clock_previous,
+                );
             }
             if let (Some(music), Some(zoom)) = (music.as_ref(), probe.timeline_zoom) {
                 let duration = f64::from(music.get_time_length());
@@ -712,6 +765,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         &mut fonts,
         &mut app,
         &mut caption_font_request,
+        music.as_ref(),
     );
     let mut export: Option<ExportSession> = None;
     // `--render` runs the export and exits (`musializer.c:650`), where an export
@@ -744,6 +798,12 @@ fn run() -> Result<std::process::ExitCode, String> {
     // `confirm_close`.
     let mut close_warned = false;
     while running {
+        // Service the decoder before any potentially expensive UI work. A
+        // second refill remains below, after window/asset maintenance, matching
+        // the oracle's two service opportunities per interactive frame.
+        if let Some(music) = music.as_ref() {
+            music.update_stream();
+        }
         let physical_window = (rl.get_screen_width() as f32, rl.get_screen_height() as f32);
         let resolved_scale = ui::scale::effective_scale(
             app.shell.ui_scale_preference(),
@@ -751,7 +811,9 @@ fn run() -> Result<std::process::ExitCode, String> {
             rl.get_window_scale_dpi(),
         );
         if resolved_scale != ui_scale {
-            fonts.set_ui_scale(&mut rl, &thread, resolved_scale.value());
+            with_preview_paused(music.as_ref(), || {
+                fonts.set_ui_scale(&mut rl, &thread, resolved_scale.value());
+            });
             ui_scale = resolved_scale;
         }
         sync_caption_face(
@@ -760,6 +822,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             &mut fonts,
             &mut app,
             &mut caption_font_request,
+            music.as_ref(),
         );
         // Reasserted every frame rather than set once, so the tooltip a capture is
         // after is in the shot regardless of how many frames the run lasts — and
@@ -800,6 +863,14 @@ fn run() -> Result<std::process::ExitCode, String> {
         if let Some(music) = music.as_ref() {
             music.update_stream();
         }
+        // Negative control for the output-underrun counter. This sleeps only the
+        // refill/UI thread; raylib's audio device thread continues consuming the
+        // primed stream, which is the condition the diagnostic must detect.
+        if report.frames == 60 {
+            if let Some(milliseconds) = audio_stall_ms.take() {
+                std::thread::sleep(std::time::Duration::from_millis(milliseconds));
+            }
+        }
 
         // The Assist supervisor, polled before anything is drawn so the panel
         // shows this frame's job state rather than last frame's.
@@ -816,10 +887,8 @@ fn run() -> Result<std::process::ExitCode, String> {
             report.consumed_frames += consumed as u64;
         }
 
-        // The scene clock is the frame delta, which is what preview and export
-        // must agree on.
-        let delta = rl.get_frame_time();
-        if analysis.analyzer.analyze(delta) {
+        let analyzer_delta = rl.get_frame_time();
+        if analysis.analyzer.analyze(analyzer_delta) {
             report.analyzed_frames += 1;
         }
 
@@ -835,6 +904,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             .current()
             .map_or(0.0, |track| track.duration_seconds);
         let playing = music.as_ref().is_some_and(|m| m.is_stream_playing());
+        let scene_delta = scene_clock_delta(&mut scene_clock_previous, time_seconds);
 
         // Scene-plan selection and its settings snapshot precede routing. Keep a
         // scene with an inline route editor visible during preview, exactly as
@@ -888,7 +958,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             SceneFrameTiming {
                 time_seconds,
                 duration_seconds,
-                delta_seconds: delta,
+                delta_seconds: scene_delta,
                 frame_index: report.frames,
             },
             audio_frame,
@@ -1133,18 +1203,13 @@ fn run() -> Result<std::process::ExitCode, String> {
                 }
                 ShellCommand::Seek(seconds) => {
                     if let Some(music) = music.as_ref() {
-                        music.seek_stream(seconds as f32);
-                        // A seek is a time discontinuity, so the learned tempo
-                        // anchor no longer refers to the audio under the playhead
-                        // (`seek_track_to` calls `fft_clean`, `plug.c:2673`). The
-                        // tracker would reject the backwards jump and reset itself
-                        // anyway; doing it here means a *forward* seek is handled
-                        // too, which it would otherwise accept as a long interval.
-                        analysis.beat.reset();
-                        if let Some(track) = app.workspace.current_mut() {
-                            track.scene_switches.reset();
-                            track.cue_settings_active = false;
-                        }
+                        seek_preview(
+                            music,
+                            &mut analysis,
+                            &mut app,
+                            seconds,
+                            &mut scene_clock_previous,
+                        );
                     }
                 }
                 ShellCommand::SelectScene(id) => {
@@ -1439,9 +1504,12 @@ fn run() -> Result<std::process::ExitCode, String> {
                     // path through `GetFileName` and writes to the working
                     // directory, so a `build/x/y.png` argument silently lands in
                     // the repository root. Grabbing the image and exporting it
-                    // honours the path given.
-                    let image = rl.load_image_from_screen(&thread);
-                    image.export_image(path_str);
+                    // honours the path given. The GPU readback and PNG encoder
+                    // are synchronous, so pause/refill the preview around them.
+                    with_preview_paused(music.as_ref(), || {
+                        let image = rl.load_image_from_screen(&thread);
+                        image.export_image(path_str);
+                    });
                     // `export_image` reports nothing, so confirm by looking.
                     if !Path::new(path_str).is_file() {
                         return Err(format!("could not write {path_str}"));
@@ -1940,26 +2008,32 @@ fn open_track<'audio>(
     play: bool,
 ) -> Result<usize, String> {
     let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
-    // Opened before anything is mutated, so an unreadable file leaves the session
-    // exactly as it was rather than half-adding a track. This one is only a
-    // metadata probe — the stream that plays is opened by `bind_current_audio` —
-    // which is the same split as C's `metadata_probe` (`plug.c:4901-4913`).
-    let probe = audio
-        .new_music(path_str)
-        .map_err(|error| error.to_string())?;
-    let duration = f64::from(probe.get_time_length());
-    drop(probe);
-
     let (base_scene, seed) = app
         .workspace
         .inherited_scene(app.scene.id(), app.scene.seed());
-    let mut track = Track::new(path.to_path_buf(), duration, base_scene, seed)
-        .map_err(|error| format!("could not prepare the track: {error}"))?;
-    track.transport_seekable =
-        musializer_core::timing::track_timeline::path_is_seekable(Some(path_str));
-    // At load, before the track is in the workspace, which is where the C does it
-    // too (`plug.c:820`, inside `add_track` and before the count is bumped).
-    load_timeline_waveform(audio, &mut track);
+    let mut track = with_preview_paused(music.as_ref(), || {
+        // Opened before anything is mutated, so an unreadable file leaves the
+        // session exactly as it was rather than half-adding a track. This one is
+        // only a metadata probe — the stream that plays is opened by
+        // `bind_current_audio` — which is the same split as C's `metadata_probe`
+        // (`plug.c:4901-4913`).
+        let probe = audio
+            .new_music(path_str)
+            .map_err(|error| error.to_string())?;
+        let duration = f64::from(probe.get_time_length());
+        drop(probe);
+
+        let mut track = Track::new(path.to_path_buf(), duration, base_scene, seed)
+            .map_err(|error| format!("could not prepare the track: {error}"))?;
+        track.transport_seekable =
+            musializer_core::timing::track_timeline::path_is_seekable(Some(path_str));
+        // At load, before the track is in the workspace, which is where the C
+        // does it too (`plug.c:820`, inside `add_track` and before the count is
+        // bumped). The whole-file decode is why playback is paused around this
+        // preparation transaction.
+        load_timeline_waveform(audio, &mut track);
+        Ok::<Track, String>(track)
+    })?;
 
     // Any new track claims a pending import, first or not (`plug.c:825-839`).
     if let Some(image) = app.pending_ascii.take() {
@@ -2055,9 +2129,6 @@ fn bind_audio<'audio>(
 
     let file_sample_rate = opened.stream.sampleRate;
     analysis.reconfigure(AudioAnalyzerConfig::preview(file_sample_rate))?;
-    if play {
-        opened.play_stream();
-    }
     // SAFETY: the bridge is installed in `run` before this can be called, the
     // audio device is initialized (it is what produced `opened`), and the stream
     // outlives the attachment because `close_audio` — reached from the next
@@ -2065,12 +2136,72 @@ fn bind_audio<'audio>(
     // it.
     unsafe { audio_bridge::attach(opened.stream) }
         .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
+    // Both halves begin marked processed. Fill them before playback starts so
+    // the device never races the first rendered frame for actual PCM.
+    opened.update_stream();
+    opened.play_stream();
+    if !play {
+        // A parked probe is a paused live stream, not a never-started buffer.
+        // That distinction matters because raylib only lets the seek transaction
+        // reset a paused buffer after it has been resumed.
+        opened.pause_stream();
+    }
 
     app.shell
         .timeline
         .reset(f64::from(opened.get_time_length()));
     *music = Some(opened);
     Ok(())
+}
+
+/// Performs one transport discontinuity as an indivisible stream transaction.
+fn seek_preview(
+    music: &Music<'_>,
+    analysis: &mut Analysis,
+    app: &mut App,
+    seconds: f64,
+    scene_clock_previous: &mut Option<f64>,
+) {
+    let Some(track) = app.workspace.current() else {
+        return;
+    };
+    if !track.transport_seekable {
+        return;
+    }
+    let target = musializer_core::timing::track_timeline::seek_relative(
+        0.0,
+        seconds,
+        track.duration_seconds,
+    );
+    let was_playing = music.is_stream_playing();
+    // raylib only resets a paused AudioBuffer from its playing state. This
+    // seemingly redundant resume is therefore required before StopMusicStream,
+    // and mirrors `seek_track_to` in the frozen build.
+    if !was_playing {
+        music.resume_stream();
+    }
+    music.stop_stream();
+    music.seek_stream(target as f32);
+    music.update_stream();
+
+    // The stream is stopped, so the callback cannot race either reset. Queued
+    // samples and analyzer smoothing both describe the old playhead and must be
+    // discarded together.
+    if let Some(ring) = audio_bridge::ring() {
+        ring.reset();
+    }
+    analysis.analyzer.reset();
+    analysis.beat.reset();
+    *scene_clock_previous = None;
+    if let Some(track) = app.workspace.current_mut() {
+        track.scene_switches.reset();
+        track.cue_settings_active = false;
+    }
+
+    music.play_stream();
+    if !was_playing {
+        music.pause_stream();
+    }
 }
 
 /// Detaches and drops the playing stream, leaving no stale samples behind.
@@ -2390,13 +2521,23 @@ fn open_project<'audio>(
     app: &mut App,
     scratch: &mut [f32],
 ) -> Result<(), String> {
-    let opened = project::open_path(path, |audio_path| {
-        // A metadata probe, exactly as C's `LoadMusicStream` at `plug.c:4901` is:
-        // the stream that plays is opened by `bind_current_audio`.
-        let probe = open_music(audio, audio_path)?;
-        Ok(f64::from(probe.get_time_length()))
-    })
-    .map_err(|error| error.to_string())?;
+    let opened = with_preview_paused(music.as_ref(), || {
+        let mut opened = project::open_path(path, |audio_path| {
+            // A metadata probe, exactly as C's `LoadMusicStream` at `plug.c:4901`
+            // is: the stream that plays is opened by `bind_current_audio`.
+            let probe = open_music(audio, audio_path)?;
+            Ok(f64::from(probe.get_time_length()))
+        })
+        .map_err(|error| error.to_string())?;
+
+        // The same load-time preprocessing a plain audio file gets. Keep the
+        // currently playing preview paused across the whole-file decode.
+        load_timeline_waveform(audio, &mut opened.track);
+        if let Some(image) = opened.track.ascii.as_mut() {
+            decode_ascii_grid(image);
+        }
+        Ok::<_, String>(opened)
+    })?;
 
     if let Some(project::OpenWarning::LegacyAudioPath) = opened.warning {
         app.shell.notify(
@@ -2406,16 +2547,7 @@ fn open_project<'audio>(
         );
     }
 
-    let mut track = opened.track;
-    // The same load-time preprocessing a plain audio file gets. A project's track
-    // reaches the workspace through a different door, and the envelope is derived
-    // from the audio rather than stored in the `.musi`, so it has to be built on
-    // both paths or the strip is blank for exactly the tracks that carry authored
-    // work.
-    load_timeline_waveform(audio, &mut track);
-    if let Some(image) = track.ascii.as_mut() {
-        decode_ascii_grid(image);
-    }
+    let track = opened.track;
     let index = app.workspace.push(track);
     // `push` only selects when the workspace was empty, but opening a project
     // always makes its track current (`plug.c:5031`). The audio bind is
@@ -2659,6 +2791,7 @@ impl Report {
             "audio frames:    {} consumed, {dropped} dropped",
             self.consumed_frames
         );
+        println!("output underruns: {}", audio_bridge::output_underruns());
         println!("bands:           {band_count}");
         println!("peak seen:       {:.4}", self.peak_seen);
         // Evidence, not existence. `beat_phase` is a documented route source and it
@@ -2895,5 +3028,20 @@ impl Report {
                 (false, _, _) => "no audio was consumed",
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scene_clock_delta;
+
+    #[test]
+    fn scene_clock_turns_transport_discontinuities_into_zero_delta() {
+        let mut previous = None;
+        assert_eq!(scene_clock_delta(&mut previous, 12.0), 0.0);
+        assert!((scene_clock_delta(&mut previous, 12.025) - 0.025).abs() < 1.0e-6);
+        assert_eq!(scene_clock_delta(&mut previous, 4.0), 0.0);
+        assert_eq!(scene_clock_delta(&mut previous, 4.75), 0.0);
+        assert!((scene_clock_delta(&mut previous, 4.8) - 0.05).abs() < 1.0e-6);
     }
 }

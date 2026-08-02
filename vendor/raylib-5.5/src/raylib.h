@@ -1693,6 +1693,7 @@ RLAPI void SetAudioStreamVolume(AudioStream stream, float volume);    // Set vol
 RLAPI void SetAudioStreamPitch(AudioStream stream, float pitch);      // Set pitch for audio stream (1.0 is base level)
 RLAPI void SetAudioStreamPan(AudioStream stream, float pan);          // Set pan for audio stream (0.5 is centered)
 RLAPI void SetAudioStreamBufferSizeDefault(int size);                 // Default size for new audio streams
+RLAPI unsigned int GetAudioStreamUnderrunCount(void);                 // Get output-starvation count for playing streams
 RLAPI void SetAudioStreamCallback(AudioStream stream, AudioCallback callback); // Audio thread callback to request new data
 
 RLAPI void AttachAudioStreamProcessor(AudioStream stream, AudioCallback processor); // Attach audio stream processor to stream, receives the samples as 'float'

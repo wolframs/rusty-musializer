@@ -50,6 +50,11 @@ static CAPTURE_RING: OnceLock<SampleRing> = OnceLock::new();
 /// callback already in flight becomes a no-op.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 
+unsafe extern "C" {
+    /// Small diagnostic extension carried by the vendored raylib 5.5 build.
+    fn GetAudioStreamUnderrunCount() -> c_uint;
+}
+
 /// Installing or attaching went wrong.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
@@ -162,6 +167,18 @@ pub unsafe fn detach(stream: raylib_sys::AudioStream) {
 #[must_use]
 pub fn is_capturing() -> bool {
     CAPTURING.load(Ordering::Relaxed)
+}
+
+/// Number of times the output mixer reached an unfilled streaming-buffer half.
+///
+/// This is intentionally separate from [`SampleRing::dropped`]: the analyzer
+/// ring can accept every callback it sees while the decoder/output stream has
+/// already emitted a block of silence.
+#[must_use]
+pub fn output_underruns() -> u64 {
+    // SAFETY: the vendored function takes no pointers, locks raylib's audio
+    // context before reading the counter, and returns zero before device init.
+    unsafe { u64::from(GetAudioStreamUnderrunCount()) }
 }
 
 /// Drains queued frames into an analyzer-ready interleaved buffer.

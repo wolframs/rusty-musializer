@@ -11,7 +11,7 @@
 //! The three passes, in order, because additive blending makes order visible:
 //! 1. opaque bars (plus their floor reflection, if enabled);
 //! 2. an additive vertical smear from each band's trail to its current peak;
-//! 3. an additive bright core at each bar's head, then the onset flash.
+//! 3. an additive bright core at each bar's head.
 
 use musializer_core::scene::settings::index::spectrum as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
@@ -213,21 +213,5 @@ pub fn draw(
                 draw::draw_texture_ex(&mut pass, texture, position, 0.0, 2.0 * radius, color);
             }
         });
-
-        if frame.audio.onset {
-            let flash_height = boundary.height * (0.035 + frame.audio.spectral_flux * 0.16);
-            let flash = draw::color_alpha(
-                Color::RAYWHITE,
-                (0.08 + frame.audio.spectral_flux).min(0.22),
-            );
-            blend.draw_rectangle_gradient_v(
-                boundary.x as i32,
-                (boundary.y + boundary.height - flash_height) as i32,
-                boundary.width as i32,
-                flash_height as i32,
-                draw::color_alpha(flash, 0.0),
-                flash,
-            );
-        }
     });
 }

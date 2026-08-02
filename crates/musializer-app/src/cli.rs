@@ -219,6 +219,10 @@ pub struct UiProbe {
     /// Parks rather than moves: the position is reasserted every frame, so the tip
     /// is in the shot regardless of how many frames the run lasts.
     pub hover: Option<(f32, f32)>,
+    /// `audio-stall=MS`: block only the main/refill thread once during a probe.
+    /// This is a bounded negative-control hook for the output-underrun counter;
+    /// the audio device thread remains live and must observe the starvation.
+    pub audio_stall_ms: Option<u64>,
 }
 
 /// `fonts=` in a `--ui-probe` spec (`musializer.c:202-217`).
@@ -748,6 +752,13 @@ pub fn parse_ui_probe(spec: &str) -> Option<UiProbe> {
             "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
             "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
             "hover" => probe.hover = Some(parse_point(value)?),
+            "audio-stall" => {
+                let milliseconds: u64 = value.parse().ok()?;
+                if !(1..=5_000).contains(&milliseconds) {
+                    return None;
+                }
+                probe.audio_stall_ms = Some(milliseconds);
+            }
             _ => return None,
         }
     }
@@ -1297,6 +1308,12 @@ mod tests {
         assert!(parse_ui_probe("timeline-height=4096").is_some());
         assert!(parse_ui_probe("inspector=4097").is_none());
         assert!(parse_ui_probe("sidebar=nan").is_none());
+        assert_eq!(
+            parse_ui_probe("audio-stall=750").unwrap().audio_stall_ms,
+            Some(750)
+        );
+        assert!(parse_ui_probe("audio-stall=0").is_none());
+        assert!(parse_ui_probe("audio-stall=5001").is_none());
     }
 
     #[test]

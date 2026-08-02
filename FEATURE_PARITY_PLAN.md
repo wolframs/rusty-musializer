@@ -359,9 +359,9 @@ merges them into `app.shared_presets`, which is the library Tune reads.
 - [ ] Draw the merged manual/semantic event markers over the waveform lane.
 - [ ] Draw the lyric cue lane even when the Lyrics editor is closed.
 - [ ] Add Shift-wheel pan and middle-drag pan with robust pointer-claim release.
-- [ ] Make waveform scrubbing transactional: pause on press, track the target
+- [x] Make waveform scrubbing transactional: pause on press, track the target
       while dragging, seek once on release and restore the prior play state.
-- [ ] On every transport discontinuity, clear queued pre-seek PCM and analyzer
+- [x] On every transport discontinuity, clear queued pre-seek PCM and analyzer
       history as well as beat, scene-clock, scene-plan and cue-settings state.
 - [ ] Keep wheel zoom anchored at the pointer and every lane aligned through the
       shared `TimelineView` conversion.
@@ -369,10 +369,26 @@ merges them into `app.shared_presets`, which is the library Tune reads.
       contrast.
 - [ ] Capture event colors, lyric spans, zoom, pan and an off-screen boundary.
 
-Audit evidence: C's press/drag/release contract is at `plug.c:3174-3199` and its
-full reset at `:2661-2678`. Rust currently emits `Seek` each drag frame
-(`ui/shell.rs:1723-1740`) and resets only beat/scene-plan state
-(`main.rs:1087-1101`).
+Completion evidence (2026-08-03): C's press/drag/release contract at
+`plug.c:3174-3199` now maps to one pause command on press, an in-memory target
+through the drag and one transactional seek plus conditional resume on release.
+`seek_preview` mirrors the full reset at `plug.c:2661-2678`: resume a paused
+raylib buffer so Stop can reset it, stop, clamp/seek, refill both halves, clear
+the callback ring plus analyzer/beat history, reset the scene clock/plan/cue
+state, then play and restore the prior pause state. The headless gate observes
+zero output underruns on the ordinary and seek/reopen paths; its main-thread
+stall negative control observes 45-46 output-starved mixer reads, proving the new
+counter measures the silence-producing queue rather than analyzer-ring drops.
+
+The same audit found the Rust composition root had omitted the C build's 8,192
+frame preview half-buffer and started a stream before its first refill. Rust now
+sets that size before opening any `Music`, attaches the analyzer, fills both
+halves and only then plays; it services the decoder before and after frame-boundary
+maintenance and pauses/refills around whole-track decode, font rasterization and
+probe PNG encoding. The ordinary Xvfb run changed from 17 analyzer-ring drops / 30
+output underruns to 0 / 0. Spectrum's onset-only full-width white floor gradient
+was also removed: the frame-eight floor crop remains at luma 21, while restoring
+the old pass raises it to 55 and fails the gate.
 
 ### D5 — CLI execution semantics
 
@@ -647,7 +663,7 @@ This is centralized dangling-work cleanup, not feature parity by itself:
 | Multi-track workspace | Fit interactively | C2, C4 |
 | Lyrics editing | Editor fit; document import/export and broad draft guards missing | C2, D3 |
 | Manual/semantic events | Scene consumption fit; timeline markers missing | D4 |
-| Timeline | Waveform/zoom fit; lyric/events/pan and transactional seek missing | D4 |
+| Timeline | Waveform/zoom and transactional seek fit; lyric/events/pan missing | D4 |
 | ASCII image mode | CLI/project rendering fit; GUI and typed drop missing | D1-D2 |
 | Assist | UI/controller/bridge and source bundle fit; live/fullscreen/helper-state validation remains | C2, E2-E4 |
 | Google Fonts | Job/manifest verification exists; background polling and project application are unwired | E3 |

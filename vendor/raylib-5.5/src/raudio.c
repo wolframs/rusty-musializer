@@ -389,6 +389,7 @@ typedef struct AudioData {
         AudioBuffer *first;         // Pointer to first AudioBuffer in the list
         AudioBuffer *last;          // Pointer to last AudioBuffer in the list
         int defaultSize;            // Default audio buffer size for audio streams
+        unsigned int streamUnderruns; // Output-starved reads from playing streams
     } Buffer;
     rAudioProcessor *mixedProcessor;
 } AudioData;
@@ -518,6 +519,7 @@ void InitAudioDevice(void)
     TRACELOG(LOG_INFO, "    > Sample rate:   %d -> %d", AUDIO.System.device.sampleRate, AUDIO.System.device.playback.internalSampleRate);
     TRACELOG(LOG_INFO, "    > Periods size:  %d", AUDIO.System.device.playback.internalPeriodSizeInFrames*AUDIO.System.device.playback.internalPeriods);
 
+    AUDIO.Buffer.streamUnderruns = 0;
     AUDIO.System.isReady = true;
 }
 
@@ -2212,6 +2214,19 @@ void SetAudioStreamBufferSizeDefault(int size)
     AUDIO.Buffer.defaultSize = size;
 }
 
+// Get the number of times a playing stream emitted silence because its next
+// double-buffer half had not been refilled. Musializer uses this as evidence
+// about the output path; analyzer-ring drops measure a different queue.
+unsigned int GetAudioStreamUnderrunCount(void)
+{
+    if (!AUDIO.System.isReady) return 0;
+
+    ma_mutex_lock(&AUDIO.System.lock);
+    unsigned int count = AUDIO.Buffer.streamUnderruns;
+    ma_mutex_unlock(&AUDIO.System.lock);
+    return count;
+}
+
 // Audio thread callback to request new data
 void SetAudioStreamCallback(AudioStream stream, AudioCallback callback)
 {
@@ -2379,7 +2394,14 @@ static ma_uint32 ReadAudioBufferFramesInInternalFormat(AudioBuffer *audioBuffer,
         }
         else
         {
-            if (isSubBufferProcessed[currentSubBufferIndex]) break;
+            if (isSubBufferProcessed[currentSubBufferIndex])
+            {
+                if (AUDIO.Buffer.streamUnderruns != (unsigned int)-1)
+                {
+                    AUDIO.Buffer.streamUnderruns++;
+                }
+                break;
+            }
         }
 
         ma_uint32 totalFramesRemaining = (frameCount - framesRead);

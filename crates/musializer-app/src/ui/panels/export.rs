@@ -668,6 +668,10 @@ impl ExportSession {
             // The stream is the sample ring's producer; an export reads the
             // decoded file instead, and leaving playback running would put live
             // audio into the analyzer alongside it (`plug.c:6920`).
+            // raylib only resets a paused buffer from its playing state.
+            if !restore_playing {
+                music.resume_stream();
+            }
             music.stop_stream();
         }
 
@@ -1111,11 +1115,17 @@ fn restore_preview(
     // export just drove the analyzer over the whole track, so the tempo it learned
     // belongs to an offline pass rather than to the stream about to resume.
     let _ = analysis.reconfigure(AudioAnalyzerConfig::preview(music.stream.sampleRate));
-    music.update_stream();
-    music.play_stream();
     if position > 0.0 {
         music.seek_stream(position);
     }
+    // Export stopped the stream, so no callback can race this reset. Any live
+    // preview PCM in the ring predates the offline pass and must not be analyzed
+    // after it. Prime the decoder at the restored position before playback.
+    if let Some(ring) = musializer_runtime::audio_bridge::ring() {
+        ring.reset();
+    }
+    music.update_stream();
+    music.play_stream();
     if !playing {
         music.pause_stream();
     }

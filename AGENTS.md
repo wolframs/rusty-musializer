@@ -262,7 +262,7 @@ comment stating why it holds. Current islands:
 
 | Where | Why | Invariant |
 | --- | --- | --- |
-| `runtime::audio_bridge` | raylib's `AudioCallback` is a bare `extern "C"` fn with no user-data pointer, so the ring must be reachable from a `static` | The callback only touches a lock-free SPSC ring — no allocation, lock, or syscall. `attach`/`detach` are `unsafe` and document the stream-lifetime contract |
+| `runtime::audio_bridge` | raylib's `AudioCallback` is a bare `extern "C"` fn with no user-data pointer, so the ring must be reachable from a `static`; the vendored output-underrun counter is exposed by one no-argument C function | The callback only touches a lock-free SPSC ring — no allocation, lock, or syscall. `attach`/`detach` are `unsafe` and document the stream-lifetime contract; the diagnostic getter locks inside C and returns only an integer |
 | `runtime::draw` | raylib's default 1x1 texture is a non-owning handle, and the safe `Texture2D` would unload it on drop | The ffi draw wrappers take a `&mut impl RaylibDraw`, so an active drawing context is proven at compile time |
 | `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
 | `runtime::process::process_group` | `std`'s `Child::kill` sends only `SIGKILL`, to only one process. `SIGTERM` and process-group delivery need `kill(2)`, and `libc` is not a dependency | One block wrapping a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`. Both arguments pass by value, nothing is written through a pointer, and every caller passes a pid it owns as a live `Child` (or its negation) |
