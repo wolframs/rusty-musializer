@@ -713,8 +713,13 @@ fn run() -> Result<std::process::ExitCode, String> {
                     .zoom(duration, zoom, f64::from(music.get_time_played()));
             }
             // The lyrics editor's probe keys, which need the track they edit.
+            let probe_slot = app.workspace.current_index();
             if let Some(track) = app.workspace.current_mut() {
                 let mut lyrics = std::mem::take(&mut app.shell.lyrics);
+                // The probe binds the form to a cue, so the editor has to own the
+                // track first or the first drawn frame drops what it just set
+                // (review 1.3).
+                lyrics.enter_track(probe_slot);
                 let honoured = lyrics.apply_probe(&probe, track);
                 app.shell.lyrics = lyrics;
                 if !honoured {
@@ -1136,7 +1141,10 @@ fn run() -> Result<std::process::ExitCode, String> {
         // The lyrics editor writes through the track rather than through a
         // `ShellCommand` per keystroke: an edit is a whole cue operation and the
         // editor already validated it against the model's own rules.
-        let edits = app.shell.lyrics.take_pending();
+        // Drained against the current slot, not blindly (review 1.3): an edit
+        // authored on another track is dropped and reported rather than written
+        // through the cue id it happens to share with this one.
+        let edits = app.shell.drain_lyric_edits(app.workspace.current_index());
         if !edits.is_empty() {
             let now = rl.get_time();
             if let Some(track) = app.workspace.current_mut() {
@@ -2541,16 +2549,33 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
         .filter(|track| track.has_unsaved_work())
         .count();
     let route_edit = app.shell.route_edit_is_dirty();
-    // The other five conditions the C weighs — an open lyric draft, an open route
-    // edit, staged Assist suggestions, a running analysis and a running export —
-    // belong to Agents I, G, J and H. Each adds a line to this list.
-    if dirty == 0 && !route_edit && !exporting && !app.workspace.assist.blocks_close() {
+    // review 1.3 (UX0-A03). The lyric draft belongs here rather than behind its
+    // own modal: quitting is already one confirmation over six conditions
+    // (`plug.c:7215-7220`), and a second prompt for the draft would ask the user
+    // twice about the same decision. Guarding quit the way the track row is
+    // guarded would be worse still — refusing to close an application is not a
+    // reasonable answer to a half-typed lyric.
+    let lyric_draft = app.shell.lyric_draft_is_dirty(&app.workspace);
+    // The remaining conditions the C weighs — staged Assist suggestions, a
+    // running analysis and a running export — arrive through `assist` and
+    // `exporting`.
+    if dirty == 0
+        && !lyric_draft
+        && !route_edit
+        && !exporting
+        && !app.workspace.assist.blocks_close()
+    {
         return true;
     }
     // The C builds this list line by line from six conditions (`plug.c:7222-7247`).
     // Three of the six — staged Assist suggestions, a running analysis and a
     // running export — belong to Agents H and J and each adds a line here.
     let mut items = String::new();
+    // The C's order puts the draft first (`plug.c:7226-7228`), and the words are
+    // its words.
+    if lyric_draft {
+        items.push_str("\n- Apply or discard the active lyric draft.");
+    }
     if route_edit {
         items.push_str("\n- Apply or discard the open audio-route edit.");
     }
@@ -2652,6 +2677,10 @@ fn open_project<'audio>(
     } else {
         select_track(audio, index, analysis, music, app, scratch)?;
     }
+    // `lyric_editor_clear_draft()` at `plug.c:5037`. The opened project's track
+    // is current now, so any draft still bound to the previous slot has to go
+    // (review 1.3); the click that got here was guarded, so it is not lost work.
+    app.shell.lyrics.enter_track(app.workspace.current_index());
     app.shell.notify(
         Severity::Info,
         "Project opened",
@@ -2748,10 +2777,14 @@ fn ask_for_project_path(app: &mut App) -> Option<PathBuf> {
 /// leaving the session with no audio and no picture. Selecting the same track is
 /// a no-op rather than a restart.
 ///
-/// The C also runs `lyric_editor_allow_context_change` and
-/// `route_editor_allow_active_context_change` before any of this. Those guards
-/// belong to the panels that own the drafts (Agents G and I); the call sites here
-/// are where they hook in.
+/// The C runs `lyric_editor_allow_context_change` and
+/// `route_editor_allow_active_context_change` before any of this
+/// (`plug.c:5263-5264`). The lyric half now runs at the click site in
+/// `ui::shell`, because a refused guard must leave the selection untouched and
+/// the command must never be emitted at all; what happens here is the other half
+/// of `plug.c:5274` — rebinding the editor once the switch has succeeded, so the
+/// draft can never be left pointing at the document it no longer edits
+/// (review 1.3).
 fn select_track<'audio>(
     audio: &'audio RaylibAudio,
     index: usize,
@@ -2775,6 +2808,9 @@ fn select_track<'audio>(
 
     app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
     app.workspace.select(index);
+    // `lyric_editor_clear_draft()` at `plug.c:5274`, and the reason a stale
+    // binding is unreachable rather than merely guarded against (review 1.3).
+    app.shell.lyrics.enter_track(Some(index));
     bind_audio(opened, analysis, music, app, scratch, true)
 }
 

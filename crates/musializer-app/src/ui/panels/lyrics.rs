@@ -51,7 +51,7 @@ use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
 use crate::cli::UiProbe;
-use crate::workspace::Track;
+use crate::workspace::{Track, Workspace};
 
 /// The cue lane's height, and the gap between it and the editor below.
 ///
@@ -190,19 +190,14 @@ pub enum LyricsEdit {
 impl LyricsEdit {
     /// Writes the change into a track, returning the id of a newly inserted cue.
     ///
-    /// No caller yet, and that is the one thing this panel cannot finish for
-    /// itself: the drain belongs in `main.rs`, which this fan-out does not edit.
-    /// The three-line call site is in Agent I's report; until it lands, edits
-    /// accumulate in [`LyricEditor::take_pending`] and nothing is written.
+    /// Called by `main.rs` on what [`LyricEditor::take_pending`] hands back —
+    /// which is only ever the edits whose owning track is the one being written
+    /// to (review 1.3).
     ///
     /// Every variant goes through the model's own validating entry point, so an
     /// edit the panel should not have offered fails here rather than corrupting
     /// the document. That is what makes it safe for the panel to be optimistic
     /// about geometry it clamped a frame ago.
-    #[allow(
-        dead_code,
-        reason = "the drain that calls it is a `main.rs` edit this fan-out does not make; see the report"
-    )]
     pub fn apply(self, track: &mut Track) -> Result<Option<u64>, LyricsError> {
         match self {
             LyricsEdit::Insert {
@@ -245,6 +240,32 @@ impl LyricsEdit {
             }
         }
     }
+}
+
+/// One deferred edit and the workspace slot it was authored against
+/// (review 1.3).
+///
+/// The slot travels *with* the edit rather than being read at flush time,
+/// because those are two different questions: the edit belongs to whichever
+/// track the draft was bound to when the user clicked Apply, and the flush
+/// happens against whichever track is current when `main.rs` drains. Cue ids
+/// restart at 1 in every document, so with only the bare `id` those two tracks
+/// are indistinguishable and one track's draft lands on another's cue.
+#[derive(Clone, Debug, PartialEq)]
+struct PendingLyricEdit {
+    owner_slot: Option<usize>,
+    edit: LyricsEdit,
+}
+
+/// What one drain yielded (review 1.3).
+///
+/// `refused` is a count rather than a discarded silence: an edit dropped because
+/// its track went away is work the user believes they applied, and the tray has
+/// to say so.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LyricEditDrain {
+    pub edits: Vec<LyricsEdit>,
+    pub refused: usize,
 }
 
 /// The lane gesture in flight (`Lyric_Editor`'s `lane_drag_*`,
@@ -296,7 +317,20 @@ pub struct LyricEditor {
     /// oracle's `lyric_editor_panel_height` for the right number of rows without
     /// the shell reaching into the workspace.
     cue_count: usize,
-    pending: Vec<LyricsEdit>,
+    /// Which workspace slot the draft above belongs to (review 1.3).
+    ///
+    /// The house pattern is `RouteEditorState`'s `track_slot`
+    /// (`route_editor_state.h:19-31`), and this editor is the one draft that did
+    /// not have it: `selected_id` is a bare `u64`, ids restart at 1 in every
+    /// document, and so a draft opened on track A addressed a real — different —
+    /// cue on track B. It is also the same defect `Track::manual_clear` was made
+    /// per-track to avoid, one lane over.
+    ///
+    /// `None` means no track has been entered yet, which is not the same as
+    /// slot 0: an edit authored before any track was current must not apply to
+    /// the first one that appears.
+    owner_slot: Option<usize>,
+    pending: Vec<PendingLyricEdit>,
 }
 
 impl Default for LyricEditor {
@@ -339,8 +373,74 @@ impl LyricEditor {
             lane_selection: LyricLaneSelection::new(),
             lane_drag: LaneDrag::default(),
             cue_count: 0,
+            owner_slot: None,
             pending: Vec::new(),
         }
+    }
+
+    /// The workspace slot this draft belongs to, or `None` before any track has
+    /// been entered (review 1.3).
+    #[must_use]
+    pub fn draft_owner(&self) -> Option<usize> {
+        self.owner_slot
+    }
+
+    /// Puts the editor in the state a user reaches by opening a cue on `slot`
+    /// and typing one character into it.
+    ///
+    /// A hook rather than field access, so that `ui::shell`'s tests drive the
+    /// same transition the panel does: `select_single` is where the cue id is
+    /// copied out of the document, and a test that set the fields by hand would
+    /// stop covering the thing that goes wrong.
+    #[cfg(test)]
+    pub(crate) fn open_dirty_draft_for_test(
+        &mut self,
+        slot: usize,
+        document: &LyricsDocument,
+        id: u64,
+    ) {
+        self.enter_track(Some(slot));
+        self.select_single(document, id);
+        self.text
+            .edit
+            .insert_char('!')
+            .expect("a plain character is accepted by the cue rules");
+        debug_assert!(self.has_unsaved_draft(document));
+    }
+
+    /// Clicks Apply on whatever the draft currently is, as the form's button
+    /// does.
+    #[cfg(test)]
+    pub(crate) fn apply_draft_for_test(&mut self, track: &Track) {
+        let edit = self.draft_edit().expect("the draft is applicable");
+        apply_draft(self, track, edit);
+    }
+
+    /// Rebinds the editor to whichever track is now current, dropping a draft
+    /// that belonged to another slot (review 1.3).
+    ///
+    /// The oracle does the same thing in the same place — `plug.c:5274` clears
+    /// the draft immediately after a track switch is allowed, and `plug.c:5037`
+    /// after a project opens. Doing it here as well as guarding the switch is
+    /// what makes the stale binding unreachable rather than merely unlikely: a
+    /// path that forgets the guard finds a cleared draft instead of one bound to
+    /// a cue id that means something else now.
+    ///
+    /// Returns whether it dropped an unsaved *new* cue — the one draft that is
+    /// dirty by rule (`editor_draft.c:5-15`) and therefore lost work no matter
+    /// what the owning document held.
+    pub fn enter_track(&mut self, slot: Option<usize>) -> bool {
+        if self.owner_slot == slot {
+            return false;
+        }
+        let lost = self.draft_new;
+        self.owner_slot = slot;
+        self.clear_draft();
+        // The lane selection is a list of cue ids from the old document, and the
+        // ids it holds all resolve against the new one.
+        self.lane_selection.clear();
+        self.list_first = 0;
+        lost
     }
 
     /// `lyric_editor_ui_clear_draft` (`:58-66`).
@@ -473,19 +573,38 @@ impl LyricEditor {
     }
 
     fn push(&mut self, edit: LyricsEdit) {
-        self.pending.push(edit);
+        // Stamped from the editor's own binding, not from whichever track is
+        // current: those two can differ, and when they do the difference is
+        // review 1.3.
+        self.pending.push(PendingLyricEdit {
+            owner_slot: self.owner_slot,
+            edit,
+        });
     }
 
     /// Everything the editor asked for this frame, taken by `main.rs`.
     ///
     /// Draining rather than reading is the contract: an edit left behind would be
     /// applied twice, and applying a `ShiftMany` twice moves the cues twice.
-    #[allow(
-        dead_code,
-        reason = "part of the `main.rs` integration surface this fan-out does not wire; see the report"
-    )]
-    pub fn take_pending(&mut self) -> Vec<LyricsEdit> {
-        std::mem::take(&mut self.pending)
+    ///
+    /// `current_slot` is what the edits are checked against (review 1.3). An edit
+    /// whose owner is not the current track is **dropped, never applied**: the
+    /// two documents share cue ids, so applying it would either overwrite a lyric
+    /// the user never opened or fail with a raw out-of-range error against a
+    /// shorter track. This is the last line of defence — the guards above it
+    /// should mean the count is always zero — and it is deliberately not a
+    /// remap-to-the-right-track, because by flush time there is nothing left that
+    /// says the user still wants it.
+    pub fn take_pending(&mut self, current_slot: Option<usize>) -> LyricEditDrain {
+        let mut drain = LyricEditDrain::default();
+        for pending in std::mem::take(&mut self.pending) {
+            if pending.owner_slot == current_slot {
+                drain.edits.push(pending.edit);
+            } else {
+                drain.refused += 1;
+            }
+        }
+        drain
     }
 
     #[must_use]
@@ -609,10 +728,15 @@ impl LyricEditor {
             }
         };
         format!(
-            "{} cues, pane {}, selected {}, lane {}, draft {}, shadowed {}",
+            "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}",
             track.lyrics.len(),
             pane,
             selected,
+            // Which track the draft is bound to (review 1.3). A capture cannot
+            // photograph a binding, and "selected #3" reads identically whether
+            // the 3 came from this document or the one before it.
+            self.owner_slot
+                .map_or_else(|| "none".to_string(), |slot| slot.to_string()),
             self.lane_selection.len(),
             if self.has_unsaved_draft(&track.lyrics) {
                 "dirty"
@@ -658,6 +782,18 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         let font = input.fonts.ui();
+        // Before anything is drawn or clicked: whatever the guards did or did not
+        // do, the editor must be bound to the track it is about to edit
+        // (review 1.3). A draft carried in from another slot is dropped here, and
+        // said out loud when it was a new cue, because that is the only draft
+        // whose loss the user cannot see for themselves in the list.
+        if editor.enter_track(input.workspace.current_index()) {
+            self.notify(
+                Severity::Warning,
+                "Unsaved lyric draft was dropped",
+                "The new cue belonged to the track that was open before this one.",
+            );
+        }
         // The panel starts below the strip, the rule `super::stub` records: the
         // panel and the strip share one band, and the height an open panel asks
         // for is the space underneath.
@@ -1113,16 +1249,84 @@ impl Shell {
     }
 
     /// `lyric_editor_ui_allow_context_change` (`:86-94`).
+    ///
+    /// In-panel navigation only — the editor is drawn against the track it owns,
+    /// so `track` is the owning document by construction. The outer paths (a
+    /// track row, a panel button, an Open) go through
+    /// [`Self::lyric_draft_allows_context_change`], which has to find the owner
+    /// first.
     fn allow_context_change(&mut self, editor: &LyricEditor, track: &Track) -> bool {
         if !editor.has_unsaved_draft(&track.lyrics) {
             return true;
         }
+        self.refuse_lyric_context_change();
+        false
+    }
+
+    /// The same guard for the paths *outside* the panel: the Tracks row, the
+    /// bottom-panel buttons, and the Open actions (review 1.3).
+    ///
+    /// The difference that matters is which document the draft is compared
+    /// against. `allow_context_change` above is handed the current track and that
+    /// is correct while the panel is drawing; here the draft may already belong
+    /// to a slot the user is trying to leave, and asking the *current* track
+    /// whether cue #3 changed is exactly the confusion this guard exists to
+    /// prevent. So the owner is resolved first, the way
+    /// `RouteEditorState::is_dirty_for_track` resolves it
+    /// (`route_editor_state.c:233-237`).
+    ///
+    /// Same words, same refuse-with-a-notice behaviour as the in-panel guard, so
+    /// that clicking a cue row and clicking a track row fail the same way.
+    pub(crate) fn lyric_draft_allows_context_change(&mut self, workspace: &Workspace) -> bool {
+        if !self.lyric_draft_is_dirty(workspace) {
+            return true;
+        }
+        self.refuse_lyric_context_change();
+        false
+    }
+
+    /// The same question without the notice, for the quit confirmation
+    /// (`plug.c:7215`), which weighs it against five other conditions and asks
+    /// once.
+    #[must_use]
+    pub(crate) fn lyric_draft_is_dirty(&self, workspace: &Workspace) -> bool {
+        self.lyrics.draft_owner().is_some_and(|slot| {
+            workspace
+                .get(slot)
+                .is_some_and(|owner| self.lyrics.has_unsaved_draft(&owner.lyrics))
+        })
+    }
+
+    /// Drains the editor's deferred edits for the track `main.rs` is about to
+    /// write, and reports whatever the owner check refused (review 1.3).
+    ///
+    /// The drain lives here rather than in `main.rs` so that the refusal is a
+    /// notice the shell's own tests can see. A silently dropped edit is the
+    /// failure mode this whole task is about: the user believes they applied
+    /// something, and the only two honest outcomes are that it lands on the track
+    /// they authored it against or that they are told it did not land at all.
+    pub(crate) fn drain_lyric_edits(&mut self, current_slot: Option<usize>) -> Vec<LyricsEdit> {
+        let drain = self.lyrics.take_pending(current_slot);
+        if drain.refused > 0 {
+            self.notify(
+                Severity::Warning,
+                "Lyric edit was dropped",
+                &format!(
+                    "{} edit(s) belonged to a track that is no longer current and were not applied.",
+                    drain.refused
+                ),
+            );
+        }
+        drain.edits
+    }
+
+    /// One place for the refusal, so the two guards cannot drift apart.
+    fn refuse_lyric_context_change(&mut self) {
         self.notify(
             Severity::Warning,
             "Finish the lyric edit first",
             "Apply or discard the current draft before changing tracks or panels.",
         );
-        false
     }
 
     // -----------------------------------------------------------------------
@@ -2408,6 +2612,8 @@ fn fade(color: Color, alpha: f32) -> Color {
 
 #[cfg(test)]
 mod tests {
+    use musializer_core::scene::SceneId;
+
     use super::*;
 
     fn document(count: usize) -> LyricsDocument {
@@ -2586,11 +2792,145 @@ mod tests {
         // Applying a ShiftMany twice moves the cues twice, so the drain is the
         // contract rather than a convenience.
         let mut editor = LyricEditor::new();
+        editor.enter_track(Some(0));
         editor.push(LyricsEdit::Delete { id: 4 });
         assert!(editor.has_pending());
-        assert_eq!(editor.take_pending().len(), 1);
+        assert_eq!(editor.take_pending(Some(0)).edits.len(), 1);
         assert!(!editor.has_pending());
-        assert!(editor.take_pending().is_empty());
+        assert!(editor.take_pending(Some(0)).edits.is_empty());
+    }
+
+    fn test_track(name: &str, cues: usize) -> Track {
+        let mut track = Track::new(PathBuf::from(name), 120.0, SceneId::Spectrum, 7)
+            .expect("120s is a valid duration");
+        track.lyrics = document(cues);
+        track
+    }
+
+    /// review 1.3 (UX0-A03). Cue ids restart at 1 in every document, so track A's
+    /// cue #3 and track B's cue #3 are the same `u64`. The editor remembered only
+    /// that number, and the deferred Update landed on whichever track was current
+    /// when `main.rs` drained — overwriting a lyric the user never opened, or
+    /// failing with a raw out-of-range error when B was shorter.
+    #[test]
+    fn an_edit_authored_on_one_track_is_refused_against_another() {
+        let a = test_track("/tmp/a.wav", 4);
+        // Deliberately shorter: the two documents share ids 1..=2 and B has no
+        // #3 at all, which is the variant that used to surface as a raw error.
+        let b = test_track("/tmp/b.wav", 2);
+        let before = b.lyrics.clone();
+
+        let mut editor = LyricEditor::new();
+        let id = a.lyrics.cues()[2].id;
+        editor.open_dirty_draft_for_test(0, &a.lyrics, id);
+        editor.apply_draft_for_test(&a);
+        assert!(editor.has_pending());
+
+        // The old bug route: the workspace moved on without the guard, and the
+        // drain happened afterwards.
+        let drain = editor.take_pending(Some(1));
+        assert_eq!(drain.refused, 1);
+        assert!(
+            drain.edits.is_empty(),
+            "an edit owned by slot 0 reached slot 1"
+        );
+
+        // Nothing the drain yielded can touch B, so B is what it was.
+        let mut b = b;
+        for edit in drain.edits {
+            let _ = edit.apply(&mut b);
+        }
+        assert_eq!(b.lyrics, before);
+    }
+
+    /// The other half: the owner matching is not incidentally always false.
+    #[test]
+    fn an_edit_reaches_the_track_that_authored_it() {
+        let mut a = test_track("/tmp/a.wav", 4);
+        let id = a.lyrics.cues()[2].id;
+        let mut editor = LyricEditor::new();
+        editor.open_dirty_draft_for_test(0, &a.lyrics, id);
+        editor.apply_draft_for_test(&a);
+
+        let drain = editor.take_pending(Some(0));
+        assert_eq!(drain.refused, 0);
+        assert_eq!(drain.edits.len(), 1);
+        for edit in drain.edits {
+            edit.apply(&mut a).expect("the model accepts its own draft");
+        }
+        assert_eq!(a.lyrics.find(id).expect("the cue survives").text, "line 2!");
+    }
+
+    /// Entering a track is the point the binding can never be stale past
+    /// (`plug.c:5274`), so it has to drop the draft rather than reinterpret it.
+    #[test]
+    fn entering_another_track_drops_a_draft_it_does_not_own() {
+        let a = test_track("/tmp/a.wav", 4);
+        let mut editor = LyricEditor::new();
+        let id = a.lyrics.cues()[2].id;
+        editor.open_dirty_draft_for_test(0, &a.lyrics, id);
+        assert_eq!(editor.draft_owner(), Some(0));
+
+        editor.enter_track(Some(1));
+        assert_eq!(editor.draft_owner(), Some(1));
+        assert_eq!(editor.selected_id, 0);
+        assert!(!editor.draft_new);
+        assert!(editor.lane_selection.is_empty());
+
+        // And re-entering the track already owned changes nothing, because a
+        // clear on every frame would delete the draft as fast as it is typed.
+        editor.open_dirty_draft_for_test(1, &a.lyrics, id);
+        editor.enter_track(Some(1));
+        assert_eq!(editor.selected_id, id);
+    }
+
+    /// A new cue is dirty by rule, so dropping one is unsaved work and the panel
+    /// says so; an unbound editor has nothing to report.
+    #[test]
+    fn only_a_dropped_new_cue_is_reported_as_lost() {
+        let a = test_track("/tmp/a.wav", 4);
+        let mut editor = LyricEditor::new();
+        editor.enter_track(Some(0));
+        editor.begin_new(&a.lyrics, 30.0);
+        assert!(editor.enter_track(Some(1)));
+
+        let mut editor = LyricEditor::new();
+        editor.open_dirty_draft_for_test(0, &a.lyrics, a.lyrics.cues()[0].id);
+        assert!(
+            !editor.enter_track(Some(1)),
+            "an edit to a stored cue is still in the document it came from"
+        );
+    }
+
+    /// Requirement 3 of UX0-A03: Apply, Discard and Cancel each have to leave the
+    /// draft clean, or the guard they exist to satisfy stays shut behind them.
+    #[test]
+    fn apply_discard_and_cancel_all_leave_the_draft_clean() {
+        let mut a = test_track("/tmp/a.wav", 4);
+        let id = a.lyrics.cues()[1].id;
+
+        // Apply, then the write `main.rs` performs at the end of the frame.
+        let mut editor = LyricEditor::new();
+        editor.open_dirty_draft_for_test(0, &a.lyrics, id);
+        editor.apply_draft_for_test(&a);
+        for edit in editor.take_pending(Some(0)).edits {
+            edit.apply(&mut a).expect("the model accepts its own draft");
+        }
+        assert!(!editor.has_unsaved_draft(&a.lyrics), "Apply left it dirty");
+
+        // Discard, on an existing cue.
+        editor.open_dirty_draft_for_test(0, &a.lyrics, id);
+        editor.clear_draft();
+        assert!(
+            !editor.has_unsaved_draft(&a.lyrics),
+            "Discard left it dirty"
+        );
+
+        // Cancel, on a new cue that was never applied.
+        editor.begin_new(&a.lyrics, 30.0);
+        assert!(editor.has_unsaved_draft(&a.lyrics));
+        editor.clear_draft();
+        assert!(!editor.has_unsaved_draft(&a.lyrics), "Cancel left it dirty");
     }
 
     #[test]

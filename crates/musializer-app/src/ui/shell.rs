@@ -1120,14 +1120,21 @@ impl Shell {
                     commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
                 }
                 c if *c == icons::TUNE => self.set_inspector_open(!self.inspector_open),
-                c if *c == icons::EXPORT => {
-                    self.toggle_panel(UiPanel::Export);
-                }
-                c if *c == icons::LYRICS => {
-                    self.toggle_panel(UiPanel::Lyrics);
-                }
-                c if *c == icons::ASSIST => {
-                    self.toggle_panel(UiPanel::Assist);
+                // The three bottom panels share one guard, as they do in the
+                // oracle's own panel row (`plug.c:2905-2906`): leaving the lyrics
+                // editor with a half-typed cue is a context change like any other,
+                // and the draft is invisible once the panel is gone.
+                c if *c == icons::EXPORT || *c == icons::LYRICS || *c == icons::ASSIST => {
+                    if self.lyric_draft_allows_context_change(input.workspace) {
+                        let panel = if *c == icons::EXPORT {
+                            UiPanel::Export
+                        } else if *c == icons::LYRICS {
+                            UiPanel::Lyrics
+                        } else {
+                            UiPanel::Assist
+                        };
+                        self.toggle_panel(panel);
+                    }
                 }
                 _ => commands.push(ShellCommand::TogglePlay),
             }
@@ -1651,8 +1658,18 @@ impl Shell {
             );
             if state.clicked {
                 match index {
+                    // Both Opens make a *different* track current, so they are the
+                    // same context change as clicking a track row (review 1.3).
+                    // The oracle guards neither and clears the draft on the way
+                    // through (`plug.c:5037`), which loses the typing without
+                    // saying so; refusing is the interaction the rest of this
+                    // interface already uses.
+                    0 | 1 if !self.lyric_draft_allows_context_change(input.workspace) => {}
                     0 => commands.push(ShellCommand::OpenProject),
                     1 => commands.push(ShellCommand::OpenAudio),
+                    // Saving changes no context: it writes the track the draft
+                    // already belongs to, and blocking it would be telling the
+                    // user to discard work in order to save work.
                     2 => commands.push(ShellCommand::SaveProject),
                     _ => commands.push(ShellCommand::SaveProjectAs),
                 }
@@ -1781,7 +1798,12 @@ impl Shell {
                 ButtonStyle::Neutral,
                 Some(metric::UI_FONT_LABEL),
             );
-            if state.clicked && !selected {
+            // review 1.3 (UX0-A03). The click used to push the command with no
+            // guard at all, so a half-typed cue on this track became an edit
+            // against the next one. The oracle guards the same click
+            // (`plug.c:5263`), and the refusal is the panel's own words.
+            if state.clicked && !selected && self.lyric_draft_allows_context_change(input.workspace)
+            {
                 commands.push(ShellCommand::SelectTrack(index));
             }
         }
@@ -1858,6 +1880,11 @@ impl Shell {
                 ButtonStyle::Neutral,
                 Some(font_size),
             );
+            // Deliberately not guarded on the lyric draft (review 1.3), and the
+            // oracle does not guard it either. A scene change stays on the same
+            // track, so the draft it leaves behind is still bound to the document
+            // it came from and the cue list it edits is still on screen. Adding a
+            // refusal here would be friction with no defect behind it.
             if state.clicked && id != input.scene {
                 commands.push(ShellCommand::SelectScene(id));
             }
@@ -2786,5 +2813,187 @@ mod tests {
         assert!(commands.contains(&ShellCommand::Seek(42.0)));
         assert!(commands.contains(&ShellCommand::TogglePlay));
         assert!(!shell.scrub_restore_playing);
+    }
+
+    // ---- UX0-A03 (review 1.3): the lyric draft's owning track ---------------
+
+    /// The cue the tests below bind to, in both documents. Row 2, so there is a
+    /// cue on either side of it.
+    const DRAFT_ROW: usize = 2;
+    /// What row 2 says on track A before the edit, and what it says on track B
+    /// already.
+    const A_TEXT: &str = "the same sheet";
+    const B_TEXT: &str = "the same sheet!";
+
+    /// Two tracks carrying the *same* lyric sheet, which is the case the bug
+    /// needs and the one a user reaches by duplicating a project or working on a
+    /// remix. Cue ids restart at 1 in every document, so both row 2s have the
+    /// same id — and track B's row 2 already reads what the user is about to type
+    /// into track A's.
+    ///
+    /// That coincidence is the point. With the dirtiness question put to the
+    /// *current* track rather than to the draft's owner, this draft reports clean
+    /// against B, walks through the guard, and the deferred `Update` lands on B.
+    fn two_track_workspace() -> crate::workspace::Workspace {
+        use std::path::PathBuf;
+
+        use musializer_core::project::lyrics::{LyricCue, LyricsDocument};
+        use musializer_core::scene::SceneId;
+
+        let mut workspace = crate::workspace::Workspace::new();
+        for (name, row_text) in [("/tmp/a.wav", A_TEXT), ("/tmp/b.wav", B_TEXT)] {
+            let mut track =
+                crate::workspace::Track::new(PathBuf::from(name), 120.0, SceneId::Spectrum, 7)
+                    .expect("120s is a valid duration");
+            let mut document = LyricsDocument::new(120.0).expect("a positive duration");
+            for index in 0..4usize {
+                let start = 10.0 + index as f64 * 5.0;
+                document
+                    .insert(LyricCue {
+                        id: 0,
+                        start_seconds: start,
+                        end_seconds: start + 2.0,
+                        text: if index == DRAFT_ROW {
+                            row_text.to_string()
+                        } else {
+                            format!("shared line {index}")
+                        },
+                    })
+                    .expect("the fixture cues are valid");
+            }
+            track.lyrics = document;
+            workspace.push(track);
+        }
+        workspace
+    }
+
+    /// The bug, at the layer that used to have no guard at all. The Tracks row
+    /// pushed `SelectTrack` unconditionally, the switch happened, and the
+    /// deferred `Update` then wrote track A's text over track B's cue #3.
+    #[test]
+    fn a_dirty_lyric_draft_blocks_a_track_switch_and_says_so() {
+        let mut shell = Shell::new();
+        let workspace = two_track_workspace();
+        let document = workspace.get(0).expect("slot 0").lyrics.clone();
+        let id = document.cues()[DRAFT_ROW].id;
+
+        shell.lyrics.open_dirty_draft_for_test(0, &document, id);
+        assert_eq!(shell.lyrics.draft_owner(), Some(0));
+
+        let before = shell.notices.len();
+        assert!(
+            !shell.lyric_draft_allows_context_change(&workspace),
+            "the draft is dirty and the switch went through anyway"
+        );
+        assert!(
+            shell.notices.len() > before,
+            "the refusal has to be visible; a silent no-op reads as a broken button"
+        );
+    }
+
+    /// The old bug route, end to end and at the layer `main.rs` drives: edit a cue
+    /// on track A, reach track B without the guard, and let the deferred edit
+    /// flush. It must be refused, B must be byte-identical, and the user must be
+    /// told — a dropped edit they believe they applied is the same loss as the
+    /// overwrite, one track over.
+    #[test]
+    fn a_deferred_edit_that_outlived_its_track_is_refused_and_reported() {
+        let mut shell = Shell::new();
+        let mut workspace = two_track_workspace();
+        let document = workspace.get(0).expect("slot 0").lyrics.clone();
+        let id = document.cues()[DRAFT_ROW].id;
+        let untouched = workspace.get(1).expect("slot 1").lyrics.clone();
+
+        shell.lyrics.open_dirty_draft_for_test(0, &document, id);
+        let track = workspace.get(0).expect("slot 0").clone();
+        shell.lyrics.apply_draft_for_test(&track);
+        assert!(shell.lyrics.has_pending());
+
+        // The unguarded path: the selection moved and the editor was never told.
+        assert!(workspace.select(1));
+
+        let edits = shell.drain_lyric_edits(workspace.current_index());
+        assert!(edits.is_empty(), "an edit owned by slot 0 reached slot 1");
+        assert_eq!(
+            shell.notices.len(),
+            1,
+            "the drop has to be said out loud; the user thinks they applied it"
+        );
+
+        // And what `main.rs` would then write changes nothing about B.
+        let current = workspace.get_mut(1).expect("slot 1");
+        for edit in edits {
+            let _ = edit.apply(current);
+        }
+        assert_eq!(current.lyrics, untouched);
+    }
+
+    /// The dirtiness is asked of the **owning** track, not the current one. With
+    /// the question put to whichever track is current, a draft carried onto a
+    /// document whose cue happens to match would report clean and walk straight
+    /// through the guard.
+    #[test]
+    fn the_guard_asks_the_track_that_owns_the_draft() {
+        let mut shell = Shell::new();
+        let mut workspace = two_track_workspace();
+        let document = workspace.get(0).expect("slot 0").lyrics.clone();
+        let id = document.cues()[DRAFT_ROW].id;
+        shell.lyrics.open_dirty_draft_for_test(0, &document, id);
+
+        // Slot 1 is current now, and it has its own cue with this exact id.
+        assert!(workspace.select(1));
+        assert!(
+            !shell.lyric_draft_allows_context_change(&workspace),
+            "the guard read slot 1's cue #3 and called slot 0's draft clean"
+        );
+    }
+
+    /// The other half: a clean editor must not make the interface feel stuck.
+    #[test]
+    fn a_clean_lyric_draft_leaves_every_context_change_unguarded() {
+        let mut shell = Shell::new();
+        let workspace = two_track_workspace();
+        let document = workspace.get(0).expect("slot 0").lyrics.clone();
+
+        // Nothing opened at all.
+        assert!(shell.lyric_draft_allows_context_change(&workspace));
+
+        // Bound to a cue, untouched.
+        shell.lyrics.enter_track(Some(0));
+        shell.lyrics.select_single(&document, document.cues()[1].id);
+        assert!(shell.lyric_draft_allows_context_change(&workspace));
+        assert_eq!(shell.notices.len(), 0);
+    }
+
+    /// Requirement 3 of UX0-A03, end to end: Apply, the write `main.rs` makes at
+    /// the end of the frame, and then a switch that must not be argued with.
+    #[test]
+    fn applying_the_draft_then_switching_tracks_is_not_guarded() {
+        let mut shell = Shell::new();
+        let mut workspace = two_track_workspace();
+        let document = workspace.get(0).expect("slot 0").lyrics.clone();
+        let id = document.cues()[DRAFT_ROW].id;
+        let untouched = workspace.get(1).expect("slot 1").lyrics.clone();
+
+        shell.lyrics.open_dirty_draft_for_test(0, &document, id);
+        let track = workspace.get(0).expect("slot 0").clone();
+        shell.lyrics.apply_draft_for_test(&track);
+
+        let drain = shell.lyrics.take_pending(workspace.current_index());
+        assert_eq!(drain.refused, 0);
+        let owner = workspace.get_mut(0).expect("slot 0");
+        for edit in drain.edits {
+            edit.apply(owner).expect("the model accepts its own draft");
+        }
+        assert_eq!(
+            owner.lyrics.find(id).expect("the cue survives").text,
+            B_TEXT
+        );
+
+        assert!(shell.lyric_draft_allows_context_change(&workspace));
+        assert_eq!(shell.notices.len(), 0);
+        // The whole document, not one cue: an edit that reached the wrong track
+        // could have moved a boundary rather than a word.
+        assert_eq!(workspace.get(1).expect("slot 1").lyrics, untouched);
     }
 }
