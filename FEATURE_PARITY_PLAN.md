@@ -390,6 +390,39 @@ output underruns to 0 / 0. Spectrum's onset-only full-width white floor gradient
 was also removed: the frame-eight floor crop remains at luma 21, while restoring
 the old pass raises it to 55 and fails the gate.
 
+Operator acceptance (2026-08-03, after `7099741`): real-device playback and the
+Spectrum fix were tested interactively and reported to work well. Treat the audio
+consistency and white-floor-flash defects as closed; retain the zero-underrun and
+onset-floor negative controls as regression gates.
+
+The next timeline gap is separate: `+ Scene` can capture a scene-plan cue at the
+playhead, and `SceneSwitchTimeline` already supports split/insert, remove, retime
+and retarget operations, but no scene-plan lane is drawn and there is no
+comfortable editor for those operations.
+
+- [ ] Add an editable scene-plan lane to the timeline; creation, selection,
+      retargeting, boundary movement and deletion need a discoverable workflow.
+- [ ] Extract only the shared timed-lane mechanics from the lyric editor:
+      `TimelineView` geometry, clipping/minimum visible width, hit zones, stable-id
+      selection, drag threshold, preview-versus-commit state and shell-level
+      pointer ownership. Reuse those primitives for lyrics, scenes and later
+      lanes instead of cloning `lyric_lane_edit` or coupling the scene editor to
+      the Lyrics panel.
+- [ ] Keep lane policy and durable commands domain-specific. Lyrics may overlap,
+      multi-select, move as a group and resize either edge; scene segments form a
+      contiguous whole-track partition, select by stable cue id and move only a
+      shared internal boundary. Apply scene split, retime, retarget, tuning
+      capture, remove and enable/disable commands outside the draw pass.
+- [ ] Make scene boundaries independently hit-testable from scene segments and
+      keep transition presentation separate from segment identity. A later
+      transition can then carry its own kind, duration and curve and render as a
+      boundary overlay without changing segment coverage, selection semantics or
+      the cut-only `.musi` representation in this task.
+- [ ] Move timeline-lane gesture arbitration into the shell so a lane drag cannot
+      also scrub, pan or seek. Preserve preview == committed-result tests, add
+      short/off-screen boundary cases, and capture the lane both enabled and
+      disabled at whole-track and zoomed views.
+
 ### D5 — CLI execution semantics
 
 - [x] Execute positional audio, `--project`, `--scene`, `--event` and
@@ -647,6 +680,8 @@ This is centralized dangling-work cleanup, not feature parity by itself:
       presets and enabled scene cues.
 - [ ] Verify an interactive session on the operator's real desktop separately from
       Xvfb: dialogs, drag/drop, fullscreen, audio controls and launcher startup.
+      Audio playback and the Spectrum onset-floor fix were accepted on 2026-08-03;
+      the other interaction families remain open.
 - [ ] At completion, the deliberate exclusions above are the complete observable
       difference list. Update `README.md` and `AGENTS.md` from this file.
 
@@ -657,13 +692,13 @@ This is centralized dangling-work cleanup, not feature parity by itself:
 | Ten scenes and audio reaction | Fit, including saved semantic/lyric/event inputs | none; retain G1 evidence |
 | Shared captions and Cadence lyrics | Render integration fit; Cadence empty-state guidance missing | F1 |
 | Automatic scene plans | Fit in preview/export, CLI and the interactive Assist header | none; retain G1 evidence |
-| Manual scene cues | Capture/base/pending semantics fit; boundary evidence incomplete | B3 |
+| Manual scene cues | Capture/base/pending semantics fit; no timeline lane or comfortable editor | B3, D4 |
 | Settings/routes/presets | Core fit; dirty/reset, project-preset adoption and Tune control gaps remain | C1, C3, C5, D6 |
 | `.musi` open/save | Differential round trip fit | C1-C5 guard/autosave/adoption completion |
 | Multi-track workspace | Fit interactively | C2, C4 |
 | Lyrics editing | Editor fit; document import/export and broad draft guards missing | C2, D3 |
 | Manual/semantic events | Scene consumption fit; timeline markers missing | D4 |
-| Timeline | Waveform/zoom and transactional seek fit; lyric/events/pan missing | D4 |
+| Timeline | Waveform/zoom and transactional seek fit; scene-plan/lyric/event lanes and pan missing | D4 |
 | ASCII image mode | CLI/project rendering fit; GUI and typed drop missing | D1-D2 |
 | Assist | UI/controller/bridge and source bundle fit; live/fullscreen/helper-state validation remains | C2, E2-E4 |
 | Google Fonts | Job/manifest verification exists; background polling and project application are unwired | E3 |
