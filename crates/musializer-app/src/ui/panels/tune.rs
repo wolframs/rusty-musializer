@@ -47,6 +47,7 @@ use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
+use crate::workspace::Track;
 
 // -- geometry, from `plug.c:5517-5523` ---------------------------------------
 
@@ -124,6 +125,13 @@ mod slot {
 pub(crate) struct EditorHost {
     state: RouteEditorState,
     track_slot: usize,
+    /// review 1.8 (UX0-A08): "Reset scene"'s arm/confirm state. It lives here,
+    /// not on a new `Shell` field, for the same reason the route draft does —
+    /// `Shell`'s field list belongs to `shell.rs`, which this agent cannot
+    /// touch, and `EditorHost` is already the one seam `Shell` exposes into
+    /// this file. It has nothing to do with the route editor; it is here
+    /// because this is where the door is.
+    reset_arm: ResetArm,
 }
 
 impl Default for EditorHost {
@@ -131,7 +139,47 @@ impl Default for EditorHost {
         Self {
             state: RouteEditorState::new(),
             track_slot: 0,
+            reset_arm: ResetArm::default(),
         }
+    }
+}
+
+/// The "Reset scene" button's cross-frame arm/confirm state (review 1.8,
+/// UX0-A08). Copies the preset block's `Delete` button exactly
+/// (`events.rs`'s `presets.delete_armed`): first click arms and relabels the
+/// button, a second click while armed is the real action, and anything else
+/// disarms it rather than letting a stray click land on a confirmation nobody
+/// meant to give.
+///
+/// Keyed by `(track_slot, scene)` rather than a bare bool, because unlike the
+/// preset block — one selection shared by the whole session — Tune redraws a
+/// different scene's rows the instant the user switches scene or track. An
+/// unqualified bool would leave "Confirm" showing on a scene the user never
+/// clicked reset on.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ResetArm {
+    armed: bool,
+    track_slot: usize,
+    scene: Option<SceneId>,
+}
+
+impl ResetArm {
+    /// Whether this exact button (this track, this scene) is the one armed.
+    fn is_armed_for(self, track_slot: usize, scene: SceneId) -> bool {
+        self.armed && self.track_slot == track_slot && self.scene == Some(scene)
+    }
+
+    /// First click.
+    fn arm(&mut self, track_slot: usize, scene: SceneId) {
+        self.armed = true;
+        self.track_slot = track_slot;
+        self.scene = Some(scene);
+    }
+
+    /// Second click, or anything else that should make a stray third click
+    /// harmless: a slider edit, a preset action, or leaving the row.
+    fn disarm(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -265,6 +313,30 @@ impl Shell {
         );
         y += metric::UI_FONT_HEADER + metric::UI_CONTROL_GAP;
 
+        // review 1.7 (UX0-A07): `cue_settings_active` silently redirects every
+        // slider edit and Reset into a cue's captured snapshot whenever the
+        // playhead sits on one, and nothing on screen said so — the header
+        // named the scene, never which copy of its settings was being edited.
+        // The identity and time come straight from `Track::active_cue`, not
+        // from the playhead, so the label cannot drift from what a Reset or a
+        // slider edit actually touches.
+        let active_cue = input.workspace.current().and_then(Track::active_cue);
+        let scope = tune_scope_label(active_cue.map(|(index, cue)| (index, cue.start_seconds)));
+        widgets::draw_text(
+            d,
+            input.fonts.ui(),
+            &scope,
+            content.x + padding,
+            y,
+            metric::UI_FONT_CAPTION,
+            if active_cue.is_some() {
+                color::accent()
+            } else {
+                color::ui_muted()
+            },
+        );
+        y += metric::UI_FONT_CAPTION + metric::UI_CONTROL_GAP;
+
         // The shared preset block, between the header and the first slider
         // (`plug.c:5979-6100`): 42 px collapsed, 98 px populated, 0 if it does
         // not fit.
@@ -276,6 +348,12 @@ impl Shell {
             input.presets,
             &mut presets,
         );
+        if !presets.is_empty() {
+            // review 1.8: a preset Apply/Replace/Delete changes what Reset would
+            // act on, so an armed confirmation from a moment ago must not carry
+            // over and land on a scene the user has since edited a different way.
+            self.with_editor(|host| host.reset_arm.disarm());
+        }
         commands.extend(presets.into_iter().map(ShellCommand::Preset));
 
         let descriptors = settings::descriptors(input.scene);
@@ -413,6 +491,12 @@ impl Shell {
                     index,
                     value: proposed,
                 });
+                // review 1.8: an edit made after arming Reset is exactly the
+                // "changed my mind" case the arm/confirm step exists to protect
+                // — the preset block's Delete disarms the same way on any other
+                // preset action (`main.rs`'s `handle_preset`), mirrored here for
+                // the same reason.
+                self.with_editor(|host| host.reset_arm.disarm());
             }
         }
 
@@ -423,6 +507,14 @@ impl Shell {
             metric::UI_BUTTON_HEIGHT,
         );
         if content.contains(reset) {
+            // review 1.8 (UX0-A08): Reset used to fire on a single unconfirmed
+            // click while the less-destructive preset Delete right above it
+            // already required a second one. Same arm/confirm shape, same
+            // widget-style rules: filled and named `Confirm reset` while armed,
+            // `Danger` styled so the row reads as "about to do something" rather
+            // than a plain toggle.
+            let armed =
+                self.peek_editor(|host| host.reset_arm.is_armed_for(track_slot, input.scene));
             let id = widgets::widget_id(widgets::id::INSPECTOR, 900);
             if self
                 .widgets
@@ -431,14 +523,27 @@ impl Shell {
                     input.fonts.ui(),
                     id,
                     reset,
-                    "Reset scene",
-                    false,
-                    ButtonStyle::Neutral,
+                    if armed {
+                        "Confirm reset"
+                    } else {
+                        "Reset scene"
+                    },
+                    armed,
+                    if armed {
+                        ButtonStyle::Danger
+                    } else {
+                        ButtonStyle::Neutral
+                    },
                     None,
                 )
                 .clicked
             {
-                commands.push(ShellCommand::ResetScene(input.scene));
+                if armed {
+                    self.with_editor(|host| host.reset_arm.disarm());
+                    commands.push(ShellCommand::ResetScene(input.scene));
+                } else {
+                    self.with_editor(|host| host.reset_arm.arm(track_slot, input.scene));
+                }
             }
         }
     }
@@ -1165,6 +1270,50 @@ fn ascii_fallback(loaded: bool, text: &str) -> String {
     text.replace('\u{2192}', "->").replace('\u{00B7}', "-")
 }
 
+/// The Tune header's scope line (review 1.7, UX0-A07): whether a slider edit
+/// and Reset land on the base scene or on one cue's captured snapshot.
+///
+/// `cue` is `(position, start_seconds)` for the active cue — its 0-based index
+/// in the plan and its own recorded start time, both read from
+/// [`crate::workspace::Track::active_cue`] rather than re-derived here, so this
+/// function cannot disagree with what a Reset actually touches. `None` means
+/// the base scene.
+///
+/// Pure and pinned by a test rather than only drawn, because a label a capture
+/// happens to show is not the same claim as a label a test pins byte for byte —
+/// this repository's own rule for a value the oracle would have pinned, applied
+/// to a value that has no oracle at all.
+pub(crate) fn tune_scope_label(cue: Option<(usize, f64)>) -> String {
+    match cue {
+        None => "Editing: base scene".to_string(),
+        // 1-based in the label: "cue 1" for the first segment reads as an
+        // ordinal position, which is what a user counting segments on the
+        // timeline would call it, not the plan's internal zero-based index.
+        Some((position, start_seconds)) => format!(
+            "Editing: cue {} ({})",
+            position + 1,
+            widgets::format_timestamp(start_seconds)
+        ),
+    }
+}
+
+/// The Reset notice's routed-count sentence (review 1.8, UX0-A08): `ResetScene`
+/// only ever touches settings, so a routed row keeps showing its route's
+/// output no matter what the reset just did to the slider underneath it. For a
+/// heavily-routed scene that reads as "the button did nothing" unless
+/// something says otherwise.
+///
+/// `None` when there is nothing to explain: a reset on a scene with no routed
+/// settings really did just reset everything, and a notice would be noise.
+#[must_use]
+pub(crate) fn reset_routed_notice(routed_count: usize) -> Option<String> {
+    match routed_count {
+        0 => None,
+        1 => Some("1 routed setting keeps its routed value.".to_string()),
+        n => Some(format!("{n} routed settings keep their routed values.")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1245,11 +1394,14 @@ mod tests {
         // unreachable at a size the application permits.
         let frame = WorkspaceFrame::layout(960.0, 640.0, true, 1, 150.0);
         let padding = metric::UI_PANEL_PADDING;
-        // The panel header rule, then the scene name, then the first row.
+        // The panel header rule, then the scene name, then the scope line
+        // (review 1.7 added this one), then the first row.
         let available = frame.inspector.height
             - 27.0
             - padding
             - metric::UI_FONT_HEADER
+            - metric::UI_CONTROL_GAP
+            - metric::UI_FONT_CAPTION
             - metric::UI_CONTROL_GAP;
         assert!(
             available >= ROUTE_EDITOR_AREA_HEIGHT + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP,
@@ -1269,5 +1421,76 @@ mod tests {
         );
         assert_eq!(arrow(false), "->");
         assert_eq!(arrow(true), "\u{2192}");
+    }
+
+    #[test]
+    fn tune_scope_label_names_the_base_scene_when_no_cue_is_active() {
+        assert_eq!(tune_scope_label(None), "Editing: base scene");
+    }
+
+    #[test]
+    fn tune_scope_label_names_the_cue_and_reuses_the_apps_own_time_format() {
+        // Position is 0-based coming out of `Track::active_cue`; the label
+        // reads 1-based, "cue 1" for the first segment. The time format is
+        // `widgets::format_timestamp`'s, not a new one: MM:SS.mmm.
+        assert_eq!(
+            tune_scope_label(Some((0, 42.0))),
+            format!("Editing: cue 1 ({})", widgets::format_timestamp(42.0))
+        );
+        assert_eq!(
+            tune_scope_label(Some((0, 42.0))),
+            "Editing: cue 1 (00:42.000)"
+        );
+        assert_eq!(
+            tune_scope_label(Some((2, 90.5))),
+            "Editing: cue 3 (01:30.500)"
+        );
+    }
+
+    #[test]
+    fn reset_routed_notice_is_silent_when_nothing_is_routed() {
+        assert_eq!(reset_routed_notice(0), None);
+    }
+
+    #[test]
+    fn reset_routed_notice_names_the_count_and_pluralizes() {
+        assert_eq!(
+            reset_routed_notice(1).as_deref(),
+            Some("1 routed setting keeps its routed value.")
+        );
+        assert_eq!(
+            reset_routed_notice(3).as_deref(),
+            Some("3 routed settings keep their routed values.")
+        );
+    }
+
+    #[test]
+    fn reset_arm_requires_the_same_track_and_scene_to_confirm() {
+        // Mirrors `preset_delete_armed`'s shape (`main.rs`'s `handle_preset`):
+        // arm, then only the matching second click is the real action.
+        let mut arm = ResetArm::default();
+        assert!(!arm.is_armed_for(0, SceneId::Loom));
+
+        arm.arm(0, SceneId::Loom);
+        assert!(arm.is_armed_for(0, SceneId::Loom));
+        // A different track, or a different scene on the same track, must not
+        // read as armed — that would confirm a reset the user never asked for.
+        assert!(!arm.is_armed_for(1, SceneId::Loom));
+        assert!(!arm.is_armed_for(0, SceneId::Spectrum));
+
+        arm.disarm();
+        assert!(!arm.is_armed_for(0, SceneId::Loom));
+    }
+
+    #[test]
+    fn reset_arm_rearming_moves_to_the_new_target() {
+        // Switching scene while armed and clicking Reset there re-arms rather
+        // than confirming the old scene's reset — the same "movement disarms"
+        // rule the preset block's Delete button follows.
+        let mut arm = ResetArm::default();
+        arm.arm(0, SceneId::Loom);
+        arm.arm(0, SceneId::Spectrum);
+        assert!(!arm.is_armed_for(0, SceneId::Loom));
+        assert!(arm.is_armed_for(0, SceneId::Spectrum));
     }
 }

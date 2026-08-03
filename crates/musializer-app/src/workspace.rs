@@ -52,7 +52,9 @@ use musializer_core::project::event_timeline::{self, EventTimeline, ManualClear}
 use musializer_core::project::lyrics::{LyricsDocument, LyricsError};
 use musializer_core::project::model::{AnalysisLaneReference, CaptionStyle, Metadata};
 use musializer_core::project::preset_store::PresetLibrary;
-use musializer_core::project::scene_switch::{SceneSwitchError, SceneSwitchTimeline};
+use musializer_core::project::scene_switch::{
+    SceneSwitchCue, SceneSwitchError, SceneSwitchTimeline,
+};
 use musializer_core::scene::events::{EventRecord, EventTimelineError};
 use musializer_core::scene::routes::RouteTable;
 use musializer_core::scene::{SceneId, SceneSettings};
@@ -313,6 +315,25 @@ impl Track {
         } else {
             &self.scene_settings
         }
+    }
+
+    /// The cue whose captured snapshot [`Self::effective_settings`] is actually
+    /// reading and writing right now, if any (review 1.7, UX0-A07:
+    /// `cue_settings_active` silently redirected every slider edit and Reset
+    /// into a cue's snapshot and nothing in the inspector said so).
+    ///
+    /// Returns the cue's position in the plan (0-based) and the cue itself, so a
+    /// caller can name it ("cue 3") and read its own `start_seconds` rather than
+    /// re-deriving an approximate time from the playhead — the two can disagree
+    /// by up to the plan's own drift tolerance.
+    #[must_use]
+    pub fn active_cue(&self) -> Option<(usize, SceneSwitchCue)> {
+        if !self.cue_settings_active {
+            return None;
+        }
+        let index = self.scene_switches.active_index()?;
+        let cue = *self.scene_switches.cues().get(index)?;
+        Some((index, cue))
     }
 
     /// The per-track half of `plug_record_event` (`plug.c:1055-1069`).
@@ -1098,6 +1119,37 @@ mod tests {
 
         track.scene_switches.reset();
         assert_eq!(track.advance_scene_plan(1.0), Some(SceneId::Spectrum));
+    }
+
+    #[test]
+    fn active_cue_names_the_snapshot_currently_being_edited() {
+        // review 1.7 (UX0-A07): the inspector used to have no way to ask this,
+        // so a slider edit while a cue snapshot was active silently landed
+        // somewhere other than where the base-scene header claimed.
+        let mut track = track("/tmp/a.wav");
+        assert_eq!(track.active_cue(), None, "no plan yet: the base scene");
+
+        track.select_base_scene(SceneId::Loom);
+        track
+            .record_scene_cue(SceneId::Loom, 4.0)
+            .expect("backfilled plan");
+
+        assert_eq!(track.advance_scene_plan(0.0), Some(SceneId::Spectrum));
+        let (index, cue) = track.active_cue().expect("a cue is driving playback");
+        assert_eq!(index, 0);
+        assert_eq!(cue.start_seconds, 0.0);
+
+        assert_eq!(track.advance_scene_plan(4.0), Some(SceneId::Loom));
+        let (index, cue) = track.active_cue().expect("advanced to the second cue");
+        assert_eq!(index, 1);
+        assert_eq!(cue.start_seconds, 4.0);
+
+        track.set_auto_scenes(false);
+        assert_eq!(
+            track.active_cue(),
+            None,
+            "disabling playback drops the active snapshot"
+        );
     }
 
     #[test]

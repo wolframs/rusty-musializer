@@ -1237,6 +1237,17 @@ fn run() -> Result<std::process::ExitCode, String> {
                     if let Some(track) = app.workspace.current_mut() {
                         track.commit_active_cue_settings(scene);
                         track.mark_dirty(rl.get_time());
+                        // review 1.8 (UX0-A08): Reset only ever touched
+                        // settings, never routes, so a routed row kept showing
+                        // its route's output with nothing on screen saying why
+                        // the click looked like it did nothing. Routes are left
+                        // alone here on purpose — clearing them would be the
+                        // more destructive action, and undoing that is a later
+                        // task — but the user is told which rows did not move.
+                        let routed_count = track.scene_routes.scene(scene).len();
+                        if let Some(message) = ui::panels::tune::reset_routed_notice(routed_count) {
+                            app.shell.notify(Severity::Info, "Scene reset", &message);
+                        }
                     }
                 }
                 ShellCommand::LoadTrack(path) => {
@@ -3043,6 +3054,17 @@ impl Report {
             },
         }
         println!("panel:           {}", app.shell.panel.label());
+        // Whether Tune edits the base scene or a cue snapshot is invisible on a
+        // capture without this line (review 1.7): the badge text is the evidence.
+        println!(
+            "tune scope:      {}",
+            ui::panels::tune::tune_scope_label(
+                app.workspace
+                    .current()
+                    .and_then(workspace::Track::active_cue)
+                    .map(|(index, cue)| (index, cue.start_seconds))
+            )
+        );
         // Evidence, not existence: the Assist panel draws the same box whether
         // the helper was found or not, and whether the confirmation step is
         // armed or not. This line is what a capture asserts on.
