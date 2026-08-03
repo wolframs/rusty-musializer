@@ -9,6 +9,12 @@ remain valuable evidence, but its phase plans and agent handoffs are no longer a
 live queue. `docs/PHASE0_INVENTORY.md` is a behavioral inventory of the C oracle,
 not a task list. `AGENTS.md` contains repository rules and deliberate exclusions.
 
+`UX_PERSPECTIVE_REVIEW.md` is the evidence document for a committed user-facing
+review, not a second task list. Its complete set of confirmed defects, workflow
+findings, opportunities and verification blind spots is normalized as **UX0**, the
+next task below. The review's numbered sections retain the detailed evidence;
+UX0 is authoritative about whether each item is still open.
+
 ## Target and meaning of parity
 
 - **Oracle:** `../musializer`, branch `master`, frozen commit
@@ -92,11 +98,18 @@ framebuffer pixels outside the shell camera.
 
 ## Ordered completion map
 
-Work in order. P0 establishes the shared render path on which later assertions
+**UX0 is the next task.** Its work may be divided across agents where ownership
+does not overlap, but the complete review is one closure tranche and no named
+item may be silently dropped. When UX0 closes, resume the remaining A-G work in
+dependency order. P0 establishes the shared render path on which later assertions
 depend. P1 makes authored project behavior real. P2 closes missing C workflows.
 P3 packages the external product. P4 removes false status and proves the result.
 
 ```text
+NEXT user-perspective closure
+  UX0-A confirmed defects -> UX0-B workflow friction -> UX0-C opportunities
+                                                   -> UX0-D verification gates
+
 P0 project-aware frame path
   A1 frame lanes -> A2 lyric overlay -> A3 integration evidence
                   -> B1 automatic switching -> B2 cue semantics -> B3 evidence
@@ -120,6 +133,173 @@ P4 honesty and gate
   F0 robust shell typography -> F1 stale UI/status removal -> F2 stale handoff cleanup
   G1 integration gates -> G2 final feature audit
 ```
+
+## NEXT — UX0: close the complete user-perspective review
+
+**Source and scope:** `UX_PERSPECTIVE_REVIEW.md`, reviewed at `d22f9de` while
+the D4 scene-timeline work was deliberately excluded. Revalidate every code
+pointer against current `HEAD` before editing. This task includes the **entire**
+review: all 14 confirmed defects, every named workflow recommendation, all ten
+product opportunities and all four verification blind spots.
+
+UX0 deliberately includes operator-requested product work beyond strict C parity.
+Keeping it here is intentional: this repository has one live queue, and the
+review must not become a competing roadmap merely because some recommendations
+extend rather than reproduce the oracle.
+
+Confirmed defects, workflow failures and verification blind spots require an
+implemented fix plus proportionate evidence. Product opportunities are accepted
+into this tranche as real work, not a parking-lot list. An item can leave UX0
+only as implemented, merged into a more specific task below with its UX0
+acceptance criteria preserved, or explicitly deferred/excluded by the operator
+with the reason recorded here. Existing C2/D6/D7/D8/E2/E4/G1 tags are dependency
+links rather than duplicate queues; closing the older task does not implicitly
+close the UX0 item.
+
+### UX0-A — confirmed defects
+
+- [ ] **UX0-A01 — sub-millisecond lyric cue panic:** make timing-row arithmetic
+      total for every loadable cue, align the model/editor minimum-gap policy and
+      add a regression fixture that previously panicked (`review` 1.1).
+- [ ] **UX0-A02 — stranded pointer ownership:** release a widget claim when the
+      physical button is up even if its original panel disappeared; clear or
+      reconcile splitter drags across fullscreen and test both paths (1.2).
+- [ ] **UX0-A03 — cross-track lyric draft corruption [C2]:** bind drafts to their
+      owning track and guard every context switch so a stale cue id cannot update
+      another document; cover Apply, Discard and Cancel (1.3).
+- [ ] **UX0-A04 — blank Export panel:** derive its minimum height from panel
+      geometry, draw an explanation when content cannot fit and require visible
+      ink in the headless capture rather than trusting a report line (1.4).
+- [ ] **UX0-A05 — non-Latin authored text:** render lyric rows, editable lyric
+      text and track names through an atlas that contains the project's glyphs;
+      ellipsize deliberately and assert the seeded editor does not substitute
+      question marks (1.5).
+- [ ] **UX0-A06 — font-search shortcut leakage [D7]:** make every text-entry
+      surface participate in one focus policy and prove that typing suppresses
+      every global shortcut (1.6).
+- [ ] **UX0-A07 — hidden Tune edit scope:** state whether Tune is editing base
+      scene settings or a particular cue snapshot, including cue/time identity
+      where applicable (1.7).
+- [ ] **UX0-A08 — misleading scene reset [C3]:** make routed values explicit in
+      reset behavior/notices and give Reset the Confirm/Undo workflow already
+      required by C3 (1.8).
+- [ ] **UX0-A09 — RMS/progress ambiguity:** either make the transport bar a real
+      seek control with secondary level indication or restyle it unmistakably as
+      a meter; place analyzer telemetry under the HUD flag (1.9).
+- [ ] **UX0-A10 — raw error variants:** replace both user-facing `Debug` formats
+      with the existing `Display` messages and test the visible text (1.10).
+- [ ] **UX0-A11 — ineffective notice tray [D8]:** provide dark-surface contrast,
+      wrapping/clipping and severity-derived persistence so consequential errors
+      remain legible and present (1.11).
+- [ ] **UX0-A12 — Tracks/Save disappearance:** retain current-track identity and
+      a save route when a bottom panel consumes the sidebar; never draw an
+      illegible fractional row (1.12).
+- [ ] **UX0-A13 — obscured Assist refusal [C2]:** keep the Apply-blocking reason
+      visible beside artifact actions and add Candidate, Running and Failed probe
+      states so consequential Assist bodies are reviewable (1.13).
+- [ ] **UX0-A14 — silently shadowed lyric overlaps:** show overlap/shadow state in
+      the lane and form, warn which cue loses display time and clamp a new cue's
+      default end to the next cue where possible (1.14).
+
+### UX0-B — workflow friction and trust
+
+- [ ] **UX0-B01 — continuous save state [C1/D8]:** show durable dirty state on
+      the track and Save affordance; distinguish saved, unsaved and save-failed
+      state before quit is attempted (`review` 2, Saving and trust).
+- [ ] **UX0-B02 — lyric seek/stamp loop:** make cue selection seek-capable, add
+      playhead stamping for start/end, auto-advance after Apply and preserve a
+      usable play/tap loop while lyric text has focus (2, lyric timing loop).
+- [ ] **UX0-B03 — lyric edit recovery:** add undo/inverse edits and safe deletion
+      for single and multi-cue timing changes, including accidental lane drags.
+- [ ] **UX0-B04 — precise lyric timing controls:** support an established
+      fine/normal/coarse nudge ladder, hold-repeat or equivalent efficient input,
+      typed times and one consistent minimum cue gap in form and lane.
+- [ ] **UX0-B05 — expose lyric split/merge:** connect the already-ported model
+      operations to the editor with playhead-aware behavior and tests.
+- [ ] **UX0-B06 — large lyric-document navigation:** add visible/interactive
+      scrolling, keyboard navigation, jump-to-playhead and readable ellipsis for
+      long rows at 100+ cues.
+- [ ] **UX0-B07 — visible lyric draft state [C2/D8]:** mark an edited draft and
+      use consistent Apply/Cancel/Discard language in controls and refusals.
+- [ ] **UX0-B08 — understandable route affordance [D6]:** replace or explain the
+      ambiguous `~` control, restore useful static/dynamic tooltips and make the
+      reason for a disabled route action visible.
+- [ ] **UX0-B09 — precision Tune controls [D6]:** support typed values,
+      wheel/keyboard nudging, per-setting reset and efficient navigation across
+      all 104 bands.
+- [ ] **UX0-B10 — reviewable Assist reasoning:** carry section reasons, semantic
+      summaries and semantic notes through the candidate boundary and render them
+      before Apply (2, Assist).
+- [ ] **UX0-B11 — actionable timing uncertainty:** preserve cue confidence and
+      uncertainty identity and visually identify the exact cues needing review.
+- [ ] **UX0-B12 — selective/reversible Assist Apply [C2]:** allow per-lane
+      inclusion and retain a pre-apply snapshot with a visible Undo action.
+- [ ] **UX0-B13 — meaningful Assist progress [E2]:** surface phase/stage progress
+      from helpers so long-running work is distinguishable from a stalled job.
+- [ ] **UX0-B14 — actionable Assist failure [D8]:** show the useful tail of the
+      failure log and provide Retry/Open actions rather than only a clipboard
+      path.
+- [ ] **UX0-B15 — remote-mode prerequisites [E2]:** check credentials before
+      starting, disclose relevant cost/privacy prerequisites and explain the MiMo
+      provider/model route in visible language.
+- [ ] **UX0-B16 — recoverable missing-support state [E4]:** name missing files,
+      provide the support/doctor remedy and make the state actionable.
+- [ ] **UX0-B17 — consistent Assist visual semantics:** reserve amber for actual
+      staged/warning/missing states and use the normal selected-state language
+      elsewhere.
+- [ ] **UX0-B18 — discoverable keymap [D7]:** expose Tab/Shift+Tab, UI scale,
+      End and splitter reset (plus the full supported set) in a visible keymap or
+      equivalent help surface.
+- [ ] **UX0-B19 — useful tall-window layout:** use surplus vertical space for
+      content such as larger rows or preset slots rather than simultaneous dead
+      regions, without regressing minimum-window behavior.
+
+### UX0-C — product opportunities
+
+- [ ] **UX0-C01 — clip export:** expose render in/out or start/duration controls
+      and drive the existing windowed `RenderPlan` path (`review` 3.1).
+- [ ] **UX0-C02 — vertical and square output:** add explicit width/height output
+      formats without changing the C-ordered persisted resolution enum, then
+      capture-audit every scene at tall and square aspect ratios (3.2).
+- [ ] **UX0-C03 — lyric tap timing:** deliver the play-and-tap stamping workflow,
+      row seek and advancement described by B02 as a polished primary flow (3.3).
+- [ ] **UX0-C04 — preset audition/A-B:** make preset exploration reversible with
+      hold-to-audition or an explicit settings snapshot comparison (3.4).
+- [ ] **UX0-C05 — scene thumbnails:** generate/cache deterministic preview stills
+      so scene choice is visual rather than ten text-only names (3.5).
+- [ ] **UX0-C06 — recent projects:** use the welcome screen's spare region for a
+      durable, failure-tolerant recent-file list and direct reopen flow (3.6).
+- [ ] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
+      with the same reversible audition semantics as C04 (3.7).
+- [ ] **UX0-C08 — project-level palette/look:** define a coherent track-level
+      color treatment mapped across scene descriptors and automatic changes
+      without breaking routes or saved settings (3.8).
+- [ ] **UX0-C09 — cover-art/logo layer:** generalize project image assets into a
+      track-level visual layer and define its scene-host/render/route semantics
+      (3.9).
+- [ ] **UX0-C10 — still-frame export:** publish a user-selected supersampled
+      frame through the offline render path and reuse it where appropriate for
+      thumbnails/cover output (3.10).
+
+### UX0-D — verification blind spots
+
+- [ ] **UX0-D01 — pixel-backed panel gates:** measure expected ink/content inside
+      every panel rect, beginning with Export; a textual state report alone is
+      insufficient (`review` 4.1, feeds G1).
+- [ ] **UX0-D02 — Assist state captures:** make Candidate, Running and Failed
+      deterministic probe states and visually gate their consequential content
+      (4.2, feeds G1).
+- [ ] **UX0-D03 — non-Latin editor gate:** assert that the seeded authored text
+      remains distinguishable and is not replaced by U+003F in editor surfaces
+      (4.3, feeds G1).
+- [ ] **UX0-D04 — dark-overlay contrast coverage:** extend the palette/contrast
+      sweep to severity text and every other semantic color used on dark overlay
+      surfaces (4.4, feeds G1).
+
+UX0 completes only when every checkbox above has implementation evidence and the
+review document has a final disposition annotation or companion table for all
+items. Record commits, captures, negative controls and any operator-approved
+deferrals here as work lands; do not create a separate UX completion plan.
 
 ## P0 — make saved project content reach the renderer
 
@@ -732,6 +912,7 @@ This is centralized dangling-work cleanup, not feature parity by itself:
 | Notices/save status | Basic transient notices fit; actionable tray and save-state visibility missing | D8, F1 |
 | Linux launcher/MIME | Source install fit | E4 |
 | Self-contained distribution/doctor | Missing | E4 |
+| User-perspective review | Complete evidence review exists; every named defect, workflow, opportunity and blind spot is open as the next tranche | UX0 |
 | Microphone/hot reload/non-Linux | Deliberately excluded | none |
 
 ## Consolidated dangling-note ledger
@@ -751,6 +932,7 @@ parallel task lists.
 | `Workspace::assist` ownership deferral | Optional structural cleanup F3, not a parity requirement |
 | Item O: add every possible harness | Reframed as risk-based evidence work in G1 |
 | Recorded intermittent FFmpeg `ETXTBSY` test-helper race | Reproduced in a second test and retained as test-reliability cleanup in F3 |
+| `UX_PERSPECTIVE_REVIEW.md` | Evidence companion, fully normalized into next-task umbrella UX0; it is not a parallel queue |
 | Source comments naming agents/integration-owner handoffs | Audit and remove as F2 after verifying each call site |
 | Ignored `.claude/worktrees/**/REWRITE_PLAN.md` files | Historical worktree snapshots, not tracked plans and not sources of current tasks |
 
