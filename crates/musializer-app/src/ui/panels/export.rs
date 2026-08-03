@@ -112,14 +112,112 @@ fn quality_detail(quality: Quality) -> &'static str {
     }
 }
 
+/// Named y-offsets for [`Shell::export_panel`]'s body, in the order they are
+/// drawn (review 1.4). These used to be bare literals scattered through the
+/// function; naming them is what lets [`EXPORT_CONTENT_MIN_HEIGHT`] be a sum
+/// of the same numbers the drawing code uses; rather than a second, independently
+/// hand-picked guess that could drift out of agreement with the layout it is
+/// supposed to describe.
+mod body_layout {
+    /// Y offset (from the boundary's top) of the SIZE/FPS control row.
+    pub(super) const FIRST_ROW_Y: f32 = 62.0;
+    /// Vertical distance from the SIZE/FPS row down to the QUALITY row.
+    pub(super) const ROW_ADVANCE: f32 = 46.0;
+    /// Y offset (from the QUALITY row's own y) of the quality-detail line —
+    /// the last thing this panel draws before the footer.
+    pub(super) const DETAIL_OFFSET: f32 = 73.0;
+    /// Point size of the quality-detail line.
+    pub(super) const DETAIL_FONT_SIZE: f32 = 14.0;
+    /// How far above the boundary's bottom edge the footer row sits.
+    pub(super) const FOOTER_BOTTOM_MARGIN: f32 = 44.0;
+
+    /// Y offset of the QUALITY row.
+    pub(super) const SECOND_ROW_Y: f32 = FIRST_ROW_Y + ROW_ADVANCE;
+    /// Bottom of the quality-detail line — the lowest body text the footer
+    /// must clear.
+    pub(super) const DETAIL_BOTTOM: f32 = SECOND_ROW_Y + DETAIL_OFFSET + DETAIL_FONT_SIZE;
+}
+
+/// The least content-box (`boundary`) height at which [`Shell::export_panel`]
+/// draws its body instead of the one-line "too small" notice.
+///
+/// Derived from [`body_layout`]'s offsets plus [`metric::UI_CONTROL_GAP`] as
+/// the buffer between the quality-detail line and the footer row — the same
+/// spacing unit this panel already uses between its own controls, rather than
+/// a new invented margin. Review 1.4 found the panel's old gate (a bare
+/// `80.0`) was never checked against this arithmetic and was well short of it.
+pub(crate) const EXPORT_CONTENT_MIN_HEIGHT: f32 =
+    body_layout::DETAIL_BOTTOM + metric::UI_CONTROL_GAP + body_layout::FOOTER_BOTTOM_MARGIN;
+
+/// This panel's own gap between the timeline strip above it and its boundary
+/// (`top = strip.y + strip.height + 28.0`, in [`Shell::export_panel`] below).
+/// Named so [`EXPORT_MIN_BAND_HEIGHT`] can reference the same number the
+/// function actually adds, instead of repeating the literal.
+#[allow(
+    dead_code,
+    reason = "consumed by EXPORT_MIN_BAND_HEIGHT below and by this file's own \
+              tests; a non-test build of this crate does not yet reference \
+              EXPORT_MIN_BAND_HEIGHT itself — that happens once shell.rs's \
+              Export floor is switched to it, a one-line edit this session \
+              specified but does not own the file to make"
+)]
+const STRIP_GAP: f32 = 28.0;
+
+/// The timeline strip's height cap, at generous room.
+///
+/// This is `shell.rs::timeline_strip`'s `56.0f32.min(...)` literal, duplicated
+/// rather than imported: that literal lives in a file this panel does not own
+/// (see the file-ownership rule in `AGENTS.md`), and there is no constant
+/// there yet to reference. If that literal changes, this one has to move with
+/// it — recorded here so the next reader looking for why [`EXPORT_MIN_BAND_HEIGHT`]
+/// is what it is does not have to rediscover the dependency.
+#[allow(dead_code, reason = "see STRIP_GAP above")]
+const ASSUMED_STRIP_HEIGHT: f32 = 56.0;
+
+/// How much of the *band* — the timeline height `Shell::resolved_timeline_height`
+/// hands to the whole strip — is spent before this panel's own `boundary` ever
+/// begins: two lots of panel padding (one before the manual event row, one at
+/// the bottom of this panel's own boundary calculation), the manual event row,
+/// the scene-plan lane, the timeline strip itself, and this panel's own gap
+/// under the strip. Traced in `shell.rs::timeline_strip` and
+/// [`Shell::export_panel`]'s `boundary` construction.
+///
+/// [`EVENT_ROW_HEIGHT`](super::events::EVENT_ROW_HEIGHT) and
+/// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) are
+/// imported rather than duplicated, so a change to either row's budget cannot
+/// silently reopen this gap the way the `260.0` floor did.
+#[allow(dead_code, reason = "see STRIP_GAP above")]
+const BAND_TO_BOUNDARY_OFFSET: f32 = metric::UI_PANEL_PADDING * 2.0
+    + super::events::EVENT_ROW_HEIGHT
+    + super::scene_timeline::SCENE_SECTION_HEIGHT
+    + ASSUMED_STRIP_HEIGHT
+    + STRIP_GAP;
+
+/// The minimum band height `Shell::resolved_timeline_height`'s Export floor
+/// must supply so this panel's `boundary` clears [`EXPORT_CONTENT_MIN_HEIGHT`]
+/// and draws its controls, rather than the one-line notice.
+///
+/// Single source of truth for review 1.4: the floor used to be a bare `260.0`
+/// that nothing checked against what this function actually consumes above
+/// its own boundary, and a user who persisted a shorter timeline height (legal
+/// in every other panel) got a lit Export button over a blank white band with
+/// no path to an MP4, across restarts. See the session report for the
+/// `shell.rs` edit this constant is meant to replace `260.0` with.
+#[allow(dead_code, reason = "see STRIP_GAP above")]
+pub(crate) const EXPORT_MIN_BAND_HEIGHT: f32 = EXPORT_CONTENT_MIN_HEIGHT + BAND_TO_BOUNDARY_OFFSET;
+
 impl Shell {
     /// The export panel, in the timeline strip's place
     /// (`draw_export_panel`, `plug.c:2543-2659`).
     ///
-    /// The oracle draws this only when its box clears 80 px (`plug.c:3141`), and
-    /// so does this: a panel that cannot host its own controls is not drawn at
-    /// all, which is `workspace_layout.h`'s rule and the reason invisible
-    /// controls once stole clicks here.
+    /// The oracle draws its body only when its box clears 80 px (`plug.c:3141`):
+    /// a panel that cannot host its own controls must not register clicks for
+    /// invisible ones. This port keeps that refusal — at
+    /// [`EXPORT_CONTENT_MIN_HEIGHT`], not the oracle's bare `80.0` — but does
+    /// not go silent the way `plug.c` does: review 1.4 found a box that missed
+    /// the threshold by a few pixels rendering as an unexplained blank band
+    /// under a lit-up Export button, so below that height this draws a
+    /// one-line "too small" notice instead of nothing.
     pub(crate) fn export_panel(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -140,13 +238,46 @@ impl Shell {
             (content.width - padding * 2.0).max(0.0),
             (content.y + content.height - top - padding).max(0.0),
         );
-        if boundary.height <= 80.0 || boundary.width <= 0.0 {
+        if boundary.width <= 0.0 {
+            // No box at all — not even a rectangle to put a notice in.
             return;
         }
 
         let font = input.fonts.ui();
         widgets::fill(d, boundary, color::ui_surface());
         d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
+
+        if boundary.height <= EXPORT_CONTENT_MIN_HEIGHT {
+            // Named and explained, not blank (review 1.4): a lit-up Export
+            // button that opens onto a blank white band, with no path to an
+            // MP4, is worse than a panel that says it needs more room.
+            // `Shell::resolved_timeline_height`'s Export floor is meant to
+            // keep this from being reachable in practice (it now derives
+            // from `EXPORT_MIN_BAND_HEIGHT`, the band-height counterpart of
+            // this constant); this is the fallback for whatever gets past it
+            // regardless — a hostile `ui.json`, or a window too short for
+            // even the floor to fit.
+            widgets::draw_text(
+                d,
+                font,
+                "EXPORT",
+                boundary.x + padding,
+                boundary.y + 6.0,
+                metric::UI_FONT_CAPTION,
+                color::accent(),
+            );
+            widgets::draw_text(
+                d,
+                font,
+                "needs a taller timeline than this window has room for",
+                boundary.x + padding,
+                boundary.y + 24.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_warning(),
+            );
+            return;
+        }
+
         // Everything inside is clipped to the box, so a narrow window cuts a
         // label off rather than printing it across the tracks rail.
         let mut clip = widgets::begin_scissor(d, boundary, input.ui_scale);
@@ -178,7 +309,7 @@ impl Shell {
             .current()
             .map_or_else(RenderExportConfig::default, |track| track.render_config);
 
-        let mut y = boundary.y + 62.0;
+        let mut y = boundary.y + body_layout::FIRST_ROW_Y;
         widgets::draw_text(
             &mut clip,
             font,
@@ -250,7 +381,7 @@ impl Shell {
             x += 72.0 + gap;
         }
 
-        y += 46.0;
+        y += body_layout::ROW_ADVANCE;
         widgets::draw_text(
             &mut clip,
             font,
@@ -324,8 +455,8 @@ impl Shell {
             font,
             quality_detail(config.quality),
             boundary.x + padding,
-            y + 73.0,
-            14.0,
+            y + body_layout::DETAIL_OFFSET,
+            body_layout::DETAIL_FONT_SIZE,
             color::ui_muted(),
         );
         // The footer. `ffmpeg_available` is called once and used twice, as the
@@ -334,7 +465,7 @@ impl Shell {
         let encoder_present = ffmpeg_available();
         let render = UiRect::new(
             boundary.x + boundary.width - padding - 212.0,
-            boundary.y + boundary.height - 44.0,
+            boundary.y + boundary.height - body_layout::FOOTER_BOTTOM_MARGIN,
             212.0,
             metric::UI_BUTTON_HEIGHT,
         );
@@ -1193,5 +1324,80 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert!(matches!(commands[0], ShellCommand::StartRender));
         assert!(matches!(commands[1], ShellCommand::SetRenderConfig(_)));
+    }
+
+    /// Review 1.4's core claim, pinned as arithmetic: at exactly
+    /// [`EXPORT_CONTENT_MIN_HEIGHT`], the footer row must not overlap the
+    /// quality-detail line above it, and one pixel less must. This is the
+    /// same comparison `export_panel` makes (`boundary.height <=
+    /// EXPORT_CONTENT_MIN_HEIGHT`) and the same offsets it draws with
+    /// ([`body_layout`]), so a future edit to any offset in that module
+    /// breaks this test instead of silently reopening the overlap.
+    #[test]
+    fn export_content_min_height_is_exactly_where_the_footer_stops_overlapping() {
+        let detail_bottom = body_layout::DETAIL_BOTTOM;
+        // The height at which the footer sits flush against the detail line,
+        // with no slack at all.
+        let tight_min = detail_bottom + body_layout::FOOTER_BOTTOM_MARGIN;
+
+        // EXPORT_CONTENT_MIN_HEIGHT is the tight minimum plus one control gap
+        // of breathing room — the same spacing unit this panel already uses
+        // between its own controls — not the tight minimum itself.
+        assert_eq!(
+            EXPORT_CONTENT_MIN_HEIGHT,
+            tight_min + metric::UI_CONTROL_GAP
+        );
+
+        let footer_top = EXPORT_CONTENT_MIN_HEIGHT - body_layout::FOOTER_BOTTOM_MARGIN;
+        assert!(
+            footer_top >= detail_bottom,
+            "footer starts at {footer_top}, before the detail line ends at {detail_bottom}"
+        );
+
+        // One pixel inside the safety gap — below the *tight* minimum — is
+        // where the footer actually starts overlapping the line above it.
+        let one_pixel_into_the_gap = tight_min - 1.0;
+        let footer_top_short = one_pixel_into_the_gap - body_layout::FOOTER_BOTTOM_MARGIN;
+        assert!(
+            footer_top_short < detail_bottom,
+            "the tight minimum is not pinned: {one_pixel_into_the_gap} still leaves room"
+        );
+    }
+
+    /// The band-height counterpart of the test above: replays the exact chain
+    /// `shell.rs::timeline_strip` and `Shell::export_panel` use to turn a band
+    /// height into `boundary.height` — panel padding, the manual event row,
+    /// the scene-plan lane, the timeline strip, and this panel's own gap
+    /// underneath it — and asserts that handing it [`EXPORT_MIN_BAND_HEIGHT`]
+    /// produces *exactly* [`EXPORT_CONTENT_MIN_HEIGHT`] of boundary, not
+    /// merely "enough". `EVENT_ROW_HEIGHT` and `SCENE_SECTION_HEIGHT` are the
+    /// real constants those modules export, not copies, so a change to either
+    /// row's budget moves this test rather than being missed by it.
+    #[test]
+    fn export_min_band_height_reproduces_the_panels_own_boundary_formula() {
+        let padding = metric::UI_PANEL_PADDING;
+        let row = super::super::events::EVENT_ROW_HEIGHT;
+        let scene_row = super::super::scene_timeline::SCENE_SECTION_HEIGHT;
+
+        // `content` stands in for `frame.timeline`/`band`, exactly as
+        // `Shell::timeline_strip` receives it.
+        let content = UiRect::new(0.0, 0.0, 1280.0, EXPORT_MIN_BAND_HEIGHT);
+
+        // `shell.rs::timeline_strip`'s construction of `strip`.
+        let strip_y = content.y + padding + row + scene_row;
+        let strip_height =
+            ASSUMED_STRIP_HEIGHT.min((content.height - padding * 2.0 - row - scene_row).max(0.0));
+
+        // `Shell::export_panel`'s construction of `boundary`.
+        let top = strip_y + strip_height + STRIP_GAP;
+        let boundary_height = (content.y + content.height - top - padding).max(0.0);
+
+        assert!(
+            (boundary_height - EXPORT_CONTENT_MIN_HEIGHT).abs() < 0.01,
+            "EXPORT_MIN_BAND_HEIGHT ({}) should reproduce EXPORT_CONTENT_MIN_HEIGHT \
+             ({}) through the panel's own formula, got {boundary_height}",
+            EXPORT_MIN_BAND_HEIGHT,
+            EXPORT_CONTENT_MIN_HEIGHT,
+        );
     }
 }
