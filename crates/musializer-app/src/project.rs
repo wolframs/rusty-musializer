@@ -540,7 +540,7 @@ pub fn open_path(
     track
         .lyrics
         .replace(&project.lyrics)
-        .map_err(|error| ProjectError::Build(format!("{error:?}")))?;
+        .map_err(|error| ProjectError::Build(error.to_string()))?;
     track
         .semantic_events
         .replace(&project.semantic_events)

@@ -1152,7 +1152,7 @@ fn run() -> Result<std::process::ExitCode, String> {
                     app.shell.notify(
                         Severity::Warning,
                         "Lyric edit was refused",
-                        &format!("{error:?}"),
+                        &error.to_string(),
                     );
                 }
             }

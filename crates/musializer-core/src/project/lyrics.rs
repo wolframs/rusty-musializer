@@ -16,6 +16,7 @@
 //! same way without a fallible allocation in the API.
 
 use core::cmp::Ordering;
+use core::fmt;
 
 /// Maximum cues in one document (`lyrics.h:11`).
 pub const CUE_CAPACITY: usize = 1024;
@@ -64,6 +65,20 @@ pub struct LyricsValidation {
     pub error: LyricsError,
     pub index: usize,
     pub related_index: usize,
+}
+
+/// User-facing: the notice tray shows this verbatim, so it names the cue
+/// (1-based, as the editor numbers rows) rather than the variant.
+impl fmt::Display for LyricsValidation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cue {}: {}", self.index + 1, self.error)
+    }
+}
+
+impl std::error::Error for LyricsValidation {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 /// One timed line (`Lyric_Cue`, `lyrics.h:17-22`).
@@ -1309,5 +1324,50 @@ mod tests {
         assert_eq!(seconds_to_milliseconds(0.0005), 1);
         assert_eq!(seconds_to_milliseconds(0.0004), 0);
         assert_eq!(seconds_to_milliseconds(1.2345), 1235);
+    }
+
+    /// These strings reach the notice tray and `ProjectError::Build` verbatim,
+    /// so a Display that regressed to a bare variant name is a UI bug.
+    #[test]
+    fn errors_display_as_sentences_not_variant_names() {
+        let all = [
+            LyricsError::Duration,
+            LyricsError::Capacity,
+            LyricsError::InvalidCue,
+            LyricsError::InvalidUtf8,
+            LyricsError::TextTooLong,
+            LyricsError::DuplicateId,
+            LyricsError::IdExhausted,
+            LyricsError::NotFound,
+            LyricsError::Order,
+            LyricsError::NotAdjacent,
+            LyricsError::BridgeFormat,
+        ];
+        for error in all {
+            let shown = error.to_string();
+            assert_ne!(
+                shown,
+                format!("{error:?}"),
+                "{error:?} shows its variant name"
+            );
+            assert!(
+                shown.contains(' ') && shown.chars().next().unwrap().is_lowercase(),
+                "{error:?} should render a sentence fragment, got {shown:?}"
+            );
+        }
+        assert_eq!(
+            LyricsError::NotAdjacent.to_string(),
+            "lyric cues are not adjacent"
+        );
+        let validation = LyricsValidation {
+            error: LyricsError::NotAdjacent,
+            index: 2,
+            related_index: 3,
+        };
+        assert_eq!(validation.to_string(), "cue 3: lyric cues are not adjacent");
+        assert_eq!(
+            LyricsError::Order.to_string(),
+            "lyric cues are not canonically ordered"
+        );
     }
 }
