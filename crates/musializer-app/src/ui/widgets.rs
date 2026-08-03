@@ -28,7 +28,7 @@
 
 use musializer_core::ui::row_typography;
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::{Face, UiFonts};
+use musializer_runtime::font::{AuthoredText, Face, GlyphRepertoire, UiFonts};
 use raylib::prelude::{
     Color, RaylibDraw, RaylibDrawHandle, RaylibFont, RaylibScissorMode, RaylibScissorModeExt,
     Rectangle, Vector2,
@@ -62,6 +62,10 @@ pub enum ButtonStyle {
 enum LabelFont<'a> {
     Ui(&'a UiFonts),
     Exact(&'a Face),
+    /// Project-authored words — track names, cue text — through the
+    /// glyph-complete caption atlas rather than the Latin-only chrome bank
+    /// (review 1.5).
+    Authored(AuthoredText<'a>),
 }
 
 /// How long the pointer must rest on a control before its tooltip appears.
@@ -354,6 +358,35 @@ impl Widgets {
         self.button_with_label(
             d,
             LabelFont::Ui(font),
+            id,
+            boundary,
+            hit,
+            label,
+            selected,
+            style,
+            font_size,
+        )
+    }
+
+    /// [`Self::text_button_in`] for a label in the user's own words — a track
+    /// name, a cue line — where the chrome bank's Latin-only repertoire would
+    /// draw `?` (review 1.5).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_button_in_authored(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: AuthoredText<'_>,
+        id: u64,
+        boundary: UiRect,
+        hit: UiRect,
+        label: &str,
+        selected: bool,
+        style: ButtonStyle,
+        font_size: Option<f32>,
+    ) -> ButtonState {
+        self.button_with_label(
+            d,
+            LabelFont::Authored(font),
             id,
             boundary,
             hit,
@@ -727,7 +760,9 @@ fn draw_button_label(
             || row_font_size(font, &[label], &[boundary.width], boundary.height),
             |value| font.native_size(value),
         ),
-        LabelFont::Exact(_) => font_size.filter(|value| *value > 0.0).unwrap_or(base),
+        LabelFont::Exact(_) | LabelFont::Authored(_) => {
+            font_size.filter(|value| *value > 0.0).unwrap_or(base)
+        }
     };
     let available = boundary.width - row_typography::UI_ROW_LABEL_PADDING;
     // Ellipsize rather than shrink without end. A box too narrow even for the
@@ -739,6 +774,7 @@ fn draw_button_label(
         Some(|text: &str| match font {
             LabelFont::Ui(font) => measure(font, text, size),
             LabelFont::Exact(font) => font.measure_text(text, size, 0.0).x,
+            LabelFont::Authored(ref font) => font.measure_text(text, size, 0.0).x,
         }),
         row_typography::UI_ROW_LABEL_CAPACITY,
     );
@@ -753,6 +789,7 @@ fn draw_button_label(
     let loaded = match font {
         LabelFont::Ui(font) => font.all_loaded(),
         LabelFont::Exact(font) => font.is_loaded(),
+        LabelFont::Authored(ref font) => font.repertoire() != GlyphRepertoire::RaylibDefault,
     };
     let fitted = if truncated && !loaded {
         fitted.replace('\u{2026}', "...")
@@ -762,6 +799,7 @@ fn draw_button_label(
     let width = match font {
         LabelFont::Ui(font) => measure(font, &fitted, size),
         LabelFont::Exact(font) => font.measure_text(&fitted, size, 0.0).x,
+        LabelFont::Authored(ref font) => font.measure_text(&fitted, size, 0.0).x,
     };
     let position = Vector2::new(
         (boundary.x + (boundary.width - width) * 0.5).round(),
@@ -770,6 +808,7 @@ fn draw_button_label(
     match font {
         LabelFont::Ui(font) => draw_text(d, font, &fitted, position.x, position.y, size, tint),
         LabelFont::Exact(font) => d.draw_text_ex(font, &fitted, position, size, 0.0, tint),
+        LabelFont::Authored(ref font) => font.draw_text(d, &fitted, position, size, 0.0, tint),
     }
 }
 
@@ -832,6 +871,12 @@ pub fn draw_text_tracked(
 }
 
 /// A titled panel background: surface fill, a hairline border, and a header rule.
+/// Vertical chrome [`panel`] spends on its title row before the content rect
+/// begins. Public so a layout floor derived outside this file — the export
+/// panel's band minimum — can count it instead of rediscovering it as a
+/// mystery 27 px (review 1.4).
+pub const PANEL_HEADER_HEIGHT: f32 = 27.0;
+
 pub fn panel(
     d: &mut RaylibDrawHandle<'_>,
     font: &UiFonts,
@@ -856,7 +901,7 @@ pub fn panel(
         metric::UI_FONT_CAPTION,
         color::ui_muted(),
     );
-    let rule_y = boundary.y + 27.0;
+    let rule_y = boundary.y + PANEL_HEADER_HEIGHT;
     if rule_y < boundary.y + boundary.height {
         d.draw_line_ex(
             Vector2::new(boundary.x, rule_y),
@@ -971,6 +1016,11 @@ pub mod id {
     /// The transport row's right-hand cluster: readout toggle, mute, volume,
     /// fullscreen. Separate for the same reason as SEEK.
     pub const UTILITY: u32 = 9;
+    /// One per notice card's close box, indexed by the notice's own id — the
+    /// id rather than the list index, so eviction cannot misroute a claim.
+    pub const NOTICE: u32 = 64;
+    /// The collapsed tracks strip's Save button (review 1.12, UX0-A12).
+    pub const TRACK_STRIP: u32 = 65;
 }
 
 #[cfg(test)]

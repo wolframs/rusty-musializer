@@ -412,18 +412,12 @@ done
 # `Shell::export_panel`'s content box always ends exactly `UI_PANEL_PADDING`
 # (10 px) above the window's bottom edge, however tall the band above it is —
 # so its position only needs deriving once per window height, not per band
-# state. At the sizes this sweep requests (`--ui-probe panel=export`, no
-# persisted override), `Shell::timeline_height` reserves a 450 px band for
-# Export at both 1280x720 and 960x640 (verified directly against that
-# function, not eyeballed), and `export.rs`'s own `BAND_TO_BOUNDARY_OFFSET`
-# (224 px: two lots of panel padding, the manual event row, the scene-plan
-# lane, the timeline strip, and this panel's own gap under it) puts the box
-# at 226 px tall — under `EXPORT_CONTENT_MIN_HEIGHT` (247 px), so the panel
-# it captures here is the one-line notice, not the full control rows. Either
-# body's first line lands within a few pixels of the same spot, so this crop
-# does not need to be re-aimed if a later fix also raises the *automatic*
-# Export budget in `shell_layout.rs` and the full body starts drawing here
-# instead — see the session report for that gap.
+# state. The Export band is now derived end-to-end from
+# `export.rs::EXPORT_MIN_BAND_HEIGHT` (through both the automatic budget in
+# `shell_layout.rs` and the persisted-split floor in `shell.rs`), so the body
+# this crop lands on is the full control rows; the "EXPORT" header line sits
+# within a few pixels of the same spot either way, so the crop also catches a
+# regression back to the notice-or-blank states.
 declare -A EXPORT_INK_CROP_Y=( [1280x720]=474 [960x640]=394 )
 for size in 1280x720 960x640; do
     png="$OUT_DIR/panel-export-$size.png"
@@ -497,7 +491,30 @@ else
         # The line the picture cannot assert on its own: which pane is showing,
         # which cue the form is bound to, and whether the draft is dirty. Absent
         # until `main.rs` prints it, so the report is asserted as well as the PNG.
-        echo "lyrics=$(sed -n 's/^lyrics: *//p' "$log" | head -1)"
+        local report
+        report=$(sed -n 's/^lyrics: *//p' "$log" | head -1)
+        echo "lyrics=$report"
+        # Review 1.5 / 4.3: the seeded fixture is deliberately Greek+Cyrillic,
+        # and for weeks the editor drew it as rows of `?` while every capture
+        # passed. `missing=` is a direct count of glyphs the serving face could
+        # not draw for the strings actually on screen — an inference-free
+        # assertion where a question-mark-shaped pixel heuristic would guess.
+        case "$report" in
+            *"missing=0"*) ;;
+            *)
+                echo "FAIL: $name served authored text through a face missing glyphs — $report" >&2
+                return 1
+                ;;
+        esac
+        # `face=none` is a frame that drew no authored text at all (the style
+        # and fonts panes) — honest, and not the defect. The defect is authored
+        # text served by the Latin-only chrome bank or raylib's default.
+        case "$report" in
+            *"face=ui"* | *"face=default"*)
+                echo "FAIL: $name drew cue text with the wrong face — $report" >&2
+                return 1
+                ;;
+        esac
         return "$status"
     }
 
@@ -509,6 +526,24 @@ else
     lyric_capture "lyrics-fonts-1280x720" 1280x720 \
         "panel=lyrics,style=caption,fonts=consent,play=1" \
         || SWEEP_FAILED=1
+    # The non-Latin line itself bound into the editable field (review 4.3):
+    # cue 1 is the seeded Greek+Cyrillic lyric, so this frame fails unless the
+    # field, not just the list, drew through the glyph-complete face.
+    lyric_capture "lyrics-nonlatin-1280x720" 1280x720 \
+        "panel=lyrics,lyric=1,play=1" \
+        || SWEEP_FAILED=1
+    # Positive pin: the frames that show the cue pane must have served it from
+    # the caption atlas — `face=none` here would mean the rows silently stopped
+    # reporting, which is the blindness review 4.3 exists to end.
+    for name in lyrics-cues-1280x720 lyrics-nonlatin-1280x720; do
+        case "$(sed -n 's/^lyrics: *//p' "$OUT_DIR/$name.txt" | head -1)" in
+            *"face=caption"*) ;;
+            *)
+                echo "FAIL: $name did not serve cue text from the caption atlas" >&2
+                SWEEP_FAILED=1
+                ;;
+        esac
+    done
 fi
 
 echo "=== project-aware scene frames and shared captions ==="

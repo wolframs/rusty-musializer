@@ -31,8 +31,17 @@ use super::theme::metric;
 /// Timeline height with no panel open (`plug.c:7669`).
 pub const DEFAULT_TIMELINE_HEIGHT: f32 = 180.0;
 
-/// Preview height the export panel refuses to squeeze below (`plug.c:7691-7694`).
-pub const EXPORT_PANEL_TIMELINE_HEIGHT: f32 = 330.0;
+/// Timeline height the export panel asks for by default.
+///
+/// The C uses 330 (`plug.c:7691-7694`), but its band spends nothing on a manual
+/// event row or a scene-plan lane — this rewrite's does — so 330 here leaves the
+/// panel's boundary 21 px short of its own content and it would draw its
+/// too-small notice at the default size (review 1.4, UX0-A04). Derived from the
+/// panel's single source of truth so the two can never drift apart again; the
+/// value works out to 351.
+pub const EXPORT_PANEL_TIMELINE_HEIGHT: f32 = super::panels::export::EXPORT_MIN_BAND_HEIGHT
+    - super::panels::events::EVENT_ROW_HEIGHT
+    - super::panels::scene_timeline::SCENE_SECTION_HEIGHT;
 
 /// Narrowest window `scene_settings_ui_layout` will lay out
 /// (`scene_settings.c:494`). Below this it fails, and the C then keeps the

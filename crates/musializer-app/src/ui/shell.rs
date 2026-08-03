@@ -17,7 +17,7 @@ use musializer_core::project::event_timeline::ManualEventAction;
 use musializer_core::project::preset_store::{PresetAction, SharedPresetsView};
 use musializer_core::scene::routes::{ParameterMapping, RouteSources};
 use musializer_core::scene::{SceneId, SceneSettings};
-use musializer_core::ui::notice::{NoticeQueue, NoticeSpec, Severity};
+use musializer_core::ui::notice::{self, NoticeQueue, NoticeSpec, Severity};
 use musializer_core::ui::row_typography;
 use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::timeline_layout::TimelineBand;
@@ -25,7 +25,7 @@ use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::transport_bar;
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
 use musializer_runtime::font::{Faces, UiFonts};
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
+use raylib::prelude::{RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::icons;
 use super::preferences::UiPreferences;
@@ -211,6 +211,15 @@ pub struct Shell {
     scrub_target_seconds: Option<f64>,
     /// Whether playback should resume after the release-time seek.
     scrub_restore_playing: bool,
+    /// A drag in flight on the transport row's position bar (review 1.9,
+    /// UX0-A09).
+    ///
+    /// Separate from [`Self::timeline_gesture`] because the two surfaces are
+    /// disjoint and each has its own release path, but it obeys the same
+    /// transactional rule: the seek is deferred to release, and
+    /// [`Self::abandon_workspace_drags`] completes it if the toolbar stops being
+    /// drawn mid-drag — which fullscreen does.
+    transport_scrub: Option<TransportScrub>,
     /// The lyrics editor's draft, selection, panes and pending edits.
     ///
     /// Agent I had this in a `thread_local` while this field did not exist and
@@ -256,6 +265,40 @@ enum SplitKind {
 pub(crate) enum TimelineGesture {
     Scrub,
     SceneBoundary,
+}
+
+/// A drag in flight on the transport row's position bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TransportScrub {
+    /// Where the hand is, in track seconds. Emitted on release, not per frame.
+    target_seconds: f64,
+    /// Whether playback was running when the drag began.
+    restore_playing: bool,
+}
+
+/// One frame of the position bar's gesture, without raylib.
+///
+/// A struct rather than eight arguments because the whole reason it exists is to
+/// be *called from a test*: a headless run has no pointer, so a click at a known
+/// fraction of a known track is the only way to assert that the bar seeks at all
+/// — and asserting that it seeks to the right second is not something a capture
+/// could do even with a pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TransportScrubInput {
+    /// The seek groove, in window coordinates.
+    pub track: UiRect,
+    pub pointer_x: f32,
+    /// Whether the pointer is inside the bar's press area this frame.
+    pub hovered: bool,
+    /// The press edge.
+    pub pressed: bool,
+    /// Whether the button is still held.
+    pub down: bool,
+    pub playing: bool,
+    pub duration_seconds: f64,
+    /// False for a stream the decoder cannot seek in. The bar then draws as a
+    /// position readout and claims nothing.
+    pub seekable: bool,
 }
 
 /// Every surface in this interface that can take a keystroke as *text*.
@@ -309,6 +352,14 @@ pub(crate) struct KeyboardFrame {
     pub nudge_forward: bool,
     pub cycle_scene: bool,
     pub toggle_inspector: bool,
+    /// `S`, which only does anything chorded with Control.
+    ///
+    /// Not the oracle's — the frozen C has no save shortcut at all. It is here
+    /// because review 1.12 (UX0-A12) found a reachable state with *no* route to
+    /// saving: with the tracks panel collapsed, the four action buttons were the
+    /// only ones, and nothing on screen said so. The collapsed strip is the real
+    /// fix; this is the second route, and the strip's tooltip names it.
+    pub save: bool,
 }
 
 impl KeyboardFrame {
@@ -333,6 +384,7 @@ impl KeyboardFrame {
             nudge_forward: held(Key::KEY_RIGHT),
             cycle_scene: d.is_key_pressed(Key::KEY_TAB),
             toggle_inspector: d.is_key_pressed(Key::KEY_T),
+            save: d.is_key_pressed(Key::KEY_S),
         }
     }
 }
@@ -393,6 +445,7 @@ impl Shell {
             timeline_gesture: None,
             scrub_target_seconds: None,
             scrub_restore_playing: false,
+            transport_scrub: None,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
             font_browser: super::panels::fonts::FontBrowser::new(),
@@ -417,15 +470,68 @@ impl Shell {
     /// Pushes a notice, dropping the result: the overflow policy in
     /// [`NoticeQueue`] is the right answer and there is nothing better for a
     /// caller to do with a refusal.
+    ///
+    /// **The lifetime comes from the severity** ([`Severity::dwell`]), not from
+    /// this function and not from the call site. Every one of the ~51 callers
+    /// used to get `persistent: false, 6.0` — including the ones reporting an
+    /// export that had failed — while [`NoticeQueue`] supported persistence
+    /// correctly the whole time (review 1.11, UX0-A11). Fixing it here rather
+    /// than at the call sites is the point: a policy spread over fifty-one
+    /// literals is a policy that drifts back.
     pub fn notify(&mut self, severity: Severity, title: &str, detail: &str) {
+        let dwell = severity.dwell();
         let _ = self.notices.push(&NoticeSpec {
             severity,
-            persistent: false,
-            duration_seconds: 6.0,
+            persistent: dwell.persistent,
+            duration_seconds: dwell.duration_seconds,
             title: Some(title),
             detail,
             path: "",
         });
+    }
+
+    /// Which route to saving this frame's chrome puts on screen (review 1.12,
+    /// UX0-A12).
+    ///
+    /// Never absent outside fullscreen: that is the whole point, and
+    /// `a_save_route_survives_every_panel_and_window_configuration` sweeps it.
+    #[must_use]
+    pub(crate) fn save_affordance(&self, frame: &WorkspaceFrame) -> SaveAffordance {
+        if self.fullscreen {
+            return SaveAffordance::Fullscreen;
+        }
+        if frame.tracks_mode != TracksPanelMode::Hidden
+            && !frame.tracks.is_empty()
+            && frame.tracks_mode.action_row().is_some()
+        {
+            return SaveAffordance::TracksPanel;
+        }
+        if collapsed_tracks_split(frame.tracks_mode, frame.scenes).is_some() {
+            return SaveAffordance::CollapsedStrip;
+        }
+        // Unreachable while the sidebar has any height at all, and reported
+        // rather than asserted so a future layout change surfaces in the report
+        // line instead of in a panic.
+        SaveAffordance::Fullscreen
+    }
+
+    /// One line naming what this frame's chrome actually carries.
+    ///
+    /// Written for the same reason `Faces::describe` is: a capture proves a
+    /// surface drew *something*, and the failures this repository keeps finding
+    /// are surfaces that drew a plausible substitute. "save CollapsedStrip" in a
+    /// probe report is what makes the collapsed state reviewable at all — the
+    /// full panel and its stand-in photograph as two different sidebars, and
+    /// neither picture says which one was meant.
+    #[must_use]
+    pub fn describe(&self, frame: &WorkspaceFrame) -> String {
+        format!(
+            "panel {:?}  tracks {:?}  save {:?}  readout {}",
+            self.panel,
+            frame.tracks_mode,
+            self.save_affordance(frame),
+            if self.hud_visible { "on" } else { "off" }
+        )
     }
 
     /// The timeline height this frame's open panel asks for.
@@ -470,7 +576,14 @@ impl Shell {
         let minimum = super::panels::scene_timeline::SCENE_SECTION_HEIGHT
             + match self.panel {
                 UiPanel::None | UiPanel::Tune => super::panels::events::EVENT_ROW_HEIGHT + 150.0,
-                UiPanel::Export => 260.0,
+                // Derived from the export panel's own layout constants: the old
+                // bare 260.0 undershot what the panel consumes above its
+                // boundary, and a persisted shorter split blanked it across
+                // restarts (review 1.4, UX0-A04).
+                UiPanel::Export => {
+                    super::panels::export::EXPORT_MIN_BAND_HEIGHT
+                        - super::panels::scene_timeline::SCENE_SECTION_HEIGHT
+                }
                 // 121 chrome + 10 bottom + 22 lane + 5 gap + the form's 223 px.
                 UiPanel::Lyrics => 381.0,
                 // Assist has no scrolling body, so its measured content remains the
@@ -488,33 +601,52 @@ impl Shell {
     /// `layout` → draw scene → `draw`.
     #[must_use]
     pub fn layout(&self, input: &ShellInput<'_>) -> WorkspaceFrame {
+        self.frame_for(input.window, input.workspace)
+    }
+
+    /// [`Self::layout`] for a caller that has the window and the workspace but no
+    /// [`ShellInput`] — which is every caller that cannot open a window, since
+    /// `ShellInput` borrows the font bank.
+    ///
+    /// One owner for the frame, deliberately. The alternative was for the report
+    /// and the tests to rebuild it from the same five arguments, and a frame
+    /// rebuilt without the user's split overrides would disagree with the drawn
+    /// one about `tracks_mode` — which is exactly the state review 1.12 is about.
+    #[must_use]
+    pub fn frame_for(&self, window: (f32, f32), workspace: &Workspace) -> WorkspaceFrame {
         if self.fullscreen {
-            WorkspaceFrame::fullscreen(input.window.0, input.window.1, true)
-        } else {
-            let timeline = self.resolved_timeline_height(input.window, input.workspace);
-            let overrides = LayoutOverrides {
-                inspector_width: self.ui_preferences.inspector_width,
-                tracks_width: self.ui_preferences.sidebar_width,
-            };
-            if overrides == LayoutOverrides::default() {
-                WorkspaceFrame::layout(
-                    input.window.0,
-                    input.window.1,
-                    self.inspector_open,
-                    input.workspace.len(),
-                    timeline,
-                )
-            } else {
-                WorkspaceFrame::layout_with_overrides(
-                    input.window.0,
-                    input.window.1,
-                    self.inspector_open,
-                    input.workspace.len(),
-                    timeline,
-                    overrides,
-                )
-            }
+            return WorkspaceFrame::fullscreen(window.0, window.1, true);
         }
+        let timeline = self.resolved_timeline_height(window, workspace);
+        let overrides = LayoutOverrides {
+            inspector_width: self.ui_preferences.inspector_width,
+            tracks_width: self.ui_preferences.sidebar_width,
+        };
+        if overrides == LayoutOverrides::default() {
+            WorkspaceFrame::layout(
+                window.0,
+                window.1,
+                self.inspector_open,
+                workspace.len(),
+                timeline,
+            )
+        } else {
+            WorkspaceFrame::layout_with_overrides(
+                window.0,
+                window.1,
+                self.inspector_open,
+                workspace.len(),
+                timeline,
+                overrides,
+            )
+        }
+    }
+
+    /// [`Self::describe`] for the slice report, which has the window and the
+    /// workspace rather than a laid-out frame.
+    #[must_use]
+    pub fn describe_workspace(&self, window: (f32, f32), workspace: &Workspace) -> String {
+        self.describe(&self.frame_for(window, workspace))
     }
 
     /// Everything that has to happen before a frame's first widget or keypress.
@@ -894,6 +1026,17 @@ impl Shell {
         if keys.toggle_inspector {
             self.set_inspector_open(!self.inspector_open);
         }
+        // Ctrl+S / Ctrl+Shift+S (review 1.12, UX0-A12). Deliberately *not*
+        // guarded on the lyric draft, for the reason the Save button is not:
+        // saving changes no context, and refusing it would be telling the user to
+        // discard work in order to save work.
+        if keys.control && keys.save {
+            commands.push(if keys.shift {
+                ShellCommand::SaveProjectAs
+            } else {
+                ShellCommand::SaveProject
+            });
+        }
     }
 
     /// The transport row (`toolbar`, `plug.c:7366-7420`), extended.
@@ -1160,54 +1303,229 @@ impl Shell {
             );
         }
 
-        // A level meter in whatever is left between the buttons and the timecode.
-        // It reads `rms`, not a band: bands are normalized per frame by the frame's
-        // own maximum (`audio_analyzer.c:204`), so the loudest band always reads
-        // ~1.0 regardless of level and a meter driven from `bands` would be a flat
-        // line. This is the readout that makes a stuck analyzer visible in a
-        // screenshot.
-        let meter_right = if timecode_inline {
+        // The position bar goes in whatever is left between the buttons and the
+        // timecode. See [`Self::position_bar`] for what used to be here.
+        let bar_right = if timecode_inline {
             band.timecode.x - metric::UI_CONTROL_GAP
         } else {
             middle_right - metric::UI_CONTROL_GAP
         };
-        let meter = UiRect::new(
-            cursor,
-            bar.y + bar.height * 0.5 - 5.0,
-            (meter_right - cursor).max(0.0),
-            10.0,
-        );
-        // A 20 px meter is a decoration, not a readout. Below a width it can
-        // actually express a level in, it is not drawn.
-        if meter.width >= 60.0 && input.band_count > 0 {
-            d.draw_rectangle_rec(widgets::rectangle(meter), color::ui_rule());
-            let level = input.rms.clamp(0.0, 1.0);
-            d.draw_rectangle_rec(
-                widgets::rectangle(UiRect::new(
-                    meter.x,
-                    meter.y,
-                    meter.width * level,
-                    meter.height,
-                )),
-                color::ui_success(),
-            );
-            if meter.width > 190.0 {
-                widgets::draw_text(
-                    d,
-                    font,
-                    &format!(
-                        "{} bands  peak {}  rms {:.3}",
-                        input.band_count, input.peak_band, input.rms
-                    ),
-                    meter.x,
-                    meter.y - 16.0,
-                    metric::UI_FONT_CAPTION,
-                    color::ui_muted(),
-                );
-            }
+        if let Some(scrub) = transport_bar::scrub_bar(cursor, bar_right, bar) {
+            self.position_bar(d, input, scrub, has_track, commands);
         }
 
         ToolbarResult { timecode_inline }
+    }
+
+    /// The transport row's position bar: seek control, with the analyzer's level
+    /// embedded (review 1.9, UX0-A09).
+    ///
+    /// # What was here
+    ///
+    /// An RMS level meter. A green bar filling from the left, immediately beside
+    /// the timecode, in the position every media player on the machine uses for
+    /// progress — and with no widget id at all, so a click on it did nothing. At
+    /// 0.15 s into a track it read about 22% full. Two failures at once: the one
+    /// control a user would reach for first was inert, and it was actively
+    /// misreporting the position while looking authoritative.
+    ///
+    /// # What it is now
+    ///
+    /// A real seek bar. The fill is playback position, the drag scrubs, and the
+    /// transaction is the timeline scrubber's — pause on press, follow the hand,
+    /// seek once on release — because repeatedly flushing a decoder while the
+    /// pointer moves is both audible and expensive. The level survives as
+    /// [`transport_bar::ScrubBar::level`]: a 4 px strip under the groove, in the
+    /// success green it always was, which is legible as a level and cannot be
+    /// mistaken for progress. It is the readout that makes a stuck analyzer
+    /// visible in a screenshot, so it is worth keeping — it reads `rms` and not a
+    /// band, because bands are normalized per frame by the frame's own maximum
+    /// (`audio_analyzer.c:204`) and a meter driven from `bands` would be flat.
+    ///
+    /// # When the stream cannot be seeked
+    ///
+    /// `transport_seekable` is false for the formats the decoder cannot position
+    /// in. The bar then draws as a plain position readout — grey fill, no
+    /// playhead, no claim on the pointer — and its tooltip says why. Drawing an
+    /// accent-blue scrubber that silently ignored every drag is the thing this
+    /// whole finding is about.
+    fn position_bar(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        scrub: transport_bar::ScrubBar,
+        has_track: bool,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+
+        if !has_track {
+            return;
+        }
+        let seekable = input
+            .workspace
+            .current()
+            .is_some_and(|track| track.transport_seekable)
+            && input.duration_seconds.is_finite()
+            && input.duration_seconds > 0.0;
+
+        widgets::fill(d, scrub.track, color::ui_rule());
+
+        // The id lives in the fine-seek namespace rather than a new one: this bar
+        // *is* a seek control, and slots 0-2 are the three buttons beside it.
+        let id = widgets::widget_id(widgets::id::SEEK, 3);
+        // Registered even when the stream cannot be seeked, so the box still
+        // swallows the press instead of letting whatever is behind it answer, and
+        // so the tooltip explaining the refusal can be asked for.
+        let state = self.widgets.button(d, id, scrub.hit);
+        let mouse = input.ui_scale.mouse(d);
+        let dragging = self.transport_scrub(
+            TransportScrubInput {
+                track: scrub.track,
+                pointer_x: mouse.x,
+                hovered: state.hovered,
+                pressed: d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT),
+                down: d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+                playing: input.playing,
+                duration_seconds: input.duration_seconds,
+                seekable,
+            },
+            commands,
+        );
+
+        // While dragging, the bar shows the hand rather than the decoder: the
+        // seek has not been sent yet, so the playhead has genuinely not moved.
+        let shown = dragging.unwrap_or(input.time_seconds);
+        let fraction = transport_bar::scrub_fraction(shown, input.duration_seconds);
+        widgets::fill(
+            d,
+            UiRect::new(
+                scrub.track.x,
+                scrub.track.y,
+                scrub.track.width * fraction,
+                scrub.track.height,
+            ),
+            if seekable {
+                color::accent()
+            } else {
+                color::ui_disabled()
+            },
+        );
+        if seekable {
+            // A playhead that overhangs the groove, so the bar reads as a
+            // scrubber with a handle rather than as a progress bar with a fill.
+            let x = scrub.track.x + scrub.track.width * fraction;
+            let overhang = 3.0;
+            widgets::fill(
+                d,
+                UiRect::new(
+                    (x - 1.5).clamp(scrub.track.x, scrub.track.x + scrub.track.width - 3.0),
+                    scrub.track.y - overhang,
+                    3.0,
+                    scrub.track.height + overhang * 2.0,
+                ),
+                color::accent(),
+            );
+        }
+
+        widgets::fill(d, scrub.level, color::ui_rule());
+        if input.band_count > 0 {
+            let level = input.rms.clamp(0.0, 1.0);
+            widgets::fill(
+                d,
+                UiRect::new(
+                    scrub.level.x,
+                    scrub.level.y,
+                    scrub.level.width * level,
+                    scrub.level.height,
+                ),
+                color::ui_success(),
+            );
+        }
+
+        self.widgets.hint(
+            d,
+            state,
+            id,
+            scrub.hit,
+            if seekable {
+                "Seek [Home/End, arrows]"
+            } else {
+                "Position — this stream cannot be seeked"
+            },
+        );
+
+        if let Some(caption) = telemetry_caption(
+            self.hud_visible,
+            scrub.hit.width,
+            input.band_count,
+            input.peak_band,
+            input.rms,
+        ) {
+            widgets::draw_text(
+                d,
+                input.fonts.ui(),
+                &caption,
+                scrub.hit.x,
+                scrub.hit.y - 16.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+        }
+    }
+
+    /// One frame of the position bar's drag, raylib-free.
+    ///
+    /// Returns the in-flight target while a drag is running, so the caller draws
+    /// where the hand is. The seek itself is emitted on release by
+    /// [`Self::complete_transport_scrub`].
+    pub(crate) fn transport_scrub(
+        &mut self,
+        input: TransportScrubInput,
+        commands: &mut Vec<ShellCommand>,
+    ) -> Option<f64> {
+        if !input.seekable {
+            // A stream can stop being seekable between frames only by the track
+            // changing under the drag, which is exactly when a stranded gesture
+            // would fire a seek at the *new* track.
+            self.complete_transport_scrub(commands);
+            return None;
+        }
+        if self.transport_scrub.is_none() && input.hovered && input.pressed {
+            self.transport_scrub = Some(TransportScrub {
+                target_seconds: 0.0,
+                restore_playing: input.playing,
+            });
+            // Paused for the drag, and resumed by `complete`. Without this the
+            // playhead races the hand and the fill fights the drag.
+            if input.playing {
+                commands.push(ShellCommand::TogglePlay);
+            }
+        }
+        let scrub = self.transport_scrub.as_mut()?;
+        scrub.target_seconds =
+            transport_bar::scrub_seconds(input.pointer_x, input.track, input.duration_seconds);
+        let target = scrub.target_seconds;
+        if !input.down {
+            self.complete_transport_scrub(commands);
+        }
+        Some(target)
+    }
+
+    /// Ends a position-bar drag, sending the seek it owes.
+    ///
+    /// Completed rather than dropped, for the reason
+    /// [`Self::abandon_workspace_drags`] gives about the timeline scrubber: the
+    /// drag paused playback when it began, so abandoning it silently would leave
+    /// the track paused at a position the playhead never reached.
+    fn complete_transport_scrub(&mut self, commands: &mut Vec<ShellCommand>) {
+        let Some(scrub) = self.transport_scrub.take() else {
+            return;
+        };
+        commands.push(ShellCommand::Seek(scrub.target_seconds));
+        if scrub.restore_playing {
+            commands.push(ShellCommand::TogglePlay);
+        }
     }
 
     /// The right-hand cluster: readout toggle, mute, volume, fullscreen.
@@ -1428,6 +1746,10 @@ impl Shell {
     /// connect it to.
     fn abandon_workspace_drags(&mut self, commands: &mut Vec<ShellCommand>) {
         self.split_drag = None;
+        // The position bar is drawn by the toolbar, and fullscreen replaces the
+        // toolbar — so a drag left in flight there is stranded exactly the way a
+        // timeline scrub is, and is completed for the same reason.
+        self.complete_transport_scrub(commands);
         if self.timeline_gesture == Some(TimelineGesture::Scrub) {
             self.timeline_gesture = None;
             if let Some(target) = self.scrub_target_seconds.take() {
@@ -1591,6 +1913,7 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         if frame.tracks_mode == TracksPanelMode::Hidden || frame.tracks.is_empty() {
+            self.collapsed_tracks_strip(d, frame, input, commands);
             return;
         }
         let content = widgets::panel(d, input.fonts.ui(), frame.tracks, "TRACKS");
@@ -1693,6 +2016,122 @@ impl Shell {
         }
     }
 
+    /// What the sidebar shows in place of the whole tracks panel (review 1.12,
+    /// UX0-A12).
+    ///
+    /// # The defect
+    ///
+    /// At 960x640 with Assist open — and at 1280x720 with the lyrics sheet
+    /// expanded — [`TracksPanelMode::Hidden`] takes the entire tracks panel away.
+    /// The sidebar then starts at SCENES, and Save, Save As, Open project and the
+    /// name of the track being worked on are simply gone, with nothing on screen
+    /// marking their absence. Since the oracle binds no save shortcut either,
+    /// that state had **no route to saving at all** except closing the bottom
+    /// panel, and nothing suggested it.
+    ///
+    /// # Where this lives, and why there
+    ///
+    /// A 26 px strip at the very top of the sidebar — which is precisely the
+    /// space the tracks panel vacated, so the collapsed form appears where the
+    /// full one was rather than somewhere the user has to hunt for. The pixels
+    /// come out of `frame.scenes` via [`collapsed_tracks_split`], which is
+    /// shell-side arithmetic: `workspace_layout`'s outputs are pinned
+    /// record-for-record by `tools/differential_layout.sh` against the frozen C
+    /// and are not ours to change.
+    ///
+    /// The alternative considered and rejected was the transport row. It has its
+    /// own shedding ladder with a monotonicity property, so a Save control there
+    /// would either have to be unsheddable — competing with fullscreen for that
+    /// status — or would vanish at exactly the narrow widths where the tracks
+    /// panel is already hidden, which is the same bug one row down.
+    fn collapsed_tracks_strip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        let Some((strip, _)) = collapsed_tracks_split(frame.tracks_mode, frame.scenes) else {
+            return;
+        };
+        let font = input.fonts.ui();
+        widgets::fill(d, strip, color::ui_surface());
+        d.draw_line_ex(
+            Vector2::new(strip.x, strip.y + strip.height),
+            Vector2::new(strip.x + strip.width, strip.y + strip.height),
+            1.0,
+            color::ui_rule(),
+        );
+
+        let save = UiRect::new(
+            strip.x + strip.width - COLLAPSED_SAVE_WIDTH - 4.0,
+            strip.y + 3.0,
+            COLLAPSED_SAVE_WIDTH,
+            (strip.height - 6.0).max(1.0),
+        );
+        let name_width = (save.x - strip.x - metric::UI_PANEL_PADDING - 6.0).max(0.0);
+        // The current track's name, ellipsized rather than clipped: this is the
+        // only place it appears in this configuration, so half a name is worse
+        // than a shortened one. `wrap_detail` with a one-line cap is exactly that
+        // rule and is already tested.
+        let name = input
+            .workspace
+            .current()
+            .map_or("no track open", |track| track.display_name());
+        // The name is the user's own words, so it goes through the authored
+        // face (review 1.5); measure and draw share that face so the one-line
+        // cap cannot lie about what fits.
+        let authored = input.fonts.authored();
+        for line in notice::wrap_detail(name, name_width, 1, |text| {
+            authored.measure_text(text, metric::UI_FONT_CAPTION, 0.0).x
+        }) {
+            authored.draw_text(
+                d,
+                &line,
+                raylib::prelude::Vector2::new(
+                    strip.x + metric::UI_PANEL_PADDING,
+                    strip.y + (strip.height - metric::UI_FONT_CAPTION) * 0.5,
+                ),
+                metric::UI_FONT_CAPTION,
+                0.0,
+                color::ui_ink(),
+            );
+        }
+
+        if !strip.contains(save) {
+            return;
+        }
+        let id = widgets::widget_id(widgets::id::TRACK_STRIP, 0);
+        if input.workspace.current().is_none() {
+            self.widgets
+                .disabled_button(d, font, save, "Save", Some(metric::UI_FONT_CAPTION));
+            return;
+        }
+        let state = self.widgets.text_button(
+            d,
+            font,
+            id,
+            save,
+            "Save",
+            false,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        // The tooltip is the only place the collapse is explained. A user who
+        // notices the panel is gone has no other way to learn that it comes back
+        // when the bottom panel closes.
+        self.widgets.hint(
+            d,
+            state,
+            id,
+            save,
+            "Save project [Ctrl+S] \u{00b7} the tracks panel returns when the bottom panel closes",
+        );
+        if state.clicked {
+            commands.push(ShellCommand::SaveProject);
+        }
+    }
+
     /// The scrolling track list (`plug.c:5213-5382`).
     ///
     /// Split out of [`Self::tracks_panel`] because it is the one part of that
@@ -1775,9 +2214,10 @@ impl Shell {
         for (index, name) in input.workspace.display_names().enumerate() {
             let (row_y, row_height) = metrics.row_offset(index, self.track_scroll.offset());
             let top = area.y + row_y;
-            // Fully outside: no draw, and — the part that matters — no widget id
-            // registered, so nothing off-screen can claim the press.
-            if top + row_height <= area.y || top >= area.y + area.height {
+            // Outside, or too little of it left to read: no draw, and — the part
+            // that matters — no widget id registered, so nothing off-screen can
+            // claim the press.
+            if !track_row_is_legible(top, row_height, area) {
                 continue;
             }
             let boundary =
@@ -1786,9 +2226,12 @@ impl Shell {
             // Offset past the action buttons above, so a track row and an action
             // never hash to the same id.
             let id = widgets::widget_id(widgets::id::TRACKS, 16 + index as u32);
-            let state = self.widgets.text_button_in(
+            // A track name is the user's own words: the authored face carries
+            // the glyphs the Latin-only chrome bank would draw as `?`
+            // (review 1.5).
+            let state = self.widgets.text_button_in_authored(
                 &mut clip,
-                input.fonts.ui(),
+                input.fonts.authored(),
                 id,
                 boundary,
                 // The press is tested against the visible part only.
@@ -1829,10 +2272,15 @@ impl Shell {
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
-        if frame.scenes.is_empty() {
+        // Whatever the collapsed tracks strip did not take (review 1.12,
+        // UX0-A12). One owner for that split, so the browser and the strip cannot
+        // draw over each other.
+        let boundary = collapsed_tracks_split(frame.tracks_mode, frame.scenes)
+            .map_or(frame.scenes, |(_, rest)| rest);
+        if boundary.is_empty() {
             return;
         }
-        let content = widgets::panel(d, input.fonts.ui(), frame.scenes, "SCENES");
+        let content = widgets::panel(d, input.fonts.ui(), boundary, "SCENES");
         let padding = 8.0f32;
         let columns = 2usize;
         let rows = SceneId::ALL.len().div_ceil(columns);
@@ -2334,66 +2782,283 @@ impl Shell {
 
     /// The notice tray, over the preview's bottom-left corner
     /// (`notice_tray`, `plug.c`).
+    ///
+    /// Three things here are review 1.11 (UX0-A11) rather than the oracle:
+    ///
+    /// - **The severity label is a dark-surface colour.** It used to be the
+    ///   chrome palette's, which is chosen for a near-white panel: on this card
+    ///   INFO measured 1.69:1 and ERROR 3.19:1, so at a glance a failure and a
+    ///   confirmation looked the same. `theme::rgba::Surface` now makes the
+    ///   contrast sweep walk these pairs.
+    /// - **The card is opaque.** At alpha 232 the colour the user read was the
+    ///   card composited over whatever the scene drew that frame, so no ratio
+    ///   measured against it was true.
+    /// - **Detail text wraps, and the card grows to it.** It was one unwrapped,
+    ///   unclipped line on a 380 px card, while real detail strings run 90-150+
+    ///   characters — so a failure message ran across the preview and off the
+    ///   window. [`notice::wrap_detail`] caps it and ellipsizes what is left, and
+    ///   the card is sized from the lines that came back.
+    ///
+    /// Every card carries a close box, because [`Severity::Error`] notices are
+    /// persistent now and a notice that never expires needs a way out that is not
+    /// "restart the application".
     fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, font: &UiFonts, preview: UiRect) {
         if preview.is_empty() || self.notices.is_empty() {
             return;
         }
-        let width = 380.0f32.min(preview.width - 24.0);
+        let width = NOTICE_CARD_WIDTH.min(preview.width - 24.0);
         if width <= 0.0 {
             return;
         }
-        let row_height = 56.0f32;
-        let mut y = preview.y + preview.height - 12.0 - row_height;
+        let text_width = width - NOTICE_PADDING * 2.0 - NOTICE_CLOSE_SIZE;
+        if text_width <= 0.0 {
+            return;
+        }
+        let measure = |text: &str, size: f32| widgets::measure(font, text, size);
+
+        let mut bottom = preview.y + preview.height - 12.0;
+        let mut dismissed = None;
         // Newest last in the queue, so draw from the end upward: the most recent
         // notice sits closest to the bottom edge where the eye already is.
         for notice in self.notices.notices().iter().rev() {
+            let detail =
+                notice::wrap_detail(&notice.detail, text_width, NOTICE_DETAIL_MAX_LINES, {
+                    |text| measure(text, metric::UI_FONT_CAPTION)
+                });
+            let height = if detail.is_empty() {
+                NOTICE_TITLE_TOP + metric::UI_FONT_LABEL + NOTICE_BOTTOM_PADDING
+            } else {
+                NOTICE_DETAIL_TOP + detail.len() as f32 * NOTICE_DETAIL_LINE + NOTICE_BOTTOM_PADDING
+            };
+            let y = bottom - height;
+            // The tray never climbs past the top of the preview: a card drawn over
+            // the toolbar would sit on controls it does not own.
             if y < preview.y {
                 break;
             }
-            let boundary = UiRect::new(preview.x + 12.0, y, width, row_height);
+            let boundary = UiRect::new(preview.x + 12.0, y, width, height);
             let accent = match notice.severity {
-                Severity::Info => color::accent(),
-                Severity::Success => color::ui_success(),
-                Severity::Warning => color::ui_warning(),
-                Severity::Error => color::ui_danger(),
+                Severity::Info => color::notice_info_on_dark(),
+                Severity::Success => color::notice_success_on_dark(),
+                Severity::Warning => color::notice_warning_on_dark(),
+                Severity::Error => color::notice_error_on_dark(),
             };
-            d.draw_rectangle_rec(widgets::rectangle(boundary), Color::new(20, 22, 28, 232));
-            d.draw_rectangle_rec(
-                widgets::rectangle(UiRect::new(boundary.x, boundary.y, 3.0, boundary.height)),
+            widgets::fill(d, boundary, color::ui_overlay_surface());
+            widgets::fill(
+                d,
+                UiRect::new(boundary.x, boundary.y, 3.0, boundary.height),
                 accent,
             );
             widgets::draw_text(
                 d,
                 font,
                 notice.severity.label(),
-                boundary.x + 10.0,
+                boundary.x + NOTICE_PADDING,
                 boundary.y + 4.0,
                 metric::UI_FONT_CAPTION,
                 accent,
             );
-            widgets::draw_text(
-                d,
-                font,
-                &notice.title,
-                boundary.x + 10.0,
-                boundary.y + 19.0,
-                metric::UI_FONT_LABEL,
-                Color::RAYWHITE,
-            );
-            if !notice.detail.is_empty() {
+            // The title is bounded too. It is capacity-limited to 79 bytes, which
+            // is still wider than the card at 16 px.
+            for line in notice::wrap_detail(&notice.title, text_width, 1, {
+                |text| measure(text, metric::UI_FONT_LABEL)
+            }) {
                 widgets::draw_text(
                     d,
                     font,
-                    &notice.detail,
-                    boundary.x + 10.0,
-                    boundary.y + 37.0,
-                    metric::UI_FONT_CAPTION,
-                    Color::new(180, 190, 205, 255),
+                    &line,
+                    boundary.x + NOTICE_PADDING,
+                    boundary.y + NOTICE_TITLE_TOP,
+                    metric::UI_FONT_LABEL,
+                    color::ui_overlay_ink(),
                 );
             }
-            y -= row_height + 4.0;
+            for (index, line) in detail.iter().enumerate() {
+                widgets::draw_text(
+                    d,
+                    font,
+                    line,
+                    boundary.x + NOTICE_PADDING,
+                    boundary.y + NOTICE_DETAIL_TOP + index as f32 * NOTICE_DETAIL_LINE,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_overlay_muted(),
+                );
+            }
+
+            // The close box. Keyed by the notice's own id rather than by its
+            // position in the list, so a press claimed on one card cannot be
+            // released by whichever card inherited its index after an eviction.
+            let close = UiRect::new(
+                boundary.x + boundary.width - NOTICE_CLOSE_SIZE - 4.0,
+                boundary.y + 4.0,
+                NOTICE_CLOSE_SIZE,
+                NOTICE_CLOSE_SIZE,
+            );
+            let id = widgets::widget_id(widgets::id::NOTICE, notice.id as u32);
+            let state = self.widgets.button(d, id, close);
+            let tint = if state.hovered {
+                color::ui_overlay_ink()
+            } else {
+                color::ui_overlay_muted()
+            };
+            let inset = 5.0;
+            d.draw_line_ex(
+                Vector2::new(close.x + inset, close.y + inset),
+                Vector2::new(
+                    close.x + close.width - inset,
+                    close.y + close.height - inset,
+                ),
+                1.5,
+                tint,
+            );
+            d.draw_line_ex(
+                Vector2::new(close.x + close.width - inset, close.y + inset),
+                Vector2::new(close.x + inset, close.y + close.height - inset),
+                1.5,
+                tint,
+            );
+            self.widgets.hint(d, state, id, close, "Dismiss");
+            if state.clicked {
+                dismissed = Some(notice.id);
+            }
+
+            bottom = y - NOTICE_GAP;
+        }
+        // Applied after the loop: the list is borrowed while it is being drawn.
+        if let Some(id) = dismissed {
+            self.notices.dismiss(id);
         }
     }
+}
+
+/// Widest a notice card is drawn.
+const NOTICE_CARD_WIDTH: f32 = 380.0;
+const NOTICE_PADDING: f32 = 10.0;
+/// The title's baseline offset inside the card, under the severity label.
+const NOTICE_TITLE_TOP: f32 = 19.0;
+const NOTICE_DETAIL_TOP: f32 = 37.0;
+const NOTICE_DETAIL_LINE: f32 = 15.0;
+/// The card grows to its wrapped detail, but only this far.
+///
+/// Three lines is about 160 characters at this width, which covers the detail
+/// strings the application actually produces; past that the tray would start
+/// taking the preview it floats over, and the ellipsis says so honestly.
+const NOTICE_DETAIL_MAX_LINES: usize = 3;
+const NOTICE_BOTTOM_PADDING: f32 = 8.0;
+const NOTICE_CLOSE_SIZE: f32 = 18.0;
+const NOTICE_GAP: f32 = 4.0;
+
+/// The least of a track row that may still be drawn, as a fraction of its height
+/// (review 1.12, UX0-A12).
+///
+/// Rows are **clipped, not skipped** — that policy is right and it stays: a
+/// skipped row leaves a gap the list cannot explain, and a row half in view is
+/// how a scrolling list says "there is more". What the policy did not cover is
+/// the sliver. At 1280x720 with the sheet expanded the *selected* track's row
+/// came out cut through the middle of its glyphs, which reads as a rendering
+/// fault rather than as a list that continues, and it was the one row whose
+/// identity the user most needed.
+///
+/// 0.6 rather than 0.5, because a row is a text line centred vertically in its
+/// box: at exactly half the cut lands on the glyphs. Three fifths keeps a whole
+/// text line inside the visible part at every row height the list uses.
+const TRACK_ROW_MINIMUM_VISIBLE: f32 = 0.6;
+
+/// Whether enough of a row is inside `area` to be worth drawing.
+///
+/// The threshold yields to the area itself: a list region shorter than one row is
+/// a legitimate state, and refusing to draw anything there would replace a sliver
+/// with an empty panel.
+fn track_row_is_legible(top: f32, row_height: f32, area: UiRect) -> bool {
+    if row_height <= 0.0 || area.is_empty() || !top.is_finite() {
+        return false;
+    }
+    let visible = (top + row_height).min(area.y + area.height) - top.max(area.y);
+    visible > 0.0 && visible >= (row_height * TRACK_ROW_MINIMUM_VISIBLE).min(area.height)
+}
+
+/// Height of the collapsed tracks strip.
+///
+/// 26 px seats a 13 px caption and a 20 px button with 3 px of breathing room,
+/// and is the least that can carry both legibly.
+const COLLAPSED_TRACKS_HEIGHT: f32 = 26.0;
+/// The Save button's width in that strip.
+const COLLAPSED_SAVE_WIDTH: f32 = 46.0;
+
+/// Splits the sidebar into the collapsed tracks strip and what is left for the
+/// scene browser, or `None` when the full tracks panel is on screen.
+///
+/// Pure, and separate from the drawing, because the property that matters is
+/// "there is always somewhere to put it" — and that is a statement about
+/// rectangles at every window size, which is a sweep rather than a screenshot.
+///
+/// The strip is taken from the *browser's* rect rather than from
+/// [`WorkspaceFrame::tracks`], because in this mode `tracks` is empty by
+/// construction: `workspace_layout` gives the whole sidebar to the browser when
+/// it hides the panel, and its outputs are harness-pinned and untouchable.
+fn collapsed_tracks_split(
+    tracks_mode: TracksPanelMode,
+    scenes: UiRect,
+) -> Option<(UiRect, UiRect)> {
+    if tracks_mode != TracksPanelMode::Hidden || scenes.is_empty() {
+        return None;
+    }
+    let height = COLLAPSED_TRACKS_HEIGHT.min(scenes.height);
+    Some((
+        UiRect::new(scenes.x, scenes.y, scenes.width, height),
+        UiRect::new(
+            scenes.x,
+            scenes.y + height,
+            scenes.width,
+            (scenes.height - height).max(0.0),
+        ),
+    ))
+}
+
+/// Where this frame's route to saving is, if there is one on screen.
+///
+/// Reported rather than assumed. The failure review 1.12 found is an affordance
+/// being *absent*, and a capture of a missing control is indistinguishable from a
+/// capture of a control the reviewer did not look for — so the answer is a value
+/// a test can sweep and a report line can print.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SaveAffordance {
+    /// The tracks panel's own action row.
+    TracksPanel,
+    /// The one-row strip that stands in for it.
+    CollapsedStrip,
+    /// Fullscreen draws no chrome at all. Escape is the way back and every
+    /// keyboard route still works, so this is a deliberate absence rather than
+    /// the defect.
+    Fullscreen,
+}
+
+/// The analyzer telemetry line above the position bar, or `None` when it must
+/// not be drawn.
+///
+/// **Gated on the readout flag, which is the second half of review 1.9
+/// (UX0-A09).** `"104 bands  peak 18  rms 0.299"` rendered unconditionally —
+/// including under `--hud=0`, and including with `H` explicitly toggled off. The
+/// HUD flag is the one place this interface decided telemetry should not appear,
+/// and this line ignored it. Probe runs default the flag *on*, so a capture still
+/// carries its own evidence.
+///
+/// A free function so the gate is assertable without a window: a capture can show
+/// that a string is present, but nothing photographic can show that a string is
+/// absent *because* of a flag rather than because the row was too narrow.
+fn telemetry_caption(
+    hud_visible: bool,
+    width: f32,
+    band_count: usize,
+    peak_band: usize,
+    rms: f32,
+) -> Option<String> {
+    if !hud_visible || band_count == 0 || width < transport_bar::SCRUB_CAPTION_MIN_WIDTH {
+        return None;
+    }
+    Some(format!(
+        "{band_count} bands  peak {peak_band}  rms {rms:.3}"
+    ))
 }
 
 fn draw_splitter(
@@ -2623,6 +3288,351 @@ mod tests {
                 break;
             }
         }
+    }
+
+    // ---- UX0-A09 (review 1.9): the position bar ----------------------------
+
+    /// The groove the tests below press on: 200 px wide, starting at x=100, over
+    /// a two-minute track. A press at 150 is exactly a quarter in.
+    fn scrub_track() -> UiRect {
+        UiRect::new(100.0, 20.0, 200.0, transport_bar::SCRUB_TRACK_HEIGHT)
+    }
+
+    fn scrub_frame(x: f32, pressed: bool, down: bool, playing: bool) -> TransportScrubInput {
+        TransportScrubInput {
+            track: scrub_track(),
+            pointer_x: x,
+            hovered: true,
+            pressed,
+            down,
+            playing,
+            duration_seconds: 120.0,
+            seekable: true,
+        }
+    }
+
+    /// The defect, stated as the thing that used to be impossible: the rect where
+    /// every media player puts progress had no widget id at all, so clicking it
+    /// did nothing while it showed 22% at 0.15 s.
+    #[test]
+    fn a_press_on_the_position_bar_seeks_to_the_fraction_it_was_released_at() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+
+        let target = shell.transport_scrub(scrub_frame(150.0, true, true, false), &mut commands);
+        assert_eq!(target, Some(30.0), "a quarter of a 120 s track is 30 s");
+        assert!(
+            commands.is_empty(),
+            "the seek is deferred to release, as the timeline scrubber's is: {commands:?}"
+        );
+
+        // Dragged to three quarters, then released there.
+        shell.transport_scrub(scrub_frame(250.0, false, true, false), &mut commands);
+        assert!(commands.is_empty());
+        shell.transport_scrub(scrub_frame(250.0, false, false, false), &mut commands);
+        assert_eq!(commands, vec![ShellCommand::Seek(90.0)]);
+        assert_eq!(shell.transport_scrub, None);
+    }
+
+    /// A drag pauses playback so the fill does not fight the hand, and resumes it
+    /// afterwards — the timeline scrubber's transaction, deliberately identical.
+    #[test]
+    fn a_drag_that_began_during_playback_pauses_and_resumes_around_the_seek() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+
+        shell.transport_scrub(scrub_frame(150.0, true, true, true), &mut commands);
+        assert_eq!(commands, vec![ShellCommand::TogglePlay]);
+
+        commands.clear();
+        shell.transport_scrub(scrub_frame(300.0, false, false, false), &mut commands);
+        assert_eq!(
+            commands,
+            vec![ShellCommand::Seek(120.0), ShellCommand::TogglePlay],
+            "the end of the track, and playback back on"
+        );
+    }
+
+    /// `transport_seekable` is false for streams the decoder cannot position in.
+    /// A bar that accepted the drag and silently ignored it would be the same
+    /// defect this finding is about, one layer over.
+    #[test]
+    fn a_stream_that_cannot_be_seeked_emits_nothing_and_starts_no_drag() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        let mut input = scrub_frame(150.0, true, true, true);
+        input.seekable = false;
+
+        assert_eq!(shell.transport_scrub(input, &mut commands), None);
+        assert_eq!(shell.transport_scrub, None);
+        input.pressed = false;
+        input.down = false;
+        assert_eq!(shell.transport_scrub(input, &mut commands), None);
+        assert!(
+            commands.is_empty(),
+            "an unseekable stream seeked: {commands:?}"
+        );
+    }
+
+    /// A press that lands outside the bar is not a scrub, even while the button
+    /// is held: without the hover test a drag begun anywhere would capture it.
+    #[test]
+    fn a_press_that_did_not_land_on_the_bar_starts_nothing() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        let mut input = scrub_frame(150.0, true, true, false);
+        input.hovered = false;
+
+        assert_eq!(shell.transport_scrub(input, &mut commands), None);
+        assert_eq!(shell.transport_scrub, None);
+        assert!(commands.is_empty());
+    }
+
+    /// UX0-A02's rule, applied to the new gesture: fullscreen replaces the
+    /// toolbar, so a drag in flight there has nowhere to be released.
+    #[test]
+    fn fullscreen_taken_mid_position_drag_completes_the_seek_rather_than_stranding_it() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        shell.transport_scrub(scrub_frame(150.0, true, true, true), &mut commands);
+        commands.clear();
+
+        shell.keyboard_actions(
+            KeyboardFrame {
+                toggle_fullscreen: true,
+                ..KeyboardFrame::default()
+            },
+            context(),
+            &mut commands,
+        );
+
+        assert_eq!(shell.transport_scrub, None);
+        assert!(commands.contains(&ShellCommand::Seek(30.0)));
+        assert!(commands.contains(&ShellCommand::TogglePlay));
+    }
+
+    /// The second half of review 1.9: the telemetry line ignored the readout flag
+    /// and rendered even under `--hud=0`.
+    #[test]
+    fn the_telemetry_caption_is_drawn_only_when_the_readout_is_on() {
+        assert_eq!(telemetry_caption(false, 400.0, 104, 18, 0.299), None);
+        assert_eq!(
+            telemetry_caption(true, 400.0, 104, 18, 0.299).as_deref(),
+            Some("104 bands  peak 18  rms 0.299")
+        );
+        // Probe runs default the flag on, which is what keeps a capture carrying
+        // its own evidence — the reason the line exists at all.
+        assert!(telemetry_caption(true, 400.0, 104, 18, 0.299).is_some());
+        // The width and analyzer floors still apply on top of the flag.
+        assert_eq!(telemetry_caption(true, 100.0, 104, 18, 0.299), None);
+        assert_eq!(telemetry_caption(true, 400.0, 0, 0, 0.0), None);
+    }
+
+    // ---- UX0-A11 (review 1.11): how long a notice lives --------------------
+
+    /// The seam, from the shell's side: fifty-one call sites all passed
+    /// `persistent: false, 6.0`, so a render that failed while the user was away
+    /// was gone before they got back.
+    #[test]
+    fn a_failure_outlives_the_confirmation_that_a_save_worked() {
+        let mut shell = Shell::new();
+        shell.notify(Severity::Success, "Saved", "project.musi");
+        shell.notify(Severity::Warning, "Analysis is stale", "Re-run Assist");
+        shell.notify(
+            Severity::Error,
+            "Export failed",
+            "ffmpeg exited with status 1",
+        );
+
+        // Twenty minutes away from the machine.
+        shell.notices.tick(20.0 * 60.0);
+        assert_eq!(shell.notices.len(), 1, "only the failure should remain");
+        let kept = &shell.notices.notices()[0];
+        assert_eq!(kept.severity, Severity::Error);
+        assert!(kept.persistent);
+
+        // And it can be got rid of, which is what the card's close box does.
+        assert_eq!(
+            shell.notices.dismiss(kept.id),
+            musializer_core::ui::notice::NoticeResult::Ok
+        );
+        assert!(shell.notices.is_empty());
+    }
+
+    // ---- UX0-A12 (review 1.12): the vanished tracks panel -------------------
+
+    /// The configurations review 1.12 names, plus the corners around them.
+    fn save_route_configurations() -> Vec<((f32, f32), UiPanel, bool)> {
+        let mut configurations = Vec::new();
+        for window in [(960.0f32, 640.0f32), (1280.0, 720.0), (1920.0, 1080.0)] {
+            for panel in [
+                UiPanel::None,
+                UiPanel::Tune,
+                UiPanel::Export,
+                UiPanel::Lyrics,
+                UiPanel::Assist,
+            ] {
+                for inspector in [false, true] {
+                    configurations.push((window, panel, inspector));
+                }
+            }
+        }
+        configurations
+    }
+
+    /// The defect: with the tracks panel hidden there was **no route to saving at
+    /// all**, because the four action buttons were the only one and nothing on
+    /// screen said they had gone.
+    #[test]
+    fn a_save_route_survives_every_panel_and_window_configuration() {
+        let workspace = two_track_workspace();
+        let mut collapsed = 0;
+        let mut full = 0;
+
+        for (window, panel, inspector) in save_route_configurations() {
+            let mut shell = Shell::new();
+            shell.panel = panel;
+            shell.inspector_open = inspector;
+            let frame = shell.frame_for(window, &workspace);
+
+            match shell.save_affordance(&frame) {
+                SaveAffordance::TracksPanel => full += 1,
+                SaveAffordance::CollapsedStrip => collapsed += 1,
+                SaveAffordance::Fullscreen => {
+                    panic!("{window:?} with {panel:?} and inspector={inspector} has no way to save")
+                }
+            }
+        }
+
+        // Both arms have to be exercised, or the sweep is asserting nothing: if
+        // the layout stopped hiding the panel this test would pass vacuously and
+        // the collapsed strip would rot untested.
+        assert!(
+            collapsed > 0,
+            "no configuration hid the tracks panel, so the collapsed strip was never reached"
+        );
+        assert!(full > 0, "no configuration showed the full panel");
+    }
+
+    /// The named configuration from the review, on its own, so a regression names
+    /// itself rather than appearing as one failure among sixty.
+    #[test]
+    fn the_minimum_window_with_assist_open_shows_the_collapsed_strip() {
+        let workspace = two_track_workspace();
+        let mut shell = Shell::new();
+        shell.panel = UiPanel::Assist;
+        let frame = shell.frame_for((960.0, 640.0), &workspace);
+
+        assert_eq!(frame.tracks_mode, TracksPanelMode::Hidden);
+        assert_eq!(
+            shell.save_affordance(&frame),
+            SaveAffordance::CollapsedStrip
+        );
+        // And the report line says so, because a capture of the collapsed sidebar
+        // and a capture of a broken one look the same.
+        let described = shell.describe(&frame);
+        assert!(
+            described.contains("CollapsedStrip"),
+            "the report line hides the state it exists to report: {described}"
+        );
+    }
+
+    /// The strip is taken from the browser's rect, so the two must tile it.
+    #[test]
+    fn the_collapsed_strip_and_the_browser_tile_the_sidebar_without_overlapping() {
+        for height in 200..=900 {
+            let scenes = UiRect::new(0.0, 0.0, 320.0, height as f32);
+            let Some((strip, rest)) = collapsed_tracks_split(TracksPanelMode::Hidden, scenes)
+            else {
+                continue;
+            };
+            assert!(!strip.overlaps(rest), "{height}px: the two overlap");
+            assert!((strip.height + rest.height - scenes.height).abs() < 0.01);
+            assert_eq!(strip.y, scenes.y, "the strip is where the panel used to be");
+            assert!(scenes.contains(strip));
+        }
+        // And it is not offered when the full panel is on screen, which is what
+        // stops two tracks affordances being drawn at once.
+        for mode in [TracksPanelMode::Single, TracksPanelMode::Stacked] {
+            assert_eq!(
+                collapsed_tracks_split(mode, UiRect::new(0.0, 0.0, 320.0, 400.0)),
+                None
+            );
+        }
+    }
+
+    /// The clip policy stands; the sliver does not.
+    #[test]
+    fn a_track_row_is_clipped_but_never_drawn_as_a_sliver() {
+        let area = UiRect::new(0.0, 100.0, 200.0, 300.0);
+        let row = 40.0;
+
+        // Wholly inside.
+        assert!(track_row_is_legible(150.0, row, area));
+        // Clipped at the bottom, exactly three fifths visible: still drawn, which
+        // is the policy the review says is right.
+        assert!(track_row_is_legible(376.0, row, area));
+        // One pixel less: the sliver, which is what cut the selected row through
+        // the middle of its glyphs.
+        assert!(!track_row_is_legible(377.0, row, area));
+        // The same at the top edge, where a row scrolls *into* view: at 84 the
+        // bottom 24 px are showing, at 83 only 23.
+        assert!(track_row_is_legible(84.0, row, area));
+        assert!(!track_row_is_legible(83.0, row, area));
+        // Wholly outside, either way: no draw and no widget id.
+        assert!(!track_row_is_legible(500.0, row, area));
+        assert!(!track_row_is_legible(-100.0, row, area));
+
+        // A list region shorter than one row is legitimate, and refusing to draw
+        // there would replace a sliver with an empty panel.
+        let cramped = UiRect::new(0.0, 0.0, 200.0, 12.0);
+        assert!(track_row_is_legible(0.0, row, cramped));
+        // Degenerate input stays out of the hit-testing entirely.
+        assert!(!track_row_is_legible(0.0, 0.0, area));
+        assert!(!track_row_is_legible(f32::NAN, row, area));
+        assert!(!track_row_is_legible(0.0, row, UiRect::default()));
+    }
+
+    /// Ctrl+S, the second route. Not the oracle's — it has no save shortcut, and
+    /// its absence is half of why the hidden panel was unrecoverable.
+    #[test]
+    fn control_s_saves_and_a_bare_s_does_not() {
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+
+        shell.keyboard_actions(
+            KeyboardFrame {
+                save: true,
+                ..KeyboardFrame::default()
+            },
+            context(),
+            &mut commands,
+        );
+        assert!(commands.is_empty(), "a bare S saved: {commands:?}");
+
+        shell.keyboard_actions(
+            KeyboardFrame {
+                control: true,
+                save: true,
+                ..KeyboardFrame::default()
+            },
+            context(),
+            &mut commands,
+        );
+        assert_eq!(commands, vec![ShellCommand::SaveProject]);
+
+        commands.clear();
+        shell.keyboard_actions(
+            KeyboardFrame {
+                control: true,
+                shift: true,
+                save: true,
+                ..KeyboardFrame::default()
+            },
+            context(),
+            &mut commands,
+        );
+        assert_eq!(commands, vec![ShellCommand::SaveProjectAs]);
     }
 
     #[test]

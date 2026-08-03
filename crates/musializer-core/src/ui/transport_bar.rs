@@ -219,6 +219,100 @@ pub fn seek_group(x: f32, row_y: f32, available: f32) -> Option<SeekCluster> {
     })
 }
 
+/// The seek groove's height: the part of the position bar that is a control.
+pub const SCRUB_TRACK_HEIGHT: f32 = 8.0;
+/// The analyzer level strip embedded along the bar's bottom edge.
+pub const SCRUB_LEVEL_HEIGHT: f32 = 4.0;
+/// Between the two, so the level reads as an annotation rather than as a second
+/// control.
+pub const SCRUB_LEVEL_GAP: f32 = 2.0;
+/// Total height of the position bar.
+pub const SCRUB_BAR_HEIGHT: f32 = SCRUB_TRACK_HEIGHT + SCRUB_LEVEL_GAP + SCRUB_LEVEL_HEIGHT;
+/// Below this the bar is not drawn at all.
+///
+/// A 20 px seek bar is a decoration that invites a click it cannot serve
+/// precisely — one pixel would be several seconds of a track. The number is the
+/// meter's old floor, kept: the reason for a floor did not change when the
+/// readout became a control.
+pub const SCRUB_BAR_MIN_WIDTH: f32 = 60.0;
+/// Below this there is no room for the telemetry caption above the bar.
+pub const SCRUB_CAPTION_MIN_WIDTH: f32 = 190.0;
+
+/// The transport row's position bar (review 1.9, UX0-A09).
+///
+/// **Not the oracle's.** What sat here was an RMS level meter — a green fill
+/// growing from the left, beside the timecode, exactly where every media player
+/// puts progress, and with no widget id at all. At 0.15 s into a track it read
+/// about 22% full, so the interface's most conventional-looking control was both
+/// unclickable and lying about the position. It is a seek bar now, and the level
+/// it used to show is [`ScrubBar::level`]: a 4 px strip under the groove, which
+/// is legible as a level and not mistakable for progress.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrubBar {
+    /// The whole box, and the press area. Taller than the groove so the control
+    /// is not a 8 px target.
+    pub hit: UiRect,
+    /// The seek groove: background, progress fill and playhead.
+    pub track: UiRect,
+    /// The analyzer's level, along the bottom edge.
+    pub level: UiRect,
+}
+
+/// Lays the position bar into what the row has left between `left` and `right`.
+///
+/// `None` when that is narrower than [`SCRUB_BAR_MIN_WIDTH`], which is the
+/// caller's signal to draw nothing rather than a stub.
+#[must_use]
+pub fn scrub_bar(left: f32, right: f32, bar: UiRect) -> Option<ScrubBar> {
+    if !bar.is_finite() || !left.is_finite() || !right.is_finite() {
+        return None;
+    }
+    let width = right - left;
+    if width < SCRUB_BAR_MIN_WIDTH || bar.height < SCRUB_BAR_HEIGHT {
+        return None;
+    }
+    let top = bar.y + (bar.height - SCRUB_BAR_HEIGHT) * 0.5;
+    Some(ScrubBar {
+        hit: UiRect::new(left, top, width, SCRUB_BAR_HEIGHT),
+        track: UiRect::new(left, top, width, SCRUB_TRACK_HEIGHT),
+        level: UiRect::new(
+            left,
+            top + SCRUB_TRACK_HEIGHT + SCRUB_LEVEL_GAP,
+            width,
+            SCRUB_LEVEL_HEIGHT,
+        ),
+    })
+}
+
+/// How far along the track the playhead is, in `[0, 1]`.
+///
+/// Zero for a duration that is not known yet, rather than a fill of whatever
+/// `time / 0` produces — a bar that reads full on an unmeasured stream is the
+/// same lie the level meter was telling.
+#[must_use]
+pub fn scrub_fraction(time_seconds: f64, duration_seconds: f64) -> f32 {
+    if !time_seconds.is_finite() || !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return 0.0;
+    }
+    (time_seconds / duration_seconds).clamp(0.0, 1.0) as f32
+}
+
+/// The position a press at `x` on `track` asks for, clamped into the track.
+///
+/// Clamped for the reason [`nudged`] is: a drag past either end is a request for
+/// that end, and a scrubber that refuses at the boundary reads as stuck.
+#[must_use]
+pub fn scrub_seconds(x: f32, track: UiRect, duration_seconds: f64) -> f64 {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return 0.0;
+    }
+    if !x.is_finite() || track.width <= 0.0 || !track.is_finite() {
+        return 0.0;
+    }
+    let fraction = f64::from(((x - track.x) / track.width).clamp(0.0, 1.0));
+    (fraction * duration_seconds).clamp(0.0, duration_seconds)
+}
+
 /// How far one seek nudge moves, given the modifier keys held.
 ///
 /// The three sizes are the ones the reference toolbar in the request spells out,
@@ -422,6 +516,73 @@ mod tests {
         // Contiguous: the three read as one control, not three strays.
         assert!((group.back.x - (group.start.x + CONTROL_SIZE + CLUSTER_GAP)).abs() < 0.01);
         assert_eq!(seek_group(10.0, 4.0, 40.0), None);
+    }
+
+    #[test]
+    fn the_position_bar_stays_inside_the_row_it_was_given() {
+        // A sweep for the same reason the cluster has one: the interesting widths
+        // are the ones where the middle group has just shed a control and the
+        // leftover space changes discontinuously.
+        for width in 40..=1920 {
+            let bar = bar(width as f32);
+            let Some(cluster) = utilities(bar, 8.0, true) else {
+                continue;
+            };
+            let Some(scrub) = scrub_bar(bar.x + 40.0, cluster.left_edge, bar) else {
+                continue;
+            };
+            for (name, rect) in [
+                ("hit", scrub.hit),
+                ("track", scrub.track),
+                ("level", scrub.level),
+            ] {
+                assert!(
+                    rect.x >= bar.x - 0.01 && rect.x + rect.width <= cluster.left_edge + 0.01,
+                    "{width}px: the {name} rect leaves its span"
+                );
+                assert!(
+                    rect.y >= bar.y - 0.01 && rect.y + rect.height <= bar.y + bar.height + 0.01,
+                    "{width}px: the {name} rect leaves the row vertically"
+                );
+            }
+            // The level is under the groove and never over it: a strip drawn
+            // inside the seek fill would be the old meter again, one layer down.
+            assert!(scrub.level.y >= scrub.track.y + scrub.track.height);
+            assert!(!scrub.track.overlaps(scrub.level));
+            assert!(scrub.hit.contains(scrub.track) && scrub.hit.contains(scrub.level));
+        }
+    }
+
+    #[test]
+    fn a_span_too_narrow_to_seek_in_places_no_bar() {
+        let row = bar(1280.0);
+        assert_eq!(scrub_bar(0.0, SCRUB_BAR_MIN_WIDTH - 1.0, row), None);
+        assert!(scrub_bar(0.0, SCRUB_BAR_MIN_WIDTH, row).is_some());
+        assert_eq!(scrub_bar(0.0, f32::NAN, row), None);
+        // A row shorter than the bar cannot seat it either.
+        assert_eq!(
+            scrub_bar(0.0, 400.0, UiRect::new(0.0, 0.0, 400.0, 4.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_position_and_the_seek_target_are_inverses_of_each_other() {
+        let track = UiRect::new(100.0, 0.0, 200.0, SCRUB_TRACK_HEIGHT);
+        assert!((scrub_seconds(150.0, track, 120.0) - 30.0).abs() < 1e-9);
+        assert!((scrub_fraction(30.0, 120.0) - 0.25).abs() < 1e-6);
+        // Both ends, exactly.
+        assert!((scrub_seconds(100.0, track, 120.0)).abs() < 1e-9);
+        assert!((scrub_seconds(300.0, track, 120.0) - 120.0).abs() < 1e-9);
+        // Past either end is a request for that end, not a refusal.
+        assert!((scrub_seconds(-500.0, track, 120.0)).abs() < 1e-9);
+        assert!((scrub_seconds(9000.0, track, 120.0) - 120.0).abs() < 1e-9);
+        // An unmeasured stream reads empty rather than full: the meter this
+        // replaced showed 22% at 0.15 s and users read it as position.
+        assert_eq!(scrub_fraction(9.0, 0.0), 0.0);
+        assert_eq!(scrub_fraction(9.0, f64::NAN), 0.0);
+        assert_eq!(scrub_seconds(150.0, track, 0.0), 0.0);
+        assert_eq!(scrub_fraction(f64::NAN, 120.0), 0.0);
     }
 
     #[test]

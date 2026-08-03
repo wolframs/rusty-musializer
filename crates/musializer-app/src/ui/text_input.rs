@@ -32,7 +32,7 @@
 
 use musializer_core::ui::text_edit::{Motion, Select, TextEdit, TextEditError, TextRules};
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::UiFonts;
+use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::theme::color;
@@ -123,14 +123,20 @@ impl TextField {
     /// widget id: it is not a button, and taking the shared `active_button_id`
     /// for the length of a selection drag would freeze every other control the
     /// way a stranded claim does (`ui_widgets.c`, and AGENTS.md's note on it).
+    ///
+    /// The face is the caller's choice — the lyric editor passes the caption
+    /// atlas so a user's own words are legible while typed (review 1.5); a
+    /// chrome caller wraps its bank with [`AuthoredText::from_ui`]. Every
+    /// metric below — hit test, caret x, selection rect, scroll — derives from
+    /// the one `measure` closure, so face and measurement cannot drift apart.
     #[allow(
         clippy::too_many_arguments,
         reason = "the widget shape used everywhere in this shell: target, face, box, size, placeholder"
     )]
-    pub fn draw(
+    pub fn draw_with_face(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        font: &UiFonts,
+        font: AuthoredText<'_>,
         boundary: UiRect,
         font_size: f32,
         placeholder: &str,
@@ -148,7 +154,7 @@ impl TextField {
             (boundary.width - TEXT_INSET * 2.0).max(0.0),
             boundary.height,
         );
-        let measure = |text: &str| widgets::measure(font, text, font_size);
+        let measure = |text: &str| font.measure_text(text, font_size, 0.0).x;
 
         if !enabled {
             self.focused = false;
@@ -236,13 +242,12 @@ impl TextField {
         let scale = super::scale::UiScale::new(font.scale()).unwrap_or_default();
         let mut clip = widgets::begin_scissor(d, inner, scale);
         if self.edit.is_empty() && !placeholder.is_empty() {
-            widgets::draw_text(
+            font.draw_text(
                 &mut clip,
-                font,
                 placeholder,
-                inner.x,
-                text_y,
+                Vector2::new(inner.x, text_y),
                 font_size,
+                0.0,
                 color::ui_muted(),
             );
         } else {
@@ -266,13 +271,12 @@ impl TextField {
                     raylib::prelude::Color::new(231, 236, 250, 255),
                 );
             }
-            widgets::draw_text(
+            font.draw_text(
                 &mut clip,
-                font,
                 self.edit.text(),
-                inner.x - self.scroll,
-                text_y,
+                Vector2::new(inner.x - self.scroll, text_y),
                 font_size,
+                0.0,
                 color::ui_ink(),
             );
         }

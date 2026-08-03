@@ -158,48 +158,107 @@ close the UX0 item.
 
 ### UX0-A — confirmed defects
 
-- [ ] **UX0-A01 — sub-millisecond lyric cue panic:** make timing-row arithmetic
+- [x] **UX0-A01 — sub-millisecond lyric cue panic:** make timing-row arithmetic
       total for every loadable cue, align the model/editor minimum-gap policy and
       add a regression fixture that previously panicked (`review` 1.1).
-- [ ] **UX0-A02 — stranded pointer ownership:** release a widget claim when the
+      Done in `e650c76`: total `clamp_form_start`/`clamp_form_end` in core,
+      form and lane unified on `LYRIC_MIN_CUE_SECONDS = 0.02`, loadability
+      unchanged, panic shape pinned by regression tests.
+- [x] **UX0-A02 — stranded pointer ownership:** release a widget claim when the
       physical button is up even if its original panel disappeared; clear or
       reconcile splitter drags across fullscreen and test both paths (1.2).
-- [ ] **UX0-A03 — cross-track lyric draft corruption [C2]:** bind drafts to their
+      Done in `a1aafa5`: `release_stranded_claim` in `begin_frame` (previous-
+      frame pointer only, so no click can be eaten), splitter drags abandoned
+      and scrubs completed on fullscreen/inspector, 4 negative controls.
+- [x] **UX0-A03 — cross-track lyric draft corruption [C2]:** bind drafts to their
       owning track and guard every context switch so a stale cue id cannot update
       another document; cover Apply, Discard and Cancel (1.3).
-- [ ] **UX0-A04 — blank Export panel:** derive its minimum height from panel
+      Done in `2cb8385`: edits stamped with `owner_slot` at push and refused at
+      drain on mismatch; SelectTrack/panel/open/add-audio guarded, scene change
+      deliberately not (same document), quit folded into confirm_close. C2
+      should build on `lyric_draft_allows_context_change`.
+- [x] **UX0-A04 — blank Export panel:** derive its minimum height from panel
       geometry, draw an explanation when content cannot fit and require visible
       ink in the headless capture rather than trusting a report line (1.4).
-- [ ] **UX0-A05 — non-Latin authored text:** render lyric rows, editable lyric
+      Done in `7e980a9` + the wave-3 commit: `EXPORT_MIN_BAND_HEIGHT` derived
+      from the panel's own rows (including the 27 px TIMELINE header the first
+      derivation missed — caught by the ink gate, not by the replay test, which
+      now models every rect on the real path), both the automatic budget and
+      the persisted-split floor consume it, a too-small box draws a named
+      notice, and the gate measures ink (darkest pixel 20 vs blank ~247). The
+      full control rows are in a default-size capture for the first time.
+- [x] **UX0-A05 — non-Latin authored text:** render lyric rows, editable lyric
       text and track names through an atlas that contains the project's glyphs;
       ellipsize deliberately and assert the seeded editor does not substitute
       question marks (1.5).
-- [ ] **UX0-A06 — font-search shortcut leakage [D7]:** make every text-entry
+      Done in the wave-3 commit: `Faces::authored()` serves the caption atlas
+      (fallback ladder caption → caption-alt → ui → default, reported), cue
+      rows/field/track names all draw through it, rows ellipsize with U+2026,
+      and the gate asserts `face=caption missing=0` on the seeded fixture.
+      `missing=0` means the bundled repertoire, not every script — Hebrew,
+      Arabic and CJK need the imported-face path, pinned by a test.
+- [x] **UX0-A06 — font-search shortcut leakage [D7]:** make every text-entry
       surface participate in one focus policy and prove that typing suppresses
       every global shortcut (1.6).
-- [ ] **UX0-A07 — hidden Tune edit scope:** state whether Tune is editing base
+      Done in `a1aafa5`: `TextEntrySurface::ALL` swept by
+      `text_entry_has_focus`, focus gated on the surface being drawn, and the
+      suppression test enumerates the surfaces so a new one fails until wired.
+      D7's keymap work should reuse the enum.
+- [x] **UX0-A07 — hidden Tune edit scope:** state whether Tune is editing base
       scene settings or a particular cue snapshot, including cue/time identity
       where applicable (1.7).
-- [ ] **UX0-A08 — misleading scene reset [C3]:** make routed values explicit in
+      Done in `b73383d`: header badge from `Track::active_cue`, pure
+      `tune_scope_label` under test, `tune scope:` probe-report line as
+      capture evidence.
+- [x] **UX0-A08 — misleading scene reset [C3]:** make routed values explicit in
       reset behavior/notices and give Reset the Confirm/Undo workflow already
       required by C3 (1.8).
-- [ ] **UX0-A09 — RMS/progress ambiguity:** either make the transport bar a real
+      Done in `b73383d`: arm/confirm keyed per (track, scene), routed-count
+      notice, routes untouched. Undo itself remains C3's obligation.
+- [x] **UX0-A09 — RMS/progress ambiguity:** either make the transport bar a real
       seek control with secondary level indication or restyle it unmistakably as
       a meter; place analyzer telemetry under the HUD flag (1.9).
-- [ ] **UX0-A10 — raw error variants:** replace both user-facing `Debug` formats
+      Done in the wave-3 commit: the bar is a real scrub control (pause on
+      press, one Seek on release, resume; transactional like the timeline
+      scrubber; inert grey when `transport_seekable` is false) with RMS as a
+      4 px secondary strip, and the bands/peak/rms caption is HUD-gated with
+      probe runs keeping it on.
+- [x] **UX0-A10 — raw error variants:** replace both user-facing `Debug` formats
       with the existing `Display` messages and test the visible text (1.10).
-- [ ] **UX0-A11 — ineffective notice tray [D8]:** provide dark-surface contrast,
+      Done in `787010a`: both sites use `Display`, `LyricsValidation` gained a
+      cue-naming `Display`, and `errors_display_as_sentences_not_variant_names`
+      pins the visible strings.
+- [x] **UX0-A11 — ineffective notice tray [D8]:** provide dark-surface contrast,
       wrapping/clipping and severity-derived persistence so consequential errors
       remain legible and present (1.11).
-- [ ] **UX0-A12 — Tracks/Save disappearance:** retain current-track identity and
+      Done in the wave-3 commit: opaque dark card, all severities ≥6.5:1 (the
+      old failing pairs kept as a negative control), detail wraps to ≤3 lines
+      with honest ellipsis, `Severity::dwell` at the notify seam (Error
+      persists until dismissed, Warning 14 s, Info 6 s), per-notice close box.
+      D8's rebuild starts from this.
+- [x] **UX0-A12 — Tracks/Save disappearance:** retain current-track identity and
       a save route when a bottom panel consumes the sidebar; never draw an
       illegible fractional row (1.12).
-- [ ] **UX0-A13 — obscured Assist refusal [C2]:** keep the Apply-blocking reason
+      Done in the wave-3 commit: a 26 px collapsed strip (track name through
+      the authored face + Save with an explanatory tooltip) where the panel
+      vacated, Ctrl+S/Ctrl+Shift+S bound, rows below 60% visibility not drawn,
+      a 30-configuration sweep asserts a save route always exists, and the
+      `chrome:` report line is the capture evidence. `workspace_layout` is
+      untouched — the layout harness still binds.
+- [x] **UX0-A13 — obscured Assist refusal [C2]:** keep the Apply-blocking reason
       visible beside artifact actions and add Candidate, Running and Failed probe
       states so consequential Assist bodies are reviewable (1.13).
-- [ ] **UX0-A14 — silently shadowed lyric overlaps:** show overlap/shadow state in
+      Done in `22292e0`: reserved reason slot (beside/above), buttons never
+      move, non-overlap swept over 1361 widths, core untouched so the assist-ui
+      harness still binds. Probe states landed with it; captures follow in the
+      UX0-D02 gate run.
+- [x] **UX0-A14 — silently shadowed lyric overlaps:** show overlap/shadow state in
       the lane and form, warn which cue loses display time and clamp a new cue's
       default end to the next cue where possible (1.14).
+      Done in `e650c76`: `LyricsDocument::cue_shadow`/`shadowed_cues` in core
+      (cross-checked against `at_time`), lane hatching, form warning naming the
+      shadowing cue, `shadowed N` in `describe()`, Add-cue default clamped.
+      `at_time` unchanged.
 
 ### UX0-B — workflow friction and trust
 
@@ -283,18 +342,36 @@ close the UX0 item.
 
 ### UX0-D — verification blind spots
 
-- [ ] **UX0-D01 — pixel-backed panel gates:** measure expected ink/content inside
+- [x] **UX0-D01 — pixel-backed panel gates:** measure expected ink/content inside
       every panel rect, beginning with Export; a textual state report alone is
       insufficient (`review` 4.1, feeds G1).
-- [ ] **UX0-D02 — Assist state captures:** make Candidate, Running and Failed
+      Export done (`7e980a9` + wave-3): ffprobe ink assertion in the panel
+      rect, and it immediately earned its keep — it caught the 27 px header
+      the derivation and its unit test both missed. Extending the technique
+      to the remaining panels stays a G1 item.
+- [x] **UX0-D02 — Assist state captures:** make Candidate, Running and Failed
       deterministic probe states and visually gate their consequential content
       (4.2, feeds G1).
-- [ ] **UX0-D03 — non-Latin editor gate:** assert that the seeded authored text
+      Done in `22292e0` + `93972ca`: `--ui-probe assist=` synthesizes all
+      three states in-process, seven captures per sweep (including the narrow
+      reason-row branch), report-line assertions pin state/staged. The
+      blocked-Apply reason is confirmed visible in the frame.
+- [x] **UX0-D03 — non-Latin editor gate:** assert that the seeded authored text
       remains distinguishable and is not replaced by U+003F in editor surfaces
       (4.3, feeds G1).
-- [ ] **UX0-D04 — dark-overlay contrast coverage:** extend the palette/contrast
+      Done in the wave-3 commit: `missing=` in the `lyrics:` report line is a
+      direct glyph-coverage count for the strings on screen (inference-free,
+      unlike a `?`-pixel heuristic); the gate asserts `missing=0` on every
+      lyric capture plus positive `face=caption` pins on the cue-pane frames,
+      including a new capture that binds the Greek/Cyrillic line into the
+      editable field.
+- [x] **UX0-D04 — dark-overlay contrast coverage:** extend the palette/contrast
       sweep to severity text and every other semantic color used on dark overlay
       surfaces (4.4, feeds G1).
+      Done in the wave-3 commit: every `theme::rgba` entry declares its
+      `Surface`, the sweep measures each against its declared backgrounds
+      (20 entries, 16 pairs, all AA), and the old failing chrome-on-dark pairs
+      are pinned as a permanent negative control.
 
 UX0 completes only when every checkbox above has implementation evidence and the
 review document has a final disposition annotation or companion table for all

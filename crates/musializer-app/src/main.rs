@@ -1008,8 +1008,9 @@ fn run() -> Result<std::process::ExitCode, String> {
                     }
                 });
 
+        report.logical_window = ui_scale.logical_size(physical_window);
         let shell_input = ShellInput {
-            window: ui_scale.logical_size(physical_window),
+            window: report.logical_window,
             ui_scale,
             fonts: &fonts,
             scene: app.scene.id(),
@@ -2850,6 +2851,10 @@ struct Report {
     flux_seen: f32,
     /// Project-owned evidence attached to the most recently drawn preview frame.
     frame_lanes: FrameLaneStatus,
+    /// The last frame's logical window, kept so `chrome:` can be printed after
+    /// the window has closed. The chrome line is what proves a save affordance
+    /// was on screen in every panel configuration (review 1.12).
+    logical_window: (f32, f32),
     reopened: Option<Reopen>,
 }
 
@@ -2882,6 +2887,7 @@ impl Default for Report {
             onsets_seen: 0,
             flux_seen: 0.0,
             frame_lanes: FrameLaneStatus::default(),
+            logical_window: (0.0, 0.0),
             reopened: None,
         }
     }
@@ -3101,6 +3107,14 @@ impl Report {
             },
         }
         println!("panel:           {}", app.shell.panel.label());
+        // Which save route was on screen, and whether the tracks panel was
+        // collapsed — the state review 1.12 found unrecoverable is only provable
+        // from a capture through this line.
+        println!(
+            "chrome:          {}",
+            app.shell
+                .describe_workspace(self.logical_window, &app.workspace)
+        );
         // Whether Tune edits the base scene or a cue snapshot is invisible on a
         // capture without this line (review 1.7): the badge text is the evidence.
         println!(

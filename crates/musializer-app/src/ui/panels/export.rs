@@ -153,14 +153,6 @@ pub(crate) const EXPORT_CONTENT_MIN_HEIGHT: f32 =
 /// (`top = strip.y + strip.height + 28.0`, in [`Shell::export_panel`] below).
 /// Named so [`EXPORT_MIN_BAND_HEIGHT`] can reference the same number the
 /// function actually adds, instead of repeating the literal.
-#[allow(
-    dead_code,
-    reason = "consumed by EXPORT_MIN_BAND_HEIGHT below and by this file's own \
-              tests; a non-test build of this crate does not yet reference \
-              EXPORT_MIN_BAND_HEIGHT itself — that happens once shell.rs's \
-              Export floor is switched to it, a one-line edit this session \
-              specified but does not own the file to make"
-)]
 const STRIP_GAP: f32 = 28.0;
 
 /// The timeline strip's height cap, at generous room.
@@ -171,23 +163,25 @@ const STRIP_GAP: f32 = 28.0;
 /// there yet to reference. If that literal changes, this one has to move with
 /// it — recorded here so the next reader looking for why [`EXPORT_MIN_BAND_HEIGHT`]
 /// is what it is does not have to rediscover the dependency.
-#[allow(dead_code, reason = "see STRIP_GAP above")]
 const ASSUMED_STRIP_HEIGHT: f32 = 56.0;
 
 /// How much of the *band* — the timeline height `Shell::resolved_timeline_height`
 /// hands to the whole strip — is spent before this panel's own `boundary` ever
-/// begins: two lots of panel padding (one before the manual event row, one at
-/// the bottom of this panel's own boundary calculation), the manual event row,
-/// the scene-plan lane, the timeline strip itself, and this panel's own gap
-/// under the strip. Traced in `shell.rs::timeline_strip` and
-/// [`Shell::export_panel`]'s `boundary` construction.
+/// begins: the TIMELINE panel header (`widgets::panel` consumes it before
+/// returning the content rect — a real 27 px this constant once missed, caught
+/// only by measuring a capture), two lots of panel padding (one before the
+/// manual event row, one at the bottom of this panel's own boundary
+/// calculation), the manual event row, the scene-plan lane, the timeline strip
+/// itself, and this panel's own gap under the strip. Traced in
+/// `shell.rs::timeline_strip` and [`Shell::export_panel`]'s `boundary`
+/// construction.
 ///
 /// [`EVENT_ROW_HEIGHT`](super::events::EVENT_ROW_HEIGHT) and
 /// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) are
 /// imported rather than duplicated, so a change to either row's budget cannot
 /// silently reopen this gap the way the `260.0` floor did.
-#[allow(dead_code, reason = "see STRIP_GAP above")]
-const BAND_TO_BOUNDARY_OFFSET: f32 = metric::UI_PANEL_PADDING * 2.0
+const BAND_TO_BOUNDARY_OFFSET: f32 = widgets::PANEL_HEADER_HEIGHT
+    + metric::UI_PANEL_PADDING * 2.0
     + super::events::EVENT_ROW_HEIGHT
     + super::scene_timeline::SCENE_SECTION_HEIGHT
     + ASSUMED_STRIP_HEIGHT
@@ -203,7 +197,6 @@ const BAND_TO_BOUNDARY_OFFSET: f32 = metric::UI_PANEL_PADDING * 2.0
 /// in every other panel) got a lit Export button over a blank white band with
 /// no path to an MP4, across restarts. See the session report for the
 /// `shell.rs` edit this constant is meant to replace `260.0` with.
-#[allow(dead_code, reason = "see STRIP_GAP above")]
 pub(crate) const EXPORT_MIN_BAND_HEIGHT: f32 = EXPORT_CONTENT_MIN_HEIGHT + BAND_TO_BOUNDARY_OFFSET;
 
 impl Shell {
@@ -247,7 +240,12 @@ impl Shell {
         widgets::fill(d, boundary, color::ui_surface());
         d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
 
-        if boundary.height <= EXPORT_CONTENT_MIN_HEIGHT {
+        // Strictly less: `EXPORT_CONTENT_MIN_HEIGHT` is by its own derivation
+        // the *least sufficient* height (the footer exactly clears the detail
+        // row there), and the derived band floor lands the boundary on exactly
+        // that value — `<=` here drew the notice at the very size the floor
+        // guarantees.
+        if boundary.height < EXPORT_CONTENT_MIN_HEIGHT {
             // Named and explained, not blank (review 1.4): a lit-up Export
             // button that opens onto a blank white band, with no path to an
             // MP4, is worse than a panel that says it needs more room.
@@ -1379,9 +1377,18 @@ mod tests {
         let row = super::super::events::EVENT_ROW_HEIGHT;
         let scene_row = super::super::scene_timeline::SCENE_SECTION_HEIGHT;
 
-        // `content` stands in for `frame.timeline`/`band`, exactly as
-        // `Shell::timeline_strip` receives it.
-        let content = UiRect::new(0.0, 0.0, 1280.0, EXPORT_MIN_BAND_HEIGHT);
+        // The band, exactly as `Shell::timeline_strip` receives it — and then
+        // the TIMELINE header `widgets::panel` consumes before handing back the
+        // content rect. The first version of this test skipped that step and
+        // passed while a real capture showed the too-small notice: the replay
+        // must include every rect transformation on the real path.
+        let band = UiRect::new(0.0, 0.0, 1280.0, EXPORT_MIN_BAND_HEIGHT);
+        let content = UiRect::new(
+            band.x,
+            band.y + widgets::PANEL_HEADER_HEIGHT,
+            band.width,
+            band.height - widgets::PANEL_HEADER_HEIGHT,
+        );
 
         // `shell.rs::timeline_strip`'s construction of `strip`.
         let strip_y = content.y + padding + row + scene_row;

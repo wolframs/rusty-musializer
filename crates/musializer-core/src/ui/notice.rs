@@ -60,6 +60,168 @@ impl Severity {
     }
 }
 
+/// Seconds a routine notice stays on screen. The one number the shell used for
+/// everything.
+pub const INFO_DWELL_SECONDS: f64 = 6.0;
+/// A warning is read, not glanced at: something is off but nothing failed, and
+/// six seconds is not enough to finish the sentence and decide whether to care.
+pub const WARNING_DWELL_SECONDS: f64 = 14.0;
+
+/// How long a notice of a given severity stays on screen.
+///
+/// **Where the fix for review 1.11 (UX0-A11) lives.** All ~51 `notify` call sites
+/// in the shell hard-coded `persistent: false, 6.0` while this queue supported
+/// persistence correctly, so an export that failed twenty minutes into a render
+/// was gone long before the user came back to the machine. Deriving the lifetime
+/// from the severity puts the policy at the seam instead of in fifty-one places
+/// that would each have to be found and changed again.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dwell {
+    pub persistent: bool,
+    /// Ignored when `persistent`, but still finite and non-negative so
+    /// [`NoticeQueue::push`]'s validation accepts it either way.
+    pub duration_seconds: f64,
+}
+
+impl Severity {
+    /// The lifetime a notice of this severity gets unless a caller overrides it.
+    ///
+    /// Only [`Severity::Error`] is persistent. A failure is the one class of
+    /// notice the user has to *act* on, and it is also the class most likely to
+    /// arrive while nobody is looking at the screen; everything else is a
+    /// confirmation of something the user just did and can expire.
+    pub const fn dwell(self) -> Dwell {
+        match self {
+            Severity::Error => Dwell {
+                persistent: true,
+                duration_seconds: 0.0,
+            },
+            Severity::Warning => Dwell {
+                persistent: false,
+                duration_seconds: WARNING_DWELL_SECONDS,
+            },
+            Severity::Info | Severity::Success => Dwell {
+                persistent: false,
+                duration_seconds: INFO_DWELL_SECONDS,
+            },
+        }
+    }
+}
+
+/// What a clipped last line ends with.
+pub const DETAIL_ELLIPSIS: &str = "\u{2026}";
+
+/// Wraps a notice's detail to `max_width`, at most `max_lines`, ellipsizing the
+/// last line when there is more text than fits.
+///
+/// **Review 1.11 (UX0-A11).** Detail text was drawn as one unwrapped, unclipped
+/// line on a card at most 380 px wide, while the strings the application actually
+/// produces run 90 to 150+ characters — so a real failure message ran off the
+/// card, across the preview, and past the window edge. Wrapping it is not enough
+/// on its own: without a line cap one notice could take the whole preview, so the
+/// remainder is dropped *visibly*, with an ellipsis, rather than silently.
+///
+/// `measure` is the caller's text measurement, which is why this is here and not
+/// beside the drawing: the shell's font bank needs a window, and the wrapping
+/// rules — the long word with no break in it, the line that fits exactly, the
+/// ellipsis that must itself fit — are exactly what a capture cannot check.
+///
+/// A word wider than `max_width` on its own is broken by characters rather than
+/// left to overflow. That is the case a naive wrapper gets wrong and the one this
+/// interface reaches every time a detail names a path.
+pub fn wrap_detail<M>(text: &str, max_width: f32, max_lines: usize, mut measure: M) -> Vec<String>
+where
+    M: FnMut(&str) -> f32,
+{
+    let mut lines: Vec<String> = Vec::new();
+    if text.is_empty() || max_lines == 0 || !max_width.is_finite() || max_width <= 0.0 {
+        return lines;
+    }
+
+    // `split_whitespace` rather than `split(' ')`: a detail carrying a newline or
+    // a tab would otherwise measure as one enormous word and be hard-broken.
+    let mut words: Vec<&str> = text.split_whitespace().collect();
+    let mut current = String::new();
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        if current.is_empty() {
+            if measure(word) <= max_width {
+                current.push_str(word);
+                index += 1;
+            } else {
+                // Always consumes at least one character, so this terminates even
+                // when a single glyph is wider than the card.
+                let take = longest_prefix(word, max_width, &mut measure);
+                lines.push(word[..take].to_string());
+                words[index] = &word[take..];
+            }
+            continue;
+        }
+        let candidate = format!("{current} {word}");
+        if measure(&candidate) <= max_width {
+            current = candidate;
+            index += 1;
+        } else {
+            lines.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        if let Some(last) = lines.pop() {
+            lines.push(ellipsize(&last, max_width, &mut measure));
+        }
+    }
+    lines
+}
+
+/// The longest prefix of `word` that fits, in bytes, never zero.
+fn longest_prefix<M>(word: &str, max_width: f32, measure: &mut M) -> usize
+where
+    M: FnMut(&str) -> f32,
+{
+    let mut fits = 0;
+    for (offset, character) in word.char_indices() {
+        let end = offset + character.len_utf8();
+        if measure(&word[..end]) > max_width {
+            break;
+        }
+        fits = end;
+    }
+    if fits == 0 {
+        // Nothing fits at all. Emit one character anyway rather than looping
+        // forever; the caller's clip is what keeps it honest.
+        word.chars()
+            .next()
+            .map_or(word.len(), |character| character.len_utf8())
+    } else {
+        fits
+    }
+}
+
+/// `line` with an ellipsis, shortened until the pair fits.
+fn ellipsize<M>(line: &str, max_width: f32, measure: &mut M) -> String
+where
+    M: FnMut(&str) -> f32,
+{
+    let mut end = line.len();
+    loop {
+        let candidate = format!("{}{DETAIL_ELLIPSIS}", line[..end].trim_end());
+        if measure(&candidate) <= max_width || end == 0 {
+            return candidate;
+        }
+        // Step back one character, not one byte.
+        end = line[..end]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(offset, _)| offset);
+    }
+}
+
 /// Outcome of a queue operation (`ui_notice.h:39-42`), in C's declaration order
 /// so [`NoticeResult::result_string`] stays the same table.
 ///
@@ -406,6 +568,127 @@ mod tests {
             path: "/tmp/job.log",
             ..NoticeSpec::default()
         }
+    }
+
+    /// A fixed-pitch stand-in for the real font, so the wrapping tests state
+    /// character counts rather than pixel widths nobody can check by reading.
+    fn monospace(text: &str) -> f32 {
+        text.chars().count() as f32 * 10.0
+    }
+
+    #[test]
+    fn severity_decides_how_long_a_notice_lives() {
+        // Review 1.11 (UX0-A11). The table, pinned: a 20-minute export that fails
+        // while the user is away has to still be on screen when they come back,
+        // and a "Saved" toast must not be.
+        assert_eq!(
+            Severity::Error.dwell(),
+            Dwell {
+                persistent: true,
+                duration_seconds: 0.0
+            }
+        );
+        assert!(!Severity::Warning.dwell().persistent);
+        assert!(Severity::Warning.dwell().duration_seconds > INFO_DWELL_SECONDS);
+        for severity in [Severity::Info, Severity::Success] {
+            assert_eq!(
+                severity.dwell(),
+                Dwell {
+                    persistent: false,
+                    duration_seconds: INFO_DWELL_SECONDS
+                }
+            );
+        }
+        // And the queue accepts every one of them: a persistent spec still has to
+        // carry a finite duration or `push` rejects it as invalid.
+        let mut queue = NoticeQueue::new();
+        for severity in [
+            Severity::Info,
+            Severity::Success,
+            Severity::Warning,
+            Severity::Error,
+        ] {
+            let dwell = severity.dwell();
+            let result = queue.push(&NoticeSpec {
+                severity,
+                persistent: dwell.persistent,
+                duration_seconds: dwell.duration_seconds,
+                title: Some("Title"),
+                detail: "",
+                path: "",
+            });
+            assert_eq!(result.0, NoticeResult::Ok, "{severity:?} was refused");
+        }
+        // An hour later only the failure is left.
+        assert_eq!(queue.tick(3600.0), NoticeResult::Ok);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.notices()[0].severity, Severity::Error);
+    }
+
+    #[test]
+    fn wrapping_handles_the_degenerate_inputs_without_producing_a_line() {
+        assert!(wrap_detail("", 100.0, 3, monospace).is_empty());
+        assert!(wrap_detail("something", 100.0, 0, monospace).is_empty());
+        assert!(wrap_detail("something", 0.0, 3, monospace).is_empty());
+        assert!(wrap_detail("something", f32::NAN, 3, monospace).is_empty());
+    }
+
+    #[test]
+    fn a_detail_that_already_fits_is_left_exactly_alone() {
+        assert_eq!(wrap_detail("short", 100.0, 3, monospace), vec!["short"]);
+        // Exactly the width, which is the boundary a `<` would get wrong: ten
+        // characters at 10 px each against a 100 px card.
+        assert_eq!(
+            wrap_detail("abcdefghij", 100.0, 3, monospace),
+            vec!["abcdefghij"]
+        );
+        // And one character more is two lines rather than an overflow.
+        assert_eq!(
+            wrap_detail("abcdefghij k", 100.0, 3, monospace),
+            vec!["abcdefghij", "k"]
+        );
+    }
+
+    #[test]
+    fn a_long_detail_wraps_and_says_where_it_was_cut() {
+        // 150 characters is the size the real failure strings reach; the card
+        // this is measured against fits 34 of them.
+        let detail = "the render helper exited with status 1 and the previous \
+             output file was preserved unchanged at its original path on disk xy";
+        assert_eq!(detail.len(), 123);
+        let lines = wrap_detail(detail, 340.0, 2, monospace);
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            assert!(
+                monospace(line) <= 340.0,
+                "a wrapped line is still too wide: {line:?}"
+            );
+        }
+        assert!(
+            lines[1].ends_with(DETAIL_ELLIPSIS),
+            "the clipped remainder has to be visible: {:?}",
+            lines[1]
+        );
+        // Unbounded, the same text is more than two lines — so the cap is doing
+        // something and the ellipsis is not decorative.
+        assert!(wrap_detail(detail, 340.0, 16, monospace).len() > 2);
+    }
+
+    #[test]
+    fn a_word_with_no_break_in_it_is_broken_rather_than_left_to_overflow() {
+        // Every detail that names a path reaches this.
+        let path = "/home/somebody/Music/very-long-project-directory/track-01.musi";
+        let lines = wrap_detail(path, 200.0, 4, monospace);
+        assert!(lines.len() > 1, "the token was not broken at all");
+        for line in &lines {
+            assert!(monospace(line) <= 200.0, "{line:?} overflows the card");
+        }
+        // Nothing is lost except through the ellipsis: the pieces rejoin.
+        assert_eq!(lines.concat(), path);
+
+        // A card narrower than one glyph still terminates and still emits.
+        let lines = wrap_detail("abc", 1.0, 4, monospace);
+        assert_eq!(lines, vec!["a", "b", "c"]);
     }
 
     #[test]

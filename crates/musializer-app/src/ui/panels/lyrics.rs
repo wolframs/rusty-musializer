@@ -42,7 +42,7 @@ use musializer_core::ui::notice::Severity;
 use musializer_core::ui::text_edit::{TextEditError, TextRules};
 use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
-use musializer_runtime::font::UiFonts;
+use musializer_runtime::font::{GlyphRepertoire, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::super::shell::{Shell, ShellCommand, ShellInput};
@@ -286,6 +286,73 @@ struct LaneDrag {
     moved: bool,
 }
 
+/// Which face served project-authored text last frame, and what it could not draw.
+///
+/// Recorded during the draw rather than derived in [`LyricEditor::describe`],
+/// because the answer depends on which atlases rasterized — a question only the
+/// frame knows and a headless report line has to carry. UX0-A05: the panel drew
+/// Greek and Cyrillic lyrics as rows of `?` for as long as it went through the
+/// chrome atlas, and no capture caught it because a row of question marks is a
+/// perfectly plausible picture of a font that simply lacks a glyph.
+///
+/// `missing` is not a promise that every script works. Hebrew, Arabic and CJK
+/// are outside [`musializer_core::project::caption_layout::FONT_CODEPOINT_RANGES`]
+/// altogether — the bundled Alegreya has no glyphs for them, and requesting
+/// blocks the face cannot draw would only trade one row of boxes for another.
+/// Those need an imported face, which is a separate feature; what this number
+/// says is that the *bundled* repertoire reached the editor intact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AuthoredEvidence {
+    /// Face name serving the cue list rows.
+    rows: &'static str,
+    /// Face name serving the editable text field.
+    field: &'static str,
+    /// Characters the serving faces cannot draw, over every cue in the document
+    /// plus the draft in the field.
+    missing: usize,
+}
+
+impl Default for AuthoredEvidence {
+    fn default() -> Self {
+        // Not `caption`/0: before the first draw nothing has been served, and a
+        // report line that claims a glyph-complete face it never used is the
+        // exact failure this field exists to make impossible.
+        Self {
+            rows: "none",
+            field: "none",
+            missing: 0,
+        }
+    }
+}
+
+/// Count what the serving faces cannot draw, over the whole document.
+///
+/// Pure, and separated from the draw so the claim is assertable without a GPU:
+/// hand it the chrome repertoire and a Greek cue and it reports a non-zero
+/// count; hand it the curated one and it reports zero. That pair is the test.
+///
+/// Every cue rather than the visible rows only. A scrolled-away line is still
+/// text this document contains and this panel must be able to show, and a count
+/// that changed with the scroll position would be evidence about the viewport
+/// rather than about the face.
+fn authored_evidence<'a>(
+    rows: (&'static str, GlyphRepertoire),
+    field: (&'static str, GlyphRepertoire),
+    cues: impl IntoIterator<Item = &'a str>,
+    draft: &str,
+) -> AuthoredEvidence {
+    let missing = cues
+        .into_iter()
+        .map(|text| rows.1.missing(text))
+        .sum::<usize>()
+        + field.1.missing(draft);
+    AuthoredEvidence {
+        rows: rows.0,
+        field: field.0,
+        missing,
+    }
+}
+
 /// Draft state for the lyrics editor (`Lyric_Editor`, `lyrics_editor_ui.h:24-73`).
 ///
 /// The canonical document lives on the [`Track`]; everything here is the current
@@ -331,6 +398,8 @@ pub struct LyricEditor {
     /// the first one that appears.
     owner_slot: Option<usize>,
     pending: Vec<PendingLyricEdit>,
+    /// UX0-A05 evidence, written by [`Shell::cue_list`] every frame it draws.
+    authored: AuthoredEvidence,
 }
 
 impl Default for LyricEditor {
@@ -375,6 +444,7 @@ impl LyricEditor {
             cue_count: 0,
             owner_slot: None,
             pending: Vec::new(),
+            authored: AuthoredEvidence::default(),
         }
     }
 
@@ -728,7 +798,8 @@ impl LyricEditor {
             }
         };
         format!(
-            "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}",
+            "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}, \
+             face={} field={} missing={}",
             track.lyrics.len(),
             pane,
             selected,
@@ -746,6 +817,14 @@ impl LyricEditor {
             // A block whose hatching a capture would otherwise have to be read
             // for (review 1.14): the count says whether the lane drew any.
             track.lyrics.shadowed_cues().len(),
+            // UX0-A05. `face=` names the atlas that drew the cue rows, `field=`
+            // the one behind the editable line, and `missing=` counts the
+            // characters those two faces cannot draw across the whole document.
+            // A picture cannot distinguish "this font has no alpha" from "this
+            // atlas was never asked for one", so the number is the evidence.
+            self.authored.rows,
+            self.authored.field,
+            self.authored.missing,
         )
     }
 }
@@ -1346,6 +1425,24 @@ impl Shell {
             return;
         }
         let font = input.fonts.ui();
+        // Chrome keeps the native-size bank; the user's own words do not. The
+        // chrome atlas is `ui_codepoint`-filtered precisely so it stays small,
+        // and rebuilding it over the full curated set is not the alternative:
+        // seventeen native sizes times 1784 codepoints is hundreds of megabytes
+        // of atlas at the 1.75x rung. The caption atlas is already resident, is
+        // 64 px and mipmapped, and the shell draws under a `Camera2D` whose zoom
+        // is the UI scale — so every rung minifies from it and none magnifies a
+        // 1x bitmap.
+        let authored = input.fonts.authored();
+        // The editable field draws through `draw_with_face` with the same
+        // authored face as the rows, so the report can claim it truthfully.
+        let field = (authored.name(), authored.repertoire());
+        editor.authored = authored_evidence(
+            (authored.name(), authored.repertoire()),
+            field,
+            track.lyrics.cues().iter().map(|cue| cue.text.as_str()),
+            editor.text.edit.text(),
+        );
         let playhead = input.time_seconds;
         widgets::draw_text(
             d,
@@ -1456,22 +1553,35 @@ impl Shell {
                 metric::UI_FONT_VALUE,
                 color::ui_muted(),
             );
-            // Clipped rather than ellipsized: a lyric is prose, and the C shows
-            // as much of it as the row holds (`:1249-1254`).
+            // The cue's own words, so they go through the authored face rather
+            // than the chrome bank (UX0-A05). The scissor stays as a backstop
+            // against a half-pixel of measurement rounding, but it is no longer
+            // what decides where the line ends.
+            //
+            // Ellipsized rather than hard-clipped, which is a deliberate
+            // divergence from the C (`:1249-1254` shows as much as the row
+            // holds). Nothing observable in a `.musi` file or a rendered frame
+            // depends on it — it is chrome — and a hard clip cuts the last glyph
+            // mid-stroke, which in a script the reader cannot spot-check by
+            // shape is indistinguishable from the missing-glyph rendering this
+            // very fix is about. The marker says "there is more" instead.
             let text_x = boundary.x + 90.0;
             if boundary.width > 100.0 {
+                // The scissor spans `text_x .. text_x + width - 94`, and the
+                // text starts 4 px into it.
+                let available = boundary.width - 98.0;
+                let fitted = authored.ellipsize(&cue.text, available, metric::UI_FONT_VALUE, 0.0);
                 let mut clip = widgets::begin_scissor(
                     d,
                     UiRect::new(text_x, boundary.y, boundary.width - 94.0, boundary.height),
                     input.ui_scale,
                 );
-                widgets::draw_text(
+                authored.draw_text(
                     &mut clip,
-                    font,
-                    &cue.text,
-                    text_x + 4.0,
-                    boundary.y + 5.0,
+                    &fitted,
+                    Vector2::new(text_x + 4.0, boundary.y + 5.0),
                     metric::UI_FONT_VALUE,
+                    0.0,
                     color::ui_ink(),
                 );
                 drop(clip);
@@ -1661,9 +1771,16 @@ impl Shell {
         editor.draft_end = end;
 
         let field = UiRect::new(form.x, form.y + 101.0, form.width, 37.0);
-        let event = editor
-            .text
-            .draw(d, font, field, 17.0, "Type lyric content", true);
+        // The user's own words go through the caption atlas while being typed,
+        // for the same reason the cue list does (review 1.5).
+        let event = editor.text.draw_with_face(
+            d,
+            input.fonts.authored(),
+            field,
+            17.0,
+            "Type lyric content",
+            true,
+        );
         if event.flattened {
             self.notify(
                 Severity::Info,
@@ -2958,6 +3075,116 @@ mod tests {
         // on a picture.
         let editor = LyricEditor::new();
         assert_eq!(editor.describe(None), "no track");
+    }
+
+    /// UX0-A05, as a number a headless run can assert.
+    ///
+    /// The reported picture was a preview typesetting the line perfectly while
+    /// the cue list and the field one panel below showed rows of `?`. Both
+    /// surfaces held the same string, so the only variable was the atlas — which
+    /// is exactly what this drives: the same cues through two repertoires.
+    #[test]
+    fn authored_text_evidence_counts_what_the_serving_face_cannot_draw() {
+        const GREEK: &str = "Καλημέρα κόσμε";
+        const CYRILLIC: &str = "мир продолжает звучать";
+
+        // The fix: the caption atlas is requested over the full curated set.
+        let served = authored_evidence(
+            ("caption", GlyphRepertoire::Curated),
+            ("caption", GlyphRepertoire::Curated),
+            [GREEK, CYRILLIC],
+            "ещё одна строка",
+        );
+        assert_eq!(served.rows, "caption");
+        assert_eq!(served.field, "caption");
+        assert_eq!(served.missing, 0);
+
+        // The negative control, which is the defect itself rather than a
+        // synthetic perturbation: force the chrome atlas back onto authored text
+        // and the count must not stay at zero. If this ever reads 0, the
+        // interface subset has quietly grown and `missing=` has stopped being
+        // evidence of anything.
+        let starved = authored_evidence(
+            ("ui", GlyphRepertoire::InterfaceSubset),
+            ("ui", GlyphRepertoire::InterfaceSubset),
+            [GREEK, CYRILLIC],
+            "ещё одна строка",
+        );
+        assert_eq!(starved.rows, "ui");
+        assert!(
+            starved.missing > 0,
+            "the chrome atlas cannot draw Greek or Cyrillic, so the count must say so"
+        );
+        // Every letter, and only the letters: the spaces survive either way, and
+        // so does an em dash, which is why the bug report described a line of
+        // question marks with the dash still in it.
+        assert_eq!(
+            starved.missing,
+            [GREEK, CYRILLIC, "ещё одна строка"]
+                .iter()
+                .flat_map(|text| text.chars())
+                .filter(|ch| !ch.is_ascii())
+                .count()
+        );
+
+        // Half-fixed is the state this change actually ships in, because the
+        // field's face is threaded in `ui/text_input.rs`. It must report as
+        // half-fixed rather than as done.
+        let partial = authored_evidence(
+            ("caption", GlyphRepertoire::Curated),
+            ("ui", GlyphRepertoire::InterfaceSubset),
+            [GREEK, CYRILLIC],
+            "ещё одна строка",
+        );
+        assert_eq!(partial.rows, "caption");
+        assert_eq!(partial.field, "ui");
+        assert_eq!(partial.missing, "ещё одна строка".chars().count() - 2);
+
+        // A Latin document is clean through either atlas, so `missing=0` on an
+        // ASCII fixture proves nothing and the gate has to use a non-Latin one.
+        assert_eq!(
+            authored_evidence(
+                ("ui", GlyphRepertoire::InterfaceSubset),
+                ("ui", GlyphRepertoire::InterfaceSubset),
+                ["plain latin lyric"],
+                "",
+            )
+            .missing,
+            0
+        );
+    }
+
+    #[test]
+    fn the_report_line_names_the_face_that_served_the_user_s_own_words() {
+        let mut document = LyricsDocument::new(120.0).expect("a positive duration");
+        document
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 0.0,
+                end_seconds: 1.0,
+                text: "Καλημέρα κόσμε".to_string(),
+            })
+            .expect("the model accepts a Greek cue");
+        let mut track = test_track("/tmp/greek.wav", 0);
+        track.lyrics = document;
+
+        let mut editor = LyricEditor::new();
+        // Before any frame the panel must not claim a face it never used.
+        assert!(editor
+            .describe(Some(&track))
+            .contains("face=none field=none"));
+
+        editor.authored = authored_evidence(
+            ("caption", GlyphRepertoire::Curated),
+            ("caption", GlyphRepertoire::Curated),
+            track.lyrics.cues().iter().map(|cue| cue.text.as_str()),
+            "",
+        );
+        let line = editor.describe(Some(&track));
+        assert!(
+            line.contains("face=caption field=caption missing=0"),
+            "{line:?}"
+        );
     }
 
     /// Review 1.1: selecting a cue shorter than a millisecond used to panic the

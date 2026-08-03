@@ -32,6 +32,7 @@
 //! started from the wrong directory is a failure mode worth deleting rather than
 //! reproducing. The shaders are already embedded for the same reason.
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
@@ -574,6 +575,56 @@ impl Faces {
         self.caption_for(CaptionFace::Alegreya)
     }
 
+    /// The face for **project-authored** text: cue lines, the lyric text field,
+    /// track names.
+    ///
+    /// Not `caption_for`: this deliberately ignores the project's
+    /// [`CaptionFace`] choice, including an imported one. A caption style is a
+    /// statement about how the *video* should look, and the editor has to stay
+    /// legible while the user is still deciding — an imported display face with
+    /// no Cyrillic would otherwise make the field unreadable in exactly the
+    /// session where the user is typing Cyrillic into it. So authored text gets
+    /// a built-in face over the full curated set and the style applies to the
+    /// rendered frame.
+    ///
+    /// The ladder, and why it is in this order:
+    ///
+    /// | State | Serves | `name()` | Repertoire |
+    /// | --- | --- | --- | --- |
+    /// | Alegreya rasterized | Alegreya, 64 px | `caption` | Curated |
+    /// | Alegreya failed, Space Grotesk full-set rasterized | Space Grotesk, 64 px | `caption-alt` | Curated |
+    /// | both caption atlases failed, chrome bank intact | the UI bank | `ui` | InterfaceSubset |
+    /// | nothing rasterized | raylib default | `default` | RaylibDefault |
+    ///
+    /// The last two rungs are degraded and say so. Dropping to the chrome bank
+    /// loses Greek and Cyrillic — it is the defect UX0-A05 fixed, kept only as
+    /// the answer to "both caption atlases are gone", where the alternative is
+    /// raylib's 10 px bitmap face and even less coverage. A panel drawing through
+    /// this must report [`AuthoredText::name`] and a missing-glyph count, per the
+    /// repository rule that a surface which can draw without its data has to say
+    /// which one it drew.
+    #[must_use]
+    pub fn authored(&self) -> AuthoredText<'_> {
+        let scale = self.ui.scale();
+        if self.caption.is_loaded() {
+            return AuthoredText {
+                source: AuthoredSource::Caption(&self.caption),
+                scale,
+                repertoire: GlyphRepertoire::Curated,
+                name: "caption",
+            };
+        }
+        if self.caption_alt.is_loaded() {
+            return AuthoredText {
+                source: AuthoredSource::Caption(&self.caption_alt),
+                scale,
+                repertoire: GlyphRepertoire::Curated,
+                name: "caption-alt",
+            };
+        }
+        AuthoredText::from_ui(&self.ui)
+    }
+
     /// The path the imported face was rasterized from, or `None`
     /// (`p->caption_imported_font_path`).
     #[must_use]
@@ -656,7 +707,7 @@ impl Faces {
     pub fn describe(&self) -> String {
         let fallback = "raylib default (FALLBACK)";
         format!(
-            "ui={}, {}, caption={}, caption-alt={}, icons={}, imported={}",
+            "ui={}, {}, caption={}, caption-alt={}, icons={}, imported={}, authored={}",
             if self.ui.all_loaded() {
                 format!("Space Grotesk ({} native sizes)", UI_FONT_SIZES.len())
             } else {
@@ -688,6 +739,11 @@ impl Faces {
             },
             self.imported_path()
                 .map_or_else(|| "none".to_string(), |path| path.display().to_string()),
+            // Which face serves *user-typed* text. Separate from `caption=`
+            // because the two answer different questions: `caption=` is what a
+            // rendered frame typesets with, `authored=` is what the editor can
+            // legibly show the user while they type it.
+            self.authored().name(),
         )
     }
 }
@@ -748,6 +804,295 @@ pub fn ui_codepoint(codepoint: u32) -> bool {
         || (0x20A0..=0x20CF).contains(&codepoint)
         || (0x2100..=0x214F).contains(&codepoint)
         || (0x2190..=0x2199).contains(&codepoint)
+}
+
+/// Whether the curated caption table asked for this codepoint.
+///
+/// Reads [`caption_layout::FONT_CODEPOINT_RANGES`] directly rather than
+/// materializing [`caption_layout::font_codepoints`], because this is called per
+/// character of every authored string drawn in a frame and the table is 21
+/// ascending ranges.
+#[must_use]
+fn curated_codepoint(codepoint: u32) -> bool {
+    caption_layout::FONT_CODEPOINT_RANGES
+        .iter()
+        .any(|&(first, last)| (first..=last).contains(&codepoint))
+}
+
+/// The glyph repertoire a face's atlas was **requested over**.
+///
+/// This is deliberately about the atlas request, not about the outlines the
+/// typeface happens to contain, because the request is what the UX0-A05 defect
+/// was: the interface atlas is [`ui_codepoint`]-filtered, so a Greek or Cyrillic
+/// lyric drawn through it comes out as missing-glyph boxes — in the one editor
+/// whose whole job is editing that lyric. A codepoint the atlas never asked for
+/// cannot be drawn no matter how complete the font file is, and that is a
+/// property this crate can decide without a GPU, which is what makes
+/// [`GlyphRepertoire::missing`] assertable in a headless test.
+///
+/// It does **not** model an imported face: that atlas is requested over the full
+/// curated set, so the request is complete even when the file's coverage is not.
+/// Whether a user's own `.ttf` has a Greek alpha is the user's business and is
+/// not something this build can answer before rasterizing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlyphRepertoire {
+    /// The full curated caption set — Latin, Greek, Cyrillic, punctuation.
+    Curated,
+    /// [`ui_codepoint`] applied to the curated set: chrome only.
+    InterfaceSubset,
+    /// raylib's built-in bitmap face: printable ASCII and nothing else.
+    RaylibDefault,
+}
+
+impl GlyphRepertoire {
+    /// Whether a face over this repertoire can draw `ch`.
+    ///
+    /// Line and tab controls answer `true`: they are layout instructions rather
+    /// than glyphs, and counting them as missing would make every multi-line
+    /// lyric report a defect it does not have.
+    #[must_use]
+    pub fn covers(self, ch: char) -> bool {
+        if matches!(ch, '\n' | '\r' | '\t') {
+            return true;
+        }
+        let codepoint = ch as u32;
+        match self {
+            // raylib's default atlas is the 95 printable ASCII glyphs
+            // (`rtext.c`'s `LoadFontDefault`).
+            GlyphRepertoire::RaylibDefault => (0x20..=0x7E).contains(&codepoint),
+            GlyphRepertoire::InterfaceSubset => {
+                curated_codepoint(codepoint) && ui_codepoint(codepoint)
+            }
+            GlyphRepertoire::Curated => curated_codepoint(codepoint),
+        }
+    }
+
+    /// How many characters of `text` this repertoire cannot draw.
+    ///
+    /// Occurrences, not distinct codepoints: "one missing glyph" and "forty
+    /// missing glyphs" describe different pictures, and the report line exists to
+    /// tell them apart.
+    #[must_use]
+    pub fn missing(self, text: &str) -> usize {
+        text.chars().filter(|&ch| !self.covers(ch)).count()
+    }
+
+    /// The truncation marker a face over this repertoire can actually draw.
+    ///
+    /// U+2026 is inside the curated General Punctuation range *and* inside
+    /// [`ui_codepoint`]'s, so both real atlases carry it; only raylib's bitmap
+    /// fallback needs the three-period spelling. Choosing per repertoire rather
+    /// than hard-coding `"..."` everywhere is what keeps a truncated Cyrillic row
+    /// from ending in the one character the row was truncated to avoid.
+    #[must_use]
+    pub fn ellipsis(self) -> &'static str {
+        match self {
+            GlyphRepertoire::RaylibDefault => "...",
+            _ => "\u{2026}",
+        }
+    }
+}
+
+/// Fit `text` into `max_width`, ending in `ellipsis` when it does not fit.
+///
+/// `measure` must be the *same* face and size the caller will draw with, which is
+/// why this takes a closure rather than a face: a row measured with the chrome
+/// atlas and drawn with the caption atlas would either clip or leave a gap, and
+/// the two atlases have different advance widths for the same string.
+///
+/// Truncation walks `char_indices` and never a byte offset. A byte-sliced
+/// Cyrillic string panics, and a byte-sliced UTF-8 string sliced *successfully*
+/// at the wrong boundary is worse — it is the same class of defect as this
+/// module's `str::len()`-as-codepoint-count note.
+pub fn ellipsize_with<'t, F>(
+    text: &'t str,
+    max_width: f32,
+    ellipsis: &str,
+    mut measure: F,
+) -> Cow<'t, str>
+where
+    F: FnMut(&str) -> f32,
+{
+    if max_width <= 0.0 {
+        return Cow::Borrowed("");
+    }
+    if measure(text) <= max_width {
+        return Cow::Borrowed(text);
+    }
+    // Longest prefix whose ellipsized form still fits. Linear from the end
+    // rather than a binary search because advance widths are not guaranteed
+    // monotone under kerning, and a row is tens of characters.
+    let mut best: Option<String> = None;
+    for (index, _) in text.char_indices() {
+        if index == 0 {
+            continue;
+        }
+        let candidate = format!("{}{ellipsis}", text[..index].trim_end());
+        if measure(&candidate) <= max_width {
+            best = Some(candidate);
+        } else {
+            break;
+        }
+    }
+    match best {
+        Some(fitted) => Cow::Owned(fitted),
+        // Not even one character plus the marker fits. The marker alone still
+        // says "there is text here", which an empty rect does not.
+        None if measure(ellipsis) <= max_width => Cow::Owned(ellipsis.to_string()),
+        None => Cow::Borrowed(""),
+    }
+}
+
+/// The face that draws **project-authored** text, and the evidence of which one.
+///
+/// The chrome keeps the [`UiFonts`] bank: its atlas is scale-matched, native-size
+/// and small precisely because it carries no Greek, Cyrillic or accented-extended
+/// coverage, and every string the chrome draws is a literal in this repository.
+/// Anything a *user* typed — a cue line, the lyric text field, a track name — goes
+/// through here instead, because the user's alphabet is not this repository's
+/// choice to make.
+///
+/// The seam is a type rather than a `&Face` so that measurement, drawing,
+/// truncation and the missing-glyph count all come from one object. A caret
+/// measured with one face and drawn against text laid out by another drifts, and
+/// that drift grows with the line, so the caret lands nowhere near the character
+/// the user clicked.
+#[derive(Clone, Copy)]
+pub struct AuthoredText<'a> {
+    source: AuthoredSource<'a>,
+    scale: f32,
+    repertoire: GlyphRepertoire,
+    name: &'static str,
+}
+
+#[derive(Clone, Copy)]
+enum AuthoredSource<'a> {
+    /// A 64 px mipmapped caption atlas over the full curated set.
+    ///
+    /// Resolution-independent by construction: the shell draws in logical units
+    /// under a `Camera2D` whose zoom is the UI scale, so a logical 15 px row is
+    /// 15, 18.75 or 22.5 physical pixels sampled *down* from a 64 px atlas. There
+    /// is no rung at which this magnifies a 1x bitmap, which is the failure the
+    /// native-size UI bank exists to avoid.
+    Caption(&'a Face),
+    /// The chrome bank, used only when neither caption atlas rasterized.
+    Ui(&'a UiFonts),
+}
+
+impl<'a> AuthoredText<'a> {
+    /// Which face served authored text: `caption`, `caption-alt`, `ui` or
+    /// `default`. Reported by panels so a capture carries the answer rather than
+    /// requiring someone to recognize Alegreya by eye.
+    #[must_use]
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The repertoire behind [`AuthoredText::missing`].
+    #[must_use]
+    pub fn repertoire(&self) -> GlyphRepertoire {
+        self.repertoire
+    }
+
+    /// Characters of `text` the serving face cannot draw. Zero is the claim the
+    /// headless gate asserts.
+    #[must_use]
+    pub fn missing(&self, text: &str) -> usize {
+        self.repertoire.missing(text)
+    }
+
+    /// The truncation marker this face can draw.
+    #[must_use]
+    pub fn ellipsis(&self) -> &'static str {
+        self.repertoire.ellipsis()
+    }
+
+    /// Measures through the face and size that will draw.
+    #[must_use]
+    pub fn measure_text(&self, text: &str, size: f32, spacing: f32) -> Vector2 {
+        match self.source {
+            AuthoredSource::Caption(face) => {
+                face.measure_text(text, size, snap_logical(spacing, self.scale))
+            }
+            AuthoredSource::Ui(bank) => bank.measure_text(text, size, spacing),
+        }
+    }
+
+    /// Physical pixels per logical unit, for a caller that needs the shell's
+    /// [`crate::font::UiFonts::scale`] without also holding the chrome bank.
+    ///
+    /// Deliberately the *same* number either arm, because it describes the
+    /// window rather than the atlas: a text field converts the pointer into
+    /// logical units with it, and that conversion must not change when the face
+    /// behind the field does.
+    #[must_use]
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Wrap the chrome bank as authored text.
+    ///
+    /// The seam that lets a widget take an [`AuthoredText`] without every caller
+    /// having to have a [`Faces`] in hand: chrome that happens to flow through
+    /// the same widget keeps the native-size bank, and the repertoire reported is
+    /// the honest [`GlyphRepertoire::InterfaceSubset`] rather than a claim of
+    /// full coverage.
+    #[must_use]
+    pub fn from_ui(bank: &'a UiFonts) -> Self {
+        Self {
+            source: AuthoredSource::Ui(bank),
+            scale: bank.scale(),
+            repertoire: if bank.all_loaded() {
+                GlyphRepertoire::InterfaceSubset
+            } else {
+                GlyphRepertoire::RaylibDefault
+            },
+            name: if bank.all_loaded() { "ui" } else { "default" },
+        }
+    }
+
+    /// Fit `text` into `max_width` through this face.
+    #[must_use]
+    pub fn ellipsize<'t>(
+        &self,
+        text: &'t str,
+        max_width: f32,
+        size: f32,
+        spacing: f32,
+    ) -> Cow<'t, str> {
+        ellipsize_with(text, max_width, self.ellipsis(), |candidate| {
+            self.measure_text(candidate, size, spacing).x
+        })
+    }
+
+    /// Draws authored text on the same integer pixel grid the chrome uses.
+    pub fn draw_text<D: RaylibDraw>(
+        &self,
+        d: &mut D,
+        text: &str,
+        position: Vector2,
+        size: f32,
+        spacing: f32,
+        tint: Color,
+    ) {
+        match self.source {
+            AuthoredSource::Caption(face) => {
+                let position = Vector2::new(
+                    snap_logical(position.x, self.scale),
+                    snap_logical(position.y, self.scale),
+                );
+                d.draw_text_ex(
+                    face,
+                    text,
+                    position,
+                    size,
+                    snap_logical(spacing, self.scale),
+                    tint,
+                );
+            }
+            AuthoredSource::Ui(bank) => bank.draw_text(d, text, position, size, spacing, tint),
+        }
+    }
 }
 
 /// The size gate from `caption_imported_font_load` (`plug.c:405-409`), split out
@@ -1048,6 +1393,132 @@ mod tests {
             b"OTTO",
             "Font Awesome is not a CFF OpenType file"
         );
+    }
+
+    /// The UX0-A05 defect, as a number.
+    ///
+    /// The seeded fixture's line is the case that was reported: the preview
+    /// typeset it perfectly while the cue list and the text field one panel below
+    /// showed rows of `?` with only the em dash surviving. That asymmetry is
+    /// exactly this assertion — the em dash is U+2014, inside General
+    /// Punctuation, which is one of the four ranges `ui_codepoint` keeps.
+    #[test]
+    fn authored_text_through_the_chrome_repertoire_loses_greek_and_cyrillic() {
+        const REPORTED: &str = "Καλημέρα κόσμε — мир продолжает звучать";
+
+        assert_eq!(GlyphRepertoire::Curated.missing(REPORTED), 0);
+
+        // The negative control, and it is the defect rather than a synthetic
+        // perturbation: serve the same string from the chrome atlas and count.
+        let dropped = GlyphRepertoire::InterfaceSubset.missing(REPORTED);
+        assert_eq!(
+            dropped,
+            REPORTED
+                .chars()
+                .filter(|ch| !ch.is_ascii() && *ch != '\u{2014}')
+                .count(),
+            "every non-Latin letter, and only those, is outside the chrome atlas"
+        );
+        assert!(dropped > 0);
+
+        // The survivor named in the report. If this ever flips, the picture in
+        // the bug changes and so should this test.
+        assert!(GlyphRepertoire::InterfaceSubset.covers('\u{2014}'));
+        assert!(!GlyphRepertoire::InterfaceSubset.covers('Κ'));
+        assert!(!GlyphRepertoire::InterfaceSubset.covers('м'));
+        assert!(GlyphRepertoire::Curated.covers('Κ'));
+        assert!(GlyphRepertoire::Curated.covers('м'));
+
+        // raylib's bitmap fallback is worse than both and must not be mistaken
+        // for either: it loses the accents too.
+        assert_eq!(GlyphRepertoire::RaylibDefault.missing("Ångström"), 2);
+        assert_eq!(GlyphRepertoire::InterfaceSubset.missing("Ångström"), 0);
+
+        // Newlines are layout, not glyphs. Counting them would make every
+        // multi-line lyric report a defect it does not have.
+        assert_eq!(GlyphRepertoire::RaylibDefault.missing("a\nb\tc"), 0);
+
+        // CJK is outside the *curated* set as well, which is a real limit of the
+        // bundled faces rather than a bug in the seam, and is worth pinning so a
+        // future reader does not read `missing=0` as "any script works".
+        assert!(GlyphRepertoire::Curated.missing("東京") > 0);
+    }
+
+    #[test]
+    fn the_truncation_marker_is_one_the_serving_face_can_draw() {
+        // U+2026 is in the curated General Punctuation range and survives
+        // `ui_codepoint`, so both real atlases carry it and only raylib's
+        // fallback needs three periods. Asserted rather than assumed, because
+        // "the ellipsis draws as a box" is precisely the bug the shell already
+        // paid for once.
+        assert_eq!(GlyphRepertoire::Curated.ellipsis(), "\u{2026}");
+        assert_eq!(GlyphRepertoire::InterfaceSubset.ellipsis(), "\u{2026}");
+        assert_eq!(GlyphRepertoire::RaylibDefault.ellipsis(), "...");
+        for repertoire in [
+            GlyphRepertoire::Curated,
+            GlyphRepertoire::InterfaceSubset,
+            GlyphRepertoire::RaylibDefault,
+        ] {
+            assert_eq!(
+                repertoire.missing(repertoire.ellipsis()),
+                0,
+                "{repertoire:?} cannot draw its own truncation marker"
+            );
+        }
+    }
+
+    #[test]
+    fn ellipsize_cuts_on_character_boundaries_and_measures_what_it_returns() {
+        // One unit per character, which is the same stand-in `caption_layout`'s
+        // tests use. The point is the boundary arithmetic, not the metrics.
+        let measure = |text: &str| text.chars().count() as f32;
+
+        let text = "мир продолжает звучать";
+        assert_eq!(ellipsize_with(text, 100.0, "\u{2026}", measure), text);
+
+        let fitted = ellipsize_with(text, 10.0, "\u{2026}", measure);
+        assert!(measure(&fitted) <= 10.0, "{fitted:?} overflows its row");
+        assert!(fitted.ends_with('\u{2026}'));
+        assert!(text.starts_with(fitted.trim_end_matches('\u{2026}')));
+        // A byte slice at 10 would land inside a two-byte Cyrillic scalar; a
+        // character slice does not. This is the assertion that would have caught
+        // a `&text[..n]` truncation, which panics rather than clipping.
+        assert!(fitted.chars().count() < text.chars().count());
+
+        // Degenerate widths answer rather than panic.
+        assert_eq!(ellipsize_with(text, 0.0, "\u{2026}", measure), "");
+        assert_eq!(ellipsize_with(text, 1.0, "\u{2026}", measure), "\u{2026}");
+        assert_eq!(ellipsize_with("", 5.0, "\u{2026}", measure), "");
+        // A single character that does not fit still leaves the marker.
+        assert_eq!(ellipsize_with("Ω", 0.5, "\u{2026}", measure), "");
+    }
+
+    #[test]
+    fn the_authored_seam_names_its_face_and_degrades_loudly() {
+        // The only configuration a headless test can build is the worst rung, so
+        // that is the one pinned: nothing rasterized must report `default` and a
+        // non-zero missing count for the reported string, never silently serve
+        // it. The `caption` rung is what a windowed run reaches, and the gate in
+        // `tools/headless_check.sh` asserts it from the panel's report line.
+        let faces = Faces::fallback_only();
+        let authored = faces.authored();
+        assert_eq!(authored.name(), "default");
+        assert_eq!(authored.repertoire(), GlyphRepertoire::RaylibDefault);
+        assert!(authored.missing("Καλημέρα") > 0);
+        assert_eq!(authored.ellipsis(), "...");
+        assert_eq!(authored.missing("plain ascii"), 0);
+
+        // `describe` carries it, because a capture has to answer "which face drew
+        // the user's own words" without anyone recognizing Alegreya by eye.
+        assert!(faces.describe().contains("authored=default"));
+
+        // `from_ui` is the seam a widget takes when it has only the chrome bank.
+        // It must report the bank honestly and must not invent a different
+        // pointer scale, because a field converts mouse coordinates with it.
+        let chrome = AuthoredText::from_ui(faces.ui());
+        assert_eq!(chrome.name(), authored.name());
+        assert_eq!(chrome.repertoire(), authored.repertoire());
+        assert!((chrome.scale() - faces.ui().scale()).abs() < f32::EPSILON);
     }
 
     /// The atlas is built from [`Icon::ALL`], so a variant missing from it is a
