@@ -86,6 +86,41 @@ pub struct Tooltip {
     pub anchor: UiRect,
 }
 
+/// Everything a widget needs to know about the pointer, as a value.
+///
+/// Lifted out of the draw handle because the claim rule is state that outlives a
+/// frame and a rule with memory has to be testable; raylib's input is only
+/// readable from a live window, which a `cargo test` run does not have.
+/// `x`/`y` are logical coordinates — already through [`UiScale`] — because every
+/// rectangle a widget is given is logical too.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Pointer {
+    pub x: f32,
+    pub y: f32,
+    /// Held, including the frame of the press.
+    pub down: bool,
+    /// The press edge.
+    pub pressed: bool,
+    /// The release edge, true for exactly one frame.
+    pub released: bool,
+}
+
+impl Pointer {
+    #[must_use]
+    pub fn read(d: &RaylibDrawHandle<'_>, ui_scale: UiScale) -> Self {
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+
+        let position = ui_scale.mouse(d);
+        Self {
+            x: position.x,
+            y: position.y,
+            down: d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+            pressed: d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT),
+            released: d.is_mouse_button_released(MOUSE_BUTTON_LEFT),
+        }
+    }
+}
+
 /// Widget state that outlives a single call.
 ///
 /// The C keeps this inside the global `Plug` struct and passes it to every widget
@@ -95,6 +130,18 @@ pub struct Tooltip {
 #[derive(Debug, Default)]
 pub struct Widgets {
     active_button_id: u64,
+    /// The physical left-button state the last drawn widget saw.
+    ///
+    /// A claim is only ever released by the widget that made it, so a widget that
+    /// stops being drawn mid-press holds it forever and every button and slider
+    /// in the application goes dead (UX0-A02: hold a slider, press `T`, the panel
+    /// closes, the claim is stranded). Freeing it needs the one fact [`Widgets`]
+    /// is not given — where the physical button is — so it is recorded from
+    /// whichever widget happened to run rather than read at frame start. Every
+    /// surface that can strand a claim draws something else in the same frame:
+    /// the toolbar survives fullscreen, and the welcome and export screens have
+    /// buttons of their own.
+    pointer_was_down: bool,
     /// Set when any widget was interacted with this frame, so the caller can
     /// tell "the user did something" from "the user moved the mouse".
     pub interacted: bool,
@@ -127,9 +174,42 @@ impl Widgets {
 
     /// Call once per frame, before any widget.
     pub fn begin_frame(&mut self, ui_scale: UiScale) {
+        self.release_stranded_claim();
         self.interacted = false;
         self.pending_tooltip = None;
         self.ui_scale = ui_scale;
+    }
+
+    /// Frees a press claimed by a widget that has since stopped being drawn
+    /// (UX0-A02).
+    ///
+    /// The claim rule is the oracle's and is not negotiable: whoever takes the
+    /// press keeps it until it releases over the same widget. What the oracle
+    /// never has to survive is the widget *disappearing* mid-press, which this
+    /// shell can do from the keyboard — `T` closes the inspector and `F` hides
+    /// every panel, both without asking the panel first. The claim then belongs
+    /// to a widget that will never be drawn again, and since `active_button_id`
+    /// is one shared slot, nothing else in the application can ever be pressed.
+    ///
+    /// **It cannot eat a click**, because the button state it reads is the one a
+    /// widget observed on the *previous* frame, and a click is delivered on the
+    /// release frame itself. A claim only ever exists between a press and a
+    /// release, so on every frame of a legitimate press the previous frame saw
+    /// the button down — including the release frame, whose own `up` is not
+    /// visible here until the frame after, by which time the owning widget has
+    /// already taken the claim and returned `clicked`. If instead the release
+    /// edge fell on a frame where the owner was not drawn, the owner never saw it
+    /// and there is no click left to deliver.
+    ///
+    /// Reading the previous frame rather than the current one is the whole
+    /// safety argument, which is also why this does not take a pointer argument:
+    /// there would be nothing stopping a caller from handing it *this* frame's
+    /// state, and a net that fires on the release frame would swallow every click
+    /// in the interface.
+    fn release_stranded_claim(&mut self) {
+        if !self.pointer_was_down {
+            self.active_button_id = 0;
+        }
     }
 
     /// Offers a tooltip for the control `id` just drew.
@@ -188,23 +268,31 @@ impl Widgets {
     /// `id` must be unique and stable across frames for the widget it names; a
     /// colliding id lets one widget release another's press.
     pub fn button(&mut self, d: &RaylibDrawHandle<'_>, id: u64, boundary: UiRect) -> ButtonState {
-        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+        self.button_at(id, boundary, Pointer::read(d, self.ui_scale))
+    }
 
+    /// [`Widgets::button`] without raylib.
+    ///
+    /// Split out so the claim rule — the one piece of widget state that outlives
+    /// a frame, and the one a stranded press kills the whole interface with — can
+    /// be driven in a unit test. Nothing here needs a window; `button` is only
+    /// the four input reads.
+    pub(crate) fn button_at(&mut self, id: u64, boundary: UiRect, pointer: Pointer) -> ButtonState {
+        // Recorded before the empty-boundary refusal, because a control with no
+        // room is still a control that ran: what the safety net needs from it is
+        // where the physical button is, and that is true either way.
+        self.pointer_was_down = pointer.down;
         if boundary.is_empty() {
             return ButtonState::default();
         }
-        let mouse = self.ui_scale.mouse(d);
-        let hovered = mouse.x >= boundary.x
-            && mouse.x <= boundary.x + boundary.width
-            && mouse.y >= boundary.y
-            && mouse.y <= boundary.y + boundary.height;
+        let hovered = boundary.contains_point(pointer.x, pointer.y);
 
         let mut clicked = false;
         if self.active_button_id == 0 {
-            if hovered && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
+            if hovered && pointer.pressed {
                 self.active_button_id = id;
             }
-        } else if self.active_button_id == id && d.is_mouse_button_released(MOUSE_BUTTON_LEFT) {
+        } else if self.active_button_id == id && pointer.released {
             self.active_button_id = 0;
             clicked = hovered;
         }
@@ -214,7 +302,7 @@ impl Widgets {
         ButtonState {
             hovered,
             clicked,
-            pressed: hovered && d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+            pressed: hovered && pointer.down,
         }
     }
 
@@ -442,11 +530,10 @@ impl Widgets {
         boundary: UiRect,
         normalized: f32,
     ) -> Option<f32> {
-        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
-
         if boundary.is_empty() {
             return None;
         }
+        let pointer = Pointer::read(d, self.ui_scale);
         let track = UiRect::new(
             boundary.x,
             boundary.y + boundary.height * 0.5 - 3.0,
@@ -465,7 +552,7 @@ impl Widgets {
             color::accent(),
         );
 
-        let state = self.button(d, id, boundary);
+        let state = self.button_at(id, boundary, pointer);
         let knob_x = boundary.x + boundary.width * filled;
         d.draw_circle_v(
             Vector2::new(knob_x, boundary.y + boundary.height * 0.5),
@@ -480,11 +567,10 @@ impl Widgets {
         // The claim rule matters here too: a drag that started on this slider
         // keeps control even when the pointer leaves the box, which is what makes
         // dragging past the end feel like a slider rather than a switch.
-        if self.active_button_id == id && d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+        if self.active_button_id == id && pointer.down {
             self.interacted = true;
-            let mouse = self.ui_scale.mouse(d);
             return Some(slider_value(
-                mouse.x,
+                pointer.x,
                 boundary.x,
                 boundary.x + boundary.width,
             ));
@@ -935,5 +1021,145 @@ mod tests {
         }
         // Zero is the "nothing is claimed" sentinel and must be unreachable.
         assert_ne!(widget_id(0, 0), 0);
+    }
+
+    /// Two disjoint control boxes: the panel's, and the toolbar's.
+    fn box_a() -> UiRect {
+        UiRect::new(0.0, 0.0, 40.0, 20.0)
+    }
+
+    fn box_b() -> UiRect {
+        UiRect::new(100.0, 0.0, 40.0, 20.0)
+    }
+
+    fn over(rect: UiRect) -> Pointer {
+        Pointer {
+            x: rect.x + rect.width * 0.5,
+            y: rect.y + rect.height * 0.5,
+            ..Pointer::default()
+        }
+    }
+
+    fn press(rect: UiRect) -> Pointer {
+        Pointer {
+            down: true,
+            pressed: true,
+            ..over(rect)
+        }
+    }
+
+    fn hold(rect: UiRect) -> Pointer {
+        Pointer {
+            down: true,
+            ..over(rect)
+        }
+    }
+
+    fn release(rect: UiRect) -> Pointer {
+        Pointer {
+            released: true,
+            ..over(rect)
+        }
+    }
+
+    #[test]
+    fn a_press_is_awarded_on_release_over_the_same_widget() {
+        let mut widgets = Widgets::new();
+        let scale = UiScale::default();
+
+        widgets.begin_frame(scale);
+        assert!(!widgets.button_at(1, box_a(), press(box_a())).clicked);
+        widgets.begin_frame(scale);
+        assert!(!widgets.button_at(1, box_a(), hold(box_a())).clicked);
+        widgets.begin_frame(scale);
+        assert!(widgets.button_at(1, box_a(), release(box_a())).clicked);
+    }
+
+    #[test]
+    fn a_neighbour_cannot_take_a_press_another_widget_claimed() {
+        let mut widgets = Widgets::new();
+        let scale = UiScale::default();
+
+        widgets.begin_frame(scale);
+        widgets.button_at(1, box_a(), press(box_a()));
+        // The pointer leaves A for B while held: B must stay inert, or dragging
+        // past the end of a slider would become a click on whatever is next to it.
+        widgets.begin_frame(scale);
+        widgets.button_at(1, box_a(), hold(box_b()));
+        assert!(!widgets.button_at(2, box_b(), hold(box_b())).clicked);
+        widgets.begin_frame(scale);
+        widgets.button_at(1, box_a(), release(box_b()));
+        assert!(!widgets.button_at(2, box_b(), release(box_b())).clicked);
+    }
+
+    /// UX0-A02. Hold a slider, press `T`: the panel closes, the widget is never
+    /// drawn again, and before this every control in the application was dead for
+    /// the rest of the session.
+    #[test]
+    fn a_claim_stranded_by_a_vanishing_panel_does_not_freeze_every_other_control() {
+        let mut widgets = Widgets::new();
+        let scale = UiScale::default();
+
+        widgets.begin_frame(scale);
+        widgets.button_at(1, box_a(), press(box_a()));
+
+        // The panel closes. Its widget is gone; the toolbar's is not, and it is
+        // what the safety net sees the pointer through.
+        widgets.begin_frame(scale);
+        widgets.button_at(2, box_b(), hold(box_b()));
+        widgets.begin_frame(scale);
+        widgets.button_at(2, box_b(), release(box_b()));
+        widgets.begin_frame(scale);
+        widgets.button_at(2, box_b(), over(box_b()));
+
+        // A fresh press on an unrelated control now behaves normally.
+        widgets.begin_frame(scale);
+        widgets.button_at(2, box_b(), press(box_b()));
+        widgets.begin_frame(scale);
+        assert!(widgets.button_at(2, box_b(), release(box_b())).clicked);
+    }
+
+    /// The safety net's failure mode would be worse than the bug: a net that fired
+    /// on the release frame would swallow every click in the interface.
+    #[test]
+    fn the_stranded_claim_net_never_eats_a_click_the_owner_would_have_delivered() {
+        let mut widgets = Widgets::new();
+        let scale = UiScale::default();
+
+        // The slowest legitimate case: one frame of press, many of hold, then a
+        // release frame on which the pointer is already up.
+        widgets.begin_frame(scale);
+        widgets.button_at(1, box_a(), press(box_a()));
+        for _ in 0..30 {
+            widgets.begin_frame(scale);
+            assert!(!widgets.button_at(1, box_a(), hold(box_a())).clicked);
+        }
+        widgets.begin_frame(scale);
+        assert!(widgets.button_at(1, box_a(), release(box_a())).clicked);
+    }
+
+    /// A drag whose pointer is outside its own box is the reason the claim rule
+    /// exists (`ui_widgets.c:139-160`), so the net must not cut one short.
+    #[test]
+    fn a_drag_that_leaves_its_own_box_keeps_the_claim() {
+        let mut widgets = Widgets::new();
+        let scale = UiScale::default();
+
+        widgets.begin_frame(scale);
+        widgets.button_at(1, box_a(), press(box_a()));
+        for _ in 0..10 {
+            widgets.begin_frame(scale);
+            // Far outside, still held: exactly what dragging past the end of a
+            // slider looks like.
+            widgets.button_at(1, box_a(), hold(box_b()));
+        }
+        // Still owned, so the value is still the slider's to report.
+        assert_eq!(widgets.active_button_id, 1);
+        widgets.begin_frame(scale);
+        // And the release still lands on the owner even though the pointer never
+        // came back — no click, because the release is outside the box, but the
+        // claim is spent by the widget that made it.
+        assert!(!widgets.button_at(1, box_a(), release(box_b())).clicked);
+        assert_eq!(widgets.active_button_id, 0);
     }
 }

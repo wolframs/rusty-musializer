@@ -83,6 +83,19 @@ pub struct FontBrowser {
     /// (`plug.c:1762-1798`) are handed out through [`Self::take_import`] and done
     /// where those resources are owned, which is `main.rs`.
     pending_import: Option<Box<ImportManifest>>,
+    /// Whether the search field was actually drawn on the last completed frame.
+    ///
+    /// `view.query_active` is sticky by design — a click outside the field is what
+    /// takes focus away — but the pane can also leave without a click anywhere
+    /// near it: "Back" closes it, and the browsing body disappears whenever the
+    /// importer changes state. A focus flag left set behind a closed pane would
+    /// silence every global shortcut in the application for the rest of the
+    /// session (review 1.6, UX0-A06), so focus is only honoured while the field
+    /// that holds it is on screen.
+    query_field_visible: bool,
+    /// The same fact for the frame in progress, which is what
+    /// [`FontBrowser::begin_frame`] promotes.
+    query_field_drawn: bool,
 }
 
 impl Default for FontBrowser {
@@ -108,7 +121,38 @@ impl FontBrowser {
             view: BrowserView::new(),
             importer: FontImporter::new(&application, WORKSPACE_ROOT.into()),
             pending_import: None,
+            query_field_visible: false,
+            query_field_drawn: false,
         }
+    }
+
+    /// Call once per frame, before the shell reads the keyboard.
+    ///
+    /// Promotes what the last frame drew, because the order within a frame is
+    /// keyboard first and panels afterwards: asking "is the field on screen" at
+    /// the moment the shortcut is being decided can only ever be answered about
+    /// the frame the user was looking at when they pressed the key.
+    pub(crate) fn begin_frame(&mut self) {
+        self.query_field_visible = std::mem::take(&mut self.query_field_drawn);
+    }
+
+    /// Whether the family filter is taking keystrokes as text.
+    ///
+    /// Read by [`Shell::text_entry_has_focus`] through
+    /// [`crate::ui::shell::TextEntrySurface`]; see that enum for why the shell
+    /// asks rather than the panel defending itself.
+    #[must_use]
+    pub(crate) fn query_has_focus(&self) -> bool {
+        self.query_field_visible && self.view.query_active
+    }
+
+    /// The state a click inside the filter leaves: field on screen, field
+    /// focused. Test-only because the real path needs a window to be clicked in.
+    #[cfg(test)]
+    pub(crate) fn focus_query_for_test(&mut self) {
+        self.query_field_drawn = true;
+        self.begin_frame();
+        self.view.query_active = true;
     }
 
     /// Advances the helper (`poll_font_job`, `plug.c:1811-1861`).
@@ -307,6 +351,9 @@ fn draw_search_field(
     layout: BrowserLayout,
 ) {
     let _ = widgets;
+    // The field exists this frame, so the focus flag it owns is allowed to
+    // suppress the global shortcuts (review 1.6).
+    browser.query_field_drawn = true;
     let search = rect(layout.search);
     let scale = super::super::scale::UiScale::new(font.scale()).unwrap_or_default();
     let mouse = scale.mouse(d);
@@ -892,5 +939,27 @@ mod tests {
             assert!(seen.insert(panel_name(panel)), "{panel:?} shares a name");
         }
         assert_eq!(seen.len(), 6);
+    }
+
+    /// Review 1.6 / UX0-A06. The filter holds the keyboard only while it is on
+    /// screen: `query_active` survives the pane closing, and a focus flag nobody
+    /// can see would silence Space, F, M, H, T and Tab for the rest of the run.
+    #[test]
+    fn the_filter_only_holds_the_keyboard_while_it_is_being_drawn() {
+        let mut browser = FontBrowser::new();
+        assert!(!browser.query_has_focus());
+
+        browser.focus_query_for_test();
+        assert!(browser.query_has_focus());
+
+        // A frame in which nothing draws the field — the pane was closed.
+        browser.begin_frame();
+        assert!(!browser.query_has_focus());
+
+        // Reopening it restores focus rather than losing what was typed: the
+        // field is the same field, and the query is still in it.
+        browser.query_field_drawn = true;
+        browser.begin_frame();
+        assert!(browser.query_has_focus());
     }
 }

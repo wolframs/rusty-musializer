@@ -258,6 +258,109 @@ pub(crate) enum TimelineGesture {
     SceneBoundary,
 }
 
+/// Every surface in this interface that can take a keystroke as *text*.
+///
+/// One list, in one place, because the shell reads the keyboard before any panel
+/// is drawn: a panel with a focused field has already lost the keypress by the
+/// time it runs, so the guard has to be asked here and it has to know about all
+/// of them. Scattering the flags over `||`s in the caller is what produced
+/// UX0-A06 (review 1.6) — the predicate knew about the lyrics cue field and not
+/// about the font browser's filter, and typing "Space Mono" into the filter
+/// toggled playback, fullscreen, mute, the readout and the inspector, cycled the
+/// scene and seeked the track.
+///
+/// **The rule for adding one: a new text surface adds a variant here, and the
+/// compiler then requires an arm in [`Shell::text_entry_focused`] and in the
+/// test that sweeps `ALL`.** Nothing else in the shell asks about focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TextEntrySurface {
+    /// The lyrics editor's cue field.
+    LyricCue,
+    /// The font browser's family filter.
+    FontQuery,
+}
+
+impl TextEntrySurface {
+    pub(crate) const ALL: [Self; 2] = [Self::LyricCue, Self::FontQuery];
+}
+
+/// The keys one frame of the shell can act on, read out of raylib in one place.
+///
+/// Separated from [`Shell::keyboard_actions`] because a `RaylibDrawHandle` only
+/// exists inside a live window, and the shortcut-suppression rule this carries is
+/// exactly the kind of policy a capture cannot photograph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct KeyboardFrame {
+    pub control: bool,
+    pub shift: bool,
+    pub scale_up: bool,
+    pub scale_down: bool,
+    pub scale_auto: bool,
+    pub toggle_play: bool,
+    pub toggle_fullscreen: bool,
+    pub escape: bool,
+    pub toggle_mute: bool,
+    pub toggle_hud: bool,
+    pub seek_start: bool,
+    pub seek_end: bool,
+    /// Left and right arrows, which repeat: holding one to scan through a track
+    /// is the reason a 0.1 s step is useful at all.
+    pub nudge_back: bool,
+    pub nudge_forward: bool,
+    pub cycle_scene: bool,
+    pub toggle_inspector: bool,
+}
+
+impl KeyboardFrame {
+    fn read(d: &RaylibDrawHandle<'_>) -> Self {
+        use raylib::consts::KeyboardKey as Key;
+
+        let held = |key| d.is_key_pressed(key) || d.is_key_pressed_repeat(key);
+        Self {
+            control: d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL),
+            shift: d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT),
+            scale_up: d.is_key_pressed(Key::KEY_EQUAL) || d.is_key_pressed(Key::KEY_KP_ADD),
+            scale_down: d.is_key_pressed(Key::KEY_MINUS) || d.is_key_pressed(Key::KEY_KP_SUBTRACT),
+            scale_auto: d.is_key_pressed(Key::KEY_ZERO) || d.is_key_pressed(Key::KEY_KP_0),
+            toggle_play: d.is_key_pressed(Key::KEY_SPACE),
+            toggle_fullscreen: d.is_key_pressed(Key::KEY_F),
+            escape: d.is_key_pressed(Key::KEY_ESCAPE),
+            toggle_mute: d.is_key_pressed(Key::KEY_M),
+            toggle_hud: d.is_key_pressed(Key::KEY_H),
+            seek_start: d.is_key_pressed(Key::KEY_HOME),
+            seek_end: d.is_key_pressed(Key::KEY_END),
+            nudge_back: held(Key::KEY_LEFT),
+            nudge_forward: held(Key::KEY_RIGHT),
+            cycle_scene: d.is_key_pressed(Key::KEY_TAB),
+            toggle_inspector: d.is_key_pressed(Key::KEY_T),
+        }
+    }
+}
+
+/// The frame facts the keyboard path reads out of [`ShellInput`].
+///
+/// Four scalars rather than the input itself, because `ShellInput` borrows the
+/// font bank, the workspace and the preset store and so cannot be built without
+/// a window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct KeyboardContext {
+    pub ui_scale: UiScale,
+    pub time_seconds: f64,
+    pub duration_seconds: f64,
+    pub scene_index: usize,
+}
+
+impl KeyboardContext {
+    fn of(input: &ShellInput<'_>) -> Self {
+        Self {
+            ui_scale: input.ui_scale,
+            time_seconds: input.time_seconds,
+            duration_seconds: input.duration_seconds,
+            scene_index: input.scene.index(),
+        }
+    }
+}
+
 impl Default for Shell {
     fn default() -> Self {
         Self::new()
@@ -414,6 +517,17 @@ impl Shell {
         }
     }
 
+    /// Everything that has to happen before a frame's first widget or keypress.
+    ///
+    /// One call rather than each subsystem being poked from each screen: both
+    /// [`Shell::draw`] and [`Shell::draw_welcome`] need it, and per-frame state
+    /// that only one of them resets is how a stale flag survives (UX0-A02,
+    /// UX0-A06).
+    fn begin_frame(&mut self, ui_scale: UiScale) {
+        self.widgets.begin_frame(ui_scale);
+        self.font_browser.begin_frame();
+    }
+
     pub fn draw(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -421,7 +535,7 @@ impl Shell {
         input: &ShellInput<'_>,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
-        self.widgets.begin_frame(input.ui_scale);
+        self.begin_frame(input.ui_scale);
         if self.fullscreen {
             d.set_mouse_cursor(raylib::consts::MouseCursor::MOUSE_CURSOR_DEFAULT);
         }
@@ -474,7 +588,7 @@ impl Shell {
         input: &ShellInput<'_>,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
-        self.widgets.begin_frame(input.ui_scale);
+        self.begin_frame(input.ui_scale);
         self.dropped_files(d, &mut commands);
 
         let (w, h) = input.window;
@@ -671,14 +785,27 @@ impl Shell {
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
-        use raylib::consts::KeyboardKey as Key;
+        self.keyboard_actions(KeyboardFrame::read(d), KeyboardContext::of(input), commands);
+    }
 
-        let control = d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL);
-        if control {
-            let plus = d.is_key_pressed(Key::KEY_EQUAL) || d.is_key_pressed(Key::KEY_KP_ADD);
-            let minus = d.is_key_pressed(Key::KEY_MINUS) || d.is_key_pressed(Key::KEY_KP_SUBTRACT);
-            let auto = d.is_key_pressed(Key::KEY_ZERO) || d.is_key_pressed(Key::KEY_KP_0);
-            if auto {
+    /// [`Shell::keyboard`] without raylib.
+    ///
+    /// Split from the reading half so the one rule that decides whether a global
+    /// shortcut fires at all — [`Shell::text_entry_has_focus`] — is assertable.
+    /// It has to be: a shortcut that fires while the user is typing (UX0-A06,
+    /// review 1.6) leaves no trace in a capture, and the defect it caused was
+    /// that typing "Space Mono" into the font filter toggled playback, mute,
+    /// fullscreen, the readout and the inspector and seeked the track.
+    fn keyboard_actions(
+        &mut self,
+        keys: KeyboardFrame,
+        context: KeyboardContext,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if keys.control {
+            let plus = keys.scale_up;
+            let minus = keys.scale_down;
+            if keys.scale_auto {
                 self.ui_scale_override = None;
                 self.ui_preferences.scale = UiScalePreference::Auto;
                 self.notify(
@@ -689,9 +816,9 @@ impl Shell {
                 commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
             } else if plus != minus {
                 let scale = if plus {
-                    input.ui_scale.next()
+                    context.ui_scale.next()
                 } else {
-                    input.ui_scale.previous()
+                    context.ui_scale.previous()
                 };
                 self.ui_scale_override = None;
                 self.ui_preferences.scale = UiScalePreference::Fixed(scale);
@@ -713,54 +840,59 @@ impl Shell {
 
         // The C's bindings (`ui_theme.h:60-64`), plus Tab for scene cycling,
         // which the C spells with its own scene shortcuts.
-        if d.is_key_pressed(Key::KEY_SPACE) {
+        if keys.toggle_play {
             commands.push(ShellCommand::TogglePlay);
         }
-        if d.is_key_pressed(Key::KEY_F) {
+        if keys.toggle_fullscreen {
             self.set_fullscreen(!self.fullscreen, commands);
         }
         // Escape leaves fullscreen but does not enter it — the convention every
         // media player follows, and the one that makes Escape safe to press.
-        if d.is_key_pressed(Key::KEY_ESCAPE) && self.fullscreen {
+        if keys.escape && self.fullscreen {
             self.set_fullscreen(false, commands);
         }
-        if d.is_key_pressed(Key::KEY_M) {
+        if keys.toggle_mute {
             commands.push(ShellCommand::ToggleMute);
         }
-        if d.is_key_pressed(Key::KEY_H) {
+        if keys.toggle_hud {
             self.hud_visible = !self.hud_visible;
         }
 
         // Fine positioning. These are the bindings the seek buttons' tooltips
         // name, evaluated through the same `transport_bar` helpers the buttons
         // use, so a click and a keypress cannot disagree about what Ctrl means.
-        if input.duration_seconds > 0.0 {
-            if d.is_key_pressed(Key::KEY_HOME) {
+        if context.duration_seconds > 0.0 {
+            if keys.seek_start {
                 commands.push(ShellCommand::Seek(0.0));
             }
-            if d.is_key_pressed(Key::KEY_END) {
-                commands.push(ShellCommand::Seek(input.duration_seconds));
+            if keys.seek_end {
+                commands.push(ShellCommand::Seek(context.duration_seconds));
             }
-            // Repeating rather than press-only: holding an arrow to scan through a
-            // track is the reason a 0.1 s step is useful at all.
-            let held = |key| d.is_key_pressed(key) || d.is_key_pressed_repeat(key);
-            let back = held(Key::KEY_LEFT);
-            let forward = held(Key::KEY_RIGHT);
+            let back = keys.nudge_back;
+            let forward = keys.nudge_forward;
             if back != forward {
                 let sign = if back { -1.0 } else { 1.0 };
-                commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
+                let step = transport_bar::seek_step_seconds(keys.control, keys.shift) * sign;
+                commands.push(ShellCommand::Seek(transport_bar::nudged(
+                    context.time_seconds,
+                    step,
+                    context.duration_seconds,
+                )));
             }
         }
-        if d.is_key_pressed(Key::KEY_TAB) {
-            let shift = d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT);
-            let step = if shift { SceneId::ALL.len() - 1 } else { 1 };
-            let next = (input.scene.index() + step) % SceneId::ALL.len();
+        if keys.cycle_scene {
+            let step = if keys.shift {
+                SceneId::ALL.len() - 1
+            } else {
+                1
+            };
+            let next = (context.scene_index + step) % SceneId::ALL.len();
             if let Some(id) = SceneId::from_index(next) {
                 commands.push(ShellCommand::SelectScene(id));
             }
         }
-        if d.is_key_pressed(Key::KEY_T) {
-            self.inspector_open = !self.inspector_open;
+        if keys.toggle_inspector {
+            self.set_inspector_open(!self.inspector_open);
         }
     }
 
@@ -987,7 +1119,7 @@ impl Shell {
                     };
                     commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
                 }
-                c if *c == icons::TUNE => self.inspector_open = !self.inspector_open,
+                c if *c == icons::TUNE => self.set_inspector_open(!self.inspector_open),
                 c if *c == icons::EXPORT => {
                     self.toggle_panel(UiPanel::Export);
                 }
@@ -1215,11 +1347,30 @@ impl Shell {
     /// focused field cannot defend itself — it has already lost the keypress by the
     /// time it runs. This is the guard, and it has to be asked *here*.
     ///
-    /// The lyrics cue field is the only one today. The font browser's query is a
-    /// hit-tested region rather than a [`super::text_input::TextField`], so it does
-    /// not appear; when it becomes one, it belongs in this list.
+    /// It asks every surface in [`TextEntrySurface`] and nothing else; that enum
+    /// is where a new one is declared (review 1.6, UX0-A06).
     fn text_entry_has_focus(&self) -> bool {
-        self.lyrics.is_typing()
+        TextEntrySurface::ALL
+            .iter()
+            .any(|surface| self.text_entry_focused(*surface))
+    }
+
+    /// Whether one named surface is holding the keyboard.
+    ///
+    /// Both arms pair the field's own focus flag with the pane being on screen,
+    /// and that pairing is the point rather than belt-and-braces: neither flag is
+    /// cleared when its panel closes, so a focused field left behind by a closed
+    /// panel would silence every global shortcut for the rest of the session —
+    /// the same stranded-state defect as UX0-A02, one layer up.
+    fn text_entry_focused(&self, surface: TextEntrySurface) -> bool {
+        match surface {
+            // The cue field is drawn by, and only by, the lyrics panel.
+            TextEntrySurface::LyricCue => self.panel == UiPanel::Lyrics && self.lyrics.is_typing(),
+            // The filter is a hit-tested region rather than a
+            // [`super::text_input::TextField`], and it is drawn from inside
+            // another panel's body, so the browser reports its own visibility.
+            TextEntrySurface::FontQuery => self.font_browser.query_has_focus(),
+        }
     }
 
     /// The position a nudge button asks for, honouring the modifier keys.
@@ -1248,7 +1399,57 @@ impl Shell {
             return;
         }
         self.fullscreen = on;
+        self.abandon_workspace_drags(commands);
         commands.push(ShellCommand::SetFullscreen(on));
+    }
+
+    /// Ends any drag whose surface has just stopped being drawn (UX0-A02).
+    ///
+    /// Fullscreen hides every panel, and the gesture code that would finish a drag
+    /// only runs while its panel is drawn. A splitter drag left in flight does not
+    /// simply pause: on the way back out it sees a mouse button that is no longer
+    /// down and writes the preferences file from a keypress the user made minutes
+    /// ago — or worse, sees one that *is* down again and snaps the panel to
+    /// wherever the pointer happens to be.
+    ///
+    /// The two drags are ended differently on purpose. A splitter is dropped
+    /// silently: its width was applied to `ui_preferences` live, so nothing is
+    /// lost on screen, and a save command emitted from an unrelated keypress is
+    /// exactly the spurious write this fixes. A scrub is *completed*, because it
+    /// paused playback when it started — dropping it would leave the track paused
+    /// at a position the playhead never moved to, with no event the user could
+    /// connect it to.
+    fn abandon_workspace_drags(&mut self, commands: &mut Vec<ShellCommand>) {
+        self.split_drag = None;
+        if self.timeline_gesture == Some(TimelineGesture::Scrub) {
+            self.timeline_gesture = None;
+            if let Some(target) = self.scrub_target_seconds.take() {
+                commands.push(ShellCommand::Seek(target));
+            }
+            if std::mem::take(&mut self.scrub_restore_playing) {
+                commands.push(ShellCommand::TogglePlay);
+            }
+        }
+        // A scene-boundary drag belongs to the scene lane, which cancels its own
+        // preview when it finds the gesture gone (`scene_timeline.rs:530-533`).
+        // Cancelling rather than committing is right here: the boundary is only
+        // retimed on release, and the release never happened.
+        if self.timeline_gesture == Some(TimelineGesture::SceneBoundary) {
+            self.timeline_gesture = None;
+        }
+    }
+
+    /// Opens or closes the inspector, ending a drag on the boundary it owns.
+    ///
+    /// The inspector's splitter exists only while the inspector does, so closing
+    /// it mid-drag strands the drag the same way fullscreen does — and an
+    /// invisible splitter that still resizes a closed panel is the harder half to
+    /// diagnose.
+    fn set_inspector_open(&mut self, open: bool) {
+        self.inspector_open = open;
+        if !open && self.split_drag == Some(SplitKind::Inspector) {
+            self.split_drag = None;
+        }
     }
 
     fn toggle_panel(&mut self, panel: UiPanel) {
@@ -2405,5 +2606,185 @@ mod tests {
         // loaded, because persistent notices do not expire.
         let shell = Shell::new();
         assert!(shell.notices.is_empty());
+    }
+
+    fn context() -> KeyboardContext {
+        KeyboardContext {
+            ui_scale: UiScale::default(),
+            time_seconds: 30.0,
+            duration_seconds: 120.0,
+            scene_index: 0,
+        }
+    }
+
+    /// Every global shortcut on one frame. Chorded and repeat-only keys are left
+    /// out: this is the set a user types into a text field by accident.
+    fn every_shortcut() -> KeyboardFrame {
+        KeyboardFrame {
+            toggle_play: true,
+            toggle_fullscreen: true,
+            toggle_mute: true,
+            toggle_hud: true,
+            seek_start: true,
+            seek_end: true,
+            nudge_back: true,
+            cycle_scene: true,
+            toggle_inspector: true,
+            ..KeyboardFrame::default()
+        }
+    }
+
+    /// Puts one named surface in the state the user reaches by clicking into it
+    /// and typing.
+    ///
+    /// A `match` rather than a list of setters, so that adding a
+    /// [`TextEntrySurface`] variant fails to compile here until somebody says how
+    /// it takes focus — which is the half of UX0-A06 that was missed.
+    fn focus(shell: &mut Shell, surface: TextEntrySurface) {
+        match surface {
+            TextEntrySurface::LyricCue => {
+                shell.panel = UiPanel::Lyrics;
+                let document = musializer_core::project::lyrics::LyricsDocument::new(120.0)
+                    .expect("a 120 s document is valid");
+                shell.lyrics.begin_new(&document, 0.0);
+            }
+            TextEntrySurface::FontQuery => shell.font_browser.focus_query_for_test(),
+        }
+    }
+
+    /// UX0-A06 (review 1.6). Typing "Space Mono" into the font filter used to
+    /// toggle playback, fullscreen, mute and the readout, cycle the scene, open
+    /// the inspector and seek the track — one shortcut per letter.
+    #[test]
+    fn no_global_shortcut_fires_while_any_text_surface_has_focus() {
+        for surface in TextEntrySurface::ALL {
+            let mut shell = Shell::new();
+            focus(&mut shell, surface);
+            assert!(
+                shell.text_entry_has_focus(),
+                "{surface:?} does not report focus, so the guard cannot see it"
+            );
+
+            let before = (shell.hud_visible, shell.inspector_open, shell.fullscreen);
+            let mut commands = Vec::new();
+            shell.keyboard_actions(every_shortcut(), context(), &mut commands);
+
+            assert_eq!(commands, Vec::new(), "{surface:?} let a command through");
+            assert_eq!(
+                (shell.hud_visible, shell.inspector_open, shell.fullscreen),
+                before,
+                "{surface:?} let a shortcut change the shell"
+            );
+        }
+    }
+
+    /// The other half: a guard that suppressed everything unconditionally would
+    /// pass the test above and break the application.
+    #[test]
+    fn every_global_shortcut_still_fires_when_nothing_is_being_typed_into() {
+        let mut shell = Shell::new();
+        assert!(!shell.text_entry_has_focus());
+
+        let mut commands = Vec::new();
+        shell.keyboard_actions(every_shortcut(), context(), &mut commands);
+
+        assert!(commands.contains(&ShellCommand::TogglePlay));
+        assert!(commands.contains(&ShellCommand::ToggleMute));
+        assert!(commands.contains(&ShellCommand::SetFullscreen(true)));
+        assert!(commands.contains(&ShellCommand::Seek(0.0)));
+        assert!(commands.contains(&ShellCommand::Seek(120.0)));
+        assert!(commands
+            .iter()
+            .any(|command| matches!(command, ShellCommand::SelectScene(_))));
+        assert!(shell.hud_visible);
+        assert!(shell.inspector_open);
+    }
+
+    /// A stale focus flag is the same defect as a stale widget claim: the panel
+    /// goes, the flag stays, and the keyboard is dead for the rest of the session.
+    #[test]
+    fn a_text_surface_that_stopped_being_drawn_stops_taking_the_keyboard() {
+        for surface in TextEntrySurface::ALL {
+            let mut shell = Shell::new();
+            focus(&mut shell, surface);
+            assert!(shell.text_entry_has_focus());
+
+            // Close the pane the way its own control does, without touching the
+            // field: the lyrics panel is dismissed, the font browser stops
+            // drawing its filter.
+            shell.panel = UiPanel::None;
+            shell.begin_frame(UiScale::default());
+
+            assert!(
+                !shell.text_entry_has_focus(),
+                "{surface:?} kept the keyboard after its pane closed"
+            );
+        }
+    }
+
+    /// UX0-A02, the splitter half. `F` mid-drag left `split_drag` set, and the
+    /// save it owed fired on the way back out of fullscreen — minutes later, from
+    /// an unrelated keypress.
+    #[test]
+    fn fullscreen_taken_mid_splitter_drag_saves_nothing_and_leaves_no_drag() {
+        let mut shell = Shell::new();
+        shell.split_drag = Some(SplitKind::Timeline);
+
+        let mut commands = Vec::new();
+        shell.keyboard_actions(
+            KeyboardFrame {
+                toggle_fullscreen: true,
+                ..KeyboardFrame::default()
+            },
+            context(),
+            &mut commands,
+        );
+
+        assert!(shell.fullscreen);
+        assert_eq!(shell.split_drag, None);
+        assert_eq!(commands, vec![ShellCommand::SetFullscreen(true)]);
+    }
+
+    #[test]
+    fn closing_the_inspector_mid_drag_leaves_no_drag_on_a_splitter_that_is_gone() {
+        let mut shell = Shell::new();
+        shell.set_inspector_open(true);
+        shell.split_drag = Some(SplitKind::Inspector);
+
+        shell.set_inspector_open(false);
+        assert_eq!(shell.split_drag, None);
+
+        // A drag on one of the other two boundaries is not the inspector's to end.
+        shell.set_inspector_open(true);
+        shell.split_drag = Some(SplitKind::Sidebar);
+        shell.set_inspector_open(false);
+        assert_eq!(shell.split_drag, Some(SplitKind::Sidebar));
+    }
+
+    /// The same stranding, one gesture over: a scrub pauses playback when it
+    /// starts, so abandoning it silently would leave the track paused at a
+    /// position the playhead never reached.
+    #[test]
+    fn fullscreen_taken_mid_scrub_completes_the_seek_rather_than_stranding_it() {
+        let mut shell = Shell::new();
+        shell.timeline_gesture = Some(TimelineGesture::Scrub);
+        shell.scrub_target_seconds = Some(42.0);
+        shell.scrub_restore_playing = true;
+
+        let mut commands = Vec::new();
+        shell.keyboard_actions(
+            KeyboardFrame {
+                toggle_fullscreen: true,
+                ..KeyboardFrame::default()
+            },
+            context(),
+            &mut commands,
+        );
+
+        assert_eq!(shell.timeline_gesture, None);
+        assert_eq!(shell.scrub_target_seconds, None);
+        assert!(commands.contains(&ShellCommand::Seek(42.0)));
+        assert!(commands.contains(&ShellCommand::TogglePlay));
+        assert!(!shell.scrub_restore_playing);
     }
 }
