@@ -192,8 +192,9 @@ pub struct UiProbe {
     /// `--probe-frames` and `--probe-shot`. Needs `panel=tune`, and the key must
     /// belong to the scene being drawn.
     pub route_editor: Option<String>,
-    /// `assist=confirm`: arm the Assist confirmation prompt.
-    pub assist_confirmation: bool,
+    /// `assist=confirm|candidate|running|failed`: put the Assist panel in one of
+    /// its consequential states (review 4.2).
+    pub assist: Option<AssistProbe>,
     /// Selects an authored lyric sheet for the next Assist lyrics run.
     pub lyrics_reference_path: Option<PathBuf>,
     /// `time=SECONDS`, which also sets the seek-requested flag.
@@ -223,6 +224,45 @@ pub struct UiProbe {
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
     pub audio_stall_ms: Option<u64>,
+}
+
+/// `assist=` in a `--ui-probe` spec (review 4.2).
+///
+/// **Invented, and wider than the oracle's.** The frozen C has no probe at all;
+/// this repository shipped `assist=confirm` and left the three states a user
+/// actually has to read — a staged result awaiting Apply, a run in progress, and
+/// a failure — unphotographable, which by this project's own rule means
+/// unreviewed. The overpainted blocking reason found in review 1.13 lived in
+/// exactly that gap.
+///
+/// Every state but [`Self::Confirm`] is synthesized in-process by
+/// `ui::panels::assist::apply_probe_state`: no helper is spawned, no file is
+/// read, and the content is fixed, so two runs of the same probe produce the
+/// same pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssistProbe {
+    /// Arm the confirmation step, as `assist=confirm` always has.
+    Confirm,
+    /// Stage a fixed validated result whose target track is gone, so the review
+    /// body draws *and* Apply is blocked with its reason beside it.
+    Candidate,
+    /// A running job with a fixed elapsed clock.
+    Running,
+    /// A terminal failure with a fixed detail and log name.
+    Failed,
+}
+
+impl AssistProbe {
+    /// The spec words, in the order the help text lists them.
+    fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "confirm" => Some(AssistProbe::Confirm),
+            "candidate" => Some(AssistProbe::Candidate),
+            "running" => Some(AssistProbe::Running),
+            "failed" => Some(AssistProbe::Failed),
+            _ => None,
+        }
+    }
 }
 
 /// `fonts=` in a `--ui-probe` spec (`musializer.c:202-217`).
@@ -475,12 +515,15 @@ where
             "--auto-scenes" => cli.auto_scenes = true,
             "--reload-once" => cli.reload_once = true,
 
-            "--ui-probe" => match value_of(&argv, i).and_then(parse_ui_probe) {
-                Some(probe) => cli.ui_probe = Some(probe),
-                None => cli.warn(
-                    "Invalid --ui-probe spec; expected comma-separated panel=, \
-                     fullscreen=, play=, time=, route=, hover=XxY, or size= pairs",
-                ),
+            // The message names the pair it refused. A capture script's typo that
+            // warns "invalid spec" costs a round-trip to diagnose, which is
+            // exactly what `hover=1121,449` cost once.
+            "--ui-probe" => match value_of(&argv, i) {
+                None => cli.warn("Missing --ui-probe spec"),
+                Some(spec) => match parse_ui_probe_spec(spec) {
+                    Ok(probe) => cli.ui_probe = Some(probe),
+                    Err(message) => cli.warn(message),
+                },
             },
 
             "--ui-scale" => match value_of(&argv, i).and_then(UiScalePreference::parse) {
@@ -669,6 +712,16 @@ pub fn parse_route_spec(spec: &str) -> Option<ParameterMapping> {
     routes::parse_route_spec(spec).map(|(_scene, route)| route)
 }
 
+/// Accepted or refused, for the tests that only care which.
+///
+/// A thin `.ok()` rather than a second parser: a duplicated spec grammar drifts
+/// from the one it was copied from.
+#[cfg(test)]
+#[must_use]
+fn parse_ui_probe(spec: &str) -> Option<UiProbe> {
+    parse_ui_probe_spec(spec).ok()
+}
+
 /// `parse_ui_probe` (`musializer.c:131-250`). One argv word,
 /// `key=value[,key=value...]`.
 ///
@@ -676,93 +729,116 @@ pub fn parse_route_spec(spec: &str) -> Option<ParameterMapping> {
 /// last-wins and not a silent default. The rationale at `:128-130` is worth
 /// keeping: a typo in a capture script must not quietly photograph the wrong UI
 /// state.
-#[must_use]
-pub fn parse_ui_probe(spec: &str) -> Option<UiProbe> {
-    if spec.is_empty() || spec.len() >= UI_PROBE_SPEC_CAPACITY {
-        return None;
+///
+/// The refusal names the pair it refused, which the C's does not need to: this
+/// repository has a probe grammar and the C does not, and `hover=1121,449` cost
+/// a capture round-trip to diagnose because the warning said only "invalid
+/// spec".
+pub fn parse_ui_probe_spec(spec: &str) -> Result<UiProbe, String> {
+    if spec.is_empty() {
+        return Err("--ui-probe needs at least one key=value pair".to_string());
+    }
+    if spec.len() >= UI_PROBE_SPEC_CAPACITY {
+        return Err(format!(
+            "--ui-probe spec is longer than the {UI_PROBE_SPEC_CAPACITY}-byte limit"
+        ));
     }
     let mut probe = UiProbe::default();
     let mut seen: Vec<&str> = Vec::new();
 
     for pair in spec.split(',') {
-        let (key, value) = pair.split_once('=')?;
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(format!("--ui-probe pair `{pair}` is not key=value"));
+        };
         if key.is_empty() || value.is_empty() {
-            return None;
+            return Err(format!(
+                "--ui-probe pair `{pair}` has an empty key or value"
+            ));
         }
         if seen.contains(&key) {
-            return None;
+            // Not last-wins: a typo in a capture script must not quietly
+            // photograph the wrong UI state (`musializer.c:128-130`).
+            return Err(format!("--ui-probe key `{key}` appears more than once"));
         }
         seen.push(key);
 
-        match key {
-            "panel" => probe.panel = UiPanel::from_name(value)?,
-            "fullscreen" => probe.fullscreen = parse_probe_flag(value)?,
-            "play" => probe.playing = parse_probe_flag(value)?,
-            "lyric" => {
-                // 1..=4096 inclusive; 0 is rejected (`musializer.c:177-187`).
-                let selection: u32 = value.parse().ok()?;
-                if !(1..=4096).contains(&selection) {
-                    return None;
-                }
-                probe.lyric_selection = Some(selection);
-            }
-            "zoom" => {
-                // 1.0..=100000.0 inclusive, finite (`musializer.c:188-197`).
-                let zoom: f64 = value.parse().ok()?;
-                if !zoom.is_finite() || !(1.0..=100_000.0).contains(&zoom) {
-                    return None;
-                }
-                probe.timeline_zoom = Some(zoom);
-            }
-            "style" => {
-                if value != "caption" {
-                    return None;
-                }
-                probe.caption_style_pane = true;
-            }
-            "fonts" => {
-                probe.font_browser = Some(if value == "consent" {
-                    FontBrowserProbe::Consent
-                } else {
-                    FontBrowserProbe::Catalogue(PathBuf::from(value))
-                });
-            }
-            "assist" => {
-                if value != "confirm" {
-                    return None;
-                }
-                probe.assist_confirmation = true;
-            }
-            "route" => {
-                // Resolved against the descriptor tables here rather than in the
-                // panel, so a mistyped key fails the command line instead of
-                // quietly photographing an unexpanded row.
-                let key = if value.starts_with("settings.") {
-                    value.to_string()
-                } else {
-                    format!("settings.{value}")
-                };
-                settings::descriptor_by_key(&key)?;
-                probe.route_editor = Some(key);
-            }
-            "lyrics-file" => probe.lyrics_reference_path = Some(PathBuf::from(value)),
-            "time" => probe.seek_seconds = Some(parse_seconds(value)?),
-            "size" => probe.size = Some(parse_resolution(value)?),
-            "sidebar" => probe.sidebar_width = Some(parse_split_position(value)?),
-            "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
-            "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
-            "hover" => probe.hover = Some(parse_point(value)?),
-            "audio-stall" => {
-                let milliseconds: u64 = value.parse().ok()?;
-                if !(1..=5_000).contains(&milliseconds) {
-                    return None;
-                }
-                probe.audio_stall_ms = Some(milliseconds);
-            }
-            _ => return None,
+        if apply_probe_key(&mut probe, key, value).is_none() {
+            return Err(format!(
+                "--ui-probe `{key}={value}` is not something this build understands"
+            ));
         }
     }
-    Some(probe)
+    Ok(probe)
+}
+
+/// One `key=value` pair, applied. `None` is "this build does not understand it",
+/// which the caller turns into a message naming the pair.
+fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
+    match key {
+        "panel" => probe.panel = UiPanel::from_name(value)?,
+        "fullscreen" => probe.fullscreen = parse_probe_flag(value)?,
+        "play" => probe.playing = parse_probe_flag(value)?,
+        "lyric" => {
+            // 1..=4096 inclusive; 0 is rejected (`musializer.c:177-187`).
+            let selection: u32 = value.parse().ok()?;
+            if !(1..=4096).contains(&selection) {
+                return None;
+            }
+            probe.lyric_selection = Some(selection);
+        }
+        "zoom" => {
+            // 1.0..=100000.0 inclusive, finite (`musializer.c:188-197`).
+            let zoom: f64 = value.parse().ok()?;
+            if !zoom.is_finite() || !(1.0..=100_000.0).contains(&zoom) {
+                return None;
+            }
+            probe.timeline_zoom = Some(zoom);
+        }
+        "style" => {
+            if value != "caption" {
+                return None;
+            }
+            probe.caption_style_pane = true;
+        }
+        "fonts" => {
+            probe.font_browser = Some(if value == "consent" {
+                FontBrowserProbe::Consent
+            } else {
+                FontBrowserProbe::Catalogue(PathBuf::from(value))
+            });
+        }
+        "assist" => {
+            probe.assist = Some(AssistProbe::from_word(value)?);
+        }
+        "route" => {
+            // Resolved against the descriptor tables here rather than in the
+            // panel, so a mistyped key fails the command line instead of
+            // quietly photographing an unexpanded row.
+            let key = if value.starts_with("settings.") {
+                value.to_string()
+            } else {
+                format!("settings.{value}")
+            };
+            settings::descriptor_by_key(&key)?;
+            probe.route_editor = Some(key);
+        }
+        "lyrics-file" => probe.lyrics_reference_path = Some(PathBuf::from(value)),
+        "time" => probe.seek_seconds = Some(parse_seconds(value)?),
+        "size" => probe.size = Some(parse_resolution(value)?),
+        "sidebar" => probe.sidebar_width = Some(parse_split_position(value)?),
+        "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
+        "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
+        "hover" => probe.hover = Some(parse_point(value)?),
+        "audio-stall" => {
+            let milliseconds: u64 = value.parse().ok()?;
+            if !(1..=5_000).contains(&milliseconds) {
+                return None;
+            }
+            probe.audio_stall_ms = Some(milliseconds);
+        }
+        _ => return None,
+    }
+    Some(())
 }
 
 fn parse_split_position(text: &str) -> Option<f32> {
@@ -850,9 +926,9 @@ Diagnostics:
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
                           sidebar=PX, inspector=PX, timeline-height=PX
                           set logical split positions for capture,
-                          assist=confirm arms the Assist confirmation
-                          prompt, lyric=N selects the nth lyric cue
-                          (needs panel=assist),
+                          assist=confirm|candidate|running|failed puts the
+                          Assist panel in that state, lyric=N selects the
+                          nth lyric cue (needs panel=assist),
                           zoom=FACTOR zooms the timeline strip about the
                           playhead (1 = whole track),
                           style=caption shows the caption typography
@@ -1227,7 +1303,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(probe.panel, UiPanel::Assist);
-        assert!(probe.assist_confirmation);
+        assert_eq!(probe.assist, Some(AssistProbe::Confirm));
         assert_eq!(probe.lyric_selection, Some(3));
         assert!(probe.playing);
         assert!(!probe.fullscreen);
@@ -1268,6 +1344,66 @@ mod tests {
     }
 
     #[test]
+    fn the_assist_probe_names_all_four_states_and_confirm_still_means_confirm() {
+        // Review 4.2: Candidate, Running and Failed are the panel's consequential
+        // bodies and had never been in a frame, because the grammar was one word
+        // wide. `confirm` keeps its exact old meaning, including the flag
+        // `main.rs` reads today.
+        for (word, state) in [
+            ("confirm", AssistProbe::Confirm),
+            ("candidate", AssistProbe::Candidate),
+            ("running", AssistProbe::Running),
+            ("failed", AssistProbe::Failed),
+        ] {
+            let probe = parse_ui_probe(&format!("panel=assist,assist={word}"))
+                .unwrap_or_else(|| panic!("assist={word} should parse"));
+            assert_eq!(probe.assist, Some(state));
+        }
+        // Near-misses are refused rather than rounded to a neighbour: a capture
+        // that photographs Ready while claiming Candidate is worse than a failure.
+        for word in ["cancel", "Candidate", "candidates", "run", "fail", "1"] {
+            assert!(
+                parse_ui_probe(&format!("assist={word}")).is_none(),
+                "assist={word} must not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_probe_pair_is_reported_with_its_key() {
+        // The warning that said only "invalid spec" cost a capture round-trip
+        // when `hover=1121,449` silently failed. Every refusal now names what it
+        // refused.
+        let message = parse_ui_probe_spec("panel=assist,assist=cancel").unwrap_err();
+        assert!(
+            message.contains("assist=cancel"),
+            "the message must name the pair, got: {message}"
+        );
+        assert!(parse_ui_probe_spec("panel=tune,panel=export")
+            .unwrap_err()
+            .contains("panel"));
+        // The comma-separated spec eats this one at the first pair, which is
+        // still the pair a reader has to fix: `hover=` wants `XxY`.
+        assert!(parse_ui_probe_spec("hover=1121,449")
+            .unwrap_err()
+            .contains("hover=1121"));
+        assert!(parse_ui_probe_spec("pannel=tune")
+            .unwrap_err()
+            .contains("pannel=tune"));
+
+        // And the message reaches the command line rather than being swallowed.
+        let cli = parsed(&["--ui-probe", "panel=assist,assist=cancel"]);
+        assert!(cli.error);
+        assert!(
+            cli.warnings
+                .iter()
+                .any(|line| line.contains("assist=cancel")),
+            "the CLI warning must name the pair, got: {:?}",
+            cli.warnings
+        );
+    }
+
+    #[test]
     fn the_route_probe_resolves_its_key_and_rejects_a_typo() {
         // Resolved at parse time on purpose: a capture script that names a
         // setting that does not exist has to fail the command line, not
@@ -1298,9 +1434,10 @@ mod tests {
         // Flags are exactly 0 or 1, not "true"/"yes".
         assert!(parse_ui_probe("play=true").is_none());
         assert!(parse_ui_probe("fullscreen=2").is_none());
-        // style= and assist= accept exactly one word each.
+        // style= accepts exactly one word; assist= accepts exactly four.
         assert!(parse_ui_probe("style=body").is_none());
         assert!(parse_ui_probe("assist=cancel").is_none());
+        assert!(parse_ui_probe("assist=candidate").is_some());
         // time= is parse_seconds: finite and non-negative.
         assert!(parse_ui_probe("time=-1").is_none());
         assert!(parse_ui_probe("sidebar=79").is_none());

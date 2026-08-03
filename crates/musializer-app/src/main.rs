@@ -658,13 +658,24 @@ fn run() -> Result<std::process::ExitCode, String> {
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
             }
-            if probe.assist_confirmation {
-                if probe.panel == cli::UiPanel::Assist {
-                    app.workspace.assist.set_confirmation_pending(true);
-                } else {
+            // `--ui-probe assist=` puts the panel in one of its four states
+            // (review 4.2). Candidate, Running and Failed are synthesized in
+            // process -- no helper, no file, no wall clock -- so two runs of the
+            // same probe produce the same pixels. The clock handed over is the
+            // transport's, because the running body's elapsed counter is drawn
+            // from `time_seconds - started_at` and the transport is parked.
+            if let Some(state) = probe.assist {
+                if probe.panel != cli::UiPanel::Assist {
                     eprintln!(
-                        "warning: could not apply --ui-probe state; assist=confirm needs panel=assist"
+                        "warning: could not apply --ui-probe state; assist= needs panel=assist"
                     );
+                    options.error = true;
+                } else if let Err(reason) = ui::panels::assist::apply_probe_state(
+                    &mut app.workspace,
+                    state,
+                    probe.seek_seconds.unwrap_or(0.0),
+                ) {
+                    eprintln!("warning: could not apply --ui-probe assist= state; {reason}");
                     options.error = true;
                 }
             }

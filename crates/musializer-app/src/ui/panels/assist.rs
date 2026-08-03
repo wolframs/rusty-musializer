@@ -64,6 +64,7 @@ use musializer_core::ui::assist_ui_state::{
 };
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
+use musializer_runtime::font::UiFonts;
 use musializer_runtime::process::assist::{
     AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, StopReason,
 };
@@ -974,6 +975,355 @@ pub fn resolve_lyric_reference(track: Option<&Track>) -> (AssistLyricReference, 
 }
 
 // ---------------------------------------------------------------------------
+// The probe-only states (`--ui-probe assist=`), review 4.2.
+//
+// The panel's three consequential bodies — a validated result awaiting Apply, a
+// run in progress, and a failure — had never been in a frame, because reaching
+// any of them needs a helper process, a decoded track and several seconds of
+// wall clock. So they are synthesized here instead: fixed content, no spawn, no
+// file read, no clock. Two runs of the same probe produce the same pixels, which
+// is the only reason a capture is evidence of anything.
+//
+// This is invention, not a port. The frozen C has no probe at all.
+// ---------------------------------------------------------------------------
+
+/// A validated bridge document, as the helper would have written it.
+///
+/// Written out as a literal rather than generated, because a probe fixture that
+/// is computed can drift with the thing it is supposed to hold still. Two lyric
+/// cues (one flagged uncertain, so the review body draws its singular "1 timing
+/// cue needs review" branch), two contiguous sections and two contiguous
+/// semantic cues, so all three summary lines are present — which is also the
+/// worst case for the layout review 1.13 is about.
+#[rustfmt::skip]
+const PROBE_BRIDGE_DOCUMENT: &str = concat!(
+    "MUSIALIZER_BRIDGE\t1\n",
+    // Not a real digest: `analysis_bridge::parse` is called with no expected
+    // hash here, because there is no audio file in this path to hash.
+    "AUDIO\t0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\t60000\n",
+    "LYRIC\t1\t12000\t16000\t880\tnone\td2Ugd2VyZSBuZXZlciBtZWFudCB0byBzdGF5\n",
+    "LYRIC\t2\t16000\t21000\t410\tuncertain\tYW5kIHRoZSBsaWdodHMgY2FtZSB1cCBhbnl3YXk=\n",
+    "SECTION\t10\t0\t30000\tspectrum\t640\tWyJjaG9ydXMiLCJsaWZ0Il0=\n",
+    "SECTION\t11\t30000\t60000\tloom\t420\tWyJvdXRybyJd\n",
+    "SEMANTIC\t20\t0\t30000\t720\t300\t250\t900\tYnJpZ2h0IGFuZCByaXNpbmc=\n",
+    "SEMANTIC\t21\t30000\t60000\t400\t200\t-150\t800\tY2FsbSBhZnRlciB0aGUgbGlmdA==\n",
+);
+
+/// The track index a probe candidate targets: one that cannot exist.
+///
+/// Deliberate. A staged result whose target is gone is the reachable half of
+/// review 1.13 — it greys Apply out and gives the panel a reason to print — and
+/// the other half (an unfinished lyric draft) cannot be reached at all until the
+/// draft editor lands. Without a blocked Apply the fix for 1.13 is not in the
+/// frame, so this is the state worth photographing.
+const PROBE_MISSING_TRACK: usize = usize::MAX;
+
+/// The elapsed clock a probed running job reports: 2:05, fixed.
+const PROBE_ELAPSED_SECONDS: f64 = 125.0;
+
+/// Artifact paths for a probed job. They do not exist, so all three Copy buttons
+/// draw disabled — which is both truthful (this job wrote nothing) and the state
+/// that makes their boxes photographable beside the blocking reason.
+fn probe_artifacts(session: &mut AssistSession) {
+    session.output_dir = "/nonexistent/musializer-assist-probe".to_string();
+    session.bridge_path = "/nonexistent/musializer-assist-probe/result.bridge.tsv".to_string();
+    session.log_path = "/nonexistent/musializer-assist-probe/analysis.log".to_string();
+}
+
+/// The staged result a `--ui-probe assist=candidate` run reviews.
+fn probe_candidate() -> Result<AnalysisCandidate, String> {
+    let bridge = analysis_bridge::parse(PROBE_BRIDGE_DOCUMENT.as_bytes(), None, None)
+        .map_err(|error| capitalize_sentence(&error.to_string()))?;
+    let duration_seconds = bridge.duration_ms as f64 / 1000.0;
+    AnalysisCandidate::prepare(&bridge, Lanes::ALL, duration_seconds, SCENE_COUNT as u32)
+        .map_err(|error| capitalize_sentence(&error.to_string()))
+}
+
+/// Puts the Assist session into one of its four probeable states (review 4.2).
+///
+/// `now` is the transport clock the panel will read this frame, not a wall
+/// clock: the running body's elapsed counter is drawn from
+/// `time_seconds - started_at`, and a capture with a parked transport must
+/// report the same number every run.
+///
+/// Nothing here spawns a process, reads a file or touches a track. The failure
+/// case returns a sentence for the command line rather than half-applying.
+pub(crate) fn apply_probe_state(
+    workspace: &mut Workspace,
+    state: crate::cli::AssistProbe,
+    now: f64,
+) -> Result<(), String> {
+    let current = workspace.current_index();
+    match state {
+        crate::cli::AssistProbe::Confirm => {
+            // Unchanged from the one-word grammar this replaced.
+            workspace.assist.set_confirmation_pending(true);
+        }
+        crate::cli::AssistProbe::Candidate => {
+            let candidate = probe_candidate()?;
+            let session = &mut workspace.assist;
+            session.select_mode(AssistMode::All);
+            session.set_confirmation_pending(false);
+            session.set_apply_confirmation_pending(false);
+            session.candidate_first_lyric = first_lyric(&candidate);
+            session.candidate = Some(candidate);
+            session.candidate_mode = AssistMode::All;
+            session.candidate_track = Some(PROBE_MISSING_TRACK);
+            session.job_state = AssistJobState::Succeeded;
+            probe_artifacts(session);
+        }
+        crate::cli::AssistProbe::Running => {
+            let session = &mut workspace.assist;
+            session.select_mode(AssistMode::All);
+            session.set_confirmation_pending(false);
+            session.job_state = AssistJobState::Running;
+            session.job_track = current;
+            session.started_at = now - PROBE_ELAPSED_SECONDS;
+        }
+        crate::cli::AssistProbe::Failed => {
+            let session = &mut workspace.assist;
+            session.select_mode(AssistMode::All);
+            session.set_confirmation_pending(false);
+            session.job_state = AssistJobState::Failed;
+            session.job_track = current;
+            // The tail of a log, joined with " | " rather than kept as lines:
+            // the panel's failure surface is the one-line status row, and a
+            // string with newlines in it would draw straight down over the body
+            // underneath. The 250-byte truncation in `status_line` is the C's.
+            session.failure_detail =
+                "helper exited with status 2 | external_analysis.py:412 in run_alignment \
+                 | RuntimeError: alignment model unavailable offline"
+                    .to_string();
+            probe_artifacts(session);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The staged-result action row, as arithmetic.
+//
+// Pulled out of the drawing code for this file's usual reason, and for a
+// specific one: the bug review 1.13 found is a *rectangle* bug. The blocking
+// reason was drawn at `discard.right + gap`, and the Copy buttons were then
+// drawn from the same x at the same y, so the sentence explaining why Apply was
+// greyed out was painted over by three opaque 36 px boxes — precisely when the
+// user needs it. A capture cannot catch that (the picture is self-coherent, it
+// just says less than it should), and a property assertion cannot pin it, so
+// what follows is compared rect against rect in a unit test.
+// ---------------------------------------------------------------------------
+
+/// Where the review body's buttons and its blocking reason go (review 1.13).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CandidateActionRow {
+    pub apply: UiRect,
+    pub discard: UiRect,
+    /// The left edge of the three Copy buttons.
+    pub artifacts_x: f32,
+    /// Where the reason naming the block goes, if there is one.
+    pub reason: ReasonSlot,
+}
+
+/// The reason's place in the row (review 1.13).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ReasonSlot {
+    /// Apply is not blocked; there is no sentence to draw.
+    None,
+    /// Beside the buttons, in the gap the artifact strip left behind. Up to two
+    /// 13 px lines, which is what a 36 px row holds.
+    Beside(UiRect),
+    /// The row above the buttons, at full panel width, for a panel too narrow to
+    /// give the reason a readable column beside them. The caller drops the
+    /// "First staged lyric" preview when that row is where it was going to draw:
+    /// why Apply cannot be pressed outranks a preview of what it would do.
+    Above(UiRect),
+}
+
+/// Narrower than this and a two-line reason beside the buttons is shredded into
+/// three or four words a line, so it moves to its own row instead. Sized from
+/// the two reasons that exist (57 and 60 characters): at 13 px they wrap to two
+/// comfortable lines at this width.
+const REASON_MIN_WIDTH: f32 = 220.0;
+
+/// The reason row's offset from the body top, which is the "First staged lyric"
+/// line's own offset. Deliberately not a new row: `assist_ui_state::ui_layout`
+/// reserves exactly 118 px for this body and it is checked against the frozen C
+/// by `tools/differential_assist_ui.sh`, so the fix has to fit in the space the
+/// oracle's layout already allows.
+const REASON_ROW_OFFSET: f32 = 54.0;
+
+/// The 13 px text height the reason rows are sized in.
+const REASON_FONT_SIZE: f32 = 13.0;
+
+/// The width the three Copy buttons occupy, including the gaps between them.
+fn artifact_strip_width(gap: f32) -> f32 {
+    AssistArtifact::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, artifact)| artifact.width() + if index == 0 { 0.0 } else { gap })
+        .sum()
+}
+
+/// Lays out Apply, Discard, the Copy strip and the blocking reason so that no
+/// two of them share a pixel (review 1.13).
+///
+/// The Copy strip is right-aligned to the panel's inner edge **whether or not**
+/// a reason is showing. That costs a gap of empty row in the unblocked case and
+/// buys the property that matters: a reason appearing or disappearing — which it
+/// does as the user edits a lyric draft — never moves a button under the
+/// pointer. It is the same argument as `core::ui::transport_bar`'s: a layout
+/// that is stable under a state change beats one that packs tighter.
+fn candidate_action_row(
+    boundary: UiRect,
+    action_y: f32,
+    padding: f32,
+    gap: f32,
+    blocked: bool,
+) -> CandidateActionRow {
+    let x = boundary.x + padding;
+    let row_y = action_y + 72.0;
+    let apply = UiRect::new(x, row_y, 144.0, metric::UI_BUTTON_HEIGHT);
+    let discard = UiRect::new(apply.x + apply.width + gap, row_y, 100.0, apply.height);
+    let after_discard = discard.x + discard.width + gap;
+    let inner_right = boundary.x + boundary.width - padding;
+
+    // `.max` rather than a refusal: a panel this narrow already drops the Copy
+    // buttons in `assist_artifact_actions`, which will not draw a button that
+    // leaves the boundary. What must not happen is a negative-width gap being
+    // handed to the reason as if it were room.
+    let artifacts_x = (inner_right - artifact_strip_width(gap)).max(after_discard);
+    let beside_width = artifacts_x - gap - after_discard;
+
+    let reason = if !blocked {
+        ReasonSlot::None
+    } else if beside_width >= REASON_MIN_WIDTH {
+        ReasonSlot::Beside(UiRect::new(
+            after_discard,
+            row_y,
+            beside_width,
+            apply.height,
+        ))
+    } else {
+        ReasonSlot::Above(UiRect::new(
+            x,
+            action_y + REASON_ROW_OFFSET,
+            (boundary.width - padding * 2.0).max(0.0),
+            18.0,
+        ))
+    };
+    CandidateActionRow {
+        apply,
+        discard,
+        artifacts_x,
+        reason,
+    }
+}
+
+/// Greedy word wrap, with the last line ellipsized when the text outruns
+/// `max_lines`.
+///
+/// `measure` is a parameter rather than a `&UiFonts` so the wrap can be driven
+/// in a headless test; the real caller passes the real face, so what is asserted
+/// here is the algorithm, not the metrics.
+fn wrap_to_width(
+    text: &str,
+    max_width: f32,
+    max_lines: usize,
+    measure: &dyn Fn(&str) -> f32,
+) -> Vec<String> {
+    if max_lines == 0 || max_width <= 0.0 || text.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+            continue;
+        }
+        let candidate = format!("{current} {word}");
+        if measure(&candidate) <= max_width {
+            current = candidate;
+        } else if lines.len() + 1 < max_lines {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+        } else {
+            // Out of lines: everything left joins the last one, which is then
+            // cut. Cutting here rather than dropping the tail is what makes the
+            // ellipsis honest about there being more.
+            current.push(' ');
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if let Some(last) = lines.last_mut() {
+        if measure(last) > max_width {
+            *last = ellipsize(last, max_width, measure);
+        }
+    }
+    lines
+}
+
+/// Cuts `text` on a character boundary until it and a trailing `...` fit.
+///
+/// ASCII dots rather than U+2026: the icon face is the only face with Private
+/// Use Area coverage, and a glyph the UI face happens not to carry draws as an
+/// empty box — which would make a truncated sentence look like a broken one.
+fn ellipsize(text: &str, max_width: f32, measure: &dyn Fn(&str) -> f32) -> String {
+    const ELLIPSIS: &str = "...";
+    if measure(text) <= max_width {
+        return text.to_string();
+    }
+    let mut end = text.len();
+    while end > 0 {
+        end -= 1;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let candidate = format!("{}{ELLIPSIS}", text[..end].trim_end());
+        if measure(&candidate) <= max_width {
+            return candidate;
+        }
+    }
+    ELLIPSIS.to_string()
+}
+
+/// Draws the sentence naming why Apply is greyed out, in the slot the row gave
+/// it (review 1.13).
+fn draw_blocking_reason(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &UiFonts,
+    text: &str,
+    slot: ReasonSlot,
+) {
+    let measure = |line: &str| widgets::measure(font, line, REASON_FONT_SIZE);
+    let (rect, lines) = match slot {
+        ReasonSlot::None => return,
+        // Two 13 px lines in a 36 px row: 2 + 13 + 3 + 13 + 5.
+        ReasonSlot::Beside(rect) => (rect, wrap_to_width(text, rect.width, 2, &measure)),
+        ReasonSlot::Above(rect) => (rect, vec![ellipsize(text, rect.width, &measure)]),
+    };
+    if lines.is_empty() {
+        return;
+    }
+    let line_height = REASON_FONT_SIZE + 3.0;
+    let top = rect.y + ((rect.height - lines.len() as f32 * line_height) * 0.5).max(0.0);
+    for (index, line) in lines.iter().enumerate() {
+        widgets::draw_text(
+            d,
+            font,
+            line,
+            rect.x,
+            top + index as f32 * line_height,
+            REASON_FONT_SIZE,
+            color::accent(),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The panel.
 // ---------------------------------------------------------------------------
 
@@ -1588,6 +1938,27 @@ impl Shell {
         let mut line_y = action_y;
         let available = candidate.available();
 
+        // Both blocking conditions are decided before anything is drawn, because
+        // the reason may need the row the "First staged lyric" preview would
+        // otherwise take (review 1.13).
+        //
+        // A staged lyric replacement must never clear an authored draft
+        // implicitly. `draft_is_dirty` is `false` until Agent I's editor lands,
+        // which is why this reads as unblocked today.
+        let draft_conflict = assist_ui_state::candidate_conflicts_with_lyric_draft(
+            available.lyrics,
+            session.candidate_track == workspace.current_index(),
+            false,
+        );
+        let blocked_reason = if draft_conflict {
+            Some("Finish the active lyric draft before applying this result.")
+        } else if target.is_none() {
+            Some("The target track is no longer available. Discard this result.")
+        } else {
+            None
+        };
+        let row = candidate_action_row(boundary, action_y, padding, gap, blocked_reason.is_some());
+
         if available.lyrics {
             let uncertain = candidate.uncertain_lyric_count();
             let line = if uncertain == 0 {
@@ -1626,28 +1997,24 @@ impl Shell {
             widgets::draw_text(d, font, &line, x, line_y, 14.0, color::ui_ink());
             line_y += 18.0;
         }
-        if !session.candidate_first_lyric.is_empty() {
+        // Suppressed only when the reason has taken this exact row, which happens
+        // when all three lanes are staged *and* the panel is too narrow to put
+        // the reason beside the buttons.
+        let preview_row_taken = matches!(row.reason, ReasonSlot::Above(rect) if line_y >= rect.y);
+        if !session.candidate_first_lyric.is_empty() && !preview_row_taken {
             widgets::draw_text(
                 d,
                 font,
                 &format!("First staged lyric: {}", session.candidate_first_lyric),
                 x,
                 line_y,
-                13.0,
+                REASON_FONT_SIZE,
                 color::ui_muted(),
             );
         }
 
-        let apply = UiRect::new(x, action_y + 72.0, 144.0, metric::UI_BUTTON_HEIGHT);
-        let discard = UiRect::new(apply.x + apply.width + gap, apply.y, 100.0, apply.height);
-        // A staged lyric replacement must never clear an authored draft
-        // implicitly. `draft_is_dirty` is `false` until Agent I's editor lands,
-        // which is why this reads as unblocked today.
-        let draft_conflict = assist_ui_state::candidate_conflicts_with_lyric_draft(
-            available.lyrics,
-            session.candidate_track == workspace.current_index(),
-            false,
-        );
+        let apply = row.apply;
+        let discard = row.discard;
         let apply_label = if session.apply_confirmation_pending() {
             "Confirm apply"
         } else {
@@ -1699,35 +2066,10 @@ impl Shell {
         {
             session.request(AssistRequest::Discard);
         }
-        if draft_conflict {
-            widgets::draw_text(
-                d,
-                font,
-                "Finish the active lyric draft before applying this result.",
-                discard.x + discard.width + gap,
-                discard.y + 10.0,
-                13.0,
-                color::accent(),
-            );
-        } else if target.is_none() {
-            widgets::draw_text(
-                d,
-                font,
-                "The target track is no longer available. Discard this result.",
-                discard.x + discard.width + gap,
-                discard.y + 10.0,
-                13.0,
-                color::accent(),
-            );
+        if let Some(reason) = blocked_reason {
+            draw_blocking_reason(d, font, reason, row.reason);
         }
-        self.assist_artifact_actions(
-            d,
-            input,
-            boundary,
-            discard.x + discard.width + gap,
-            apply.y,
-            gap,
-        );
+        self.assist_artifact_actions(d, input, boundary, row.artifacts_x, row.apply.y, gap);
     }
 
     /// The three Copy buttons (`draw_assist_artifact_actions`, `plug.c:2069-2110`).
@@ -2279,5 +2621,280 @@ mod tests {
         assert!(!workspace.assist.confirmation_pending());
         assert!(!controller.is_running());
         assert_eq!(workspace.assist.job_state, AssistJobState::Idle);
+    }
+
+    // -----------------------------------------------------------------------
+    // The action row (review 1.13).
+    // -----------------------------------------------------------------------
+
+    /// Do two rectangles share a pixel? Touching edges do not count.
+    fn overlaps(a: UiRect, b: UiRect) -> bool {
+        a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+    }
+
+    /// The Copy strip as one rectangle, which is what the reason must clear.
+    fn artifact_strip(row: &CandidateActionRow, gap: f32) -> UiRect {
+        UiRect::new(
+            row.artifacts_x,
+            row.apply.y,
+            artifact_strip_width(gap),
+            metric::UI_BUTTON_HEIGHT,
+        )
+    }
+
+    /// Every panel width the shell can hand this body, in 1 px steps.
+    fn width_sweep() -> impl Iterator<Item = f32> {
+        (240..=1600).map(|width| width as f32)
+    }
+
+    #[test]
+    fn the_blocking_reason_never_shares_a_pixel_with_a_button() {
+        // This is the defect itself, as arithmetic. Before the fix the reason was
+        // drawn at `discard.right + gap` and the Copy buttons started at the same
+        // x and y, so every width failed this.
+        let padding = metric::UI_PANEL_PADDING;
+        let gap = metric::UI_CONTROL_GAP;
+        for width in width_sweep() {
+            let boundary = UiRect::new(12.0, 200.0, width, 260.0);
+            let row = candidate_action_row(boundary, 300.0, padding, gap, true);
+            let strip = artifact_strip(&row, gap);
+            let reason = match row.reason {
+                ReasonSlot::None => panic!("a blocked row must offer the reason a slot"),
+                ReasonSlot::Beside(rect) | ReasonSlot::Above(rect) => rect,
+            };
+            assert!(reason.width > 0.0, "at {width}px the reason has no room");
+            for (name, rect) in [
+                ("apply", row.apply),
+                ("discard", row.discard),
+                ("artifacts", strip),
+            ] {
+                assert!(
+                    !overlaps(reason, rect),
+                    "at {width}px the reason overlaps {name}: {reason:?} vs {rect:?}"
+                );
+            }
+            assert!(!overlaps(row.apply, row.discard));
+            assert!(!overlaps(row.discard, strip));
+        }
+    }
+
+    #[test]
+    fn the_reason_takes_its_own_row_only_when_it_cannot_fit_beside_the_buttons() {
+        let padding = metric::UI_PANEL_PADDING;
+        let gap = metric::UI_CONTROL_GAP;
+        let mut previous_beside: Option<f32> = None;
+        let mut above_widths = Vec::new();
+        let mut beside_widths = Vec::new();
+        for width in width_sweep() {
+            let boundary = UiRect::new(12.0, 200.0, width, 260.0);
+            let row = candidate_action_row(boundary, 300.0, padding, gap, true);
+            match row.reason {
+                ReasonSlot::Above(rect) => {
+                    above_widths.push(width);
+                    // The full inner width, and it ends exactly where the buttons
+                    // begin rather than running under them.
+                    assert_eq!(rect.width, width - padding * 2.0);
+                    assert_eq!(rect.y + rect.height, row.apply.y);
+                }
+                ReasonSlot::Beside(rect) => {
+                    beside_widths.push(width);
+                    assert!(rect.width >= REASON_MIN_WIDTH);
+                    // Monotone in the panel width, which is what keeps a resize
+                    // from making the sentence jump between the two slots more
+                    // than once. `transport_bar` earned this rule.
+                    if let Some(previous) = previous_beside {
+                        assert!(rect.width > previous, "at {width}px the slot shrank");
+                    }
+                    previous_beside = Some(rect.width);
+                }
+                ReasonSlot::None => panic!("a blocked row must offer the reason a slot"),
+            }
+        }
+        // One crossing, not several: every narrow width uses the row above and
+        // every wide one uses the slot beside.
+        assert!(!above_widths.is_empty() && !beside_widths.is_empty());
+        assert!(
+            above_widths
+                .iter()
+                .all(|narrow| beside_widths.iter().all(|wide| narrow < wide)),
+            "the two slots interleave, so a resize would flap between them"
+        );
+    }
+
+    #[test]
+    fn an_unblocked_row_keeps_the_buttons_where_a_blocked_one_puts_them() {
+        // The reason appears and disappears while the user is looking at the
+        // panel. If the Copy strip moved with it, a press aimed at Copy log
+        // would land on Copy folder.
+        let padding = metric::UI_PANEL_PADDING;
+        let gap = metric::UI_CONTROL_GAP;
+        for width in width_sweep() {
+            let boundary = UiRect::new(12.0, 200.0, width, 260.0);
+            let blocked = candidate_action_row(boundary, 300.0, padding, gap, true);
+            let clear = candidate_action_row(boundary, 300.0, padding, gap, false);
+            assert_eq!(clear.reason, ReasonSlot::None);
+            assert_eq!(clear.apply, blocked.apply);
+            assert_eq!(clear.discard, blocked.discard);
+            assert_eq!(clear.artifacts_x, blocked.artifacts_x);
+        }
+    }
+
+    /// A measure that is not a font: 7 px a character, so an assertion about the
+    /// algorithm cannot be quietly satisfied by a metric change.
+    fn measure_7px(text: &str) -> f32 {
+        text.chars().count() as f32 * 7.0
+    }
+
+    #[test]
+    fn the_reason_wraps_within_its_slot_and_ellipsizes_only_when_it_must() {
+        let text = "The target track is no longer available. Discard this result.";
+        let measure: &dyn Fn(&str) -> f32 = &measure_7px;
+
+        // The narrowest slot the row will hand out, two lines.
+        let lines = wrap_to_width(text, REASON_MIN_WIDTH, 2, measure);
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            assert!(
+                measure(line) <= REASON_MIN_WIDTH,
+                "{line:?} runs past the slot"
+            );
+        }
+        assert!(
+            lines.iter().all(|line| !line.ends_with("...")),
+            "both reasons fit whole in the narrowest slot the row hands out: {lines:?}"
+        );
+        assert_eq!(lines.concat().replace(' ', ""), text.replace(' ', ""));
+
+        // A sentence that does not fit says so rather than stopping mid-word.
+        let long = format!("{text} {text}");
+        let lines = wrap_to_width(&long, REASON_MIN_WIDTH, 2, measure);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].ends_with("..."));
+        assert!(measure(&lines[1]) <= REASON_MIN_WIDTH);
+
+        // Wide enough, and nothing is cut.
+        let lines = wrap_to_width(text, 900.0, 2, measure);
+        assert_eq!(lines, vec![text.to_string()]);
+
+        // A single row, which is the narrow-panel fallback.
+        let one = ellipsize(text, 210.0, measure);
+        assert!(measure(&one) <= 210.0 && one.ends_with("..."));
+        assert_eq!(ellipsize(text, 900.0, measure), text);
+        // Degenerate widths answer rather than loop.
+        assert_eq!(ellipsize(text, 1.0, measure), "...");
+        assert!(wrap_to_width(text, 0.0, 2, measure).is_empty());
+        assert!(wrap_to_width(text, 200.0, 0, measure).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // The probe states (review 4.2).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn both_reason_slots_are_reachable_at_a_supported_window_size() {
+        // Which matters for the capture gate: if every supported size chose the
+        // same slot, the other branch would be code nothing photographs — the
+        // exact failure review 4.2 is about. The width here is the one
+        // `assist_timeline_height` measures the panel with, less its padding.
+        let slot_at = |window: f32, inspector_open: bool| {
+            let width = WorkspaceFrame::assist_panel_width(window, inspector_open)
+                - metric::UI_PANEL_PADDING * 2.0;
+            let boundary = UiRect::new(0.0, 0.0, width, 300.0);
+            candidate_action_row(
+                boundary,
+                0.0,
+                metric::UI_PANEL_PADDING,
+                metric::UI_CONTROL_GAP,
+                true,
+            )
+            .reason
+        };
+        assert!(matches!(slot_at(1280.0, false), ReasonSlot::Beside(_)));
+        assert!(matches!(slot_at(1280.0, true), ReasonSlot::Beside(_)));
+        assert!(matches!(slot_at(960.0, false), ReasonSlot::Beside(_)));
+        // The supported minimum with the inspector open is the narrow case, and
+        // it is the one the gate should photograph for the row above.
+        assert!(matches!(slot_at(960.0, true), ReasonSlot::Above(_)));
+    }
+
+    #[test]
+    fn every_probe_state_reaches_the_body_it_names() {
+        use crate::cli::AssistProbe;
+        for (state, body) in [
+            (AssistProbe::Confirm, AssistPanelContent::Confirmation),
+            (AssistProbe::Candidate, AssistPanelContent::Candidate),
+            (AssistProbe::Running, AssistPanelContent::Running),
+            (AssistProbe::Failed, AssistPanelContent::Empty),
+        ] {
+            let mut workspace = Workspace::new();
+            workspace.assist.helper_available = true;
+            apply_probe_state(&mut workspace, state, 0.0).expect("synthesizes");
+            assert_eq!(
+                workspace.assist.panel_content(),
+                body,
+                "assist={state:?} must photograph {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_probe_candidate_is_fixed_content_with_apply_blocked() {
+        let mut workspace = Workspace::new();
+        apply_probe_state(&mut workspace, crate::cli::AssistProbe::Candidate, 0.0)
+            .expect("synthesizes");
+        let session = &workspace.assist;
+        let candidate = session.candidate.as_ref().expect("staged");
+        // All three lanes, which is the worst case for the layout: three summary
+        // lines plus the preview line, and then the button row.
+        assert!(
+            candidate.available().lyrics
+                && candidate.available().sections
+                && candidate.available().semantics
+        );
+        assert_eq!(candidate.lyrics().cues().len(), 2);
+        assert_eq!(candidate.uncertain_lyric_count(), 1);
+        assert_eq!(candidate.sections().len(), 2);
+        assert_eq!(candidate.semantic_events().len(), 2);
+        assert_eq!(session.candidate_first_lyric, "we were never meant to stay");
+        // The point of the state: the target is gone, so Apply is greyed and the
+        // panel owes the user a sentence saying why (review 1.13).
+        assert_eq!(session.candidate_track, Some(PROBE_MISSING_TRACK));
+        assert!(workspace.get(PROBE_MISSING_TRACK).is_none());
+    }
+
+    #[test]
+    fn the_probed_running_clock_is_the_transport_clock() {
+        // A capture must report the same elapsed time every run, so the clock is
+        // anchored to the parked transport rather than to the wall.
+        for now in [0.0, 5.0, 12.5] {
+            let mut workspace = Workspace::new();
+            apply_probe_state(&mut workspace, crate::cli::AssistProbe::Running, now)
+                .expect("synthesizes");
+            assert_eq!(
+                now - workspace.assist.started_at,
+                PROBE_ELAPSED_SECONDS,
+                "elapsed must not depend on when the probe ran"
+            );
+        }
+    }
+
+    #[test]
+    fn the_probed_failure_stays_on_one_line() {
+        let mut workspace = Workspace::new();
+        apply_probe_state(&mut workspace, crate::cli::AssistProbe::Failed, 0.0)
+            .expect("synthesizes");
+        let session = &workspace.assist;
+        assert_eq!(session.job_state, AssistJobState::Failed);
+        assert!(
+            !session.failure_detail.contains('\n'),
+            "a newline would draw the log tail straight down over the body"
+        );
+        assert!(session.failure_detail.contains("RuntimeError"));
+        assert!(session.log_path.ends_with("analysis.log"));
+        // Nothing the probe names exists, so all three Copy buttons draw
+        // disabled rather than offering a path to nothing.
+        for artifact in AssistArtifact::ALL {
+            assert!(!Path::new(session.artifact_path(artifact)).exists());
+        }
     }
 }
