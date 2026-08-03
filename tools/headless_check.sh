@@ -1130,7 +1130,9 @@ assist_capture() {
     local name="$1" size="$2" expect="$3" helper="$4" extra="${5:-}"
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
-    local spec="panel=assist,play=1"
+    # ASSIST_PLAY=0 parks the transport: the Running body's elapsed clock is
+    # drawn from the transport time, so a deterministic capture needs it still.
+    local spec="panel=assist,play=${ASSIST_PLAY:-1}"
     [ -n "$extra" ] && spec="$spec,$extra"
     local helper_env=()
     [ "$helper" = "missing" ] && helper_env=("MUSIALIZER_ASSIST_HELPER=$OUT_DIR/absent-assist-helper.py")
@@ -1205,7 +1207,42 @@ for size in 1280x720 960x640; do
     # Negative control: a set-but-invalid override fails hard and must not fall
     # back to the source helper.
     assist_capture "assist-missing-$size" "$size" Ready missing || SWEEP_FAILED=1
+    # Review 4.2: the three bodies a user actually has to read. Synthesized by
+    # the probe, so no helper runs and no clock ticks.
+    ASSIST_PLAY=0 assist_capture "assist-candidate-$size" "$size" Candidate source \
+        "assist=candidate" || SWEEP_FAILED=1
+    ASSIST_PLAY=0 assist_capture "assist-running-$size" "$size" Running source \
+        "assist=running" || SWEEP_FAILED=1
+    ASSIST_PLAY=0 assist_capture "assist-failed-$size" "$size" Empty source \
+        "assist=failed" || SWEEP_FAILED=1
 done
+
+# The synthesized states must be the states they claim, not a body label over
+# the wrong machinery: candidate means a staged, successful job; running means
+# an unstaged live one; failed means the job reached Failed.
+for size in 1280x720 960x640; do
+    [ "$ASSIST_WIRED" -eq 0 ] && break
+    case "$(sed -n 's/^assist: *//p' "$OUT_DIR/assist-candidate-$size.txt")" in
+        *"state=Succeeded"*"staged=true"*) ;;
+        *) echo "FAIL: assist=candidate staged nothing at $size" >&2; SWEEP_FAILED=1 ;;
+    esac
+    case "$(sed -n 's/^assist: *//p' "$OUT_DIR/assist-running-$size.txt")" in
+        *"state=Running"*"staged=false"*) ;;
+        *) echo "FAIL: assist=running is not running at $size" >&2; SWEEP_FAILED=1 ;;
+    esac
+    case "$(sed -n 's/^assist: *//p' "$OUT_DIR/assist-failed-$size.txt")" in
+        *"state=Failed"*) ;;
+        *) echo "FAIL: assist=failed did not reach the failure state at $size" >&2; SWEEP_FAILED=1 ;;
+    esac
+done
+
+# The blocked-Apply reason moves to its own full-width row when the panel is
+# too narrow for the beside-slot (review 1.13); the two supported sizes never
+# reach that branch, so it gets its own frame.
+if [ "$ASSIST_WIRED" -eq 1 ]; then
+    ASSIST_PLAY=0 assist_capture "assist-candidate-narrow" 800x640 Candidate source \
+        "assist=candidate" || SWEEP_FAILED=1
+fi
 
 # The panel that names a sheet must actually have taken it. A run that ignored
 # `lyrics-file=` would draw an identical-looking panel reading "none chosen", so
