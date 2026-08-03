@@ -387,16 +387,35 @@ impl LyricEditor {
     }
 
     /// `lyric_editor_ui_begin_new` (`:120-131`).
+    ///
+    /// The default two-second block also stops at the next cue (review 1.14).
+    /// The oracle's does not, and an overlap it walks into is invisible: the
+    /// later cue simply wins for the length of the overlap and the new line
+    /// never displays there. Only the **default** is clamped — every control in
+    /// the form and the lane can still make an overlap on purpose, because
+    /// overlaps are legal and sometimes wanted.
     pub fn begin_new(&mut self, document: &LyricsDocument, playhead: f64) {
         let duration = document.duration_seconds();
         let mut start = playhead;
         if start + 0.05 > duration {
             start = (duration - 2.0).max(0.0);
         }
+        let mut end = duration.min(start + 2.0);
+        if let Some(next) = document
+            .cues()
+            .iter()
+            .find(|cue| cue.start_seconds > start)
+            .map(|cue| cue.start_seconds)
+        {
+            end = end.min(next);
+        }
+        // A cue crowded up against the next one is still a cue, not a sliver the
+        // lane could never grab again.
+        end = end.max(duration.min(start + lyric_lane_edit::LYRIC_MIN_CUE_SECONDS));
         self.selected_id = 0;
         self.draft_new = true;
         self.draft_start = start;
-        self.draft_end = duration.min(start + 2.0);
+        self.draft_end = end;
         self.text.bind("");
         self.text.set_focused(true);
     }
@@ -590,7 +609,7 @@ impl LyricEditor {
             }
         };
         format!(
-            "{} cues, pane {}, selected {}, lane {}, draft {}",
+            "{} cues, pane {}, selected {}, lane {}, draft {}, shadowed {}",
             track.lyrics.len(),
             pane,
             selected,
@@ -600,6 +619,9 @@ impl LyricEditor {
             } else {
                 "clean"
             },
+            // A block whose hatching a capture would otherwise have to be read
+            // for (review 1.14): the count says whether the lane drew any.
+            track.lyrics.shadowed_cues().len(),
         )
     }
 }
@@ -775,6 +797,16 @@ impl Shell {
             )
         };
 
+        // Which blocks lose time to a later one (review 1.14). Computed once for
+        // the whole lane, and not at all mid-drag: the intervals are in stored
+        // time, so hatching them over blocks that are following the pointer would
+        // paint the marks in the wrong place.
+        let shadows = if editor.lane_drag.moved {
+            Vec::new()
+        } else {
+            track.lyrics.shadowed_cues()
+        };
+
         for cue in track.lyrics.cues() {
             let (preview_start, preview_end) = lane_preview_span(editor, cue);
             let Some(geometry) = timed_lane::block_geometry(
@@ -807,6 +839,30 @@ impl Shell {
             };
             widgets::fill(d, block, fade(LYRIC_BLOCK, alpha));
             d.draw_rectangle_lines_ex(widgets::rectangle(block), 1.0, LYRIC_BLOCK);
+            // A span the preview and the export will never show this cue in is
+            // greyed and hatched, so two blocks that draw the same amber stop
+            // meaning the same thing (review 1.14).
+            if let Some(shadow) = shadows.iter().find(|shadow| shadow.id == cue.id) {
+                for &(from, to) in &shadow.hidden {
+                    let Some(hidden) = timed_lane::block_geometry(
+                        &view,
+                        f64::from(lane.x),
+                        f64::from(lane.width),
+                        from,
+                        to,
+                    ) else {
+                        continue;
+                    };
+                    let region = UiRect::new(
+                        hidden.left as f32,
+                        block.y,
+                        hidden.width() as f32,
+                        block.height,
+                    );
+                    widgets::fill(d, region, fade(color::ui_surface(), 0.62));
+                    hatch(d, region, fade(color::ui_warning(), 0.85));
+                }
+            }
             // The cue the form is bound to gets a second, inset outline.
             // Selection and form target are different things now that a drag can
             // move several cues at once, and one shade of amber cannot say both.
@@ -1518,14 +1574,28 @@ impl Shell {
             });
             editor.clear_draft();
         }
+        // The shortcut hint's row carries the overlap warning instead when there
+        // is one (review 1.14). There is no spare row in this form, and a line
+        // that will never reach the screen outranks a reminder about Ctrl+V.
+        // It describes the *stored* cue, not the draft: it is telling the user
+        // what the project does today.
+        let notice = (!editor.draft_new)
+            .then(|| shadow_notice(&track.lyrics, editor.selected_id))
+            .flatten();
         widgets::draw_text(
             d,
             font,
-            "Ctrl+Enter applies  |  Ctrl+V pastes  |  Ctrl+A selects all",
+            notice
+                .as_deref()
+                .unwrap_or("Ctrl+Enter applies  |  Ctrl+V pastes  |  Ctrl+A selects all"),
             form.x,
             apply.y + apply.height + 7.0,
             metric::UI_FONT_LABEL - 2.0,
-            color::ui_muted(),
+            if notice.is_some() {
+                color::ui_warning()
+            } else {
+                color::ui_muted()
+            },
         );
         // Ctrl+Enter, the oracle's shortcut (`:1420-1423`).
         if editor.text.is_focused()
@@ -1613,10 +1683,15 @@ impl Shell {
         }
         // Clamped after the buttons, as the oracle does, so a nudge past the
         // other end stops there instead of producing a cue the model refuses.
+        //
+        // The arithmetic itself lives in `core` and is total (review 1.1). It was
+        // `f64::clamp` here, which panics when its bounds invert — and they invert
+        // for any cue shorter than the minimum gap, which the model loads
+        // happily. See `clamp_form_start`.
         if is_start {
-            *value = value.clamp(0.0, other - 0.001);
+            *value = lyric_lane_edit::clamp_form_start(*value, other);
         } else {
-            *value = value.clamp(other + 0.001, duration);
+            *value = lyric_lane_edit::clamp_form_end(*value, other, duration);
         }
     }
 
@@ -2259,6 +2334,68 @@ fn lane_preview_span(editor: &LyricEditor, cue: &LyricCue) -> (f64, f64) {
     (start, end)
 }
 
+/// The form's one-line warning for a cue a later one talks over (review 1.14).
+///
+/// Cue numbers are 1-based canonical indices, which is how [`LyricsValidation`]
+/// already names a cue to the user (`lyrics.rs`'s `Display`).
+///
+/// [`LyricsValidation`]: musializer_core::project::lyrics::LyricsValidation
+fn shadow_notice(document: &LyricsDocument, id: u64) -> Option<String> {
+    let index = document.index_of(id)?;
+    let cue = document.cues().get(index)?;
+    let shadow = document.cue_shadow(index)?;
+    let number = shadow.shadowed_by_index + 1;
+    let from = widgets::format_timestamp(shadow.from_seconds());
+    if shadow.fully {
+        return Some(format!("Overlaps cue {number} — this line never displays"));
+    }
+    // A cue that reappears after the overlap gets both ends named; saying only
+    // "after" would claim the rest of the line is lost as well.
+    let (_, until) = shadow.hidden[0];
+    if shadow.hidden.len() == 1 && until >= cue.end_seconds {
+        Some(format!(
+            "Overlaps cue {number} — this line will not display after {from}"
+        ))
+    } else {
+        Some(format!(
+            "Overlaps cue {number} — this line will not display from {from} to {}",
+            widgets::format_timestamp(until)
+        ))
+    }
+}
+
+/// Spacing between the hatch strokes that mark a shadowed span.
+const HATCH_SPACING: f32 = 5.0;
+
+/// Diagonal hatching inside `rect`, clipped by construction (review 1.14).
+///
+/// No scissor: each stroke is a segment of the 45° line through the rect's bottom
+/// edge, and the parameter range is solved for the rect rather than drawn long
+/// and cut. A lane block is a few pixels wide on a long track, and starting a
+/// scissor per block would be a state change per cue per frame.
+fn hatch(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let bottom = rect.y + rect.height;
+    let mut origin = rect.x - rect.height;
+    while origin < rect.x + rect.width {
+        // Points on the stroke are `(origin + t, bottom - t)` for `t` in
+        // `[0, height]`; these two bounds are where it is also inside the rect.
+        let low = (rect.x - origin).max(0.0);
+        let high = (rect.x + rect.width - origin).min(rect.height);
+        if high > low {
+            d.draw_line_ex(
+                Vector2::new(origin + low, bottom - low),
+                Vector2::new(origin + high, bottom - high),
+                1.0,
+                tint,
+            );
+        }
+        origin += HATCH_SPACING;
+    }
+}
+
 /// raylib's `ColorAlpha`, for a compile-time colour.
 fn fade(color: Color, alpha: f32) -> Color {
     Color::new(
@@ -2481,6 +2618,125 @@ mod tests {
         // on a picture.
         let editor = LyricEditor::new();
         assert_eq!(editor.describe(None), "no track");
+    }
+
+    /// Review 1.1: selecting a cue shorter than a millisecond used to panic the
+    /// process on the next frame that drew the timing rows.
+    ///
+    /// `validate_cue` asks only for `end > start`, so every cue built here is one
+    /// a `.musi`, a TSV import or an aligner can hand the editor. The rows
+    /// themselves need a draw handle, so this drives the arithmetic they now run
+    /// — and then feeds the result back through the model's own gate, because
+    /// "did not panic" is not the same as "produced a cue that can be applied".
+    #[test]
+    fn a_sub_millisecond_cue_can_be_selected_and_nudged_without_panicking() {
+        let mut document = LyricsDocument::new(120.0).expect("a positive duration");
+        // Half a millisecond long, at the start of the track and at its end, plus
+        // two neighbours half a millisecond apart.
+        for (start, end) in [
+            (0.0, 0.000_5),
+            (60.0, 60.000_5),
+            (60.001, 62.0),
+            (119.999_5, 120.0),
+        ] {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: end,
+                    text: "tight".to_string(),
+                })
+                .expect("the model accepts every one of these");
+        }
+
+        let mut editor = LyricEditor::new();
+        for cue in document.cues() {
+            editor.select_single(&document, cue.id);
+            // The rows clamp every frame, and both nudge buttons on both rows.
+            for nudge in [0.0, 0.1, -0.1] {
+                let start =
+                    lyric_lane_edit::clamp_form_start(editor.draft_start + nudge, editor.draft_end);
+                let end = lyric_lane_edit::clamp_form_end(
+                    editor.draft_end + nudge,
+                    start,
+                    document.duration_seconds(),
+                );
+                assert!(start >= 0.0 && end > start && end <= document.duration_seconds());
+                let mut applied = document.clone();
+                applied
+                    .update(cue.id, start, end, "tight")
+                    .expect("what the rows produce is what the model takes");
+            }
+        }
+    }
+
+    /// Review 1.14, the `Add cue` half.
+    #[test]
+    fn a_new_cues_default_end_stops_at_the_next_cue() {
+        let document = document(3);
+        let mut editor = LyricEditor::new();
+        // Cues sit at 10, 15 and 20 s. Two seconds from 14 s would bury the one
+        // at 15 s under the new line for its whole length.
+        editor.begin_new(&document, 14.0);
+        assert_eq!(editor.draft_start, 14.0);
+        assert_eq!(editor.draft_end, 15.0);
+        // Clear of everything, the default is still two seconds.
+        editor.begin_new(&document, 30.0);
+        assert_eq!(editor.draft_end, 32.0);
+        // Crowded against the next cue, it is short rather than inverted.
+        editor.begin_new(&document, 19.995);
+        assert!(editor.draft_end > editor.draft_start);
+        assert!(editor.draft_end <= 20.0 + lyric_lane_edit::LYRIC_MIN_CUE_SECONDS);
+    }
+
+    /// Review 1.14, the warning half.
+    #[test]
+    fn the_form_names_the_cue_that_swallows_the_selected_line() {
+        let clear = document(3);
+        let mut document = LyricsDocument::new(120.0).expect("a positive duration");
+        document
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 40.0,
+                end_seconds: 44.0,
+                text: "swallowed tail".to_string(),
+            })
+            .expect("valid");
+        document
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 42.1,
+                end_seconds: 46.0,
+                text: "the one that wins".to_string(),
+            })
+            .expect("valid");
+
+        let notice = shadow_notice(&document, 1).expect("cue 1 loses its tail");
+        assert_eq!(
+            notice,
+            "Overlaps cue 2 — this line will not display after 00:42.100"
+        );
+        // The cue doing the shadowing is not warned about, and neither is a
+        // document without an overlap in it.
+        assert_eq!(shadow_notice(&document, 2), None);
+        assert_eq!(shadow_notice(&clear, 1), None);
+
+        // A line nothing of which ever reaches the screen says so outright.
+        let mut buried = LyricsDocument::new(120.0).expect("a positive duration");
+        for end in [12.0, 14.0] {
+            buried
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: 10.0,
+                    end_seconds: end,
+                    text: "line".to_string(),
+                })
+                .expect("valid");
+        }
+        assert_eq!(
+            shadow_notice(&buried, 1).as_deref(),
+            Some("Overlaps cue 2 — this line never displays")
+        );
     }
 
     #[test]

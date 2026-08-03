@@ -91,6 +91,34 @@ pub struct LyricCue {
     pub text: String,
 }
 
+/// The part of one cue's span that a later cue takes over (review 1.14).
+///
+/// Produced by [`LyricsDocument::cue_shadow`]. Not from the oracle: the C has no
+/// notion of this, which is exactly why a swallowed line was invisible in it too.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CueShadow {
+    /// Canonical index of the cue that loses time, and its id.
+    pub index: usize,
+    pub id: u64,
+    /// The **first** cue that takes part of the span, for naming one culprit in a
+    /// one-line warning. There may be more; the intervals below are all of them.
+    pub shadowed_by_index: usize,
+    pub shadowed_by_id: u64,
+    /// No instant of the span resolves to this cue: the line never displays.
+    pub fully: bool,
+    /// The hidden intervals, merged and in order, clipped to the cue's own span.
+    /// Never empty — a cue with nothing hidden has no `CueShadow` at all.
+    pub hidden: Vec<(f64, f64)>,
+}
+
+impl CueShadow {
+    /// The first instant the cue stops displaying. What the form's warning names.
+    #[must_use]
+    pub fn from_seconds(&self) -> f64 {
+        self.hidden.first().map_or(f64::NAN, |span| span.0)
+    }
+}
+
 /// Canonical order: `(start, end, id)` (`lyrics.c:19-28`).
 ///
 /// The id tiebreak makes the order total, so no two cues in a valid document ever
@@ -684,6 +712,74 @@ impl LyricsDocument {
         active
     }
 
+    /// Which part of the cue at `index` [`Self::at_time`] will never hand back
+    /// (review 1.14), or `None` when all of it displays.
+    ///
+    /// Overlaps are legal here and `at_time` resolves them as "the last one in
+    /// canonical order that is active", so an overlapping cue does not merge or
+    /// alternate — it **replaces** the one under it for the length of the
+    /// overlap, in the preview and in an export alike. Nothing in the editor said
+    /// so: the lane drew both blocks identically and a user proofreading saw a
+    /// line missing with nothing pointing at why.
+    ///
+    /// Additive signalling only. This reports what `at_time` already decides and
+    /// must never change that decision — export determinism depends on it.
+    #[must_use]
+    // `!(to > from)` is NaN-rejecting where `to <= from` would let a non-finite
+    // pair through as an interval; a document can hold one before it validates.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    pub fn cue_shadow(&self, index: usize) -> Option<CueShadow> {
+        let cue = self.cues.get(index)?;
+        let (start, end) = (cue.start_seconds, cue.end_seconds);
+
+        let mut hidden: Vec<(f64, f64)> = Vec::new();
+        let mut by = None;
+        // Canonical order is `(start, end, id)`, so every cue after this one both
+        // starts no earlier *and* wins the `at_time` scan against it. That is the
+        // whole rule: later index, later word.
+        for (later_index, later) in self.cues.iter().enumerate().skip(index + 1) {
+            if later.start_seconds >= end {
+                break;
+            }
+            let from = later.start_seconds.max(start);
+            let to = later.end_seconds.min(end);
+            if !(to > from) {
+                continue;
+            }
+            if by.is_none() {
+                by = Some((later_index, later.id));
+            }
+            match hidden.last_mut() {
+                // Touching or overlapping runs merge, so "fully shadowed" is a
+                // question about one interval rather than about a list.
+                Some(previous) if from <= previous.1 => previous.1 = previous.1.max(to),
+                _ => hidden.push((from, to)),
+            }
+        }
+
+        let (shadowed_by_index, shadowed_by_id) = by?;
+        let fully = hidden.len() == 1 && hidden[0].0 <= start && hidden[0].1 >= end;
+        Some(CueShadow {
+            index,
+            id: cue.id,
+            shadowed_by_index,
+            shadowed_by_id,
+            fully,
+            hidden,
+        })
+    }
+
+    /// Every shadowed cue in the document, in canonical order (review 1.14).
+    ///
+    /// One pass for a whole frame: the lane asks once and looks up by id, rather
+    /// than asking per block and walking the document again each time.
+    #[must_use]
+    pub fn shadowed_cues(&self) -> Vec<CueShadow> {
+        (0..self.cues.len())
+            .filter_map(|index| self.cue_shadow(index))
+            .collect()
+    }
+
     /// `lyrics_bridge_export` (`lyrics.c:603-648`).
     ///
     /// The derived UI bridge, **not** the canonical persistence format:
@@ -919,6 +1015,91 @@ mod tests {
             end_seconds: end,
             text: text.to_owned(),
         }
+    }
+
+    /// Review 1.14. Each case is checked against `at_time` itself rather than
+    /// against a hand-read expectation, because the two agreeing is the only
+    /// thing that makes the warning true.
+    #[test]
+    fn a_cue_a_later_one_talks_over_is_reported_as_shadowed() {
+        let mut document = document();
+        // 1 is buried whole, 2 loses its tail, 3 is clear.
+        document.insert(cue(0, 10.0, 12.0, "buried")).unwrap();
+        document.insert(cue(0, 10.0, 14.0, "on top")).unwrap();
+        document.insert(cue(0, 20.0, 24.0, "cut short")).unwrap();
+        document.insert(cue(0, 22.0, 26.0, "cuts in")).unwrap();
+        document.insert(cue(0, 40.0, 42.0, "clear")).unwrap();
+
+        let shadowed = document.shadowed_cues();
+        assert_eq!(shadowed.len(), 2);
+
+        // Identical starts: canonical order breaks the tie by end, then id, and
+        // the loser never displays at all.
+        let buried = &shadowed[0];
+        assert_eq!(buried.id, 1);
+        assert!(buried.fully);
+        assert_eq!(buried.shadowed_by_id, 2);
+        assert_eq!(buried.hidden, vec![(10.0, 12.0)]);
+        for time in [10.0, 11.0, 11.999] {
+            assert_ne!(document.at_time(time).unwrap().id, 1);
+        }
+
+        let cut = &shadowed[1];
+        assert_eq!(cut.id, 3);
+        assert!(!cut.fully);
+        assert_eq!(cut.shadowed_by_id, 4);
+        assert_eq!(cut.hidden, vec![(22.0, 24.0)]);
+        assert!((cut.from_seconds() - 22.0).abs() < 1e-12);
+        assert_eq!(document.at_time(21.0).unwrap().id, 3);
+        assert_eq!(document.at_time(23.0).unwrap().id, 4);
+
+        // The clear cue and the two that do the shadowing report nothing.
+        for index in [1, 3, 4] {
+            assert_eq!(document.cue_shadow(index), None);
+        }
+        assert_eq!(document.cue_shadow(99), None);
+    }
+
+    #[test]
+    fn a_cue_that_reappears_between_two_overlaps_is_not_fully_shadowed() {
+        let mut document = document();
+        document.insert(cue(0, 10.0, 20.0, "long line")).unwrap();
+        document.insert(cue(0, 11.0, 13.0, "first cut")).unwrap();
+        document.insert(cue(0, 15.0, 17.0, "second cut")).unwrap();
+
+        let shadow = document.cue_shadow(0).expect("the long line loses time");
+        assert!(!shadow.fully);
+        // Two separate holes, not one span from the first to the last.
+        assert_eq!(shadow.hidden, vec![(11.0, 13.0), (15.0, 17.0)]);
+        assert_eq!(document.at_time(14.0).unwrap().id, 1);
+
+        // Abutting overlaps merge into one hole rather than two, which is what
+        // keeps "fully" a question about a single span.
+        let mut abutting = LyricsDocument::new(60.0).unwrap();
+        abutting.insert(cue(0, 10.0, 20.0, "long line")).unwrap();
+        abutting.insert(cue(0, 12.0, 16.0, "first cut")).unwrap();
+        abutting.insert(cue(0, 16.0, 20.0, "second cut")).unwrap();
+        let shadow = abutting
+            .cue_shadow(0)
+            .expect("the long line loses its tail");
+        assert_eq!(shadow.hidden, vec![(12.0, 20.0)]);
+        assert!(!shadow.fully);
+        assert_eq!(abutting.at_time(11.0).unwrap().id, 1);
+        assert_eq!(abutting.at_time(13.0).unwrap().id, 2);
+        assert_eq!(abutting.at_time(17.0).unwrap().id, 3);
+    }
+
+    #[test]
+    fn cues_that_only_touch_are_not_shadowed() {
+        let mut document = document();
+        // `at_time` is right-open, so a cue ending exactly where the next starts
+        // still displays for its whole span. Warning about this would train the
+        // user to ignore the warning.
+        document.insert(cue(0, 10.0, 12.0, "first")).unwrap();
+        document.insert(cue(0, 12.0, 14.0, "second")).unwrap();
+        assert!(document.shadowed_cues().is_empty());
+        assert_eq!(document.at_time(11.999).unwrap().id, 1);
+        assert_eq!(document.at_time(12.0).unwrap().id, 2);
     }
 
     #[test]

@@ -47,12 +47,19 @@ pub const LYRIC_LANE_EDGE_GRAB_PIXELS: f64 = 5.0;
 /// by hand anyway.
 pub const LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS: f64 = 18.0;
 
-/// Shortest cue a resize may produce (`lyric_lane_edit.h:34-37`).
+/// Shortest cue **any edit here may produce** (`lyric_lane_edit.h:34-37`).
 ///
 /// The lyrics model only demands `end > start`, so without a floor a single
 /// sloppy drag can collapse a cue to a sliver that is then impossible to grab
 /// again.
-pub const LYRIC_LANE_MIN_CUE_SECONDS: f64 = 0.02;
+///
+/// Named without `LANE` because it is no longer only the lane's: the editing
+/// form's timing rows clamp against the same number (review 1.1, which found the
+/// form using a 1 ms floor while the lane used this one). It governs *edits the
+/// application makes*, never what a document may contain —
+/// [`crate::project::lyrics::LyricsDocument`] still loads a shorter cue, and
+/// tightening it there would make a currently-openable `.musi` unopenable.
+pub const LYRIC_MIN_CUE_SECONDS: f64 = 0.02;
 
 /// Pointer travel before a press counts as a drag rather than a click
 /// (`lyric_lane_edit.h:39-42`).
@@ -468,7 +475,7 @@ pub fn clamp_move(
 ///
 /// Note the trailing-edge branch's last guard (`lyric_lane_edit.c:205`): raising
 /// `end` to the minimum cue length can push it past the end of the track for a
-/// cue that starts within `LYRIC_LANE_MIN_CUE_SECONDS` of it, and the cue is then
+/// cue that starts within `LYRIC_MIN_CUE_SECONDS` of it, and the cue is then
 /// left exactly as it was. The leading-edge branch's matching guard
 /// (`lyric_lane_edit.c:199`) tests `start > end`, which the clamp above it has
 /// already made unreachable — see the module tests, and the report note. It is
@@ -491,7 +498,7 @@ pub fn clamp_resize(
     let mut start = cue.start_seconds;
     let mut end = cue.end_seconds;
     if moving_start {
-        let latest = end - LYRIC_LANE_MIN_CUE_SECONDS;
+        let latest = end - LYRIC_MIN_CUE_SECONDS;
         start = proposed_seconds;
         if start < 0.0 {
             start = 0.0;
@@ -505,7 +512,7 @@ pub fn clamp_resize(
             start = cue.start_seconds;
         }
     } else {
-        let earliest = start + LYRIC_LANE_MIN_CUE_SECONDS;
+        let earliest = start + LYRIC_MIN_CUE_SECONDS;
         end = proposed_seconds;
         if end > document.duration_seconds() {
             end = document.duration_seconds();
@@ -521,6 +528,38 @@ pub fn clamp_resize(
         return None;
     }
     Some((start, end))
+}
+
+/// The editing form's START row, clamped so it can never invert (review 1.1).
+///
+/// Not from the oracle: the C writes two sequential `if`s over a `double` and
+/// merely produces a slightly out-of-range value, but the Rust port reached for
+/// `f64::clamp`, **which panics when `min > max`**. A cue shorter than
+/// [`LYRIC_MIN_CUE_SECONDS`] is loadable — `validate_cue` asks only for
+/// `end > start`, and so does TSV import — so `clamp(0.0, end - gap)` with a
+/// sub-gap cue took the whole process down on the next frame that drew the row.
+///
+/// Total for every input, including NaN, because the panic it replaces was
+/// reachable from a file on disk rather than from a mistake in this crate. The
+/// order matters and is the fix: the ceiling is applied first and the floor
+/// second, so a cue that is *already* shorter than the gap keeps its start at 0
+/// rather than being pushed negative into a pair the model would refuse.
+#[must_use]
+pub fn clamp_form_start(value: f64, end_seconds: f64) -> f64 {
+    value.min(end_seconds - LYRIC_MIN_CUE_SECONDS).max(0.0)
+}
+
+/// The editing form's END row, the same way (review 1.1).
+///
+/// The mirror-image panic: `clamp(start + gap, duration)` inverts for a cue that
+/// starts within the gap of the end of the track. The track length wins here, as
+/// 0 wins in [`clamp_form_start`], because `end <= duration` is what the model
+/// checks and `end > start` then follows from `start < duration`.
+#[must_use]
+pub fn clamp_form_end(value: f64, start_seconds: f64, duration_seconds: f64) -> f64 {
+    value
+        .max(start_seconds + LYRIC_MIN_CUE_SECONDS)
+        .min(duration_seconds)
 }
 
 #[cfg(test)]
@@ -902,7 +941,7 @@ mod tests {
         // Dragging it back past the start stops at the minimum length rather than
         // collapsing the cue to something that can never be grabbed again.
         let (start, end) = clamp_resize(&document, 1, false, 2.0).expect("cue 1 exists");
-        expect_near(end, 10.0 + LYRIC_LANE_MIN_CUE_SECONDS, 1e-9);
+        expect_near(end, 10.0 + LYRIC_MIN_CUE_SECONDS, 1e-9);
         assert!(end > start);
 
         // The leading edge, symmetrically.
@@ -912,7 +951,7 @@ mod tests {
         let (start, _) = clamp_resize(&document, 1, true, -40.0).expect("cue 1 exists");
         expect_near(start, 0.0, 1e-9);
         let (start, _) = clamp_resize(&document, 1, true, 50.0).expect("cue 1 exists");
-        expect_near(start, 11.0 - LYRIC_LANE_MIN_CUE_SECONDS, 1e-9);
+        expect_near(start, 11.0 - LYRIC_MIN_CUE_SECONDS, 1e-9);
 
         // Whatever it produces, a retime must accept it.
         let (start, end) = clamp_resize(&document, 1, true, 50.0).expect("cue 1 exists");
@@ -922,9 +961,79 @@ mod tests {
         assert_eq!(clamp_resize(&document, 1, true, f64::NAN), None);
     }
 
+    /// Review 1.1: the shape that used to panic the process.
+    ///
+    /// Every pair here is one `validate_cue` accepts, so every one of them is
+    /// loadable from a `.musi`, a TSV import or an aligner — and each one made
+    /// `f64::clamp` assert `min <= max` in the editing form's timing rows.
+    #[test]
+    fn a_sub_millisecond_cue_no_longer_panics_the_timing_rows() {
+        const TRACK: f64 = 100.0;
+        // A 0.5 ms cue against the start of the track: `clamp(0.0, -0.0005)`.
+        let start = clamp_form_start(0.0, 0.000_5);
+        expect_near(start, 0.0, 1e-12);
+        assert!(
+            start < 0.000_5,
+            "the pair the model gets must keep end > start"
+        );
+        // ... and both nudge buttons on the same cue.
+        expect_near(clamp_form_start(0.1, 0.000_5), 0.0, 1e-12);
+        expect_near(clamp_form_start(-0.1, 0.000_5), 0.0, 1e-12);
+
+        // A 0.5 ms cue against the end of the track: `clamp(100.0005, 100.0)`.
+        let end = clamp_form_end(TRACK, TRACK - 0.000_5, TRACK);
+        expect_near(end, TRACK, 1e-12);
+        assert!(end > TRACK - 0.000_5);
+        expect_near(
+            clamp_form_end(TRACK + 5.0, TRACK - 0.000_5, TRACK),
+            TRACK,
+            1e-12,
+        );
+        expect_near(clamp_form_end(0.0, TRACK - 0.000_5, TRACK), TRACK, 1e-12);
+
+        // A sub-gap cue mid-track, from both rows: the floor widens it rather
+        // than inverting, and neither row can produce `start >= end`.
+        expect_near(clamp_form_start(9.999_5, 9.999_5), 9.979_5, 1e-12);
+        expect_near(clamp_form_end(10.0, 10.0, TRACK), 10.02, 1e-12);
+
+        // Degenerate values reach these rows through the same draft fields, and a
+        // NaN is what `f64::clamp` panics on second.
+        assert!(clamp_form_start(f64::NAN, 5.0).is_finite());
+        assert!(clamp_form_end(f64::NAN, 5.0, TRACK).is_finite());
+        expect_near(clamp_form_start(1.0, f64::NAN), 1.0, 1e-12);
+        expect_near(clamp_form_end(1.0, f64::NAN, TRACK), 1.0, 1e-12);
+    }
+
+    /// The form and the lane now clamp against the same floor (review 1.1).
+    ///
+    /// They did not: the form used 1 ms and the lane 20 ms, so a resize drag and
+    /// a `-0.1` press disagreed about the shortest cue the editor allows.
+    #[test]
+    fn the_form_and_the_lane_agree_on_the_minimum_cue_length() {
+        let document = build_lane();
+        // Cue 1 is 10 s to 11 s. Dragging its leading edge past the end stops at
+        // the floor ...
+        let (start, _) = clamp_resize(&document, 1, true, 50.0).expect("cue 1 exists");
+        expect_near(start, 11.0 - LYRIC_MIN_CUE_SECONDS, 1e-9);
+        // ... and so does typing the same move into the form's START row.
+        expect_near(
+            clamp_form_start(50.0, 11.0),
+            11.0 - LYRIC_MIN_CUE_SECONDS,
+            1e-9,
+        );
+
+        let (_, end) = clamp_resize(&document, 1, false, 2.0).expect("cue 1 exists");
+        expect_near(end, 10.0 + LYRIC_MIN_CUE_SECONDS, 1e-9);
+        expect_near(
+            clamp_form_end(2.0, 10.0, TRACK),
+            10.0 + LYRIC_MIN_CUE_SECONDS,
+            1e-9,
+        );
+    }
+
     /// Not in the C suite. It pins the behaviour of the guard at
     /// `lyric_lane_edit.c:199`, which claims to leave a cue shorter than
-    /// `LYRIC_LANE_MIN_CUE_SECONDS` "exactly as it was" but tests `start > end`,
+    /// `LYRIC_MIN_CUE_SECONDS` "exactly as it was" but tests `start > end`,
     /// a condition the clamp to `end - MIN_CUE_SECONDS` above it has already made
     /// impossible. The observable consequence is a *negative* start, which the
     /// lyrics model rejects — so an edge drag on such a cue silently does
