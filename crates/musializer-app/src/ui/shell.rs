@@ -1876,7 +1876,12 @@ impl Shell {
             && mouse.y >= strip.y
             && mouse.y <= strip.y + strip.height;
         let wheel = d.get_mouse_wheel_move();
-        if over_strip && wheel != 0.0 {
+        // A boundary drag stores a time under the pointer. Zooming the view out
+        // from underneath it would move that time while the hand stayed still.
+        if over_strip
+            && wheel != 0.0
+            && self.timeline_gesture != Some(TimelineGesture::SceneBoundary)
+        {
             let anchor = self.timeline.seconds_at(
                 f64::from(mouse.x),
                 f64::from(strip.x),
@@ -1960,7 +1965,10 @@ impl Shell {
         }
         // Follow playback with the least scroll that keeps the playhead inside,
         // which is safe to call every frame (`timeline_view.h:52-55`).
-        if input.playing {
+        // Keep the view stationary while a boundary owns the pointer. Playback
+        // may continue, but follow-scrolling here would make a stationary hand
+        // retime the cue as the playhead approached the edge.
+        if input.playing && self.timeline_gesture != Some(TimelineGesture::SceneBoundary) {
             self.timeline.reveal(duration, input.time_seconds);
         }
 

@@ -441,6 +441,11 @@ headless gate captures the same two-cue plan disabled, enabled and at 4x zoom;
 its lane-only crop measures saturation 55.1 enabled and 20.0 disabled, where a
 missing/empty lane is zero.
 
+Review follow-up: while a scene boundary owns the pointer, wheel zoom and
+playback follow-scrolling are suspended so the time under a stationary hand
+cannot move with the view. Playback itself is not paused, and ordinary follow
+resumes after release.
+
 ### D5 — CLI execution semantics
 
 - [x] Execute positional audio, `--project`, `--scene`, `--event` and
