@@ -386,6 +386,80 @@ impl Track {
         Ok(())
     }
 
+    fn scene_cue_index(&self, id: u64) -> Result<usize, SceneCueError> {
+        self.scene_switches
+            .cues()
+            .iter()
+            .position(|cue| cue.id == id)
+            .ok_or(SceneCueError::Plan(SceneSwitchError::Index))
+    }
+
+    /// Moves the internal boundary identified by the cue on its right.
+    pub fn retime_scene_cue(&mut self, id: u64, start_seconds: f64) -> Result<(), SceneCueError> {
+        let index = self.scene_cue_index(id)?;
+        self.scene_switches.retime(
+            index,
+            start_seconds,
+            self.duration_seconds,
+            SceneId::ALL.len() as u32,
+        )?;
+        self.scene_switches.reset();
+        self.cue_settings_active = false;
+        Ok(())
+    }
+
+    /// Changes one segment's scene and captures that target scene's editable
+    /// settings. A snapshot from the old scene is never reinterpreted.
+    pub fn retarget_scene_cue(&mut self, id: u64, scene: SceneId) -> Result<(), SceneCueError> {
+        let index = self.scene_cue_index(id)?;
+        let snapshot = self
+            .scene_settings
+            .capture(scene)
+            .ok_or(SceneCueError::Settings)?;
+        self.scene_switches.retarget(
+            index,
+            scene.index() as u32,
+            Some(&snapshot),
+            self.duration_seconds,
+            SceneId::ALL.len() as u32,
+        )?;
+        self.scene_switches.reset();
+        self.cue_settings_active = false;
+        Ok(())
+    }
+
+    /// Replaces one cue's snapshot with the values currently visible in Tune.
+    pub fn capture_scene_cue_settings(&mut self, id: u64) -> Result<(), SceneCueError> {
+        let index = self.scene_cue_index(id)?;
+        let scene_index = self.scene_switches.cues()[index].scene_index;
+        let scene = SceneId::from_index(scene_index as usize)
+            .ok_or(SceneCueError::Plan(SceneSwitchError::Settings))?;
+        let snapshot = self
+            .effective_settings()
+            .capture(scene)
+            .ok_or(SceneCueError::Settings)?;
+        self.scene_switches.retarget(
+            index,
+            scene_index,
+            Some(&snapshot),
+            self.duration_seconds,
+            SceneId::ALL.len() as u32,
+        )?;
+        self.scene_switches.reset();
+        self.cue_settings_active = false;
+        Ok(())
+    }
+
+    /// Removes a segment while preserving contiguous whole-track coverage.
+    pub fn remove_scene_cue(&mut self, id: u64) -> Result<(), SceneCueError> {
+        let index = self.scene_cue_index(id)?;
+        self.scene_switches
+            .remove(index, self.duration_seconds, SceneId::ALL.len() as u32)?;
+        self.scene_switches.reset();
+        self.cue_settings_active = false;
+        Ok(())
+    }
+
     /// Makes `scene` the track's base scene (`track_select_base_scene`,
     /// `plug.c:963-977`).
     ///
@@ -1024,6 +1098,41 @@ mod tests {
 
         track.scene_switches.reset();
         assert_eq!(track.advance_scene_plan(1.0), Some(SceneId::Spectrum));
+    }
+
+    #[test]
+    fn scene_lane_edits_resolve_stable_ids_and_preserve_coverage() {
+        let mut track = track("/tmp/a.wav");
+        track
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .expect("base segment");
+        track
+            .record_scene_cue(SceneId::Loom, 4.0)
+            .expect("second segment");
+        let right_id = track.scene_switches.cues()[1].id;
+
+        track.retime_scene_cue(right_id, 6.0).unwrap();
+        assert_eq!(track.scene_switches.cues()[0].end_seconds, 6.0);
+        assert_eq!(track.scene_switches.cues()[1].start_seconds, 6.0);
+
+        track
+            .retarget_scene_cue(right_id, SceneId::Cadence)
+            .unwrap();
+        assert_eq!(
+            track.scene_switches.cues()[1].scene_index,
+            SceneId::Cadence.index() as u32
+        );
+        assert!(track.scene_switches.cues()[1]
+            .settings
+            .is_valid_for(SceneId::Cadence));
+
+        track.remove_scene_cue(right_id).unwrap();
+        assert_eq!(track.scene_switches.len(), 1);
+        assert_eq!(track.scene_switches.cues()[0].start_seconds, 0.0);
+        assert_eq!(
+            track.scene_switches.cues()[0].end_seconds,
+            track.duration_seconds
+        );
     }
 
     #[test]

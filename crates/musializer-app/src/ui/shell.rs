@@ -99,6 +99,8 @@ pub enum ShellCommand {
     StartRender,
     /// The manual event row's outcome (`plug.c:2834-2971`).
     ManualEvent(ManualEventAction),
+    /// One durable edit from the always-visible scene-plan lane.
+    ScenePlan(super::panels::scene_timeline::ScenePlanEdit),
     /// The shared preset block's outcome (`plug.c:5979-6100`).
     Preset(PresetAction),
     /// Output volume in `[0, 1]`, from the transport row's slider.
@@ -200,9 +202,9 @@ pub struct Shell {
     pub hud_visible: bool,
     pub notices: NoticeQueue,
     pub timeline: TimelineView,
-    /// Which of the timeline's own controls the pointer is dragging, so a scrub
-    /// that leaves the strip keeps scrubbing.
-    scrubbing: bool,
+    /// One owner for every timeline drag. A scene boundary and the waveform
+    /// scrubber must never both interpret the same press.
+    pub(crate) timeline_gesture: Option<TimelineGesture>,
     /// The most recent drag position. Seeking is deliberately deferred until
     /// release: repeatedly flushing and refilling a decoder while the pointer
     /// moves is both audible and needlessly expensive.
@@ -217,6 +219,8 @@ pub struct Shell {
     /// cannot touch a shared file names what it needs instead of quietly
     /// reaching for a global and leaving it there.
     pub lyrics: super::panels::lyrics::LyricEditor,
+    /// Selection and in-flight boundary preview for the scene-plan lane.
+    pub scene_lane: super::panels::scene_timeline::SceneLaneEditor,
     /// The font browser's catalogue, query, selection and consent, plus the
     /// importer it drives.
     ///
@@ -248,6 +252,12 @@ enum SplitKind {
     Timeline,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimelineGesture {
+    Scrub,
+    SceneBoundary,
+}
+
 impl Default for Shell {
     fn default() -> Self {
         Self::new()
@@ -277,13 +287,14 @@ impl Shell {
             fullscreen: false,
             hud_visible: false,
             timeline: TimelineView::new(0.0),
-            scrubbing: false,
+            timeline_gesture: None,
             scrub_target_seconds: None,
             scrub_restore_playing: false,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
             font_browser: super::panels::fonts::FontBrowser::new(),
             lyrics: super::panels::lyrics::LyricEditor::new(),
+            scene_lane: super::panels::scene_timeline::SceneLaneEditor::default(),
             ui_preferences,
             ui_scale_override: None,
             split_drag: None,
@@ -335,7 +346,7 @@ impl Shell {
         // its floor — which drops the tracks panel entirely, as a capture showed.
         // The event lane keeps its own affordance in the no-panel band.
         let events = super::panels::events::EVENT_ROW_HEIGHT;
-        match self.panel {
+        let panel_height = match self.panel {
             UiPanel::None | UiPanel::Tune => events + DEFAULT_TIMELINE_HEIGHT,
             UiPanel::Export => events + WorkspaceFrame::export_timeline_height(window_height),
             // Both full-band editors take the band to themselves, for the same
@@ -344,7 +355,8 @@ impl Shell {
             // already moved into the toolbar.
             UiPanel::Lyrics => self.lyrics.timeline_height(window_height, 0.0),
             UiPanel::Assist => self.assist_timeline_height(window, &workspace.assist),
-        }
+        };
+        panel_height + super::panels::scene_timeline::SCENE_SECTION_HEIGHT
     }
 
     fn resolved_timeline_height(&self, window: (f32, f32), workspace: &Workspace) -> f32 {
@@ -352,15 +364,16 @@ impl Shell {
         let Some(requested) = self.ui_preferences.timeline_height else {
             return automatic;
         };
-        let minimum = match self.panel {
-            UiPanel::None | UiPanel::Tune => super::panels::events::EVENT_ROW_HEIGHT + 150.0,
-            UiPanel::Export => 260.0,
-            // 121 chrome + 10 bottom + 22 lane + 5 gap + the form's 223 px.
-            UiPanel::Lyrics => 381.0,
-            // Assist has no scrolling body, so its measured content remains the
-            // floor; resizing can give it room, never clip an action.
-            UiPanel::Assist => automatic,
-        };
+        let minimum = super::panels::scene_timeline::SCENE_SECTION_HEIGHT
+            + match self.panel {
+                UiPanel::None | UiPanel::Tune => super::panels::events::EVENT_ROW_HEIGHT + 150.0,
+                UiPanel::Export => 260.0,
+                // 121 chrome + 10 bottom + 22 lane + 5 gap + the form's 223 px.
+                UiPanel::Lyrics => 381.0,
+                // Assist has no scrolling body, so its measured content remains the
+                // floor; resizing can give it room, never clip an action.
+                UiPanel::Assist => automatic - super::panels::scene_timeline::SCENE_SECTION_HEIGHT,
+            };
         let maximum = (window.1 - metric::HUD_BUTTON_SIZE - 150.0).max(minimum);
         requested.clamp(minimum, maximum)
     }
@@ -1817,11 +1830,22 @@ impl Shell {
             &mut events,
         );
         commands.extend(events.into_iter().map(ShellCommand::ManualEvent));
+        let scene_row = self.scene_plan_section(
+            d,
+            input,
+            UiRect::new(
+                content.x + padding,
+                content.y + padding + row,
+                (content.width - padding * 2.0).max(0.0),
+                (content.height - padding * 2.0 - row).max(0.0),
+            ),
+            commands,
+        );
         let strip = UiRect::new(
             content.x + padding,
-            content.y + padding + row,
+            content.y + padding + row + scene_row,
             (content.width - padding * 2.0).max(0.0),
-            56.0f32.min((content.height - padding * 2.0 - row).max(0.0)),
+            56.0f32.min((content.height - padding * 2.0 - row - scene_row).max(0.0)),
         );
         if strip.is_empty() {
             return;
@@ -1943,14 +1967,17 @@ impl Shell {
         // Scrub. The drag is tracked here rather than through the button claim
         // because a scrub that leaves the strip must keep scrubbing.
         use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
-        if over_strip && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
-            self.scrubbing = true;
+        if over_strip
+            && self.timeline_gesture.is_none()
+            && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+        {
+            self.timeline_gesture = Some(TimelineGesture::Scrub);
             self.scrub_restore_playing = input.playing;
             if input.playing {
                 commands.push(ShellCommand::TogglePlay);
             }
         }
-        if self.scrubbing {
+        if self.timeline_gesture == Some(TimelineGesture::Scrub) {
             let seconds = self.timeline.seconds_at(
                 f64::from(mouse.x),
                 f64::from(strip.x),
@@ -1959,7 +1986,7 @@ impl Shell {
             );
             self.scrub_target_seconds = Some(seconds);
             if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
-                self.scrubbing = false;
+                self.timeline_gesture = None;
                 if let Some(target) = self.scrub_target_seconds.take() {
                     commands.push(ShellCommand::Seek(target));
                 }

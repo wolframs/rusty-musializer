@@ -242,12 +242,14 @@ done
 # frame eight. The removed renderer pass used that boolean to paint a full-width
 # white gradient across the reflection floor — the short flash reported in both
 # preview and exports. Pin a quiet region far from the active bands. Negative
-# control: restoring the old pass raises this crop's YMAX from 21 to 55.
+# control: restoring the old pass raises this crop's YMAX from 21 to 55. The
+# fixed probe layout's preview now ends at y=400 after the scene lane was added,
+# so y=386 samples its last quiet 12 px without crossing into toolbar chrome.
 capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
     || SWEEP_FAILED=1
 SPECTRUM_ONSETS="$(sed -n 's/^onsets: *\([0-9][0-9]*\) .*/\1/p' "$OUT_DIR/spectrum-onset-floor.txt")"
 SPECTRUM_FLOOR="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:438,signalstats" \
+    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:386,signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 echo "spectrum onset floor: onsets=${SPECTRUM_ONSETS:-?} peak-luma=${SPECTRUM_FLOOR:-?}"
 if [ "${SPECTRUM_ONSETS:-0}" -eq 0 ] 2>/dev/null \
@@ -1210,6 +1212,10 @@ else
         shift
         local shot="$AUTO_SCENE_DIR/$name.png"
         local log="$AUTO_SCENE_DIR/$name.txt"
+        local probe="panel=assist,time=5,play=0"
+        if [ "$name" = "zoomed" ]; then
+            probe="panel=none,time=5,play=0,zoom=4"
+        fi
         set +e
         env -u WAYLAND_DISPLAY \
             DISPLAY="$DISPLAY_NUM" \
@@ -1219,7 +1225,7 @@ else
                 --size 1280x720 \
                 --probe-frames 12 \
                 --probe-shot "$shot" \
-                --ui-probe "panel=assist,time=5,play=0" \
+                --ui-probe "$probe" \
             >"$log" 2>&1
         local status=$?
         set -e
@@ -1234,11 +1240,13 @@ else
 
     auto_scene_capture disabled || SWEEP_FAILED=1
     auto_scene_capture enabled --auto-scenes || SWEEP_FAILED=1
+    auto_scene_capture zoomed --auto-scenes || SWEEP_FAILED=1
 
     DISABLED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/disabled.txt" | head -1)"
     ENABLED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
     DISABLED_SCENE="$(sed -n 's/^scene: *//p' "$AUTO_SCENE_DIR/disabled.txt" | head -1)"
     ENABLED_SCENE="$(sed -n 's/^scene: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
+    ZOOMED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/zoomed.txt" | head -1)"
     if [ "$DISABLED_STATE" != "disabled (2 cues)" ] \
         || [ "$DISABLED_SCENE" != "constellation (Constellation)" ]; then
         echo "FAIL: disabled Auto-scenes did not retain the plan and base scene" >&2
@@ -1249,9 +1257,29 @@ else
         echo "FAIL: enabled Auto-scenes did not drive the parked preview frame" >&2
         SWEEP_FAILED=1
     fi
+    if [ "$ZOOMED_STATE" != "enabled (2 cues)" ]; then
+        echo "FAIL: the zoomed scene-lane capture lost its retained plan" >&2
+        SWEEP_FAILED=1
+    fi
     if [ "$(sha256sum "$AUTO_SCENE_DIR/disabled.png" | cut -d' ' -f1)" \
         = "$(sha256sum "$AUTO_SCENE_DIR/enabled.png" | cut -d' ' -f1)" ]; then
         echo "FAIL: enabled and disabled Auto-scenes captures were identical" >&2
+        SWEEP_FAILED=1
+    fi
+    # At this fixed 1280x720 layout, y=404 is inside the 24 px scene lane and
+    # outside both its controls and the waveform. Saturation proves the two-cue
+    # plan is actually painted; a plausible empty strip or a missing lane is
+    # white here and reads zero. Disabled stays visible but deliberately muted.
+    ENABLED_LANE_SAT="$(ffprobe -v error -f lavfi \
+        -i "movie=$AUTO_SCENE_DIR/enabled.png,crop=1000:12:100:404,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1)"
+    DISABLED_LANE_SAT="$(ffprobe -v error -f lavfi \
+        -i "movie=$AUTO_SCENE_DIR/disabled.png,crop=1000:12:100:404,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1)"
+    echo "scene lane saturation: enabled=${ENABLED_LANE_SAT:-?} disabled=${DISABLED_LANE_SAT:-?}"
+    if [ "${ENABLED_LANE_SAT%%.*}" -lt 30 ] 2>/dev/null \
+        || [ "${DISABLED_LANE_SAT%%.*}" -lt 10 ] 2>/dev/null; then
+        echo "FAIL: the editable scene-plan lane was not visibly drawn in both states" >&2
         SWEEP_FAILED=1
     fi
 fi

@@ -13,16 +13,12 @@
 //!
 //! # The two structural divergences, and why
 //!
-//! **The cue lane sits at the top of this panel, not inside the timeline strip.**
-//! The oracle draws it in the strip and defends its presses with a gesture id
-//! claimed out of the shared `active_button_id` (`LYRIC_LANE_GESTURE_ID`,
-//! `:255`), because the transport scrubber's hit region covers the lane and would
-//! otherwise seek on every drag. Here the scrubber is `Shell::scrubbing`, a
-//! private field set before this panel is reached, so there is no claim to take
-//! and no way to gate it from a panel file. Putting the lane immediately below
-//! the strip, at the same `x`, the same width and reading the same
-//! `Shell::timeline`, keeps every block aligned under the ticks it belongs to and
-//! leaves the scrubber alone.
+//! **The cue lane sits at the top of this panel, not inside the always-visible
+//! lane stack yet.** It shares `timed_lane` geometry with the scene-plan lane and
+//! reads the same `Shell::timeline`, so blocks, ticks and playhead stay aligned.
+//! Its rectangle remains disjoint from the waveform scrubber; the shell-level
+//! timeline gesture owner introduced for scene boundaries is the seam for moving
+//! this lane into the common stack when the always-visible lyric lane lands.
 //!
 //! **Every edit leaves as a [`LyricsEdit`], not as a mutation.** The panel is
 //! handed `&Workspace`, so it could not write to the document if it wanted to.
@@ -44,6 +40,7 @@ use musializer_core::ui::lyric_lane_edit::{
 use musializer_core::ui::lyrics_editor_layout::{self, LYRIC_EDITOR_ROW_HEIGHT};
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::text_edit::{TextEditError, TextRules};
+use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::UiFonts;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
@@ -780,28 +777,24 @@ impl Shell {
 
         for cue in track.lyrics.cues() {
             let (preview_start, preview_end) = lane_preview_span(editor, cue);
-            let left = view.x_at(preview_start, f64::from(lane.x), f64::from(lane.width)) as f32;
-            let mut right = view.x_at(preview_end, f64::from(lane.x), f64::from(lane.width)) as f32;
-            if right < lane.x || left > lane.x + lane.width {
+            let Some(geometry) = timed_lane::block_geometry(
+                &view,
+                f64::from(lane.x),
+                f64::from(lane.width),
+                preview_start,
+                preview_end,
+            ) else {
                 continue;
-            }
-            if right - left < 3.0 {
-                right = left + 3.0;
-            }
-            // Clipped to the lane. The hit test works from the true edges
-            // instead, so a block whose start scrolled off never offers a
-            // start-edge handle at the border for a boundary that is not shown.
-            let mut block = UiRect::new(left, lane.y + 3.0, right - left, lane.height - 6.0);
-            if block.x < lane.x {
-                block.width -= lane.x - block.x;
-                block.x = lane.x;
-            }
-            if block.x + block.width > lane.x + lane.width {
-                block.width = lane.x + lane.width - block.x;
-            }
-            if block.width < 1.0 {
-                continue;
-            }
+            };
+            // Clipped to the lane by the same geometry the hit test reads. A
+            // boundary which scrolled off-screen is therefore never recreated
+            // as a handle at the lane border.
+            let block = UiRect::new(
+                geometry.left as f32,
+                lane.y + 3.0,
+                geometry.width() as f32,
+                lane.height - 6.0,
+            );
 
             let in_selection = editor.lane_selection.contains(cue.id);
             let hovered = hover.is_some_and(|hit| hit.id == cue.id);

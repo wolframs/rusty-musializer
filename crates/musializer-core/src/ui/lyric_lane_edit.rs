@@ -26,7 +26,7 @@
 
 use crate::project::lyrics::LyricsDocument;
 
-use super::timeline_view::TimelineView;
+use super::{timed_lane, timeline_view::TimelineView};
 
 /// How many cues one gesture can move together (`lyric_lane_edit.h:20-24`).
 ///
@@ -59,14 +59,7 @@ pub const LYRIC_LANE_MIN_CUE_SECONDS: f64 = 0.02;
 ///
 /// Below it the gesture is a selection, so a click never nudges a cue by a
 /// pixel's worth of time and silently dirties the project.
-pub const LYRIC_LANE_DRAG_THRESHOLD_PIXELS: f64 = 3.0;
-
-/// Minimum drawn block width, inlined in the C at `lyric_lane_edit.c:34`.
-///
-/// The hit test widens a too-short block to match what the drawing does, so a
-/// cue too short to see is still a target. Private because it is a property of
-/// the lane painter, not of the gesture vocabulary.
-const MIN_DRAWN_BLOCK_PIXELS: f64 = 3.0;
+pub const LYRIC_LANE_DRAG_THRESHOLD_PIXELS: f64 = timed_lane::DRAG_THRESHOLD_PIXELS;
 
 /// One cue as the lane sees it. The lane needs three fields; the full model is
 /// Agent B's (`project::lyrics`, from `lyrics.h:17-22`).
@@ -406,28 +399,27 @@ pub fn hit_test(
         let Some(cue) = document.cue_at(step) else {
             continue;
         };
-        let left = view.x_at(cue.start_seconds, lane_x, lane_width);
-        let mut right = view.x_at(cue.end_seconds, lane_x, lane_width);
-        if !left.is_finite() || !right.is_finite() {
+        let Some(block) = timed_lane::block_geometry(
+            view,
+            lane_x,
+            lane_width,
+            cue.start_seconds,
+            cue.end_seconds,
+        ) else {
             continue;
-        }
-        // Match the minimum drawn width so a cue too short to see is still a
-        // target; the drawing does the same widening.
-        if right - left < MIN_DRAWN_BLOCK_PIXELS {
-            right = left + MIN_DRAWN_BLOCK_PIXELS;
-        }
-        if pointer_x < left || pointer_x > right {
+        };
+        if !block.contains_x(pointer_x) {
             continue;
         }
 
         let mut zone = LyricLaneZone::Body;
-        if right - left >= LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS {
+        if block.true_width() >= LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS {
             // Only offer a handle for a boundary that is actually on screen.
-            let start_visible = left >= lane_x;
-            let end_visible = right <= lane_x + lane_width;
-            if start_visible && pointer_x <= left + LYRIC_LANE_EDGE_GRAB_PIXELS {
+            if block.start_visible && pointer_x <= block.true_left + LYRIC_LANE_EDGE_GRAB_PIXELS {
                 zone = LyricLaneZone::StartEdge;
-            } else if end_visible && pointer_x >= right - LYRIC_LANE_EDGE_GRAB_PIXELS {
+            } else if block.end_visible
+                && pointer_x >= block.true_right - LYRIC_LANE_EDGE_GRAB_PIXELS
+            {
                 zone = LyricLaneZone::EndEdge;
             }
         }

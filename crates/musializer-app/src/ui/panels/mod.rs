@@ -28,6 +28,7 @@ pub mod events;
 pub mod export;
 pub mod fonts;
 pub mod lyrics;
+pub mod scene_timeline;
 pub mod tune;
 
 // `stub()` used to live here: one shared "not built yet" box, so every unfilled

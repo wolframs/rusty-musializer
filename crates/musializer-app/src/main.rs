@@ -1291,6 +1291,9 @@ fn run() -> Result<std::process::ExitCode, String> {
                     // recorded where the transport is (`plug.c:1979-2030`).
                     handle_manual_event(&mut app, action, time_seconds, rl.get_time());
                 }
+                ShellCommand::ScenePlan(edit) => {
+                    handle_scene_plan_edit(&mut app, edit, time_seconds, rl.get_time());
+                }
                 ShellCommand::Preset(action) => {
                     handle_preset(&mut app, action, rl.get_time());
                 }
@@ -2312,6 +2315,82 @@ fn handle_manual_event(app: &mut App, action: ManualEventAction, time: f64, now:
             "Scene cue captured",
             "The scene and its current tuning will load at this playhead position.",
         );
+    }
+}
+
+/// Applies one command from the scene-plan lane. The lane selects by stable id;
+/// this boundary resolves it against the current track, marks the project dirty
+/// exactly once, and refreshes the live auto-scene state after a successful edit.
+fn handle_scene_plan_edit(
+    app: &mut App,
+    edit: ui::panels::scene_timeline::ScenePlanEdit,
+    time: f64,
+    now: f64,
+) {
+    use ui::panels::scene_timeline::ScenePlanEdit as Edit;
+
+    if let Edit::SetEnabled(enabled) = edit {
+        app.set_auto_scenes(enabled, now);
+        if enabled {
+            app.apply_auto_scene_switch(time);
+        }
+        return;
+    }
+
+    let live_scene = app.scene.id();
+    let result = {
+        let Some(track) = app.workspace.current_mut() else {
+            return;
+        };
+        let result = match edit {
+            Edit::SplitAt { seconds } => track.record_scene_cue(live_scene, seconds),
+            Edit::RetimeBoundary {
+                right_cue_id,
+                seconds,
+            } => track.retime_scene_cue(right_cue_id, seconds),
+            Edit::Retarget { cue_id, scene } => track.retarget_scene_cue(cue_id, scene),
+            Edit::CaptureTuning { cue_id } => track.capture_scene_cue_settings(cue_id),
+            Edit::Remove { cue_id } => track.remove_scene_cue(cue_id),
+            Edit::SetEnabled(_) => unreachable!("handled above"),
+        };
+        if result.is_ok() {
+            track.mark_dirty(now);
+        }
+        result
+    };
+
+    match result {
+        Err(error) => app.shell.notify(
+            Severity::Warning,
+            "Scene plan edit was refused",
+            &error.to_string(),
+        ),
+        Ok(()) => {
+            let enabled = app
+                .workspace
+                .current()
+                .is_some_and(|track| track.scene_switches.enabled);
+            if enabled {
+                app.apply_auto_scene_switch(time);
+            } else if let Some(track) = app.workspace.current() {
+                app.scene =
+                    SceneInstance::new(scene_host::descriptor(track.base_scene), track.scene_seed);
+            }
+            app.shell.notify(
+                Severity::Success,
+                "Scene plan updated",
+                match edit {
+                    Edit::SplitAt { .. } => "A segment now begins at the playhead.",
+                    Edit::RetimeBoundary { .. } => "The shared scene boundary was moved.",
+                    Edit::Retarget { .. } => "The selected segment now uses the chosen scene.",
+                    Edit::CaptureTuning { .. } => {
+                        "The selected segment captured the current tuning."
+                    }
+                    Edit::Remove { .. } => "The segment was removed and its span was merged.",
+                    Edit::SetEnabled(_) => unreachable!("handled above"),
+                },
+            );
+        }
     }
 }
 
