@@ -522,7 +522,23 @@ else
         lyric_capture "lyrics-cues-$size" "$size" "panel=lyrics,play=1" || SWEEP_FAILED=1
         lyric_capture "lyrics-selected-$size" "$size" "panel=lyrics,lyric=3,play=1" || SWEEP_FAILED=1
         lyric_capture "lyrics-style-$size" "$size" "panel=lyrics,style=caption,play=1" || SWEEP_FAILED=1
+        # The free colour picker, which a click is otherwise the only way to
+        # open. 960x640 is the size that matters twice over: it is the minimum
+        # supported window, and it is the one whose caption form was 165 px —
+        # inside the [152, 184) band where "Import a face..." was positioned and
+        # then silently not drawn.
+        lyric_capture "lyrics-picker-ink-$size" "$size" "panel=lyrics,picker=ink,play=1" \
+            || SWEEP_FAILED=1
     done
+    lyric_capture "lyrics-picker-plate-960x640" 960x640 \
+        "panel=lyrics,picker=plate,play=1" || SWEEP_FAILED=1
+    # The caption effects form and the glow colour picker inside it
+    # (post-legacy, 2026-08-03). 960x640 for the same reason as the pickers:
+    # the minimum window is where a control positioned-but-not-fitting hides.
+    lyric_capture "lyrics-effects-960x640" 960x640 \
+        "panel=lyrics,style=effects,play=1" || SWEEP_FAILED=1
+    lyric_capture "lyrics-picker-glow-960x640" 960x640 \
+        "panel=lyrics,picker=glow,play=1" || SWEEP_FAILED=1
     lyric_capture "lyrics-fonts-1280x720" 1280x720 \
         "panel=lyrics,style=caption,fonts=consent,play=1" \
         || SWEEP_FAILED=1
@@ -544,6 +560,82 @@ else
                 ;;
         esac
     done
+
+    # The report line first: `picker=` says which of the two colours the frame
+    # is showing, and `picker=none` on the plain style frames is what proves the
+    # disclosure is closed by default rather than stuck open.
+    for pair in \
+        "lyrics-picker-ink-1280x720:picker=ink" \
+        "lyrics-picker-ink-960x640:picker=ink" \
+        "lyrics-picker-plate-960x640:picker=plate" \
+        "lyrics-picker-glow-960x640:picker=glow" \
+        "lyrics-picker-glow-960x640:pane caption-effects" \
+        "lyrics-effects-960x640:pane caption-effects" \
+        "lyrics-effects-960x640:picker=none" \
+        "lyrics-style-1280x720:picker=none" \
+        "lyrics-style-960x640:picker=none"; do
+        name="${pair%%:*}"
+        want="${pair##*:}"
+        case "$(sed -n 's/^lyrics: *//p' "$OUT_DIR/$name.txt" | head -1)" in
+            *"$want"*) ;;
+            *)
+                echo "FAIL: $name did not report $want" >&2
+                SWEEP_FAILED=1
+                ;;
+        esac
+    done
+
+    # And then the pixels, because the report line only proves the panel was
+    # *told* to open the picker — the same trap review 1.4 found in the export
+    # panel, where `panel: export` printed happily over a blank white band.
+    #
+    # The measurement is specific to what a hue bar is: a full turn around the
+    # chroma circle. Sixteen pixel columns at x=124 are the bar itself (the
+    # timeline panel's content starts at x=20 — 10 px window padding plus 10 px
+    # panel padding — and the picker puts its bar 104 px in), swept over the
+    # bottom 220 rows, which covers the panel at both window heights. A ramp
+    # through all six sectors makes U and V each span nearly the full byte; grey
+    # chrome and a single accent fill cannot, whatever else they draw.
+    picker_chroma() {
+        # picker_chroma NAME WINDOW_HEIGHT -> "Uspread Vspread"
+        local png="$OUT_DIR/$1.png" top=$(( $2 - 220 ))
+        local raw
+        raw="$(ffprobe -v error -f lavfi \
+            -i "movie=$png,crop=16:220:124:$top,signalstats" \
+            -show_entries frame_tags=lavfi.signalstats.UMIN,lavfi.signalstats.UMAX,lavfi.signalstats.VMIN,lavfi.signalstats.VMAX \
+            -of csv=p=0 2>/dev/null | head -1)"
+        [ -z "$raw" ] && { echo "0 0"; return; }
+        IFS=, read -r umin umax vmin vmax <<<"$raw"
+        echo "$(( umax - umin )) $(( vmax - vmin ))"
+    }
+    for pair in \
+        "lyrics-picker-ink-1280x720:720:open" \
+        "lyrics-picker-ink-960x640:640:open" \
+        "lyrics-picker-plate-960x640:640:open" \
+        "lyrics-picker-glow-960x640:640:open" \
+        "lyrics-effects-960x640:640:closed" \
+        "lyrics-style-1280x720:720:closed" \
+        "lyrics-style-960x640:640:closed"; do
+        name="${pair%%:*}"
+        rest="${pair#*:}"
+        height="${rest%%:*}"
+        state="${rest##*:}"
+        read -r u_spread v_spread <<<"$(picker_chroma "$name" "$height")"
+        printf '%-30s %-6s chroma spread U=%s V=%s\n' "$name" "$state" "$u_spread" "$v_spread"
+        # Measured: an open picker gives 251/252, the closed left column 67/34.
+        # The two thresholds are a decade apart on purpose, and the closed case
+        # is the negative control this gate carries with it — a bar drawn
+        # unconditionally would fail it.
+        if [ "$state" = open ]; then
+            if [ "$u_spread" -lt 200 ] || [ "$v_spread" -lt 200 ]; then
+                echo "FAIL: $name says the picker is open but drew no hue ramp" >&2
+                SWEEP_FAILED=1
+            fi
+        elif [ "$u_spread" -gt 100 ] || [ "$v_spread" -gt 100 ]; then
+            echo "FAIL: $name drew a hue ramp with the picker closed" >&2
+            SWEEP_FAILED=1
+        fi
+    done
 fi
 
 echo "=== project-aware scene frames and shared captions ==="
@@ -561,8 +653,8 @@ rm -rf "$FRAME_LANE_DIR"
 mkdir -p "$FRAME_LANE_DIR"
 
 make_frame_lane_variant() {
-    # make_frame_lane_variant NAME SCENE BOX [DROPPED_LANE]
-    local name="$1" scene="$2" box="$3" dropped="${4:-}"
+    # make_frame_lane_variant NAME SCENE BOX [DROPPED_LANE] [EFFECTS]
+    local name="$1" scene="$2" box="$3" dropped="${4:-}" effects="${5:-}"
     local directory="$FRAME_LANE_DIR/$name"
     mkdir -p "$directory"
     cp "$LYRIC_PROJECT" "$directory/cues.musi"
@@ -570,6 +662,9 @@ make_frame_lane_variant() {
     local args=("$directory/cues.musi" --scene "$scene" --box "$box")
     if [ -n "$dropped" ]; then
         args+=(--drop "$dropped")
+    fi
+    if [ -n "$effects" ]; then
+        args+=(--effects "$effects")
     fi
     python3 tools/seed_lyric_fixture.py "${args[@]}" >"$directory/seed.txt"
 }
@@ -608,9 +703,59 @@ make_frame_lane_variant loom loom plate
 make_frame_lane_variant full constellation plate
 make_frame_lane_variant box-none spectrum none
 make_frame_lane_variant box-shadow spectrum shadow
-for name in shared-caption cadence loom full box-none box-shadow; do
+# The caption effects, over the same scene/box pairs as their baselines so the
+# only authored difference is the effects block itself.
+make_frame_lane_variant fx-glow spectrum plate "" glow
+make_frame_lane_variant fx-soft-shadow spectrum shadow "" soft-shadow
+for name in shared-caption cadence loom full box-none box-shadow fx-glow fx-soft-shadow; do
     frame_lane_capture "$name" || SWEEP_FAILED=1
 done
+
+# Each effects variant differs from its baseline *only* in the authored
+# effects block, and the parked frame is deterministic (asserted below for the
+# preview), so a per-pixel difference isolates exactly what the effect drew.
+# An average-luma crop cannot do this: the first version of this gate measured
+# the caption's corner and read 134 → 136, because the crop was mostly chrome
+# and the halo was diluted into signalstats noise.
+caption_fx_delta() {
+    # caption_fx_delta VARIANT BASELINE -> peak |difference| luma, whole frame
+    ffprobe -v error -f lavfi \
+        -i "movie=$FRAME_LANE_DIR/$1/preview.png[a];movie=$FRAME_LANE_DIR/$2/preview.png[b];[a][b]blend=all_mode=difference,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null \
+        | head -1 | cut -d. -f1
+}
+GLOW_DELTA="$(caption_fx_delta fx-glow shared-caption)"
+SHADOW_DELTA="$(caption_fx_delta fx-soft-shadow box-shadow)"
+# The control: a frame diffed against itself must be exactly zero, or the
+# instrument itself is broken and both assertions above are meaningless.
+SELF_DELTA="$(caption_fx_delta shared-caption shared-caption)"
+echo "caption fx delta: glow=$GLOW_DELTA soft-shadow=$SHADOW_DELTA control=$SELF_DELTA"
+if [ "${SELF_DELTA:-1}" -ne 0 ]; then
+    echo "FAIL: the fx difference control is $SELF_DELTA, not 0" >&2
+    SWEEP_FAILED=1
+fi
+# Measured: glow 125 (an additive amber halo), soft shadow 4. The shadow's
+# number is small because the fixture is honest about the feature — a
+# near-black shadow blurring over a near-black scene corner moves almost no
+# luma, and widening the blur to 0.35 was tried and still measured 4. What
+# makes 4 a real assertion is the pair of anchors around it: the frames are
+# deterministic (asserted below) and the self-diff control is exactly 0, so
+# "the blur taps drew" is the only thing that separates 4 from 0.
+#
+# Negative control, run by hand while these thresholds were chosen: a project
+# carrying an explicit all-default effects block measured **exactly 0**
+# against the no-block baseline — captured in a separate run, so the zero also
+# pins cross-run determinism — and the first fx-glow fixture, which authored
+# plate roundness alongside the glow, was rejected because the reshaped
+# corners alone would have cleared the glow threshold with the glow broken.
+if [ -z "$GLOW_DELTA" ] || [ "$GLOW_DELTA" -lt 32 ]; then
+    echo "FAIL: the authored glow changed the frame by ${GLOW_DELTA:-nothing} (< 32)" >&2
+    SWEEP_FAILED=1
+fi
+if [ -z "$SHADOW_DELTA" ] || [ "$SHADOW_DELTA" -lt 2 ]; then
+    echo "FAIL: the soft shadow changed the frame by ${SHADOW_DELTA:-nothing} (< 2)" >&2
+    SWEEP_FAILED=1
+fi
 
 FULL_LANES="$(sed -n 's/^frame lanes: *//p' "$FRAME_LANE_DIR/full/preview.txt" | head -1)"
 if [ "$FULL_LANES" != "lyric=1 semantic=available source=11 merged-events=4" ]; then
@@ -622,6 +767,48 @@ case "$IMPORTED_LINE" in
     *"imported="*"cues.assets/fonts/"*) : ;;
     *)
         echo "FAIL: the generated project did not rasterize its imported caption face: $IMPORTED_LINE" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+
+# Which atlas the caption was drawn from. A caption magnified out of the shared
+# 64 px atlas and one rasterized at its drawn size are both perfectly plausible
+# pictures of a caption, so this is a claim only the report line can carry:
+# `sizes=[...]` non-empty means an at-size atlas served the frame, and `failed=0`
+# with `overflow=0` means it did so without falling back on the way.
+CAPTION_ATLAS_LINE="$(sed -n 's/^fonts: *//p' "$FRAME_LANE_DIR/shared-caption/preview.txt" | head -1)"
+echo "caption atlas: ${CAPTION_ATLAS_LINE#*caption-atlas=}"
+case "$CAPTION_ATLAS_LINE" in
+    *"caption-atlas=(sizes=[]"*)
+        echo "FAIL: the caption overlay drew from the shared 64px atlas: $CAPTION_ATLAS_LINE" >&2
+        SWEEP_FAILED=1
+        ;;
+    *"caption-atlas=("*"failed=0"*"overflow=0"*) : ;;
+    *)
+        echo "FAIL: an at-size caption atlas was refused or overflowed: $CAPTION_ATLAS_LINE" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+
+# And which face typeset Cadence. The scene animates per-glyph scale, so it draws
+# through a distance field rather than a raster atlas; `cadence-text=bitmap` here
+# is the fallback, which is survivable and must not be silent.
+CADENCE_TEXT_LINE="$(sed -n 's/^scene text: *//p' "$FRAME_LANE_DIR/cadence/preview.txt" | head -1)"
+echo "cadence text: ${CADENCE_TEXT_LINE:-<absent>}"
+case "${CADENCE_TEXT_LINE:-absent}" in
+    "sdf-shader=compiled, cadence-text=sdf") : ;;
+    *)
+        echo "FAIL: Cadence did not typeset through the SDF path: ${CADENCE_TEXT_LINE:-<absent>}" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+# The scenes that are *not* Cadence must not have asked for it, which is what
+# keeps a 200 ms SDF build off the startup path of the other nine.
+SPECTRUM_TEXT_LINE="$(sed -n 's/^scene text: *//p' "$FRAME_LANE_DIR/shared-caption/preview.txt" | head -1)"
+case "${SPECTRUM_TEXT_LINE:-absent}" in
+    *"cadence-text=none") : ;;
+    *)
+        echo "FAIL: a non-Cadence frame built the SDF atlas: ${SPECTRUM_TEXT_LINE:-<absent>}" >&2
         SWEEP_FAILED=1
         ;;
 esac

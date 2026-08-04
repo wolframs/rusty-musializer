@@ -6,6 +6,7 @@
 pub mod analysis_bridge;
 pub mod analysis_candidate;
 pub mod assets;
+pub mod caption_effects;
 pub mod caption_layout;
 pub mod editor_draft;
 pub mod event_timeline;

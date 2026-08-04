@@ -81,6 +81,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="seed a disabled two-cue automatic scene plan",
     )
+    parser.add_argument(
+        "--effects",
+        choices=("glow", "soft-shadow"),
+        help="author a caption effects block (post-legacy, 2026-08-03)",
+    )
     return parser.parse_args()
 
 
@@ -158,6 +163,32 @@ def main() -> int:
         "box_rgba": "120d2bd8",
         "font": bundle_font(args.project),
     }
+    if args.effects:
+        # Drives stay "none" so the frame is a pure function of the style: the
+        # capture asserts brightness against the drive-free variant, and a
+        # music-following pulse would make that comparison depend on the parked
+        # frame's audio figures instead of on the feature under test.
+        effects = {
+            "glow_strength": 0.0,
+            "glow_radius": 0.3,
+            "glow_rgba": "ffc864ff",
+            "glow_pulse": "none",
+            "glow_pulse_depth": 0.6,
+            "glow_hue_drive": "none",
+            "glow_hue_range": 120.0,
+            "shadow_blur": 0.0,
+            "shadow_opacity": 1.0,
+            "plate_roundness": 0.12,
+        }
+        if args.effects == "glow":
+            # Only the glow: authoring roundness here too would let the
+            # difference gate pass on a frame whose glow never drew, since the
+            # reshaped plate corners alone clear the threshold.
+            effects["glow_strength"] = 0.9
+        else:
+            effects["shadow_blur"] = 0.18
+            effects["shadow_opacity"] = 0.85
+        project["caption_style"]["effects"] = effects
     if args.scene_plan:
         midpoint = round(duration / 2.0, 3)
         project["scene_switches"] = {

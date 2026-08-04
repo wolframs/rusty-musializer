@@ -595,6 +595,11 @@ fn build_fixture() -> Project {
             licence_sha256: LICENCE_SHA.to_owned(),
             licence_name: "SIL OFL 1.1".to_owned(),
         }),
+        // Deliberately default: this fixture is compared against the frozen C,
+        // which predates the effects block. A default block is not serialized,
+        // so the C parser never sees it. Effects round-tripping is covered by
+        // the Rust-only tests in `project::io`.
+        effects: Default::default(),
     };
 
     // -- output. A non-integer frame rate, a partial range, and the last format

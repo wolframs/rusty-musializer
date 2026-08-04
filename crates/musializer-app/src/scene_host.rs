@@ -25,6 +25,7 @@
 //! before Pentagram exists. A silent black frame would be indistinguishable from
 //! a broken scene.
 
+use musializer_core::project::caption_effects::EffectInputs;
 use musializer_core::scene::{SceneDescriptor, SceneFrame, SceneId, SceneInstance, StatelessScene};
 use musializer_core::scenes as core_scenes;
 use musializer_runtime::font::Faces;
@@ -218,16 +219,71 @@ pub struct TrackAssets<'a> {
 
 pub struct SceneRenderer {
     circle: scenes::spectrum::CircleShader,
+    /// The signed-distance-field text shader, for Cadence.
+    ///
+    /// `None` when it would not compile, and that is a *supported* state rather
+    /// than a startup failure: without it the SDF atlas must not be drawn at all
+    /// — a distance field through the normal path is grey blobs — so Cadence
+    /// falls back to the bitmap atlas it used before, and [`SceneRenderer::describe`]
+    /// says which one a capture is looking at.
+    sdf_text: Option<raylib::shaders::Shader>,
+    /// Whether the shader was refused, kept apart from `None`-because-unused so
+    /// the report can tell "did not compile" from "never asked for".
+    sdf_error: Option<String>,
+    /// Which face typeset the last Cadence frame: `sdf`, `bitmap`, or `none`
+    /// before Cadence has drawn at all. A compiled shader does not prove the
+    /// atlas built, so the report carries the outcome and not the intent.
+    cadence_text: &'static str,
 }
 
 impl SceneRenderer {
+    /// The SDF fragment shader, embedded like every other first-party shader.
+    ///
+    /// GLSL 330 only, matching `CircleShader`: the C hard-codes `GLSL_VERSION`
+    /// to 330 and its `glsl120` directory is unreachable there, so a second
+    /// variant here would be a file nothing compiles.
+    const SDF_TEXT_SOURCE: &'static str =
+        include_str!("../../../resources/shaders/glsl330/sdf_text.fs");
+
     pub fn load(
         rl: &mut raylib::RaylibHandle,
         thread: &raylib::RaylibThread,
     ) -> Result<Self, String> {
+        // raylib answers a failed compile with the *default* shader rather than
+        // an error, so "did it compile" is a question about the returned id, not
+        // about a `Result`. `is_shader_valid` is that check.
+        let shader = rl.load_shader_from_memory(thread, None, Some(Self::SDF_TEXT_SOURCE));
+        let (sdf_text, sdf_error) = if shader.is_shader_valid() {
+            (Some(shader), None)
+        } else {
+            (
+                None,
+                Some("the driver refused the GLSL 330 SDF text shader".to_string()),
+            )
+        };
         Ok(Self {
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
+            sdf_text,
+            sdf_error,
+            cadence_text: "none",
         })
+    }
+
+    /// One line naming the scene-text path, for the slice report.
+    ///
+    /// Evidence rather than assertion, and it is the only place the SDF fallback
+    /// is visible: a Cadence capture drawn from the bitmap atlas and one drawn
+    /// from the distance field are both plausible pictures of Cadence.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let shader = match &self.sdf_text {
+            Some(_) => "sdf-shader=compiled".to_string(),
+            None => format!(
+                "sdf-shader=FALLBACK ({})",
+                self.sdf_error.as_deref().unwrap_or("absent")
+            ),
+        };
+        format!("{shader}, cadence-text={}", self.cadence_text)
     }
 
     /// Draws the bound scene into `boundary`.
@@ -309,7 +365,45 @@ impl SceneRenderer {
                     // renderer, and `scene_cadence.c:449` uses it). Not the
                     // interface face: this scene typesets lyrics, and the interface
                     // atlas carries only the codepoints the chrome needs.
-                    scenes::cadence::draw(d, frame, state, fonts.caption(), boundary, pixel_scale);
+                    let bitmap = fonts.caption();
+                    // The distance field, but only with the shader that reads it,
+                    // and only over the codepoints this cue actually needs — the
+                    // atlas is built on the first Cadence frame rather than at
+                    // startup, so nine other scenes do not pay for it.
+                    //
+                    // No cue means the scene draws its idle particle ring and no
+                    // type at all, so the atlas is not requested then either: a
+                    // 200 ms build for a frame with no glyphs in it is a stall
+                    // paid for nothing.
+                    let cue = frame
+                        .lyric
+                        .map(|lyric| lyric.text.as_str())
+                        .filter(|text| !text.is_empty());
+                    let sdf_face = match (self.sdf_text.is_some(), cue) {
+                        (true, Some(text)) => fonts.cadence_sdf(text),
+                        _ => None,
+                    };
+                    let mut faces = match &sdf_face {
+                        Some(face) => scenes::cadence::CadenceType {
+                            text: face.face(),
+                            ink: bitmap,
+                            sdf: self.sdf_text.as_mut(),
+                        },
+                        None => scenes::cadence::CadenceType {
+                            text: bitmap,
+                            ink: bitmap,
+                            sdf: None,
+                        },
+                    };
+                    // `ambient` rather than `bitmap` when there is no cue, because
+                    // the two are different frames: one fell back, the other had
+                    // nothing to typeset.
+                    self.cadence_text = if cue.is_none() {
+                        "ambient"
+                    } else {
+                        faces.describe()
+                    };
+                    scenes::cadence::draw(d, frame, state, &mut faces, boundary, pixel_scale);
                 }
             }
             SceneId::Loom => {
@@ -325,13 +419,24 @@ impl SceneRenderer {
         }
         if id != SceneId::Cadence {
             if let Some(style) = assets.caption_style {
+                // The effect drives read the same frame the scene just drew
+                // from, which is what makes an export's glow pulse identical to
+                // the preview's.
+                let inputs = EffectInputs::from_audio(
+                    frame.time_seconds,
+                    frame.audio.rms,
+                    frame.audio.trails,
+                    frame.audio.beat_phase,
+                    frame.audio.spectral_flux,
+                );
                 scenes::caption::draw_scene_lyric_overlay(
                     d,
                     frame.lyric,
-                    fonts.caption_for(style.face),
+                    fonts,
                     boundary,
                     pixel_scale,
                     style,
+                    &inputs,
                 );
             }
         }

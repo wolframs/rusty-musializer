@@ -191,6 +191,153 @@ named_enum! {
 }
 
 named_enum! {
+    /// What modulates a caption effect per frame. First post-legacy extension
+    /// (2026-08-03): no C counterpart. Every source is a pure function of the
+    /// [`crate::scene::SceneFrame`], so preview and export agree by construction.
+    ///
+    /// `Rms` is overall loudness; `Bass` the low-band energy of the smoothed
+    /// trails; `Beat` a sharp pulse decaying over each beat interval; `Flux`
+    /// the spectral movement; `Time` a steady clock cycle for drives that
+    /// should not depend on the music. The mapping from each source to its
+    /// 0..=1 value lives in [`crate::project::caption_effects::drive_value`].
+    EffectDrive {
+        None => "none",
+        Rms => "rms",
+        Bass => "bass",
+        Beat => "beat",
+        Flux => "flux",
+        Time => "time",
+    }
+}
+
+/// Caption effect bounds. Like [`caption`], every length is a fraction —
+/// of the resolved font size, not of the frame — so effects scale with the
+/// type they decorate at any export resolution.
+pub mod caption_fx {
+    pub const GLOW_STRENGTH_MINIMUM: f64 = 0.0;
+    pub const GLOW_STRENGTH_MAXIMUM: f64 = 1.0;
+    pub const GLOW_STRENGTH_DEFAULT: f64 = 0.0;
+    /// Fraction of the font size.
+    pub const GLOW_RADIUS_MINIMUM: f64 = 0.02;
+    pub const GLOW_RADIUS_MAXIMUM: f64 = 0.60;
+    pub const GLOW_RADIUS_DEFAULT: f64 = 0.18;
+    /// Warm amber, full alpha: legible over dark material the moment the
+    /// strength slider leaves zero, without first visiting a colour control.
+    pub const GLOW_RGBA_DEFAULT: u32 = 0xFFC8_64FF;
+    pub const PULSE_DEPTH_MINIMUM: f64 = 0.0;
+    pub const PULSE_DEPTH_MAXIMUM: f64 = 1.0;
+    pub const PULSE_DEPTH_DEFAULT: f64 = 0.6;
+    /// Degrees of hue swept across the drive's 0..1 range.
+    pub const HUE_RANGE_MINIMUM: f64 = 0.0;
+    pub const HUE_RANGE_MAXIMUM: f64 = 360.0;
+    pub const HUE_RANGE_DEFAULT: f64 = 120.0;
+    /// Fraction of the font size. Zero is the legacy hard-offset shadow.
+    pub const SHADOW_BLUR_MINIMUM: f64 = 0.0;
+    pub const SHADOW_BLUR_MAXIMUM: f64 = 0.50;
+    pub const SHADOW_BLUR_DEFAULT: f64 = 0.0;
+    pub const SHADOW_OPACITY_MINIMUM: f64 = 0.0;
+    pub const SHADOW_OPACITY_MAXIMUM: f64 = 1.0;
+    pub const SHADOW_OPACITY_DEFAULT: f64 = 1.0;
+    /// `DrawRectangleRounded` roundness. The default is the constant the C
+    /// hard-coded (`plug.c:1282`), now authorable.
+    pub const PLATE_ROUNDNESS_MINIMUM: f64 = 0.0;
+    pub const PLATE_ROUNDNESS_MAXIMUM: f64 = 0.5;
+    pub const PLATE_ROUNDNESS_DEFAULT: f64 = 0.12;
+}
+
+/// Caption text effects: glow, soft shadow and plate shape.
+///
+/// First `.musi` extension past the frozen C (operator decision, 2026-08-03).
+/// The default value renders **exactly** the legacy composition — no glow, the
+/// hard offset shadow, the 0.12 plate roundness — and a default block is not
+/// serialized at all, so every pre-effects project round-trips byte-identically
+/// (which is also what keeps `differential_project_io.sh` green).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptionEffects {
+    /// 0 disables the glow entirely.
+    pub glow_strength: f64,
+    /// Halo radius as a fraction of the font size.
+    pub glow_radius: f64,
+    /// Base glow colour; its alpha is the ceiling the strength scales.
+    pub glow_rgba: u32,
+    /// Modulates glow intensity per frame.
+    pub glow_pulse: EffectDrive,
+    /// How much of the intensity the pulse owns: 0 is steady, 1 swings to zero.
+    pub glow_pulse_depth: f64,
+    /// Shifts the glow hue per frame.
+    pub glow_hue_drive: EffectDrive,
+    /// Degrees of hue swept across the drive's range.
+    pub glow_hue_range: f64,
+    /// Softens the `Shadow` backing; 0 is the legacy hard copy.
+    pub shadow_blur: f64,
+    /// Scales the shadow colour's alpha; 1 is the legacy value.
+    pub shadow_opacity: f64,
+    /// Corner roundness of the `Plate` backing.
+    pub plate_roundness: f64,
+}
+
+impl Default for CaptionEffects {
+    fn default() -> Self {
+        Self {
+            glow_strength: caption_fx::GLOW_STRENGTH_DEFAULT,
+            glow_radius: caption_fx::GLOW_RADIUS_DEFAULT,
+            glow_rgba: caption_fx::GLOW_RGBA_DEFAULT,
+            glow_pulse: EffectDrive::None,
+            glow_pulse_depth: caption_fx::PULSE_DEPTH_DEFAULT,
+            glow_hue_drive: EffectDrive::None,
+            glow_hue_range: caption_fx::HUE_RANGE_DEFAULT,
+            shadow_blur: caption_fx::SHADOW_BLUR_DEFAULT,
+            shadow_opacity: caption_fx::SHADOW_OPACITY_DEFAULT,
+            plate_roundness: caption_fx::PLATE_ROUNDNESS_DEFAULT,
+        }
+    }
+}
+
+impl CaptionEffects {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Every scalar finite and inside its published bound.
+    #[must_use]
+    pub fn validate(&self) -> bool {
+        let bounded = |value: f64, minimum: f64, maximum: f64| {
+            value.is_finite() && value >= minimum && value <= maximum
+        };
+        bounded(
+            self.glow_strength,
+            caption_fx::GLOW_STRENGTH_MINIMUM,
+            caption_fx::GLOW_STRENGTH_MAXIMUM,
+        ) && bounded(
+            self.glow_radius,
+            caption_fx::GLOW_RADIUS_MINIMUM,
+            caption_fx::GLOW_RADIUS_MAXIMUM,
+        ) && bounded(
+            self.glow_pulse_depth,
+            caption_fx::PULSE_DEPTH_MINIMUM,
+            caption_fx::PULSE_DEPTH_MAXIMUM,
+        ) && bounded(
+            self.glow_hue_range,
+            caption_fx::HUE_RANGE_MINIMUM,
+            caption_fx::HUE_RANGE_MAXIMUM,
+        ) && bounded(
+            self.shadow_blur,
+            caption_fx::SHADOW_BLUR_MINIMUM,
+            caption_fx::SHADOW_BLUR_MAXIMUM,
+        ) && bounded(
+            self.shadow_opacity,
+            caption_fx::SHADOW_OPACITY_MINIMUM,
+            caption_fx::SHADOW_OPACITY_MAXIMUM,
+        ) && bounded(
+            self.plate_roundness,
+            caption_fx::PLATE_ROUNDNESS_MINIMUM,
+            caption_fx::PLATE_ROUNDNESS_MAXIMUM,
+        )
+    }
+}
+
+named_enum! {
     /// `Musi_Caption_Anchor` (`project.h:110-121`), in the C enum's 0..8 order.
     CaptionAnchor {
         BottomLeft => "bottom_left",
@@ -308,6 +455,9 @@ pub struct CaptionStyle {
     pub box_rgba: u32,
     /// Present **exactly when** `face` is [`CaptionFace::Imported`].
     pub font: Option<FontAsset>,
+    /// Glow, soft shadow and plate shape. Defaults render the legacy
+    /// composition exactly; see [`CaptionEffects`].
+    pub effects: CaptionEffects,
 }
 
 impl Default for CaptionStyle {
@@ -328,6 +478,7 @@ impl Default for CaptionStyle {
             text_rgba: caption::TEXT_RGBA_DEFAULT,
             box_rgba: caption::BOX_RGBA_DEFAULT,
             font: None,
+            effects: CaptionEffects::default(),
         }
     }
 }
@@ -358,6 +509,9 @@ impl CaptionStyle {
         // arrangement where they disagree would open a project whose captions are
         // typeset in a face the file does not carry (`project.c:164`).
         if (self.face == CaptionFace::Imported) != self.font.is_some() {
+            return false;
+        }
+        if !self.effects.validate() {
             return false;
         }
         self.font.as_ref().map_or(true, FontAsset::is_valid)

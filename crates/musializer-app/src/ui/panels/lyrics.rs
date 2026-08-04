@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use musializer_core::project::editor_draft::{LyricDraftState, LyricDraftValues};
 use musializer_core::project::lyrics::{self, LyricCue, LyricsDocument, LyricsError};
 use musializer_core::project::model::{
-    caption, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle,
+    caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, EffectDrive,
 };
 use musializer_core::ui::lyric_lane_edit::{
     self, LyricLaneClick, LyricLaneSelection, LyricLaneZone,
@@ -50,7 +50,7 @@ use super::super::shell_layout::DEFAULT_TIMELINE_HEIGHT;
 use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
-use crate::cli::UiProbe;
+use crate::cli::{CaptionPickerProbe, UiProbe};
 use crate::workspace::{Track, Workspace};
 
 /// The cue lane's height, and the gap between it and the editor below.
@@ -105,10 +105,31 @@ const _: () = assert!(
 /// a header, one row and a margin.
 const EDITOR_MINIMUM_HEIGHT: f32 = 82.0;
 
-/// Smallest pane the caption controls fit in (`CAPTION_STYLE_FORM_HEIGHT`,
-/// `lyrics_editor_ui.c:454`), and the width its two columns need (`:838`).
-const CAPTION_FORM_HEIGHT: f32 = 152.0;
+/// Smallest pane the caption controls fit in, and the width its two columns need
+/// (`CAPTION_STYLE_FORM_HEIGHT`/`:838`, `lyrics_editor_ui.c:454`).
+///
+/// **The height is [`CaptionFormLayout::EXTENT`], not the oracle's 152.** At 152
+/// the form drew, and then the "Import a face..." button — placed 158 px down —
+/// was skipped by a `fits inside the form?` guard, so at every form height in
+/// `[152, 184)` the only route to an imported caption face silently did not
+/// exist. The real layout produces exactly one such height and it is the one a
+/// 960x640 window gets, which is how the operator found it and no test did.
+/// A control the form draws is now part of the number the form is measured by.
+const CAPTION_FORM_HEIGHT: f32 = CaptionFormLayout::EXTENT;
 const CAPTION_FORM_WIDTH: f32 = 520.0;
+
+/// What the shortest panel the layout can produce leaves for the caption form.
+///
+/// `lyrics_editor_layout::panel_height` never returns less than
+/// `LYRIC_EDITOR_FORM_MINIMUM`, and [`Shell::caption_pane`] spends
+/// `UI_PANEL_PADDING` twice plus the 38 px header row before handing the rest to
+/// the form. Derived rather than measured, so raising the form's own extent past
+/// what the panel can ever supply fails to compile instead of reintroducing the
+/// "Enlarge the window" message at the minimum supported size.
+const CAPTION_FORM_AVAILABLE: f32 =
+    lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM - metric::UI_PANEL_PADDING * 2.0 - 38.0;
+
+const _: () = assert!(CAPTION_FORM_HEIGHT <= CAPTION_FORM_AVAILABLE);
 
 /// Widget id namespaces for this panel.
 ///
@@ -138,6 +159,38 @@ mod form_id {
     pub const DELETE: u32 = 2;
     pub const START_TIME: u32 = 10;
     pub const END_TIME: u32 = 20;
+}
+
+/// Indices inside [`ns::CAPTION`], separated by control group for the same reason
+/// [`form_id`]'s are separated by row.
+///
+/// Each group leaves room for one more entry than it uses: the INK row grew a
+/// seventh cell when free colour picking landed, and had the swatch base been
+/// packed tight against the next group that cell would have inherited the anchor
+/// grid's id and released its press.
+mod caption_id {
+    /// Face choice: three cells, since a project may carry an imported family.
+    pub const FACE: u32 = 0;
+    /// Backing choice: three cells.
+    pub const BACKING: u32 = 8;
+    /// The 3x3 anchor grid.
+    pub const ANCHOR: u32 = 16;
+    pub const IMPORT_FACE: u32 = 32;
+    pub const REMOVE_FACE: u32 = 33;
+    /// The INK row: one per swatch, then the custom cell.
+    pub const INK_SWATCHES: u32 = 40;
+    /// The PLATE row, the same shape.
+    pub const PLATE_SWATCHES: u32 = 48;
+    /// The free picker's Done button.
+    pub const PICKER_DONE: u32 = 56;
+    /// The effects form's PULSE drive row: six cells.
+    pub const PULSE_DRIVE: u32 = 64;
+    /// The effects form's HUE drive row: six cells.
+    pub const HUE_DRIVE: u32 = 72;
+    /// The glow colour cell on the effects form.
+    pub const GLOW_COLOR: u32 = 80;
+    /// The Style/Effects toggle in the caption pane header.
+    pub const EFFECTS_TOGGLE: u32 = 88;
 }
 
 /// The amber a lyric block is drawn in (`lyrics_editor_ui.c:998`).
@@ -374,10 +427,18 @@ pub struct LyricEditor {
     pub style_pane: bool,
     /// The font browser, a third whole-panel pane. Agent K's.
     pub font_pane: bool,
-    /// Which caption slider a drag started on, `0` for none. Held rather than
-    /// recomputed from the pointer so a drag that leaves the track keeps moving
-    /// the control it started on.
+    /// The caption effects form, a sibling body inside the style pane
+    /// (post-legacy, 2026-08-03). `font_pane` wins when both are set, matching
+    /// the browser's precedence over the style form.
+    pub effects_pane: bool,
+    /// Which caption slider or picker surface a drag started on, `0` for none.
+    /// Held rather than recomputed from the pointer so a drag that leaves the
+    /// track keeps moving the control it started on. `1..=3` are the SIZE, WIDTH
+    /// and INSET sliders; `4..=6` are the picker's square, hue bar and alpha
+    /// bar; `10..=16` are the effects form's seven sliders.
     style_drag: u8,
+    /// The free colour picker, closed unless a custom swatch opened it.
+    picker: CaptionPicker,
     lane_selection: LyricLaneSelection,
     lane_drag: LaneDrag,
     /// Cue count as of the last frame, so [`Self::timeline_height`] can ask the
@@ -438,7 +499,9 @@ impl LyricEditor {
             list_follow_selection: true,
             style_pane: false,
             font_pane: false,
+            effects_pane: false,
             style_drag: 0,
+            picker: CaptionPicker::default(),
             lane_selection: LyricLaneSelection::new(),
             lane_drag: LaneDrag::default(),
             cue_count: 0,
@@ -739,11 +802,31 @@ impl LyricEditor {
         if probe.caption_style_pane {
             self.style_pane = true;
         }
+        if probe.caption_effects_pane {
+            self.style_pane = true;
+            self.effects_pane = true;
+        }
         if probe.font_browser.is_some() {
             // The browser is a pane *inside* the style pane, and its own Back
             // button returns there (`lyrics_editor_ui.c:1165-1174`).
             self.style_pane = true;
             self.font_pane = true;
+        }
+        if let Some(target) = probe.caption_picker {
+            // A disclosure inside the style pane, so it turns the pane on the
+            // same way `fonts=` does — and turns the browser off, because the
+            // browser draws over the whole form and the frame would show neither.
+            self.style_pane = true;
+            self.font_pane = false;
+            honoured &= probe.font_browser.is_none();
+            // The glow colour lives on the effects form, so its picker opens
+            // that body; the other two live on the style form and close it.
+            self.effects_pane = target == CaptionPickerProbe::Glow;
+            self.picker.toggle(match target {
+                CaptionPickerProbe::Ink => CaptionColor::Ink,
+                CaptionPickerProbe::Plate => CaptionColor::Plate,
+                CaptionPickerProbe::Glow => CaptionColor::Glow,
+            });
         }
         if let Some(selection) = probe.lyric_selection {
             match track
@@ -778,6 +861,8 @@ impl LyricEditor {
         };
         let pane = if self.font_pane && self.style_pane {
             "fonts"
+        } else if self.style_pane && self.effects_pane {
+            "caption-effects"
         } else if self.style_pane {
             "caption-style"
         } else {
@@ -799,7 +884,7 @@ impl LyricEditor {
         };
         format!(
             "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}, \
-             face={} field={} missing={}",
+             face={} field={} missing={} picker={}",
             track.lyrics.len(),
             pane,
             selected,
@@ -825,6 +910,12 @@ impl LyricEditor {
             self.authored.rows,
             self.authored.field,
             self.authored.missing,
+            // Which free picker is open, and on what. The picker replaces the
+            // left column while it is up, so a capture of the caption pane is
+            // ambiguous about whether it photographed the controls or the
+            // picker; `picker=ink` is what makes the frame self-describing, and
+            // `picker=none` is what proves the toggle closes again.
+            self.picker.target.map_or("none", |target| target.token()),
         )
     }
 }
@@ -2063,6 +2154,7 @@ impl Shell {
                 // back to a half-finished search nobody remembers starting is
                 // worse than coming back to the controls.
                 editor.font_pane = false;
+                editor.effects_pane = false;
             }
         }
         widgets::draw_text(
@@ -2070,6 +2162,8 @@ impl Shell {
             font,
             if browsing {
                 "CAPTION FACE"
+            } else if editor.effects_pane {
+                "CAPTION EFFECTS"
             } else {
                 "CAPTION STYLE"
             },
@@ -2078,6 +2172,35 @@ impl Shell {
             metric::UI_FONT_HEADER,
             color::accent(),
         );
+        // The Style/Effects flip, hidden while the browser is up because the
+        // browser's Back already means "return to where you were".
+        if !browsing {
+            let flip = UiRect::new(toggle.x + toggle.width + 178.0, list.y - 3.0, 74.0, 34.0);
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    font,
+                    widgets::widget_id(ns::CAPTION, caption_id::EFFECTS_TOGGLE),
+                    flip,
+                    if editor.effects_pane {
+                        "Style"
+                    } else {
+                        "Effects"
+                    },
+                    false,
+                    ButtonStyle::Neutral,
+                    Some(14.0),
+                )
+                .clicked
+            {
+                editor.effects_pane = !editor.effects_pane;
+                // Whichever picker was open belongs to the form being left; an
+                // open picker floating over the other form would write into a
+                // control that is no longer on screen.
+                editor.picker.target = None;
+            }
+        }
         let form = UiRect::new(
             boundary.x + metric::UI_PANEL_PADDING,
             list.y + 38.0,
@@ -2092,10 +2215,15 @@ impl Shell {
             self.font_browser_pane(d, input, form, commands);
             return;
         }
+        if editor.effects_pane {
+            self.caption_effects_form(d, input, editor, track, form);
+            return;
+        }
         self.caption_style_form(d, input, editor, track, form);
     }
 
-    /// `draw_caption_style_form` (`:833-981`).
+    /// `draw_caption_style_form` (`:833-981`), plus the free picker the oracle
+    /// has no counterpart for.
     fn caption_style_form(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -2127,31 +2255,185 @@ impl Shell {
         // Two columns across the whole panel. The cue list is hidden while this
         // pane is open, which is what buys the width: stacking these controls
         // into the 48% form column needed height the panel does not have.
-        let column_gap = 24.0;
-        let label_width = 62.0;
-        let column_width = (form.width - column_gap) * 0.5;
-        let left_x = form.x + label_width;
-        let left_width = column_width - label_width;
-        let right_label_x = form.x + column_width + column_gap;
-        let right_x = right_label_x + label_width;
-        let right_width = column_width - label_width;
+        let layout = CaptionFormLayout::compose(form);
 
         // The imported face is offered only when the project actually carries
         // one. A third choice selecting a face the file does not have would be a
         // control whose only outcome is a validation failure on save.
         let imported = style.font.as_ref().map(|asset| asset.family.clone());
-        let face_labels: Vec<&str> = match imported.as_deref() {
+
+        // Left column, or the picker in its place. Never both: a control painted
+        // under another claims the press first, which is the defect
+        // `workspace_layout`'s no-draw rule exists for, and the picker needs more
+        // height than any window this panel supports can spare beside them.
+        match editor.picker.target {
+            Some(target) => {
+                if self.caption_picker(
+                    d,
+                    font,
+                    input.ui_scale,
+                    editor,
+                    &layout.picker,
+                    target,
+                    &mut style,
+                ) {
+                    changed = true;
+                }
+            }
+            None => {
+                if self.caption_left_column(
+                    d,
+                    font,
+                    editor,
+                    &layout,
+                    imported.as_deref(),
+                    &mut style,
+                ) {
+                    changed = true;
+                }
+            }
+        }
+
+        let readout_width = 44.0;
+        #[rustfmt::skip]
+        let sliders: [(&str, f64, f64, u8); 3] = [
+            ("SIZE",  caption::SIZE_MINIMUM,   caption::SIZE_MAXIMUM,   1),
+            ("WIDTH", caption::WIDTH_MINIMUM,  caption::WIDTH_MAXIMUM,  2),
+            ("INSET", caption::MARGIN_MINIMUM, caption::MARGIN_MAXIMUM, 3),
+        ];
+        for (index, (label, minimum, maximum, drag_id)) in sliders.into_iter().enumerate() {
+            let bar = layout.sliders[index];
+            caption_label(d, font, label, layout.right_label_x, bar.y, bar.height);
+            if bar.width < 60.0 {
+                continue;
+            }
+            let value = match index {
+                0 => &mut style.size_scale,
+                1 => &mut style.width_scale,
+                _ => &mut style.margin_scale,
+            };
+            if caption_slider(
+                d,
+                input.ui_scale,
+                &mut editor.style_drag,
+                drag_id,
+                bar,
+                minimum,
+                maximum,
+                value,
+            ) {
+                changed = true;
+            }
+            let readout = format!("{:.1}%", *value * 100.0);
+            let width = widgets::measure(font, &readout, 12.0).min(readout_width);
+            widgets::draw_text(
+                d,
+                font,
+                &readout,
+                layout.readout_right - width,
+                bar.y + 5.0,
+                12.0,
+                color::ui_ink(),
+            );
+        }
+
+        caption_label(
+            d,
+            font,
+            "INK",
+            layout.right_label_x,
+            layout.ink.y,
+            layout.ink.height,
+        );
+        match self.swatch_row(
+            d,
+            widgets::widget_id(ns::CAPTION, caption_id::INK_SWATCHES),
+            layout.ink,
+            &CAPTION_TEXT_SWATCHES,
+            style.text_rgba,
+        ) {
+            Some(SwatchChoice::Packed(chosen)) => {
+                style.text_rgba = chosen;
+                changed = true;
+            }
+            Some(SwatchChoice::Custom) => editor.picker.toggle(CaptionColor::Ink),
+            None => {}
+        }
+
+        // Kept live even with backing "None": switching back should restore the
+        // colour that was chosen rather than reset it.
+        caption_label(
+            d,
+            font,
+            "PLATE",
+            layout.right_label_x,
+            layout.plate.y,
+            layout.plate.height,
+        );
+        match self.swatch_row(
+            d,
+            widgets::widget_id(ns::CAPTION, caption_id::PLATE_SWATCHES),
+            layout.plate,
+            &CAPTION_BOX_SWATCHES,
+            style.box_rgba,
+        ) {
+            Some(SwatchChoice::Packed(chosen)) => {
+                style.box_rgba = chosen;
+                changed = true;
+            }
+            Some(SwatchChoice::Custom) => editor.picker.toggle(CaptionColor::Plate),
+            None => {}
+        }
+
+        widgets::draw_text(
+            d,
+            font,
+            "Sizes are fractions of the frame, so exports match the preview.",
+            layout.note.x,
+            layout.note.y,
+            12.0,
+            color::ui_muted(),
+        );
+
+        if changed {
+            editor.push(LyricsEdit::SetCaptionStyle(Box::new(style)));
+        }
+    }
+
+    /// FACE, BACKING, PLACE and the two face-asset buttons.
+    ///
+    /// Returns whether the style changed. Split out of [`Self::caption_style_form`]
+    /// because the free picker draws in exactly this space and the two must be
+    /// mutually exclusive by construction rather than by remembering to skip.
+    fn caption_left_column(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        editor: &mut LyricEditor,
+        layout: &CaptionFormLayout,
+        imported: Option<&str>,
+        style: &mut CaptionStyle,
+    ) -> bool {
+        let mut changed = false;
+
+        let face_labels: Vec<&str> = match imported {
             Some(family) => vec!["Alegreya", "Space Grotesk", family],
             None => vec!["Alegreya", "Space Grotesk"],
         };
-        let face_row = UiRect::new(left_x, form.y, left_width, 26.0);
-        caption_label(d, font, "FACE", form.x, face_row.y, face_row.height);
+        caption_label(
+            d,
+            font,
+            "FACE",
+            layout.label_x,
+            layout.face.y,
+            layout.face.height,
+        );
         let face_index = index_of(CaptionFace::ALL, style.face);
         if let Some(chosen) = self.choice_row(
             d,
             font,
-            widgets::widget_id(ns::CAPTION, 0),
-            face_row,
+            widgets::widget_id(ns::CAPTION, caption_id::FACE),
+            layout.face,
             &face_labels,
             face_index,
         ) {
@@ -2164,14 +2446,20 @@ impl Shell {
         }
 
         let box_labels: [&str; 3] = ["None", "Shadow", "Plate"];
-        let box_row = UiRect::new(left_x, form.y + 32.0, left_width, 26.0);
-        caption_label(d, font, "BACKING", form.x, box_row.y, box_row.height);
+        caption_label(
+            d,
+            font,
+            "BACKING",
+            layout.label_x,
+            layout.backing.y,
+            layout.backing.height,
+        );
         let box_index = index_of(CaptionBox::ALL, style.box_style);
         if let Some(chosen) = self.choice_row(
             d,
             font,
-            widgets::widget_id(ns::CAPTION, 8),
-            box_row,
+            widgets::widget_id(ns::CAPTION, caption_id::BACKING),
+            layout.backing,
             &box_labels,
             box_index,
         ) {
@@ -2188,17 +2476,10 @@ impl Shell {
         // names would be worse than nine 22 px cells. The enum counts up from the
         // bottom row because bottom-centre is the default and belongs at zero,
         // while the grid draws downward from the top (`:886-902`).
-        caption_label(d, font, "PLACE", form.x, form.y + 64.0, 66.0);
+        caption_label(d, font, "PLACE", layout.label_x, layout.anchor[0].y, 66.0);
         let anchor_index = index_of(CaptionAnchor::ALL, style.anchor);
-        for cell in 0..9usize {
-            let drawn_row = cell / 3;
-            let value = (2 - drawn_row) * 3 + cell % 3;
-            let rect = UiRect::new(
-                left_x + (cell % 3) as f32 * 24.0,
-                form.y + 64.0 + drawn_row as f32 * 24.0,
-                22.0,
-                22.0,
-            );
+        for (cell, rect) in layout.anchor.into_iter().enumerate() {
+            let value = (2 - cell / 3) * 3 + cell % 3;
             widgets::fill(
                 d,
                 rect,
@@ -2209,11 +2490,12 @@ impl Shell {
                 },
             );
             d.draw_rectangle_lines_ex(widgets::rectangle(rect), 1.0, color::ui_rule());
-            if self
-                .widgets
-                .button(d, widgets::widget_id(ns::CAPTION, 16 + cell as u32), rect)
-                .clicked
-            {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "nine cells, indexed by the loop that draws them"
+            )]
+            let id = widgets::widget_id(ns::CAPTION, caption_id::ANCHOR + cell as u32);
+            if self.widgets.button(d, id, rect).clicked {
                 if let Some(anchor) = CaptionAnchor::ALL.get(value) {
                     if *anchor != style.anchor {
                         style.anchor = *anchor;
@@ -2222,87 +2504,372 @@ impl Shell {
                 }
             }
         }
-        widgets::draw_text(
-            d,
-            font,
-            "Sizes are fractions of the frame, so exports match the preview.",
-            form.x,
-            form.y + 140.0,
-            12.0,
-            color::ui_muted(),
-        );
 
         // Reaching the browser from the face row is what makes the third choice
-        // obtainable at all.
-        let import_face = UiRect::new(left_x, form.y + 158.0, 132.0, 26.0);
-        if import_face.y + import_face.height <= form.y + form.height {
-            if self
+        // obtainable at all — which is why it is no longer drawn conditionally.
+        if self
+            .widgets
+            .text_button(
+                d,
+                font,
+                widgets::widget_id(ns::CAPTION, caption_id::IMPORT_FACE),
+                layout.import_face,
+                "Import a face...",
+                false,
+                ButtonStyle::Neutral,
+                Some(13.0),
+            )
+            .clicked
+        {
+            editor.font_pane = true;
+        }
+        if imported.is_some()
+            && self
                 .widgets
                 .text_button(
                     d,
                     font,
-                    widgets::widget_id(ns::CAPTION, 32),
-                    import_face,
-                    "Import a face...",
+                    widgets::widget_id(ns::CAPTION, caption_id::REMOVE_FACE),
+                    layout.remove_face,
+                    "Remove",
                     false,
                     ButtonStyle::Neutral,
                     Some(13.0),
                 )
                 .clicked
-            {
-                editor.font_pane = true;
-            }
-            let forget = UiRect::new(
-                import_face.x + import_face.width + 6.0,
-                import_face.y,
-                74.0,
-                26.0,
+        {
+            // Dropping the asset must drop the face that named it in the same
+            // step, or the project would validate as an imported face with
+            // nothing behind it.
+            style.face = CaptionFace::Alegreya;
+            style.font = None;
+            changed = true;
+        }
+
+        changed
+    }
+
+    /// The free colour picker: a saturation/value square, a hue bar, an alpha bar
+    /// and a hex readout, in the space the left column otherwise occupies.
+    ///
+    /// **Invented, and an operator decision of 2026-08-03** — the frozen C offers
+    /// six ink swatches and five plate swatches and nothing else. The swatches
+    /// stay as the quick picks they always were; this is the escape hatch.
+    ///
+    /// It claims the left column rather than opening below the swatch rows
+    /// because there is nowhere below them: the tallest caption form any
+    /// supported window produces is 282 px, and the swatch rows already end at
+    /// 136. Replacing rather than overlaying is also what keeps the press claim
+    /// honest — an overlaid picker would sit on top of buttons that were drawn
+    /// first and took the press.
+    ///
+    /// Returns whether the style changed, which during a drag is every frame:
+    /// the same behaviour the three caption sliders already have, and there is
+    /// no undo stack for caption style for it to flood.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the caption-form shape: the face, the scale, the drag slots, the layout, the target, the style"
+    )]
+    fn caption_picker(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        ui_scale: super::super::scale::UiScale,
+        editor: &mut LyricEditor,
+        picker: &CaptionPickerLayout,
+        target: CaptionColor,
+        style: &mut CaptionStyle,
+    ) -> bool {
+        // Whatever the model holds now, including a preset swatch clicked while
+        // this was open.
+        editor.picker.sync(target.read(style));
+
+        widgets::draw_text(
+            d,
+            font,
+            target.heading(),
+            picker.heading.x,
+            picker.heading.y,
+            12.0,
+            color::accent(),
+        );
+        if self
+            .widgets
+            .text_button(
+                d,
+                font,
+                widgets::widget_id(ns::CAPTION, caption_id::PICKER_DONE),
+                picker.done,
+                "Done",
+                false,
+                ButtonStyle::Neutral,
+                Some(13.0),
+            )
+            .clicked
+        {
+            editor.picker.target = None;
+        }
+
+        widgets::saturation_value_field(d, picker.field, editor.picker.hue);
+        d.draw_rectangle_lines_ex(widgets::rectangle(picker.field), 1.0, color::ui_rule());
+        widgets::hue_bar(d, picker.hue);
+        d.draw_rectangle_lines_ex(widgets::rectangle(picker.hue), 1.0, color::ui_rule());
+
+        let (red, green, blue) = widgets::rgb_from_hsv(
+            editor.picker.hue,
+            editor.picker.saturation,
+            editor.picker.value,
+        );
+        widgets::alpha_bar(d, picker.alpha, Color::new(red, green, blue, 255));
+        d.draw_rectangle_lines_ex(widgets::rectangle(picker.alpha), 1.0, color::ui_rule());
+
+        // Knobs after the fills, so none of them is painted over.
+        let field_knob = Vector2::new(
+            picker.field.x + editor.picker.saturation * picker.field.width,
+            picker.field.y + (1.0 - editor.picker.value) * picker.field.height,
+        );
+        let ink = widgets::contrasting_ink(Color::new(red, green, blue, 255));
+        d.draw_circle_lines(field_knob.x as i32, field_knob.y as i32, 5.0, ink);
+        let hue_y = picker.hue.y + (editor.picker.hue / 360.0) * picker.hue.height;
+        d.draw_rectangle_lines_ex(
+            widgets::rectangle(UiRect::new(
+                picker.hue.x - 2.0,
+                hue_y - 3.0,
+                picker.hue.width + 4.0,
+                6.0,
+            )),
+            2.0,
+            color::ui_ink(),
+        );
+        let alpha_x = picker.alpha.x + editor.picker.alpha * picker.alpha.width;
+        d.draw_rectangle_lines_ex(
+            widgets::rectangle(UiRect::new(
+                alpha_x - 3.0,
+                picker.alpha.y - 2.0,
+                6.0,
+                picker.alpha.height + 4.0,
+            )),
+            2.0,
+            color::ui_ink(),
+        );
+
+        // The three drags. Ids 4..=6 continue the caption sliders' 1..=3 in the
+        // same slot, so no two of them can be live at once — and like them, none
+        // claims a widget id, because a gesture that leaves its rectangle would
+        // otherwise strand the one claim the whole interface shares.
+        if let Some((across, down)) =
+            caption_drag(d, ui_scale, &mut editor.style_drag, 4, picker.field)
+        {
+            editor.picker.saturation = across;
+            editor.picker.value = 1.0 - down;
+        }
+        if let Some((_, down)) = caption_drag(d, ui_scale, &mut editor.style_drag, 5, picker.hue) {
+            // 359.99 rather than 360: they are the same colour, and letting the
+            // stored hue reach 360 would make the knob leave the bottom of the bar.
+            editor.picker.hue = (down * 360.0).min(359.99);
+        }
+        if let Some((across, _)) =
+            caption_drag(d, ui_scale, &mut editor.style_drag, 6, picker.alpha)
+        {
+            editor.picker.alpha = across;
+        }
+
+        let (red, green, blue, alpha) = widgets::unpack_rgba(editor.picker.packed());
+        widgets::draw_text(
+            d,
+            font,
+            &format!("#{red:02X}{green:02X}{blue:02X}"),
+            picker.readout.x,
+            picker.readout.y,
+            13.0,
+            color::ui_ink(),
+        );
+        widgets::draw_text(
+            d,
+            font,
+            &format!("ALPHA {:.0}%", f32::from(alpha) / 255.0 * 100.0),
+            picker.readout.x,
+            picker.readout.y + 18.0,
+            12.0,
+            color::ui_muted(),
+        );
+
+        let chosen = editor.picker.packed();
+        if chosen == target.read(style) {
+            return false;
+        }
+        target.write(style, chosen);
+        // Recorded as agreed, or the next frame's `sync` would read the value
+        // back out and lose the hue the drag is holding.
+        editor.picker.adopt(chosen);
+        true
+    }
+
+    /// The caption effects form (post-legacy, 2026-08-03): glow, drives, soft
+    /// shadow and plate shape. A sibling body to [`Self::caption_style_form`]
+    /// inside the same pane, sharing its footprint, drag slot and free picker.
+    fn caption_effects_form(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        editor: &mut LyricEditor,
+        track: &Track,
+        form: UiRect,
+    ) {
+        let font = input.fonts.ui();
+        if form.height < CAPTION_FORM_HEIGHT || form.width < CAPTION_FORM_WIDTH {
+            widgets::draw_text(
+                d,
+                font,
+                "Enlarge the window to edit caption effects.",
+                form.x,
+                form.y,
+                metric::UI_FONT_VALUE,
+                color::ui_muted(),
             );
-            if imported.is_some()
-                && forget.x + forget.width <= form.x + column_width
-                && self
-                    .widgets
-                    .text_button(
-                        d,
-                        font,
-                        widgets::widget_id(ns::CAPTION, 33),
-                        forget,
-                        "Remove",
-                        false,
-                        ButtonStyle::Neutral,
-                        Some(13.0),
-                    )
-                    .clicked
-            {
-                // Dropping the asset must drop the face that named it in the same
-                // step, or the project would validate as an imported face with
-                // nothing behind it.
-                style.face = CaptionFace::Alegreya;
-                style.font = None;
+            return;
+        }
+        let mut style = track.caption_style.clone();
+        let mut changed = false;
+        let layout = CaptionEffectsLayout::compose(form);
+
+        // The left column, or the glow picker in its place — the same
+        // mutual exclusion the style form has, for the same press-claim reason.
+        // An Ink or Plate picker cannot be open here: the pane toggle closes the
+        // picker, and this form's only opener targets Glow.
+        if editor.picker.target == Some(CaptionColor::Glow) {
+            if self.caption_picker(
+                d,
+                font,
+                input.ui_scale,
+                editor,
+                &layout.picker,
+                CaptionColor::Glow,
+                &mut style,
+            ) {
                 changed = true;
+            }
+        } else {
+            changed |= self.effects_left_column(d, input, editor, &layout, &mut style);
+        }
+
+        // The right column: the hue drive and four sliders, drawn regardless of
+        // the picker so a colour drag shows its consequence live.
+        caption_label(
+            d,
+            font,
+            "HUE",
+            layout.right_label_x,
+            layout.hue.y,
+            layout.hue.height,
+        );
+        let hue_index = index_of(EffectDrive::ALL, style.effects.glow_hue_drive);
+        if let Some(chosen) = self.choice_row(
+            d,
+            font,
+            widgets::widget_id(ns::CAPTION, caption_id::HUE_DRIVE),
+            layout.hue,
+            &DRIVE_LABELS,
+            hue_index,
+        ) {
+            if let Some(drive) = EffectDrive::ALL.get(chosen) {
+                if *drive != style.effects.glow_hue_drive {
+                    style.effects.glow_hue_drive = *drive;
+                    changed = true;
+                }
             }
         }
 
-        let readout_width = 44.0;
-        let slider_width = right_width - readout_width - 6.0;
         #[rustfmt::skip]
-        let sliders: [(&str, f64, f64, u8); 3] = [
-            ("SIZE",  caption::SIZE_MINIMUM,   caption::SIZE_MAXIMUM,   1),
-            ("WIDTH", caption::WIDTH_MINIMUM,  caption::WIDTH_MAXIMUM,  2),
-            ("INSET", caption::MARGIN_MINIMUM, caption::MARGIN_MAXIMUM, 3),
+        let right_sliders: [(&str, UiRect, f64, f64, u8, usize); 4] = [
+            ("SWEEP", layout.sweep, caption_fx::HUE_RANGE_MINIMUM,      caption_fx::HUE_RANGE_MAXIMUM,      13, 0),
+            ("BLUR",  layout.blur,  caption_fx::SHADOW_BLUR_MINIMUM,    caption_fx::SHADOW_BLUR_MAXIMUM,    14, 1),
+            ("SHADE", layout.shade, caption_fx::SHADOW_OPACITY_MINIMUM, caption_fx::SHADOW_OPACITY_MAXIMUM, 15, 2),
+            ("ROUND", layout.round, caption_fx::PLATE_ROUNDNESS_MINIMUM, caption_fx::PLATE_ROUNDNESS_MAXIMUM, 16, 3),
         ];
-        for (index, (label, minimum, maximum, drag_id)) in sliders.into_iter().enumerate() {
-            let row_y = form.y + index as f32 * 26.0;
-            caption_label(d, font, label, right_label_x, row_y, 22.0);
-            if slider_width < 60.0 {
+        for (label, bar, minimum, maximum, drag_id, which) in right_sliders {
+            caption_label(d, font, label, layout.right_label_x, bar.y, bar.height);
+            if bar.width < 60.0 {
                 continue;
             }
-            let value = match index {
-                0 => &mut style.size_scale,
-                1 => &mut style.width_scale,
-                _ => &mut style.margin_scale,
+            let value = match which {
+                0 => &mut style.effects.glow_hue_range,
+                1 => &mut style.effects.shadow_blur,
+                2 => &mut style.effects.shadow_opacity,
+                _ => &mut style.effects.plate_roundness,
             };
-            let bar = UiRect::new(right_x, row_y, slider_width, 22.0);
+            if caption_slider(
+                d,
+                input.ui_scale,
+                &mut editor.style_drag,
+                drag_id,
+                bar,
+                minimum,
+                maximum,
+                value,
+            ) {
+                changed = true;
+            }
+            let readout = if which == 0 {
+                format!("{:.0}\u{b0}", *value)
+            } else {
+                format!("{:.1}%", *value * 100.0)
+            };
+            let width = widgets::measure(font, &readout, 12.0).min(44.0);
+            widgets::draw_text(
+                d,
+                font,
+                &readout,
+                layout.readout_right - width,
+                bar.y + 5.0,
+                12.0,
+                color::ui_ink(),
+            );
+        }
+
+        widgets::draw_text(
+            d,
+            font,
+            "Drives follow the music. BLUR and SHADE soften the Shadow backing; ROUND shapes the Plate.",
+            layout.note.x,
+            layout.note.y,
+            12.0,
+            color::ui_muted(),
+        );
+
+        if changed {
+            editor.push(LyricsEdit::SetCaptionStyle(Box::new(style)));
+        }
+    }
+
+    /// GLOW, RADIUS, COLOR, PULSE and DEPTH — the space the glow picker claims.
+    fn effects_left_column(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        editor: &mut LyricEditor,
+        layout: &CaptionEffectsLayout,
+        style: &mut CaptionStyle,
+    ) -> bool {
+        let font = input.fonts.ui();
+        let mut changed = false;
+
+        #[rustfmt::skip]
+        let sliders: [(&str, UiRect, f64, f64, u8, usize); 3] = [
+            ("GLOW",   layout.glow,   caption_fx::GLOW_STRENGTH_MINIMUM, caption_fx::GLOW_STRENGTH_MAXIMUM, 10, 0),
+            ("RADIUS", layout.radius, caption_fx::GLOW_RADIUS_MINIMUM,   caption_fx::GLOW_RADIUS_MAXIMUM,   11, 1),
+            ("DEPTH",  layout.depth,  caption_fx::PULSE_DEPTH_MINIMUM,   caption_fx::PULSE_DEPTH_MAXIMUM,   12, 2),
+        ];
+        for (label, bar, minimum, maximum, drag_id, which) in sliders {
+            caption_label(d, font, label, layout.label_x, bar.y, bar.height);
+            if bar.width < 60.0 {
+                continue;
+            }
+            let value = match which {
+                0 => &mut style.effects.glow_strength,
+                1 => &mut style.effects.glow_radius,
+                _ => &mut style.effects.glow_pulse_depth,
+            };
             if caption_slider(
                 d,
                 input.ui_scale,
@@ -2316,56 +2883,82 @@ impl Shell {
                 changed = true;
             }
             let readout = format!("{:.1}%", *value * 100.0);
-            let width = widgets::measure(font, &readout, 12.0);
+            let width = widgets::measure(font, &readout, 12.0).min(44.0);
             widgets::draw_text(
                 d,
                 font,
                 &readout,
-                right_x + right_width - width,
-                row_y + 5.0,
+                layout.left_readout_right - width,
+                bar.y + 5.0,
                 12.0,
                 color::ui_ink(),
             );
         }
 
-        let text_row = UiRect::new(right_x, form.y + 86.0, right_width, 22.0);
-        caption_label(d, font, "INK", right_label_x, text_row.y, text_row.height);
-        if let Some(chosen) = self.swatch_row(
-            d,
-            widgets::widget_id(ns::CAPTION, 40),
-            text_row,
-            &CAPTION_TEXT_SWATCHES,
-            style.text_rgba,
-        ) {
-            style.text_rgba = chosen;
-            changed = true;
-        }
-
-        let plate_row = UiRect::new(right_x, form.y + 114.0, right_width, 22.0);
+        // The glow colour cell: checkerboard under it so a translucent glow
+        // reads as translucent, and the free picker behind a click.
         caption_label(
             d,
             font,
-            "PLATE",
-            right_label_x,
-            plate_row.y,
-            plate_row.height,
+            "COLOR",
+            layout.label_x,
+            layout.color_cell.y,
+            layout.color_cell.height,
         );
-        // Kept live even with backing "None": switching back should restore the
-        // colour that was chosen rather than reset it.
-        if let Some(chosen) = self.swatch_row(
+        widgets::checkerboard(d, layout.color_cell, layout.color_cell.width * 0.25);
+        widgets::fill(
             d,
-            widgets::widget_id(ns::CAPTION, 48),
-            plate_row,
-            &CAPTION_BOX_SWATCHES,
-            style.box_rgba,
-        ) {
-            style.box_rgba = chosen;
-            changed = true;
+            layout.color_cell,
+            Color::get_color(style.effects.glow_rgba),
+        );
+        d.draw_rectangle_lines_ex(widgets::rectangle(layout.color_cell), 1.0, color::ui_rule());
+        if self
+            .widgets
+            .button(
+                d,
+                widgets::widget_id(ns::CAPTION, caption_id::GLOW_COLOR),
+                layout.color_cell,
+            )
+            .clicked
+        {
+            editor.picker.toggle(CaptionColor::Glow);
         }
+        let (red, green, blue, _) = widgets::unpack_rgba(style.effects.glow_rgba);
+        widgets::draw_text(
+            d,
+            font,
+            &format!("#{red:02X}{green:02X}{blue:02X}"),
+            layout.color_cell.x + layout.color_cell.width + 8.0,
+            layout.color_cell.y + 5.0,
+            12.0,
+            color::ui_muted(),
+        );
 
-        if changed {
-            editor.push(LyricsEdit::SetCaptionStyle(Box::new(style)));
+        caption_label(
+            d,
+            font,
+            "PULSE",
+            layout.label_x,
+            layout.pulse.y,
+            layout.pulse.height,
+        );
+        let pulse_index = index_of(EffectDrive::ALL, style.effects.glow_pulse);
+        if let Some(chosen) = self.choice_row(
+            d,
+            font,
+            widgets::widget_id(ns::CAPTION, caption_id::PULSE_DRIVE),
+            layout.pulse,
+            &DRIVE_LABELS,
+            pulse_index,
+        ) {
+            if let Some(drive) = EffectDrive::ALL.get(chosen) {
+                if *drive != style.effects.glow_pulse {
+                    style.effects.glow_pulse = *drive;
+                    changed = true;
+                }
+            }
         }
+        changed
     }
 
     /// One row of mutually exclusive choices (`caption_choice_row`, `:502-521`).
@@ -2416,12 +3009,16 @@ impl Shell {
         chosen
     }
 
-    /// A row of colour swatches (`caption_swatch_row`, `:541-576`).
+    /// A row of colour swatches, and the custom cell that opens the free picker
+    /// (`caption_swatch_row`, `:541-576`).
     ///
-    /// Swatches, not a colour wheel: a caption has to stay legible over moving
-    /// material, so the useful choices are few and opinionated, and the alpha is
-    /// baked into each entry because "white at 40%" is a different decision from
-    /// "grey".
+    /// The swatches are the oracle's and stay the quick picks they were: a
+    /// caption has to be legible over moving material, so a short opinionated
+    /// list is the right first offer, and the alpha is baked into each entry
+    /// because "white at 40%" is a different decision from "grey". What is new is
+    /// the last cell — it shows the colour currently in force, carries a `+`, and
+    /// reads as selected whenever the value matches no swatch, which is the only
+    /// honest way to show that a hand-picked colour is the live one.
     fn swatch_row(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -2429,42 +3026,43 @@ impl Shell {
         row: UiRect,
         swatches: &[u32],
         current: u32,
-    ) -> Option<u32> {
+    ) -> Option<SwatchChoice> {
         let gap = 4.0;
-        let width = (row.width - gap * (swatches.len() - 1) as f32) / swatches.len() as f32;
+        let cells = swatches.len() + 1;
+        let width = (row.width - gap * (cells - 1) as f32) / cells as f32;
         if width < 12.0 {
             return None;
         }
+        let custom = !swatches.contains(&current);
         let mut chosen = None;
-        for (index, packed) in swatches.iter().enumerate() {
+        for index in 0..cells {
             let box_rect = UiRect::new(
                 row.x + index as f32 * (width + gap),
                 row.y,
                 width,
                 row.height,
             );
+            let is_custom = index == swatches.len();
+            let packed = if is_custom { current } else { swatches[index] };
             // A checkerboard behind every swatch, so a translucent choice reads
             // as translucent rather than as a slightly different flat colour.
-            for cell in 0..8usize {
-                let cw = box_rect.width * 0.25;
-                let ch = box_rect.height * 0.5;
-                widgets::fill(
-                    d,
-                    UiRect::new(
-                        box_rect.x + (cell % 4) as f32 * cw,
-                        box_rect.y + (cell / 4) as f32 * ch,
-                        cw,
-                        ch,
-                    ),
-                    if (cell % 4 + cell / 4) % 2 == 0 {
-                        color::ui_raised()
-                    } else {
-                        color::ui_surface()
-                    },
+            widgets::checkerboard(d, box_rect, (box_rect.height * 0.5).max(2.0));
+            let tint = Color::get_color(packed);
+            widgets::fill(d, box_rect, tint);
+            if is_custom {
+                // A `+` rather than a colour wheel glyph: the icon face is not
+                // guaranteed loaded (`Faces::icons_available`), and two strokes
+                // drawn in whatever contrasts with the swatch cannot go missing.
+                let ink = widgets::contrasting_ink(tint);
+                let arm = (width * 0.28).min(box_rect.height * 0.28);
+                let (cx, cy) = (
+                    box_rect.x + box_rect.width * 0.5,
+                    box_rect.y + box_rect.height * 0.5,
                 );
+                widgets::fill(d, UiRect::new(cx - arm, cy - 1.0, arm * 2.0, 2.0), ink);
+                widgets::fill(d, UiRect::new(cx - 1.0, cy - arm, 2.0, arm * 2.0), ink);
             }
-            widgets::fill(d, box_rect, Color::get_color(*packed));
-            let selected = *packed == current;
+            let selected = if is_custom { custom } else { packed == current };
             d.draw_rectangle_lines_ex(
                 widgets::rectangle(box_rect),
                 if selected { 2.0 } else { 1.0 },
@@ -2475,7 +3073,11 @@ impl Shell {
                 },
             );
             if self.widgets.button(d, id + index as u64, box_rect).clicked {
-                chosen = Some(*packed);
+                chosen = Some(if is_custom {
+                    SwatchChoice::Custom
+                } else {
+                    SwatchChoice::Packed(packed)
+                });
             }
         }
         chosen
@@ -2520,6 +3122,445 @@ const CAPTION_TEXT_SWATCHES: [u32; 6] = [
 const CAPTION_BOX_SWATCHES: [u32; 5] = [
     0x0000_00B7, 0x0000_0066, 0x0000_00FF, 0xFFFF_FFCC, 0x1B2A_5AC0,
 ];
+
+// ---------------------------------------------------------------------------
+// The caption style form's geometry, composed before anything is drawn
+// ---------------------------------------------------------------------------
+
+/// Which caption colour the free picker is editing.
+///
+/// Two colours rather than a generic slot, because the pair is what the model
+/// stores and naming them is what lets the report line and the probe say which
+/// one is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptionColor {
+    Ink,
+    Plate,
+    /// The glow's base colour, which lives on the effects form rather than a
+    /// swatch row — glow colours are not "few and opinionated", they are the
+    /// point of the feature.
+    Glow,
+}
+
+impl CaptionColor {
+    /// For the report line and the `--ui-probe` key.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::Ink => "ink",
+            Self::Plate => "plate",
+            Self::Glow => "glow",
+        }
+    }
+
+    /// The picker's own heading. It has to name the colour, because opening the
+    /// picker replaces the controls that were in that space.
+    const fn heading(self) -> &'static str {
+        match self {
+            Self::Ink => "CUSTOM INK",
+            Self::Plate => "CUSTOM PLATE",
+            Self::Glow => "GLOW COLOUR",
+        }
+    }
+
+    const fn read(self, style: &CaptionStyle) -> u32 {
+        match self {
+            Self::Ink => style.text_rgba,
+            Self::Plate => style.box_rgba,
+            Self::Glow => style.effects.glow_rgba,
+        }
+    }
+
+    fn write(self, style: &mut CaptionStyle, packed: u32) {
+        match self {
+            Self::Ink => style.text_rgba = packed,
+            Self::Plate => style.box_rgba = packed,
+            Self::Glow => style.effects.glow_rgba = packed,
+        }
+    }
+}
+
+/// The free colour picker's state while it is open.
+///
+/// **Hue, saturation and value are held here rather than re-derived from the
+/// RGBA every frame, and that is the whole reason this struct exists.** Grey has
+/// no hue and black has no saturation, so a picker that read its own bar
+/// positions back out of the packed colour would snap to red the instant a drag
+/// touched the left or the bottom edge of the square — and then stay there,
+/// because the colour it wrote back has no hue to recover either.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CaptionPicker {
+    /// `None` when the picker is closed, which is also its resting state: it is a
+    /// disclosure under the swatch row, not a mode.
+    target: Option<CaptionColor>,
+    /// Degrees in `[0, 360)`.
+    hue: f32,
+    saturation: f32,
+    value: f32,
+    alpha: f32,
+    /// The packed colour the four above were last agreed with, so a preset
+    /// swatch clicked while the picker is open moves the picker, and the
+    /// picker's own writes do not move it back.
+    source: Option<u32>,
+}
+
+impl CaptionPicker {
+    /// Opens on `target`, or closes if it is already the one open.
+    ///
+    /// Clearing `source` is what makes reopening re-derive: the same colour may
+    /// have been reached by a route that lost its hue while the picker was shut.
+    fn toggle(&mut self, target: CaptionColor) {
+        if self.target == Some(target) {
+            self.target = None;
+        } else {
+            self.target = Some(target);
+            self.source = None;
+        }
+    }
+
+    /// Adopts `packed` unless it is already the value this picker agreed with.
+    fn sync(&mut self, packed: u32) {
+        if self.source == Some(packed) {
+            return;
+        }
+        let (red, green, blue, alpha) = widgets::unpack_rgba(packed);
+        let (hue, saturation, value) = widgets::hsv_from_rgb(red, green, blue);
+        // A colour with no chroma reports hue 0. Keeping the bar where the user
+        // left it is the difference between "I dragged to black and back" and "I
+        // dragged to black and lost my colour".
+        if saturation > 0.0 && value > 0.0 {
+            self.hue = hue;
+        }
+        self.saturation = saturation;
+        self.value = value;
+        self.alpha = f32::from(alpha) / 255.0;
+        self.source = Some(packed);
+    }
+
+    /// What the three bars currently mean, as the model stores it.
+    fn packed(&self) -> u32 {
+        let (red, green, blue) = widgets::rgb_from_hsv(self.hue, self.saturation, self.value);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to [0, 1] before scaling"
+        )]
+        let alpha = (self.alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+        widgets::pack_rgba(red, green, blue, alpha)
+    }
+
+    /// Records `packed` as agreed, so [`Self::sync`] does not undo the drag that
+    /// produced it.
+    fn adopt(&mut self, packed: u32) {
+        self.source = Some(packed);
+    }
+}
+
+/// Every rectangle the caption style form draws, composed in one place before
+/// anything is drawn.
+///
+/// **This exists because of the "Import a face..." defect.** The button was
+/// positioned at `form.y + 158` and then drawn only `if it happened to fit`, so
+/// for every form height in `[152, 184)` — which is exactly what a 960x640
+/// window produces — it was silently not there, and neither was the Remove
+/// button beside it. A conditional draw is a control that pretends, and this
+/// repository's rule is that a missing feature says so by name. Composing the
+/// geometry as a value is what lets a test assert *every* rect against the form
+/// rectangle, rather than each draw call re-deriving a position nothing checks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptionFormLayout {
+    /// Where the left column's 12 px labels start.
+    label_x: f32,
+    /// Where the right column's labels start.
+    right_label_x: f32,
+    /// Half the form, minus the gap. The left column's controls must end inside
+    /// `form.x + column_width`.
+    column_width: f32,
+    face: UiRect,
+    backing: UiRect,
+    /// Row-major from the **top**, which is not the enum's order — see the
+    /// anchor loop.
+    anchor: [UiRect; 9],
+    import_face: UiRect,
+    remove_face: UiRect,
+    /// SIZE, WIDTH, INSET.
+    sliders: [UiRect; 3],
+    /// Where each slider's percentage readout is right-aligned to.
+    readout_right: f32,
+    ink: UiRect,
+    plate: UiRect,
+    /// The "sizes are fractions of the frame" note, moved out of the left column
+    /// so the import button could come up into the space it used.
+    note: UiRect,
+    /// The free picker, which claims the left column when it is open.
+    picker: CaptionPickerLayout,
+}
+
+/// The free picker's rectangles, all inside the left column.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptionPickerLayout {
+    heading: UiRect,
+    done: UiRect,
+    /// The saturation/value square.
+    field: UiRect,
+    hue: UiRect,
+    alpha: UiRect,
+    /// The hex readout and the alpha percentage beside the square.
+    readout: UiRect,
+}
+
+impl CaptionFormLayout {
+    /// One choice row, one anchor cell stride, one button.
+    const ROW: f32 = 26.0;
+    const CELL: f32 = 22.0;
+    const CELL_STRIDE: f32 = 24.0;
+    /// The gutter the 12 px labels sit in, left of both columns.
+    const LABEL_WIDTH: f32 = 62.0;
+    const COLUMN_GAP: f32 = 24.0;
+
+    /// How far below `form.y` the lowest control reaches.
+    ///
+    /// The left column is the taller one: the import row at `+134` plus its
+    /// 26 px is 160, against the right column's note ending at 152 and the
+    /// picker's alpha bar ending at 146. This is [`CAPTION_FORM_HEIGHT`], and a
+    /// test walks every rect to prove the number is not a guess.
+    const EXTENT: f32 = 160.0;
+
+    fn compose(form: UiRect) -> Self {
+        let column_width = (form.width - Self::COLUMN_GAP) * 0.5;
+        let left_x = form.x + Self::LABEL_WIDTH;
+        let left_width = column_width - Self::LABEL_WIDTH;
+        let right_label_x = form.x + column_width + Self::COLUMN_GAP;
+        let right_x = right_label_x + Self::LABEL_WIDTH;
+        let right_width = column_width - Self::LABEL_WIDTH;
+
+        let mut anchor = [UiRect::new(0.0, 0.0, 0.0, 0.0); 9];
+        for (cell, rect) in anchor.iter_mut().enumerate() {
+            *rect = UiRect::new(
+                left_x + (cell % 3) as f32 * Self::CELL_STRIDE,
+                form.y + 60.0 + (cell / 3) as f32 * Self::CELL_STRIDE,
+                Self::CELL,
+                Self::CELL,
+            );
+        }
+
+        // 134, not the oracle's 158: dropping the note out of this column and
+        // tightening the two choice rows by 2 px each is what brings the only
+        // route to an imported face inside the form at the minimum window size.
+        //
+        // And it starts at the form's own edge rather than in the control
+        // column, because the 62 px gutter is for the 12 px labels beside FACE,
+        // BACKING and PLACE. A button has its own label. Spending the gutter on
+        // it is what left Remove hanging 26 px past the column at the minimum
+        // width — where the old code simply did not draw it, which is the same
+        // silent disappearance one row up.
+        let import_face = UiRect::new(form.x, form.y + 134.0, 132.0, Self::ROW);
+        let remove_face = UiRect::new(
+            import_face.x + import_face.width + 6.0,
+            import_face.y,
+            74.0,
+            Self::ROW,
+        );
+
+        let readout_width = 44.0;
+        let slider_width = right_width - readout_width - 6.0;
+        let mut sliders = [UiRect::new(0.0, 0.0, 0.0, 0.0); 3];
+        for (index, rect) in sliders.iter_mut().enumerate() {
+            *rect = UiRect::new(
+                right_x,
+                form.y + index as f32 * Self::ROW,
+                slider_width,
+                Self::CELL,
+            );
+        }
+
+        Self {
+            label_x: form.x,
+            right_label_x,
+            column_width,
+            face: UiRect::new(left_x, form.y, left_width, Self::ROW),
+            backing: UiRect::new(left_x, form.y + 30.0, left_width, Self::ROW),
+            anchor,
+            import_face,
+            remove_face,
+            sliders,
+            readout_right: right_x + right_width,
+            ink: UiRect::new(right_x, form.y + 86.0, right_width, Self::CELL),
+            plate: UiRect::new(right_x, form.y + 114.0, right_width, Self::CELL),
+            note: UiRect::new(right_label_x, form.y + 140.0, column_width, 12.0),
+            picker: CaptionPickerLayout {
+                heading: UiRect::new(form.x, form.y + 4.0, column_width - 62.0, 12.0),
+                done: UiRect::new(form.x + column_width - 56.0, form.y, 56.0, Self::CELL),
+                field: UiRect::new(form.x, form.y + 26.0, 96.0, 96.0),
+                hue: UiRect::new(form.x + 104.0, form.y + 26.0, 16.0, 96.0),
+                alpha: UiRect::new(form.x, form.y + 128.0, 120.0, 18.0),
+                readout: UiRect::new(form.x + 128.0, form.y + 26.0, column_width - 128.0, 34.0),
+            },
+        }
+    }
+
+    /// Every rectangle in draw order, for the containment test.
+    ///
+    /// The picker's rects are included even though they and the left column's are
+    /// never drawn in the same frame: both have to fit, and a list that omitted
+    /// one state would be the same blind spot the import button lived in.
+    #[cfg(test)]
+    fn every_rect(&self) -> Vec<(&'static str, UiRect)> {
+        let mut rects = vec![
+            ("face", self.face),
+            ("backing", self.backing),
+            ("import_face", self.import_face),
+            ("remove_face", self.remove_face),
+            ("ink", self.ink),
+            ("plate", self.plate),
+            ("note", self.note),
+            ("picker.heading", self.picker.heading),
+            ("picker.done", self.picker.done),
+            ("picker.field", self.picker.field),
+            ("picker.hue", self.picker.hue),
+            ("picker.alpha", self.picker.alpha),
+            ("picker.readout", self.picker.readout),
+        ];
+        for rect in self.anchor {
+            rects.push(("anchor", rect));
+        }
+        for rect in self.sliders {
+            rects.push(("slider", rect));
+        }
+        rects
+    }
+}
+
+/// Every rectangle the caption *effects* form draws, composed like
+/// [`CaptionFormLayout`] and for the same reason: a control positioned inline
+/// and drawn "if it fits" is the import-button defect again. The form shares
+/// the style form's footprint ([`CaptionFormLayout::EXTENT`]), and a test walks
+/// every rect to keep that true.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptionEffectsLayout {
+    label_x: f32,
+    right_label_x: f32,
+    /// The left column's right edge, for the slider readouts.
+    left_readout_right: f32,
+    /// The right column's right edge.
+    readout_right: f32,
+    /// Glow strength.
+    glow: UiRect,
+    /// Glow radius, as a fraction of the font size.
+    radius: UiRect,
+    /// The glow colour cell; clicking it opens the free picker on
+    /// [`CaptionColor::Glow`].
+    color_cell: UiRect,
+    /// The pulse drive choice row.
+    pulse: UiRect,
+    /// Pulse depth.
+    depth: UiRect,
+    /// The hue drive choice row.
+    hue: UiRect,
+    /// Hue sweep, in degrees.
+    sweep: UiRect,
+    /// Shadow blur.
+    blur: UiRect,
+    /// Shadow opacity.
+    shade: UiRect,
+    /// Plate roundness.
+    round: UiRect,
+    note: UiRect,
+    /// The free picker claims the left column here exactly as it does on the
+    /// style form, so the rects are the same ones.
+    picker: CaptionPickerLayout,
+}
+
+impl CaptionEffectsLayout {
+    fn compose(form: UiRect) -> Self {
+        const ROW: f32 = CaptionFormLayout::ROW;
+        let column_width = (form.width - CaptionFormLayout::COLUMN_GAP) * 0.5;
+        let left_x = form.x + CaptionFormLayout::LABEL_WIDTH;
+        let left_width = column_width - CaptionFormLayout::LABEL_WIDTH;
+        let right_label_x = form.x + column_width + CaptionFormLayout::COLUMN_GAP;
+        let right_x = right_label_x + CaptionFormLayout::LABEL_WIDTH;
+        let right_width = column_width - CaptionFormLayout::LABEL_WIDTH;
+
+        let readout_width = 44.0;
+        let left_slider = left_width - readout_width - 6.0;
+        let right_slider = right_width - readout_width - 6.0;
+        Self {
+            label_x: form.x,
+            right_label_x,
+            left_readout_right: left_x + left_width,
+            readout_right: right_x + right_width,
+            glow: UiRect::new(left_x, form.y, left_slider, CaptionFormLayout::CELL),
+            radius: UiRect::new(left_x, form.y + ROW, left_slider, CaptionFormLayout::CELL),
+            color_cell: UiRect::new(
+                left_x,
+                form.y + ROW * 2.0,
+                CaptionFormLayout::CELL,
+                CaptionFormLayout::CELL,
+            ),
+            pulse: UiRect::new(left_x, form.y + 82.0, left_width, CaptionFormLayout::ROW),
+            depth: UiRect::new(left_x, form.y + 108.0, left_slider, CaptionFormLayout::CELL),
+            hue: UiRect::new(right_x, form.y, right_width, CaptionFormLayout::ROW),
+            sweep: UiRect::new(right_x, form.y + ROW, right_slider, CaptionFormLayout::CELL),
+            blur: UiRect::new(
+                right_x,
+                form.y + ROW * 2.0,
+                right_slider,
+                CaptionFormLayout::CELL,
+            ),
+            shade: UiRect::new(
+                right_x,
+                form.y + ROW * 3.0,
+                right_slider,
+                CaptionFormLayout::CELL,
+            ),
+            round: UiRect::new(
+                right_x,
+                form.y + ROW * 4.0,
+                right_slider,
+                CaptionFormLayout::CELL,
+            ),
+            note: UiRect::new(form.x, form.y + 140.0, form.width, 12.0),
+            picker: CaptionFormLayout::compose(form).picker,
+        }
+    }
+
+    /// Every rectangle in draw order, for the containment test.
+    #[cfg(test)]
+    fn every_rect(&self) -> Vec<(&'static str, UiRect)> {
+        vec![
+            ("glow", self.glow),
+            ("radius", self.radius),
+            ("color_cell", self.color_cell),
+            ("pulse", self.pulse),
+            ("depth", self.depth),
+            ("hue", self.hue),
+            ("sweep", self.sweep),
+            ("blur", self.blur),
+            ("shade", self.shade),
+            ("round", self.round),
+            ("note", self.note),
+            ("picker.heading", self.picker.heading),
+            ("picker.done", self.picker.done),
+            ("picker.field", self.picker.field),
+            ("picker.hue", self.picker.hue),
+            ("picker.alpha", self.picker.alpha),
+            ("picker.readout", self.picker.readout),
+        ]
+    }
+}
+
+/// The drive rows' labels, in [`EffectDrive::ALL`] order.
+const DRIVE_LABELS: [&str; 6] = ["Off", "RMS", "Bass", "Beat", "Flux", "Time"];
+
+/// What a swatch row press asked for.
+///
+/// A named pair rather than a sentinel packed value: every `u32` is a colour
+/// somebody may legitimately have chosen, so "the custom cell" cannot be encoded
+/// as one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwatchChoice {
+    Packed(u32),
+    Custom,
+}
 
 /// Position of `value` in a `named_enum!`'s `ALL`, which is the C enum's order
 /// and therefore the index a choice row uses.
@@ -2625,6 +3666,50 @@ fn caption_slider(
     }
     *value = moved;
     true
+}
+
+/// A press-and-drag anywhere inside `rect`, reported as a position in `[0, 1]`
+/// on both axes.
+///
+/// The two-dimensional sibling of [`caption_slider`], and it shares the drag slot
+/// and the reason: it claims no widget id, so a gesture that wanders out of the
+/// square cannot strand the one `active_button_id` every button in the
+/// application needs. It is also why the picker's three surfaces cannot be
+/// dragged at once — one slot, one gesture.
+///
+/// `None` means "this drag is not yours", including on the frame the button comes
+/// up; the caller decides whether the position it last saw was a change.
+fn caption_drag(
+    d: &mut RaylibDrawHandle<'_>,
+    ui_scale: super::super::scale::UiScale,
+    drag: &mut u8,
+    id: u8,
+    rect: UiRect,
+) -> Option<(f32, f32)> {
+    use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+
+    if rect.is_empty() {
+        return None;
+    }
+    let mouse = ui_scale.mouse(d);
+    if *drag == 0
+        && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+        && rect.contains_point(mouse.x, mouse.y)
+    {
+        *drag = id;
+    }
+    if *drag != id {
+        return None;
+    }
+    // Released, or the button went up while the window was unfocused.
+    if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+        *drag = 0;
+        return None;
+    }
+    Some((
+        ((mouse.x - rect.x) / rect.width).clamp(0.0, 1.0),
+        ((mouse.y - rect.y) / rect.height).clamp(0.0, 1.0),
+    ))
 }
 
 /// Where a cue should be drawn right now: its stored timing, unless the current
@@ -3337,5 +4422,306 @@ mod tests {
             .shift_many(editor.lane_selection.ids(), editor.lane_drag.delta_seconds)
             .is_ok());
         assert!((committed.cues()[0].start_seconds - 0.0).abs() < 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // The caption style form: geometry, and the free colour picker
+    // -----------------------------------------------------------------------
+
+    /// The defect the operator found, as a number.
+    ///
+    /// "Import a face..." was positioned at `form.y + 158` and then drawn only
+    /// `if import_face.y + height <= form.y + form.height`, against a form
+    /// minimum of 152. Every height in `[152, 184)` therefore drew the form and
+    /// silently omitted the only route to an imported caption face — and the
+    /// real layout hands the caption pane exactly one height at the minimum
+    /// supported window, 165, which is inside that window. No capture could
+    /// catch it, because a form missing its last row is a plausible picture of a
+    /// form.
+    ///
+    /// So the geometry is composed as a value and every rectangle in it is
+    /// checked against the form, in both states the form has.
+    #[test]
+    fn every_caption_control_fits_the_smallest_form_the_pane_will_draw() {
+        // Deliberately not at the origin: an off-by-one that used `form.height`
+        // where it meant `form.y + form.height` passes at (0, 0).
+        let form = UiRect::new(17.0, 23.0, CAPTION_FORM_WIDTH, CAPTION_FORM_HEIGHT);
+        let layout = CaptionFormLayout::compose(form);
+        for (name, rect) in layout.every_rect() {
+            assert!(
+                form.contains(rect),
+                "{name} at {rect:?} escapes the form {form:?}"
+            );
+        }
+
+        // Both halves stay in their own column. The picker replaces the left
+        // one, so a picker rectangle that reached across would be drawn over the
+        // swatch row it was opened from — and the swatch row is drawn second,
+        // which means it would take the press.
+        let left = UiRect::new(form.x, form.y, layout.column_width, form.height);
+        let right = UiRect::new(
+            layout.right_label_x,
+            form.y,
+            form.x + form.width - layout.right_label_x,
+            form.height,
+        );
+        for (name, rect) in layout.every_rect() {
+            let column = if rect.x < layout.right_label_x {
+                ("left", left)
+            } else {
+                ("right", right)
+            };
+            assert!(
+                column.1.contains(rect),
+                "{name} at {rect:?} overruns the {} column {:?}",
+                column.0,
+                column.1
+            );
+        }
+    }
+
+    /// The other half of the fix: the number the form is measured by must be one
+    /// the panel can actually supply, or the repair would be an "Enlarge the
+    /// window" message at the minimum supported size instead of a cut button.
+    ///
+    /// Driven through the same chain the panel uses — `timeline_height`, the
+    /// shell's chrome, the pane's own padding — rather than against a constant,
+    /// because it is the chain that decided 165 and nobody wrote 165 down.
+    #[test]
+    fn the_caption_form_never_falls_back_to_the_enlarge_message() {
+        let mut editor = LyricEditor::new();
+        let mut smallest = f32::INFINITY;
+        for count in [0usize, 1, 8, 64, 1024] {
+            editor.cue_count = count;
+            for window in [640.0f32, 720.0, 800.0, 1080.0, 1440.0, 2160.0] {
+                let band = editor.timeline_height(window, 0.0);
+                let boundary =
+                    band - CHROME_ABOVE_PANEL - PANEL_BOTTOM_PADDING - LANE_HEIGHT - LANE_GAP;
+                // `Shell::caption_pane`'s arithmetic for the form it hands on.
+                let form_height = boundary - metric::UI_PANEL_PADDING * 2.0 - 38.0;
+                assert!(
+                    form_height >= CAPTION_FORM_HEIGHT,
+                    "{window}px window, {count} cues: the caption form got {form_height}px \
+                     against a minimum of {CAPTION_FORM_HEIGHT}"
+                );
+                smallest = smallest.min(form_height);
+            }
+        }
+        // The floor is the panel's form minimum, and it is what
+        // `CAPTION_FORM_AVAILABLE` claims at compile time. If the two ever
+        // disagree the const assertion above is measuring the wrong thing.
+        assert!(
+            (smallest - CAPTION_FORM_AVAILABLE).abs() < 0.001,
+            "{smallest}"
+        );
+    }
+
+    /// Ids are what claim a press, and a collision lets one control release
+    /// another's. The caption pane grew two cells and a button in this change,
+    /// and the swatch rows are the risk: they are indexed from a base, so a base
+    /// too close to the next group silently overlaps it.
+    #[test]
+    fn every_caption_control_has_a_distinct_widget_id() {
+        let mut ids = vec![
+            caption_id::IMPORT_FACE,
+            caption_id::REMOVE_FACE,
+            caption_id::PICKER_DONE,
+            caption_id::GLOW_COLOR,
+            caption_id::EFFECTS_TOGGLE,
+        ];
+        // Three face choices (a project may carry an imported family), three
+        // backings, nine anchor cells.
+        ids.extend((0..3).map(|index| caption_id::FACE + index));
+        ids.extend((0..3).map(|index| caption_id::BACKING + index));
+        ids.extend((0..9).map(|index| caption_id::ANCHOR + index));
+        // One per swatch, plus the custom cell at the end of each row.
+        ids.extend((0..=CAPTION_TEXT_SWATCHES.len() as u32).map(|i| caption_id::INK_SWATCHES + i));
+        ids.extend((0..=CAPTION_BOX_SWATCHES.len() as u32).map(|i| caption_id::PLATE_SWATCHES + i));
+        // The effects form's two drive rows, one cell per drive.
+        ids.extend((0..DRIVE_LABELS.len() as u32).map(|i| caption_id::PULSE_DRIVE + i));
+        ids.extend((0..DRIVE_LABELS.len() as u32).map(|i| caption_id::HUE_DRIVE + i));
+
+        let control_count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), control_count, "two caption controls share an id");
+
+        // And the pane's namespace is disjoint from the other panels', which is
+        // checked rather than assumed because these are local constants.
+        let mine: std::collections::HashSet<u64> = ids
+            .iter()
+            .map(|index| widgets::widget_id(ns::CAPTION, *index))
+            .collect();
+        for namespace in [ns::ACTIONS, ns::FORM, ns::ROWS, widgets::id::TOOLBAR] {
+            for index in 0..4096u32 {
+                assert!(!mine.contains(&widgets::widget_id(namespace, index)));
+            }
+        }
+    }
+
+    /// The effects form shares the style form's footprint, so it inherits the
+    /// same obligation: every control fits the smallest form the pane will
+    /// draw, in both of its states, and each stays in its own column.
+    #[test]
+    fn every_effects_control_fits_the_smallest_form_the_pane_will_draw() {
+        let form = UiRect::new(17.0, 23.0, CAPTION_FORM_WIDTH, CAPTION_FORM_HEIGHT);
+        let layout = CaptionEffectsLayout::compose(form);
+        for (name, rect) in layout.every_rect() {
+            assert!(
+                form.contains(rect),
+                "{name} at {rect:?} escapes the form {form:?}"
+            );
+            let boundary = if rect.x < layout.right_label_x {
+                UiRect::new(form.x, form.y, layout.right_label_x - form.x, form.height)
+            } else {
+                UiRect::new(
+                    layout.right_label_x,
+                    form.y,
+                    form.x + form.width - layout.right_label_x,
+                    form.height,
+                )
+            };
+            // The note deliberately spans the whole form.
+            if name != "note" {
+                assert!(
+                    boundary.contains(rect),
+                    "{name} at {rect:?} overruns its column {boundary:?}"
+                );
+            }
+        }
+        // Six drive cells stay wide enough for `choice_row` to draw at all — a
+        // row under 24 px per cell returns `None`, which is a silently missing
+        // control, the exact defect this file's layout values exist to prevent.
+        let per_cell = (layout.pulse.width - 4.0 * 5.0) / 6.0;
+        assert!(per_cell >= 24.0, "pulse cells are {per_cell}px");
+    }
+
+    /// The Style/Effects flip and the probe both land on the effects body, and
+    /// leaving the pane resets it, so a later "style=caption" capture cannot
+    /// photograph the wrong form.
+    #[test]
+    fn the_effects_pane_is_reachable_and_leaves_with_the_style_pane() {
+        let mut editor = LyricEditor::new();
+        let mut track = test_track("/tmp/effects.wav", 0);
+        let probe = UiProbe {
+            caption_effects_pane: true,
+            ..UiProbe::default()
+        };
+        assert!(editor.apply_probe(&probe, &mut track));
+        assert!(editor.style_pane && editor.effects_pane);
+        assert!(editor.describe(Some(&track)).contains("caption-effects"));
+
+        let glow = UiProbe {
+            caption_picker: Some(CaptionPickerProbe::Glow),
+            ..UiProbe::default()
+        };
+        let mut fresh = LyricEditor::new();
+        assert!(fresh.apply_probe(&glow, &mut track));
+        assert!(
+            fresh.effects_pane,
+            "the glow picker lives on the effects form"
+        );
+        assert_eq!(fresh.picker.target, Some(CaptionColor::Glow));
+    }
+
+    /// The one thing an RGBA colour cannot carry, and the reason the picker holds
+    /// hue, saturation and value of its own.
+    ///
+    /// Drag the square to the bottom edge and the colour is black; black has no
+    /// hue and no saturation. A picker that re-read its bar positions out of the
+    /// packed value every frame would jump to red and stay there, so dragging
+    /// back up would return a *different* colour from the one you started with.
+    #[test]
+    fn a_drag_through_black_keeps_the_hue_it_was_dragged_from() {
+        let mut picker = CaptionPicker::default();
+        picker.toggle(CaptionColor::Ink);
+        // Cyan at full opacity.
+        picker.sync(0x00FF_FFFF);
+        assert!((picker.hue - 180.0).abs() < 0.01, "{}", picker.hue);
+        assert_eq!(picker.packed(), 0x00FF_FFFF);
+
+        // Down to black, which is what the bottom edge of the square means.
+        picker.value = 0.0;
+        let black = picker.packed();
+        assert_eq!(widgets::unpack_rgba(black), (0, 0, 0, 255));
+        picker.adopt(black);
+        // The frame after: the model holds black and the picker is asked to
+        // agree with it. Nothing about the bar may move.
+        picker.sync(black);
+        assert!((picker.hue - 180.0).abs() < 0.01, "{}", picker.hue);
+
+        // And straight back up is the colour that was there, not red.
+        picker.value = 1.0;
+        assert_eq!(picker.packed(), 0x00FF_FFFF);
+    }
+
+    /// The other direction: a preset swatch clicked while the picker is open has
+    /// to move the picker, or the next drag would snap back to the colour the
+    /// picker still thought was live.
+    #[test]
+    fn a_preset_swatch_chosen_while_the_picker_is_open_moves_it() {
+        let mut picker = CaptionPicker::default();
+        picker.toggle(CaptionColor::Ink);
+        picker.sync(0xFFFF_FFFF);
+        // The amber swatch, chosen from the row rather than from the square.
+        picker.sync(0xF2BE_42FF);
+        assert_eq!(picker.packed(), 0xF2BE_42FF);
+        assert!(picker.saturation > 0.5);
+
+        // Toggling it shut and open again re-derives, because the value may have
+        // travelled a route that lost its hue while the picker was closed.
+        picker.toggle(CaptionColor::Ink);
+        assert_eq!(picker.target, None);
+        picker.toggle(CaptionColor::Ink);
+        assert_eq!(picker.source, None);
+        // Another target closes the first rather than opening two.
+        picker.toggle(CaptionColor::Plate);
+        assert_eq!(picker.target, Some(CaptionColor::Plate));
+    }
+
+    /// Alpha is a whole byte, and a picker that lost the low bits would make the
+    /// six oracle swatches unreachable by hand.
+    #[test]
+    fn every_swatch_in_both_rows_round_trips_through_the_picker() {
+        for packed in CAPTION_TEXT_SWATCHES.iter().chain(&CAPTION_BOX_SWATCHES) {
+            let mut picker = CaptionPicker::default();
+            picker.sync(*packed);
+            assert_eq!(
+                picker.packed(),
+                *packed,
+                "{packed:#010X} did not survive the picker"
+            );
+        }
+    }
+
+    /// `picker=` and the report line, which is what a capture asserts on.
+    #[test]
+    fn the_report_line_says_which_free_picker_is_open() {
+        let track = test_track("/tmp/a.wav", 3);
+        let mut editor = LyricEditor::new();
+        assert!(editor.describe(Some(&track)).contains("picker=none"));
+
+        let probe = UiProbe {
+            caption_picker: Some(CaptionPickerProbe::Plate),
+            ..UiProbe::default()
+        };
+        let mut track = track;
+        assert!(editor.apply_probe(&probe, &mut track));
+        assert!(editor.style_pane, "the picker lives inside the style pane");
+        assert!(!editor.font_pane);
+        let line = editor.describe(Some(&track));
+        assert!(line.contains("pane caption-style"), "{line:?}");
+        assert!(line.contains("picker=plate"), "{line:?}");
+
+        // The font browser draws over the whole form, so the two together are a
+        // capture that would photograph neither. It has to fail the exit status
+        // rather than quietly pick one.
+        let mut editor = LyricEditor::new();
+        let probe = UiProbe {
+            caption_picker: Some(CaptionPickerProbe::Ink),
+            font_browser: Some(crate::cli::FontBrowserProbe::Consent),
+            ..UiProbe::default()
+        };
+        assert!(!editor.apply_probe(&probe, &mut track));
     }
 }

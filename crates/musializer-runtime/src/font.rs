@@ -33,8 +33,9 @@
 //! reproducing. The shaders are already embedded for the same reason.
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, Ref, RefCell};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use musializer_core::project::caption_layout;
 use musializer_core::project::model::CaptionFace;
@@ -59,6 +60,57 @@ pub const FONT_SIZE: i32 = 64;
 pub const UI_FONT_SIZES: [i32; 17] = [
     11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 28, 34, 38, 84,
 ];
+
+/// Rasterization step for the caption overlay's at-size atlases.
+///
+/// A caption's drawn size is continuous —
+/// `max(20 * pixel_scale, boundary.height * size_scale)` — so there is no bank
+/// of fixed rungs to quantize to the way
+/// [`UI_FONT_SIZES`] does for the chrome. Rounding **up** to a multiple of this
+/// keeps every draw a minification of its atlas rather than a magnification,
+/// which is the whole point: at 8 px the worst case is a 3% shrink at the small
+/// end and under 1% at the large one, and bilinear minification of that size is
+/// invisible where a 3x magnification is the blur this exists to remove.
+pub const CAPTION_ATLAS_STEP: i32 = 8;
+
+/// Smallest at-size caption atlas. Below this the 64 px atlas is already
+/// downsampling and there is nothing to win.
+pub const CAPTION_ATLAS_MIN: i32 = 24;
+
+/// Largest at-size caption atlas.
+///
+/// A 4K export with the maximum `size_scale` asks for about 650 px, and
+/// rasterizing that would cost a 16k-wide atlas for one frame. Above this the
+/// draw magnifies again — but from 256 px rather than 64, so the worst case is a
+/// 2.5x magnification of a face that used to be magnified 10x.
+pub const CAPTION_ATLAS_MAX: i32 = 256;
+
+/// Rasterization size for the Cadence scene's signed-distance-field atlas.
+///
+/// SDF glyphs carry a distance ramp rather than coverage, so one atlas serves
+/// every drawn size; 64 px is raylib's own working range for this (its SDF
+/// example uses 16) and keeps the ramp wide enough for the 100--300 px Cadence
+/// animates through.
+pub const SDF_ATLAS_SIZE: i32 = 64;
+
+/// Atlas padding for the SDF face, and the `glyphPadding` the draw path must
+/// agree with.
+///
+/// `DrawTextCodepoint` grows the source rectangle by `font.glyphPadding` on
+/// every side (`vendor/raylib-5.5/src/rtext.c`), so the number handed to
+/// `GenImageFontAtlas` and the number stored on the `Font` are one decision, not
+/// two. They disagreeing is a glyph sampled from its neighbour's pixels.
+pub const SDF_GLYPH_PADDING: i32 = 4;
+
+/// Ceiling on the codepoints an on-demand atlas is built over.
+///
+/// The at-size atlases are requested over the codepoints actually drawn rather
+/// than over the full curated set, because the curated set is ~1,770 codepoints
+/// and rasterizing it at 256 px — or as SDF at any size — costs seconds and tens
+/// of megabytes for glyphs no lyric contains. This is the point past which a
+/// pathological cue stops growing the request; beyond it the caller falls back to
+/// the 64 px atlas and the report says so.
+pub const DYNAMIC_COVERAGE_LIMIT: usize = 512;
 
 /// Largest face this build will rasterize
 /// (`CAPTION_IMPORTED_FONT_BYTE_LIMIT`, `plug.c:369`).
@@ -371,6 +423,259 @@ pub fn native_ui_size(requested: f32) -> i32 {
         .unwrap_or(UI_FONT_SIZES[0])
 }
 
+/// The atlas size an at-size caption face is rasterized at for a drawn size.
+///
+/// Rounds **up** to a [`CAPTION_ATLAS_STEP`] multiple inside
+/// `[CAPTION_ATLAS_MIN, CAPTION_ATLAS_MAX]`, so the draw scales the atlas down
+/// rather than up. Pure, and quantized before anything is measured, which is what
+/// keeps a resize sweep from asking for a new atlas every pixel.
+#[must_use]
+pub fn caption_atlas_size(requested: f32) -> i32 {
+    if !requested.is_finite() || requested <= 0.0 {
+        return CAPTION_ATLAS_MIN;
+    }
+    let stepped = (requested / CAPTION_ATLAS_STEP as f32).ceil() * CAPTION_ATLAS_STEP as f32;
+    (stepped as i32).clamp(CAPTION_ATLAS_MIN, CAPTION_ATLAS_MAX)
+}
+
+/// The codepoints the on-demand atlases are built over.
+///
+/// Grown from the text actually drawn, and never beyond
+/// [`DYNAMIC_COVERAGE_LIMIT`]. Filtered to the curated caption set on the way in:
+/// a codepoint outside it is one the 64 px atlas could not draw either
+/// (`Faces::load` requests exactly that set), so admitting it here would make the
+/// at-size face silently *better* than the base one and hide the missing-glyph
+/// count [`GlyphRepertoire`] reports.
+struct Coverage {
+    /// Sorted and deduplicated, which is what `LoadFontFromMemory` wants.
+    points: Vec<i32>,
+    /// Bumped whenever `points` grows. Cached atlases carry the generation they
+    /// were built at, so a grown set retires them instead of drawing a lyric
+    /// through an atlas that predates its alphabet.
+    generation: u32,
+    /// How many requests asked for more codepoints than the ceiling allows.
+    /// Reported, because the fallback it causes is invisible otherwise.
+    overflows: u32,
+}
+
+impl Coverage {
+    /// Printable ASCII, the ellipsis the layout appends, the em dash, and the
+    /// non-breaking space. The seed rather than the whole story: everything else
+    /// arrives from the text being drawn.
+    fn new() -> Self {
+        let mut points: Vec<i32> = (0x20..=0x7E).collect();
+        points.extend([0xA0, 0x2014, 0x2026]);
+        points.sort_unstable();
+        Self {
+            points,
+            generation: 1,
+            overflows: 0,
+        }
+    }
+
+    /// Ensures `text` is drawable from an atlas built over this set, returning
+    /// the generation to build at — or `None` when the set cannot grow that far.
+    fn admit(&mut self, text: &str) -> Option<u32> {
+        let mut added = false;
+        for ch in text.chars() {
+            let codepoint = ch as u32;
+            if matches!(ch, '\n' | '\r' | '\t') || !curated_codepoint(codepoint) {
+                continue;
+            }
+            let point = codepoint as i32;
+            if let Err(index) = self.points.binary_search(&point) {
+                if self.points.len() >= DYNAMIC_COVERAGE_LIMIT {
+                    self.overflows = self.overflows.saturating_add(1);
+                    return None;
+                }
+                self.points.insert(index, point);
+                added = true;
+            }
+        }
+        if added {
+            self.generation = self.generation.wrapping_add(1);
+        }
+        Some(self.generation)
+    }
+}
+
+/// One on-demand atlas, and the key that says what it is an atlas *of*.
+struct SizedEntry {
+    /// The resolved caption slot, not the requested one: a style asking for an
+    /// imported face this build could not rasterize resolves to Alegreya, and
+    /// keying on the request would cache two entries for one atlas.
+    slot: CaptionFace,
+    size: i32,
+    generation: u32,
+    /// Monotonic use stamp, for the two-entry eviction below.
+    used: u64,
+    /// `None` records a *failed* build. Caching the failure is what stops a face
+    /// raylib refuses from being retried every frame, which would be a stutter
+    /// rather than a fallback.
+    face: Option<Face>,
+}
+
+/// Atlases rasterized at the size they are drawn at, and the SDF face.
+///
+/// Interior mutability because both scene draws happen with a live
+/// `RaylibDrawHandle`, which holds the `&mut RaylibHandle` — there is no `&mut
+/// Faces` to be had at the point the drawn size is finally known. That is safe
+/// for the same reason `rasterize` never needed the handle for anything but
+/// proof: raylib's font path wants a *window*, not exclusive access, and
+/// `windowed` is that proof carried forward from the constructor.
+struct DynamicAtlases {
+    coverage: RefCell<Coverage>,
+    /// The current caption size and the one before it. Two, because a resize
+    /// drag crosses a rung and back, and one entry would rebuild on every
+    /// wobble; more than two would keep atlases nobody is drawing from.
+    caption: RefCell<Vec<SizedEntry>>,
+    /// One SDF face, Alegreya, shared by every Cadence frame.
+    sdf: RefCell<Option<SizedEntry>>,
+    clock: Cell<u64>,
+    caption_builds: Cell<u32>,
+    caption_failures: Cell<u32>,
+    sdf_builds: Cell<u32>,
+    last_build_ms: Cell<u32>,
+    /// False for [`Faces::fallback_only`], which is the one constructor that has
+    /// no window behind it. Nothing is rasterized on demand then.
+    windowed: bool,
+}
+
+impl DynamicAtlases {
+    const CAPTION_CAPACITY: usize = 2;
+
+    fn new(windowed: bool) -> Self {
+        Self {
+            coverage: RefCell::new(Coverage::new()),
+            caption: RefCell::new(Vec::new()),
+            sdf: RefCell::new(None),
+            clock: Cell::new(0),
+            caption_builds: Cell::new(0),
+            caption_failures: Cell::new(0),
+            sdf_builds: Cell::new(0),
+            last_build_ms: Cell::new(0),
+            windowed,
+        }
+    }
+
+    fn tick(&self) -> u64 {
+        let next = self.clock.get().wrapping_add(1);
+        self.clock.set(next);
+        next
+    }
+
+    /// Drops every cached atlas. Called when the imported face changes, because
+    /// its slot key would otherwise still name an atlas of the old file.
+    fn invalidate(&self) {
+        self.caption.borrow_mut().clear();
+        *self.sdf.borrow_mut() = None;
+        let mut coverage = self.coverage.borrow_mut();
+        coverage.generation = coverage.generation.wrapping_add(1);
+    }
+
+    fn report(&self) -> String {
+        let coverage = self.coverage.borrow();
+        let sizes = self
+            .caption
+            .borrow()
+            .iter()
+            .map(|entry| match entry.face {
+                Some(_) => entry.size.to_string(),
+                None => format!("{}!", entry.size),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "sizes=[{sizes}] builds={} failed={} coverage={} overflow={} last-build={}ms",
+            self.caption_builds.get(),
+            self.caption_failures.get(),
+            coverage.points.len(),
+            coverage.overflows,
+            self.last_build_ms.get(),
+        )
+    }
+}
+
+/// A face resolved for one draw, and whether it is an at-size atlas or the
+/// shared 64 px one.
+///
+/// Borrowed rather than cloned, and deliberately a guard: the cache it comes out
+/// of is a `RefCell`, so a caller holding two of these across a draw would panic
+/// on the second request rather than quietly measure with one face and draw with
+/// another. One at a time, per draw, is the contract — which is also the rule
+/// that keeps line widths from drifting.
+pub struct FaceRef<'a> {
+    source: FaceRefSource<'a>,
+    atlas_size: i32,
+    sized: bool,
+}
+
+enum FaceRefSource<'a> {
+    Cached(Ref<'a, Face>),
+    Base(&'a Face),
+}
+
+impl<'a> FaceRef<'a> {
+    fn base(face: &'a Face) -> Self {
+        Self {
+            source: FaceRefSource::Base(face),
+            atlas_size: FONT_SIZE,
+            sized: false,
+        }
+    }
+
+    /// The face to both measure and draw with.
+    #[must_use]
+    pub fn face(&self) -> &Face {
+        match &self.source {
+            FaceRefSource::Cached(face) => face,
+            FaceRefSource::Base(face) => face,
+        }
+    }
+
+    /// The pixel size this atlas was rasterized at.
+    #[must_use]
+    pub fn atlas_size(&self) -> i32 {
+        self.atlas_size
+    }
+
+    /// Whether this is an at-size atlas rather than the shared 64 px one.
+    /// Reported, because "the caption is crisp" is not a claim a capture can make
+    /// on its own.
+    #[must_use]
+    pub fn is_sized(&self) -> bool {
+        self.sized
+    }
+
+    /// Measures through the face that will draw. Same instance, same metrics:
+    /// measuring with one atlas and drawing with another drifts every line.
+    #[must_use]
+    pub fn measure_text(&self, text: &str, size: f32, spacing: f32) -> Vector2 {
+        self.face().measure_text(text, size, spacing)
+    }
+}
+
+impl std::ops::Deref for FaceRef<'_> {
+    type Target = Face;
+
+    fn deref(&self) -> &Face {
+        self.face()
+    }
+}
+
+/// A project's imported caption face, its bytes, and the path that keys it.
+///
+/// The bytes are retained rather than re-read on demand because an at-size atlas
+/// may be rebuilt long after the import: re-reading would silently rasterize
+/// whatever is at that path *now*, and the digest promise the caller made was
+/// about the bytes it handed over.
+struct ImportedFace {
+    path: PathBuf,
+    file_type: String,
+    bytes: Vec<u8>,
+    face: Face,
+}
+
 /// Every logical face slot the application draws with.
 ///
 /// Loaded once and borrowed for the rest of the run. A face loaded per frame — or
@@ -397,7 +702,9 @@ pub struct Faces {
     /// The path is the *key*, not a label: `caption_imported_font_load` returns
     /// early when it is asked for the face it already holds, which is what stops
     /// a per-frame reload from leaking an atlas every frame.
-    imported: Option<(PathBuf, Face)>,
+    imported: Option<ImportedFace>,
+    /// Atlases rasterized at the size they are drawn at, plus Cadence's SDF face.
+    atlases: DynamicAtlases,
 }
 
 impl Faces {
@@ -411,6 +718,10 @@ impl Faces {
     }
 
     /// Load the shell bank for `ui_scale` physical pixels per logical unit.
+    ///
+    /// The handle and thread are the proof that a window exists — raylib cannot
+    /// upload an atlas without one — and this constructor is where that proof is
+    /// recorded, because the on-demand atlases built later cannot obtain it.
     pub fn load_with_ui_scale(rl: &mut RaylibHandle, thread: &RaylibThread, ui_scale: f32) -> Self {
         let curated = caption_layout::font_codepoints().unwrap_or_default();
 
@@ -429,7 +740,7 @@ impl Faces {
             curated.iter().copied().map(|point| point as i32).collect();
 
         let ui = load_ui_fonts(rl, thread, &ui_codepoints, ui_scale);
-        let caption = rasterize(rl, thread, ".ttf", ALEGREYA, &caption_codepoints).map_or_else(
+        let caption = rasterize(".ttf", ALEGREYA, &caption_codepoints).map_or_else(
             || {
                 eprintln!("FONT: Alegreya caption face unavailable; using raylib default");
                 default_face()
@@ -440,17 +751,16 @@ impl Faces {
         // and it is the only thing that makes `MUSI_CAPTION_FACE_SPACE_GROTESK`
         // mean anything: falling back to the interface face here would quietly
         // typeset a Cyrillic lyric as missing-glyph boxes.
-        let caption_alt = rasterize(rl, thread, ".otf", SPACE_GROTESK, &caption_codepoints)
-            .map_or_else(
-                || {
-                    eprintln!(
-                        "FONT: Space Grotesk caption face unavailable; captions asking for it \
+        let caption_alt = rasterize(".otf", SPACE_GROTESK, &caption_codepoints).map_or_else(
+            || {
+                eprintln!(
+                    "FONT: Space Grotesk caption face unavailable; captions asking for it \
                          will fall back to Alegreya"
-                    );
-                    default_face()
-                },
-                Face::Loaded,
-            );
+                );
+                default_face()
+            },
+            Face::Loaded,
+        );
 
         // The icon atlas. A failure here is the one fallback that is *not*
         // survivable by drawing something slightly wrong: raylib's default face has
@@ -461,7 +771,7 @@ impl Faces {
             .iter()
             .map(|icon| icon.codepoint() as i32)
             .collect();
-        let icons = rasterize(rl, thread, ".otf", FONT_AWESOME, &icon_codepoints).map_or_else(
+        let icons = rasterize(".otf", FONT_AWESOME, &icon_codepoints).map_or_else(
             || {
                 eprintln!("FONT: icon face unavailable; the chrome will use text labels");
                 default_face()
@@ -475,6 +785,7 @@ impl Faces {
             caption_alt,
             icons,
             imported: None,
+            atlases: DynamicAtlases::new(true),
         }
     }
 
@@ -512,6 +823,10 @@ impl Faces {
             caption_alt: default_face(),
             icons: default_face(),
             imported: None,
+            // No window, so nothing may be rasterized on demand. The seam is
+            // still present and still answers, which is what makes the fallback
+            // reachable in a headless test.
+            atlases: DynamicAtlases::new(false),
         }
     }
 
@@ -557,9 +872,212 @@ impl Faces {
             CaptionFace::Imported => self
                 .imported
                 .as_ref()
-                .map_or(&self.caption, |(_, face)| face),
+                .map_or(&self.caption, |imported| &imported.face),
             _ => &self.caption,
         }
+    }
+
+    /// Which slot [`Faces::caption_for`] resolved to, and the bytes it was
+    /// rasterized from.
+    ///
+    /// The ladder is duplicated rather than derived because the two answers are
+    /// used in different places — one hands back a live atlas, the other builds a
+    /// new one — and a test below walks every style asserting they agree. `None`
+    /// means the resolved slot is the fallback face, which has no bytes and
+    /// therefore no at-size rebuild.
+    fn caption_source(&self, face: CaptionFace) -> Option<(CaptionFace, &[u8], &str)> {
+        match face {
+            CaptionFace::SpaceGrotesk if self.caption_alt.is_loaded() => {
+                Some((CaptionFace::SpaceGrotesk, SPACE_GROTESK, ".otf"))
+            }
+            CaptionFace::Imported => match self.imported.as_ref() {
+                Some(imported) if imported.face.is_loaded() => Some((
+                    CaptionFace::Imported,
+                    &imported.bytes,
+                    imported.file_type.as_str(),
+                )),
+                _ if self.caption.is_loaded() => Some((CaptionFace::Alegreya, ALEGREYA, ".ttf")),
+                _ => None,
+            },
+            _ if self.caption.is_loaded() => Some((CaptionFace::Alegreya, ALEGREYA, ".ttf")),
+            _ => None,
+        }
+    }
+
+    /// The caption face rasterized at (a quantization of) the size it will be
+    /// drawn at.
+    ///
+    /// The shared 64 px atlas is right for the chrome-sized text a panel draws
+    /// and wrong for a caption: `max(20 * pixel_scale, boundary.height *
+    /// size_scale)` reaches 200 px on a large window at the maximum style size
+    /// and further again under export supersampling, and magnifying a 64 px
+    /// bitmap that far is the blur this exists to remove. The size changes only
+    /// on a window resize, a style-slider drag or an export pass, so the atlas is
+    /// built at most a handful of times per session.
+    ///
+    /// `text` is the string about to be drawn: the atlas is requested over the
+    /// codepoints actually needed rather than the full 1,770-codepoint curated
+    /// set, because that set at 256 px is seconds of rasterization and tens of
+    /// megabytes for glyphs no lyric contains.
+    ///
+    /// Falls back to the shared atlas — visibly, in the report — when there is no
+    /// window, when the style resolves to the fallback face, when the coverage
+    /// ceiling is reached, or when raylib refuses the build.
+    #[must_use]
+    pub fn caption_at(&self, face: CaptionFace, pixel_size: f32, text: &str) -> FaceRef<'_> {
+        let base = self.caption_for(face);
+        if !self.atlases.windowed {
+            return FaceRef::base(base);
+        }
+        let Some((slot, bytes, file_type)) = self.caption_source(face) else {
+            return FaceRef::base(base);
+        };
+        let size = caption_atlas_size(pixel_size);
+        let Some(generation) = self.atlases.coverage.borrow_mut().admit(text) else {
+            return FaceRef::base(base);
+        };
+
+        let index = {
+            let mut entries = self.atlases.caption.borrow_mut();
+            let existing = entries.iter().position(|entry| {
+                entry.slot == slot && entry.size == size && entry.generation == generation
+            });
+            match existing {
+                Some(index) => {
+                    entries[index].used = self.atlases.tick();
+                    index
+                }
+                None => {
+                    let codepoints = self.atlases.coverage.borrow().points.clone();
+                    let built = self
+                        .build_timed(|| rasterize_at(file_type, bytes, &codepoints, size, false));
+                    self.atlases
+                        .caption_builds
+                        .set(self.atlases.caption_builds.get().saturating_add(1));
+                    if built.is_none() {
+                        eprintln!(
+                            "FONT: the caption face would not rasterize at {size}px; \
+                             falling back to the shared {FONT_SIZE}px atlas"
+                        );
+                        self.atlases
+                            .caption_failures
+                            .set(self.atlases.caption_failures.get().saturating_add(1));
+                    }
+                    // Stale generations first, then the least recently drawn: a
+                    // resize sweep must retire atlases rather than accumulate
+                    // them, and an atlas built for an alphabet that has since
+                    // grown can never be selected again.
+                    while entries.len() >= DynamicAtlases::CAPTION_CAPACITY {
+                        let victim = entries
+                            .iter()
+                            .enumerate()
+                            .min_by_key(|(_, entry)| (entry.generation == generation, entry.used))
+                            .map(|(index, _)| index)
+                            .unwrap_or(0);
+                        entries.remove(victim);
+                    }
+                    entries.push(SizedEntry {
+                        slot,
+                        size,
+                        generation,
+                        used: self.atlases.tick(),
+                        face: built.map(Face::Loaded),
+                    });
+                    entries.len() - 1
+                }
+            }
+        };
+
+        let entries = self.atlases.caption.borrow();
+        if entries[index].face.is_none() {
+            drop(entries);
+            return FaceRef::base(base);
+        }
+        FaceRef {
+            source: FaceRefSource::Cached(Ref::map(entries, |entries| {
+                entries[index]
+                    .face
+                    .as_ref()
+                    .expect("the failed-build arm returned above")
+            })),
+            atlas_size: size,
+            sized: true,
+        }
+    }
+
+    /// Alegreya as a signed-distance-field atlas, for Cadence.
+    ///
+    /// Cadence animates per-glyph scale continuously as a word pops in, so no
+    /// fixed raster size is the right one and the at-size cache above cannot
+    /// help: it would rebuild every frame. An SDF atlas is scale-independent
+    /// instead — one 64 px build, sharp edges at any size — at the cost of a
+    /// fragment shader, which is why this returns the face and the caller owns
+    /// whether the shader compiled. **Do not draw this face without that
+    /// shader**: an SDF atlas rendered through the normal path is a field of grey
+    /// blobs, which is worse than the blur it replaces.
+    ///
+    /// `None` means Cadence must use [`Faces::caption`] and say so.
+    #[must_use]
+    pub fn cadence_sdf(&self, text: &str) -> Option<FaceRef<'_>> {
+        if !self.atlases.windowed || !self.caption.is_loaded() {
+            return None;
+        }
+        let generation = self.atlases.coverage.borrow_mut().admit(text)?;
+        {
+            let mut slot = self.atlases.sdf.borrow_mut();
+            // A failed build is stored with the generation it failed at, so it is
+            // retried when the alphabet grows and not once per frame — an SDF
+            // build is the most expensive thing in this module.
+            let stale = slot
+                .as_ref()
+                .map_or(true, |entry| entry.generation != generation);
+            if stale {
+                let codepoints = self.atlases.coverage.borrow().points.clone();
+                let built =
+                    self.build_timed(|| rasterize_sdf(ALEGREYA, &codepoints, SDF_ATLAS_SIZE));
+                self.atlases
+                    .sdf_builds
+                    .set(self.atlases.sdf_builds.get().saturating_add(1));
+                if built.is_none() {
+                    eprintln!(
+                        "FONT: the Cadence SDF atlas would not build; Cadence will typeset \
+                         from the bitmap atlas"
+                    );
+                }
+                *slot = Some(SizedEntry {
+                    slot: CaptionFace::Alegreya,
+                    size: SDF_ATLAS_SIZE,
+                    generation,
+                    used: self.atlases.tick(),
+                    face: built.map(Face::Loaded),
+                });
+            }
+        }
+
+        let slot = self.atlases.sdf.borrow();
+        if slot.as_ref().map_or(true, |entry| entry.face.is_none()) {
+            return None;
+        }
+        Some(FaceRef {
+            source: FaceRefSource::Cached(Ref::map(slot, |slot| {
+                slot.as_ref()
+                    .and_then(|entry| entry.face.as_ref())
+                    .expect("the absent-face arm returned above")
+            })),
+            atlas_size: SDF_ATLAS_SIZE,
+            sized: true,
+        })
+    }
+
+    /// Runs one atlas build and records how long it took, because "the atlas is
+    /// rebuilt on resize" is only reassuring with a number attached.
+    fn build_timed<T>(&self, build: impl FnOnce() -> Option<T>) -> Option<T> {
+        let started = Instant::now();
+        let built = build();
+        self.atlases
+            .last_build_ms
+            .set(started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32);
+        built
     }
 
     /// The caption default: Alegreya at the full curated set
@@ -629,7 +1147,9 @@ impl Faces {
     /// (`p->caption_imported_font_path`).
     #[must_use]
     pub fn imported_path(&self) -> Option<&Path> {
-        self.imported.as_ref().map(|(path, _)| path.as_path())
+        self.imported
+            .as_ref()
+            .map(|imported| imported.path.as_path())
     }
 
     /// Rasterizes an already-verified face (`caption_imported_font_load`,
@@ -648,9 +1168,12 @@ impl Faces {
         thread: &RaylibThread,
         path: &Path,
     ) -> bool {
+        let _ = (rl, thread); // Proof a window exists; raylib needs one for the atlas.
         if self.imported_path() == Some(path) {
             return true;
         }
+        // Also drops every at-size atlas: they are keyed by slot, and the
+        // `Imported` slot is about to mean a different file.
         self.clear_imported();
 
         if !imported_face_size_is_usable(path) {
@@ -679,10 +1202,15 @@ impl Faces {
             .filter(|value| !value.is_empty())
             .map_or_else(|| ".ttf".to_string(), |value| format!(".{value}"));
 
-        match rasterize(rl, thread, &extension, &bytes, &codepoints) {
+        match rasterize(&extension, &bytes, &codepoints) {
             None => false,
             Some(font) => {
-                self.imported = Some((path.to_path_buf(), Face::Loaded(font)));
+                self.imported = Some(ImportedFace {
+                    path: path.to_path_buf(),
+                    file_type: extension,
+                    bytes,
+                    face: Face::Loaded(font),
+                });
                 true
             }
         }
@@ -691,9 +1219,11 @@ impl Faces {
     /// Drops the imported face and the path that named it
     /// (`caption_imported_font_unload`, `plug.c:371-378`).
     ///
-    /// The GPU atlas goes with it: [`Font`]'s `Drop` is `UnloadFont`.
+    /// The GPU atlas goes with it: [`Font`]'s `Drop` is `UnloadFont`. So do the
+    /// at-size atlases, whose slot key would otherwise still name the old file.
     pub fn clear_imported(&mut self) {
         self.imported = None;
+        self.atlases.invalidate();
     }
 
     /// One line naming which faces are real, for the slice report.
@@ -707,7 +1237,8 @@ impl Faces {
     pub fn describe(&self) -> String {
         let fallback = "raylib default (FALLBACK)";
         format!(
-            "ui={}, {}, caption={}, caption-alt={}, icons={}, imported={}, authored={}",
+            "ui={}, {}, caption={}, caption-alt={}, icons={}, imported={}, authored={}, \
+             caption-atlas=({}), sdf={}",
             if self.ui.all_loaded() {
                 format!("Space Grotesk ({} native sizes)", UI_FONT_SIZES.len())
             } else {
@@ -744,6 +1275,21 @@ impl Faces {
             // rendered frame typesets with, `authored=` is what the editor can
             // legibly show the user while they type it.
             self.authored().name(),
+            // The at-size atlases. `sizes=[]` with `builds=0` is an honest "no
+            // caption has been drawn yet"; `sizes=[]` with a non-zero
+            // `overflow=` or `failed=` is the fallback to the shared 64 px
+            // atlas, which no screenshot can distinguish from the fix working.
+            self.atlases.report(),
+            // Cadence's face. A capture of Cadence cannot show which of the two
+            // typeset it — that is the whole reason the line exists.
+            match self.atlases.sdf.borrow().as_ref() {
+                None if self.atlases.sdf_builds.get() == 0 => "not requested".to_string(),
+                None => "unavailable (FALLBACK to the bitmap atlas)".to_string(),
+                Some(entry) if entry.face.is_some() => {
+                    format!("Alegreya {}px SDF", entry.size)
+                }
+                Some(_) => "build refused (FALLBACK to the bitmap atlas)".to_string(),
+            },
         )
     }
 }
@@ -754,6 +1300,7 @@ fn load_ui_fonts(
     codepoints: &[i32],
     requested_scale: f32,
 ) -> UiFonts {
+    let _ = (rl, thread); // Proof a window exists; raylib needs one for the atlas.
     let scale = if requested_scale.is_finite() {
         requested_scale.clamp(1.0, 2.0)
     } else {
@@ -765,25 +1312,17 @@ fn load_ui_fonts(
             .copied()
             .map(|logical_size| {
                 let pixel_size = (logical_size as f32 * scale).round() as i32;
-                let face = rasterize_at(
-                    rl,
-                    thread,
-                    ".otf",
-                    SPACE_GROTESK,
-                    codepoints,
-                    pixel_size,
-                    false,
-                )
-                .map_or_else(
-                    || {
-                        eprintln!(
-                            "FONT: Space Grotesk UI face unavailable at {pixel_size}px \
+                let face = rasterize_at(".otf", SPACE_GROTESK, codepoints, pixel_size, false)
+                    .map_or_else(
+                        || {
+                            eprintln!(
+                                "FONT: Space Grotesk UI face unavailable at {pixel_size}px \
                              ({logical_size}px logical, {scale:.2}x); using raylib default"
-                        );
-                        default_face()
-                    },
-                    Face::Loaded,
-                );
+                            );
+                            default_face()
+                        },
+                        Face::Loaded,
+                    );
                 (logical_size, face)
             })
             .collect(),
@@ -1124,27 +1663,28 @@ fn default_face() -> Face {
 /// codepoint count. For an ASCII string that happens to be right; for the curated
 /// set, which is mostly multi-byte, it would tell raylib to read several times as
 /// many `i32`s as the array holds. So the codepoints go through the ffi directly.
-fn rasterize(
-    rl: &mut RaylibHandle,
-    thread: &RaylibThread,
-    file_type: &str,
-    bytes: &[u8],
-    codepoints: &[i32],
-) -> Option<Font> {
-    rasterize_at(rl, thread, file_type, bytes, codepoints, FONT_SIZE, true)
+///
+/// # Window
+///
+/// raylib needs a window for the atlas upload. These functions do not take the
+/// [`RaylibHandle`] as proof of one, because the on-demand atlases are built
+/// mid-frame — with the handle already borrowed by the draw handle — and a token
+/// nobody can produce there would only be threaded through as a lie. The proof
+/// moved to `Faces::atlases.windowed`, set by the constructor that *did* hold the
+/// handle, and every on-demand caller checks it first.
+fn rasterize(file_type: &str, bytes: &[u8], codepoints: &[i32]) -> Option<Font> {
+    rasterize_at(file_type, bytes, codepoints, FONT_SIZE, true)
 }
 
 fn rasterize_at(
-    rl: &mut RaylibHandle,
-    thread: &RaylibThread,
     file_type: &str,
     bytes: &[u8],
     codepoints: &[i32],
     pixel_size: i32,
     generate_mipmaps: bool,
 ) -> Option<Font> {
-    let _ = (rl, thread); // Proof a window exists; raylib needs one for the atlas.
     let c_file_type = std::ffi::CString::new(file_type).ok()?;
+    flush_render_batch();
 
     // SAFETY: `LoadFontFromMemory` reads `bytes.len()` bytes from `bytes` and
     // `codepoints.len()` `i32`s from `codepoints`, and both lengths are passed
@@ -1157,8 +1697,8 @@ fn rasterize_at(
     // "use the default 95-glyph set" request, which is the right answer when the
     // curated table is unavailable. The returned struct owns GPU and heap
     // allocations, which is why it is immediately handed to `Font::from_raw`
-    // whose `Drop` is `UnloadFont`. A window must exist for the atlas upload;
-    // `rl` is the proof of that.
+    // whose `Drop` is `UnloadFont`. A window must exist for the atlas upload,
+    // which is the invariant recorded on this function.
     let raw = unsafe {
         raylib_sys::LoadFontFromMemory(
             c_file_type.as_ptr(),
@@ -1213,6 +1753,137 @@ fn rasterize_at(
     Some(font)
 }
 
+/// Draws whatever the current batch is holding before an atlas build binds a
+/// texture behind its back.
+///
+/// `rlLoadTexture` unbinds the current texture on entry and on exit
+/// (`vendor/raylib-5.5/src/rlgl.h:3181`), and the batch re-binds per draw when
+/// it flushes, so this is belt and braces rather than a known defect — but the
+/// on-demand atlases are built *inside* a begin/end drawing pair, which nothing
+/// else in this codebase does, and a flush costs one draw call on the handful of
+/// frames that rebuild.
+fn flush_render_batch() {
+    // SAFETY: `rlDrawRenderBatchActive` takes no arguments, writes through no
+    // caller pointer and only submits the batch raylib itself owns. It is a
+    // no-op before a window exists, and every caller here has one.
+    unsafe { raylib_sys::rlDrawRenderBatchActive() }
+}
+
+/// Alegreya (or any face) as a signed-distance-field atlas.
+///
+/// `LoadFontFromMemory` cannot produce one: it hard-codes `FONT_DEFAULT`
+/// (`vendor/raylib-5.5/src/rtext.c`), so the three steps it performs internally —
+/// glyph data, atlas image, texture — are done here with `FONT_SDF` in the first.
+/// That is also why this is ffi rather than a safe wrapper; there is no safe
+/// wrapper for this path in raylib-rs at all, and the three that do exist in this
+/// family were each defective (see the `unsafe` inventory in `AGENTS.md`).
+///
+/// Two numbers are a single decision rather than two: the padding handed to
+/// `GenImageFontAtlas` and the `glyphPadding` stored on the font. `DrawTextCodepoint`
+/// grows the source rectangle by the latter on all four sides, so a mismatch
+/// samples a glyph's neighbours. `packMethod` 1 is the skyline packer, which
+/// keeps the SDF atlas square enough to stay inside the texture limit.
+fn rasterize_sdf(bytes: &[u8], codepoints: &[i32], pixel_size: i32) -> Option<Font> {
+    if codepoints.is_empty() {
+        return None;
+    }
+    let count = i32::try_from(codepoints.len()).ok()?;
+    flush_render_batch();
+
+    // SAFETY: `LoadFontData` reads `bytes.len()` bytes from `bytes` and `count`
+    // `i32`s from `codepoints`; both lengths come from the slices themselves and
+    // both borrows outlive the call, which is all raylib needs — it copies out
+    // what it wants and keeps no pointer into either. The codepoint pointer is
+    // cast to `*mut` because the C signature is non-const, but `LoadFontData`
+    // only writes through it when it is null (it then allocates its own), and it
+    // is not null here. The return is an owning `GlyphInfo` array of `count`
+    // entries, or null; every path below either hands it to `Font::from_raw`
+    // (whose `Drop` unloads it) or unloads it explicitly.
+    let glyphs = unsafe {
+        raylib_sys::LoadFontData(
+            bytes.as_ptr(),
+            bytes.len() as i32,
+            pixel_size,
+            codepoints.as_ptr().cast_mut(),
+            count,
+            raylib_sys::FontType::FONT_SDF as i32,
+        )
+    };
+    if glyphs.is_null() {
+        return None;
+    }
+
+    let mut recs: *mut raylib_sys::Rectangle = std::ptr::null_mut();
+    // SAFETY: `glyphs` is the non-null array of `count` entries returned above,
+    // and `recs` is a live local whose address is written through exactly once —
+    // it is the documented out-parameter, and raylib allocates the rectangles
+    // with its own allocator, which is the one `UnloadFont`/`MemFree` free them
+    // with. `GenImageFontAtlas` reads the glyph images it was given and returns
+    // an `Image` owning a fresh CPU buffer.
+    let atlas = unsafe {
+        raylib_sys::GenImageFontAtlas(glyphs, &mut recs, count, pixel_size, SDF_GLYPH_PADDING, 1)
+    };
+    if atlas.data.is_null() || recs.is_null() {
+        // SAFETY: `glyphs` is still the array from `LoadFontData` and has not
+        // been given to anything that took ownership; `UnloadFontData` frees its
+        // `count` glyph images and the array. `recs` is either null (nothing to
+        // free) or raylib's own allocation, freed by raylib's own `MemFree`.
+        unsafe {
+            raylib_sys::UnloadFontData(glyphs, count);
+            if !recs.is_null() {
+                raylib_sys::MemFree(recs.cast());
+            }
+            if !atlas.data.is_null() {
+                raylib_sys::UnloadImage(atlas);
+            }
+        }
+        return None;
+    }
+
+    // SAFETY: `atlas` is the image returned above, still owning its buffer, and
+    // is unloaded immediately after the upload — raylib copies the pixels into
+    // GPU memory inside `LoadTextureFromImage` and keeps no reference to them.
+    let texture = unsafe {
+        let texture = raylib_sys::LoadTextureFromImage(atlas);
+        raylib_sys::UnloadImage(atlas);
+        texture
+    };
+    if texture.id == 0 {
+        // SAFETY: as above; nothing has taken ownership of `glyphs` or `recs`.
+        unsafe {
+            raylib_sys::UnloadFontData(glyphs, count);
+            raylib_sys::MemFree(recs.cast());
+        }
+        return None;
+    }
+
+    // SAFETY: bilinear is what makes an SDF atlas readable — the distance ramp
+    // has to be interpolated between texels before the shader thresholds it, and
+    // raylib's own SDF example sets the same filter. The call takes the texture
+    // by value and mutates only raylib-side GL state.
+    unsafe {
+        raylib_sys::SetTextureFilter(
+            texture,
+            raylib_sys::TextureFilter::TEXTURE_FILTER_BILINEAR as i32,
+        );
+    }
+
+    let raw = raylib_sys::Font {
+        baseSize: pixel_size,
+        glyphCount: count,
+        glyphPadding: SDF_GLYPH_PADDING,
+        texture,
+        recs,
+        glyphs,
+    };
+    // SAFETY: every field above is a live allocation this function owns and has
+    // not handed to anything else — the glyph array and rectangles from raylib's
+    // allocator, the texture from the upload — assembled in exactly the shape
+    // `LoadFontEx` produces. `Font::from_raw` takes sole ownership and its `Drop`
+    // is `UnloadFont`, which frees all three.
+    Some(unsafe { Font::from_raw(raw) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1230,6 +1901,119 @@ mod tests {
             assert!(
                 UI_FONT_SIZES.contains(&size),
                 "fixed shell size {size} has no native atlas"
+            );
+        }
+    }
+
+    #[test]
+    fn the_caption_atlas_size_never_magnifies_and_never_runs_away() {
+        // Rounds *up*, which is the whole policy: an atlas at least as large as
+        // the drawn size means the draw minifies, and minification is the case
+        // bilinear filtering handles well. The old behaviour is the negative
+        // control — a fixed 64 px atlas for every size in this list.
+        assert_eq!(caption_atlas_size(24.0), 24);
+        assert_eq!(caption_atlas_size(24.1), 32);
+        assert_eq!(caption_atlas_size(63.9), 64);
+        assert_eq!(caption_atlas_size(64.0), 64);
+        assert_eq!(caption_atlas_size(122.0), 128);
+        for requested in [12.0f32, 40.5, 91.0, 122.0, 199.0, 256.0] {
+            let atlas = caption_atlas_size(requested);
+            assert!(
+                atlas as f32 >= requested || atlas == CAPTION_ATLAS_MAX,
+                "{requested} would be magnified from a {atlas}px atlas"
+            );
+        }
+        // Both clamps, and the degenerate inputs, answer rather than allocate a
+        // 16k texture or a zero-sized one.
+        assert_eq!(caption_atlas_size(1.0), CAPTION_ATLAS_MIN);
+        assert_eq!(caption_atlas_size(0.0), CAPTION_ATLAS_MIN);
+        assert_eq!(caption_atlas_size(-8.0), CAPTION_ATLAS_MIN);
+        // A non-finite request is a broken caller, and the smallest atlas is the
+        // cheapest way to answer one — the same choice `native_ui_size` makes.
+        assert_eq!(caption_atlas_size(f32::NAN), CAPTION_ATLAS_MIN);
+        assert_eq!(caption_atlas_size(f32::INFINITY), CAPTION_ATLAS_MIN);
+        assert_eq!(caption_atlas_size(650.0), CAPTION_ATLAS_MAX);
+
+        // Monotone in the requested size. A ladder that went *down* as the
+        // window grew would make a resize flicker between two atlases, which is
+        // the class of defect the transport row's width sweep caught.
+        let mut previous = 0;
+        for tenth in 0..3000 {
+            let atlas = caption_atlas_size(tenth as f32 * 0.25);
+            assert!(atlas >= previous, "size {tenth} shrank the atlas");
+            previous = atlas;
+        }
+    }
+
+    #[test]
+    fn the_dynamic_coverage_grows_with_the_text_and_stops_at_its_ceiling() {
+        let mut coverage = Coverage::new();
+        let ascii = coverage.generation;
+        // ASCII is already in the seed, so a Latin lyric never rebuilds an atlas.
+        assert_eq!(coverage.admit("plain ascii lyric"), Some(ascii));
+        // The seeded fixture's line is the case this exists for: Greek and
+        // Cyrillic are outside the seed and must retire the atlas built before
+        // them, or the cue draws as missing-glyph boxes.
+        let grown = coverage
+            .admit("Καλημέρα κόσμε — мир")
+            .expect("the curated set holds Greek and Cyrillic");
+        assert_ne!(grown, ascii, "the atlas generation did not move");
+        assert_eq!(coverage.admit("Καλημέρα"), Some(grown), "and then settles");
+
+        // Outside the curated set is *not* admitted: the 64 px atlas cannot draw
+        // it either, and letting the at-size face draw it would make the two
+        // faces disagree about what is missing.
+        let before = coverage.points.len();
+        assert_eq!(coverage.admit("東京"), Some(grown));
+        assert_eq!(coverage.points.len(), before);
+
+        // The ceiling, and the fallback it causes. Every Greek and Cyrillic
+        // letter in the curated set is well over the remaining room.
+        let flood: String = (0x0370u32..0x0700)
+            .filter_map(char::from_u32)
+            .filter(|ch| curated_codepoint(*ch as u32))
+            .collect();
+        assert!(coverage.admit(&flood).is_none());
+        assert_eq!(coverage.overflows, 1);
+        assert!(coverage.points.len() <= DYNAMIC_COVERAGE_LIMIT);
+    }
+
+    #[test]
+    fn with_no_window_every_at_size_request_falls_back_and_says_so() {
+        // The one configuration a headless test can build. Nothing may be
+        // rasterized without a window, so both seams must answer with the shared
+        // atlas rather than reaching for raylib — and the report has to make the
+        // difference visible, because a fallback that photographs plausibly is
+        // exactly what this repository has shipped unnoticed before.
+        let faces = Faces::fallback_only();
+        let face = faces.caption_at(CaptionFace::Alegreya, 120.0, "a caption");
+        assert!(!face.is_sized());
+        assert_eq!(face.atlas_size(), FONT_SIZE);
+        assert!(std::ptr::eq(face.face(), faces.caption()));
+        drop(face);
+        assert!(faces.cadence_sdf("a lyric").is_none());
+
+        let line = faces.describe();
+        assert!(line.contains("caption-atlas=(sizes=[] builds=0"), "{line}");
+        assert!(line.contains("sdf=not requested"), "{line}");
+    }
+
+    #[test]
+    fn the_at_size_slot_agrees_with_the_face_the_style_resolves_to() {
+        // `caption_source` duplicates `caption_for`'s ladder, because one hands
+        // back a live atlas and the other the bytes to build a new one. They
+        // disagreeing would rasterize Alegreya and draw Space Grotesk, or cache
+        // two entries for one face. With nothing rasterized every style resolves
+        // to the fallback, which has no bytes — and that is the answer.
+        let faces = Faces::fallback_only();
+        for style in [
+            CaptionFace::Alegreya,
+            CaptionFace::SpaceGrotesk,
+            CaptionFace::Imported,
+        ] {
+            assert!(
+                faces.caption_source(style).is_none(),
+                "{style:?} claimed bytes for a face that is not loaded"
             );
         }
     }

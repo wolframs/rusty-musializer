@@ -40,10 +40,11 @@ use crate::project::assets;
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
 use crate::project::model::{
     capacity, AnalysisLaneKind, AnalysisLaneReference, AsciiImageAsset, AssetMode, AudioAsset,
-    BlendMode, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, FontAsset, Metadata,
-    OutputFormat, OutputQuality, OutputSettings, ParameterCue, Project, Provenance, SceneEntry,
-    ScenePreset, SceneSwitchSuggestion, SceneSwitchSuggestions, MAX_ANALYSIS_LANES, MAX_CUES,
-    MAX_MAPPINGS_PER_SCENE, MAX_SCENES, MAX_SCENE_PRESETS, SCENE_SWITCH_CAPACITY,
+    BlendMode, CaptionAnchor, CaptionBox, CaptionEffects, CaptionFace, CaptionStyle, EffectDrive,
+    FontAsset, Metadata, OutputFormat, OutputQuality, OutputSettings, ParameterCue, Project,
+    Provenance, SceneEntry, ScenePreset, SceneSwitchSuggestion, SceneSwitchSuggestions,
+    MAX_ANALYSIS_LANES, MAX_CUES, MAX_MAPPINGS_PER_SCENE, MAX_SCENES, MAX_SCENE_PRESETS,
+    SCENE_SWITCH_CAPACITY,
 };
 use crate::scene::events::{EventRecord, EventType, TIMELINE_CAPACITY, VALUE_CAPACITY};
 use crate::scene::routes::{AnalysisSource, Interpolation, ParameterMapping};
@@ -326,6 +327,34 @@ fn write_project(out: &mut String, project: &Project) {
             out.push('}');
         }
         None => out.push_str("null"),
+    }
+    // Post-legacy extension (2026-08-03): written only when authored, so every
+    // pre-effects project — including the differential fixtures — serializes
+    // byte-identically to the C. The frozen C cannot read a file carrying this
+    // block; that is accepted and recorded in `AGENTS.md`.
+    let effects = &caption.effects;
+    if !effects.is_default() {
+        out.push_str(",\"effects\":{\"glow_strength\":");
+        write_f64(out, effects.glow_strength);
+        out.push_str(",\"glow_radius\":");
+        write_f64(out, effects.glow_radius);
+        out.push_str(",\"glow_rgba\":");
+        write_rgba(out, effects.glow_rgba);
+        out.push_str(",\"glow_pulse\":");
+        write_string(out, effects.glow_pulse.canonical_name());
+        out.push_str(",\"glow_pulse_depth\":");
+        write_f64(out, effects.glow_pulse_depth);
+        out.push_str(",\"glow_hue_drive\":");
+        write_string(out, effects.glow_hue_drive.canonical_name());
+        out.push_str(",\"glow_hue_range\":");
+        write_f64(out, effects.glow_hue_range);
+        out.push_str(",\"shadow_blur\":");
+        write_f64(out, effects.shadow_blur);
+        out.push_str(",\"shadow_opacity\":");
+        write_f64(out, effects.shadow_opacity);
+        out.push_str(",\"plate_roundness\":");
+        write_f64(out, effects.plate_roundness);
+        out.push('}');
     }
     out.push('}');
 
@@ -1380,11 +1409,13 @@ fn parse_font_asset(parser: &mut Parser<'_>) -> Parsed<Option<FontAsset>> {
 /// `parse_caption_style` (`project_io.c:276-302`).
 ///
 /// The block is optional at the top level, but **once present every one of its
-/// nine members is required**: a half-specified style would silently mix the
-/// author's intent with the shipped defaults, and the file could then no longer
-/// say which was which.
+/// nine legacy members is required**: a half-specified style would silently mix
+/// the author's intent with the shipped defaults, and the file could then no
+/// longer say which was which. `effects` is the one optional member — it
+/// post-dates the frozen C (2026-08-03) and its absence *is* the default, the
+/// same contract the whole block has at the project level.
 fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
-    const NAMES: [&str; 9] = [
+    const NAMES: [&str; 10] = [
         "face",
         "box",
         "anchor",
@@ -1394,6 +1425,7 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
         "text_rgba",
         "box_rgba",
         "font",
+        "effects",
     ];
     let mut style = CaptionStyle::default();
     let mut seen = Seen::default();
@@ -1409,7 +1441,8 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
             5 => style.width_scale = parser.f64()?,
             6 => style.text_rgba = parser.rgba()?,
             7 => style.box_rgba = parser.rgba()?,
-            _ => style.font = parse_font_asset(parser)?,
+            8 => style.font = parse_font_asset(parser)?,
+            _ => style.effects = parse_caption_effects(parser)?,
         }
         Ok(())
     })?;
@@ -1417,6 +1450,46 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
         return Err(ProjectIoError::MissingField);
     }
     Ok(style)
+}
+
+/// The `effects` block: once present, all ten members are required, matching
+/// the parent style's all-or-nothing contract.
+fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
+    const NAMES: [&str; 10] = [
+        "glow_strength",
+        "glow_radius",
+        "glow_rgba",
+        "glow_pulse",
+        "glow_pulse_depth",
+        "glow_hue_drive",
+        "glow_hue_range",
+        "shadow_blur",
+        "shadow_opacity",
+        "plate_roundness",
+    ];
+    let mut effects = CaptionEffects::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => effects.glow_strength = parser.f64()?,
+            1 => effects.glow_radius = parser.f64()?,
+            2 => effects.glow_rgba = parser.rgba()?,
+            3 => effects.glow_pulse = parser.enum_value(EffectDrive::from_canonical_name)?,
+            4 => effects.glow_pulse_depth = parser.f64()?,
+            5 => effects.glow_hue_drive = parser.enum_value(EffectDrive::from_canonical_name)?,
+            6 => effects.glow_hue_range = parser.f64()?,
+            7 => effects.shadow_blur = parser.f64()?,
+            8 => effects.shadow_opacity = parser.f64()?,
+            _ => effects.plate_roundness = parser.f64()?,
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x3ff) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(effects)
 }
 
 /// `parse_project` (`project_io.c:304-306`).
@@ -2265,6 +2338,75 @@ mod tests {
             deserialize(misspelled.as_bytes()).unwrap_err(),
             ProjectIoError::UnknownField
         );
+    }
+
+    #[test]
+    fn default_caption_effects_are_not_written_and_absence_is_the_default() {
+        let project = valid_project();
+        assert!(project.caption_style.effects.is_default());
+        let text = serialize(&project).unwrap();
+        assert!(
+            !text.contains("\"effects\""),
+            "a default effects block must not widen pre-effects files"
+        );
+        assert!(deserialize(text.as_bytes())
+            .unwrap()
+            .caption_style
+            .effects
+            .is_default());
+    }
+
+    #[test]
+    fn authored_caption_effects_round_trip_exactly() {
+        let mut project = valid_project();
+        project.caption_style.effects = CaptionEffects {
+            glow_strength: 0.8,
+            glow_radius: 0.25,
+            glow_rgba: 0x39FF_88E0,
+            glow_pulse: EffectDrive::Bass,
+            glow_pulse_depth: 0.75,
+            glow_hue_drive: EffectDrive::Time,
+            glow_hue_range: 200.0,
+            shadow_blur: 0.12,
+            shadow_opacity: 0.9,
+            plate_roundness: 0.3,
+        };
+        let text = serialize(&project).unwrap();
+        assert!(text.contains("\"effects\":{\"glow_strength\":"));
+        assert!(text.contains("\"glow_rgba\":\"39ff88e0\""));
+        assert!(text.contains("\"glow_pulse\":\"bass\""));
+        let reparsed = round_trip(&project);
+        assert_eq!(
+            reparsed.caption_style.effects,
+            project.caption_style.effects
+        );
+    }
+
+    #[test]
+    fn a_half_specified_effects_block_is_refused() {
+        let mut project = valid_project();
+        project.caption_style.effects.glow_strength = 0.5;
+        let text = serialize(&project).unwrap();
+        for member in [
+            "\"glow_radius\":0.18,",
+            "\"glow_pulse\":\"none\",",
+            "\"shadow_opacity\":1,",
+        ] {
+            let reduced = text.replace(member, "");
+            assert!(reduced != text, "{member} not found in {text}");
+            assert_eq!(
+                deserialize(reduced.as_bytes()).unwrap_err(),
+                ProjectIoError::MissingField,
+                "{member} should be required once effects are present"
+            );
+        }
+        let misspelled = text.replace("\"glow_hue_drive\":", "\"glow_hue_driver\":");
+        assert_eq!(
+            deserialize(misspelled.as_bytes()).unwrap_err(),
+            ProjectIoError::UnknownField
+        );
+        let bad_drive = text.replace("\"glow_pulse\":\"none\"", "\"glow_pulse\":\"midi\"");
+        assert!(deserialize(bad_drive.as_bytes()).is_err());
     }
 
     #[test]

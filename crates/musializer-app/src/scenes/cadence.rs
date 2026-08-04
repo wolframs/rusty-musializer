@@ -29,10 +29,12 @@ use musializer_core::scenes::cadence::{
     INK_PROBES, LAYOUT_ATTEMPTS, MAX_LAYOUT_ROWS, PARTICLES_PER_GLYPH, PARTICLE_BUDGET,
 };
 use musializer_runtime::draw;
+use musializer_runtime::font::Face;
 use raylib::prelude::{
-    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibFont, Rectangle,
-    Vector2,
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibFont,
+    RaylibShaderModeExt, Rectangle, Vector2,
 };
+use raylib::shaders::Shader;
 
 const PI: f32 = std::f32::consts::PI;
 
@@ -44,6 +46,76 @@ const PI: f32 = std::f32::consts::PI;
 #[must_use]
 pub fn font_is_loaded<F: RaylibFont>(font: &F) -> bool {
     font.texture().id != 0
+}
+
+/// The two faces Cadence typesets with, and the shader that makes the first one
+/// legible.
+///
+/// A deliberate divergence from the oracle, which hands the scene one `Font`
+/// (`scene_cadence.c:449`). Cadence animates per-glyph scale continuously as a
+/// word condenses, so there is no size to rasterize a bitmap atlas at — every
+/// choice is wrong for most of the animation, and the oracle's 64 px atlas is
+/// wrong by a factor of three at the sizes this scene actually draws. A
+/// signed-distance-field atlas is scale-independent instead.
+///
+/// **The two faces are not interchangeable, and that is the point.** `text`
+/// measures and draws; `ink` is sampled for the inked pixels particles condense
+/// onto (`cadence_glyph_ink`, `scene_cadence.c:200-235`), and an SDF glyph image
+/// is a distance ramp rather than coverage — the C's 96/255 alpha threshold
+/// applied to it would scatter particles over the glyph's *surroundings*. So the
+/// particle field keeps reading the bitmap atlas, unchanged, and only the drawn
+/// letterform moves to the distance field.
+pub struct CadenceType<'a> {
+    /// The face `measure` and every glyph draw go through.
+    pub text: &'a Face,
+    /// The face whose CPU-side glyph bitmaps place particles. Always a bitmap
+    /// atlas.
+    pub ink: &'a Face,
+    /// The SDF fragment shader. `Some` only when `text` is an SDF atlas: drawing
+    /// a distance field through the normal path is a field of grey blobs, so the
+    /// two travel together or not at all.
+    pub sdf: Option<&'a mut Shader>,
+}
+
+impl CadenceType<'_> {
+    /// Which face typeset the frame, for the report line. A capture cannot show
+    /// the difference between a soft bitmap glyph and a soft *export*, and the
+    /// repository rule is that a surface which can draw without its data says
+    /// which one it drew.
+    #[must_use]
+    pub fn describe(&self) -> &'static str {
+        if self.sdf.is_some() {
+            "sdf"
+        } else {
+            "bitmap"
+        }
+    }
+}
+
+/// One glyph, through the SDF shader when there is one.
+///
+/// The shader is entered per glyph rather than once around the word because the
+/// particle swarm is drawn between glyphs and must not go through it: the
+/// distance-field threshold would be applied to raylib's 1x1 white shape texture,
+/// which is a different picture. A word is tens of glyphs, so this is tens of
+/// batch flushes per frame — measured against a scene that already draws hundreds
+/// of additive circles, it does not register.
+fn draw_glyph<D: RaylibDraw>(
+    d: &mut D,
+    faces: &mut CadenceType<'_>,
+    codepoint: char,
+    pen: Vector2,
+    font_size: f32,
+    tint: Color,
+) {
+    let CadenceType { text, sdf, .. } = faces;
+    let text: &Face = text;
+    match sdf.as_deref_mut() {
+        Some(shader) => d.draw_shader_mode(shader, |mut pass| {
+            pass.draw_text_codepoint(text, codepoint as i32, pen, font_size, tint);
+        }),
+        None => d.draw_text_codepoint(text, codepoint as i32, pen, font_size, tint),
+    }
 }
 
 /// A word's layout slot for the current frame's boundary.
@@ -294,11 +366,11 @@ struct WordStyle {
 
 /// `cadence_draw_word` (`:288-397`).
 #[allow(clippy::too_many_arguments)]
-fn draw_word<F: RaylibFont>(
+fn draw_word(
     d: &mut RaylibDrawHandle<'_>,
     frame: &SceneFrame<'_>,
     state: &CadenceState,
-    font: &F,
+    faces: &mut CadenceType<'_>,
     word: &Word<'_>,
     slot: Slot,
     word_index: usize,
@@ -333,7 +405,7 @@ fn draw_word<F: RaylibFont>(
     for (glyph_index, codepoint) in word.text.chars().enumerate() {
         let mut encoded = [0u8; 4];
         let encoded = codepoint.encode_utf8(&mut encoded);
-        let glyph_advance = measure(font, encoded, font_size, 0.0);
+        let glyph_advance = measure(faces.text, encoded, font_size, 0.0);
         let pen = Vector2::new(cursor, slot.y);
         // Read straight from `bands`, unclamped, exactly as the C does.
         let band = if bands.is_empty() {
@@ -357,7 +429,7 @@ fn draw_word<F: RaylibFont>(
                 .min(*particle_budget);
             let mut ink_points = [Vector2::zero(); PARTICLES_PER_GLYPH];
             let want = glyph_ink(
-                font,
+                faces.ink,
                 codepoint,
                 state.seed,
                 glyph_salt.wrapping_mul(64),
@@ -365,9 +437,13 @@ fn draw_word<F: RaylibFont>(
                 &mut ink_points,
             );
             *particle_budget -= want;
+            // The *ink* face's base size, because `ink_points` are coordinates in
+            // its glyph bitmaps. Scaling them by the text face's base size would
+            // put the particles somewhere else entirely the moment the two atlases
+            // differ, which is exactly what the SDF path makes possible.
             let glyph_scale = font_size
-                / if font.base_size() > 0 {
-                    font.base_size() as f32
+                / if faces.ink.base_size() > 0 {
+                    faces.ink.base_size() as f32
                 } else {
                     1.0
                 };
@@ -418,19 +494,16 @@ fn draw_word<F: RaylibFont>(
             if focus.active && style.glow > 0.01 {
                 // A single additive ghost offset to the left, which reads as a bloom
                 // around the stroke rather than as a second glyph.
+                let ghost = Vector2::new(pen.x - 1.5 * style.pixel_scale, pen.y);
+                let ghost_tint = draw::color_alpha(style.ink, 0.16 * style.glow * focus.focus);
                 d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
-                    blend.draw_text_codepoint(
-                        font,
-                        codepoint as i32,
-                        Vector2::new(pen.x - 1.5 * style.pixel_scale, pen.y),
-                        font_size,
-                        draw::color_alpha(style.ink, 0.16 * style.glow * focus.focus),
-                    );
+                    draw_glyph(&mut blend, faces, codepoint, ghost, font_size, ghost_tint);
                 });
             }
-            d.draw_text_codepoint(
-                font,
-                codepoint as i32,
+            draw_glyph(
+                d,
+                faces,
+                codepoint,
                 pen,
                 font_size,
                 draw::color_alpha(style.ink, ink_alpha),
@@ -442,14 +515,14 @@ fn draw_word<F: RaylibFont>(
 
 /// Draws Cadence into `boundary`.
 ///
-/// `font` is the caption face to typeset with; pass the default font when the
-/// project's imported face is absent, which is the fallback the C makes at
-/// `scene_cadence.c:449`. See [`font_is_loaded`].
-pub fn draw<F: RaylibFont>(
+/// `faces.text` is the caption face to typeset with; pass the default font when
+/// the project's imported face is absent, which is the fallback the C makes at
+/// `scene_cadence.c:449`. See [`font_is_loaded`] and [`CadenceType`].
+pub fn draw(
     d: &mut RaylibDrawHandle<'_>,
     frame: &SceneFrame<'_>,
     state: &CadenceState,
-    font: &F,
+    faces: &mut CadenceType<'_>,
     boundary: Rectangle,
     pixel_scale: f32,
 ) {
@@ -500,7 +573,7 @@ pub fn draw<F: RaylibFont>(
         cadence::cue_position(frame.time_seconds, lyric.start_seconds, lyric.end_seconds);
     // The whole line loosens back into particles over the cue's final beats.
     let line_hold = timing::line_hold(cue_position);
-    let layout = layout(&words, font, boundary, scale, spacing_scale);
+    let layout = layout(&words, faces.text, boundary, scale, spacing_scale);
 
     let style = WordStyle {
         ink,
@@ -522,7 +595,7 @@ pub fn draw<F: RaylibFont>(
             d,
             frame,
             state,
-            font,
+            faces,
             word,
             layout.slots[i],
             i,

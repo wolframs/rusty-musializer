@@ -31,6 +31,10 @@ UX0 is authoritative about whether each item is still open.
   merely because the oracle uses them.
 - **A difference is a parity gap** when it changes a `.musi` file, rendered video,
   analysis number, documented command, user workflow or durable edit.
+- **The C is legacy (operator decision, 2026-08-03).** See `AGENTS.md` — the
+  rewrite supersedes the C; formats may evolve past it with a `schema_version`
+  bump, harnesses pin kept behaviour rather than forbid change, and this plan
+  remains the queue only for capability parity a user would otherwise lose.
 
 ### Deliberate exclusions
 
@@ -314,6 +318,18 @@ close the UX0 item.
       regions, without regressing minimum-window behavior.
 
 ### UX0-C — product opportunities
+
+**Landed 2026-08-04 (operator-requested lyrics/typography batch, first
+post-legacy work):** free INK/PLATE colour picking (hand-built SV/hue/alpha
+picker beside the swatch rows), the always-visible "Import a face..." route
+(`CaptionFormLayout`, form minimum 152 → 160), at-size caption atlases and an
+SDF-typeset Cadence replacing the magnified 64 px atlas, the rounded plate
+outline, and `caption_style.effects` — audio-drivable glow (RMS/bass/beat/
+flux/time pulse and hue drives), soft shadow and authorable plate roundness,
+resolved per frame in `core::project::caption_effects` and serialized only when
+authored so pre-effects `.musi` files stay byte-identical. Divergence rows in
+`AGENTS.md`; captures and luma/chroma gates in `tools/headless_check.sh`
+(`lyrics-effects-*`, `lyrics-picker-*`, `fx-glow`, `fx-soft-shadow`).
 
 - [ ] **UX0-C01 — clip export:** expose render in/out or start/duration controls
       and drive the existing windowed `RenderPlan` path (`review` 3.1).

@@ -269,6 +269,8 @@ comment stating why it holds. Current islands:
 | `runtime::font` | raylib-rs's safe `load_font_from_memory` takes the glyph set as a `&str` and passes `str::len()` — a **byte** count — as the codepoint count, so a multi-byte set makes raylib read past the array. And `GetFontDefault` is a non-owning handle that `Font`'s `Drop` would unload | Four blocks, all inside `rasterize` and `default_face`, and every face goes through them — the four built-in ones (including the icon face, whose codepoints are all above U+F000 and so are exactly the multi-byte case the wrapper gets wrong) and a project's imported one. `LoadFontFromMemory` gets both lengths from the slices themselves, and raylib copies out what it needs before returning, so a heap buffer read from disk is as safe as an `include_bytes!` array; the result goes straight into `Font::from_raw`, whose `Drop` is `UnloadFont`. The default face is wrapped in `WeakFont`, whose drop is a no-op. `GenTextureMipmaps` borrows the font's own texture field so the level count is written back where `SetTextureFilter` reads it |
 | `runtime::decode::wave_samples` | raylib-rs's safe `Wave::load_samples` builds its slice as `(pointer, frameCount)` while `LoadWaveSamples` allocates `frameCount * channels` floats, so for any stereo track it hands back exactly half the decoded audio — silently | One block. The count comes from the wave's own format, the pointer is null-checked before a slice is formed, the slice is copied into a `Vec` inside the block, and the allocation goes straight back to `UnloadWaveSamples`. Nothing borrowed escapes, and the `ffi::Wave` it is called with is a bitwise copy of one whose owner outlives the call |
 | `runtime::decode::image_rgba8` | reading a decoded image's pixels needs `Image::data`, and the safe alternative — `get_image_data` — forms a slice from `LoadImageColors` without null-checking the pointer, which is the third instance of the same defect | One block. `ImageFormat` converts to `UNCOMPRESSED_R8G8B8A8` first, and the length is `GetPixelDataSize` — the same function raylib itself sizes the buffer with — checked against `width * height * 4` before the slice is formed, so a format `ImageFormat` silently declined to convert is refused rather than misread. The pointer is null-checked, the `Image` owning the allocation is still in scope (its `Drop` is `UnloadImage`), and `to_vec` copies before the block ends |
+| `runtime::font::rasterize_sdf` | `LoadFontFromMemory` hard-codes `FONT_DEFAULT`, so a signed-distance-field atlas has to be assembled from the three calls it makes internally — `LoadFontData(FONT_SDF)`, `GenImageFontAtlas`, `LoadTextureFromImage` — and raylib-rs wraps none of them | Five blocks in one function, each freeing what it owns on the way out: the glyph array and the rectangles come from raylib's allocator and go back to `UnloadFontData`/`MemFree` on every refusal path, the atlas image is unloaded immediately after the upload, and the assembled `raylib_sys::Font` goes straight to `Font::from_raw` whose `Drop` is `UnloadFont`. Both lengths are taken from the slices, and `glyphPadding` is set to the same constant handed to `GenImageFontAtlas`, because `DrawTextCodepoint` grows the source rect by it |
+| `runtime::font::flush_render_batch` | the on-demand atlases are built *inside* a begin/end drawing pair, which nothing else here does, and `rlLoadTexture` binds a texture behind the batch's back | One block wrapping `rlDrawRenderBatchActive`, which takes no arguments, writes through no caller pointer and only submits raylib's own batch. Belt and braces rather than a known defect, and it runs only on the handful of frames that rebuild an atlas |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
@@ -366,6 +368,28 @@ note `master`, not `main`.
   though it is present in the local working tree.
 - The code and its tests are authoritative about behaviour. Documents are not.
 
+### The C is legacy (operator decision, 2026-08-03)
+
+The operator declared the C project superseded: it was never distributed, has no
+users, and this rewrite is now the canonical Musializer. What that changes, and
+what it does not:
+
+- **Backwards compatibility with the frozen C is no longer a requirement.** The
+  `.musi` format and schemas may gain fields and semantics the C cannot read.
+  Bump `schema_version` when they do, and keep opening every file *this*
+  application has ever written — the compatibility contract now runs against our
+  own releases, not the C's.
+- **The oracle remains read-only and remains useful** for behaviour not yet
+  ported. Nothing about how to read it changes.
+- **Existing differential harnesses stay green as regression anchors.** They pin
+  behaviour we chose to keep, not behaviour we are forbidden to change. Diverging
+  from one is now a decision, not a bug — but it must be deliberate: update the
+  harness to pin the new behaviour and record why, never let one fail quietly or
+  drift by accident.
+- `FEATURE_PARITY_PLAN.md` stays the task queue for completing capability parity
+  (features a user would otherwise lose in the switch). New features beyond the
+  C's ceiling need no parity justification at all.
+
 ## Parity is the goal. A line-by-line port is not the method
 
 The target is **feature parity with the frozen C**, judged by what a user or a
@@ -408,12 +432,20 @@ in the tree:
 | No volume control (only `--mute` at startup) | Mute button and slider on the transport row | Operator request. `--mute` now sets a *flag* rather than the device volume, so the button can undo it |
 | `Full` hides the panels | `Full` also toggles the OS window | Operator request. Guarded off in probe runs: Xvfb has no window manager to restack the window, so a capture would photograph a size it did not ask for |
 | The diagnostic readout is always drawn | Off by default; `H`, the row's button and `--hud` turn it on, and probe runs default it on | Operator request. It is a developer HUD, and a capture that carries its own evidence is why the line exists |
+| One 64 px caption atlas, magnified to whatever the style asks for | An at-size atlas per drawn size, quantized up to a multiple of 8 and capped at 256 px, two cached | Operator request, 2026-08-03. A caption is drawn at `max(20 * pixel_scale, boundary.height * size_scale)` — past 400 px with the panels hidden, and further again under export supersampling — and a magnified bitmap atlas is a blur the C never had to answer for because nothing photographed it. Built over the codepoints the cue actually uses, so the atlas is 10--30 ms rather than the seconds the full 1,770-codepoint set would cost at that size |
+| Cadence typesets from the same bitmap atlas | A signed-distance-field atlas and a first-party fragment shader (`resources/shaders/glsl330/sdf_text.fs`) | Operator request, 2026-08-03. Cadence animates per-glyph scale continuously, so *no* raster size is right for the whole animation. The particle field still samples the bitmap atlas's glyph images — an SDF glyph is a distance ramp, and the C's 96/255 ink threshold applied to one would scatter particles around the letterform instead of onto it |
+| The rounded plate outlined by a sharp `DrawRectangleLinesEx` (`plug.c:1281-1285`) | `DrawRectangleRoundedLinesEx`, tracing the fill's own roundness | Operator request, 2026-08-03: a rounded box in a rectangular outline, called out by name. Roundness itself is now authorable (`effects.plate_roundness`, default the C's 0.12) |
+| Two fixed swatch rows for INK and PLATE | The swatches plus a hand-built free picker (SV square, hue bar, alpha bar) | Operator request, 2026-08-03, overriding the C's "few and opinionated" stance. The format always stored arbitrary RGBA; only the picker was missing |
+| No caption effects | `caption_style.effects`: audio-drivable glow (strength/radius/colour, RMS/bass/beat/flux/time pulse and hue drives), soft shadow, plate roundness | Operator request, 2026-08-03 — the first `.musi` extension past the frozen C. Resolution is pure per-frame math in `core::project::caption_effects`, so exports reproduce the preview's pulse exactly; a default block is never serialized, keeping pre-effects files byte-identical |
 
-**Not negotiable — anything a user or a file can observe.** These are parity
-bugs, not design choices:
+**Not negotiable by accident — anything a user or a file can observe.** Since
+the 2026-08-03 legacy decision these may change *deliberately* (with a schema
+version bump or an updated harness and a recorded reason), but an unplanned
+difference in any of them is still a bug, not a design choice:
 
 - The `.musi` format and every schema in `docs/PHASE0_INVENTORY.md`. A project
-  saved by the C must open here and back again.
+  saved by any earlier build of *this* application must open here and back
+  again; the C-interchange requirement is retired.
 - Analysis numbers. The analyzer, beat tracker and band layout are checked
   against the C numerically; a "nicer" formulation that shifts a band is wrong.
 - Settings semantics: descriptor keys, bounds, defaults, precision and clamping.

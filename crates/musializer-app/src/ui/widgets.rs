@@ -27,7 +27,7 @@
 //! fallback face reachable in a test.
 
 use musializer_core::ui::row_typography;
-use musializer_core::ui::workspace_layout::UiRect;
+use musializer_core::ui::{contrast, workspace_layout::UiRect};
 use musializer_runtime::font::{AuthoredText, Face, GlyphRepertoire, UiFonts};
 use raylib::prelude::{
     Color, RaylibDraw, RaylibDrawHandle, RaylibFont, RaylibScissorMode, RaylibScissorModeExt,
@@ -943,6 +943,236 @@ pub fn rectangle(rect: UiRect) -> Rectangle {
     Rectangle::new(rect.x, rect.y, rect.width, rect.height)
 }
 
+// ---------------------------------------------------------------------------
+// Colour, for the surfaces that let a user choose one
+// ---------------------------------------------------------------------------
+//
+// **Invented, not the oracle's.** The frozen C offers colour only as fixed
+// swatch tables (`lyrics_editor_ui.c:534-539`); free picking is an operator
+// decision of 2026-08-03 and there is nothing in the C to port. Everything here
+// is deliberately generic — a rectangle, a hue, a packed RGBA — because a second
+// caller (a scene's tint, a route colour) should not have to reinvent a hue bar.
+//
+// The conversions are written out rather than taken from raylib's `ColorFromHSV`
+// for two reasons: raylib has no inverse, and a pure-Rust pair round-trips in a
+// unit test with no window open, which is the only place this arithmetic can be
+// checked at all.
+
+/// Split a `0xRRGGBBAA` word, the packing `Color::get_color` and every swatch
+/// table in this application use.
+#[must_use]
+pub fn unpack_rgba(packed: u32) -> (u8, u8, u8, u8) {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "each shift is masked to one byte"
+    )]
+    (
+        (packed >> 24) as u8,
+        ((packed >> 16) & 0xFF) as u8,
+        ((packed >> 8) & 0xFF) as u8,
+        (packed & 0xFF) as u8,
+    )
+}
+
+/// The inverse of [`unpack_rgba`].
+#[must_use]
+pub fn pack_rgba(red: u8, green: u8, blue: u8, alpha: u8) -> u32 {
+    (u32::from(red) << 24) | (u32::from(green) << 16) | (u32::from(blue) << 8) | u32::from(alpha)
+}
+
+/// Hue in degrees `[0, 360)`, saturation and value in `[0, 1]`.
+///
+/// Hue is **not** recoverable from a grey or a black: both have zero chroma, so
+/// this reports 0 for them. A picker that re-derived its bar position from the
+/// colour every frame would therefore snap to red the instant a drag reached the
+/// left or bottom edge of the square, which is why the caller keeps the hue.
+#[must_use]
+pub fn hsv_from_rgb(red: u8, green: u8, blue: u8) -> (f32, f32, f32) {
+    let red = f32::from(red) / 255.0;
+    let green = f32::from(green) / 255.0;
+    let blue = f32::from(blue) / 255.0;
+    let max = red.max(green).max(blue);
+    let min = red.min(green).min(blue);
+    let chroma = max - min;
+    let hue = if chroma <= 0.0 {
+        0.0
+    } else if max == red {
+        60.0 * (((green - blue) / chroma) % 6.0)
+    } else if max == green {
+        60.0 * ((blue - red) / chroma + 2.0)
+    } else {
+        60.0 * ((red - green) / chroma + 4.0)
+    };
+    let hue = if hue < 0.0 { hue + 360.0 } else { hue };
+    let saturation = if max <= 0.0 { 0.0 } else { chroma / max };
+    (hue, saturation, max)
+}
+
+/// The inverse of [`hsv_from_rgb`], clamping rather than refusing: a drag can
+/// hand this a fraction a hair outside the square.
+#[must_use]
+pub fn rgb_from_hsv(hue: f32, saturation: f32, value: f32) -> (u8, u8, u8) {
+    let hue = if hue.is_finite() {
+        hue.rem_euclid(360.0)
+    } else {
+        0.0
+    };
+    let saturation = saturation.clamp(0.0, 1.0);
+    let value = value.clamp(0.0, 1.0);
+    let chroma = value * saturation;
+    let sector = hue / 60.0;
+    let second = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
+    let (red, green, blue) = match sector as u32 {
+        0 => (chroma, second, 0.0),
+        1 => (second, chroma, 0.0),
+        2 => (0.0, chroma, second),
+        3 => (0.0, second, chroma),
+        4 => (second, 0.0, chroma),
+        _ => (chroma, 0.0, second),
+    };
+    let floor = value - chroma;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0, 1] before scaling, so the product is in [0, 255]"
+    )]
+    let byte = |channel: f32| ((channel + floor).clamp(0.0, 1.0) * 255.0).round() as u8;
+    (byte(red), byte(green), byte(blue))
+}
+
+/// A checkerboard, so a translucent fill drawn over it reads as translucent
+/// rather than as a slightly different flat colour.
+///
+/// Takes a cell **size** rather than a cell count: the same idiom backs a 22 px
+/// swatch and a 120 px alpha bar, and a count would stretch the squares into
+/// stripes on the wide one.
+pub fn checkerboard<D: RaylibDraw>(d: &mut D, rect: UiRect, cell: f32) {
+    if rect.is_empty() || !cell.is_finite() || cell <= 0.0 {
+        return;
+    }
+    fill(d, rect, color::ui_raised());
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "both operands are finite and positive, and the rect is a UI control"
+    )]
+    let (columns, rows) = (
+        (rect.width / cell).ceil() as usize,
+        (rect.height / cell).ceil() as usize,
+    );
+    for row in 0..rows {
+        for column in 0..columns {
+            if (row + column) % 2 == 0 {
+                continue;
+            }
+            let x = rect.x + column as f32 * cell;
+            let y = rect.y + row as f32 * cell;
+            // Clipped by construction rather than by a scissor: a partial cell at
+            // the far edge is one rectangle, and starting a scissor per swatch
+            // would be a GPU state change per control per frame.
+            fill(
+                d,
+                UiRect::new(
+                    x,
+                    y,
+                    cell.min(rect.x + rect.width - x),
+                    cell.min(rect.y + rect.height - y),
+                ),
+                color::ui_surface(),
+            );
+        }
+    }
+}
+
+/// The saturation/value square for one hue: white at the top left, the pure hue
+/// at the top right, black along the bottom.
+///
+/// One quad, not a per-pixel loop. `DrawRectangleGradientEx` takes its corners
+/// counter-clockwise from the top left (`rshapes.c`'s `DrawRectangleGradientEx`),
+/// which is exactly the square's own definition, and the GPU interpolates what a
+/// software loop would otherwise write a pixel at a time.
+pub fn saturation_value_field<D: RaylibDraw>(d: &mut D, rect: UiRect, hue: f32) {
+    if rect.is_empty() {
+        return;
+    }
+    let (red, green, blue) = rgb_from_hsv(hue, 1.0, 1.0);
+    d.draw_rectangle_gradient_ex(
+        rectangle(rect),
+        Color::new(255, 255, 255, 255),
+        Color::new(0, 0, 0, 255),
+        Color::new(0, 0, 0, 255),
+        Color::new(red, green, blue, 255),
+    );
+}
+
+/// A vertical hue ramp, red at the top through to red again at the bottom.
+///
+/// Six segments because hue is piecewise linear in RGB: a single gradient from
+/// red to red is a constant, and any fewer than six would cut a chord through
+/// the colour cube and lose the secondaries.
+pub fn hue_bar<D: RaylibDraw>(d: &mut D, rect: UiRect) {
+    if rect.is_empty() {
+        return;
+    }
+    for segment in 0..6usize {
+        let top = rect.y + rect.height * segment as f32 / 6.0;
+        let bottom = rect.y + rect.height * (segment + 1) as f32 / 6.0;
+        let (r, g, b) = rgb_from_hsv(segment as f32 * 60.0, 1.0, 1.0);
+        let (nr, ng, nb) = rgb_from_hsv((segment + 1) as f32 * 60.0, 1.0, 1.0);
+        let start = Color::new(r, g, b, 255);
+        let end = Color::new(nr, ng, nb, 255);
+        d.draw_rectangle_gradient_ex(
+            Rectangle::new(rect.x, top, rect.width, bottom - top),
+            start,
+            end,
+            end,
+            start,
+        );
+    }
+}
+
+/// Transparent to opaque, left to right, over the checkerboard.
+pub fn alpha_bar<D: RaylibDraw>(d: &mut D, rect: UiRect, tint: Color) {
+    if rect.is_empty() {
+        return;
+    }
+    checkerboard(d, rect, (rect.height * 0.5).max(2.0));
+    let clear = Color::new(tint.r, tint.g, tint.b, 0);
+    let solid = Color::new(tint.r, tint.g, tint.b, 255);
+    d.draw_rectangle_gradient_ex(rectangle(rect), clear, clear, solid, solid);
+}
+
+/// Black or white, whichever a marker drawn over `background` will be seen in.
+///
+/// [`contrast::ratio`] is the judge, because it is the one already checked
+/// against WCAG here — but it ignores alpha by design, and a marker on a
+/// 10%-opaque swatch is really sitting on the checkerboard behind it. So the
+/// colour is composited over the checkerboard's mid-grey first and the tested
+/// ratio then decides.
+#[must_use]
+pub fn contrasting_ink(background: Color) -> Color {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a convex combination of two values in [0, 255]"
+    )]
+    let over = |channel: u8| -> u8 {
+        let alpha = f32::from(background.a) / 255.0;
+        (f32::from(channel) * alpha + 127.5 * (1.0 - alpha)).round() as u8
+    };
+    let packed = pack_rgba(
+        over(background.r),
+        over(background.g),
+        over(background.b),
+        255,
+    );
+    if contrast::ratio(0x0000_00FF, packed) >= contrast::ratio(0xFFFF_FFFF, packed) {
+        Color::new(0, 0, 0, 255)
+    } else {
+        Color::new(255, 255, 255, 255)
+    }
+}
+
 /// Begin a framebuffer scissor for a logical UI rectangle. Camera transforms do
 /// not affect raylib scissors, so every UI clip must cross this boundary.
 pub fn begin_scissor<'a, D: RaylibDraw>(
@@ -1211,5 +1441,91 @@ mod tests {
         // claim is spent by the widget that made it.
         assert!(!widgets.button_at(1, box_a(), release(box_b())).clicked);
         assert_eq!(widgets.active_button_id, 0);
+    }
+
+    /// The two conversions are inverses over every colour a swatch table or a
+    /// picker can produce.
+    ///
+    /// Sampled rather than exhaustive over 16.7 M, but the sampling is on a
+    /// stride coprime with 256 so it is not a lattice of round numbers: an
+    /// off-by-one in the sector arithmetic shows up at the boundaries, and 60,
+    /// 120, 180, 240 and 300 degrees are all hit exactly.
+    #[test]
+    fn hsv_and_rgb_round_trip_through_each_other() {
+        for red in (0..=255u32).step_by(17) {
+            for green in (0..=255u32).step_by(23) {
+                for blue in (0..=255u32).step_by(29) {
+                    let (r, g, b) = (red as u8, green as u8, blue as u8);
+                    let (hue, saturation, value) = hsv_from_rgb(r, g, b);
+                    assert!(
+                        (0.0..360.0).contains(&hue),
+                        "{r},{g},{b} produced hue {hue}"
+                    );
+                    assert!((0.0..=1.0).contains(&saturation));
+                    assert!((0.0..=1.0).contains(&value));
+                    let back = rgb_from_hsv(hue, saturation, value);
+                    assert_eq!(back, (r, g, b), "{r},{g},{b} came back as {back:?}");
+                }
+            }
+        }
+        // The six primaries and secondaries by hue, which is what the hue bar's
+        // six segments are drawn from.
+        for (degrees, expected) in [
+            (0.0, (255u8, 0u8, 0u8)),
+            (60.0, (255, 255, 0)),
+            (120.0, (0, 255, 0)),
+            (180.0, (0, 255, 255)),
+            (240.0, (0, 0, 255)),
+            (300.0, (255, 0, 255)),
+            (360.0, (255, 0, 0)),
+        ] {
+            assert_eq!(rgb_from_hsv(degrees, 1.0, 1.0), expected, "{degrees} deg");
+        }
+    }
+
+    /// A drag can hand the conversion a fraction a hair outside the square, and
+    /// a `NaN` hue is what an unwritten picker slot would hold.
+    #[test]
+    fn rgb_from_hsv_clamps_rather_than_wrapping_into_a_wrong_colour() {
+        assert_eq!(rgb_from_hsv(0.0, 1.5, 1.5), (255, 0, 0));
+        assert_eq!(rgb_from_hsv(0.0, -0.5, 1.0), (255, 255, 255));
+        assert_eq!(rgb_from_hsv(-60.0, 1.0, 1.0), (255, 0, 255));
+        assert_eq!(rgb_from_hsv(420.0, 1.0, 1.0), (255, 255, 0));
+        assert_eq!(rgb_from_hsv(f32::NAN, 1.0, 1.0), (255, 0, 0));
+    }
+
+    #[test]
+    fn packing_is_the_order_every_swatch_table_is_written_in() {
+        // `0xFFFF_FFC0` in `CAPTION_TEXT_SWATCHES` is white at 75% alpha, not a
+        // pale yellow: the byte order is the one `Color::get_color` reads.
+        assert_eq!(unpack_rgba(0xFFFF_FFC0), (255, 255, 255, 0xC0));
+        assert_eq!(unpack_rgba(0x1B2A_5AC0), (0x1B, 0x2A, 0x5A, 0xC0));
+        for packed in [0x0000_0000u32, 0xFFFF_FFFF, 0x1234_5678, 0xF2BE_42FF] {
+            let (r, g, b, a) = unpack_rgba(packed);
+            assert_eq!(pack_rgba(r, g, b, a), packed);
+        }
+        let raylib_order = Color::get_color(0x1B2A_5AC0);
+        assert_eq!(
+            (
+                raylib_order.r,
+                raylib_order.g,
+                raylib_order.b,
+                raylib_order.a
+            ),
+            unpack_rgba(0x1B2A_5AC0)
+        );
+    }
+
+    /// The marker on a custom swatch has to be legible on the colour the swatch
+    /// is showing, including when that colour is nearly transparent and what is
+    /// really behind it is the checkerboard.
+    #[test]
+    fn a_marker_ink_is_chosen_against_what_is_actually_behind_it() {
+        assert_eq!(contrasting_ink(Color::new(255, 255, 255, 255)).r, 0);
+        assert_eq!(contrasting_ink(Color::new(0, 0, 0, 255)).r, 255);
+        // Black at 6% opacity is a light grey on screen, so black ink on it
+        // would be the unreadable choice.
+        assert_eq!(contrasting_ink(Color::new(0, 0, 0, 16)).r, 0);
+        assert_eq!(contrasting_ink(Color::new(242, 190, 66, 255)).r, 0);
     }
 }

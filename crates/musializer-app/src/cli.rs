@@ -179,9 +179,14 @@ pub struct UiProbe {
     pub timeline_zoom: Option<f64>,
     /// `style=caption`: show the caption typography pane. Needs `panel=lyrics`.
     pub caption_style_pane: bool,
+    /// `style=effects`: show the caption effects form inside that pane.
+    pub caption_effects_pane: bool,
     /// `fonts=consent` shows the network-consent panel; `fonts=PATH` loads a
     /// family list from disk, so a capture never contacts Google.
     pub font_browser: Option<FontBrowserProbe>,
+    /// `picker=ink|plate`: open the caption pane's free colour picker. Implies
+    /// `style=caption`, since the picker is a disclosure inside that pane.
+    pub caption_picker: Option<CaptionPickerProbe>,
     /// `route=KEY`: open the Tune inspector's route editor on the setting that
     /// `KEY` names, e.g. `route=loom.weight` or the full `settings.loom.weight`.
     ///
@@ -263,6 +268,24 @@ impl AssistProbe {
             _ => None,
         }
     }
+}
+
+/// `picker=` in a `--ui-probe` spec.
+///
+/// **Invented, and for the reason the whole probe grammar exists.** The free
+/// colour picker is a disclosure behind the last cell of a swatch row — a click
+/// is the only way a user reaches it, and a headless run has no click. Without
+/// this key the picker would join the welcome screen and the three `None`
+/// fallbacks on the list of surfaces this repository shipped unreviewed, which is
+/// exactly what `../musializer/tools/UI_REVIEW.md` says costs the most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptionPickerProbe {
+    /// `picker=glow`: the glow colour, which opens the effects form.
+    Glow,
+    /// `picker=ink`: the caption text colour.
+    Ink,
+    /// `picker=plate`: the backing colour.
+    Plate,
 }
 
 /// `fonts=` in a `--ui-probe` spec (`musializer.c:202-217`).
@@ -795,16 +818,32 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             probe.timeline_zoom = Some(zoom);
         }
         "style" => {
-            if value != "caption" {
-                return None;
+            // `caption` opens the style form; `effects` its sibling effects
+            // form. Both are bodies of the same pane.
+            match value {
+                "caption" => probe.caption_style_pane = true,
+                "effects" => {
+                    probe.caption_style_pane = true;
+                    probe.caption_effects_pane = true;
+                }
+                _ => return None,
             }
-            probe.caption_style_pane = true;
         }
         "fonts" => {
             probe.font_browser = Some(if value == "consent" {
                 FontBrowserProbe::Consent
             } else {
                 FontBrowserProbe::Catalogue(PathBuf::from(value))
+            });
+        }
+        "picker" => {
+            // Named rather than a flag, because the pane has two colours and a
+            // capture that photographed the wrong one would still exit 0.
+            probe.caption_picker = Some(match value {
+                "ink" => CaptionPickerProbe::Ink,
+                "plate" => CaptionPickerProbe::Plate,
+                "glow" => CaptionPickerProbe::Glow,
+                _ => return None,
             });
         }
         "assist" => {
@@ -1329,6 +1368,16 @@ mod tests {
                 "/tmp/families.json"
             )))
         );
+
+        // The free colour picker, which a click is otherwise the only way to
+        // open. Two named colours rather than a flag: a capture that
+        // photographed the wrong one would still exit 0.
+        let probe = parse_ui_probe("panel=lyrics,picker=ink").unwrap();
+        assert_eq!(probe.caption_picker, Some(CaptionPickerProbe::Ink));
+        let probe = parse_ui_probe("panel=lyrics,style=caption,picker=plate").unwrap();
+        assert_eq!(probe.caption_picker, Some(CaptionPickerProbe::Plate));
+        assert!(parse_ui_probe("panel=lyrics,picker=1").is_none());
+        assert!(parse_ui_probe("panel=lyrics,picker=text").is_none());
     }
 
     #[test]

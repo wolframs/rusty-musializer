@@ -826,6 +826,13 @@ silently mix the author's intent with shipped defaults." The C agrees —
 `tests/test_project_io.c:834`,
 `project_io_rejects_a_half_specified_or_misspelled_caption_style`.
 
+**Post-legacy extension (2026-08-03):** a tenth, optional member `effects`
+(glow, soft shadow, plate roundness — `caption_effects` in the schema) that the
+frozen C does not know. A default block is never written, so every pre-effects
+project keeps its exact C-era serialization; the authoritative description
+lives in the schema and `crates/musializer-core/src/project/caption_effects.rs`,
+not in this inventory, which documents the C's behaviour only.
+
 Every measurement is a fraction of the frame, never a pixel count, so a project
 typeset against a preview window exports identically at any resolution
 (`:43`).

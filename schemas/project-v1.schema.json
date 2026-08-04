@@ -341,6 +341,92 @@
             }
           ],
           "description": "Present exactly when face is \"imported\". Any other arrangement is a project whose captions cannot be reproduced from the file."
+        },
+        "effects": {
+          "$ref": "#/$defs/caption_effects",
+          "description": "Optional post-legacy extension (2026-08-03): glow, soft shadow and plate shape. Absent means the legacy composition; a writer must omit the block when every member is its default, so pre-effects projects keep their exact serialization."
+        }
+      }
+    },
+    "caption_effect_drive": {
+      "enum": [
+        "none",
+        "rms",
+        "bass",
+        "beat",
+        "flux",
+        "time"
+      ],
+      "description": "What modulates an effect per frame. Every source is a pure function of the deterministic scene frame, so preview and export agree."
+    },
+    "caption_effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "glow_strength",
+        "glow_radius",
+        "glow_rgba",
+        "glow_pulse",
+        "glow_pulse_depth",
+        "glow_hue_drive",
+        "glow_hue_range",
+        "shadow_blur",
+        "shadow_opacity",
+        "plate_roundness"
+      ],
+      "description": "All members are required once the object is present, matching caption_style's all-or-nothing contract. Lengths are fractions of the resolved font size, never pixels.",
+      "properties": {
+        "glow_strength": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "0 disables the glow."
+        },
+        "glow_radius": {
+          "type": "number",
+          "minimum": 0.02,
+          "maximum": 0.6,
+          "description": "Halo radius as a fraction of the font size."
+        },
+        "glow_rgba": {
+          "$ref": "#/$defs/caption_rgba",
+          "description": "Base glow colour; its alpha is the ceiling the strength scales."
+        },
+        "glow_pulse": {
+          "$ref": "#/$defs/caption_effect_drive"
+        },
+        "glow_pulse_depth": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "How much of the intensity the pulse owns: 0 is steady, 1 swings to zero."
+        },
+        "glow_hue_drive": {
+          "$ref": "#/$defs/caption_effect_drive"
+        },
+        "glow_hue_range": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 360.0,
+          "description": "Degrees of hue swept across the drive's range."
+        },
+        "shadow_blur": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 0.5,
+          "description": "Softens the shadow backing as a fraction of the font size; 0 is the legacy hard copy."
+        },
+        "shadow_opacity": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Scales the shadow colour's alpha; 1 is the legacy value."
+        },
+        "plate_roundness": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 0.5,
+          "description": "Corner roundness of the plate backing. 0.12 is the historical constant."
         }
       }
     },

@@ -4,13 +4,16 @@
 //! Layout stays in `musializer-core`; this file is only the application-side
 //! composition that turns the layout into a box, shadow and glyph draw calls.
 
+use musializer_core::project::caption_effects::{self, EffectInputs, GLOW_TAPS, SHADOW_TAPS};
 use musializer_core::project::caption_layout::{self, CaptionLayout};
 use musializer_core::project::model::{CaptionAnchor, CaptionBox, CaptionStyle};
 use musializer_core::scene::LyricCue;
 use musializer_runtime::draw;
-use musializer_runtime::font::Face;
+use musializer_runtime::font::Faces;
+use raylib::consts::BlendMode;
 use raylib::prelude::{
-    Color, RaylibDraw, RaylibDrawHandle, RaylibFont, RaylibScissorModeExt, Rectangle, Vector2,
+    Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Rectangle,
+    Vector2,
 };
 
 #[derive(Clone, Debug)]
@@ -45,13 +48,20 @@ fn anchor_axes(anchor: CaptionAnchor) -> (i8, i8) {
     }
 }
 
-fn compose(
+/// The pixel size this caption will be drawn at, or `None` when there is no
+/// caption to draw (`plug.c:1219-1307`).
+///
+/// Split out of [`compose`] because it is the *only* input the at-size atlas
+/// needs and it depends on nothing that has to be measured first. The face has to
+/// be chosen before the first measurement — measuring through one atlas and
+/// drawing through another drifts every line width — so this runs first, the
+/// atlas is resolved from it, and `compose` is then handed the same number.
+fn caption_font_size(
     boundary: Rectangle,
     text: &str,
     pixel_scale: f32,
     style: &CaptionStyle,
-    measure: &mut dyn FnMut(&str, f32, f32) -> f32,
-) -> Option<Composition> {
+) -> Option<f32> {
     if text.is_empty()
         || !pixel_scale.is_finite()
         || pixel_scale <= 0.0
@@ -60,7 +70,17 @@ fn compose(
     {
         return None;
     }
-    let font_size = (20.0 * pixel_scale).max(boundary.height * style.size_scale as f32);
+    Some((20.0 * pixel_scale).max(boundary.height * style.size_scale as f32))
+}
+
+fn compose(
+    boundary: Rectangle,
+    text: &str,
+    pixel_scale: f32,
+    style: &CaptionStyle,
+    font_size: f32,
+    measure: &mut dyn FnMut(&str, f32, f32) -> f32,
+) -> Option<Composition> {
     let spacing = pixel_scale;
     let (horizontal_padding, vertical_padding) = match style.box_style {
         CaptionBox::Plate => (font_size * 0.7, font_size * 0.34),
@@ -100,35 +120,85 @@ fn compose(
 }
 
 /// Draws the current project cue in the shared caption style.
+///
+/// Takes the whole face bank rather than one face because the face is chosen
+/// *by size*: the caption is drawn at `max(20 * pixel_scale, boundary.height *
+/// size_scale)`, which reaches 200 px on a large window and further under export
+/// supersampling, and the shared 64 px atlas magnified that far is a blur. See
+/// [`Faces::caption_at`], which quantizes the size, caches two atlases and falls
+/// back — visibly, in the report line — when it cannot build one.
 pub fn draw_scene_lyric_overlay(
     d: &mut RaylibDrawHandle<'_>,
     lyric: Option<&LyricCue>,
-    font: &Face,
+    fonts: &Faces,
     boundary: Rectangle,
     pixel_scale: f32,
     style: &CaptionStyle,
+    inputs: &EffectInputs,
 ) {
     let Some(lyric) = lyric else {
         return;
     };
+    let Some(font_size) = caption_font_size(boundary, &lyric.text, pixel_scale, style) else {
+        return;
+    };
+    // One resolution, held across both the measurement and the draw. Two calls
+    // could hand back two different atlases if a resize landed between them, and
+    // a line measured at one size and drawn at another either clips or floats.
+    let font = fonts.caption_at(style.face, font_size, &lyric.text);
     let Some(composition) = compose(
         boundary,
         &lyric.text,
         pixel_scale,
         style,
+        font_size,
         &mut |text, size, spacing| font.measure_text(text, size, spacing).x,
     ) else {
         return;
     };
+    // Deterministic per frame: the drives read the same figures the scenes do,
+    // so an export reproduces the preview's pulse exactly.
+    let fx = caption_effects::resolve(&style.effects, inputs, font_size);
     let text_color = Color::get_color(style.text_rgba);
     let box_color = Color::get_color(style.box_rgba);
     if style.box_style == CaptionBox::Plate {
-        d.draw_rectangle_rounded(composition.box_rect, 0.12, 8, box_color);
-        d.draw_rectangle_lines_ex(
+        d.draw_rectangle_rounded(composition.box_rect, fx.plate_roundness, 8, box_color);
+        // Rounded like the fill it traces. The C outlined its rounded plate
+        // with a sharp `DrawRectangleLinesEx` (`plug.c:1281-1285`) — the
+        // operator called that one out by name, and the C is legacy.
+        d.draw_rectangle_rounded_lines_ex(
             composition.box_rect,
+            fx.plate_roundness,
+            8,
             pixel_scale,
             draw::color_alpha(text_color, 0.28),
         );
+    }
+
+    // The glow ignores the scissor on purpose: a halo is *supposed* to spill
+    // past the composed box, and clipping it would print the box's outline into
+    // the haze. The taps are still bounded — radius is a fraction of the font
+    // size — so nothing reaches far.
+    if let Some(glow) = fx.glow {
+        let glow_alpha = f32::from((glow.rgba & 0xFF) as u8) / 255.0;
+        let glow_color = Color::get_color(glow.rgba);
+        d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
+            for line in line_positions(&composition) {
+                for tap in GLOW_TAPS {
+                    blend.draw_text_ex(
+                        font.face(),
+                        line.text,
+                        Vector2::new(
+                            line.position.x + tap.dx * glow.radius_px,
+                            line.position.y + tap.dy * glow.radius_px,
+                        ),
+                        composition.font_size,
+                        composition.spacing,
+                        draw::color_alpha(glow_color, glow_alpha * tap.weight),
+                    );
+                }
+            }
+        });
     }
 
     // The layout's three-line ellipsis is the semantic limit; the scissor is the
@@ -139,28 +209,44 @@ pub fn draw_scene_lyric_overlay(
         composition.box_rect.width as i32,
         composition.box_rect.height as i32,
     );
-    for (index, line) in composition.layout.lines.iter().enumerate() {
-        let position = Vector2::new(
-            composition.box_rect.x + (composition.box_rect.width - line.width) * 0.5,
-            composition.box_rect.y
-                + composition.vertical_padding
-                + index as f32 * composition.line_advance,
-        );
+    for line in line_positions(&composition) {
         if style.box_style == CaptionBox::Shadow {
             let offset = pixel_scale.max(composition.font_size * 0.055);
-            clipped.draw_text_ex(
-                font,
-                &line.text,
-                Vector2::new(position.x + offset, position.y + offset),
-                composition.font_size,
-                composition.spacing,
-                box_color,
-            );
+            let anchor = Vector2::new(line.position.x + offset, line.position.y + offset);
+            let base_alpha = f32::from(box_color.a) / 255.0 * fx.shadow_alpha_scale;
+            if fx.shadow_blur_px > 0.0 {
+                // The soft shadow: the same colour budget spread over a ring
+                // of taps, so blurring never darkens the composite.
+                for tap in SHADOW_TAPS {
+                    clipped.draw_text_ex(
+                        font.face(),
+                        line.text,
+                        Vector2::new(
+                            anchor.x + tap.dx * fx.shadow_blur_px,
+                            anchor.y + tap.dy * fx.shadow_blur_px,
+                        ),
+                        composition.font_size,
+                        composition.spacing,
+                        draw::color_alpha(box_color, base_alpha * tap.weight),
+                    );
+                }
+            } else {
+                // Legacy: one hard copy, exactly the C's composition when the
+                // effects block is default (`shadow_opacity` 1).
+                clipped.draw_text_ex(
+                    font.face(),
+                    line.text,
+                    anchor,
+                    composition.font_size,
+                    composition.spacing,
+                    draw::color_alpha(box_color, base_alpha),
+                );
+            }
         }
         clipped.draw_text_ex(
-            font,
-            &line.text,
-            position,
+            font.face(),
+            line.text,
+            line.position,
             composition.font_size,
             composition.spacing,
             text_color,
@@ -168,14 +254,45 @@ pub fn draw_scene_lyric_overlay(
     }
 }
 
+struct PlacedLine<'a> {
+    text: &'a str,
+    position: Vector2,
+}
+
+/// Each laid-out line and where it is drawn — the arithmetic the glow, shadow
+/// and ink passes must agree on, so it exists once.
+fn line_positions(composition: &Composition) -> impl Iterator<Item = PlacedLine<'_>> {
+    composition
+        .layout
+        .lines
+        .iter()
+        .enumerate()
+        .map(move |(index, line)| PlacedLine {
+            text: &line.text,
+            position: Vector2::new(
+                composition.box_rect.x + (composition.box_rect.width - line.width) * 0.5,
+                composition.box_rect.y
+                    + composition.vertical_padding
+                    + index as f32 * composition.line_advance,
+            ),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn measured(boundary: Rectangle, text: &str, scale: f32, style: &CaptionStyle) -> Composition {
-        compose(boundary, text, scale, style, &mut |line, size, _| {
-            line.chars().count() as f32 * size * 0.5
-        })
+        let font_size =
+            caption_font_size(boundary, text, scale, style).expect("the boundary holds a caption");
+        compose(
+            boundary,
+            text,
+            scale,
+            style,
+            font_size,
+            &mut |line, size, _| line.chars().count() as f32 * size * 0.5,
+        )
         .expect("the synthetic caption fits")
     }
 

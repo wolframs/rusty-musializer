@@ -1569,6 +1569,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         analysis.analyzer.band_count(),
         requested_scene,
         &fonts,
+        &renderer,
         &assist,
     );
 
@@ -2904,6 +2905,10 @@ impl Report {
         self.peak_band_high = self.peak_band_high.max(band);
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the report reads from every long-lived owner in main: app, analyzer, fonts, renderer, assist"
+    )]
     fn print(
         &self,
         raylib_version: &str,
@@ -2911,6 +2916,7 @@ impl Report {
         band_count: usize,
         requested_scene: Option<SceneId>,
         fonts: &Faces,
+        renderer: &scene_host::SceneRenderer,
         assist: &AssistController,
     ) {
         let dropped = audio_bridge::ring().map_or(0, |ring| ring.dropped());
@@ -2921,6 +2927,10 @@ impl Report {
         // face is the kind of regression that gets noticed by eye weeks later, and
         // `tools/headless_check.sh` greps this line.
         println!("fonts:           {}", fonts.describe());
+        // The scene-text path, which the `fonts:` line cannot carry: the SDF
+        // shader belongs to the renderer, and a compiled shader is not the same
+        // claim as a Cadence frame that actually typeset through it.
+        println!("scene text:      {}", renderer.describe());
         println!(
             "ui layout:       scale={} sidebar={} inspector={} timeline={}",
             (fonts.ui().scale() * 100.0).round() as u16,
