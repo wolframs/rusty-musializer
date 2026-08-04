@@ -1560,6 +1560,260 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         "assist=candidate" || SWEEP_FAILED=1
 fi
 
+# ---------------------------------------------------------------------------
+# Tranche LT1: unresolved lines and review flags, by name and time range.
+#
+# The localizer's failures are sparse and specific, so a count alone sends the
+# user back through the whole song. The panel names them, and this is where that
+# claim is checked rather than assumed.
+#
+# Three job folders, because three answers must look different:
+#
+#   flagged  two unresolved lines (one of them an abstention) and two cues whose
+#            views disagree -- four flags, four named rows;
+#   clear    an LT1 run that placed everything, which must say so in words: a
+#            blank region is indistinguishable from a broken one;
+#   legacy   a manifest from before this tranche, which must render exactly as
+#            it always did. This is the requirement that "absence" and "zero"
+#            are different answers, and it is also the SATAVG control below.
+#
+# The fixtures are files rather than a literal in the panel, and they reach the
+# probe through MUSIALIZER_ASSIST_PROBE_DIR, because the review is read from
+# `assist-manifest.json` plus a `lyric-sync-v1` document in the job folder. That
+# is the same path a real finished job takes, so what is photographed here is
+# the real ingestion and not a synthesized picture of it.
+# ---------------------------------------------------------------------------
+ASSIST_REVIEW_DIR="$OUT_DIR/assist-review"
+rm -rf "$ASSIST_REVIEW_DIR"
+mkdir -p "$ASSIST_REVIEW_DIR/flagged" "$ASSIST_REVIEW_DIR/clear" "$ASSIST_REVIEW_DIR/legacy"
+
+cat >"$ASSIST_REVIEW_DIR/flagged/assist-manifest.json" <<'JSON'
+{
+  "schema_version": "musializer.assist-manifest/v1",
+  "mode": "lyrics",
+  "artifacts": {"aligned": "/nonexistent/job/lyrics.aligned.json",
+                "sync": "/nonexistent/job/lyrics.sync.json"},
+  "result_counts": {"lyrics": 2, "lyrics_unmatched": 2, "lyrics_unresolved": 2,
+                    "lyrics_review_flags": 4, "sections": 2, "semantics": 2},
+  "lyric_localization": {"policy": "anchor-block-mms", "policy_version": "3"}
+}
+JSON
+cat >"$ASSIST_REVIEW_DIR/flagged/lyrics.aligned.json" <<'JSON'
+{
+  "schema_version": "musializer.lyric-sync/v1",
+  "lane": "lyric_sync",
+  "localization_policy": "anchor-block-mms",
+  "localization_policy_version": "3",
+  "lines": [
+    {"reference_line_index": 0, "text": "we were never meant to stay",
+     "start_seconds": 12.0, "end_seconds": 16.0, "review_flagged": true},
+    {"reference_line_index": 1, "text": "and the lights came up anyway",
+     "start_seconds": 16.0, "end_seconds": 21.0, "review_flagged": true}
+  ],
+  "unresolved": [
+    {"reference_line_index": 25, "line_position": 25, "kind": "lyric",
+     "text": "hold the note until it breaks", "reason": "no block placement",
+     "abstained": false, "coarse_start_seconds": 90.6, "coarse_end_seconds": 94.2},
+    {"reference_line_index": 30, "line_position": 30, "kind": "lyric",
+     "text": "and again, and again",
+     "reason": "repeated phrase could not be pinned", "abstained": true,
+     "coarse_start_seconds": null, "coarse_end_seconds": null}
+  ],
+  "review_flags": [
+    {"reference_line_index": 0, "text": "we were never meant to stay",
+     "flag": "coarse_disagreement", "reason": "the two views differ by 21.6 s",
+     "start_seconds": 12.0, "end_seconds": 16.0,
+     "coarse_start_seconds": 33.6, "delta_seconds": -21.6},
+    {"reference_line_index": 1, "text": "and the lights came up anyway",
+     "flag": "coarse_disagreement", "reason": "the two views differ by 8.4 s",
+     "start_seconds": 16.0, "end_seconds": 21.0,
+     "coarse_start_seconds": 24.4, "delta_seconds": -8.4},
+    {"reference_line_index": 25, "text": "hold the note until it breaks",
+     "flag": "unresolved", "reason": "no block placement",
+     "start_seconds": null, "end_seconds": null,
+     "coarse_start_seconds": 90.6, "delta_seconds": null},
+    {"reference_line_index": 30, "text": "and again, and again",
+     "flag": "unresolved", "reason": "repeated phrase could not be pinned",
+     "start_seconds": null, "end_seconds": null,
+     "coarse_start_seconds": null, "delta_seconds": null}
+  ],
+  "statistics": {"reference_lines": 4, "matched_lines": 2, "estimated_lines": 0,
+                 "unmatched_lines": 2, "reference_tokens": 30,
+                 "unresolved_lines": 2, "abstained_lines": 1,
+                 "review_flagged_lines": 4, "coarse_disagreement_lines": 2}
+}
+JSON
+cat >"$ASSIST_REVIEW_DIR/clear/assist-manifest.json" <<'JSON'
+{
+  "schema_version": "musializer.assist-manifest/v1",
+  "mode": "lyrics",
+  "artifacts": {"aligned": "/nonexistent/job/lyrics.aligned.json"},
+  "result_counts": {"lyrics": 2, "lyrics_unmatched": 0, "lyrics_unresolved": 0,
+                    "lyrics_review_flags": 0, "sections": 2, "semantics": 2},
+  "lyric_localization": {"policy": "anchor-block-mms", "policy_version": "3"}
+}
+JSON
+cat >"$ASSIST_REVIEW_DIR/clear/lyrics.aligned.json" <<'JSON'
+{
+  "schema_version": "musializer.lyric-sync/v1",
+  "lane": "lyric_sync",
+  "localization_policy": "anchor-block-mms",
+  "localization_policy_version": "3",
+  "lines": [
+    {"reference_line_index": 0, "text": "we were never meant to stay",
+     "start_seconds": 12.0, "end_seconds": 16.0, "review_flagged": false},
+    {"reference_line_index": 1, "text": "and the lights came up anyway",
+     "start_seconds": 16.0, "end_seconds": 21.0, "review_flagged": false}
+  ],
+  "unresolved": [],
+  "review_flags": [],
+  "statistics": {"reference_lines": 2, "matched_lines": 2, "estimated_lines": 0,
+                 "unmatched_lines": 0, "reference_tokens": 12,
+                 "unresolved_lines": 0, "review_flagged_lines": 0}
+}
+JSON
+# Pre-LT1: the manifest a job folder written before this tranche carries. No
+# `lyrics_unresolved`, no `lyrics_review_flags`, no `lyric_localization`.
+cat >"$ASSIST_REVIEW_DIR/legacy/assist-manifest.json" <<'JSON'
+{
+  "schema_version": "musializer.assist-manifest/v1",
+  "mode": "lyrics",
+  "artifacts": {"aligned": "/nonexistent/job/lyrics.aligned.json"},
+  "result_counts": {"lyrics": 2, "lyrics_unmatched": 0, "sections": 2, "semantics": 2}
+}
+JSON
+cat >"$ASSIST_REVIEW_DIR/legacy/lyrics.aligned.json" <<'JSON'
+{
+  "schema_version": "musializer.lyric-sync/v1",
+  "lane": "lyric_sync",
+  "lines": [{"reference_line_index": 0, "text": "we were never meant to stay",
+             "start_seconds": 12.0, "end_seconds": 16.0}]
+}
+JSON
+
+assist_review_capture() {
+    # assist_review_capture NAME JOB_FOLDER
+    local name="$1" dir="$2"
+    local out="$OUT_DIR/$name.png"
+    local log="$OUT_DIR/$name.txt"
+    set +e
+    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        MUSIALIZER_ASSIST_PROBE_DIR="$dir" \
+        ./target/debug/musializer --mute "$FIXTURE" \
+            --size 1280x720 \
+            --probe-frames 30 \
+            --probe-shot "$out" \
+            --ui-probe "panel=assist,play=0,assist=candidate" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    local line
+    line="$(sed -n 's/^assist review: *//p' "$log")"
+    printf '%-28s exit=%s %s\n' "$name" "$status" "${line:-<no assist review line>}"
+    if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
+        echo "FAIL: $name did not produce a frame, or exited $status" >&2
+        return 1
+    fi
+    return 0
+}
+
+# Saturation rather than luma: the panel surface and its disabled buttons are
+# achromatic, and the review rows are accent blue and warning orange. A crop that
+# is bright *and* coloured can only be drawn review text -- a blank surface or a
+# grey button reads near zero, which is what `legacy` measures below.
+assist_review_saturation() {
+    # assist_review_saturation NAME CROP
+    ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/$1.png,crop=$2,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1
+}
+
+if [ "$ASSIST_WIRED" -eq 1 ]; then
+    echo "--- LT1 review surface ---"
+    assist_review_capture assist-review-flagged "$ASSIST_REVIEW_DIR/flagged" || SWEEP_FAILED=1
+    assist_review_capture assist-review-clear "$ASSIST_REVIEW_DIR/clear" || SWEEP_FAILED=1
+    assist_review_capture assist-review-legacy "$ASSIST_REVIEW_DIR/legacy" || SWEEP_FAILED=1
+
+    # The counts, and the names. `line 26` and `1:30.6-1:34.2` are the whole
+    # point: a run that printed only "2 unresolved" would pass a count check and
+    # still leave the user hunting.
+    REVIEW_FLAGGED_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-flagged.txt")"
+    case "$REVIEW_FLAGGED_LINE" in
+        "unresolved=2 flagged=4 listed=4 omitted=0 policy=anchor-block-mms | "*) ;;
+        *)
+            echo "FAIL: the flagged review did not report 2 unresolved and 4 flags:" >&2
+            echo "      ${REVIEW_FLAGGED_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    for named in \
+        'UNPLACED line 26 1:30.6-1:34.2 "hold the note until it breaks"' \
+        'AMBIGUOUS line 31 not placed "and again, and again"' \
+        'CHECK line 1 0:12.0-0:16.0 "we were never meant to stay"' \
+        'CHECK line 2 0:16.0-0:21.0 "and the lights came up anyway"'
+    do
+        case "$REVIEW_FLAGGED_LINE" in
+            *"$named"*) ;;
+            *)
+                echo "FAIL: the review list did not name: $named" >&2
+                SWEEP_FAILED=1
+                ;;
+        esac
+    done
+
+    REVIEW_CLEAR_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-clear.txt")"
+    case "$REVIEW_CLEAR_LINE" in
+        "unresolved=0 flagged=0 listed=0 omitted=0 policy=anchor-block-mms | All lines placed, none flagged") ;;
+        *)
+            echo "FAIL: a run that placed every line did not say so: ${REVIEW_CLEAR_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+
+    # Absence is not zero. A pre-LT1 job folder must reach the same panel it
+    # always reached, which is also why this capture is the saturation control.
+    REVIEW_LEGACY_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-legacy.txt")"
+    case "$REVIEW_LEGACY_LINE" in
+        "absent"*) ;;
+        *)
+            echo "FAIL: a pre-LT1 manifest invented a review: ${REVIEW_LEGACY_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    # The named rows, at the panel's default scale. 20,588 300x82 is the block
+    # below the Apply/Discard row at 1280x720; `clear` draws two shorter rows and
+    # gets its own tighter crop.
+    REVIEW_SAT_FLAGGED="$(assist_review_saturation assist-review-flagged 300:82:20:588)"
+    REVIEW_SAT_CLEAR="$(assist_review_saturation assist-review-clear 300:36:20:632)"
+    REVIEW_SAT_LEGACY_A="$(assist_review_saturation assist-review-legacy 300:82:20:588)"
+    REVIEW_SAT_LEGACY_B="$(assist_review_saturation assist-review-legacy 300:36:20:632)"
+    echo "review block saturation: flagged=${REVIEW_SAT_FLAGGED:-?} clear=${REVIEW_SAT_CLEAR:-?}" \
+         "legacy=${REVIEW_SAT_LEGACY_A:-?}/${REVIEW_SAT_LEGACY_B:-?} (control)"
+    if [ "${REVIEW_SAT_FLAGGED%%.*}" -lt 3 ] 2>/dev/null; then
+        echo "FAIL: the named review rows were not drawn where the panel says they are" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "${REVIEW_SAT_CLEAR%%.*}" -lt 2 ] 2>/dev/null; then
+        echo "FAIL: the 'all lines placed' state drew nothing" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "${REVIEW_SAT_LEGACY_A%%.*}" -ge 3 ] 2>/dev/null \
+        || [ "${REVIEW_SAT_LEGACY_B%%.*}" -ge 2 ] 2>/dev/null; then
+        echo "FAIL: the control is not a control; a pre-LT1 panel drew review text" >&2
+        SWEEP_FAILED=1
+    fi
+    # And the three states are three pictures, not one picture three times.
+    REVIEW_SHOTS="$(sha256sum "$OUT_DIR/assist-review-flagged.png" \
+        "$OUT_DIR/assist-review-clear.png" "$OUT_DIR/assist-review-legacy.png" \
+        | cut -d' ' -f1 | sort -u | wc -l)"
+    if [ "$REVIEW_SHOTS" -ne 3 ]; then
+        echo "FAIL: the three LT1 review captures are not three distinct frames" >&2
+        SWEEP_FAILED=1
+    fi
+fi
+
 # The panel that names a sheet must actually have taken it. A run that ignored
 # `lyrics-file=` would draw an identical-looking panel reading "none chosen", so
 # the report says which of the three references resolved.

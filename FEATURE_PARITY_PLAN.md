@@ -1004,7 +1004,7 @@ review flags come from cross-lane disagreement and unresolved lines
       the canary at threshold 0.50 and 3 segments at 0.10. It is opt-in through
       `MUSIALIZER_WHISPER_VAD_MODEL`, and an absent model degrades to no VAD.
       Both are recorded in the lane's `request_settings`.
-- [ ] Surface unresolved lines and review flags in the Assist review UI by
+- [x] (2026-08-04) Surface unresolved lines and review flags in the Assist review UI by
       name and time range, so the user is pointed at what to fix instead of
       hunting. A flag is cross-view disagreement (coarse proposal vs
       anchor-block placement, >3 s) or an unresolved/abstained line — not the
