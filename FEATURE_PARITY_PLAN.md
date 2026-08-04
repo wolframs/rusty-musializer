@@ -355,14 +355,14 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       measured 125), zero-strength control exactly 0, radius sweep 0.08/0.3/0.6
       → 169/135/95 with one widening halo and no copies
       (`build/glow-evidence/`); glow export deterministic across runs and
-      intact inside the supersampled target. `GLOW_TAPS` is now unused (core
-      cleanup belongs to the core stream). Follow-up, same day: the soft shadow
-      rides the same blur through `halo_mask.fs` (luminance-as-alpha, normal
-      blending); the seeder's soft-shadow fixture is now bright enough to
-      measure (soft-vs-hard delta 152, was 3-4), the zero-blur variant
+      intact inside the supersampled target. Follow-up, same day: the soft
+      shadow rides the same blur through `halo_mask.fs` (luminance-as-alpha,
+      normal blending); the seeder's soft-shadow fixture is now bright enough
+      to measure (soft-vs-hard delta 152, was 3-4), the zero-blur variant
       degenerates to the legacy composition at exactly delta 0 (a standing
-      in-gate control), and `SHADOW_TAPS` is now also unused outside core.
-      Evidence under `build/shadow-evidence/`.*
+      in-gate control). `GLOW_TAPS`, `SHADOW_TAPS` and `GlowTap` are removed
+      from `core::project::caption_effects` — both effects now draw from one
+      blur, with no tap table left. Evidence under `build/shadow-evidence/`.*
 - [x] **UX0-C12 — effects pane grouping:** BLUR/SHADE/ROUND are backing tuners,
       not effects; move them to the Style pane beside BACKING (contextual to
       Shadow/Plate) so the Effects pane is glow-only.
