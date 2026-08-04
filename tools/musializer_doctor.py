@@ -20,6 +20,9 @@ import sys
 import tempfile
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from analysis_io import sha256_file
+import runtime_inventory
+
 external_analysis = None
 if sys.version_info >= (3, 10):
     # The adapters themselves require Python 3.10 syntax. Keep this import lazy
@@ -294,6 +297,16 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
                        if capability in item["required_for"] and not item["ok"]]
         capabilities[capability] = {"ready": not missing_ids, "missing": missing_ids}
 
+    # Per-runtime identity (AP2-a): richer than the flat checks above, and
+    # never a reason the overall run fails -- a missing optional runtime is
+    # this dict's own "unavailable" entry, not a raised exception. See
+    # runtime_inventory.py for what each field means and how it is probed.
+    runtimes = runtime_inventory.collect(
+        whisper_binary=whisper_bin, whisper_model=whisper_model,
+        align_python=align_python, align_model=align_model,
+        which=which, runner=runner, environ=environ, sha256_file=sha256_file,
+    )
+
     return {
         "schema_version": SCHEMA_VERSION,
         "root": str(root),
@@ -301,6 +314,7 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
         "output_directory": str(output_dir),
         "checks": checks,
         "capabilities": capabilities,
+        "runtimes": runtimes,
         "gpu": _gpu_hint(which, runner, environ),
     }
 
@@ -326,6 +340,29 @@ def render_human(report: Mapping[str, Any]) -> str:
         status = "READY" if capability["ready"] else "BLOCKED"
         suffix = "" if capability["ready"] else ": " + ", ".join(capability["missing"])
         lines.append(f"  {labels[name]}: {status}{suffix}")
+    lines.extend(("", "Runtimes:"))
+    runtime_labels = {
+        "whisper": "Whisper", "mms_ctc_aligner": "MMS/CTC forced aligner",
+        "stem_separator": "Stem separator",
+    }
+    for runtime_id, label in runtime_labels.items():
+        runtime = report["runtimes"][runtime_id]
+        if runtime["state"] != "ok":
+            lines.append(f"  {label}: UNAVAILABLE - {runtime['remediation']}")
+            continue
+        detail_bits = []
+        if runtime["path"]:
+            detail_bits.append(runtime["path"])
+        if runtime["version"]:
+            detail_bits.append(f"version {runtime['version']}")
+        if runtime["gpu_ready"] is not None:
+            detail_bits.append("GPU-ready" if runtime["gpu_ready"] else "CPU-only")
+        lines.append(f"  {label}: OK - " + ", ".join(detail_bits))
+        if runtime["language_support"]:
+            lines.append(f"    language support: {runtime['language_support']}")
+        if runtime["model_path"]:
+            hash_bits = f" ({runtime['model_sha256']})" if runtime["model_sha256"] else " (hash skipped)"
+            lines.append(f"    model: {runtime['model_path']}{hash_bits}")
     gpu = report["gpu"]
     hint = ", ".join(gpu["devices"]) if gpu["devices"] else "no optional GPU hint detected"
     lines.extend(("", f"GPU hint: {hint}"))
