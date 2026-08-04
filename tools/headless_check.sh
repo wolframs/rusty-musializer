@@ -1583,9 +1583,14 @@ fi
 # is the same path a real finished job takes, so what is photographed here is
 # the real ingestion and not a synthesized picture of it.
 # ---------------------------------------------------------------------------
+#   stale    review LT1-R, R1: a *Sections* run's manifest with the lyric
+#            document of an earlier full run still beside it, which is what an
+#            audio-keyed cache folder actually looks like. It must render as
+#            `absent`; before the fix it drew the other run's four flags.
 ASSIST_REVIEW_DIR="$OUT_DIR/assist-review"
 rm -rf "$ASSIST_REVIEW_DIR"
-mkdir -p "$ASSIST_REVIEW_DIR/flagged" "$ASSIST_REVIEW_DIR/clear" "$ASSIST_REVIEW_DIR/legacy"
+mkdir -p "$ASSIST_REVIEW_DIR/flagged" "$ASSIST_REVIEW_DIR/clear" \
+         "$ASSIST_REVIEW_DIR/legacy" "$ASSIST_REVIEW_DIR/stale"
 
 cat >"$ASSIST_REVIEW_DIR/flagged/assist-manifest.json" <<'JSON'
 {
@@ -1691,9 +1696,30 @@ cat >"$ASSIST_REVIEW_DIR/legacy/lyrics.aligned.json" <<'JSON'
 }
 JSON
 
+# Review LT1-R, R1. The manifest of a run with no lyrics lane, over the lyric
+# document a previous run left in the same audio-keyed folder. The document is
+# byte-identical to `flagged`'s, so anything the panel draws here came from the
+# wrong run.
+cat >"$ASSIST_REVIEW_DIR/stale/assist-manifest.json" <<'JSON'
+{
+  "schema_version": "musializer.assist-manifest/v1",
+  "mode": "sections",
+  "artifacts": {"aligned": "/nonexistent/job/lyrics.aligned.json"},
+  "result_counts": {"lyrics": 0, "lyrics_unmatched": 0, "lyrics_unresolved": 0,
+                    "lyrics_review_flags": 0, "sections": 2, "semantics": 0},
+  "lyric_localization": null
+}
+JSON
+cp "$ASSIST_REVIEW_DIR/flagged/lyrics.aligned.json" \
+   "$ASSIST_REVIEW_DIR/stale/lyrics.aligned.json"
+
 assist_review_capture() {
-    # assist_review_capture NAME JOB_FOLDER
-    local name="$1" dir="$2"
+    # assist_review_capture NAME JOB_FOLDER [SIZE] [LANES]
+    #
+    # SIZE and LANES are review LT1-R: R2 needs the 960x640 window whose scissor
+    # was eating the tail, and R11 needs the lyrics-only candidate, which
+    # `probe_candidate` could not produce until it took a mode.
+    local name="$1" dir="$2" size="${3:-1280x720}" lanes="${4:-}"
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
@@ -1701,8 +1727,9 @@ assist_review_capture() {
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_ASSIST_PROBE_DIR="$dir" \
+        MUSIALIZER_ASSIST_PROBE_LANES="$lanes" \
         ./target/debug/musializer --mute "$FIXTURE" \
-            --size 1280x720 \
+            --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
             --ui-probe "panel=assist,play=0,assist=candidate" \
@@ -1723,6 +1750,16 @@ assist_review_capture() {
 # achromatic, and the review rows are accent blue and warning orange. A crop that
 # is bright *and* coloured can only be drawn review text -- a blank surface or a
 # grey button reads near zero, which is what `legacy` measures below.
+# Darkest pixel in a crop. The tail row is muted grey rather than coloured, so
+# saturation cannot see it; what distinguishes "text here" from "panel surface"
+# is that text has dark pixels in it at all (review LT1-R, R2).
+assist_review_luma_min() {
+    # assist_review_luma_min NAME CROP
+    ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/$1.png,crop=$2,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1
+}
+
 assist_review_saturation() {
     # assist_review_saturation NAME CROP
     ffprobe -v error -f lavfi \
@@ -1735,24 +1772,36 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     assist_review_capture assist-review-flagged "$ASSIST_REVIEW_DIR/flagged" || SWEEP_FAILED=1
     assist_review_capture assist-review-clear "$ASSIST_REVIEW_DIR/clear" || SWEEP_FAILED=1
     assist_review_capture assist-review-legacy "$ASSIST_REVIEW_DIR/legacy" || SWEEP_FAILED=1
+    assist_review_capture assist-review-stale "$ASSIST_REVIEW_DIR/stale" || SWEEP_FAILED=1
+    assist_review_capture assist-review-tail "$ASSIST_REVIEW_DIR/flagged" 960x640 \
+        || SWEEP_FAILED=1
+    assist_review_capture assist-review-lyrics-only "$ASSIST_REVIEW_DIR/flagged" \
+        1280x720 lyrics || SWEEP_FAILED=1
 
     # The counts, and the names. `line 26` and `1:30.6-1:34.2` are the whole
     # point: a run that printed only "2 unresolved" would pass a count check and
     # still leave the user hunting.
+    #
+    # `rows_drawn=`/`tail=` are review LT1-R (R5): the line used to describe the
+    # parse, which cannot be clipped, while the panel below it was being cut.
     REVIEW_FLAGGED_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-flagged.txt")"
     case "$REVIEW_FLAGGED_LINE" in
-        "unresolved=2 flagged=4 listed=4 omitted=0 policy=anchor-block-mms | "*) ;;
+        "unresolved=2 flagged=4 listed=4 rows_drawn=4 tail=no omitted=0 counts=document \
+manifest=2/4 policy=anchor-block-mms | "*) ;;
         *)
-            echo "FAIL: the flagged review did not report 2 unresolved and 4 flags:" >&2
+            echo "FAIL: the flagged review did not report 2 unresolved, 4 flags and 4 rows:" >&2
             echo "      ${REVIEW_FLAGGED_LINE:-<absent>}" >&2
             SWEEP_FAILED=1
             ;;
     esac
+    # The row grammar, including the three LT1-R fixes a screenshot shows and a
+    # count cannot: the proposal label (R8), the number/clock separator (R7) and
+    # the reason that was parsed and never drawn (R6).
     for named in \
-        'UNPLACED line 26 1:30.6-1:34.2 "hold the note until it breaks"' \
-        'AMBIGUOUS line 31 not placed "and again, and again"' \
-        'CHECK line 1 0:12.0-0:16.0 "we were never meant to stay"' \
-        'CHECK line 2 0:16.0-0:21.0 "and the lights came up anyway"'
+        'UNPLACED line 26 proposed 1:30.6-1:34.2 "hold the note until it breaks"' \
+        'AMBIGUOUS line 31 not placed "and again, and again" (repeated phrase could not be pinned)' \
+        'CHECK line 1 at 0:12.0-0:16.0 "we were never meant to stay" (views differ 21.6s)' \
+        'CHECK line 2 at 0:16.0-0:21.0 "and the lights came up anyway" (views differ 8.4s)'
     do
         case "$REVIEW_FLAGGED_LINE" in
             *"$named"*) ;;
@@ -1765,9 +1814,80 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
 
     REVIEW_CLEAR_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-clear.txt")"
     case "$REVIEW_CLEAR_LINE" in
-        "unresolved=0 flagged=0 listed=0 omitted=0 policy=anchor-block-mms | All lines placed, none flagged") ;;
+        "unresolved=0 flagged=0 listed=0 rows_drawn=0 tail=no omitted=0 counts=document \
+manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
         *)
             echo "FAIL: a run that placed every line did not say so: ${REVIEW_CLEAR_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+
+    # Review LT1-R, R1. The Sections run whose folder still holds the previous
+    # run's lyric document draws no review at all. This is the assertion that
+    # would have caught the defect: before the fix this line named `line 26`.
+    REVIEW_STALE_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-stale.txt")"
+    case "$REVIEW_STALE_LINE" in
+        "absent"*) ;;
+        *)
+            echo "FAIL: a run with no lyrics lane showed another run's review:" >&2
+            echo "      ${REVIEW_STALE_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+
+    # Review LT1-R, R2/R5. At 960x640 the panel gets less height than the review
+    # block asks for, and the row that admits the truncation used to be the first
+    # thing the scissor ate. The tail is now fitted before the names are, so at
+    # this size it is the only review row there is.
+    REVIEW_TAIL_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-tail.txt")"
+    case "$REVIEW_TAIL_LINE" in
+        *" tail=yes "*) ;;
+        *)
+            echo "FAIL: the 960x640 panel drew no tail row: ${REVIEW_TAIL_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    case "$REVIEW_TAIL_LINE" in
+        *" listed=4 rows_drawn=0 "*) ;;
+        *)
+            echo "FAIL: the 960x640 panel did not report what it actually drew:" >&2
+            echo "      ${REVIEW_TAIL_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    # And the pixels, because a report line is a claim about a frame. 20,602 is
+    # the tail row inside the panel at 960x640; 20,615 is the strip between it
+    # and the panel's own border, which must stay empty -- a row drawn there
+    # would be one the scissor cuts mid-glyph.
+    REVIEW_TAIL_INK="$(assist_review_luma_min assist-review-tail 520:14:20:602)"
+    REVIEW_TAIL_CLEAR="$(assist_review_luma_min assist-review-tail 520:12:20:615)"
+    echo "review tail at 960x640: ink=${REVIEW_TAIL_INK:-?} below=${REVIEW_TAIL_CLEAR:-?} (control)"
+    if [ "${REVIEW_TAIL_INK%%.*}" -ge 200 ] 2>/dev/null; then
+        echo "FAIL: the tail row is reported but not on screen at 960x640" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "${REVIEW_TAIL_CLEAR%%.*}" -lt 200 ] 2>/dev/null; then
+        echo "FAIL: a review row was drawn into the panel's clipped edge" >&2
+        SWEEP_FAILED=1
+    fi
+
+    # Review LT1-R, R11. The same job folder staged as a lyrics-only run: one
+    # lane line instead of three, which is the arrangement the review surface
+    # actually ships in and the one nothing could photograph.
+    REVIEW_LYRICS_ONLY_LINE="$(sed -n 's/^assist review: *//p' \
+        "$OUT_DIR/assist-review-lyrics-only.txt")"
+    case "$REVIEW_LYRICS_ONLY_LINE" in
+        *"rows_drawn=4 tail=no"*) ;;
+        *)
+            echo "FAIL: the lyrics-only candidate drew no review:" >&2
+            echo "      ${REVIEW_LYRICS_ONLY_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    case "$(sed -n 's/^assist: *//p' "$OUT_DIR/assist-review-lyrics-only.txt")" in
+        *"mode=lyrics"*) ;;
+        *)
+            echo "FAIL: MUSIALIZER_ASSIST_PROBE_LANES=lyrics did not select the lyrics mode" >&2
             SWEEP_FAILED=1
             ;;
     esac
@@ -1810,6 +1930,31 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         | cut -d' ' -f1 | sort -u | wc -l)"
     if [ "$REVIEW_SHOTS" -ne 3 ]; then
         echo "FAIL: the three LT1 review captures are not three distinct frames" >&2
+        SWEEP_FAILED=1
+    fi
+    # Review LT1-R, R1, as a frame rather than as a sentence: a run with no
+    # lyrics lane must render **exactly** the panel a pre-LT1 job folder does,
+    # and must not render the one its neighbouring document would produce.
+    if ! cmp -s "$OUT_DIR/assist-review-stale.png" "$OUT_DIR/assist-review-legacy.png"; then
+        echo "FAIL: a no-lyrics-lane manifest did not render the pre-LT1 panel" >&2
+        SWEEP_FAILED=1
+    fi
+    if cmp -s "$OUT_DIR/assist-review-stale.png" "$OUT_DIR/assist-review-flagged.png"; then
+        echo "FAIL: a no-lyrics-lane run drew the review of the run before it" >&2
+        SWEEP_FAILED=1
+    fi
+    # And the lyrics-only frame is its own picture: one lane line, not three.
+    if cmp -s "$OUT_DIR/assist-review-lyrics-only.png" "$OUT_DIR/assist-review-flagged.png"; then
+        echo "FAIL: MUSIALIZER_ASSIST_PROBE_LANES=lyrics changed nothing on screen" >&2
+        SWEEP_FAILED=1
+    fi
+    # The stale panel is the second saturation control: it holds `flagged`'s own
+    # lyric document, so any coloured review text in the block is that document
+    # being drawn by a run that never had a lyrics lane.
+    REVIEW_SAT_STALE="$(assist_review_saturation assist-review-stale 300:82:20:588)"
+    echo "review block saturation: stale=${REVIEW_SAT_STALE:-?} (control)"
+    if [ "${REVIEW_SAT_STALE%%.*}" -ge 3 ] 2>/dev/null; then
+        echo "FAIL: a run with no lyrics lane drew the previous run's review rows" >&2
         SWEEP_FAILED=1
     fi
 fi

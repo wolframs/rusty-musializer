@@ -450,5 +450,61 @@ class LocalizationCacheIdentityTests(unittest.TestCase):
                          "coarse_proposal")
 
 
+class AssistManifestLaneKeys(unittest.TestCase):
+    """The manifest's LT1 review keys belong to a run that had a lyrics lane.
+
+    Review LT1-R, R1. The cache folder is keyed by audio, not by mode, so a
+    Sections run's manifest sits beside the ``lyrics.aligned.json`` an earlier
+    full run wrote. ``lyrics_unresolved: 0`` in that manifest is enough for the
+    panel to treat the folder as an LT1 job and read the stale document.
+    """
+
+    def _manifest(self, mode: str, lyrics: dict[str, object] | None) -> dict[str, object]:
+        return external_analysis.build_assist_manifest(
+            mode=mode, audio_sha="a" * 64, measured_duration=60.0,
+            cache_status={}, paths={"manifest": Path("/job/assist-manifest.json"),
+                                    "aligned": Path("/job/lyrics.aligned.json")},
+            plan={"sections": [{}, {}]}, lyrics=lyrics, semantic=None,
+        )
+
+    def _lyrics(self) -> dict[str, object]:
+        return {
+            "lane": "lyric_sync", "lines": [{}, {}], "unmatched": [],
+            "unresolved": [{}, {}], "review_flags": [{}, {}, {}],
+            "localization_policy": "anchor-block-mms",
+            "localization_policy_version": "3",
+        }
+
+    def test_a_run_without_a_lyrics_lane_writes_no_review_keys(self) -> None:
+        manifest = self._manifest("sections", None)
+        counts = manifest["result_counts"]
+        self.assertNotIn("lyrics_unresolved", counts)
+        self.assertNotIn("lyrics_review_flags", counts)
+        self.assertNotIn("lyric_localization", manifest)
+        # And it stays legible as a manifest: the lane-independent counts are
+        # still there, so nothing else about the folder changes.
+        self.assertEqual(counts["sections"], 2)
+        self.assertEqual(counts["lyrics"], 0)
+        self.assertNotIn("lyrics", manifest["provenance_streams"])
+
+    def test_a_lyrics_run_writes_all_three_markers(self) -> None:
+        manifest = self._manifest("lyrics", self._lyrics())
+        self.assertEqual(manifest["result_counts"]["lyrics_unresolved"], 2)
+        self.assertEqual(manifest["result_counts"]["lyrics_review_flags"], 3)
+        self.assertEqual(manifest["lyric_localization"],
+                         {"policy": "anchor-block-mms", "policy_version": "3"})
+        self.assertIn("lyrics", manifest["provenance_streams"])
+
+    def test_a_lyrics_run_that_placed_everything_still_says_zero(self) -> None:
+        # Zero is a claim only a run with the lane may make, and it must keep
+        # making it: "every line placed" is a different answer from "no review".
+        lyrics = self._lyrics()
+        lyrics["unresolved"] = []
+        lyrics["review_flags"] = []
+        counts = self._manifest("all", lyrics)["result_counts"]
+        self.assertEqual(counts["lyrics_unresolved"], 0)
+        self.assertEqual(counts["lyrics_review_flags"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

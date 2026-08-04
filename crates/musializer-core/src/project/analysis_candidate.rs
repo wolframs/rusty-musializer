@@ -178,6 +178,14 @@ impl LyricReviewKind {
     }
 }
 
+/// How much of a helper's `reason` a row carries after its window and text
+/// (review LT1-R, R6).
+///
+/// Short enough that the suffix cannot push the row's own name off the end of
+/// the line, long enough for the two sentences the helper actually writes
+/// ("repeated phrase could not be pinned" is 35).
+pub const REVIEW_REASON_MAX_CHARS: usize = 48;
+
 /// One line the user should look at, by name and time range.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LyricReviewEntry {
@@ -193,29 +201,72 @@ pub struct LyricReviewEntry {
     pub end_seconds: Option<f64>,
     /// The helper's own sentence.
     pub reason: String,
+    /// How far apart the two views put this line, when the flag said so
+    /// (review LT1-R, R6). Only a [`LyricReviewKind::Disagreement`] has one.
+    pub delta_seconds: Option<f64>,
 }
 
 impl LyricReviewEntry {
     /// `1:30.7-1:34.9`, or `not placed` when nothing proposed a window.
+    ///
+    /// An unresolved line's window is the **coarse proposal**, not a placement,
+    /// and says so (review LT1-R, R8): it is a guess from the view that was
+    /// overruled, and drawing it in the same grammar as a real cue invited the
+    /// reader to trust it as one.
     #[must_use]
     pub fn window(&self) -> String {
-        match (self.start_seconds, self.end_seconds) {
+        let span = match (self.start_seconds, self.end_seconds) {
             (Some(start), Some(end)) => format!("{}-{}", clock(start), clock(end)),
             (Some(start), None) => clock(start),
-            _ => "not placed".to_string(),
+            _ => return "not placed".to_string(),
+        };
+        if self.kind.is_unresolved() {
+            format!("proposed {span}")
+        } else {
+            format!("at {span}")
+        }
+    }
+
+    /// The terse tail a row carries after its text (review LT1-R, R6).
+    ///
+    /// `reason` was parsed, bounded and tested since LT1 and drawn nowhere,
+    /// which is the same defect as a lane that never reaches a frame. A CHECK
+    /// row's useful part of it is one number — how far apart the two views are —
+    /// and an AMBIGUOUS row's is the sentence itself, because "the occurrence
+    /// could not be pinned" and "two identical lines collapsed" are different
+    /// problems with different fixes.
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self.kind {
+            LyricReviewKind::Disagreement => match self.delta_seconds {
+                Some(delta) if delta.is_finite() => format!("views differ {:.1}s", delta.abs()),
+                _ => String::new(),
+            },
+            LyricReviewKind::Abstained => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
+            LyricReviewKind::Unresolved => String::new(),
         }
     }
 
     /// One row of the review list, and the same text the report line carries so
     /// a capture and a screenshot cannot disagree.
+    ///
+    /// `line {n}` is followed by a word rather than by a number (review LT1-R,
+    /// R7): `line 1 0:12.0` read as `line 10:12.0`, which is the one thing on
+    /// the row a user has to type into another panel.
     #[must_use]
     pub fn describe(&self) -> String {
+        let detail = self.detail();
         format!(
-            "{} line {} {} \"{}\"",
+            "{} line {} {} \"{}\"{}",
             self.kind.label(),
             self.line_number,
             self.window(),
-            self.text
+            self.text,
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({detail})")
+            }
         )
     }
 }
@@ -234,6 +285,15 @@ fn clock(seconds: f64) -> String {
 /// What `assist-manifest.json` says about the run's review surface.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewManifest {
+    /// Whether **this run** had a lyrics lane (review LT1-R, R1).
+    ///
+    /// The job folder is keyed by audio, not by mode, so a Sections run lands in
+    /// the same directory a Full-assist run left `lyrics.aligned.json` in. Read
+    /// without this, the Sections run's panel showed the *previous* run's lyric
+    /// flags — a review of content the user was not being offered. The helper
+    /// now omits the count keys when there was no lyrics lane, and this is the
+    /// second half of that fix: an old-format manifest is still refused here.
+    pub lyrics_lane: bool,
     pub unresolved: usize,
     pub flagged: usize,
     /// `lyric_localization.policy`, empty on the per-cue lane.
@@ -264,6 +324,18 @@ pub struct LyricsReview {
     pub omitted: usize,
     pub policy: String,
     pub policy_version: String,
+    /// What the **manifest** claimed, kept after the document overrules it
+    /// (review LT1-R, R10). A disagreement is a stale or truncated artifact and
+    /// the panel says which side it drew rather than resolving it in silence.
+    pub manifest_unresolved: usize,
+    pub manifest_flagged: usize,
+    /// Whether a lyric document was actually read.
+    ///
+    /// The counts come from it when true and from the manifest when false, and
+    /// the panel's "could not be read" sentence is only true in the false case
+    /// (review LT1-R, R3) — it was printing over a document that had been read
+    /// perfectly well and simply named nothing.
+    pub document_read: bool,
 }
 
 impl LyricsReview {
@@ -279,7 +351,29 @@ impl LyricsReview {
             omitted: manifest.flagged,
             policy: manifest.policy.clone(),
             policy_version: manifest.policy_version.clone(),
+            manifest_unresolved: manifest.unresolved,
+            manifest_flagged: manifest.flagged,
+            document_read: false,
         }
+    }
+
+    /// How many lines the panel claims are worth checking.
+    ///
+    /// The named list can be **longer** than `flagged` when a document's
+    /// `unresolved[]` names lines its `review_flags[]` forgot, and shorter when
+    /// a flag record is too damaged to name. Both happen, so the tail row is
+    /// driven by this rather than by either count alone (review LT1-R, R2/R4).
+    #[must_use]
+    pub fn total_to_check(&self) -> usize {
+        self.flagged.max(self.entries.len())
+    }
+
+    /// Whether the document overruled the manifest's counts (review LT1-R, R10).
+    #[must_use]
+    pub fn counts_disagree(&self) -> bool {
+        self.document_read
+            && (self.unresolved != self.manifest_unresolved
+                || self.flagged != self.manifest_flagged)
     }
 
     /// Nothing to look at. The distinction that matters is against *absence*:
@@ -291,15 +385,28 @@ impl LyricsReview {
     }
 
     /// The counts, for the panel's summary line.
+    ///
+    /// Carries one parenthetical when the manifest disagreed (review LT1-R,
+    /// R10), because "0 flagged" from a document beside a manifest saying 5 is
+    /// exactly the case where a user needs to know which number they are
+    /// reading.
     #[must_use]
     pub fn summary(&self) -> String {
-        if self.is_clear() {
+        let counts = if self.is_clear() {
             "All lines placed, none flagged".to_string()
         } else {
             format!(
                 "{} unresolved, {} flagged for review",
                 self.unresolved, self.flagged
             )
+        };
+        if self.counts_disagree() {
+            format!(
+                "{counts} (from the lyric document; the manifest said {}/{})",
+                self.manifest_unresolved, self.manifest_flagged
+            )
+        } else {
+            counts
         }
     }
 
@@ -342,10 +449,9 @@ impl LyricsReview {
         let mut entries: Vec<LyricReviewEntry> = Vec::new();
         match flags {
             Some(flags) => {
-                self.flagged = flags.len();
                 for flag in flags {
                     if let Some(entry) = review_entry_from_flag(flag, unresolved) {
-                        entries.push(entry);
+                        merge_entry(&mut entries, entry);
                     }
                 }
             }
@@ -354,11 +460,6 @@ impl LyricsReview {
                 // `unresolved[]` and per-cue `review_flagged` and nothing else is
                 // still readable — that pair is what the schema requires, and the
                 // aggregate array is a convenience over it.
-                for record in unresolved {
-                    if let Some(entry) = review_entry_from_unresolved(record) {
-                        entries.push(entry);
-                    }
-                }
                 let flagged_cues = root
                     .get("lines")
                     .and_then(Value::as_array)
@@ -369,12 +470,29 @@ impl LyricsReview {
                     });
                 for line in flagged_cues {
                     if let Some(entry) = review_entry_from_line(line) {
-                        entries.push(entry);
+                        merge_entry(&mut entries, entry);
                     }
                 }
-                self.flagged = entries.len();
             }
         }
+        // The union, and the half of it that was being lost (review LT1-R, R3):
+        // a document whose `review_flags[]` names fewer lines than its
+        // `unresolved[]` does — which the helper can write, and which a
+        // hand-edited or truncated artifact certainly can — silently dropped
+        // every named unresolved line, leaving a panel that counted a problem it
+        // refused to name. `unresolved[]` is the authoritative list of lines that
+        // never became cues, so it is merged in and its kind wins.
+        for record in unresolved {
+            if let Some(entry) = review_entry_from_unresolved(record) {
+                merge_entry(&mut entries, entry);
+            }
+        }
+        self.flagged = match flags {
+            // Never fewer than the list: a count the panel can visibly
+            // contradict is worse than a count that is generous.
+            Some(flags) => flags.len().max(entries.len()),
+            None => entries.len(),
+        };
 
         // Unresolved lines first, then the disagreements, each in authored
         // order. The unresolved ones are the ones with no cue to jump to, so
@@ -385,7 +503,29 @@ impl LyricsReview {
             .saturating_sub(entries.len().min(REVIEW_ENTRY_CAPACITY));
         entries.truncate(REVIEW_ENTRY_CAPACITY);
         self.entries = entries;
+        self.document_read = true;
         true
+    }
+}
+
+/// Adds `entry` unless that authored line is already listed, in which case the
+/// unresolved kind wins (review LT1-R, R3).
+///
+/// One line is one row. A line that is both in `unresolved[]` and named by a
+/// `review_flags[]` record is one problem described twice, and "this line never
+/// became a cue" outranks "this line's two views disagree" — the second is not
+/// even true of a line that has no placement to disagree about.
+fn merge_entry(entries: &mut Vec<LyricReviewEntry>, entry: LyricReviewEntry) {
+    match entries
+        .iter_mut()
+        .find(|existing| existing.line_number == entry.line_number)
+    {
+        None => entries.push(entry),
+        Some(existing) => {
+            if entry.kind.is_unresolved() && !existing.kind.is_unresolved() {
+                *existing = entry;
+            }
+        }
     }
 }
 
@@ -430,6 +570,7 @@ pub fn parse_review_manifest(bytes: &[u8]) -> Option<ReviewManifest> {
     }
 
     Some(ReviewManifest {
+        lyrics_lane: manifest_has_lyrics_lane(&root),
         unresolved: bounded_count(unresolved),
         flagged: bounded_count(flagged),
         policy: localization
@@ -444,6 +585,31 @@ pub fn parse_review_manifest(bytes: &[u8]) -> Option<ReviewManifest> {
             .unwrap_or_default(),
         documents,
     })
+}
+
+/// Whether the run this manifest describes had a lyrics lane (review LT1-R, R1).
+///
+/// `mode` is what the supervisor asked for and `provenance_streams` is what the
+/// run produced (`external_analysis.py:1741-1749`); either one saying "no
+/// lyrics" is enough to refuse, and a manifest carrying neither key is too old
+/// to have an opinion — it is refused by the count keys instead, which it also
+/// does not have.
+///
+/// Deliberately not inferred from `result_counts.lyrics > 0`: a lyrics run that
+/// legitimately placed nothing is exactly the run whose review matters most.
+fn manifest_has_lyrics_lane(root: &Value) -> bool {
+    if let Some(mode) = root.get("mode").and_then(Value::as_str) {
+        return matches!(mode, "lyrics" | "all");
+    }
+    match root.get("provenance_streams").and_then(Value::as_array) {
+        Some(streams) => streams
+            .iter()
+            .any(|stream| stream.as_str() == Some("lyrics")),
+        // No mode, no provenance: the counts are the only evidence there is, and
+        // a manifest that carries them was written by a build that also writes
+        // `mode`. Accepted so a hand-written fixture stays readable.
+        None => true,
+    }
 }
 
 fn json_value(bytes: &[u8]) -> Option<Value> {
@@ -469,15 +635,24 @@ fn bounded_count(value: Option<u64>) -> usize {
 }
 
 fn truncated(text: &str) -> String {
-    let mut end = text.len();
-    if text.chars().count() > REVIEW_TEXT_MAX_CHARS {
-        end = text
-            .char_indices()
-            .nth(REVIEW_TEXT_MAX_CHARS)
-            .map_or(text.len(), |(index, _)| index);
-        return format!("{}...", &text[..end]);
+    clipped(text, REVIEW_TEXT_MAX_CHARS)
+}
+
+/// `text`, cut on a character boundary to `limit` characters with an ASCII
+/// ellipsis.
+///
+/// ASCII dots rather than U+2026, for `ui/panels/assist.rs::ellipsize`'s reason:
+/// a codepoint the interface atlas was not requested over draws as an empty box,
+/// which makes a shortened sentence look like a broken one.
+fn clipped(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
     }
-    text[..end].to_string()
+    let end = text
+        .char_indices()
+        .nth(limit)
+        .map_or(text.len(), |(index, _)| index);
+    format!("{}...", text[..end].trim_end())
 }
 
 /// A number the panel can print: finite and not negative.
@@ -530,16 +705,9 @@ fn review_entry_from_flag(flag: &Value, unresolved: &[Value]) -> Option<LyricRev
                     .or_else(|| seconds_at(flag, "coarse_start_seconds")),
                 end_seconds: record.and_then(|record| seconds_at(record, "coarse_end_seconds")),
                 reason: text_at(flag, "reason"),
+                delta_seconds: None,
             })
         }
-        "coarse_disagreement" => Some(LyricReviewEntry {
-            kind: LyricReviewKind::Disagreement,
-            line_number: number,
-            text,
-            start_seconds: seconds_at(flag, "start_seconds"),
-            end_seconds: seconds_at(flag, "end_seconds"),
-            reason: text_at(flag, "reason"),
-        }),
         // An unknown flag kind from a newer helper is still a line to look at;
         // dropping it would make the list quieter than the count.
         _ => Some(LyricReviewEntry {
@@ -549,8 +717,25 @@ fn review_entry_from_flag(flag: &Value, unresolved: &[Value]) -> Option<LyricRev
             start_seconds: seconds_at(flag, "start_seconds"),
             end_seconds: seconds_at(flag, "end_seconds"),
             reason: text_at(flag, "reason"),
+            delta_seconds: disagreement_delta(flag),
         }),
     }
+}
+
+/// How far apart the two views put a flagged line (review LT1-R, R6).
+///
+/// The helper writes `delta_seconds`; it is derived from the two starts when it
+/// did not, because a CHECK row whose whole point is a disagreement should not
+/// be silent about its size just because one optional key is missing.
+fn disagreement_delta(flag: &Value) -> Option<f64> {
+    if let Some(delta) = flag.get("delta_seconds").and_then(Value::as_f64) {
+        if delta.is_finite() {
+            return Some(delta);
+        }
+    }
+    let placed = seconds_at(flag, "start_seconds")?;
+    let coarse = seconds_at(flag, "coarse_start_seconds")?;
+    Some(coarse - placed)
 }
 
 fn review_entry_from_unresolved(record: &Value) -> Option<LyricReviewEntry> {
@@ -574,6 +759,7 @@ fn review_entry_from_unresolved(record: &Value) -> Option<LyricReviewEntry> {
         start_seconds: seconds_at(record, "coarse_start_seconds"),
         end_seconds: seconds_at(record, "coarse_end_seconds"),
         reason: text_at(record, "reason"),
+        delta_seconds: None,
     })
 }
 
@@ -590,6 +776,7 @@ fn review_entry_from_line(line: &Value) -> Option<LyricReviewEntry> {
         start_seconds: seconds_at(line, "start_seconds"),
         end_seconds: seconds_at(line, "end_seconds"),
         reason: text_at(line, "status"),
+        delta_seconds: None,
     })
 }
 
@@ -1312,12 +1499,225 @@ mod tests {
         assert_eq!(
             described,
             vec![
-                "UNPLACED line 26 1:30.6-1:34.2 \"we were never meant to stay\"",
-                "AMBIGUOUS line 31 not placed \"and again\"",
-                "CHECK line 5 2:14.6-2:16.0 \"rawr.\"",
+                "UNPLACED line 26 proposed 1:30.6-1:34.2 \"we were never meant to stay\"",
+                "AMBIGUOUS line 31 not placed \"and again\" (repeated phrase could not be pinned)",
+                "CHECK line 5 at 2:14.6-2:16.0 \"rawr.\" (views differ 21.6s)",
             ],
-            "line numbers are 1-based, and an unresolved line shows the coarse window"
+            "line numbers are 1-based, an unresolved line's window is labelled a \
+             proposal, and the row carries why"
         );
+        assert!(
+            !review.counts_disagree(),
+            "3 flags, and the manifest said 3"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Review LT1-R: the fresh-eyes findings, each against the fixture that
+    // demonstrated it.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_run_without_a_lyrics_lane_cannot_carry_a_lyric_review() {
+        // R1, the reviewer's `jobs/stale`: the job folder is keyed by audio, so
+        // a Sections run lands where a previous Full-assist run left its lyric
+        // document. Its manifest carried `lyrics_unresolved: 0` — an LT1 marker
+        // — and the document beside it then supplied four flags belonging to a
+        // run the user did not start.
+        let sections_run = r#"{"schema_version":"musializer.assist-manifest/v1","mode":"sections",
+            "artifacts":{"aligned":"/cache/job/lyrics.aligned.json"},
+            "result_counts":{"lyrics":0,"lyrics_unresolved":0,"lyrics_review_flags":0,
+                             "sections":2,"semantics":0},
+            "lyric_localization":null}"#;
+        let manifest = parse_review_manifest(sections_run.as_bytes()).expect("manifest parses");
+        assert!(
+            !manifest.lyrics_lane,
+            "a sections run has no lyrics lane to review"
+        );
+        // And the modes that do.
+        for mode in ["lyrics", "all"] {
+            let json = sections_run.replace(r#""mode":"sections""#, &format!(r#""mode":"{mode}""#));
+            assert!(parse_review_manifest(json.as_bytes()).unwrap().lyrics_lane);
+        }
+        // `mimo` is the other lane-less mode, and `provenance_streams` is the
+        // second witness for a manifest that names no mode.
+        let no_mode = r#"{"schema_version":"musializer.assist-manifest/v1",
+            "provenance_streams":["measured_audio","scene_plan"],
+            "result_counts":{"lyrics_unresolved":0}}"#;
+        assert!(
+            !parse_review_manifest(no_mode.as_bytes())
+                .unwrap()
+                .lyrics_lane
+        );
+        let with_lyrics = no_mode.replace(r#""measured_audio""#, r#""measured_audio","lyrics""#);
+        assert!(
+            parse_review_manifest(with_lyrics.as_bytes())
+                .unwrap()
+                .lyrics_lane
+        );
+    }
+
+    #[test]
+    fn named_unresolved_lines_survive_a_document_whose_flag_array_forgot_them() {
+        // R3, the reviewer's `jobs/partialflags`: three unresolved lines and one
+        // flag record. Every one of the three was dropped, so the panel counted
+        // a problem it then refused to name.
+        let document = r#"{
+            "unresolved": [
+                {"reference_line_index": 25, "text": "hold the note until it breaks",
+                 "reason": "no block placement", "abstained": false,
+                 "coarse_start_seconds": 90.6, "coarse_end_seconds": 94.2},
+                {"reference_line_index": 30, "text": "and again, and again",
+                 "reason": "repeated phrase could not be pinned", "abstained": true},
+                {"reference_line_index": 33, "text": "one more that never landed",
+                 "reason": "no block placement", "abstained": false,
+                 "coarse_start_seconds": 120.0, "coarse_end_seconds": 124.0}
+            ],
+            "review_flags": [
+                {"reference_line_index": 0, "text": "we were never meant to stay",
+                 "flag": "coarse_disagreement", "reason": "the two views differ by 21.6 s",
+                 "start_seconds": 12.0, "end_seconds": 16.0,
+                 "coarse_start_seconds": 33.6, "delta_seconds": -21.6}
+            ]}"#;
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(document.as_bytes()));
+        assert_eq!(review.unresolved, 3);
+        assert_eq!(
+            review.entries.len(),
+            4,
+            "the union, not the flag array alone"
+        );
+        assert_eq!(
+            review.flagged, 4,
+            "a count the list can visibly contradict is worse than a generous one"
+        );
+        assert_eq!(review.total_to_check(), 4);
+        let numbers: Vec<u64> = review.entries.iter().map(|e| e.line_number).collect();
+        assert_eq!(
+            numbers,
+            vec![26, 34, 31, 1],
+            "unresolved first, then the rest"
+        );
+    }
+
+    #[test]
+    fn a_line_named_by_both_arrays_is_one_row_and_keeps_the_unresolved_kind() {
+        let document = r#"{
+            "unresolved": [{"reference_line_index": 4, "text": "rawr.",
+                            "reason": "no block placement", "abstained": false,
+                            "coarse_start_seconds": 156.2, "coarse_end_seconds": 158.0}],
+            "review_flags": [{"reference_line_index": 4, "text": "rawr.",
+                              "flag": "coarse_disagreement", "reason": "views differ",
+                              "start_seconds": 134.6, "end_seconds": 136.0,
+                              "delta_seconds": 21.6}]}"#;
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(document.as_bytes()));
+        assert_eq!(review.entries.len(), 1, "one line is one row");
+        assert_eq!(review.entries[0].kind, LyricReviewKind::Unresolved);
+        assert_eq!(
+            review.entries[0].describe(),
+            "UNPLACED line 5 proposed 2:36.2-2:38.0 \"rawr.\"",
+            "a line with no cue cannot have a placement to disagree with"
+        );
+    }
+
+    #[test]
+    fn a_document_that_overrules_the_manifest_says_which_number_won() {
+        // R10, the reviewer's `jobs/mismatch`: the manifest claimed 9 unresolved
+        // and 12 flags over a document naming one and two.
+        let manifest = parse_review_manifest(
+            manifest(
+                ",\"lyrics_unresolved\":9,\"lyrics_review_flags\":12",
+                r#"{"policy":"anchor-block-mms","policy_version":"3"}"#,
+            )
+            .as_bytes(),
+        )
+        .expect("manifest");
+        let mut review = LyricsReview::from_manifest(&manifest);
+        assert!(review.read_document(REVIEW_DOCUMENT.as_bytes()));
+        assert!(review.counts_disagree());
+        assert_eq!(
+            review.summary(),
+            "2 unresolved, 3 flagged for review (from the lyric document; the manifest said 9/12)"
+        );
+        assert_eq!(
+            (review.manifest_unresolved, review.manifest_flagged),
+            (9, 12)
+        );
+        assert!(review.document_read);
+    }
+
+    #[test]
+    fn a_manifest_whose_document_was_never_read_keeps_its_own_counts() {
+        // R3's other half, the reviewer's `jobs/nodoc` and `jobs/baddoc`: the
+        // "could not be read" sentence is only true here.
+        let manifest = parse_review_manifest(
+            manifest(",\"lyrics_unresolved\":2,\"lyrics_review_flags\":4", "null").as_bytes(),
+        )
+        .expect("manifest");
+        let review = LyricsReview::from_manifest(&manifest);
+        assert!(!review.document_read);
+        assert!(
+            !review.counts_disagree(),
+            "there is nothing to disagree with"
+        );
+        assert_eq!(review.summary(), "2 unresolved, 4 flagged for review");
+        assert_eq!(review.total_to_check(), 4);
+    }
+
+    #[test]
+    fn a_document_that_was_read_and_named_nothing_is_not_a_read_failure() {
+        // The reviewer's `jobs/emptyboth`: both arrays present and empty under a
+        // manifest claiming 3 and 5.
+        let manifest = parse_review_manifest(
+            manifest(",\"lyrics_unresolved\":3,\"lyrics_review_flags\":5", "null").as_bytes(),
+        )
+        .expect("manifest");
+        let mut review = LyricsReview::from_manifest(&manifest);
+        assert!(review.read_document(br#"{"unresolved":[],"review_flags":[]}"#));
+        assert!(review.document_read);
+        assert!(review.is_clear());
+        assert!(review.counts_disagree());
+        assert_eq!(
+            review.summary(),
+            "All lines placed, none flagged (from the lyric document; the manifest said 3/5)"
+        );
+    }
+
+    #[test]
+    fn a_flag_record_too_damaged_to_name_still_counts_towards_the_tail() {
+        // R4, the reviewer's `jobs/dropped`: four flags, two of them with no
+        // usable text. The two survivors were drawn as if they were the whole
+        // list, because the tail only appeared past the row cap.
+        let document = r#"{"unresolved":[],"review_flags":[
+            {"reference_line_index":0,"text":"we were never meant to stay",
+             "flag":"coarse_disagreement","start_seconds":12.0,"end_seconds":16.0,
+             "delta_seconds":-21.6},
+            {"reference_line_index":1,"text":"and the lights came up anyway",
+             "flag":"coarse_disagreement","start_seconds":16.0,"end_seconds":21.0,
+             "delta_seconds":-8.4},
+            {"reference_line_index":5,"flag":"coarse_disagreement","reason":"no text field",
+             "start_seconds":40.0,"end_seconds":44.0},
+            {"reference_line_index":7,"text":"","flag":"unresolved","reason":"empty text"}]}"#;
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(document.as_bytes()));
+        assert_eq!(review.entries.len(), 2);
+        assert_eq!(review.flagged, 4);
+        assert_eq!(
+            review.total_to_check(),
+            4,
+            "the tail is owed two lines the panel cannot name"
+        );
+    }
+
+    #[test]
+    fn a_disagreement_delta_is_derived_when_the_helper_did_not_write_one() {
+        let document = r#"{"unresolved":[],"review_flags":[
+            {"reference_line_index":0,"text":"a line","flag":"coarse_disagreement",
+             "start_seconds":12.0,"end_seconds":16.0,"coarse_start_seconds":33.6}]}"#;
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(document.as_bytes()));
+        assert_eq!(review.entries[0].detail(), "views differ 21.6s");
     }
 
     #[test]

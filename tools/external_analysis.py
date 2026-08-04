@@ -1737,8 +1737,26 @@ def run_assist(
     )
     atomic_write_json(paths["plan"], plan)
     atomic_write_text(paths["bridge"], build_bridge(plan, lyrics=lyrics, semantic=semantic))
+    manifest = build_assist_manifest(
+        mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
+        cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
+    )
+    atomic_write_json(paths["manifest"], manifest)
+    return manifest
+
+
+def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float,
+                          cache_status: dict[str, Any], paths: dict[str, Path],
+                          plan: dict[str, Any], lyrics: dict[str, Any] | None,
+                          semantic: dict[str, Any] | None) -> dict[str, Any]:
+    """`assist-manifest.json`, as the Assist panel reads it.
+
+    Pure, so the lane rules below can be tested without a run: the panel decides
+    what to show from these keys alone, and one of them being present when it
+    should not be is a whole-surface defect (review LT1-R, R1).
+    """
     lyric_lane = lyrics.get("lane") if lyrics else None
-    manifest = {
+    manifest: dict[str, Any] = {
         "schema_version": "musializer.assist-manifest/v1", "mode": mode,
         "audio": {"sha256": audio_sha, "duration_seconds": measured_duration},
         "cache_status": cache_status,
@@ -1754,18 +1772,32 @@ def run_assist(
             "lyrics_unmatched": len(lyrics.get("unmatched", [])) if lyrics else 0,
             # Additive: unresolved lines and review flags are the LT1 review
             # surface. They are never cues, so they cannot reach the bridge.
-            "lyrics_unresolved": len(lyrics.get("unresolved", [])) if lyrics else 0,
-            "lyrics_review_flags": (
-                len(lyrics.get("review_flags", [])) if lyrics else 0),
+            #
+            # Written **only** when this run had a lyrics lane (review LT1-R,
+            # R1). The job folder is keyed by audio rather than by mode, so a
+            # `--mode sections` run lands in the same directory a previous full
+            # run left `lyrics.aligned.json` in; a `"lyrics_unresolved": 0` in
+            # that manifest is an LT1 marker, and the reader then found the old
+            # document beside it and drew the *previous* run's flags. Zero is a
+            # claim about a lane, and a run without the lane has no standing to
+            # make it.
+            **({"lyrics_unresolved": len(lyrics.get("unresolved", [])),
+                "lyrics_review_flags": len(lyrics.get("review_flags", []))}
+               if lyrics else {}),
             "sections": len(plan.get("sections", [])),
             "semantics": len(semantic.get("segments", [])) if semantic else 0,
         },
-        "lyric_localization": (
-            {"policy": lyrics.get("localization_policy"),
-             "policy_version": lyrics.get("localization_policy_version")}
-            if lyrics and lyrics.get("localization_policy") else None),
     }
-    atomic_write_json(paths["manifest"], manifest)
+    # Same rule for the localization block, and the same reason: it is the third
+    # LT1 marker, so a run without a lyrics lane must not carry the key at all
+    # rather than carry it as null (review LT1-R, R1).
+    if lyrics and lyrics.get("localization_policy"):
+        manifest["lyric_localization"] = {
+            "policy": lyrics.get("localization_policy"),
+            "policy_version": lyrics.get("localization_policy_version"),
+        }
+    elif lyrics:
+        manifest["lyric_localization"] = None
     return manifest
 
 

@@ -761,6 +761,13 @@ fn read_lyrics_review(output_dir: &str) -> Option<LyricsReview> {
     let manifest = analysis_candidate::parse_review_manifest(&read_bounded(
         &directory.join(ASSIST_MANIFEST_NAME),
     )?)?;
+    // Review LT1-R, R1. The cache folder is keyed by audio rather than by mode,
+    // so a Sections run's job folder still holds the `lyrics.aligned.json` a
+    // previous Full-assist run wrote. Refusing here — **before** any document is
+    // opened — is what stops one run's panel from showing another run's flags.
+    if !manifest.lyrics_lane {
+        return None;
+    }
 
     let mut review = LyricsReview::from_manifest(&manifest);
     // Names, resolved against the folder the supervisor chose. The manifest
@@ -791,17 +798,32 @@ fn read_bounded(path: &Path) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// The Assist review's own report line (review LT1).
+/// What the panel actually put on screen this frame (review LT1-R, R5).
+///
+/// The report line used to describe the *parse*, which is the one thing that
+/// cannot be clipped: it said `listed=4` while the 960x640 scissor was eating
+/// the fourth row and the tail that would have admitted it. These two numbers
+/// come from the drawing code, so a gate can assert against clipping instead of
+/// against intent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReviewDraw {
+    /// Named rows drawn, excluding the tail.
+    pub rows: usize,
+    /// Whether the "N of M shown" row survived.
+    pub tail: bool,
+}
+
+/// The Assist review's own report line (review LT1, extended by LT1-R).
 ///
 /// `main.rs` owns the `assist:` line and is not this agent's file, so the review
 /// prints its own — the same shape `ui/panels/export.rs` uses for
-/// `export frame lanes:`. It is emitted once, when a result is staged, so a
-/// capture carries the counts and the named lines without a screenshot having to
-/// be read by eye.
+/// `export frame lanes:`. It is emitted once per distinct state so a capture
+/// carries the counts and the named lines without a screenshot having to be read
+/// by eye.
 #[must_use]
-pub(crate) fn describe_review(candidate: Option<&AnalysisCandidate>) -> String {
+pub(crate) fn describe_review(candidate: Option<&AnalysisCandidate>, drawn: ReviewDraw) -> String {
     let Some(review) = candidate.and_then(AnalysisCandidate::lyrics_review) else {
-        return "absent (this run left no LT1 review artifact)".to_string();
+        return "absent (this run left no lyrics-lane LT1 review artifact)".to_string();
     };
     let named: Vec<String> = review
         .entries
@@ -809,11 +831,21 @@ pub(crate) fn describe_review(candidate: Option<&AnalysisCandidate>) -> String {
         .map(LyricReviewEntry::describe)
         .collect();
     format!(
-        "unresolved={} flagged={} listed={} omitted={} policy={} | {}",
+        "unresolved={} flagged={} listed={} rows_drawn={} tail={} omitted={} counts={} \
+         manifest={}/{} policy={} | {}",
         review.unresolved,
         review.flagged,
         review.entries.len(),
+        drawn.rows,
+        if drawn.tail { "yes" } else { "no" },
         review.omitted,
+        if review.document_read {
+            "document"
+        } else {
+            "manifest"
+        },
+        review.manifest_unresolved,
+        review.manifest_flagged,
         if review.policy.is_empty() {
             "none"
         } else {
@@ -827,14 +859,43 @@ pub(crate) fn describe_review(candidate: Option<&AnalysisCandidate>) -> String {
     )
 }
 
-/// Attaches the review and prints the report line, once, where a result is
-/// staged. Both callers — a finished job and the probe — go through here so the
-/// two cannot drift.
+thread_local! {
+    /// The last `assist review:` line printed, so the panel can report what it
+    /// drew without printing it once per frame.
+    ///
+    /// Report-only state, and the narrowest thing that can hold it: the number
+    /// of rows that survive the scissor is a property of the drawn frame, and
+    /// `Shell`'s own fields are not this file's to add to.
+    static LAST_REVIEW_REPORT: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// Prints the review report line when it says something new.
+fn report_review(line: String) {
+    LAST_REVIEW_REPORT.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist review:   {line}");
+            *last = line;
+        }
+    });
+}
+
+/// Attaches the review where a result is staged. Both callers — a finished job
+/// and the probe — go through here so the two cannot drift.
+///
+/// The report line is **not** printed here any more (review LT1-R, R5): it now
+/// carries how many rows reached the screen, which only the panel knows. The one
+/// case with no rows to count is still reported at once, because a run whose
+/// review is absent has nothing to wait for a frame for.
 fn stage_lyrics_review(candidate: &mut AnalysisCandidate, output_dir: &str) {
-    if let Some(review) = read_lyrics_review(output_dir) {
-        candidate.attach_lyrics_review(review);
+    LAST_REVIEW_REPORT.with(|last| last.borrow_mut().clear());
+    let attached =
+        read_lyrics_review(output_dir).is_some_and(|review| candidate.attach_lyrics_review(review));
+    if !attached {
+        report_review(describe_review(None, ReviewDraw::default()));
     }
-    println!("assist review:   {}", describe_review(Some(candidate)));
 }
 
 /// `thiserror` messages are lowercase and unpunctuated; the panel prints whole
@@ -1160,13 +1221,50 @@ fn probe_artifacts(session: &mut AssistSession) {
     session.output_dir = directory;
 }
 
+/// Which mode a probed candidate was run in (review LT1-R, R11).
+///
+/// `probe_candidate` hard-coded [`Lanes::ALL`], so the panel state a *lyrics*
+/// run produces — one lane line, and the review block directly under it — could
+/// not be photographed by anyone, the gate included. That is the arrangement the
+/// LT1 review surface actually ships in, and it was the one arrangement nothing
+/// could take a picture of.
+///
+/// An environment variable for [`PROBE_ARTIFACT_DIR_VARIABLE`]'s reason: the
+/// `--ui-probe` grammar lives in `cli.rs`, which is not this agent's file. An
+/// unset or unrecognized value is `all`, so every existing capture is unchanged.
+pub const PROBE_LANES_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_LANES";
+
+/// The mode named by [`PROBE_LANES_VARIABLE`], or `All`.
+fn probe_mode() -> AssistMode {
+    match std::env::var(PROBE_LANES_VARIABLE)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "lyrics" => AssistMode::Lyrics,
+        "sections" => AssistMode::Sections,
+        "mimo" => AssistMode::Mimo,
+        _ => AssistMode::All,
+    }
+}
+
 /// The staged result a `--ui-probe assist=candidate` run reviews.
-fn probe_candidate() -> Result<AnalysisCandidate, String> {
+///
+/// The bridge document carries all three lanes whatever the mode is, exactly as
+/// a real one does; `prepare` is what drops the lanes the run was not authorized
+/// for, so what a lyrics-only probe photographs is the real authority path.
+fn probe_candidate(mode: AssistMode) -> Result<AnalysisCandidate, String> {
     let bridge = analysis_bridge::parse(PROBE_BRIDGE_DOCUMENT.as_bytes(), None, None)
         .map_err(|error| capitalize_sentence(&error.to_string()))?;
     let duration_seconds = bridge.duration_ms as f64 / 1000.0;
-    AnalysisCandidate::prepare(&bridge, Lanes::ALL, duration_seconds, SCENE_COUNT as u32)
-        .map_err(|error| capitalize_sentence(&error.to_string()))
+    AnalysisCandidate::prepare(
+        &bridge,
+        assist_ui_state::mode_lanes(mode),
+        duration_seconds,
+        SCENE_COUNT as u32,
+    )
+    .map_err(|error| capitalize_sentence(&error.to_string()))
 }
 
 /// Puts the Assist session into one of its four probeable states (review 4.2).
@@ -1190,13 +1288,14 @@ pub(crate) fn apply_probe_state(
             workspace.assist.set_confirmation_pending(true);
         }
         crate::cli::AssistProbe::Candidate => {
-            let mut candidate = probe_candidate()?;
+            let mode = probe_mode();
+            let mut candidate = probe_candidate(mode)?;
             let session = &mut workspace.assist;
-            session.select_mode(AssistMode::All);
+            session.select_mode(mode);
             session.set_confirmation_pending(false);
             session.set_apply_confirmation_pending(false);
             session.candidate_first_lyric = first_lyric(&candidate);
-            session.candidate_mode = AssistMode::All;
+            session.candidate_mode = mode;
             session.candidate_track = Some(PROBE_MISSING_TRACK);
             session.job_state = AssistJobState::Succeeded;
             probe_artifacts(session);
@@ -1325,18 +1424,31 @@ const REVIEW_MAX_ROWS: usize = 4;
 /// 36 px button row at +72 and its 10 px of slack.
 const REVIEW_BLOCK_OFFSET: f32 = 118.0;
 
-/// How many named lines the block shows, and how many flagged lines that leaves
-/// for the tail count.
+/// How many named lines the block shows in `max_rows` rows, and how many lines
+/// that leaves for the tail count.
 ///
-/// The tail spends one of the four rows, so a list that overflows shows three
-/// names rather than four. Losing a name to say "there are more" is the right
-/// trade: a list silently cut at four would read as the whole answer.
-fn review_rows(review: &LyricsReview) -> (usize, usize) {
-    if review.flagged <= REVIEW_MAX_ROWS && review.entries.len() <= REVIEW_MAX_ROWS {
-        return (review.entries.len(), 0);
+/// The tail spends one of the rows, so a list that overflows shows one name
+/// fewer. Losing a name to say "there are more" is the right trade: a list
+/// silently cut would read as the whole answer.
+///
+/// Two things changed in review LT1-R:
+///
+/// - **The tail is owed whenever fewer rows are drawn than there are lines to
+///   check** (R4), not only when the row cap is the reason. A document with four
+///   flags and two nameable ones drew two rows and no tail, so the panel's two
+///   confident rows *were* the honest answer as far as the reader could tell.
+/// - **`max_rows` is a parameter** (R2), because the row cap is not the binding
+///   constraint at 960x640 — the panel's own scissor is, and it cut the tail
+///   first. The caller measures the room it has and the tail is fitted inside
+///   it, so the row that admits the truncation cannot itself be truncated.
+fn review_rows(review: &LyricsReview, max_rows: usize) -> (usize, usize) {
+    let total = review.total_to_check();
+    let named = review.entries.len();
+    if named >= total && named <= max_rows {
+        return (named, 0);
     }
-    let shown = review.entries.len().min(REVIEW_MAX_ROWS - 1);
-    (shown, review.flagged.saturating_sub(shown))
+    let shown = named.min(max_rows.saturating_sub(1));
+    (shown, total.saturating_sub(shown))
 }
 
 /// The height the review block adds to the panel, or 0 when there is no review.
@@ -1344,10 +1456,13 @@ fn review_rows(review: &LyricsReview) -> (usize, usize) {
 /// Zero for a pre-LT1 run, which is what keeps every existing capture's geometry
 /// byte-for-byte where it was.
 fn review_block_height(candidate: Option<&AnalysisCandidate>) -> f32 {
-    let Some(review) = candidate.and_then(AnalysisCandidate::lyrics_review) else {
+    let Some(candidate) = candidate.filter(|candidate| candidate.available().lyrics) else {
         return 0.0;
     };
-    let (shown, hidden) = review_rows(review);
+    let Some(review) = candidate.lyrics_review() else {
+        return 0.0;
+    };
+    let (shown, hidden) = review_rows(review, REVIEW_MAX_ROWS);
     // A clear run still gets a row: it says so in words, because a blank region
     // is indistinguishable from a broken one.
     let rows = shown.max(1) + usize::from(hidden > 0);
@@ -1508,6 +1623,33 @@ fn ellipsize(text: &str, max_width: f32, measure: &dyn Fn(&str) -> f32) -> Strin
 /// user to replay the whole song; "UNPLACED line 26 at 1:30.6" asks them to look
 /// at one place. The counts are on the summary line above; this is the part that
 /// turns them into an action.
+/// Where a flagged line is actually repaired (review LT1-R, R9).
+///
+/// A hint, not a route: the Lyrics panel is where a cue is dragged or nudged,
+/// and nothing here navigates to it. Deliberately on the heading's own row so it
+/// costs no row from the list, and dropped entirely when the panel is too narrow
+/// for both — the names are the point, this is the footnote.
+const REVIEW_FIX_HINT: &str = "Retime cues in the Lyrics panel";
+
+/// How many review rows fit between `first_row_y` and the panel's clip edge.
+///
+/// Whole rows only. A row that would be cut mid-glyph is not a row the reader
+/// can act on, and the scissor does not care that the arithmetic above it
+/// reserved the space (review LT1-R, R2).
+fn review_row_capacity(first_row_y: f32, clip_bottom: f32) -> usize {
+    // `<=` rather than a negated `>`, so a NaN edge is a refusal rather than a
+    // row count derived from one.
+    if clip_bottom <= first_row_y || !(clip_bottom - first_row_y).is_finite() {
+        return 0;
+    }
+    let rows = ((clip_bottom - first_row_y) / REVIEW_ROW_HEIGHT).floor();
+    if rows <= 0.0 {
+        0
+    } else {
+        rows as usize
+    }
+}
+
 fn draw_lyrics_review(
     d: &mut RaylibDrawHandle<'_>,
     font: &UiFonts,
@@ -1515,45 +1657,69 @@ fn draw_lyrics_review(
     x: f32,
     y: f32,
     width: f32,
-) {
+    clip_bottom: f32,
+) -> ReviewDraw {
     let measure = |line: &str| widgets::measure(font, line, REVIEW_FONT_SIZE);
-    let (shown, hidden) = review_rows(review);
-    widgets::draw_text(
-        d,
-        font,
-        &if review.policy.is_empty() {
-            "Lines to check".to_string()
-        } else {
-            format!("Lines to check ({})", review.policy)
-        },
-        x,
-        y,
-        REASON_FONT_SIZE,
-        color::accent(),
-    );
     let mut row_y = y + 18.0;
+    // The whole block, heading included, is dropped rather than half-drawn: a
+    // heading over a list the scissor ate is the one arrangement that promises
+    // names and delivers none.
+    let capacity = review_row_capacity(row_y, clip_bottom);
+    if capacity == 0 {
+        return ReviewDraw::default();
+    }
+    let (shown, hidden) = review_rows(review, capacity.min(REVIEW_MAX_ROWS));
+
+    let heading = if review.policy.is_empty() {
+        "Lines to check".to_string()
+    } else {
+        format!("Lines to check ({})", review.policy)
+    };
+    widgets::draw_text(d, font, &heading, x, y, REASON_FONT_SIZE, color::accent());
+    let hint_width = widgets::measure(font, REVIEW_FIX_HINT, REVIEW_FONT_SIZE);
+    let heading_width = widgets::measure(font, &heading, REASON_FONT_SIZE);
+    if width - heading_width - hint_width >= 24.0 {
+        widgets::draw_text(
+            d,
+            font,
+            REVIEW_FIX_HINT,
+            x + width - hint_width,
+            y + 1.0,
+            REVIEW_FONT_SIZE,
+            color::ui_muted(),
+        );
+    }
 
     // Nothing to check is a state, not an absence. Without this row the panel
     // would be blank exactly where the answer goes, and a blank region is
     // indistinguishable from a broken one.
     if review.entries.is_empty() {
+        let sentence = if review.is_clear() {
+            "All authored lines were placed and none were flagged."
+        } else if review.document_read {
+            // Read, and it named nobody. Different problem, different sentence
+            // (review LT1-R, R3).
+            "The job's lyric document named none of them, so there is nothing to \
+             point at here."
+        } else {
+            // Counts without names: the manifest said something is wrong and
+            // the document that names it could not be read. Say which.
+            "The counts above came from the job manifest; its lyric document \
+             could not be read for the line names."
+        };
         widgets::draw_text(
             d,
             font,
-            if review.is_clear() {
-                "All authored lines were placed and none were flagged."
-            } else {
-                // Counts without names: the manifest said something is wrong and
-                // the document that names it could not be read. Say which.
-                "The counts above came from the job manifest; its lyric document \
-                 could not be read for the line names."
-            },
+            &ellipsize(sentence, width, &measure),
             x,
             row_y,
             REVIEW_FONT_SIZE,
             color::ui_muted(),
         );
-        return;
+        return ReviewDraw {
+            rows: 0,
+            tail: false,
+        };
     }
 
     for entry in review.entries.iter().take(shown) {
@@ -1569,19 +1735,33 @@ fn draw_lyrics_review(
         row_y += REVIEW_ROW_HEIGHT;
     }
     if hidden > 0 {
+        // "N of M shown" rather than "+N more": it is the form that still reads
+        // correctly when the panel is short enough that N is zero, which is the
+        // case this row exists for.
+        let total = review.total_to_check();
+        let tail = if shown == 0 {
+            format!(
+                "None of the {total} lines to check fit here; the full list is in the job \
+                 folder's lyrics document."
+            )
+        } else {
+            format!(
+                "{shown} of {total} shown; the full list is in the job folder's lyrics document."
+            )
+        };
         widgets::draw_text(
             d,
             font,
-            &format!(
-                "+{hidden} more flagged line{}; the full list is in the job folder's \
-                 lyrics document.",
-                if hidden == 1 { "" } else { "s" }
-            ),
+            &ellipsize(&tail, width, &measure),
             x,
             row_y,
             REVIEW_FONT_SIZE,
             color::ui_muted(),
         );
+    }
+    ReviewDraw {
+        rows: shown,
+        tail: hidden > 0,
     }
 }
 
@@ -2370,15 +2550,25 @@ impl Shell {
             draw_blocking_reason(d, font, reason, row.reason);
         }
         self.assist_artifact_actions(d, input, boundary, row.artifacts_x, row.apply.y, gap);
-        if let Some(review) = candidate.lyrics_review() {
-            draw_lyrics_review(
+        // Inside the lyrics-lane guard (review LT1-R, R1): a review is a claim
+        // about lyric content, and a run that staged no lyrics lane is offering
+        // none. `attach_lyrics_review` already refuses one, and this is the
+        // second lock on the same door — the drawing cannot outlive the lane.
+        if let Some(review) = candidate.lyrics_review().filter(|_| available.lyrics) {
+            let drawn = draw_lyrics_review(
                 d,
                 font,
                 review,
                 x,
                 action_y + REVIEW_BLOCK_OFFSET,
                 (boundary.width - padding * 2.0).max(0.0),
+                // The scissor's own inner edge, which is what actually cuts a
+                // row. `boundary.height` is `available.min(required)`, so at a
+                // window too short for the panel this is *less* than the block
+                // asked for and the list has to fit what it got.
+                boundary.y + boundary.height - 1.0,
             );
+            report_review(describe_review(Some(candidate), drawn));
         }
     }
 
@@ -3216,8 +3406,8 @@ mod tests {
         );
         assert!(read_lyrics_review(&folder.display().to_string()).is_none());
         assert_eq!(
-            describe_review(None),
-            "absent (this run left no LT1 review artifact)"
+            describe_review(None, ReviewDraw::default()),
+            "absent (this run left no lyrics-lane LT1 review artifact)"
         );
         // And an empty or missing folder is the same answer, not a crash.
         assert!(read_lyrics_review("").is_none());
@@ -3233,14 +3423,22 @@ mod tests {
         assert_eq!(review.flagged, 2);
         assert_eq!(review.entries.len(), 2);
 
-        let mut candidate = probe_candidate().expect("probe candidate");
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
         assert!(candidate.attach_lyrics_review(review));
         assert_eq!(
-            describe_review(Some(&candidate)),
-            "unresolved=1 flagged=2 listed=2 omitted=0 policy=anchor-block-mms | \
-             UNPLACED line 26 1:30.6-1:34.2 \"hold the note until it breaks\" ; \
-             CHECK line 1 0:12.0-0:16.0 \"we were never meant to stay\"",
-            "the report line carries the names and the windows, not only the counts"
+            describe_review(
+                Some(&candidate),
+                ReviewDraw {
+                    rows: 2,
+                    tail: false
+                }
+            ),
+            "unresolved=1 flagged=2 listed=2 rows_drawn=2 tail=no omitted=0 counts=document \
+             manifest=1/2 policy=anchor-block-mms | \
+             UNPLACED line 26 proposed 1:30.6-1:34.2 \"hold the note until it breaks\" ; \
+             CHECK line 1 at 0:12.0-0:16.0 \"we were never meant to stay\"",
+            "the report line carries the names and the windows, not only the counts; this \
+             fixture's flag records no delta, so the CHECK row has no detail to add"
         );
     }
 
@@ -3282,12 +3480,12 @@ mod tests {
         let review = read_lyrics_review(&folder.display().to_string()).expect("review");
         assert!(review.is_clear());
 
-        let mut candidate = probe_candidate().expect("probe candidate");
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
         assert!(candidate.attach_lyrics_review(review));
         assert_eq!(
-            describe_review(Some(&candidate)),
-            "unresolved=0 flagged=0 listed=0 omitted=0 policy=anchor-block-mms | \
-             All lines placed, none flagged"
+            describe_review(Some(&candidate), ReviewDraw::default()),
+            "unresolved=0 flagged=0 listed=0 rows_drawn=0 tail=no omitted=0 counts=document \
+             manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged"
         );
         // A row is still reserved for it: a blank region is indistinguishable
         // from a broken one, so "nothing to check" must occupy pixels.
@@ -3333,11 +3531,15 @@ mod tests {
         );
         let review = read_lyrics_review(&folder.display().to_string()).expect("review");
         assert_eq!(review.flagged, 40);
-        let mut candidate = probe_candidate().expect("probe candidate");
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
         assert!(candidate.attach_lyrics_review(review));
 
-        // Three named rows and the "+37 more" tail: four rows plus the heading.
-        assert_eq!(review_rows(candidate.lyrics_review().unwrap()), (3, 37));
+        // Three named rows and the "3 of 40 shown" tail: four rows plus the
+        // heading.
+        assert_eq!(
+            review_rows(candidate.lyrics_review().unwrap(), REVIEW_MAX_ROWS),
+            (3, 37)
+        );
         let block = review_block_height(Some(&candidate));
         assert_eq!(
             block,
@@ -3354,6 +3556,144 @@ mod tests {
             "the review block must fit the 1280x720 ceiling: {} + {block} > {ceiling}",
             layout.required_height
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Review LT1-R.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_sections_run_never_reads_the_previous_runs_lyric_document() {
+        // R1, the reviewer's `jobs/stale`. Both artifacts are here, exactly as
+        // an audio-keyed cache folder leaves them: the Sections run's manifest,
+        // and the lyric document a Full-assist run wrote earlier. The panel used
+        // to name four flags from a lane this run never had.
+        let scratch = Scratch::new("review-stale");
+        let folder = review_job_folder(
+            &scratch,
+            "stale",
+            r#"{"schema_version":"musializer.assist-manifest/v1","mode":"sections",
+                "artifacts":{"aligned":"/cache/job/lyrics.aligned.json"},
+                "result_counts":{"lyrics":0,"lyrics_unresolved":0,"lyrics_review_flags":0,
+                                 "sections":2,"semantics":0},
+                "lyric_localization":null}"#,
+            LT1_DOCUMENT,
+        );
+        assert!(
+            read_lyrics_review(&folder.display().to_string()).is_none(),
+            "a run with no lyrics lane has no lyric review, whatever is beside it"
+        );
+        // And the same folder under a lyrics-mode manifest still reads, so this
+        // is a lane check and not an accidental refusal of everything.
+        std::fs::write(
+            folder.join(ASSIST_MANIFEST_NAME),
+            r#"{"schema_version":"musializer.assist-manifest/v1","mode":"lyrics",
+                "result_counts":{"lyrics_unresolved":1,"lyrics_review_flags":2}}"#,
+        )
+        .expect("manifest");
+        assert!(read_lyrics_review(&folder.display().to_string()).is_some());
+    }
+
+    #[test]
+    fn a_candidate_without_a_lyrics_lane_reserves_no_review_height() {
+        // The drawing guard's arithmetic half (R1). A review cannot attach to a
+        // sections-only candidate, so this is belt and braces — but the block's
+        // height is what pushes the scene preview down, and it must not be
+        // reserved for a lane the panel is not offering.
+        let candidate = probe_candidate(AssistMode::Sections).expect("probe candidate");
+        assert!(!candidate.available().lyrics);
+        assert_eq!(review_block_height(Some(&candidate)), 0.0);
+    }
+
+    #[test]
+    fn the_probe_can_stage_a_lyrics_only_candidate() {
+        // R11: the arrangement the LT1 review actually ships in — one lane line
+        // and the review under it — could not be photographed at all.
+        let candidate = probe_candidate(AssistMode::Lyrics).expect("probe candidate");
+        assert_eq!(candidate.available(), Lanes::lyrics_only());
+        assert_eq!(candidate.lyrics().cues().len(), 2);
+        assert!(candidate.sections().is_empty());
+        assert!(candidate.semantic_events().is_empty());
+        // And the variable's grammar, including the fallback that keeps every
+        // existing capture on `all`.
+        assert_eq!(PROBE_LANES_VARIABLE, "MUSIALIZER_ASSIST_PROBE_LANES");
+    }
+
+    #[test]
+    fn a_list_shorter_than_its_count_still_gets_a_tail() {
+        // R4, the reviewer's `jobs/dropped`: four flags, two of them unnameable.
+        // Two rows and no tail is a picture that says "these two", and there is
+        // no width or height at which that becomes true.
+        let scratch = Scratch::new("review-dropped");
+        let folder = review_job_folder(
+            &scratch,
+            "dropped",
+            LT1_MANIFEST,
+            r#"{"unresolved":[],"review_flags":[
+                {"reference_line_index":0,"text":"we were never meant to stay",
+                 "flag":"coarse_disagreement","start_seconds":12.0,"end_seconds":16.0},
+                {"reference_line_index":1,"text":"and the lights came up anyway",
+                 "flag":"coarse_disagreement","start_seconds":16.0,"end_seconds":21.0},
+                {"reference_line_index":5,"flag":"coarse_disagreement","reason":"no text"},
+                {"reference_line_index":7,"text":"","flag":"unresolved"}]}"#,
+        );
+        let review = read_lyrics_review(&folder.display().to_string()).expect("review");
+        assert_eq!(review.entries.len(), 2);
+        assert_eq!(
+            review_rows(&review, REVIEW_MAX_ROWS),
+            (2, 2),
+            "two named rows and a tail owning the two the panel cannot name"
+        );
+    }
+
+    #[test]
+    fn the_tail_is_fitted_before_the_names_are() {
+        // R2, the reviewer's `jobs/many` at 960x640: the scissor ate the tail
+        // first, so the most truncated panel was the one that admitted least.
+        let scratch = Scratch::new("review-tail");
+        let mut flags = String::new();
+        for index in 0..12 {
+            if index > 0 {
+                flags.push(',');
+            }
+            flags.push_str(&format!(
+                r#"{{"reference_line_index":{index},"text":"line {index}","flag":"unresolved"}}"#
+            ));
+        }
+        let folder = review_job_folder(
+            &scratch,
+            "many",
+            LT1_MANIFEST,
+            &format!(r#"{{"unresolved":[],"review_flags":[{flags}]}}"#),
+        );
+        let review = read_lyrics_review(&folder.display().to_string()).expect("review");
+
+        // Row capacity is whole rows between the first row and the clip edge.
+        assert_eq!(review_row_capacity(0.0, 60.0), 4);
+        assert_eq!(review_row_capacity(0.0, 59.0), 3);
+        assert_eq!(review_row_capacity(0.0, 14.9), 0);
+        assert_eq!(review_row_capacity(100.0, 100.0), 0);
+
+        // However few rows survive, the last one is always the tail, and the
+        // count it names is the whole count.
+        for capacity in 1..=REVIEW_MAX_ROWS {
+            let (shown, hidden) = review_rows(&review, capacity);
+            assert_eq!(shown, capacity - 1, "the tail keeps its row at {capacity}");
+            assert_eq!(shown + hidden, 12, "and it names every line not shown");
+            assert!(hidden > 0);
+        }
+    }
+
+    #[test]
+    fn a_list_that_fits_exactly_spends_no_row_on_a_tail() {
+        let scratch = Scratch::new("review-exact");
+        let folder = review_job_folder(&scratch, "exact", LT1_MANIFEST, LT1_DOCUMENT);
+        let review = read_lyrics_review(&folder.display().to_string()).expect("review");
+        assert_eq!(review_rows(&review, REVIEW_MAX_ROWS), (2, 0));
+        assert_eq!(review_rows(&review, 2), (2, 0));
+        // One row fewer than the list, and the tail appears rather than a row
+        // silently going missing.
+        assert_eq!(review_rows(&review, 1), (0, 2));
     }
 
     #[test]

@@ -1041,6 +1041,42 @@ review flags come from cross-lane disagreement and unresolved lines
       both are wrong — cross-view disagreement cannot catch a shared-evidence
       error.
 
+### LT1-R — fresh-eyes review fixes for the lyrics-review surface
+
+Independent user-perspective review of `7881776` (2026-08-04): ten confirmed
+defects plus one verification blind spot; fixtures and captures under
+`build/review-lt1/`. Fixed 2026-08-05 with two demonstrated negative controls;
+R9 keeps only its honest hint, navigation deferred.
+
+- [x] R1 stale review: a per-audio cache dir plus a manifest that names every
+      artifact makes a Sections run display the previous Full-assist run's
+      lyric flags. Tie the review to this run's lyric lane on both sides
+      (helper emits lyric counts only when the run had a lyrics lane; Rust
+      requires it and draws the block only under the lyrics-lane guard).
+- [x] R2 the "+N more" tail is the first thing the 960x640 scissor eats, and
+      rows cut mid-glyph; the honesty mechanism must be the last row standing.
+- [x] R3 a flags-only document silently drops named unresolved lines (union
+      `unresolved[]` into the entries), and the "document could not be read"
+      sentence prints when the document *was* read — make it truthful.
+- [x] R4 parse-dropped entries vanish without a tail when flagged <= 4; any
+      drawn<total shows the tail.
+- [x] R5 the `assist review:` report line describes the parse, not the panel —
+      add rows-drawn so the gate can assert against clipping, plus a 960x640
+      gate capture.
+- [x] R6 `reason` is parsed, truncated, tested and never drawn; surface it
+      (disagreement delta on CHECK rows, why-ambiguous on AMBIGUOUS).
+- [x] R7 "line 1 0:12.0" reads as "line 10:12.0" — separator.
+- [x] R8 UNPLACED rows show the coarse *proposal* in the same grammar as real
+      placements; label it as proposed.
+- [ ] R9 no route from a flagged line to where it gets fixed. The honest hint
+      ("Retime cues in the Lyrics panel") shipped 2026-08-05; the open remainder
+      is real cross-panel navigation from a flagged row.
+- [x] R10 manifest/document count disagreement is resolved silently; make it
+      visible or report-asserted.
+- [x] R11 `probe_candidate` hardcodes all lanes, so a lyrics-only candidate is
+      unphotographable by anyone, gate included — add a probe seam for lane
+      selection.
+
 ### AP1 — persistence foundation
 
 - [x] AP1-a (2026-08-04) `musializer.assist-settings/v1` in `musializer-core` (pure, no
