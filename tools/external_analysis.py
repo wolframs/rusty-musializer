@@ -278,17 +278,24 @@ def _safe_local_env() -> dict[str, str]:
             if not any(marker in key.upper() for marker in sensitive)}
 
 
-def _openrouter_env(dotenv_path: Path | None = None) -> dict[str, str]:
+def _openrouter_env(dotenv_path: Path | None = None, *, allow_dotenv: bool = True) -> dict[str, str]:
     """Expose only the one credential authorized for the MiMo helper.
 
     Desktop launchers do not normally inherit interactive shell variables, so
     the repository's ignored .env is accepted as an explicit local credential
     store. It is parsed as data, never sourced as shell code.
+
+    allow_dotenv=False is what the desktop passes. The application imports its
+    key through a dialog and hands it over deliberately, so a .env the dialog
+    never saw must not be able to authorize a job: the run would succeed and
+    then record a provenance snapshot naming a credential nobody chose. The
+    command line keeps the fallback, which is the only place it was ever meant
+    to serve.
     """
     environment = _safe_local_env()
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     path = dotenv_path or ROOT / ".env"
-    if not key and path.is_file():
+    if not key and allow_dotenv and path.is_file():
         for raw_line in path.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -1310,6 +1317,7 @@ def run_assist(
     semantic_cache: Path | None = None,
     lyrics_file: Path | None = None,
     zdr: bool = False, external_timeout: float = 2400.0,
+    allow_dotenv: bool = True,
     dry_run: bool = False, runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     """Run one complete, cache-aware UI action and emit JSON plus TSV bridge."""
@@ -1349,6 +1357,7 @@ def run_assist(
             "forced_alignment_configured": bool(align_python),
             "external_timeout_seconds": external_timeout,
             "credentials": "environment only; omitted",
+            "dotenv_fallback": allow_dotenv,
         }
 
     cache_status: dict[str, str] = {}
@@ -1503,7 +1512,8 @@ def run_assist(
                 str(paths["semantic"]), "--duration", f"{measured_duration:.9f}",
             ]
             if zdr: command.append("--zdr")
-            _run(command, timeout=external_timeout, env=_openrouter_env(), runner=runner)
+            _run(command, timeout=external_timeout,
+                 env=_openrouter_env(allow_dotenv=allow_dotenv), runner=runner)
             envelope = _cache_matches(
                 paths["semantic"], "musializer.analysis-cache/v1", audio_sha,
                 accept=lambda value: _mimo_cache_accepts(
@@ -1588,6 +1598,8 @@ def main(argv: list[str] | None = None) -> int:
     assist.add_argument("--semantic-cache", type=Path)
     assist.add_argument("--lyrics-file", type=Path)
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
+    assist.add_argument("--no-dotenv", action="store_true",
+                        help="refuse the repository .env credential fallback (the desktop path)")
     assist.add_argument("--new-process-group", action="store_true", help=argparse.SUPPRESS)
     assist.add_argument("--dry-run", action="store_true"); assist.add_argument("--request-dump", type=Path)
 
@@ -1631,7 +1643,8 @@ def main(argv: list[str] | None = None) -> int:
                 codex_model=args.codex_model, align_python=args.align_python,
                 semantic_cache=args.semantic_cache,
                 lyrics_file=args.lyrics_file,
-                zdr=args.zdr, external_timeout=args.timeout, dry_run=args.dry_run,
+                zdr=args.zdr, external_timeout=args.timeout,
+                allow_dotenv=not args.no_dotenv, dry_run=args.dry_run,
             )
             if args.dry_run:
                 if args.request_dump: atomic_write_json(args.request_dump, result)

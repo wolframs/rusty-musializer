@@ -247,6 +247,10 @@ impl AssistJob {
             // The helper puts itself in a new session so cancellation reaches
             // whisper.cpp and codex, not just python.
             .arg("--new-process-group");
+        // The desktop flow must never authorize a job with a key the settings
+        // dialog never saw, so the helper's repository-`.env` fallback is
+        // CLI-only (docs/ASSIST_PROVIDER_CONTRACTS.md §3, AP1-e).
+        command.arg("--no-dotenv");
         if spec.mode.uses_model() {
             command.arg("--zdr");
         }
@@ -599,7 +603,11 @@ mod tests {
         assert_eq!(argv[9], "--timeout");
         assert_eq!(argv[10], "2400");
         assert_eq!(argv[11], "--new-process-group");
-        assert_eq!(argv[12], "--zdr", "a model run must be zero-data-retention");
+        assert_eq!(
+            argv[12], "--no-dotenv",
+            "the desktop path must refuse the repository-`.env` fallback"
+        );
+        assert_eq!(argv[13], "--zdr", "a model run must be zero-data-retention");
         assert!(
             !argv.contains(&"--lyrics-file".to_string()),
             "no sheet was chosen, so none may be passed"

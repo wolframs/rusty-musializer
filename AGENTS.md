@@ -272,6 +272,7 @@ comment stating why it holds. Current islands:
 | `runtime::font::rasterize_sdf` | `LoadFontFromMemory` hard-codes `FONT_DEFAULT`, so a signed-distance-field atlas has to be assembled from the three calls it makes internally — `LoadFontData(FONT_SDF)`, `GenImageFontAtlas`, `LoadTextureFromImage` — and raylib-rs wraps none of them | Five blocks in one function, each freeing what it owns on the way out: the glyph array and the rectangles come from raylib's allocator and go back to `UnloadFontData`/`MemFree` on every refusal path, the atlas image is unloaded immediately after the upload, and the assembled `raylib_sys::Font` goes straight to `Font::from_raw` whose `Drop` is `UnloadFont`. Both lengths are taken from the slices, and `glyphPadding` is set to the same constant handed to `GenImageFontAtlas`, because `DrawTextCodepoint` grows the source rect by it |
 | `runtime::font::flush_render_batch` | the on-demand atlases are built *inside* a begin/end drawing pair, which nothing else here does, and `rlLoadTexture` binds a texture behind the batch's back | One block wrapping `rlDrawRenderBatchActive`, which takes no arguments, writes through no caller pointer and only submits raylib's own batch. Belt and braces rather than a known defect, and it runs only on the handful of frames that rebuild an atlas |
 | `runtime::halo` | the caption glow halo and soft shadow are blurred offscreen mid-frame, and raylib texture modes do not nest: `EndTextureMode` always returns to the *default* framebuffer (`rcore.c:1110-1131`), so the safe guard would end the export's supersampled texture mode behind its back and redirect the rest of the frame to the screen | Six blocks. The batch is flushed and the active framebuffer captured (`rlGetActiveFramebuffer` plus the width/height pair `draw::SceneViewport` already trusts) before any GL call; each pass runs through by-value `BeginTextureMode` calls, which flush and rebind everything they touch; and the caller's framebuffer is restored on every exit path — `EndTextureMode` for the screen, or a reconstructed `BeginTextureMode` for a render target, which reads only the id and the colour texture's dimensions (`rcore.c:1079-1108`). `LoadRenderTexture`'s zero-id failure is checked before `RenderTexture2D::from_raw` takes ownership (its `Drop` is `UnloadRenderTexture`), and no pointer crosses the boundary anywhere. The shadow's luminance-as-alpha composite (`halo_mask.fs`) is safe code throughout |
+| `runtime::assist::env` | `std::env::remove_var` is `unsafe` in edition 2024, and E1 in `docs/ASSIST_PROVIDER_CONTRACTS.md` requires the app to take `OPENROUTER_API_KEY` out of its own environment after importing it, so no child — `ffmpeg`, `kdialog`/`zenity`, `codex`, a Python helper — can inherit it by accident | One block, inside `import_session_credentials`, which is itself an `unsafe fn` documenting the contract. `musializer-app`'s `main` calls it as its **first statement**, before the window, the audio device, `cli::parse` and any thread, so no other thread can be reading the environment concurrently. The value is copied into an owned `String` before the removal and nothing reads the environment after it |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
@@ -525,6 +526,24 @@ control would be — see the disabled buttons and `ShellCommand::NotImplemented`
 A blank region is indistinguishable from a broken one, and a control that
 silently does nothing is worse than one that explains itself. This is also what
 makes an unfinished area show up in a capture instead of in a bug report.
+
+## Persistent file storage (operator decisions, 2026-08-04)
+
+- **Downloadable model weights** (aligners, separators, ASR): the app lets the
+  user choose the directory. Default is `<install dir>/models/`; if that is not
+  writable, fall back to a `musializer` directory in the user's home. Never a
+  location the user was not shown.
+- On this dev machine, research model downloads live under
+  `~/.local/share/musializer/models/`, one subdirectory per model. The existing
+  `~/.local/share/musializer/lyrics-align/` venv stays as is and nothing is ever
+  installed into it.
+- **Remote-provider credentials**: no OS/vendor wallet — kwallet/Secret Service
+  rejected 2026-08-04 for cross-platform reasons. Persist to a 0600-permission
+  credentials file under the per-user config directory (the `gh`/`aws` model),
+  with session-only storage and env-var import as alternatives. Never in `.musi`
+  files, preference JSON, argv, logs, analysis artifacts, or a repository `.env`.
+- **Non-secret preferences**: versioned, atomically replaced, per-user config
+  directory (XDG on Linux).
 
 ## Rules for this repository
 

@@ -46,6 +46,7 @@ step "cargo build" cargo build --quiet
 step "cargo clippy" cargo clippy --all-targets --quiet
 step "cargo test" cargo test --quiet
 step "support bundle (offline Assist)" tools/support_bundle_check.sh
+step "secret canary (provider credentials)" tools/secret_canary_check.sh
 
 # Differential harnesses against the frozen C. These are the evidence that the
 # ports are faithful rather than merely plausible.

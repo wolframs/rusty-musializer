@@ -44,6 +44,7 @@ use musializer_core::scene::{SceneAudioFrame, SceneId, SceneInstance, SceneSetti
 use musializer_core::scenes::ascii_field::ascii_art;
 use musializer_core::timing::render_export::{Quality as RenderQuality, RenderExportConfig};
 use musializer_core::ui::notice::Severity;
+use musializer_runtime::assist::env as assist_env;
 use musializer_runtime::audio_bridge;
 use musializer_runtime::font::Faces;
 use musializer_runtime::preset_files;
@@ -174,6 +175,21 @@ fn scene_clock_delta(previous: &mut Option<f64>, time_seconds: f64) -> f32 {
 }
 
 fn main() -> std::process::ExitCode {
+    // First statement of the program, and it has to stay first. `remove_var` is
+    // `unsafe` in edition 2024 because the C environment is process-global, and
+    // its whole contract is that no other thread exists yet — before the window,
+    // the audio device, and before any library starts a thread of its own.
+    //
+    // What it buys is E1 in `docs/ASSIST_PROVIDER_CONTRACTS.md`: after this line
+    // there is no `OPENROUTER_API_KEY` in the environment for `ffmpeg`,
+    // `kdialog`, `codex` or a Python helper to inherit by accident. The only
+    // copy left is the `Secret`, which has one owner and is zeroized on drop.
+    //
+    // SAFETY: nothing has run before this point — no thread has been spawned,
+    // no raylib call has been made, and `cli::parse` has not been reached — so
+    // no other thread can be reading the environment concurrently.
+    let _session_credentials = unsafe { assist_env::import_session_credentials() };
+
     match run() {
         Ok(status) => status,
         Err(message) => {

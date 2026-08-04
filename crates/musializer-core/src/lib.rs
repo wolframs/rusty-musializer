@@ -9,6 +9,7 @@
 //! Where a function reproduces C behaviour, the doc comment cites the C file and
 //! line so a later reader can check the port rather than trust it.
 
+pub mod assist;
 pub mod audio;
 pub mod project;
 pub mod scene;

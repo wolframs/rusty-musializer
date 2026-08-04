@@ -964,6 +964,112 @@ does not close E2's remaining discovery, lifecycle, staging, or UI work.
 - [ ] Document optional external dependencies and which features degrade without
       them.
 
+## AP — assistance provider configuration (accepted 2026-08-04)
+
+Design authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` (P0, done), which carries
+the operator's storage decisions from `AGENTS.md` — no OS/vendor wallet, a 0600
+credentials file, user-chosen models directory. Later phases (dialog, execution
+wiring) get their tranches only after these land. The lyrics-timing benchmark
+(`docs/LYRICS_TIMING_RESEARCH_PLAN.md`, trimmed per
+`docs/LYRICS_TIMING_WEB_EVIDENCE.md`) runs in parallel and is not gated on this.
+
+### LT1 — anchor→block lyric localization in production
+
+Benchmark verdict 2026-08-04 (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`):
+anchor→block MMS reached 100% authored-line coverage on all four tracks and
+recovered the canary's Whisper-looped outro lines; whole-song Qwen failed its
+decision gate. Starts after AP1 lands (both touch `external_analysis.py`) and
+after the operator's 13-line boundary spot-check
+(`build/lyrics-research-v2/spot-check-list.txt`).
+
+- [ ] Replace the per-cue Whisper-window MMS path in the lyrics pipeline with
+      anchor→block alignment (port of `tools/lyrics_research/anchor_block_mms.py`
+      into the production helpers), keeping every authored line through to
+      alignment. Invariant 1: an unlocatable line is `unresolved`, never
+      silently dropped before the aligner.
+- [ ] Adopt VAD segmentation + `condition_on_prev_text=False` for the Whisper
+      evidence pass (the accepted fix for the canary's 90 s repetition loop).
+- [ ] Surface unresolved lines and low-confidence blocks in the Assist review
+      UI by name and time range, so the user is pointed at what to fix instead
+      of hunting.
+- [ ] Version the new localization policy in cache provenance so cached
+      artifacts from the old policy cannot be silently reused.
+- [ ] Evidence: rerun the four-track benchmark through the *production* path
+      with identical coverage results; the canary's two outro lines appear in
+      the staged candidate; the existing metadata and stripped-tag acceptance
+      tracks still pass; the choir track's order violation is diagnosed and
+      either fixed or pinned with a reason.
+
+### AP1 — persistence foundation
+
+- [x] AP1-a (2026-08-04) `musializer.assist-settings/v1` in `musializer-core` (pure, no
+      filesystem) plus a loader modelled on `ui/preferences.rs`: size cap,
+      `deny_unknown_fields`, corrupt file is an error not a reset, atomic
+      temp+rename write. Evidence: round-trip, unknown-field, oversize and
+      corrupt-file tests; two writes of a default profile are byte-identical.
+- [x] AP1-b (2026-08-04) credentials store `musializer.assist-credentials/v1` at
+      `$XDG_CONFIG_HOME/musializer/credentials.json`, dir `0700`, file `0600`
+      set before secret bytes exist, temp file created `0600`; loose-permission
+      files are refused, not repaired. Evidence: `mode & 0o077 == 0` asserted on
+      file and dir; a `0644` fixture loads as a permission error without being
+      chmodded; Forget on a two-provider file leaves the other entry
+      byte-identical.
+- [x] AP1-c (2026-08-04) `Secret` newtype: no `Clone`, no derived `Debug`, best-effort zeroize
+      on drop, hand-written `Debug` printing `<redacted>`, no new crate.
+      Evidence: `format!("{:?}")` contains no key characters; non-`Clone` pinned.
+- [x] AP1-d (2026-08-04) env import and self-strip: read `OPENROUTER_API_KEY` once at startup
+      into the session store, then remove it from the process environment before
+      threads start (`SAFETY:` comment + `AGENTS.md` unsafe-inventory row).
+      Evidence: a child spawned from a build with a planted key shows no
+      credential-named variable in `/proc/self/environ`; the helper's
+      `_safe_local_env` test stays green.
+- [x] AP1-e (2026-08-04) `.env` migration: the desktop path passes an explicit flag disabling
+      `external_analysis.py`'s repository-`.env` fallback; the CLI path keeps
+      it. Evidence: `_openrouter_env` with the flag and a populated `.env`
+      fixture yields no `OPENROUTER_API_KEY`; `tools/support_bundle_check.sh`
+      still asserts `"credentials": "environment only; omitted"`.
+- [x] AP1-f (2026-08-04) canary leak scan `tools/secret_canary_check.sh`: plant a sentinel
+      key through file, session and env-import routes, run a dry-run assist job,
+      scan config dir, cache dir, `build/analysis/`, a saved `.musi`, the job
+      log, the support bundle and `/proc/<pid>/cmdline` for zero occurrences;
+      wire into `tools/verify.sh`. Negative control: leak the sentinel into the
+      dry-run JSON, watch the scan fail, revert byte-for-byte.
+
+### AP2 — discovery
+
+- [x] AP2-a (2026-08-04) extend `musializer_doctor.py` with per-runtime identity for Whisper,
+      the MMS/CTC aligner and any stem separator: path, version, model path,
+      `sha256` where practical, language support, GPU readiness. Evidence: a
+      schema test on doctor output; a missing binary yields a per-runtime
+      `unavailable` state with a remediation string, not a global failure.
+- [ ] AP2-b models-directory resolution per the operator rule: default
+      `<install dir>/models/`, fallback to a home-directory musializer folder
+      when unwritable, always overridable and always displayed. Evidence: pure
+      unit tests over an injected writability probe (writable default,
+      unwritable default, explicit override); the resolved path appears in
+      doctor output.
+- [x] AP2-c (2026-08-04; live `codex app-server` JSON-RPC probe returned 7
+      models, old-Codex stub yields `Codex default`) Codex `model/list` discovery where the installed Codex supports it;
+      cache non-secret catalog metadata only. Evidence: a stubbed old-Codex
+      response yields exactly `Codex default` and no guessed id; a test asserts
+      no Codex auth file is read.
+- [x] AP2-d (2026-08-04; 34 tests in `tests/test_provider_discovery.py`, live
+      fetch cached 25 audio+text models) OpenRouter catalog cache: bounded fetch of `GET /api/v1/models`
+      with the stored filters, normalized to an allowlist of fields, written
+      under `$XDG_CACHE_HOME/musializer` with cache schema version, source URL,
+      timestamps, filters, atomic replacement. Evidence: malformed, oversized,
+      duplicated-id and truncated inputs are each refused while the prior valid
+      cache stays readable.
+- [ ] AP2-e suitability overlay: a versioned in-repo table keyed by (model id,
+      contract id) with `recommended`/`experimental`/`unsupported`, evidence
+      date, prompt/schema version, scope, languages, limitations. Evidence:
+      every `recommended` row names an evidence date and a benchmarked
+      prompt/schema version; an absent model resolves to `experimental`, never
+      `recommended`.
+- [ ] AP2-f offline/stale UX (cached catalog with an honest age badge, no
+      network hang) — deferred to the dialog tranche (P3), which owns the
+      surface it renders on.
+
 ## P4 — honest status, stale handoffs and final gate
 
 ### F0 — robust native-size shell typography
