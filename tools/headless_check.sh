@@ -1590,7 +1590,8 @@ fi
 ASSIST_REVIEW_DIR="$OUT_DIR/assist-review"
 rm -rf "$ASSIST_REVIEW_DIR"
 mkdir -p "$ASSIST_REVIEW_DIR/flagged" "$ASSIST_REVIEW_DIR/clear" \
-         "$ASSIST_REVIEW_DIR/legacy" "$ASSIST_REVIEW_DIR/stale"
+         "$ASSIST_REVIEW_DIR/legacy" "$ASSIST_REVIEW_DIR/stale" \
+         "$ASSIST_REVIEW_DIR/navigate"
 
 cat >"$ASSIST_REVIEW_DIR/flagged/assist-manifest.json" <<'JSON'
 {
@@ -1713,17 +1714,70 @@ JSON
 cp "$ASSIST_REVIEW_DIR/flagged/lyrics.aligned.json" \
    "$ASSIST_REVIEW_DIR/stale/lyrics.aligned.json"
 
+# Review LT1-R, R9. The `flagged` fixture above names lines no document in this
+# repository has, which is right for the list and useless for the *navigation*:
+# a row can only bind a cue that exists in the track the Lyrics panel edits. So
+# this job folder flags one of `seed_lyric_fixture.py`'s own seeded lines by its
+# exact text and time, and leaves one unresolved with a proposal — the two
+# outcomes a press has to keep apart.
+cat >"$ASSIST_REVIEW_DIR/navigate/assist-manifest.json" <<'JSON'
+{
+  "schema_version": "musializer.assist-manifest/v1",
+  "mode": "lyrics",
+  "artifacts": {"aligned": "/nonexistent/job/lyrics.aligned.json"},
+  "result_counts": {"lyrics": 2, "lyrics_unmatched": 1, "lyrics_unresolved": 1,
+                    "lyrics_review_flags": 2, "sections": 2, "semantics": 2},
+  "lyric_localization": {"policy": "anchor-block-mms", "policy_version": "3"}
+}
+JSON
+cat >"$ASSIST_REVIEW_DIR/navigate/lyrics.aligned.json" <<'JSON'
+{
+  "schema_version": "musializer.lyric-sync/v1",
+  "lane": "lyric_sync",
+  "localization_policy": "anchor-block-mms",
+  "localization_policy_version": "3",
+  "lines": [
+    {"reference_line_index": 1, "text": "Every band a step above",
+     "start_seconds": 1.65, "end_seconds": 2.65, "review_flagged": true}
+  ],
+  "unresolved": [
+    {"reference_line_index": 9, "line_position": 9, "kind": "lyric",
+     "text": "a line the sheet has and the song does not",
+     "reason": "no block placement", "abstained": false,
+     "coarse_start_seconds": 5.2, "coarse_end_seconds": 6.4}
+  ],
+  "review_flags": [
+    {"reference_line_index": 1, "text": "Every band a step above",
+     "flag": "coarse_disagreement", "reason": "the two views differ by 3.9 s",
+     "start_seconds": 1.65, "end_seconds": 2.65,
+     "coarse_start_seconds": 5.55, "delta_seconds": 3.9},
+    {"reference_line_index": 9, "text": "a line the sheet has and the song does not",
+     "flag": "unresolved", "reason": "no block placement",
+     "start_seconds": null, "end_seconds": null,
+     "coarse_start_seconds": 5.2, "delta_seconds": null}
+  ],
+  "statistics": {"reference_lines": 2, "matched_lines": 1, "estimated_lines": 0,
+                 "unmatched_lines": 1, "reference_tokens": 14,
+                 "unresolved_lines": 1, "abstained_lines": 0,
+                 "review_flagged_lines": 2, "coarse_disagreement_lines": 1}
+}
+JSON
+
 assist_review_capture() {
-    # assist_review_capture NAME JOB_FOLDER [SIZE] [LANES]
+    # assist_review_capture NAME JOB_FOLDER [SIZE] [LANES] [PROBE_EXTRA]
     #
     # SIZE and LANES are review LT1-R: R2 needs the 960x640 window whose scissor
     # was eating the tail, and R11 needs the lyrics-only candidate, which
-    # `probe_candidate` could not produce until it took a mode.
-    local name="$1" dir="$2" size="${3:-1280x720}" lanes="${4:-}"
+    # `probe_candidate` could not produce until it took a mode. PROBE_EXTRA is
+    # R9's, and it is `hover=XxY`: a headless run has no pointer, so without it
+    # every hover state on the review rows would be unphotographable — the blind
+    # spot `--ui-probe hover=` was invented to close.
+    local name="$1" dir="$2" size="${3:-1280x720}" lanes="${4:-}" extra="${5:-}"
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
     env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+        -u MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_ASSIST_PROBE_DIR="$dir" \
@@ -1732,13 +1786,52 @@ assist_review_capture() {
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
-            --ui-probe "panel=assist,play=0,assist=candidate" \
+            --ui-probe "panel=assist,play=0,assist=candidate$extra" \
         >"$log" 2>&1
     local status=$?
     set -e
     local line
     line="$(sed -n 's/^assist review: *//p' "$log")"
     printf '%-28s exit=%s %s\n' "$name" "$status" "${line:-<no assist review line>}"
+    if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
+        echo "FAIL: $name did not produce a frame, or exited $status" >&2
+        return 1
+    fi
+    return 0
+}
+
+assist_review_navigate_capture() {
+    # assist_review_navigate_capture NAME ROW
+    #
+    # Review LT1-R, R9: the frame *after* a review row is pressed. Over
+    # `$LYRIC_PROJECT`, because a row can only bind a cue that already exists in
+    # the track the Lyrics panel edits, and the bare sweep has none.
+    #
+    # The press arrives through MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW rather than
+    # through the pointer: `--ui-probe hover=` parks a pointer and nothing in the
+    # grammar releases a button, and the grammar lives in `cli.rs`. It goes
+    # through the same `Shell::open_lyric_review_row` a real press does, so this
+    # photographs the navigation and not a picture of it.
+    local name="$1" row="$2"
+    local out="$OUT_DIR/$name.png"
+    local log="$OUT_DIR/$name.txt"
+    set +e
+    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        MUSIALIZER_ASSIST_PROBE_DIR="$ASSIST_REVIEW_DIR/navigate" \
+        MUSIALIZER_ASSIST_PROBE_LANES="lyrics" \
+        MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW="$row" \
+        ./target/debug/musializer --mute --project "$LYRIC_PROJECT" \
+            --size 1280x720 \
+            --probe-frames 30 \
+            --probe-shot "$out" \
+            --ui-probe "panel=assist,play=0,assist=candidate" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    printf '%-28s exit=%s %s\n' "$name" "$status" \
+        "$(sed -n 's/^assist review nav: *//p' "$log" | head -1)"
     if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
         echo "FAIL: $name did not produce a frame, or exited $status" >&2
         return 1
@@ -1956,6 +2049,139 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     if [ "${REVIEW_SAT_STALE%%.*}" -ge 3 ] 2>/dev/null; then
         echo "FAIL: a run with no lyrics lane drew the previous run's review rows" >&2
         SWEEP_FAILED=1
+    fi
+
+    # -----------------------------------------------------------------------
+    # Review LT1-R, R9: the route from a flagged row to where it gets fixed.
+    #
+    # Two things a capture can prove and a unit test cannot -- that the row is
+    # *reachable* (it lights under the pointer and names itself) and that the
+    # Lyrics panel really arrives with the cue bound. Which cue it bound is the
+    # other way round, and lives in `assist.rs`'s own tests.
+    # -----------------------------------------------------------------------
+    echo "--- LT1-R R9: review row navigation ---"
+
+    # Where the rows landed, published by the panel rather than measured off a
+    # screenshot once and then trusted forever. A re-layout that moves them makes
+    # the hover below miss, and this is the line that says so instead.
+    REVIEW_ROWS_LINE="$(sed -n 's/^assist review rows: *//p' \
+        "$OUT_DIR/assist-review-flagged.txt" | head -1)"
+    echo "review rows: ${REVIEW_ROWS_LINE:-<absent>}"
+    case "$REVIEW_ROWS_LINE" in
+        'x=20 y=609 width=1240 pitch=15 rows=4 hint="Click a line to open it in Lyrics"') ;;
+        *)
+            echo "FAIL: the review rows are not where the hover below aims:" >&2
+            echo "      ${REVIEW_ROWS_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+
+    # 200x614 is the middle of the first row -- `y=609` less the 2 px the hit box
+    # starts above the ink, plus half a 15 px pitch.
+    assist_review_capture assist-review-hover "$ASSIST_REVIEW_DIR/flagged" \
+        1280x720 "" ",hover=200x614" || SWEEP_FAILED=1
+    # The tip is white on near-black over a panel that is otherwise 247 flat, so
+    # one crop carries both halves: a dark minimum is the box, a bright maximum
+    # is the text inside it. `assist-review-flagged` is the same frame without a
+    # pointer and is the control.
+    ROW_TIP="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/assist-review-hover.png,crop=300:16:480:581,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YMAX \
+        -of csv=p=0 2>/dev/null | head -1)"
+    ROW_TIP_CONTROL="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/assist-review-flagged.png,crop=300:16:480:581,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+    echo "review row tooltip: box/text=${ROW_TIP:-?} bare=${ROW_TIP_CONTROL:-?} (control)"
+    if [ "${ROW_TIP%%,*}" -ge 100 ] 2>/dev/null \
+        || [ "${ROW_TIP##*,}" -lt 180 ] 2>/dev/null; then
+        echo "FAIL: no tooltip where the first review row's tip should be" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "${ROW_TIP_CONTROL%%.*}" -lt 200 ] 2>/dev/null; then
+        echo "FAIL: the control is not a control; a bare panel drew a tooltip" >&2
+        SWEEP_FAILED=1
+    fi
+    # And the row itself lights. Two controls, because one is not enough here:
+    # the *same* row in the frame with no pointer, and the row below it in this
+    # frame -- a highlight that painted every row would pass the first alone.
+    ROW_FILL="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/assist-review-hover.png,crop=400:12:700:608,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+    ROW_FILL_NEIGHBOUR="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/assist-review-hover.png,crop=400:12:700:623,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+    ROW_FILL_BARE="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/assist-review-flagged.png,crop=400:12:700:608,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+    echo "review row hover fill: row=${ROW_FILL:-?} neighbour=${ROW_FILL_NEIGHBOUR:-?}" \
+         "bare=${ROW_FILL_BARE:-?} (controls)"
+    if [ "${ROW_FILL%%.*}" -ge 245 ] 2>/dev/null; then
+        echo "FAIL: the hovered review row drew no highlight" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "${ROW_FILL_NEIGHBOUR%%.*}" -lt 245 ] 2>/dev/null \
+        || [ "${ROW_FILL_BARE%%.*}" -lt 245 ] 2>/dev/null; then
+        echo "FAIL: the row highlight is not a hover state; it painted a row nobody pointed at" >&2
+        SWEEP_FAILED=1
+    fi
+
+    # The press, over a project that has cues. Row 1 is the CHECK line whose text
+    # a seeded cue carries; row 0 is the unresolved one, which must land at the
+    # proposal without borrowing somebody else's cue.
+    if [ ! -f "$LYRIC_PROJECT" ]; then
+        echo "SKIPPED: no lyric fixture project, so the R9 press has no cues to bind"
+    else
+        assist_review_navigate_capture assist-nav-cue 1 || SWEEP_FAILED=1
+        assist_review_navigate_capture assist-nav-unplaced 0 || SWEEP_FAILED=1
+
+        NAV_CUE_LINE="$(sed -n 's/^assist review nav: *//p' "$OUT_DIR/assist-nav-cue.txt" \
+            | head -1)"
+        if [ "$NAV_CUE_LINE" != "line 2 -> cue 2 at 0:01.6 (Lyrics panel)" ]; then
+            echo "FAIL: pressing a CHECK row did not bind that line's own cue:" >&2
+            echo "      ${NAV_CUE_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+        fi
+        # The claim, checked against the panel that would have to honour it. This
+        # line is the Lyrics panel's own, so it cannot agree with the Assist
+        # panel by construction.
+        NAV_CUE_LYRICS="$(sed -n 's/^lyrics: *//p' "$OUT_DIR/assist-nav-cue.txt" | head -1)"
+        echo "review row press:   $NAV_CUE_LYRICS"
+        case "$NAV_CUE_LYRICS" in
+            *"pane cues"*"selected #2 at 00:01.650"*) ;;
+            *)
+                echo "FAIL: the Lyrics panel did not arrive bound to the pressed row's cue:" >&2
+                echo "      ${NAV_CUE_LYRICS:-<absent>}" >&2
+                SWEEP_FAILED=1
+                ;;
+        esac
+
+        NAV_UNPLACED_LINE="$(sed -n 's/^assist review nav: *//p' \
+            "$OUT_DIR/assist-nav-unplaced.txt" | head -1)"
+        if [ "$NAV_UNPLACED_LINE" != "line 10 -> no cue; Lyrics panel at the proposed 0:05.2" ]
+        then
+            echo "FAIL: pressing an UNPLACED row did not land at its proposal:" >&2
+            echo "      ${NAV_UNPLACED_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+        fi
+        # The half that matters most: a line with no cue must select nothing.
+        # Binding a neighbouring cue would look right in every screenshot.
+        NAV_UNPLACED_LYRICS="$(sed -n 's/^lyrics: *//p' "$OUT_DIR/assist-nav-unplaced.txt" \
+            | head -1)"
+        echo "review row press:   $NAV_UNPLACED_LYRICS"
+        case "$NAV_UNPLACED_LYRICS" in
+            *"selected none"*) ;;
+            *)
+                echo "FAIL: an unresolved line's row bound a cue that is not its own:" >&2
+                echo "      ${NAV_UNPLACED_LYRICS:-<absent>}" >&2
+                SWEEP_FAILED=1
+                ;;
+        esac
+        # Two presses, two pictures. A press that changed nothing on screen would
+        # otherwise pass every assertion above through the report line alone.
+        if cmp -s "$OUT_DIR/assist-nav-cue.png" "$OUT_DIR/assist-nav-unplaced.png"; then
+            echo "FAIL: the two review-row presses produced the same frame" >&2
+            SWEEP_FAILED=1
+        fi
     fi
 fi
 

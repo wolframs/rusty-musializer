@@ -36,6 +36,17 @@ SCHEMA_VERSION = "musializer.doctor/v1"
 ROOT = Path(__file__).resolve().parents[1]
 CAPABILITIES = ("preview", "export", "local_lyrics", "remote_mimo", "font_import")
 
+# AP2-b. The same rule as musializer_core::assist::models_dir, restated here
+# because the doctor must report what the application will do, not what a
+# reader of the operator rule assumes it does. Keep the two in step:
+#   1. local_runtimes.models_dir wins, writable or not;
+#   2. else <directory of the application executable>/models/, when writable;
+#   3. else <home>/musializer/models.
+MODELS_DIRECTORY_NAME = "models"
+HOME_FALLBACK_DIRECTORY = "musializer"
+ASSIST_SETTINGS_SCHEMA = "musializer.assist-settings/v1"
+ASSIST_SETTINGS_MAX_BYTES = 256 * 1024  # musializer_core::assist::settings::MAX_FILE_SIZE
+
 Which = Callable[[str], Optional[str]]
 FindSpec = Callable[[str], Any]
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -90,6 +101,103 @@ def _probe_directory(path: Path) -> tuple[bool, str]:
     if candidate.exists():
         return True, f"writable: {candidate}"
     return True, f"creatable below writable parent: {probe}"
+
+
+def _assist_settings_path(environ: Mapping[str, str]) -> Optional[Path]:
+    """Where `assist.json` lives, by the same ladder `assist::files` uses."""
+    override = environ.get("MUSIALIZER_ASSIST_SETTINGS", "").strip()
+    if override:
+        return Path(override)
+    xdg_config = environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_config:
+        return Path(xdg_config) / "musializer/assist.json"
+    home = environ.get("HOME", "").strip()
+    if home:
+        return Path(home) / ".config/musializer/assist.json"
+    return None
+
+
+def _configured_models_dir(path: Optional[Path]) -> tuple[str, Optional[str]]:
+    """`local_runtimes.models_dir` from the settings file: (value, error).
+
+    Only that one field is read, and nothing else from the file reaches the
+    report. `assist.json` is non-secret by contract (E11 -- it carries a
+    credential *fingerprint* and mode, never a key), and this keeps the
+    doctor's "no credential values are read" promise true by construction
+    rather than by inspection of the file it happens to find.
+
+    A broken file is reported and then ignored, never repaired and never a
+    raised exception: the doctor's job is to say what it found.
+    """
+    if path is None or not path.is_file():
+        return "", None
+    try:
+        size = path.stat().st_size
+        if size > ASSIST_SETTINGS_MAX_BYTES:
+            return "", f"{path} is larger than the {ASSIST_SETTINGS_MAX_BYTES} byte cap"
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeDecodeError) as error:
+        return "", f"{path} could not be read as assist settings: {error}"
+    if not isinstance(document, dict):
+        return "", f"{path} is not an assist settings object"
+    schema = document.get("schema")
+    if schema != ASSIST_SETTINGS_SCHEMA:
+        return "", f"{path} declares schema {schema!r}, not {ASSIST_SETTINGS_SCHEMA}"
+    runtimes = document.get("local_runtimes", {})
+    if not isinstance(runtimes, dict):
+        return "", f"{path} has a local_runtimes block that is not an object"
+    configured = runtimes.get("models_dir", "")
+    if not isinstance(configured, str):
+        return "", f"{path} has a local_runtimes.models_dir that is not a string"
+    return configured.strip(), None
+
+
+def _models_directory(*, root: Path, application: Optional[Path],
+                      environ: Mapping[str, str]) -> dict[str, Any]:
+    """Resolve the downloaded-weights directory and show the whole ladder.
+
+    Every candidate is reported, not only the winner, because the operator
+    rule is "never a location the user was not shown" -- so an override that
+    beat a perfectly good default has to say what it beat.
+    """
+    install_directory = application.parent if application else root
+    install_default = install_directory / MODELS_DIRECTORY_NAME
+    home = environ.get("HOME", "").strip()
+    home_fallback = (Path(home) / HOME_FALLBACK_DIRECTORY / MODELS_DIRECTORY_NAME
+                     if home else None)
+
+    settings_path = _assist_settings_path(environ)
+    override, settings_error = _configured_models_dir(settings_path)
+    install_writable, install_detail = _probe_directory(install_default)
+
+    if override:
+        resolved: Optional[Path] = Path(override)
+        source: Optional[str] = "settings-override"
+        writable, detail = _probe_directory(resolved)
+    elif install_writable:
+        resolved, source, writable, detail = (install_default, "install-default",
+                                              True, install_detail)
+    elif home_fallback is not None:
+        resolved, source = home_fallback, "home-fallback"
+        writable, detail = _probe_directory(resolved)
+    else:
+        resolved, source, writable = None, None, False
+        detail = f"{install_detail}; and no home directory to fall back to"
+
+    return {
+        "state": "ok" if resolved is not None and writable else "unavailable",
+        "resolved": str(resolved) if resolved else None,
+        "source": source,
+        "writable": writable,
+        "detail": detail,
+        "install_default": str(install_default),
+        "install_default_writable": install_writable,
+        "install_default_detail": install_detail,
+        "home_fallback": str(home_fallback) if home_fallback else None,
+        "override": override or None,
+        "settings_path": str(settings_path) if settings_path else None,
+        "settings_error": settings_error,
+    }
 
 
 def _gpu_hint(which: Which, runner: Runner,
@@ -316,6 +424,8 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
         "checks": checks,
         "capabilities": capabilities,
         "runtimes": runtimes,
+        "models_directory": _models_directory(
+            root=root, application=application, environ=environ),
         "gpu": _gpu_hint(which, runner, environ),
     }
 
@@ -364,6 +474,26 @@ def render_human(report: Mapping[str, Any]) -> str:
         if runtime["model_path"]:
             hash_bits = f" ({runtime['model_sha256']})" if runtime["model_sha256"] else " (hash skipped)"
             lines.append(f"    model: {runtime['model_path']}{hash_bits}")
+    models = report["models_directory"]
+    lines.extend(("", "Models directory:"))
+    if models["resolved"]:
+        lines.append(f"  Resolved: {models['resolved']} ({models['source']}"
+                     f"{'' if models['writable'] else ', NOT WRITABLE'})")
+    else:
+        lines.append(f"  Resolved: none - {models['detail']}")
+    lines.append(f"  Install default: {models['install_default']}"
+                 f" ({'writable' if models['install_default_writable'] else 'not writable'})")
+    if models["home_fallback"]:
+        lines.append(f"  Home fallback: {models['home_fallback']}")
+    settings_path = models["settings_path"] or "no per-user config directory"
+    if models["override"]:
+        lines.append(f"  Override: {models['override']}"
+                     f" (local_runtimes.models_dir in {settings_path}; it wins over the default above)")
+    else:
+        lines.append("  Override: none"
+                     f" (set local_runtimes.models_dir in {settings_path} and it wins over the default above)")
+    if models["settings_error"]:
+        lines.append(f"  Settings problem: {models['settings_error']}")
     gpu = report["gpu"]
     hint = ", ".join(gpu["devices"]) if gpu["devices"] else "no optional GPU hint detected"
     lines.extend(("", f"GPU hint: {hint}"))

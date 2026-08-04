@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regression tests for the AP2 discovery tranche's Python-side subset.
 
-Covers: `tools/musializer_doctor.py`'s AP2-a runtime inventory extension,
-`tools/codex_model_discovery.py` (AP2-c), and `tools/provider_catalog.py`
-(AP2-d), plus the shared `tools/atomic_cache.py` write path they both use.
+Covers: `tools/musializer_doctor.py`'s AP2-a runtime inventory extension and
+its AP2-b models-directory resolution, `tools/codex_model_discovery.py`
+(AP2-c), and `tools/provider_catalog.py` (AP2-d), plus the shared
+`tools/atomic_cache.py` write path they both use.
 Matches `tests/test_lyrics_timing.py`'s pattern: plain `unittest`, `tools/`
 pushed onto `sys.path`, one `TestCase` per module/concern, picked up by
 `tools/support_bundle_check.sh`'s `python3 -m unittest discover -s tests`.
@@ -27,6 +28,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import atomic_cache  # noqa: E402
 import codex_model_discovery  # noqa: E402
+import musializer_doctor  # noqa: E402
 import provider_catalog  # noqa: E402
 import runtime_inventory  # noqa: E402
 
@@ -231,6 +233,236 @@ class RuntimeInventoryTests(unittest.TestCase):
         for runtime in runtimes.values():
             self.assertEqual(runtime["state"], "unavailable")
             self.assertIsInstance(runtime["remediation"], str)
+
+
+# --- Models directory resolution (AP2-b) ------------------------------------
+
+def _assist_settings(models_dir: str, **extra) -> str:
+    document = {"schema": musializer_doctor.ASSIST_SETTINGS_SCHEMA,
+                "active_profile": "recommended",
+                "local_runtimes": {"models_dir": models_dir}}
+    document.update(extra)
+    return json.dumps(document)
+
+
+class ModelsDirectoryTests(unittest.TestCase):
+    """The operator rule from AGENTS.md, as the doctor reports it.
+
+    The same ladder is implemented in `musializer_core::assist::models_dir`
+    and probed by `musializer_runtime::assist::models`; these tests pin the
+    doctor's copy, which is what a user actually reads.
+    """
+
+    def _locked(self, path: Path) -> bool:
+        """chmod 0o500 and report whether it really blocked this process."""
+        path.chmod(0o500)
+
+        def restore() -> None:
+            # The temporary directory may already be gone: Python's own
+            # cleanup chmods and retries on a locked directory.
+            try:
+                path.chmod(0o700)
+            except OSError:
+                pass
+
+        self.addCleanup(restore)
+        probe = path / "musializer-writability-check"
+        try:
+            probe.write_text("x")
+        except OSError:
+            return True
+        probe.unlink()
+        return False
+
+    def test_writable_install_directory_is_the_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            section = musializer_doctor._models_directory(
+                root=root, application=None, environ={"HOME": str(Path(tmp) / "home")})
+            self.assertEqual(section["source"], "install-default")
+            self.assertEqual(section["resolved"], str(root / "models"))
+            self.assertTrue(section["writable"])
+            self.assertEqual(section["state"], "ok")
+            self.assertIsNone(section["override"])
+
+    def test_install_directory_is_the_applications_own_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            application = root / "dist/musializer"
+            application.parent.mkdir(parents=True)
+            application.write_text("#!/bin/sh\n")
+            section = musializer_doctor._models_directory(
+                root=root, application=application, environ={})
+            self.assertEqual(section["install_default"], str(root / "dist/models"))
+            self.assertEqual(section["resolved"], str(root / "dist/models"))
+
+    def test_unwritable_install_directory_falls_back_to_the_home_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            home = Path(tmp) / "home"
+            root.mkdir()
+            home.mkdir()
+            if not self._locked(root):
+                self.skipTest("this process can write to a 0500 directory (running as root?)")
+            section = musializer_doctor._models_directory(
+                root=root, application=None, environ={"HOME": str(home)})
+            self.assertEqual(section["source"], "home-fallback")
+            self.assertEqual(section["resolved"], str(home / "musializer/models"))
+            self.assertFalse(section["install_default_writable"])
+            # The default that lost is still named, per "never a location the
+            # user was not shown".
+            self.assertEqual(section["install_default"], str(root / "models"))
+
+    def test_an_explicit_override_wins_over_a_writable_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            chosen = Path(tmp) / "elsewhere/models"
+            settings = Path(tmp) / "assist.json"
+            root.mkdir()
+            settings.write_text(_assist_settings(str(chosen)))
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"HOME": str(Path(tmp) / "home"),
+                         "MUSIALIZER_ASSIST_SETTINGS": str(settings)})
+            self.assertEqual(section["source"], "settings-override")
+            self.assertEqual(section["resolved"], str(chosen))
+            self.assertEqual(section["override"], str(chosen))
+            self.assertTrue(section["install_default_writable"])
+            self.assertEqual(section["install_default"], str(root / "models"))
+            self.assertIsNone(section["settings_error"])
+
+    def test_an_unwritable_override_still_wins_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            chosen = Path(tmp) / "locked/models"
+            settings = Path(tmp) / "assist.json"
+            root.mkdir()
+            chosen.parent.mkdir()
+            if not self._locked(chosen.parent):
+                self.skipTest("this process can write to a 0500 directory (running as root?)")
+            settings.write_text(_assist_settings(str(chosen)))
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"MUSIALIZER_ASSIST_SETTINGS": str(settings)})
+            self.assertEqual(section["source"], "settings-override")
+            self.assertFalse(section["writable"])
+            self.assertEqual(section["state"], "unavailable")
+
+    def test_settings_path_follows_the_xdg_ladder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            xdg = Path(tmp) / "config"
+            (xdg / "musializer").mkdir(parents=True)
+            (xdg / "musializer/assist.json").write_text(_assist_settings("/srv/weights"))
+            section = musializer_doctor._models_directory(
+                root=Path(tmp), application=None,
+                environ={"XDG_CONFIG_HOME": str(xdg), "HOME": str(Path(tmp) / "home")})
+            self.assertEqual(section["settings_path"], str(xdg / "musializer/assist.json"))
+            self.assertEqual(section["resolved"], "/srv/weights")
+
+            home_only = musializer_doctor._assist_settings_path({"HOME": "/home/example"})
+            self.assertEqual(home_only, Path("/home/example/.config/musializer/assist.json"))
+            self.assertIsNone(musializer_doctor._assist_settings_path({}))
+
+    def test_a_corrupt_settings_file_is_reported_and_the_default_still_resolves(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            settings = Path(tmp) / "assist.json"
+            settings.write_text("{ broken")
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"MUSIALIZER_ASSIST_SETTINGS": str(settings)})
+            self.assertIsNotNone(section["settings_error"])
+            self.assertEqual(section["source"], "install-default")
+            # Reported, never repaired.
+            self.assertEqual(settings.read_text(), "{ broken")
+
+    def test_a_foreign_schema_is_not_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            settings = Path(tmp) / "assist.json"
+            settings.write_text(json.dumps({"schema": "musializer.assist-settings/v2",
+                                            "local_runtimes": {"models_dir": "/srv/weights"}}))
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"MUSIALIZER_ASSIST_SETTINGS": str(settings)})
+            self.assertIn("musializer.assist-settings/v2", section["settings_error"])
+            self.assertIsNone(section["override"])
+            self.assertEqual(section["source"], "install-default")
+
+    def test_an_oversized_settings_file_is_refused_before_it_is_parsed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            settings = Path(tmp) / "assist.json"
+            padding = " " * (musializer_doctor.ASSIST_SETTINGS_MAX_BYTES + 1)
+            settings.write_text(_assist_settings("/srv/weights") + padding)
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"MUSIALIZER_ASSIST_SETTINGS": str(settings)})
+            self.assertIn("cap", section["settings_error"])
+            self.assertIsNone(section["override"])
+
+    def test_only_the_models_dir_field_reaches_the_report(self) -> None:
+        # E11: assist.json carries a credential mode and fingerprint. The
+        # doctor reads one field out of this file and must not echo the rest.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            settings = Path(tmp) / "assist.json"
+            settings.write_text(_assist_settings(
+                str(Path(tmp) / "weights"),
+                credentials={"openrouter": {"mode": "file", "lookup_id": "MUSICANARY",
+                                            "fingerprint": "0a1b2c3d"}}))
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"MUSIALIZER_ASSIST_SETTINGS": str(settings)})
+            rendered = json.dumps(section)
+            self.assertNotIn("MUSICANARY", rendered)
+            self.assertNotIn("0a1b2c3d", rendered)
+            self.assertNotIn("fingerprint", rendered)
+
+    def test_no_home_and_an_unwritable_default_resolves_to_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            if not self._locked(root):
+                self.skipTest("this process can write to a 0500 directory (running as root?)")
+            section = musializer_doctor._models_directory(
+                root=root, application=None, environ={})
+            self.assertIsNone(section["resolved"])
+            self.assertIsNone(section["source"])
+            self.assertEqual(section["state"], "unavailable")
+            self.assertIsNone(section["home_fallback"])
+
+    def test_the_human_report_shows_the_default_and_that_an_override_would_win(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "install"
+            root.mkdir()
+            section = musializer_doctor._models_directory(
+                root=root, application=None,
+                environ={"HOME": str(Path(tmp) / "home")})
+            runtimes = runtime_inventory.collect(
+                whisper_binary=None, whisper_model=None, align_python=None,
+                align_model=None, which=lambda name: None,
+                runner=lambda *a, **k: _completed(), environ={},
+                sha256_file=lambda path: "unused")
+            report = {
+                "root": str(root), "checks": [], "runtimes": runtimes,
+                "capabilities": {name: {"ready": True, "missing": []}
+                                 for name in musializer_doctor.CAPABILITIES},
+                "models_directory": section,
+                "gpu": {"kind": "none", "available": False, "devices": []},
+            }
+            rendered = musializer_doctor.render_human(report)
+            self.assertIn("Models directory:", rendered)
+            self.assertIn(f"Resolved: {root / 'models'} (install-default)", rendered)
+            self.assertIn(f"Install default: {root / 'models'} (writable)", rendered)
+            self.assertIn(f"Home fallback: {Path(tmp) / 'home/musializer/models'}", rendered)
+            self.assertIn("Override: none", rendered)
+            self.assertIn("it wins over the default above", rendered)
 
 
 # --- Codex model discovery (AP2-c) -----------------------------------------

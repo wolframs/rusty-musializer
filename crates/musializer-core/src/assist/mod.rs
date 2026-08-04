@@ -14,5 +14,7 @@
 
 pub mod contracts;
 pub mod credentials;
+pub mod models_dir;
 pub mod secret;
 pub mod settings;
+pub mod suitability;

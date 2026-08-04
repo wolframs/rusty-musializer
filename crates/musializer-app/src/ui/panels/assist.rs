@@ -54,6 +54,7 @@ use musializer_core::project::analysis_bridge;
 use musializer_core::project::analysis_candidate::{
     self, AnalysisCandidate, Lanes, LyricReviewEntry, LyricReviewKind, LyricsReview,
 };
+use musializer_core::project::lyrics::LyricsDocument;
 use musializer_core::project::model::{
     AnalysisLaneKind, AnalysisLaneReference, Provenance, MAX_ANALYSIS_LANES,
 };
@@ -77,7 +78,8 @@ use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
 use super::super::theme::{color, metric};
-use super::super::widgets::{self, ButtonStyle};
+use super::super::widgets::{self, ButtonStyle, Widgets};
+use crate::cli::UiPanel;
 use crate::workspace::{Track, Workspace};
 
 /// Widget id namespace for this panel.
@@ -882,6 +884,32 @@ fn report_review(line: String) {
     });
 }
 
+thread_local! {
+    /// The last `assist review rows:` line printed. Same rule and same reason as
+    /// [`LAST_REVIEW_REPORT`]: a per-frame line is not a report, it is a log.
+    static LAST_REVIEW_ROWS: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// Prints where the pressable review rows landed (review LT1-R, R9).
+///
+/// A hover state nothing can photograph is a hover state nobody reviews, and the
+/// gate's pointer has to be parked on a coordinate. Publishing the rectangle the
+/// panel actually used means the capture cannot drift silently away from the
+/// control it thinks it is hovering — the failure `--ui-probe hover=` was
+/// invented to end.
+fn report_review_rows(line: &str) {
+    LAST_REVIEW_ROWS.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist review rows: {line}");
+            last.clear();
+            last.push_str(line);
+        }
+    });
+}
+
 /// Attaches the review where a result is staged. Both callers — a finished job
 /// and the probe — go through here so the two cannot drift.
 ///
@@ -1623,13 +1651,180 @@ fn ellipsize(text: &str, max_width: f32, measure: &dyn Fn(&str) -> f32) -> Strin
 /// user to replay the whole song; "UNPLACED line 26 at 1:30.6" asks them to look
 /// at one place. The counts are on the summary line above; this is the part that
 /// turns them into an action.
-/// Where a flagged line is actually repaired (review LT1-R, R9).
+/// Where a flagged line is actually repaired, and how to get there
+/// (review LT1-R, R9).
 ///
-/// A hint, not a route: the Lyrics panel is where a cue is dragged or nudged,
-/// and nothing here navigates to it. Deliberately on the heading's own row so it
-/// costs no row from the list, and dropped entirely when the panel is too narrow
-/// for both — the names are the point, this is the footnote.
-const REVIEW_FIX_HINT: &str = "Retime cues in the Lyrics panel";
+/// It shipped as a hint — "Retime cues in the Lyrics panel" — while nothing here
+/// navigated. Now the rows *are* the route, so the sentence names the gesture
+/// instead: icons and rows both cost discoverability, and this repository pays
+/// for it in writing rather than hoping the affordance reads. Deliberately on the
+/// heading's own row so it costs no row from the list, and dropped entirely when
+/// the panel is too narrow for both — the names are the point, this is the
+/// footnote.
+const REVIEW_FIX_HINT: &str = "Click a line to open it in Lyrics";
+
+/// Widget index of the first review row, in [`ASSIST_WIDGETS`].
+///
+/// Clear of the mode buttons (`0..4`), the confirmation and reference controls
+/// (`10..21`), the Apply/Discard pair (`30`, `31`), the Copy strip (`40..43`) and
+/// the auto-scene toggle (`90`). A colliding id would let one control release
+/// another's press.
+const REVIEW_ROW_WIDGET_BASE: u32 = 60;
+
+/// The cue that carries a review row's line, in the document the Lyrics panel
+/// edits (review LT1-R, R9).
+///
+/// **Text, then time — never time alone.** A row whose line never became a cue
+/// must not select a neighbouring one: the whole complaint R9 answers is that a
+/// flagged line sends the user hunting, and landing them on somebody else's cue
+/// is worse than landing them nowhere. So the match is on the authored text, and
+/// the time only breaks a tie between repeated lines — which is exactly the case
+/// the localizer abstains on, and therefore the case a wrong guess would be
+/// least excusable in.
+///
+/// Compared trimmed: the helper writes the sheet's line and the editor stores
+/// what was applied, and the one difference either side can introduce is
+/// surrounding space.
+fn review_entry_cue(entry: &LyricReviewEntry, document: &LyricsDocument) -> Option<u64> {
+    let wanted = entry.text.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut best: Option<(&musializer_core::project::lyrics::LyricCue, f64)> = None;
+    for cue in document.cues() {
+        if cue.text.trim() != wanted {
+            continue;
+        }
+        let distance = entry
+            .start_seconds
+            .map_or(0.0, |start| (cue.start_seconds - start).abs());
+        // `is_none_or` is 1.82 and this tree's MSRV is 1.80.
+        if best.map_or(true, |(_, previous)| distance < previous) {
+            best = Some((cue, distance));
+        }
+    }
+    best.map(|(cue, _)| cue.id)
+}
+
+/// What a review row's press did, so a test and a report line can both see it
+/// (review LT1-R, R9).
+///
+/// An enum rather than a `bool` for the reason `BeatUpdate` is one: "nothing was
+/// selected" covers three different outcomes here — a line with a cue, a line
+/// without one, and a press refused because an unsaved draft is in the way — and
+/// collapsing them would hide the case R9 is really about.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ReviewNavigation {
+    /// The line has a cue: the form is bound to it and the playhead moved to it.
+    Cue { id: u64, seconds: f64 },
+    /// No cue carries this line. The Lyrics panel is open at the proposed time
+    /// (`None` when even the coarse view proposed nothing) and a notice names
+    /// the line, because a silent no-op is indistinguishable from a broken row.
+    NoCue { seconds: Option<f64> },
+    /// An unsaved lyric draft blocks every context change in this interface, and
+    /// this row is no exception (review 1.3's guard).
+    Refused,
+}
+
+impl ReviewNavigation {
+    fn describe(&self, entry: &LyricReviewEntry) -> String {
+        match self {
+            ReviewNavigation::Cue { id, seconds } => format!(
+                "line {} -> cue {id} at {} (Lyrics panel)",
+                entry.line_number,
+                review_clock(*seconds)
+            ),
+            ReviewNavigation::NoCue {
+                seconds: Some(seconds),
+            } => format!(
+                "line {} -> no cue; Lyrics panel at the proposed {}",
+                entry.line_number,
+                review_clock(*seconds)
+            ),
+            ReviewNavigation::NoCue { seconds: None } => format!(
+                "line {} -> no cue and no proposed time; Lyrics panel, playhead unchanged",
+                entry.line_number
+            ),
+            ReviewNavigation::Refused => format!(
+                "line {} refused: an unsaved lyric draft is open",
+                entry.line_number
+            ),
+        }
+    }
+}
+
+/// The review list's own `m:ss.s`, so a tooltip and a report line read like the
+/// row above them.
+///
+/// A duplicate of `analysis_candidate`'s private `clock`, deliberately: the
+/// alternative is `widgets::format_timestamp`, whose `00:04.000` is the
+/// transport's grammar and not this list's, and widening the core's function to
+/// `pub` for a tooltip would export a formatting detail as an interface.
+fn review_clock(seconds: f64) -> String {
+    if !seconds.is_finite() {
+        return "?".to_string();
+    }
+    let seconds = seconds.max(0.0);
+    let minutes = (seconds / 60.0).floor();
+    let rest = seconds - minutes * 60.0;
+    format!("{minutes:.0}:{rest:04.1}")
+}
+
+/// The tooltip a review row carries, which has to tell the truth *before* the
+/// click rather than after it.
+///
+/// A row that reads "open this cue" and then opens nothing is the silent no-op
+/// R9 complains about, wearing a label. So the text is built from the same
+/// resolution the press will perform.
+fn review_row_hint(entry: &LyricReviewEntry, cue: Option<u64>) -> String {
+    match (cue, entry.start_seconds) {
+        (Some(_), _) => format!(
+            "Open line {} in the Lyrics panel and select its cue",
+            entry.line_number
+        ),
+        (None, Some(start)) => format!(
+            "Open the Lyrics panel at the proposed {} — line {} has no cue yet",
+            review_clock(start),
+            entry.line_number
+        ),
+        (None, None) => format!(
+            "Open the Lyrics panel — line {} has no cue and no proposed time",
+            entry.line_number
+        ),
+    }
+}
+
+/// Row index a probe run presses, one row per process (review LT1-R, R9).
+///
+/// A headless run has no pointer that can *click*: `--ui-probe hover=` parks one
+/// but nothing in the grammar releases a button, and the grammar lives in
+/// `cli.rs`, which is not this agent's file. So the post-click frame reaches a
+/// capture the same way [`PROBE_ARTIFACT_DIR_VARIABLE`] and
+/// [`PROBE_LANES_VARIABLE`] reach one.
+///
+/// It presses the row through the same [`Shell::open_lyric_review_row`] a real
+/// press goes through, so what a capture photographs is the real navigation and
+/// not a picture of it.
+pub const PROBE_ACTIVATE_ROW_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW";
+
+thread_local! {
+    /// Whether the probe press named by [`PROBE_ACTIVATE_ROW_VARIABLE`] has been
+    /// delivered. Once per process: a press repeated every frame would re-seek
+    /// under playback and push one notice per frame.
+    static PROBE_ROW_PRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The row a probe run wants pressed, once.
+fn probe_activated_row() -> Option<usize> {
+    if PROBE_ROW_PRESSED.with(std::cell::Cell::get) {
+        return None;
+    }
+    let row = std::env::var(PROBE_ACTIVATE_ROW_VARIABLE)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())?;
+    PROBE_ROW_PRESSED.with(|pressed| pressed.set(true));
+    Some(row)
+}
 
 /// How many review rows fit between `first_row_y` and the panel's clip edge.
 ///
@@ -1650,15 +1845,23 @@ fn review_row_capacity(first_row_y: f32, clip_bottom: f32) -> usize {
     }
 }
 
+/// One frame of the review list, drawn and pressed.
+///
+/// `document` is the lyric document the *Lyrics panel* edits, not the staged
+/// candidate's: the tooltip has to promise what the press will actually do, and
+/// what it can do is bind a cue that exists where the user is about to be sent.
+#[allow(clippy::too_many_arguments)]
 fn draw_lyrics_review(
     d: &mut RaylibDrawHandle<'_>,
+    widgets_state: &mut Widgets,
     font: &UiFonts,
     review: &LyricsReview,
+    document: Option<&LyricsDocument>,
     x: f32,
     y: f32,
     width: f32,
     clip_bottom: f32,
-) -> ReviewDraw {
+) -> (ReviewDraw, Option<usize>) {
     let measure = |line: &str| widgets::measure(font, line, REVIEW_FONT_SIZE);
     let mut row_y = y + 18.0;
     // The whole block, heading included, is dropped rather than half-drawn: a
@@ -1666,7 +1869,7 @@ fn draw_lyrics_review(
     // names and delivers none.
     let capacity = review_row_capacity(row_y, clip_bottom);
     if capacity == 0 {
-        return ReviewDraw::default();
+        return (ReviewDraw::default(), None);
     }
     let (shown, hidden) = review_rows(review, capacity.min(REVIEW_MAX_ROWS));
 
@@ -1716,13 +1919,40 @@ fn draw_lyrics_review(
             REVIEW_FONT_SIZE,
             color::ui_muted(),
         );
-        return ReviewDraw {
-            rows: 0,
-            tail: false,
-        };
+        return (
+            ReviewDraw {
+                rows: 0,
+                tail: false,
+            },
+            None,
+        );
     }
 
-    for entry in review.entries.iter().take(shown) {
+    // Where the rows landed, so the headless gate can park a pointer on one
+    // rather than on a coordinate somebody measured off a screenshot once.
+    report_review_rows(&format!(
+        "x={x:.0} y={row_y:.0} width={width:.0} pitch={REVIEW_ROW_HEIGHT:.0} \
+         rows={shown} hint=\"{REVIEW_FIX_HINT}\""
+    ));
+
+    let mut activated = None;
+    for (index, entry) in review.entries.iter().take(shown).enumerate() {
+        // The row is its own press area, full block width: a list row is the
+        // affordance a reader already knows, and a hit box narrower than the ink
+        // is a control that misses when you aim at it.
+        let row = UiRect::new(x, row_y - 2.0, width, REVIEW_ROW_HEIGHT);
+        let id = widgets::widget_id(ASSIST_WIDGETS, REVIEW_ROW_WIDGET_BASE + index as u32);
+        let state = widgets_state.button(d, id, row);
+        if state.hovered {
+            // Drawn behind the text, and the same fill a track row uses, so the
+            // interface has one hover vocabulary rather than a private one here.
+            widgets::fill(d, row, color::track_button_hoverover());
+        }
+        let cue = document.and_then(|document| review_entry_cue(entry, document));
+        widgets_state.hint(d, state, id, row, &review_row_hint(entry, cue));
+        if state.clicked {
+            activated = Some(index);
+        }
         widgets::draw_text(
             d,
             font,
@@ -1759,10 +1989,13 @@ fn draw_lyrics_review(
             color::ui_muted(),
         );
     }
-    ReviewDraw {
-        rows: shown,
-        tail: hidden > 0,
-    }
+    (
+        ReviewDraw {
+            rows: shown,
+            tail: hidden > 0,
+        },
+        activated,
+    )
 }
 
 /// Draws the sentence naming why Apply is greyed out, in the slot the row gave
@@ -1983,6 +2216,7 @@ impl Shell {
             panel_content,
             padding,
             gap,
+            commands,
         );
     }
 
@@ -2146,6 +2380,7 @@ impl Shell {
         content: AssistPanelContent,
         padding: f32,
         gap: f32,
+        commands: &mut Vec<ShellCommand>,
     ) {
         let font = input.fonts.ui();
         let session = &input.workspace.assist;
@@ -2269,7 +2504,7 @@ impl Shell {
                 );
             }
             AssistPanelContent::Candidate => {
-                self.assist_candidate_body(d, input, boundary, action_y, padding, gap);
+                self.assist_candidate_body(d, input, boundary, action_y, padding, gap, commands);
             }
             AssistPanelContent::Empty => {
                 let (line, tint) = if session.job_state == AssistJobState::Succeeded {
@@ -2391,6 +2626,10 @@ impl Shell {
     ///
     /// Every line reads `before -> after`, because "12 lyrics" does not tell
     /// anyone whether applying replaces two cues or two hundred.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the review rows emit a Seek, so the body needs the command sink the panel already threads"
+    )]
     fn assist_candidate_body(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -2399,6 +2638,7 @@ impl Shell {
         action_y: f32,
         padding: f32,
         gap: f32,
+        commands: &mut Vec<ShellCommand>,
     ) {
         let font = input.fonts.ui();
         let workspace = input.workspace;
@@ -2555,10 +2795,16 @@ impl Shell {
         // none. `attach_lyrics_review` already refuses one, and this is the
         // second lock on the same door — the drawing cannot outlive the lane.
         if let Some(review) = candidate.lyrics_review().filter(|_| available.lyrics) {
-            let drawn = draw_lyrics_review(
+            // The document the *Lyrics panel* edits, which is the one a press can
+            // send the user into. Not the candidate's staged lane: until Apply
+            // runs, that lane's cues do not exist anywhere the user can drag one.
+            let document = workspace.current().map(|track| &track.lyrics);
+            let (drawn, pressed) = draw_lyrics_review(
                 d,
+                &mut self.widgets,
                 font,
                 review,
+                document,
                 x,
                 action_y + REVIEW_BLOCK_OFFSET,
                 (boundary.width - padding * 2.0).max(0.0),
@@ -2569,7 +2815,91 @@ impl Shell {
                 boundary.y + boundary.height - 1.0,
             );
             report_review(describe_review(Some(candidate), drawn));
+            // A probe press only reaches rows the panel drew, so a capture cannot
+            // claim to have pressed a row the scissor ate.
+            let pressed = pressed.or_else(|| probe_activated_row().filter(|row| *row < drawn.rows));
+            if let Some(entry) = pressed.and_then(|row| review.entries.get(row)) {
+                let outcome = self.open_lyric_review_row(entry, workspace, commands);
+                println!("assist review nav: {}", outcome.describe(entry));
+            }
         }
+    }
+
+    /// A flagged review row, pressed: the route from "this line is wrong" to the
+    /// panel that fixes it (review LT1-R, R9).
+    ///
+    /// Three separate things, and each of them is refusable on its own:
+    ///
+    /// - **The panel switch** goes through [`Shell::panel`] directly, as the
+    ///   Export panel's own Close button does. It is guarded by
+    ///   [`Shell::lyric_draft_allows_context_change`] first, because every other
+    ///   route into the Lyrics panel is — the toolbar button, a track row, an
+    ///   Open — and a row that silently discarded a half-typed cue would be the
+    ///   one exception.
+    /// - **The selection** binds the form to a cue that carries this line, and to
+    ///   nothing otherwise. [`Self::lyrics`] is entered on the current slot first:
+    ///   the panel calls `enter_track` itself on its next frame, and if that call
+    ///   is the *first* one it clears the draft — including the selection this
+    ///   press just made.
+    /// - **The seek** is a [`ShellCommand::Seek`], because the transport lives in
+    ///   `main.rs`. An unresolved line seeks to the coarse proposal, which is a
+    ///   guess and is labelled as one on the row; the Lyrics panel is where the
+    ///   user listens and places it.
+    ///
+    /// The caption panes are closed on the way in. Landing on typography would be
+    /// a panel switch that did not arrive.
+    fn open_lyric_review_row(
+        &mut self,
+        entry: &LyricReviewEntry,
+        workspace: &Workspace,
+        commands: &mut Vec<ShellCommand>,
+    ) -> ReviewNavigation {
+        if !self.lyric_draft_allows_context_change(workspace) {
+            return ReviewNavigation::Refused;
+        }
+        self.panel = UiPanel::Lyrics;
+        self.lyrics.style_pane = false;
+        self.lyrics.font_pane = false;
+        self.lyrics.effects_pane = false;
+        self.lyrics.enter_track(workspace.current_index());
+
+        let document = workspace.current().map(|track| &track.lyrics);
+        let cue = document
+            .and_then(|document| review_entry_cue(entry, document).map(|id| (document, id)));
+        if let Some((document, id)) = cue {
+            self.lyrics.select_single(document, id);
+            // The cue's own start, not the review's: the review records where the
+            // job put the line, and the document records where it is now. The
+            // user is going to look at the second one.
+            let seconds = document
+                .find(id)
+                .map_or(0.0, |cue| cue.start_seconds)
+                .max(0.0);
+            commands.push(ShellCommand::Seek(seconds));
+            return ReviewNavigation::Cue { id, seconds };
+        }
+
+        // No cue, and deliberately no substitute for one. What is left that is
+        // honest: the proposed time, and the line's own words — which the user
+        // needs, because the Lyrics panel has no row for a line that is not a cue
+        // and would otherwise show them an empty list at a plausible timestamp.
+        let seconds = entry
+            .start_seconds
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0);
+        if let Some(seconds) = seconds {
+            commands.push(ShellCommand::Seek(seconds));
+        }
+        self.notify(
+            Severity::Info,
+            "This line has no cue yet",
+            &format!(
+                "Line {} \"{}\" is {}. Add it here, or Apply the staged lyrics first.",
+                entry.line_number,
+                entry.text,
+                entry.window()
+            ),
+        );
+        ReviewNavigation::NoCue { seconds }
     }
 
     /// The three Copy buttons (`draw_assist_artifact_actions`, `plug.c:2069-2110`).
@@ -3694,6 +4024,284 @@ mod tests {
         // One row fewer than the list, and the tail appears rather than a row
         // silently going missing.
         assert_eq!(review_rows(&review, 1), (0, 2));
+    }
+
+    // -----------------------------------------------------------------------
+    // Row -> Lyrics panel navigation (review LT1-R, R9).
+    //
+    // Driven through `Shell::open_lyric_review_row`, which is the whole press
+    // minus the rectangle: the panel switch, the cue binding and the emitted
+    // `Seek`. A capture can show that a row is hoverable and that the Lyrics
+    // panel arrived; only a test can say *which* cue the form ended up bound to,
+    // and "some cue" is precisely the wrong answer R9 is about.
+    // -----------------------------------------------------------------------
+
+    /// A workspace whose current track carries the two lines `LT1_DOCUMENT`
+    /// flags, as cues — the state after Apply, which is when a user is retiming.
+    ///
+    /// The repeated line is deliberate: `review_entry_cue` breaks a text tie on
+    /// time, and a fixture with one occurrence of everything could not tell a
+    /// working tie-break from an accidental `first()`.
+    fn workspace_with_cues() -> Workspace {
+        use musializer_core::project::lyrics::LyricCue;
+
+        let mut workspace = Workspace::new();
+        workspace.push(
+            Track::new(PathBuf::from("/tmp/lt1r.wav"), 120.0, SceneId::Spectrum, 7).expect("track"),
+        );
+        let document = &mut workspace.get_mut(0).expect("slot 0").lyrics;
+        for (start, text) in [
+            (4.0, "we were never meant to stay"),
+            (12.0, "and the lights came up anyway"),
+            (48.0, "we were never meant to stay"),
+        ] {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 2.0,
+                    text: text.to_string(),
+                })
+                .expect("cue");
+        }
+        workspace
+    }
+
+    /// The two named entries `LT1_DOCUMENT` produces: `[0]` is the UNPLACED line
+    /// with a coarse proposal, `[1]` the CHECK line that has a cue.
+    fn lt1_entries(scratch: &Scratch, name: &str) -> Vec<LyricReviewEntry> {
+        let folder = review_job_folder(scratch, name, LT1_MANIFEST, LT1_DOCUMENT);
+        read_lyrics_review(&folder.display().to_string())
+            .expect("review")
+            .entries
+    }
+
+    #[test]
+    fn a_flagged_row_opens_the_lyrics_panel_on_that_lines_own_cue() {
+        let scratch = Scratch::new("nav-cue");
+        let entries = lt1_entries(&scratch, "cue");
+        let workspace = workspace_with_cues();
+        let mut shell = Shell::new();
+        // The state a user reaches by browsing typography before the review:
+        // landing on the caption panes would be a switch that did not arrive.
+        shell.lyrics.style_pane = true;
+        shell.lyrics.effects_pane = true;
+        let mut commands = Vec::new();
+
+        let entry = &entries[1];
+        assert_eq!(entry.kind, LyricReviewKind::Disagreement);
+        let outcome = shell.open_lyric_review_row(entry, &workspace, &mut commands);
+
+        let id = workspace.get(0).expect("slot 0").lyrics.cues()[0].id;
+        assert_eq!(outcome, ReviewNavigation::Cue { id, seconds: 4.0 });
+        assert_eq!(shell.panel, UiPanel::Lyrics);
+        assert!(!shell.lyrics.style_pane && !shell.lyrics.effects_pane);
+        assert_eq!(shell.lyrics.selected_id, id);
+        assert_eq!(commands, vec![ShellCommand::Seek(4.0)]);
+        assert_eq!(
+            outcome.describe(entry),
+            "line 1 -> cue 1 at 0:04.0 (Lyrics panel)"
+        );
+    }
+
+    /// The selection has to survive the *panel's* own first frame.
+    ///
+    /// `lyrics_panel` calls `enter_track` before it draws anything, and the first
+    /// such call on a fresh editor clears the draft — which is the selection this
+    /// press just made. Entering the slot inside the press is what makes the
+    /// panel's call a no-op; without it the user arrives at an unbound form and
+    /// the row looks like it did nothing.
+    #[test]
+    fn the_selection_survives_the_lyrics_panels_own_track_binding() {
+        let scratch = Scratch::new("nav-survives");
+        let entries = lt1_entries(&scratch, "survives");
+        let workspace = workspace_with_cues();
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+
+        shell.open_lyric_review_row(&entries[1], &workspace, &mut commands);
+        let selected = shell.lyrics.selected_id;
+        assert_ne!(selected, 0);
+        assert!(
+            !shell.lyrics.enter_track(workspace.current_index()),
+            "the panel's own binding must find the slot already entered"
+        );
+        assert_eq!(shell.lyrics.selected_id, selected);
+    }
+
+    /// An unresolved line has no cue anywhere, and must not borrow one.
+    #[test]
+    fn an_unresolved_row_lands_at_the_proposal_and_names_the_line() {
+        let scratch = Scratch::new("nav-unresolved");
+        let entries = lt1_entries(&scratch, "unresolved");
+        let workspace = workspace_with_cues();
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+
+        let entry = &entries[0];
+        assert_eq!(entry.kind, LyricReviewKind::Unresolved);
+        let outcome = shell.open_lyric_review_row(entry, &workspace, &mut commands);
+
+        assert_eq!(
+            outcome,
+            ReviewNavigation::NoCue {
+                seconds: Some(90.6)
+            }
+        );
+        assert_eq!(shell.panel, UiPanel::Lyrics);
+        assert_eq!(
+            shell.lyrics.selected_id, 0,
+            "no cue carries this line, so nothing may be bound"
+        );
+        assert_eq!(commands, vec![ShellCommand::Seek(90.6)]);
+        // Not a silent no-op: the words the user has to find are on screen.
+        assert_eq!(shell.notices.len(), 1);
+        let notice = shell.notices.notices()[0].detail.clone();
+        assert!(
+            notice.contains("hold the note until it breaks")
+                && notice.contains("proposed 1:30.6-1:34.2"),
+            "the notice must carry the line and its proposed window: {notice}"
+        );
+    }
+
+    /// The one case with nothing to seek to: the coarse view proposed nothing
+    /// either. The panel still opens, and the playhead is left where it was
+    /// rather than sent to zero as if that meant something.
+    #[test]
+    fn a_row_with_no_proposed_time_opens_the_panel_and_seeks_nowhere() {
+        let workspace = workspace_with_cues();
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        let entry = LyricReviewEntry {
+            kind: LyricReviewKind::Abstained,
+            line_number: 31,
+            text: "and again, and again".to_string(),
+            start_seconds: None,
+            end_seconds: None,
+            reason: "repeated phrase could not be pinned".to_string(),
+            delta_seconds: None,
+        };
+
+        let outcome = shell.open_lyric_review_row(&entry, &workspace, &mut commands);
+        assert_eq!(outcome, ReviewNavigation::NoCue { seconds: None });
+        assert_eq!(shell.panel, UiPanel::Lyrics);
+        assert!(commands.is_empty(), "there is no honest second to seek to");
+        assert_eq!(
+            outcome.describe(&entry),
+            "line 31 -> no cue and no proposed time; Lyrics panel, playhead unchanged"
+        );
+    }
+
+    /// Every other route into the Lyrics panel is guarded by the unsaved-draft
+    /// rule (review 1.3). A row that discarded a half-typed cue on the way to
+    /// showing you a different one would be the exception that makes the guard
+    /// worthless.
+    #[test]
+    fn a_row_press_is_refused_while_an_unsaved_lyric_draft_is_open() {
+        let scratch = Scratch::new("nav-refused");
+        let entries = lt1_entries(&scratch, "refused");
+        let workspace = workspace_with_cues();
+        let document = workspace.get(0).expect("slot 0").lyrics.clone();
+        let mut shell = Shell::new();
+        shell
+            .lyrics
+            .open_dirty_draft_for_test(0, &document, document.cues()[1].id);
+        let dirty_id = shell.lyrics.selected_id;
+        let mut commands = Vec::new();
+
+        let outcome = shell.open_lyric_review_row(&entries[1], &workspace, &mut commands);
+        assert_eq!(outcome, ReviewNavigation::Refused);
+        assert_eq!(shell.panel, UiPanel::None, "the panel did not switch");
+        assert_eq!(shell.lyrics.selected_id, dirty_id, "the draft is untouched");
+        assert!(commands.is_empty());
+    }
+
+    /// The tie-break, and the thing it must never do: match on time alone.
+    #[test]
+    fn a_repeated_line_binds_the_nearest_occurrence_and_a_missing_one_binds_nothing() {
+        let workspace = workspace_with_cues();
+        let document = &workspace.get(0).expect("slot 0").lyrics;
+        let ids: Vec<u64> = document.cues().iter().map(|cue| cue.id).collect();
+
+        let repeated = |start: Option<f64>| LyricReviewEntry {
+            kind: LyricReviewKind::Disagreement,
+            line_number: 1,
+            text: "we were never meant to stay".to_string(),
+            start_seconds: start,
+            end_seconds: start.map(|start| start + 2.0),
+            reason: String::new(),
+            delta_seconds: None,
+        };
+        // Two cues carry this text; the review's own window picks between them.
+        assert_eq!(
+            review_entry_cue(&repeated(Some(5.0)), document),
+            Some(ids[0])
+        );
+        assert_eq!(
+            review_entry_cue(&repeated(Some(47.0)), document),
+            Some(ids[2])
+        );
+        // No window at all still binds — the text is the identity, the time is
+        // only the tie-break — and takes the first occurrence.
+        assert_eq!(review_entry_cue(&repeated(None), document), Some(ids[0]));
+
+        // And a line no cue carries binds nothing, however close a cue is to it.
+        let absent = LyricReviewEntry {
+            text: "hold the note until it breaks".to_string(),
+            ..repeated(Some(4.1))
+        };
+        assert_eq!(
+            review_entry_cue(&absent, document),
+            None,
+            "a neighbouring cue is not this line's cue"
+        );
+        // Surrounding space is the one difference either side can introduce.
+        let padded = LyricReviewEntry {
+            text: "  we were never meant to stay\n".to_string(),
+            ..repeated(Some(5.0))
+        };
+        assert_eq!(review_entry_cue(&padded, document), Some(ids[0]));
+    }
+
+    /// The tooltip has to promise what the press will do, or the row is a silent
+    /// no-op wearing a label.
+    #[test]
+    fn the_row_hint_says_which_of_the_three_outcomes_this_row_has() {
+        let scratch = Scratch::new("nav-hint");
+        let entries = lt1_entries(&scratch, "hint");
+        assert_eq!(
+            review_row_hint(&entries[1], Some(3)),
+            "Open line 1 in the Lyrics panel and select its cue"
+        );
+        assert_eq!(
+            review_row_hint(&entries[1], None),
+            "Open the Lyrics panel at the proposed 0:12.0 — line 1 has no cue yet"
+        );
+        assert_eq!(
+            review_row_hint(&entries[0], None),
+            "Open the Lyrics panel at the proposed 1:30.6 — line 26 has no cue yet"
+        );
+        let no_time = LyricReviewEntry {
+            start_seconds: None,
+            end_seconds: None,
+            ..entries[0].clone()
+        };
+        assert_eq!(
+            review_row_hint(&no_time, None),
+            "Open the Lyrics panel — line 26 has no cue and no proposed time"
+        );
+    }
+
+    #[test]
+    fn the_probe_row_press_is_delivered_once_and_only_when_asked() {
+        assert_eq!(
+            PROBE_ACTIVATE_ROW_VARIABLE,
+            "MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW"
+        );
+        // Unset in this process, so the seam is inert for every other test and
+        // for every run that did not ask for it.
+        assert_eq!(probe_activated_row(), None);
+        assert!(!PROBE_ROW_PRESSED.with(std::cell::Cell::get));
     }
 
     #[test]

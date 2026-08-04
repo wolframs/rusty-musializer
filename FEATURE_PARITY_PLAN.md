@@ -1046,7 +1046,7 @@ review flags come from cross-lane disagreement and unresolved lines
 Independent user-perspective review of `7881776` (2026-08-04): ten confirmed
 defects plus one verification blind spot; fixtures and captures under
 `build/review-lt1/`. Fixed 2026-08-05 with two demonstrated negative controls;
-R9 keeps only its honest hint, navigation deferred.
+R9's navigation followed on 2026-08-05.
 
 - [x] R1 stale review: a per-audio cache dir plus a manifest that names every
       artifact makes a Sections run display the previous Full-assist run's
@@ -1068,9 +1068,25 @@ R9 keeps only its honest hint, navigation deferred.
 - [x] R7 "line 1 0:12.0" reads as "line 10:12.0" — separator.
 - [x] R8 UNPLACED rows show the coarse *proposal* in the same grammar as real
       placements; label it as proposed.
-- [ ] R9 no route from a flagged line to where it gets fixed. The honest hint
-      ("Retime cues in the Lyrics panel") shipped 2026-08-05; the open remainder
-      is real cross-panel navigation from a flagged row.
+- [x] R9 (2026-08-05) no route from a flagged line to where it gets fixed. The
+      row is now the route: pressing one opens the Lyrics panel, binds the cue
+      that carries **that line's text** — never a neighbour by time — and emits
+      `ShellCommand::Seek`. An unresolved line has no cue to bind, so it lands at
+      the coarse proposal and a notice names the line and its window; the
+      heading's hint became "Click a line to open it in Lyrics" and every row
+      carries a `widgets::hint` tooltip naming which of the three outcomes it
+      has. Guarded by `lyric_draft_allows_context_change`, like every other route
+      into that panel. Evidence: eight tests through the command seam (which cue
+      was bound is not something a capture can assert), a hover capture
+      (`assist-review-hover`, tip 20/237 against a bare 247, row fill 234 against
+      247 for the same row unpointed and 247 for its neighbour) and two press
+      captures over the seeded project (`assist-nav-cue`, `assist-nav-unplaced`).
+      Negative control: falling back to nearest-by-time made the unplaced row
+      bind cue #5, which both press assertions catch. **Limitation:** rows are
+      pointer-only. `ui/widgets.rs` has no focus or traversal model at all — no
+      surface in this interface is keyboard-reachable except through the global
+      `KeyboardFrame` shortcuts — so a focus ring here would be half a model in
+      one panel. Recorded rather than invented.
 - [x] R10 manifest/document count disagreement is resolved silently; make it
       visible or report-asserted.
 - [x] R11 `probe_candidate` hardcodes all lanes, so a lyrics-only candidate is
@@ -1119,12 +1135,24 @@ R9 keeps only its honest hint, navigation deferred.
       `sha256` where practical, language support, GPU readiness. Evidence: a
       schema test on doctor output; a missing binary yields a per-runtime
       `unavailable` state with a remediation string, not a global failure.
-- [ ] AP2-b models-directory resolution per the operator rule: default
+- [x] AP2-b (2026-08-05; 9 pure tests in `core::assist::models_dir`, 8 probe
+      tests in `runtime::assist::models`, 12 doctor tests) models-directory
+      resolution per the operator rule: default
       `<install dir>/models/`, fallback to a home-directory musializer folder
       when unwritable, always overridable and always displayed. Evidence: pure
       unit tests over an injected writability probe (writable default,
       unwritable default, explicit override); the resolved path appears in
       doctor output.
+      The resolution is pure (`ModelsDirRequest` in, `ModelsDirResolution` out,
+      probe injected); the real probe creates and removes one file in the
+      nearest existing ancestor, because permission arithmetic gets read-only
+      mounts and full filesystems wrong. `ModelsDirResolution` carries every
+      losing candidate, and the doctor prints all of them plus "an override
+      wins over the default above", so the rule's "never a location the user
+      was not shown" is visible rather than implied. Negative controls: the
+      home fallback promoted above a writable install default fails 1 core
+      test; a writable default beating the user's override fails 3 doctor
+      tests; both reverted byte-for-byte (`sha256sum -c`).
 - [x] AP2-c (2026-08-04; live `codex app-server` JSON-RPC probe returned 7
       models, old-Codex stub yields `Codex default`) Codex `model/list` discovery where the installed Codex supports it;
       cache non-secret catalog metadata only. Evidence: a stubbed old-Codex
@@ -1137,12 +1165,24 @@ R9 keeps only its honest hint, navigation deferred.
       timestamps, filters, atomic replacement. Evidence: malformed, oversized,
       duplicated-id and truncated inputs are each refused while the prior valid
       cache stays readable.
-- [ ] AP2-e suitability overlay: a versioned in-repo table keyed by (model id,
+- [x] AP2-e (2026-08-05; 8 tests in `core::assist::suitability`, 3 seeded rows)
+      suitability overlay: a versioned in-repo table keyed by (model id,
       contract id) with `recommended`/`experimental`/`unsupported`, evidence
       date, prompt/schema version, scope, languages, limitations. Evidence:
       every `recommended` row names an evidence date and a benchmarked
       prompt/schema version; an absent model resolves to `experimental`, never
       `recommended`.
+      A `const` table (`OVERLAY`, revision
+      `musializer.assist-suitability/2026-08-04`) rather than an asset, because
+      core opens no files and a mistyped contract id should not compile. The
+      three rows are this repository's real evidence and nothing else:
+      `mms-ctc`/`TC-ALIGN` recommended (2026-08-04, four-track benchmark plus
+      operator adjudication, `anchor-block-mms/1`,
+      `musializer.lyric-timing/v1`); `qwen3-fa`/`TC-ALIGN` unsupported (failed
+      its decision gate the same day); `xiaomi/mimo-v2.5`/`TC-SEMANTIC`
+      experimental (in use, never benchmarked). Negative control: defaulting an
+      absent pair to `recommended` fails the lookup test; reverted
+      byte-for-byte.
 - [ ] AP2-f offline/stale UX (cached catalog with an honest age badge, no
       network hang) — deferred to the dialog tranche (P3), which owns the
       surface it renders on.
