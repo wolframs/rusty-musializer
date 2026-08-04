@@ -45,7 +45,7 @@ use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::{GlyphRepertoire, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
-use super::super::shell::{Shell, ShellCommand, ShellInput};
+use super::super::shell::{draw_timeline_playhead, Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::DEFAULT_TIMELINE_HEIGHT;
 use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
@@ -199,6 +199,10 @@ mod caption_id {
 /// than text, so nothing in the contrast suite would have an opinion about it;
 /// the request to move it there is in the report.
 const LYRIC_BLOCK: Color = Color::new(242, 190, 66, 255);
+
+fn lyric_lane_hover_allowed(lane: UiRect, pointer: Vector2, drag_active: bool) -> bool {
+    !drag_active && lane.contains_point(pointer.x, pointer.y)
+}
 
 /// The pale wash behind a selected row (`GetColor(0xE7ECFAFF)`, `:1238`).
 const SELECTED_ROW: u32 = 0xE7EC_FAFF;
@@ -1076,6 +1080,7 @@ impl Shell {
         if lane.is_empty() {
             return;
         }
+        self.timeline_pan_gesture(d, input, lane);
         self.lane_gesture(d, input.ui_scale, editor, track, lane);
 
         widgets::fill(d, lane, color::ui_raised());
@@ -1091,7 +1096,7 @@ impl Shell {
         // No hover highlight while a gesture is in flight, which is the C's
         // `*active_button_id == 0` guard (`:1006-1009`) expressed against the one
         // claim this lane actually has.
-        let hover = if editor.lane_drag.active {
+        let hover = if !lyric_lane_hover_allowed(lane, mouse, editor.lane_drag.active) {
             None
         } else {
             lyric_lane_edit::hit_test(
@@ -1204,16 +1209,14 @@ impl Shell {
 
         // The playhead, over the blocks. The strip above draws its own; this lane
         // is a second view of the same span and would be hard to read without one.
-        let playhead =
-            view.x_at(input.time_seconds, f64::from(lane.x), f64::from(lane.width)) as f32;
-        if playhead >= lane.x && playhead <= lane.x + lane.width {
-            d.draw_line_ex(
-                Vector2::new(playhead, lane.y),
-                Vector2::new(playhead, lane.y + lane.height),
-                1.0,
-                color::accent(),
-            );
-        }
+        draw_timeline_playhead(
+            d,
+            view,
+            lane,
+            self.timeline_playhead_seconds(input.time_seconds),
+            1.0,
+            false,
+        );
         if track.lyrics.is_empty() {
             widgets::draw_text(
                 d,
@@ -3832,6 +3835,32 @@ mod tests {
                 .expect("the fixture cues are valid");
         }
         document
+    }
+
+    #[test]
+    fn lyric_hover_requires_both_axes_of_the_actual_cue_lane() {
+        let lane = UiRect::new(100.0, 400.0, 500.0, 22.0);
+        assert!(lyric_lane_hover_allowed(
+            lane,
+            Vector2::new(250.0, 410.0),
+            false
+        ));
+        // Same X as a cue, but in the scene preview and PCM lane respectively.
+        assert!(!lyric_lane_hover_allowed(
+            lane,
+            Vector2::new(250.0, 200.0),
+            false
+        ));
+        assert!(!lyric_lane_hover_allowed(
+            lane,
+            Vector2::new(250.0, 360.0),
+            false
+        ));
+        assert!(!lyric_lane_hover_allowed(
+            lane,
+            Vector2::new(250.0, 410.0),
+            true
+        ));
     }
 
     #[test]

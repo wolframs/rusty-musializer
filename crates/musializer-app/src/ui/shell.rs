@@ -209,8 +209,20 @@ pub struct Shell {
     /// release: repeatedly flushing and refilling a decoder while the pointer
     /// moves is both audible and needlessly expensive.
     scrub_target_seconds: Option<f64>,
+    /// Release-frame preview retained until the composition root applies the
+    /// emitted seek after drawing. Prevents a one-frame snap back to decoder time.
+    scrub_release_preview_seconds: Option<f64>,
     /// Whether playback should resume after the release-time seek.
     scrub_restore_playing: bool,
+    /// Origin of a middle-button timeline pan. The view is recomputed from this
+    /// fixed pair each frame, so pointer sampling jitter cannot accumulate.
+    timeline_pan: Option<TimelinePan>,
+    /// A manual pan deliberately detaches the view from playback-follow until
+    /// the user asks to Follow again.
+    timeline_manual_view: bool,
+    /// Wheel zoom captured over the PCM lane and applied at the start of the
+    /// next frame, before any aligned lane draws.
+    timeline_zoom_pending: Option<(f64, f64)>,
     /// A drag in flight on the transport row's position bar (review 1.9,
     /// UX0-A09).
     ///
@@ -264,7 +276,83 @@ enum SplitKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TimelineGesture {
     Scrub,
+    Pan,
     SceneBoundary,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TimelinePan {
+    origin_x: f32,
+    origin_start_seconds: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PlayheadGeometry {
+    line_x: f32,
+    handle_x: Option<f32>,
+}
+
+fn playhead_geometry(
+    lane: UiRect,
+    raw_x: f32,
+    line_width: f32,
+    handle: bool,
+) -> Option<PlayheadGeometry> {
+    if lane.is_empty() || !raw_x.is_finite() || raw_x < lane.x || raw_x > lane.x + lane.width {
+        return None;
+    }
+    let half_line = line_width.max(1.0) * 0.5;
+    let line_low = lane.x + half_line;
+    let line_high = lane.x + lane.width - half_line;
+    let snapped_low = line_low.ceil();
+    let snapped_high = line_high.floor();
+    if snapped_low > snapped_high {
+        return None;
+    }
+    let handle_x = if handle && lane.width >= 10.0 {
+        Some(raw_x.clamp(lane.x + 5.0, lane.x + lane.width - 5.0).round())
+    } else {
+        None
+    };
+    Some(PlayheadGeometry {
+        // Integer logical pixels keep the high-contrast marker stable while the
+        // waveform scrolls fractionally beneath it.
+        line_x: raw_x.round().clamp(snapped_low, snapped_high),
+        handle_x,
+    })
+}
+
+/// Draw one bounded, pixel-snapped playhead on any timed lane.
+///
+/// The line keeps the exact edge position as closely as its stroke permits. The
+/// optional triangular handle moves inward near either edge, so the end-of-track
+/// marker never paints outside the PCM element.
+pub(crate) fn draw_timeline_playhead<D: RaylibDraw>(
+    d: &mut D,
+    view: TimelineView,
+    lane: UiRect,
+    seconds: f64,
+    line_width: f32,
+    handle: bool,
+) {
+    let raw_x = view.x_at(seconds, f64::from(lane.x), f64::from(lane.width)) as f32;
+    let Some(geometry) = playhead_geometry(lane, raw_x, line_width, handle) else {
+        return;
+    };
+    d.draw_line_ex(
+        Vector2::new(geometry.line_x, lane.y),
+        Vector2::new(geometry.line_x, lane.y + lane.height),
+        line_width,
+        color::accent(),
+    );
+    if let Some(handle_x) = geometry.handle_x {
+        d.draw_triangle(
+            Vector2::new(handle_x - 5.0, lane.y),
+            Vector2::new(handle_x, lane.y + 7.0),
+            Vector2::new(handle_x + 5.0, lane.y),
+            color::accent(),
+        );
+    }
 }
 
 /// A drag in flight on the transport row's position bar.
@@ -444,7 +532,11 @@ impl Shell {
             timeline: TimelineView::new(0.0),
             timeline_gesture: None,
             scrub_target_seconds: None,
+            scrub_release_preview_seconds: None,
             scrub_restore_playing: false,
+            timeline_pan: None,
+            timeline_manual_view: false,
+            timeline_zoom_pending: None,
             transport_scrub: None,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
@@ -460,6 +552,33 @@ impl Shell {
 
     pub fn set_ui_scale_override(&mut self, preference: Option<UiScalePreference>) {
         self.ui_scale_override = preference;
+    }
+
+    /// Starts a fresh whole-track view and clears every transient gesture tied
+    /// to the previous track. Used by the composition root instead of reaching
+    /// into [`Self::timeline`] so a manual-pan follow suspension cannot leak
+    /// across track changes.
+    pub fn reset_timeline(&mut self, duration_seconds: f64) {
+        self.timeline.reset(duration_seconds);
+        self.timeline_gesture = None;
+        self.scrub_target_seconds = None;
+        self.scrub_release_preview_seconds = None;
+        self.scrub_restore_playing = false;
+        self.timeline_pan = None;
+        self.timeline_manual_view = false;
+        self.timeline_zoom_pending = None;
+    }
+
+    /// The one playhead every timed lane draws. During a transactional scrub the
+    /// decoder has not moved yet, so the preview target is the honest position.
+    pub(crate) fn timeline_playhead_seconds(&self, actual_seconds: f64) -> f64 {
+        if self.timeline_gesture == Some(TimelineGesture::Scrub) {
+            self.scrub_target_seconds
+                .or(self.scrub_release_preview_seconds)
+                .unwrap_or(actual_seconds)
+        } else {
+            self.scrub_release_preview_seconds.unwrap_or(actual_seconds)
+        }
     }
 
     #[must_use]
@@ -658,6 +777,7 @@ impl Shell {
     fn begin_frame(&mut self, ui_scale: UiScale) {
         self.widgets.begin_frame(ui_scale);
         self.font_browser.begin_frame();
+        self.scrub_release_preview_seconds = None;
     }
 
     pub fn draw(
@@ -1101,12 +1221,13 @@ impl Shell {
         let middle_right = utilities.map_or(bar.x + bar.width, |cluster| cluster.left_edge);
         let middle_width = (middle_right - bar.x).max(0.0);
 
+        let shown_time = self.timeline_playhead_seconds(input.time_seconds);
         let timecode = format!(
             "{} / {}",
-            widgets::format_timestamp(input.time_seconds),
+            widgets::format_timestamp(shown_time),
             widgets::format_timestamp(input.duration_seconds)
         );
-        let timecode_width = widgets::measure(font, &timecode, metric::UI_FONT_VALUE);
+        let timecode_width = widgets::measure_tabular(font, &timecode, metric::UI_FONT_VALUE);
 
         // The middle group, richest first. The seek trio is shed before the panel
         // buttons and the panel buttons before the transport button, which is the
@@ -1292,7 +1413,7 @@ impl Shell {
         // exact mistake `timeline_layout.h` was written to stop.
         let timecode_inline = band.timecode_inline && !band.timecode.is_empty();
         if timecode_inline {
-            widgets::draw_text(
+            widgets::draw_text_tabular(
                 d,
                 font,
                 &timecode,
@@ -1472,6 +1593,132 @@ impl Shell {
                 color::ui_muted(),
             );
         }
+    }
+
+    /// Claim the shared timed lanes for one transactional seek.
+    ///
+    /// Scene bodies and the PCM strip call the same method; lyric bodies do not,
+    /// because their left-button drag belongs to cue editing. The decoder is
+    /// paused once here and seeked once by [`Self::complete_timeline_scrub`].
+    pub(crate) fn begin_timeline_scrub(
+        &mut self,
+        playing: bool,
+        commands: &mut Vec<ShellCommand>,
+    ) -> bool {
+        if self.timeline_gesture.is_some() {
+            return false;
+        }
+        self.timeline_gesture = Some(TimelineGesture::Scrub);
+        self.scrub_restore_playing = playing;
+        self.timeline_manual_view = false;
+        if playing {
+            commands.push(ShellCommand::TogglePlay);
+        }
+        true
+    }
+
+    /// Update the preview target for the shared lane scrub and complete it when
+    /// the physical button is released. `lane` may be the scene or PCM lane:
+    /// their X geometry is deliberately identical through `TimelineView`.
+    pub(crate) fn update_timeline_scrub(
+        &mut self,
+        pointer_x: f32,
+        lane: UiRect,
+        duration_seconds: f64,
+        button_down: bool,
+        commands: &mut Vec<ShellCommand>,
+    ) -> Option<f64> {
+        if self.timeline_gesture != Some(TimelineGesture::Scrub) {
+            return None;
+        }
+        let seconds = self.timeline.seconds_at(
+            f64::from(pointer_x),
+            f64::from(lane.x),
+            f64::from(lane.width),
+            duration_seconds,
+        );
+        self.scrub_target_seconds = Some(seconds);
+        if !button_down {
+            self.complete_timeline_scrub(commands);
+        }
+        Some(seconds)
+    }
+
+    fn complete_timeline_scrub(&mut self, commands: &mut Vec<ShellCommand>) {
+        if self.timeline_gesture != Some(TimelineGesture::Scrub) {
+            return;
+        }
+        self.timeline_gesture = None;
+        if let Some(target) = self.scrub_target_seconds.take() {
+            self.scrub_release_preview_seconds = Some(target);
+            commands.push(ShellCommand::Seek(target));
+        }
+        if std::mem::take(&mut self.scrub_restore_playing) {
+            commands.push(ShellCommand::TogglePlay);
+        }
+    }
+
+    /// Middle-button pan shared by the scene, PCM and lyric timed lanes.
+    ///
+    /// The active gesture keeps updating after the pointer leaves its source
+    /// lane. Releasing anywhere clears it, while [`Self::abandon_workspace_drags`]
+    /// clears it if the surface disappears first.
+    pub(crate) fn timeline_pan_gesture(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        lane: UiRect,
+    ) {
+        use raylib::consts::MouseButton::MOUSE_BUTTON_MIDDLE;
+
+        let mouse = input.ui_scale.mouse(d);
+        if self.timeline_gesture.is_none()
+            && !self.timeline.is_whole(input.duration_seconds)
+            && lane.contains_point(mouse.x, mouse.y)
+            && d.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE)
+        {
+            self.begin_timeline_pan(mouse.x);
+        }
+        self.update_timeline_pan(
+            mouse.x,
+            lane,
+            input.duration_seconds,
+            d.is_mouse_button_down(MOUSE_BUTTON_MIDDLE),
+        );
+    }
+
+    fn begin_timeline_pan(&mut self, origin_x: f32) {
+        self.timeline_gesture = Some(TimelineGesture::Pan);
+        self.timeline_pan = Some(TimelinePan {
+            origin_x,
+            origin_start_seconds: self.timeline.start_seconds,
+        });
+        self.timeline_manual_view = true;
+    }
+
+    fn update_timeline_pan(
+        &mut self,
+        pointer_x: f32,
+        lane: UiRect,
+        duration_seconds: f64,
+        button_down: bool,
+    ) {
+        if self.timeline_gesture != Some(TimelineGesture::Pan) {
+            return;
+        }
+        if !button_down {
+            self.timeline_gesture = None;
+            self.timeline_pan = None;
+            return;
+        }
+        let Some(pan) = self.timeline_pan else {
+            self.timeline_gesture = None;
+            return;
+        };
+        let delta_seconds = f64::from(pan.origin_x - pointer_x)
+            * self.timeline.seconds_per_pixel(f64::from(lane.width));
+        self.timeline.start_seconds = pan.origin_start_seconds;
+        self.timeline.pan(duration_seconds, delta_seconds);
     }
 
     /// One frame of the position bar's drag, raylib-free.
@@ -1751,13 +1998,13 @@ impl Shell {
         // timeline scrub is, and is completed for the same reason.
         self.complete_transport_scrub(commands);
         if self.timeline_gesture == Some(TimelineGesture::Scrub) {
+            self.complete_timeline_scrub(commands);
+        }
+        // Panning has no deferred model command, so abandoning it is just a
+        // release. The already-visible view remains where the hand left it.
+        if self.timeline_gesture == Some(TimelineGesture::Pan) {
             self.timeline_gesture = None;
-            if let Some(target) = self.scrub_target_seconds.take() {
-                commands.push(ShellCommand::Seek(target));
-            }
-            if std::mem::take(&mut self.scrub_restore_playing) {
-                commands.push(ShellCommand::TogglePlay);
-            }
+            self.timeline_pan = None;
         }
         // A scene-boundary drag belongs to the scene lane, which cancels its own
         // preview when it finds the gesture gone (`scene_timeline.rs:530-533`).
@@ -2469,14 +2716,15 @@ impl Shell {
         // beside the transport buttons (`timeline_layout.h:42-44`). Right-aligned
         // in this panel's header, where nothing else is drawn.
         if !toolbar.timecode_inline {
+            let shown_time = self.timeline_playhead_seconds(input.time_seconds);
             let timecode = format!(
                 "{} / {}",
-                widgets::format_timestamp(input.time_seconds),
+                widgets::format_timestamp(shown_time),
                 widgets::format_timestamp(input.duration_seconds)
             );
             let font = input.fonts.ui();
-            let width = widgets::measure(font, &timecode, metric::UI_FONT_VALUE);
-            widgets::draw_text(
+            let width = widgets::measure_tabular(font, &timecode, metric::UI_FONT_VALUE);
+            widgets::draw_text_tabular(
                 d,
                 input.fonts.ui(),
                 &timecode,
@@ -2488,8 +2736,26 @@ impl Shell {
         }
         let duration = input.duration_seconds;
         self.timeline.clamp(duration);
-
         let padding = metric::UI_PANEL_PADDING;
+        let mouse = input.ui_scale.mouse(d);
+
+        // A wheel event is captured only over the PCM lane (below), so it cannot
+        // steal scrolling from the lyric list. Applying the captured mutation
+        // here, one frame later, means scene, PCM and lyric lanes all consume the
+        // new view together instead of tearing for one frame.
+        if let Some((factor, anchor)) = self.timeline_zoom_pending.take() {
+            self.timeline.zoom(duration, factor, anchor);
+        }
+
+        // Follow before *any* timed lane draws. The old order mutated the view
+        // after the scene lane, waveform, ticks and playhead had consumed it,
+        // then let the lyric lane below consume the new state in the same frame.
+        // Apart from cross-lane disagreement, the marker saw a variable one-frame
+        // overshoot and visibly flickered while the content scrolled beneath it.
+        if input.playing && self.timeline_gesture.is_none() && !self.timeline_manual_view {
+            self.timeline.reveal(duration, input.time_seconds);
+        }
+
         // The manual event row, above the waveform lane (`plug.c:2861-2971`).
         // It reports what it took; 0.0 means it could not seat its controls and
         // the strip gets the space back.
@@ -2528,7 +2794,7 @@ impl Shell {
         }
         d.draw_rectangle_rec(widgets::rectangle(strip), color::ui_raised());
         d.draw_rectangle_lines_ex(widgets::rectangle(strip), 1.0, color::ui_rule());
-        self.waveform_lane(d, input, strip, duration);
+        self.timeline_pan_gesture(d, input, strip);
 
         if duration <= 0.0 {
             widgets::draw_text(
@@ -2544,28 +2810,42 @@ impl Shell {
             return;
         }
 
-        // Wheel zoom about the pointer, so the moment under the cursor does not
-        // slide away (`timeline_view.h:43-47`).
-        let mouse = input.ui_scale.mouse(d);
+        // The common view was already zoomed before any lane drew. This region
+        // remains the left-button seek target.
         let over_strip = mouse.x >= strip.x
             && mouse.x <= strip.x + strip.width
             && mouse.y >= strip.y
             && mouse.y <= strip.y + strip.height;
         let wheel = d.get_mouse_wheel_move();
-        // A boundary drag stores a time under the pointer. Zooming the view out
-        // from underneath it would move that time while the hand stayed still.
-        if over_strip
-            && wheel != 0.0
-            && self.timeline_gesture != Some(TimelineGesture::SceneBoundary)
-        {
+        if over_strip && wheel != 0.0 && self.timeline_gesture.is_none() {
             let anchor = self.timeline.seconds_at(
                 f64::from(mouse.x),
                 f64::from(strip.x),
                 f64::from(strip.width),
                 duration,
             );
-            self.timeline
-                .zoom(duration, 1.2f64.powf(f64::from(wheel)), anchor);
+            self.timeline_zoom_pending = Some((1.2f64.powf(f64::from(wheel)), anchor));
+        }
+        self.waveform_lane(d, input, strip, duration);
+
+        // Left-drag seek is shared with scene-body dragging. Update before the
+        // marker draws so the preview follows the hand in this frame, while the
+        // decoder still receives exactly one seek on release.
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+        if over_strip
+            && self.timeline_gesture.is_none()
+            && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+        {
+            self.begin_timeline_scrub(input.playing, commands);
+        }
+        if self.timeline_gesture == Some(TimelineGesture::Scrub) {
+            self.update_timeline_scrub(
+                mouse.x,
+                strip,
+                duration,
+                d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+                commands,
+            );
         }
 
         // Ticks from the ladder, chosen from the visible span rather than the
@@ -2616,83 +2896,36 @@ impl Shell {
             }
         }
 
-        // Playhead.
-        let playhead = self.timeline.x_at(
-            input.time_seconds,
-            f64::from(strip.x),
-            f64::from(strip.width),
-        ) as f32;
-        if playhead >= strip.x && playhead <= strip.x + strip.width {
-            d.draw_line_ex(
-                Vector2::new(playhead, strip.y),
-                Vector2::new(playhead, strip.y + strip.height),
-                2.0,
-                color::accent(),
-            );
-            // The grab handle at the top (`plug.c:3109-3112`). A bare line was
-            // enough to read while the lane was empty; over an envelope in the same
-            // accent colour it is not, which is presumably why the oracle has one.
-            d.draw_triangle(
-                Vector2::new(playhead - 5.0, strip.y),
-                Vector2::new(playhead, strip.y + 7.0),
-                Vector2::new(playhead + 5.0, strip.y),
-                color::accent(),
-            );
-        }
-        // Follow playback with the least scroll that keeps the playhead inside,
-        // which is safe to call every frame (`timeline_view.h:52-55`).
-        // Keep the view stationary while a boundary owns the pointer. Playback
-        // may continue, but follow-scrolling here would make a stationary hand
-        // retime the cue as the playhead approached the edge.
-        if input.playing && self.timeline_gesture != Some(TimelineGesture::SceneBoundary) {
-            self.timeline.reveal(duration, input.time_seconds);
-        }
-
-        // Scrub. The drag is tracked here rather than through the button claim
-        // because a scrub that leaves the strip must keep scrubbing.
-        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
-        if over_strip
-            && self.timeline_gesture.is_none()
-            && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
-        {
-            self.timeline_gesture = Some(TimelineGesture::Scrub);
-            self.scrub_restore_playing = input.playing;
-            if input.playing {
-                commands.push(ShellCommand::TogglePlay);
-            }
-        }
-        if self.timeline_gesture == Some(TimelineGesture::Scrub) {
-            let seconds = self.timeline.seconds_at(
-                f64::from(mouse.x),
-                f64::from(strip.x),
-                f64::from(strip.width),
-                duration,
-            );
-            self.scrub_target_seconds = Some(seconds);
-            if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
-                self.timeline_gesture = None;
-                if let Some(target) = self.scrub_target_seconds.take() {
-                    commands.push(ShellCommand::Seek(target));
-                }
-                if std::mem::take(&mut self.scrub_restore_playing) {
-                    commands.push(ShellCommand::TogglePlay);
-                }
-            }
-        }
+        // One bounded, pixel-snapped marker for every timed lane. The handle's
+        // centre moves inward at either edge while the line stays on the time,
+        // so the track-end triangle cannot overflow the PCM element.
+        draw_timeline_playhead(
+            d,
+            self.timeline,
+            strip,
+            self.timeline_playhead_seconds(input.time_seconds),
+            2.0,
+            true,
+        );
 
         // The zoom readout, so "why is the strip not the whole track" has an
         // answer on screen.
         let zoom_label = if self.timeline.is_whole(duration) {
             "whole track".to_string()
         } else {
+            let mode = if self.timeline_manual_view {
+                "  ·  free view"
+            } else {
+                ""
+            };
             format!(
-                "{:.1}x  ({} - {})",
+                "{:.1}x{mode}  ({} - {})",
                 duration / self.timeline.span_seconds,
                 widgets::format_timestamp(self.timeline.start_seconds),
                 widgets::format_timestamp(self.timeline.start_seconds + self.timeline.span_seconds)
             )
         };
-        widgets::draw_text(
+        widgets::draw_text_tabular(
             d,
             input.fonts.ui(),
             &zoom_label,
@@ -2713,7 +2946,8 @@ impl Shell {
         //
         // Drawn only when there is room beside the zoom readout, since printing
         // through it would be worse than not saying so.
-        let zoom_width = widgets::measure(input.fonts.ui(), &zoom_label, metric::UI_FONT_CAPTION);
+        let zoom_width =
+            widgets::measure_tabular(input.fonts.ui(), &zoom_label, metric::UI_FONT_CAPTION);
         let hint =
             "Arrows: 1 s  \u{00b7}  Ctrl: 0.1 s  \u{00b7}  Shift: 10 s  \u{00b7}  Home/End: ends";
         let hint_width = widgets::measure(input.fonts.ui(), hint, metric::UI_FONT_CAPTION);
@@ -2737,6 +2971,11 @@ impl Shell {
             22.0,
         );
         if content.contains(reset) {
+            let reset_label = if self.timeline_manual_view {
+                "Follow"
+            } else {
+                "Zoom out"
+            };
             let id = widgets::widget_id(widgets::id::TIMELINE, 1);
             if self
                 .widgets
@@ -2745,14 +2984,19 @@ impl Shell {
                     input.fonts.ui(),
                     id,
                     reset,
-                    "Zoom out",
+                    reset_label,
                     false,
                     ButtonStyle::Neutral,
                     None,
                 )
                 .clicked
             {
-                self.timeline.reset(duration);
+                if self.timeline_manual_view {
+                    self.timeline_manual_view = false;
+                    self.timeline.reveal(duration, input.time_seconds);
+                } else {
+                    self.reset_timeline(duration);
+                }
             }
         }
 
@@ -3823,6 +4067,69 @@ mod tests {
         assert!(commands.contains(&ShellCommand::Seek(42.0)));
         assert!(commands.contains(&ShellCommand::TogglePlay));
         assert!(!shell.scrub_restore_playing);
+    }
+
+    #[test]
+    fn scene_and_pcm_surfaces_share_one_transactional_scrub_preview() {
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+        let lane = UiRect::new(10.0, 20.0, 100.0, 24.0);
+        let mut commands = Vec::new();
+
+        assert!(shell.begin_timeline_scrub(true, &mut commands));
+        assert_eq!(commands, vec![ShellCommand::TogglePlay]);
+        assert_eq!(
+            shell.update_timeline_scrub(85.0, lane, 120.0, true, &mut commands),
+            Some(90.0)
+        );
+        assert_eq!(shell.timeline_playhead_seconds(12.0), 90.0);
+        assert_eq!(commands, vec![ShellCommand::TogglePlay]);
+
+        shell.update_timeline_scrub(85.0, lane, 120.0, false, &mut commands);
+        assert_eq!(shell.timeline_gesture, None);
+        assert_eq!(
+            commands,
+            vec![
+                ShellCommand::TogglePlay,
+                ShellCommand::Seek(90.0),
+                ShellCommand::TogglePlay
+            ]
+        );
+    }
+
+    #[test]
+    fn middle_pan_uses_a_fixed_origin_and_releases_without_a_command() {
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+        shell.timeline.zoom(120.0, 4.0, 60.0);
+        let lane = UiRect::new(10.0, 20.0, 100.0, 24.0);
+        let origin = shell.timeline.start_seconds;
+
+        shell.begin_timeline_pan(60.0);
+        shell.update_timeline_pan(50.0, lane, 120.0, true);
+        assert_eq!(shell.timeline.start_seconds, origin + 3.0);
+        // Recomputing from the fixed origin means the same pointer cannot drift.
+        shell.update_timeline_pan(50.0, lane, 120.0, true);
+        assert_eq!(shell.timeline.start_seconds, origin + 3.0);
+        assert!(shell.timeline_manual_view);
+
+        shell.update_timeline_pan(50.0, lane, 120.0, false);
+        assert_eq!(shell.timeline_gesture, None);
+        assert_eq!(shell.timeline_pan, None);
+    }
+
+    #[test]
+    fn playhead_handle_stays_inside_both_pcm_edges() {
+        let lane = UiRect::new(100.0, 20.0, 400.0, 56.0);
+        let left = playhead_geometry(lane, 100.0, 2.0, true).expect("left edge");
+        let right = playhead_geometry(lane, 500.0, 2.0, true).expect("right edge");
+
+        assert!(left.line_x >= lane.x && left.line_x <= lane.x + lane.width);
+        assert!(right.line_x >= lane.x && right.line_x <= lane.x + lane.width);
+        assert_eq!(left.handle_x, Some(105.0));
+        assert_eq!(right.handle_x, Some(495.0));
+        assert!(left.handle_x.unwrap() - 5.0 >= lane.x);
+        assert!(right.handle_x.unwrap() + 5.0 <= lane.x + lane.width);
     }
 
     // ---- UX0-A03 (review 1.3): the lyric draft's owning track ---------------

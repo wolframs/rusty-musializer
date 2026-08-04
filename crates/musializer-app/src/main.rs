@@ -718,7 +718,7 @@ fn run() -> Result<std::process::ExitCode, String> {
             }
             if let (Some(music), Some(zoom)) = (music.as_ref(), probe.timeline_zoom) {
                 let duration = f64::from(music.get_time_length());
-                app.shell.timeline.reset(duration);
+                app.shell.reset_timeline(duration);
                 app.shell
                     .timeline
                     .zoom(duration, zoom, f64::from(music.get_time_played()));
@@ -2183,8 +2183,7 @@ fn bind_audio<'audio>(
     }
 
     app.shell
-        .timeline
-        .reset(f64::from(opened.get_time_length()));
+        .reset_timeline(f64::from(opened.get_time_length()));
     *music = Some(opened);
     Ok(())
 }
@@ -2258,7 +2257,7 @@ fn close_audio(music: &mut Option<Music<'_>>, app: &mut App, scratch: &mut [f32]
     unsafe { audio_bridge::detach(open.stream) };
     drop(open);
     while audio_bridge::drain_interleaved(scratch) > 0 {}
-    app.shell.timeline.reset(0.0);
+    app.shell.reset_timeline(0.0);
 }
 
 /// Asks for an audio file and opens it, reporting either failure in the tray.

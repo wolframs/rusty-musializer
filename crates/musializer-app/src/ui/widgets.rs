@@ -735,6 +735,44 @@ pub fn measure(font: &UiFonts, text: &str, font_size: f32) -> f32 {
     font.measure_text(text, font_size, 0.0).x
 }
 
+/// Width of proportional UI text with decimal digits laid out in equal cells.
+///
+/// Space Grotesk remains the face — only its numeral advances become tabular,
+/// like CSS's `font-variant-numeric: tabular-nums`. This is the stable-geometry
+/// boundary for live timecodes: measuring `00:11.111` and `00:55.555` through
+/// ordinary proportional advances makes every neighbour breathe during
+/// playback, even though the strings have the same shape.
+#[must_use]
+pub fn measure_tabular(font: &UiFonts, text: &str, font_size: f32) -> f32 {
+    let digit_width = ('0'..='9')
+        .map(|digit| measure_char(font, digit, font_size))
+        .fold(0.0f32, f32::max);
+    tabular_width(text, digit_width, |character| {
+        measure_char(font, character, font_size)
+    })
+}
+
+fn tabular_width(
+    text: &str,
+    digit_width: f32,
+    mut measure_character: impl FnMut(char) -> f32,
+) -> f32 {
+    text.chars()
+        .map(|character| {
+            if character.is_ascii_digit() {
+                digit_width
+            } else {
+                measure_character(character)
+            }
+        })
+        .sum()
+}
+
+fn measure_char(font: &UiFonts, character: char, font_size: f32) -> f32 {
+    let mut bytes = [0u8; 4];
+    measure(font, character.encode_utf8(&mut bytes), font_size)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "the C's `ui_widgets_draw_label` shape; every argument is one of face, box, text, size, offset, tint"
@@ -837,6 +875,46 @@ pub fn draw_text<D: RaylibDraw>(
         0.0,
         tint,
     );
+}
+
+/// Draw proportional UI text with decimal digits centred in tabular cells.
+///
+/// Measurement and drawing share the same cell arithmetic, so callers may use
+/// [`measure_tabular`] as a fixed reservation without switching to a monospace
+/// face. Non-digits retain their ordinary proportional advance.
+pub fn draw_text_tabular<D: RaylibDraw>(
+    d: &mut D,
+    font: &UiFonts,
+    text: &str,
+    x: f32,
+    y: f32,
+    font_size: f32,
+    tint: Color,
+) {
+    let digit_width = ('0'..='9')
+        .map(|digit| measure_char(font, digit, font_size))
+        .fold(0.0f32, f32::max);
+    let mut cursor = x;
+    for character in text.chars() {
+        let mut bytes = [0u8; 4];
+        let glyph = character.encode_utf8(&mut bytes);
+        let glyph_width = measure(font, glyph, font_size);
+        let cell_width = if character.is_ascii_digit() {
+            digit_width
+        } else {
+            glyph_width
+        };
+        draw_text(
+            d,
+            font,
+            glyph,
+            cursor + (cell_width - glyph_width) * 0.5,
+            y,
+            font_size,
+            tint,
+        );
+        cursor += cell_width;
+    }
 }
 
 /// Text with letter spacing, for the few places the C asks for tracking.
@@ -1279,6 +1357,27 @@ mod tests {
         assert_eq!(format_timestamp(3600.0), "60:00.000");
         // A negative seek clamps rather than printing a negative minute.
         assert_eq!(format_timestamp(-5.0), "00:00.000");
+    }
+
+    #[test]
+    fn tabular_digits_hold_live_timecode_geometry_without_a_monospace_face() {
+        // Deliberately proportional fake glyphs: 1 is narrow, 5 is wide, and
+        // punctuation keeps its own advance. Ordinary measurement would make
+        // these two strings differ by 36 units.
+        let measure = |character: char| match character {
+            '1' => 2.0,
+            '5' => 8.0,
+            ':' | '.' => 1.0,
+            _ => 4.0,
+        };
+        let digit_cell = 8.0;
+        assert_eq!(
+            tabular_width("00:11.111", digit_cell, measure),
+            tabular_width("00:55.555", digit_cell, measure)
+        );
+        // Non-numeric copy is still proportional rather than being forced into
+        // cells, which is what keeps Space Grotesk looking like Space Grotesk.
+        assert_eq!(tabular_width("1x", digit_cell, measure), 12.0);
     }
 
     #[test]

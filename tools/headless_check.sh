@@ -245,7 +245,11 @@ done
 # control: restoring the old pass raises this crop's YMAX from 21 to 55. The
 # fixed probe layout's preview now ends at y=400 after the scene lane was added,
 # so y=386 samples its last quiet 12 px without crossing into toolbar chrome.
+# Pin that split on this capture: per-user timeline preferences are intentionally
+# honoured elsewhere in the sweep, but letting one move a renderer negative
+# control made this crop sample white timeline chrome instead of the scene.
 capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
+    --ui-probe "play=1,timeline-height=270" \
     || SWEEP_FAILED=1
 SPECTRUM_ONSETS="$(sed -n 's/^onsets: *\([0-9][0-9]*\) .*/\1/p' "$OUT_DIR/spectrum-onset-floor.txt")"
 SPECTRUM_FLOOR="$(ffprobe -v error -f lavfi \

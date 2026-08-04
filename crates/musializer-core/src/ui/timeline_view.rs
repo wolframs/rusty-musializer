@@ -26,8 +26,9 @@
 ///
 /// A 0.25 s span across a 900 px strip is about 0.28 ms per pixel, already finer
 /// than the millisecond the lyric bridge format round-trips, so further zoom
-/// would buy precision the format cannot store while making the 2048-bin
-/// waveform visibly blocky.
+/// would buy precision the format cannot store. The Rust waveform now retains a
+/// larger envelope than the oracle so this floor remains useful rather than
+/// stretching a 2,048-bin whole-track preview across the lane.
 pub const TIMELINE_VIEW_MIN_SPAN_SECONDS: f64 = 0.25;
 
 /// Fraction of the visible span kept between the playhead and the edge when the

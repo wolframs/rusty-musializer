@@ -15,13 +15,17 @@
 //! Nothing here reads a clock or allocates during playback, which is what lets
 //! preview and export agree.
 
-/// Hard cap on envelope bins (`track_timeline.h:7`).
+/// Hard cap on retained waveform-envelope bins.
 ///
 /// The C `Track_Timeline_Waveform` is a fixed 2048-element array so it can live
 /// in hot-reloaded state without an allocator. Hot reload is a stated non-goal
-/// here, so [`Waveform`] owns a `Vec` instead and this constant survives as the
-/// bound rather than as an array length.
-pub const MAX_BINS: usize = 2048;
+/// here, and 2,048 bins make a roughly two-minute track visibly step in ~12 px
+/// blocks at the ordinary 12.8x zoom reported by the operator. [`Waveform`]
+/// therefore retains 16x the oracle's detail: 32,768 `(min,max)` pairs, or at
+/// most 256 KiB per loaded track, while still discarding the full decoded PCM.
+/// The reduction arithmetic remains the oracle's and its differential rows stay
+/// unchanged; only the Rust-side storage ceiling deliberately diverges.
+pub const MAX_BINS: usize = 32_768;
 
 /// One column of the envelope: the extremes of every sample in its span
 /// (`track_timeline.h:9-12`).
@@ -312,8 +316,14 @@ mod tests {
         let waveform = Waveform::build(&samples, 1, usize::MAX);
         assert_eq!(waveform.len(), MAX_BINS);
         assert!(!waveform.is_empty());
-        // 100000 frames over 2048 bins: each bin sees ~48 identical samples.
+        // 100000 frames over 32768 bins: each bin sees 3-4 identical samples.
         assert!(waveform.bins().iter().all(|bin| bin.maximum == 1.0));
+    }
+
+    #[test]
+    fn rust_retains_sixteen_times_the_oracle_waveform_detail() {
+        assert_eq!(MAX_BINS, 2_048 * 16);
+        assert_eq!(MAX_BINS * std::mem::size_of::<Bin>(), 256 * 1024);
     }
 
     #[test]

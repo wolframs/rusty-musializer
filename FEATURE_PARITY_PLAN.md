@@ -642,6 +642,47 @@ merges them into `app.shared_presets`, which is the library Tune reads.
       contrast.
 - [ ] Capture event colors, lyric spans, zoom, pan and an off-screen boundary.
 
+Operator follow-up (2026-08-04), scoped to the existing D4 ownership:
+
+- [x] Keep proportional Space Grotesk for time readouts, but lay out its digits in
+      tabular cells so `00:11.111` and `00:55.555` reserve exactly the same width.
+      The toolbar timecode, progress/level bars, zoom/view readout and adjacent
+      arrow-key hint must not breathe while playback advances.
+- [x] Apply playback-follow before any timeline lane draws and pixel-snap the
+      shared playhead, so the scene, waveform and lyric lanes consume one view
+      state per frame without marker flicker during a zoomed follow-scroll.
+- [x] Bound the waveform playhead handle at both strip edges; at the track end no
+      part of the marker may draw outside the PCM element.
+- [x] Left-drag on the waveform and scene-plan body must preview one playhead and
+      commit one transactional seek on release. Preserve lyric-cue left-drag for
+      cue editing and preserve scene-boundary drag for retiming.
+- [x] Middle-drag any timed lane to pan the shared view. A manual pan suspends
+      playback-follow until the visible Follow affordance is used, and release or
+      a disappearing surface must never strand the pointer claim.
+- [x] Retain a higher-detail whole-track waveform envelope than the C oracle's
+      2,048-bin hot-reload array; document the memory/detail tradeoff and pin the
+      Rust-side cap with a test.
+- [x] Scope lyric-cue hover to both axes of the actual cue lane. A pointer over the
+      scene preview, controls or waveform must not highlight a cue that merely
+      shares its X coordinate.
+
+Completion evidence (2026-08-04): live time strings draw through proportional
+Space Grotesk with tabular digit cells; rendered `00:01.111`/`00:05.555`
+snapshots keep both transport bars and the lower hint at identical X bounds.
+Playback-follow and deferred wheel zoom now mutate the shared view before any
+lane draws, and one bounded pixel-snapped renderer serves the scene, PCM and lyric
+playheads. Its edge test and a `00:07.999 / 00:08.000` capture keep the right-hand
+line and triangle inside the PCM box. One shell transaction now owns scene-body
+and PCM scrubs (pause, preview, one release-time Seek, conditional resume), while
+scene boundary and lyric-cue drags retain their domain behavior. Middle-pan uses
+a fixed origin, releases on physical button-up, persists as `free view`, and the
+visible Follow action restores automatic tracking. The waveform cap is 32,768
+min/max pairs (16x the C hot-reload array, 256 KiB per track); the full headless
+report observes all 32,768. Lyric hover has a two-axis lane gate and a negative
+control for the same X over preview/PCM. App/core tests are 231/694 passed, clippy
+is clean, `tools/verify.sh --quick` is 19/0, and the private-Xvfb sweep passes with
+0 ordinary output underruns plus its forced-starvation negative control.
+
 Completion evidence (2026-08-03): C's press/drag/release contract at
 `plug.c:3174-3199` now maps to one pause command on press, an in-memory target
 through the drag and one transactional seek plus conditional resume on release.

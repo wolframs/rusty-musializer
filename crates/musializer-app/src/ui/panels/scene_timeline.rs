@@ -11,7 +11,9 @@ use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
-use super::super::shell::{Shell, ShellCommand, ShellInput, TimelineGesture};
+use super::super::shell::{
+    draw_timeline_playhead, Shell, ShellCommand, ShellInput, TimelineGesture,
+};
 use super::super::theme::{color, metric, rgba};
 use super::super::widgets::{self, ButtonStyle};
 
@@ -45,6 +47,9 @@ struct BoundaryDrag {
 pub struct SceneLaneEditor {
     pub selected_id: u64,
     drag: Option<BoundaryDrag>,
+    /// A body press remains a selection click until it crosses the common drag
+    /// threshold, then becomes the timeline's transactional scrub.
+    scrub_origin_x: Option<f32>,
     /// A successful split is applied after drawing; resolve its new segment on
     /// the following frame without guessing the model's next id in the UI.
     pending_select_seconds: Option<f64>,
@@ -370,6 +375,7 @@ impl Shell {
         let Some(track) = input.workspace.current() else {
             return;
         };
+        self.timeline_pan_gesture(d, input, lane);
         self.scene_lane_gesture(d, input, lane, commands);
         widgets::fill(d, lane, color::ui_raised());
         d.draw_rectangle_lines_ex(widgets::rectangle(lane), 1.0, color::ui_rule());
@@ -463,18 +469,14 @@ impl Shell {
             );
         }
 
-        let playhead =
-            self.timeline
-                .x_at(input.time_seconds, f64::from(lane.x), f64::from(lane.width))
-                as f32;
-        if playhead >= lane.x && playhead <= lane.x + lane.width {
-            d.draw_line_ex(
-                Vector2::new(playhead, lane.y),
-                Vector2::new(playhead, lane.y + lane.height),
-                1.0,
-                color::accent(),
-            );
-        }
+        draw_timeline_playhead(
+            d,
+            self.timeline,
+            lane,
+            self.timeline_playhead_seconds(input.time_seconds),
+            1.0,
+            false,
+        );
     }
 
     fn scene_lane_gesture(
@@ -490,6 +492,36 @@ impl Shell {
             return;
         };
         let mouse = input.ui_scale.mouse(d);
+        if self.timeline_gesture == Some(TimelineGesture::Scrub) {
+            self.scene_lane.scrub_origin_x = None;
+            self.update_timeline_scrub(
+                mouse.x,
+                lane,
+                track.duration_seconds,
+                d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+                commands,
+            );
+            return;
+        }
+        if let Some(origin_x) = self.scene_lane.scrub_origin_x {
+            if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+                self.scene_lane.scrub_origin_x = None;
+                return;
+            }
+            if (mouse.x - origin_x).abs() >= timed_lane::DRAG_THRESHOLD_PIXELS as f32 {
+                self.scene_lane.scrub_origin_x = None;
+                if self.begin_timeline_scrub(input.playing, commands) {
+                    self.update_timeline_scrub(
+                        mouse.x,
+                        lane,
+                        track.duration_seconds,
+                        true,
+                        commands,
+                    );
+                }
+            }
+            return;
+        }
         if self.scene_lane.drag.is_none() {
             if self.timeline_gesture.is_some()
                 || !lane.contains_point(mouse.x, mouse.y)
@@ -506,6 +538,7 @@ impl Shell {
             );
             let Some(hit) = hit else {
                 self.scene_lane.selected_id = 0;
+                self.scene_lane.scrub_origin_x = Some(mouse.x);
                 return;
             };
             self.scene_lane.selected_id = hit.id;
@@ -523,6 +556,8 @@ impl Shell {
                     moved: false,
                 });
                 self.timeline_gesture = Some(TimelineGesture::SceneBoundary);
+            } else {
+                self.scene_lane.scrub_origin_x = Some(mouse.x);
             }
             return;
         }
@@ -595,6 +630,7 @@ mod tests {
         let editor = SceneLaneEditor::default();
         assert_eq!(editor.selected_id, 0);
         assert!(editor.drag.is_none());
+        assert!(editor.scrub_origin_x.is_none());
         assert!(editor.pending_select_seconds.is_none());
     }
 }
