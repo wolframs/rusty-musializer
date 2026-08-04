@@ -82,10 +82,12 @@ pin this otherwise non-obvious lifecycle requirement.
 intermediate evidence plus a final TSV bridge. Depending on mode it coordinates:
 
 - deterministic measured analysis from FFmpeg-decoded PCM and NumPy;
-- whisper.cpp transcription and rough word order;
+- whisper.cpp transcription and rough word order, decoded with no cross-segment
+  text conditioning (`--max-context 0`);
 - authored lyric discovery from an explicit sheet, sibling file, or embedded
   metadata;
-- local MMS forced alignment for final lyric timing;
+- anchor→block localization plus local MMS forced alignment for final lyric
+  timing when authored text exists, and per-cue MMS refinement when it does not;
 - optional Codex or explicitly authorized OpenRouter semantic review;
 - scene-plan construction and bridge serialization.
 
@@ -120,14 +122,17 @@ allowed to answer implicitly:
    sheet, sibling file, or embedded metadata. Without a reference, Whisper plus
    review supplies provisional cue text and order.
 2. **Where in the song are they sung?** Whisper timestamps are proposals, not the
-   final clock. CUDA-backed TorchAudio MMS forced alignment teacher-forces the
-   decided cue text against the audio and produces line- and word-level acoustic
-   evidence.
+   final clock, and since tranche LT1 they are not the search space either.
+   With authored text the song is localized globally first — rare n-gram
+   anchors partition it into ordered blocks — and CUDA-backed TorchAudio MMS
+   then forces each block's complete consecutive text through one CTC path.
+   Without authored text the transcription *is* the text, so the older per-cue
+   MMS refinement still applies.
 3. **Should a questionable cue survive?** Confidence is evidence, not authority.
-   Weak alignment keeps a cue uncertain; it does not erase authored text. A
-   no-reference cue is removed only with corroborating evidence such as weak
-   Whisper plus weak alignment, or duplicate candidates claiming the same
-   acoustic span.
+   An authored line the acoustics could not place becomes `unresolved` and
+   named for review; it is never dropped. A no-reference cue is removed only
+   with corroborating evidence such as weak Whisper plus weak alignment, or
+   duplicate candidates claiming the same acoustic span.
 
 ```text
                      authored text available?
@@ -136,21 +141,80 @@ allowed to answer implicitly:
                      |                     |
           preserve text and order    Whisper transcription
                      |                + conservative review
-                     +----------+----------+
-                                |
-                       per-cue MMS alignment
-                                |
-                   strong evidence? -- no --> keep proposal,
-                         |                    mark uncertain
-                        yes
-                         |
-                replace/narrow timing only
+      Whisper words as evidence              |
+                     |                       |
+      rare unique n-grams -> anchors         |
+                     |                       |
+      ordered blocks (initial and            |
+      terminal blocks included)              |
+                     |                       |
+      one CTC pass per block          per-cue MMS alignment
+                     |                       |
+      placed? -- no --> unresolved   strong evidence? -- no --> keep
+         |              + flagged          |                    proposal,
+        yes                               yes                   uncertain
+         |                                 |
+   repeated phrase the global       replace/narrow timing only
+   order did not decide?
+         |
+        yes --> abstain: unresolved + flagged
 ```
 
-The central implementation is
-[`force_align_lyrics.py`](../tools/force_align_lyrics.py). Its output
+The pure half of that policy is
+[`lyric_anchor_block.py`](../tools/lyric_anchor_block.py) — anchors, blocks,
+abstention, review flags and the coverage guard, all without a model. The
+acoustic half is [`anchor_block_align.py`](../tools/anchor_block_align.py),
+which runs under the installed alignment runtime. The no-reference lane stays in
+[`force_align_lyrics.py`](../tools/force_align_lyrics.py). Either way the output
 `lyrics.aligned.json` contains the audit evidence used to construct the bridge;
-the bridge contains the bounded result the Rust application needs.
+the bridge contains the bounded result the Rust application needs, and an
+unresolved line is never in it.
+
+### Anchor→block localization (LT1)
+
+The previous path made Whisper the *authority*: a line it missed was omitted
+before MMS ever saw it, and a line it kept was searched only near its own
+proposal. Both classes were measured — the coverage canary lost its two outro
+lines to a 90-second repetition loop. The benchmark in
+[`LYRICS_TIMING_BENCHMARK_RESULTS.md`](LYRICS_TIMING_BENCHMARK_RESULTS.md)
+selected anchor→block, and it is now the production default.
+
+- **Coverage.** Every alignable authored line reaches the acoustic stage,
+  including the block before the first anchor and after the last. An
+  unlocatable line becomes an `unresolved` record with a named reason; the
+  helper refuses to write a lane that lost one (`validate_full_coverage`).
+- **Abstention.** A repeated authored phrase abstains when the coarse
+  Whisper-derived view puts it nearer a *sibling* occurrence's block placement
+  than its own, by more than the 3-second review tolerance, or when two
+  identical lines collapse onto one acoustic phrase. Guessing an occurrence
+  confidently is worse than saying so.
+- **Review flags.** A flag is cross-view disagreement (coarse proposal versus
+  block placement, > 3 s) or an unresolved line. It is **never** the aligner's
+  own score: the 2026-08-04 operator adjudication measured median score 0.139
+  on confirmed-correct lines against 0.142 on confirmed-wrong ones, and cues
+  therefore carry `confidence: null` rather than a number that orders nothing.
+- **The coarse lane is demoted, not deleted.** `lyrics.sync.json` is still
+  written, because both the flags and the abstention are defined as
+  disagreement with it. Its cache identity records `role: coarse_proposal`.
+
+### Whisper evidence pass
+
+whisper-cli 1.8.6 has no `--no-context` flag — the library's `params.no_context`
+is never wired to an argument — but `--max-context 0` reaches the same place:
+`whisper.cpp:7097` skips history conditioning entirely when `n_max_text_ctx` is
+zero. Assist passes it on every run. On the canary that alone removed the
+repetition loop and transcribed the first outro line at 90.6 s; across the four
+benchmark tracks duplicate segments fell 31→13, 27→11 and 22→0, with the choir
+track gaining evidence (32→55 segments).
+
+Its VAD (`--vad`/`--vad-model`) is available and **off by default**. Measured on
+2026-08-04, Silero v6.2.0 rejects sung vocals over accompaniment almost
+completely: the canary kept one 0.4-second segment at the default 0.50
+threshold and three at 0.10. `MUSIALIZER_WHISPER_VAD_MODEL` enables it for an
+operator who wants it; a path that is not a readable file logs the reason and
+continues without VAD rather than failing the job. Whichever ran is recorded in
+the lane's `request_settings` (`text_conditioning`, `vad_model_sha256`), so a
+lane decoded under the other policy is regenerated rather than reused.
 
 ## Why Whisper timing alone was insufficient
 
@@ -173,6 +237,11 @@ Parser and matching repairs remain necessary, but an independent acoustic
 alignment stage is what makes cue boundaries defensible.
 
 ## Forced-alignment policy
+
+This section describes the **no-reference** lane. With authored text the
+anchor→block localizer above replaces it, and batching is not optional there:
+aligning a block's lines together is precisely what disambiguates a repeated
+phrase by its ordered neighbours.
 
 MMS runs one acoustic request per cue. Batched repeated lyrics can change which
 occurrence the aligner selects according to neighboring cues, so batching is not
@@ -198,7 +267,9 @@ evidence and a new policy/cache version.
 | --- | --- |
 | Authored lyric text and ordering | Explicit sheet, sibling file, or embedded metadata |
 | No-reference text and ordering | Whisper proposal plus conservative review |
+| Authored-line position in the song | Anchor→block CTC path over the whole ordered block; Whisper words are evidence for the anchors only |
 | Final cue timing | MMS acoustic evidence when strong; otherwise marked provisional timing |
+| Whether a line is placed at all | The acoustics and the global order — never the aligner's own score |
 | Sections and semantic cues | Measured/model evidence bounded by bridge validation |
 | Audio identity | SHA-256 carried by the bridge and verified by Rust |
 | Project mutation | Rust `AnalysisCandidate` plus explicit Apply |
@@ -224,12 +295,17 @@ Failure should remain visible at the narrowest boundary that can explain it:
   not an empty candidate.
 - Weak lyric evidence: retain timing as uncertain rather than manufacture
   confidence or silently delete a line.
+- An authored line that cannot be located, or a repeated phrase whose occurrence
+  the global order did not decide: an `unresolved` record and a review flag
+  naming the line, never a cue placed on a guess and never an omission.
 
 ## Verification map
 
 | Concern | Evidence |
 | --- | --- |
 | Timestamp-token parsing, cluster selection, alignment policy | [`tests/test_lyrics_timing.py`](../tests/test_lyrics_timing.py) |
+| Coverage invariant, repeated-phrase abstention, review flags, Whisper flags, localization cache identity | [`tests/test_lyric_anchor_block.py`](../tests/test_lyric_anchor_block.py) |
+| Four-track localization coverage through the production path | `tools/lyrics_research/run.py --method baseline` plus `scoreboard.py`; gitignored `build/lyrics-research-v2` artifacts |
 | Assist state and mode authority parity | `tools/differential_assist_ui.sh` and core tests |
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |
 | Bridge bounds, identity, coverage, and staging | core bridge/candidate tests and app panel tests |

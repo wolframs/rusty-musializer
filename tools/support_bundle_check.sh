@@ -13,6 +13,8 @@ for helper in \
     tools/analyze_audio.py \
     tools/external_analysis.py \
     tools/force_align_lyrics.py \
+    tools/anchor_block_align.py \
+    tools/lyric_anchor_block.py \
     tools/google_fonts.py \
     tools/import_whisper.py \
     tools/lyric_align.py \

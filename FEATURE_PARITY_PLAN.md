@@ -978,27 +978,68 @@ wiring) get their tranches only after these land. The lyrics-timing benchmark
 Benchmark verdict 2026-08-04 (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`):
 anchor→block MMS reached 100% authored-line coverage on all four tracks and
 recovered the canary's Whisper-looped outro lines; whole-song Qwen failed its
-decision gate. Starts after AP1 lands (both touch `external_analysis.py`) and
-after the operator's 13-line boundary spot-check
-(`build/lyrics-research-v2/spot-check-list.txt`).
+decision gate. Both gates cleared 2026-08-04: AP1 landed (`d132a3e`) and the
+operator adjudicated all spot-check lines (anchor lane correct 14/21, its only
+failures the predicted repeated-phrase and weak-exclamation classes; verdicts
+in `build/lyrics-research-v2/ground_truth_adjudication.json`). Key design
+consequence: the aligner's own score does not separate right from wrong —
+review flags come from cross-lane disagreement and unresolved lines
+(Invariant 4), never from raw model score.
 
-- [ ] Replace the per-cue Whisper-window MMS path in the lyrics pipeline with
-      anchor→block alignment (port of `tools/lyrics_research/anchor_block_mms.py`
-      into the production helpers), keeping every authored line through to
-      alignment. Invariant 1: an unlocatable line is `unresolved`, never
-      silently dropped before the aligner.
-- [ ] Adopt VAD segmentation + `condition_on_prev_text=False` for the Whisper
-      evidence pass (the accepted fix for the canary's 90 s repetition loop).
-- [ ] Surface unresolved lines and low-confidence blocks in the Assist review
-      UI by name and time range, so the user is pointed at what to fix instead
-      of hunting.
-- [ ] Version the new localization policy in cache provenance so cached
-      artifacts from the old policy cannot be silently reused.
-- [ ] Evidence: rerun the four-track benchmark through the *production* path
-      with identical coverage results; the canary's two outro lines appear in
-      the staged candidate; the existing metadata and stripped-tag acceptance
-      tracks still pass; the choir track's order violation is diagnosed and
-      either fixed or pinned with a reason.
+- [x] (2026-08-04) Replace the per-cue Whisper-window MMS path with anchor→block
+      alignment. Policy in `tools/lyric_anchor_block.py` (pure, no model),
+      acoustics in `tools/anchor_block_align.py` (alignment venv), orchestration
+      in `external_analysis.run_assist`. `lyrics.sync.json` is demoted to the
+      coarse proposal; `lyrics.aligned.json` is the anchor/block result. The
+      no-reference lane keeps `force_align_lyrics.py` unchanged. Invariant 1 is
+      enforced, not assumed: `validate_full_coverage` refuses a lane where cues
+      plus `unresolved` do not account for every alignable authored line.
+- [x] (2026-08-04) Whisper evidence pass: `--max-context 0` on every run.
+      whisper-cli 1.8.6 has **no** `--no-context` (`params.no_context` is never
+      wired to an argument), but zero max context skips history conditioning at
+      `whisper.cpp:7097`. Measured: the canary's 90 s loop is gone and its first
+      outro line transcribes at 90.6 s; duplicate segments across the four
+      tracks fall 31→13, 27→11, 22→0, and the choir track gains evidence 32→55.
+      **VAD is measured harmful and stays off**: Silero v6.2.0 keeps 0.4 s of
+      the canary at threshold 0.50 and 3 segments at 0.10. It is opt-in through
+      `MUSIALIZER_WHISPER_VAD_MODEL`, and an absent model degrades to no VAD.
+      Both are recorded in the lane's `request_settings`.
+- [ ] Surface unresolved lines and review flags in the Assist review UI by
+      name and time range, so the user is pointed at what to fix instead of
+      hunting. A flag is cross-view disagreement (coarse proposal vs
+      anchor-block placement, >3 s) or an unresolved/abstained line — not the
+      aligner's own score, which the adjudication proved uninformative. The
+      additive JSON fields are in place (`unresolved`, `review_flags`; see
+      `docs/PHASE0_INVENTORY.md` 6.6) and the current Rust ignores them.
+- [x] (2026-08-04) Repeated-phrase abstention. A repeated authored line abstains
+      when the coarse view puts it nearer a *sibling* occurrence's block
+      placement than its own by more than the 3 s review tolerance, or when two
+      identical lines collapse onto one acoustic phrase. **The pinned example no
+      longer reproduces**: with the repetition loop contained, both views place
+      `shut-up-cat` line 26 on its own occurrence (110.0 s / 108.3 s), so it
+      keeps a cue. The criterion is pinned instead against the recorded pre-LT1
+      numbers in `tests/test_lyric_anchor_block.py`, where it fires on line 26
+      and on nothing else in that six-occurrence group.
+- [x] (2026-08-04) Localization policy versioned in cache provenance:
+      `localization_policy` / `localization_policy_version` on the document and
+      in `timing_refinement`, checked by `_anchor_block_cache_accepts` alongside
+      the whisper/coarse/reference digests. The coarse lane records
+      `role: coarse_proposal`, and the Whisper lane's `text_conditioning` and
+      `vad_model_sha256` invalidate any lane decoded under the old flags.
+- [x] (2026-08-04) Evidence: all four benchmark tracks rerun through the
+      *production* path reach 100% coverage with 0 omitted and 0 unresolved
+      (15/15, 33/33, 51/51, 42/42); the canary's outro lines are real cues at
+      90.72 s and 93.94 s against the adjudicated 90.7/93.9; every
+      adjudicated-correct line matches the anchor-lane time to ≤0.21 s; the
+      choir track's order violation is **fixed** (0, not pinned) — it came from
+      the pre-`--max-context 0` evidence. `tools/support_bundle_check.sh`,
+      `cargo test` and `tools/verify.sh --quick` are green, and the four real
+      bridges parse through `analysis_bridge_check` unchanged. Known regression:
+      `shipped-the-disposition` line 41 (`rawr.`, the weak one-word-exclamation
+      class the adjudication predicted) moved from 150.6 s to 134.6 s against a
+      truth of 156.2 s, and is **not** flagged, because both views agree and
+      both are wrong — cross-view disagreement cannot catch a shared-evidence
+      error.
 
 ### AP1 — persistence foundation
 

@@ -652,7 +652,7 @@ get wrong.
 | `codex-lyric-review-output-v1.schema.json` | Output contract for the Codex-driven lyric review tool. The only schema in the directory with **no `$id` and no `title`**. |
 | `font-import-v1.schema.json` | What `tools/google_fonts.py` writes after retrieving one caption face. **Rewrite must satisfy this** — see 6.4. |
 | `lyric-review-v1.schema.json` | Evidence-preserving lyric review records. |
-| `lyric-sync-v1.schema.json` | Deterministic alignment of authored reference lyrics to Whisper word evidence; display text is authored truth, timing is acoustic evidence, estimated windows are flagged. |
+| `lyric-sync-v1.schema.json` | Deterministic localization of authored reference lyrics; display text is authored truth, timing is acoustic evidence, and an unlocatable line is flagged, never absent. Governs both `lyrics.sync.json` and `lyrics.aligned.json` — see 6.5 for the tranche-LT1 additions. |
 | `lyric-timing-v1.schema.json` | Imported lyric timing (the `lyric_timing` analysis lane artifact). |
 | `measured-analysis-v1.schema.json` | Offline measured-audio analysis output (the `measured_signal` lane artifact). Largest of the ancillary schemas at 7.1 KB. |
 | `project-v1.schema.json` | **Canonical `.musi` project contract.** Rewrite must satisfy this — see 6.2/6.3. 24 KB. |
@@ -942,6 +942,37 @@ are a separate enum, `Musi_Project_File_Result` (`src/project_io.h:41-52`),
 which distinguishes `ERROR_SYNC`, `ERROR_PUBLISH`, and `ERROR_DURABILITY` —
 the rewrite must keep that granularity or lose the atomic-save guarantees the
 tests assert.
+
+### 6.6 `lyric-sync-v1` after tranche LT1
+
+`schemas/lyric-sync-v1.schema.json` governs both `lyrics.sync.json` (the coarse
+Whisper-derived proposal) and `lyrics.aligned.json` (the acoustic result). The
+LT1 fields below are **additive and optional**: the Rust bridge reads none of
+them, and `tools/external_analysis.py build_bridge` reads only `lines`, so an
+unresolved line cannot become a cue. `tests/test_lyric_anchor_block.py` pins the
+lane against this file, because nothing validates it at runtime.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `localization_policy` | string | `anchor-block-mms`. Absent on the coarse lane and on the no-reference per-cue lane |
+| `localization_policy_version` | string | Part of the cache identity: an artifact from another policy version is regenerated, never reused |
+| `unresolved[]` | array | `reference_line_index`, `text`, `reason`, `abstained`, and the coarse window if one existed. Cues + unresolved always account for every alignable authored line, and the helper refuses to write a lane where they do not |
+| `review_flags[]` | array | `flag` is `coarse_disagreement` (coarse proposal versus block placement, > 3 s) or `unresolved`. Never derived from the aligner's score |
+| `anchors[]`, `blocks[]` | array | Audit trail for the localization: rare n-grams unique on both sides, and the ordered search partitions they cut |
+| `order_violations[]` | array | Timed lines whose start goes backwards against authored order. Cues are emitted sorted by start, so the bridge still parses |
+| `generation` | object | `whisper_sha256`, `coarse_sha256`, `reference_sha256` |
+| `timing_refinement` | object | Adapter, alignment version, policy versions and request identity. Pre-existing for the per-cue lane; the schema only declared it now |
+| `lines[].status` | string | `aligned`, `weak`, or a refusal reason. Audit only |
+| `lines[].score`, `first_word_score`, `last_word_score`, `word_alignments` | number / array | The aligner's own CTC evidence. Audit only: `confidence` stays `null`, because the 2026-08-04 adjudication measured the score at 0.139 median on correct lines versus 0.142 on wrong ones |
+| `lines[].block_index`, `line_position` | integer | Which block placed the line, and its position among alignable lines |
+| `lines[].coarse_start_seconds`, `coarse_end_seconds`, `review_flagged` | number / boolean | The other view and whether the two disagreed |
+| `statistics.unresolved_lines`, `abstained_lines`, `review_flagged_lines`, `coarse_disagreement_lines`, `anchor_count`, `block_count`, `evidence_tokens`, `order_violations` | integer | LT1 counters; `matched_tokens` became optional because the anchor lane has no token-match stage |
+
+`assist-manifest.json` gains `result_counts.lyrics_unresolved`,
+`result_counts.lyrics_review_flags`, and a `lyric_localization`
+`{policy, policy_version}` block (null on the per-cue lane). The Whisper lane's
+`provenance.request_settings` gains `text_conditioning` and `vad_model_sha256`;
+see 9.3 for `MUSIALIZER_WHISPER_VAD_MODEL`.
 
 ---
 
@@ -1407,12 +1438,14 @@ No C code reads either one; they are consumed by `tools/ui_capture.sh` and
 | `OPENROUTER_API_KEY` | `tools/external_analysis.py:287` | Same credential for the MiMo helper | Falls back to parsing the repo `.env` **as data, not shell** (`:288-300`): skips blanks, `#`, and lines without `=`; matches the exact name; strips one layer of matching `"` or `'` | `.strip()`ed string, truthiness |
 | `MUSIALIZER_WHISPER_BIN` | `tools/external_analysis.py:1220`, `--whisper-bin` default `:1450` | whisper.cpp CLI path | Discovers `<install>/build/bin/whisper-cli` (`:1223-1227`); if still unresolved → `AnalysisValidationError` (`:1493`) | raw string → `Path`; **env always wins over discovery**, comment `:1197-1198` |
 | `MUSIALIZER_WHISPER_MODEL` | `tools/external_analysis.py:1221`, `:1451` | ggml model file | Preference-ordered discovery `_WHISPER_MODEL_PREFERENCE` (`:1204-1209`); a better model anywhere beats a lesser model in a preferred install (`:1229-1235`) | raw string → `Path` |
+| `MUSIALIZER_WHISPER_VAD_MODEL` | `tools/external_analysis.py`, `whisper_vad_model()` | Opt-in whisper.cpp VAD model (`--vad`/`--vad-model`). **Added by tranche LT1**, and off by default: Silero v6.2.0 rejects sung vocals over accompaniment (canary kept 0.4 s of 114.84 s) | no VAD; a named path that is not a readable file logs the reason and also runs without VAD, rather than failing the job | `.strip()`, `expanduser()` → `Path`; its SHA-256 enters the Whisper cache identity |
 | whole `os.environ` (filter) | `tools/external_analysis.py:272-276`, `_safe_local_env()` | Strips any variable whose upper-cased name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, or `AUTH` before spawning local children | n/a | substring blacklist |
 | `CUDA_VISIBLE_DEVICES` | `tools/musializer_doctor.py:114` | GPU-presence heuristic | `""` → falls through to a `/dev/dri/renderD128` probe (`:118`), then `{"kind": "none"}` (`:121`) | `.strip()`; treated as "GPU present" if non-empty and not literally `"-1"` |
 | whole `os.environ` (filter) | `tools/musializer_doctor.py:126-132` | Same credential stripping before invoking `nvidia-smi` | n/a | same substring blacklist |
 | `MUSIALIZER_WHISPER_BIN` / `_MODEL` | `tests/e2e/test_lyrics_assist_e2e.py:68-69` | e2e skip gating (`:100-105`) | test skipped | truthiness |
 
 `tools/google_fonts.py`, `tools/analyze_audio.py`, `tools/lyric_align.py`,
+`tools/lyric_anchor_block.py`, `tools/anchor_block_align.py`,
 `tools/import_whisper.py`, and `tools/analysis_io.py` read **no** environment
 variables.
 

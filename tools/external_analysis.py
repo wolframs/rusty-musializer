@@ -37,6 +37,7 @@ from analysis_io import (
 from import_whisper import normalize_whisper
 import force_align_lyrics
 import lyric_align
+import lyric_anchor_block
 import mimo_openrouter as mimo_adapter
 
 
@@ -47,6 +48,11 @@ LYRIC_REVIEW_VERSION = "musializer.lyric-review/v1"
 LYRIC_PROMPT_VERSION = "lyrics_cleanup_system/v2"
 LYRIC_SYNC_VERSION = lyric_align.LYRIC_SYNC_VERSION
 FORCED_ALIGNER = ROOT / "tools" / "force_align_lyrics.py"
+ANCHOR_BLOCK_ALIGNER = ROOT / "tools" / "anchor_block_align.py"
+# whisper-cli 1.8.6 has no `--no-context`; `--max-context 0` is the reachable
+# equivalent and is recorded here so a lane decoded with conditioning on cannot
+# be reused. See `whisper_vad_model` for the measurement behind both choices.
+WHISPER_TEXT_CONDITIONING = "none_max_context_0"
 # The model may emit up to this many characters per reviewed line; the
 # deterministic splitter then reduces cues to display size. The C editor
 # rejects cue text at 512 bytes, so both bounds stay far inside it.
@@ -347,10 +353,38 @@ def _whisper_thread_count() -> int:
     return max(1, os.cpu_count() or 4)
 
 
+def whisper_vad_model() -> Path | None:
+    """An opt-in whisper.cpp VAD model, or None.
+
+    whisper-cli 1.8.6 has no ``--no-context`` flag — the library's
+    ``params.no_context`` is never wired to an argument — but it does accept
+    ``--max-context 0``, and ``whisper.cpp:7097`` skips history conditioning
+    entirely when ``n_max_text_ctx`` is zero. That is the CLI-reachable form of
+    ``condition_on_prev_text=False`` and it is always on here.
+
+    Its VAD (``--vad``/``--vad-model``) is a different matter. Measured on this
+    project's four benchmark tracks on 2026-08-04, Silero v6.2.0 rejects sung
+    vocals over accompaniment almost completely: the coverage canary kept 1
+    segment of 0.4 s at the default 0.50 threshold and 3 segments at 0.10.
+    Whisper's own long-form pass is far better evidence for this material, so
+    VAD stays **off** unless the operator names a model, and an unreadable or
+    absent model degrades to no VAD rather than failing the job.
+    """
+    configured = os.environ.get("MUSIALIZER_WHISPER_VAD_MODEL", "").strip()
+    if not configured:
+        return None
+    candidate = Path(configured).expanduser()
+    if candidate.is_file():
+        return candidate
+    print(f"Ignoring MUSIALIZER_WHISPER_VAD_MODEL: {candidate} is not a file; "
+          "continuing without voice-activity segmentation.", file=sys.stderr)
+    return None
+
+
 def whisper_request(
     audio: Path, *, whisper_bin: Path, model: Path, language: str,
     dtw_model: str | None, ffmpeg: str, output_prefix: Path,
-    threads: int | None = None,
+    threads: int | None = None, vad_model: Path | None = None,
 ) -> tuple[list[str], list[str]]:
     wav = output_prefix.with_suffix(".16k.wav")
     decode = [
@@ -362,7 +396,15 @@ def whisper_request(
         str(whisper_bin), "-f", str(wav), "--output-file", str(output_prefix),
         "--output-json", "-ojf", "-m", str(model), "-l", language,
         "-t", str(threads if threads is not None else _whisper_thread_count()),
+        # No cross-segment text conditioning. A decoder that can quote its own
+        # previous segment will, and on singing it loops: the canary repeated
+        # one genuine line from 90.0 s to the end of the track and buried the
+        # two outro lines behind it. With `-mc 0` that loop is gone and the
+        # outro is transcribed at 90.6 s.
+        "-mc", "0",
     ]
+    if vad_model is not None:
+        whisper.extend(["--vad", "-vm", str(vad_model)])
     if dtw_model:
         # whisper.cpp's CLI defaults flash attention on, while the library
         # explicitly disables its experimental DTW token timestamps whenever
@@ -372,6 +414,24 @@ def whisper_request(
         # provenance.
         whisper.extend(["--no-flash-attn", "--dtw", dtw_model])
     return decode, whisper
+
+
+def _whisper_request_settings(
+    *, language: str, dtw_model: str | None, model_sha256: str,
+    vad_model: Path | None,
+) -> dict[str, Any]:
+    """The identity a cached Whisper lane has to match to be reused."""
+    return {
+        "language": language, "dtw_model": dtw_model,
+        "model_sha256": model_sha256, "gpu_requested": True,
+        "timing_backend": ("dtw_no_flash_attention" if dtw_model
+                           else "token_onsets_flash_attention"),
+        "word_timing": ("dtw_centers_v1" if dtw_model
+                        else "token_onsets_v1"),
+        "text_conditioning": WHISPER_TEXT_CONDITIONING,
+        "vad_model_sha256": (None if vad_model is None
+                             else sha256_file(vad_model)),
+    }
 
 
 def run_whisper(
@@ -386,11 +446,13 @@ def run_whisper(
         raise AnalysisValidationError("audio, Whisper executable, and model must be files")
     audio_sha = sha256_file(audio)
     model_sha = sha256_file(model)
+    vad_model = whisper_vad_model()
     with tempfile.TemporaryDirectory(prefix="musializer-whisper-") as temporary:
         prefix = Path(temporary) / "transcription"
         decode, whisper = whisper_request(
             audio, whisper_bin=whisper_bin, model=model, language=language,
             dtw_model=dtw_model, ffmpeg=ffmpeg, output_prefix=prefix,
+            vad_model=vad_model,
         )
         request = {
             "dry_run": dry_run,
@@ -398,6 +460,9 @@ def run_whisper(
             "model_sha256": model_sha,
             "language": language,
             "dtw_model": dtw_model,
+            "text_conditioning": WHISPER_TEXT_CONDITIONING,
+            "vad_model_sha256": (None if vad_model is None
+                                 else sha256_file(vad_model)),
             "timeouts_seconds": {"decode": decode_timeout, "whisper": timeout},
             "decode_argv": _command_description(decode, {7, len(decode) - 1}),
             "whisper_argv": _command_description(whisper, {2, 4, whisper.index("-m") + 1}),
@@ -417,14 +482,10 @@ def run_whisper(
         )
         normalized["provenance"]["adapter"] = "tools/external_analysis.py"
         normalized["provenance"]["adapter_version"] = ADAPTER_VERSION
-        normalized["provenance"]["request_settings"] = {
-            "language": language, "dtw_model": dtw_model,
-            "model_sha256": model_sha, "gpu_requested": True,
-            "timing_backend": ("dtw_no_flash_attention" if dtw_model
-                               else "token_onsets_flash_attention"),
-            "word_timing": ("dtw_centers_v1" if dtw_model
-                            else "token_onsets_v1"),
-        }
+        normalized["provenance"]["request_settings"] = _whisper_request_settings(
+            language=language, dtw_model=dtw_model, model_sha256=model_sha,
+            vad_model=vad_model,
+        )
         normalized["provenance"]["generation"] = {
             "raw_whisper_sha256": canonical_sha256(raw),
         }
@@ -505,6 +566,20 @@ def discover_reference_lyrics(
     return None
 
 
+# The sync lane is no longer the timing authority. Since LT1 it is the
+# *coarse proposal*: one of two independent views, kept because the review
+# flags and the repeated-phrase abstention are both defined as disagreement
+# between it and the anchor/block placement. Recording the role in the request
+# identity keeps a lane written under the old authority from being reused as
+# if it were still the answer.
+LYRIC_SYNC_ROLE = "coarse_proposal"
+
+
+def _sync_request_settings() -> dict[str, Any]:
+    return {"aligner_version": lyric_align.ALIGNER_VERSION,
+            "role": LYRIC_SYNC_ROLE}
+
+
 def run_lyric_sync(
     source: Path, reference: dict[str, Any], output: Path,
 ) -> dict[str, Any]:
@@ -531,7 +606,7 @@ def run_lyric_sync(
         "source_kind": "lyric_sync",
         "audio_sha256": audio.get("sha256"),
         "schema_version": LYRIC_SYNC_VERSION,
-        "request_settings": {"aligner_version": lyric_align.ALIGNER_VERSION},
+        "request_settings": _sync_request_settings(),
         "generation": {
             "whisper_sha256": sha256_file(source),
             "reference_sha256": reference["sha256"],
@@ -560,7 +635,7 @@ def _sync_cache_accepts(
         adapter="tools/external_analysis.py",
         adapter_version=ADAPTER_VERSION,
         source_kind="lyric_sync",
-        request_settings={"aligner_version": lyric_align.ALIGNER_VERSION},
+        request_settings=_sync_request_settings(),
     )
 
 
@@ -1138,15 +1213,10 @@ def _whisper_cache_accepts(
         # Assist deliberately uses flash-attention decoding plus bounded token
         # onsets. DTW remains an explicit lower-level diagnostic option because
         # disabling flash attention caused severe repetition loops on singing.
-        dtw_model = None
-        expected_settings = {
-            "language": "en", "dtw_model": dtw_model,
-            "model_sha256": sha256_file(model), "gpu_requested": True,
-            "timing_backend": ("dtw_no_flash_attention" if dtw_model
-                               else "token_onsets_flash_attention"),
-            "word_timing": ("dtw_centers_v1" if dtw_model
-                            else "token_onsets_v1"),
-        }
+        expected_settings = _whisper_request_settings(
+            language="en", dtw_model=None, model_sha256=sha256_file(model),
+            vad_model=whisper_vad_model(),
+        )
         if settings != expected_settings or provenance.get("model") != model.name:
             return False
     elif not isinstance(settings.get("model_sha256"), str):
@@ -1294,6 +1364,95 @@ def _alignment_cache_accepts(
     )
 
 
+def _anchor_block_cache_accepts(
+    document: dict[str, Any], *, whisper_sha256: str, coarse_sha256: str,
+    reference_sha256: str | None,
+) -> bool:
+    """Accept a cached anchor/block lane only under the same policy.
+
+    The localization policy version is part of the identity on purpose: the
+    LT1 tranche replaced what "located" means, so an artifact written by the
+    per-cue Whisper-window path has to be regenerated rather than reused, even
+    though its audio digest and schema still match.
+
+    ``reference_sha256=None`` skips only the authored-text check, for the
+    Scene-changes lane: it never discovers lyrics and never writes this
+    artifact, so it has no authored digest to compare and is reusing evidence
+    another run already validated against one.
+    """
+    refinement = document.get("timing_refinement")
+    if not isinstance(refinement, dict):
+        return False
+    generation = document.get("generation")
+    if not isinstance(generation, dict):
+        return False
+    return (
+        document.get("localization_policy") == lyric_anchor_block.LOCALIZATION_POLICY
+        and document.get("localization_policy_version")
+        == lyric_anchor_block.LOCALIZATION_POLICY_VERSION
+        and refinement.get("adapter") == "tools/anchor_block_align.py"
+        and refinement.get("model") == "torchaudio.pipelines.MMS_FA"
+        and refinement.get("localization_policy")
+        == lyric_anchor_block.LOCALIZATION_POLICY
+        and refinement.get("localization_policy_version")
+        == lyric_anchor_block.LOCALIZATION_POLICY_VERSION
+        and generation.get("whisper_sha256") == whisper_sha256
+        and generation.get("coarse_sha256") == coarse_sha256
+        and (reference_sha256 is None
+             or generation.get("reference_sha256") == reference_sha256)
+        and isinstance(generation.get("reference_sha256"), str)
+    )
+
+
+def run_anchor_block_alignment(
+    audio: Path, whisper: Path, reference_file: Path, coarse: Path,
+    output: Path, *, audio_duration: float, align_python: Path, timeout: float,
+    reference_sha256: str, reference_source: str = "",
+    diagnostic_sink: Path | None = None, runner: Runner = subprocess.run,
+) -> dict[str, Any]:
+    """Locate every authored line acoustically, anchors first, blocks second."""
+    command = [
+        str(align_python), str(ANCHOR_BLOCK_ALIGNER), str(audio), str(whisper),
+        str(output), "--duration", f"{audio_duration:.9f}",
+        "--reference-file", str(reference_file), "--coarse", str(coarse),
+    ]
+    _run(command, timeout=timeout, env=_safe_local_env(), runner=runner,
+         diagnostic_sink=diagnostic_sink)
+    result = read_json(output)
+    result["reference"] = {
+        "source": reference_source,
+        "sha256": reference_sha256,
+    }
+    result["generation"] = {
+        "whisper_sha256": sha256_file(whisper),
+        "coarse_sha256": sha256_file(coarse),
+        "reference_sha256": reference_sha256,
+    }
+    result["provenance"] = {
+        "adapter": "tools/external_analysis.py",
+        "adapter_version": ADAPTER_VERSION,
+        "source_kind": "lyric_anchor_block",
+        "audio_sha256": result.get("audio", {}).get("sha256"),
+        "schema_version": LYRIC_SYNC_VERSION,
+        "request_settings": {
+            "localization_policy": lyric_anchor_block.LOCALIZATION_POLICY,
+            "localization_policy_version": (
+                lyric_anchor_block.LOCALIZATION_POLICY_VERSION),
+        },
+        "generation": result["generation"],
+    }
+    if not _anchor_block_cache_accepts(
+            result, whisper_sha256=result["generation"]["whisper_sha256"],
+            coarse_sha256=result["generation"]["coarse_sha256"],
+            reference_sha256=reference_sha256):
+        raise RuntimeError("anchor/block aligner produced an invalid lyric lane")
+    lyric_anchor_block.validate_full_coverage(
+        result, lyric_anchor_block.alignable_lines(
+            reference_file.read_text(encoding="utf-8")))
+    atomic_write_json(output, result)
+    return result
+
+
 def run_forced_alignment(
     audio: Path, source: Path, output: Path, *, audio_duration: float,
     align_python: Path, timeout: float, runner: Runner = subprocess.run,
@@ -1333,6 +1492,7 @@ def run_assist(
         "measured": output_dir / "measured.json",
         "lyrics": output_dir / "lyrics.whisper.json",
         "sync": output_dir / "lyrics.sync.json",
+        "reference": output_dir / "lyrics.reference.txt",
         "review": output_dir / "lyrics.review.json",
         "aligned": output_dir / "lyrics.aligned.json",
         "semantic": semantic_cache or output_dir / "semantic.cache.json",
@@ -1347,7 +1507,8 @@ def run_assist(
     actions = ["measured", "plan", "bridge"]
     if mode in {"lyrics", "all"}:
         actions[1:1] = [
-            "whisper", "lyric_sync_or_codex_review", "ctc_forced_alignment"]
+            "whisper", "lyric_sync_or_codex_review",
+            "anchor_block_localization_or_ctc_forced_alignment"]
     if mode in {"mimo", "all"}: actions[1:1] = ["mimo_openrouter"]
     if dry_run:
         return {
@@ -1405,10 +1566,16 @@ def run_assist(
                 "MUSIALIZER_ALIGN_PYTHON or install the local lyrics-align runtime")
         reference = discover_reference_lyrics(
             audio, override=lyrics_file, runner=runner)
-        timing_source_path: Path
         if reference is not None:
             # Authored lyrics exist: display text is already decided, so the
-            # deterministic aligner replaces the Codex wording review.
+            # question is only *where* each line is. Whisper stays evidence and
+            # stops being authority — the sync lane becomes a coarse proposal
+            # and the anchor/block localizer decides the times, so a line
+            # Whisper missed or looped over still reaches the acoustic stage.
+            if not ANCHOR_BLOCK_ALIGNER.is_file():
+                raise AnalysisValidationError(
+                    "the anchor/block localizer is missing from the support "
+                    "bundle (tools/anchor_block_align.py)")
             lyrics = _cache_matches(
                 paths["sync"], LYRIC_SYNC_VERSION, audio_sha,
                 accept=lambda value: _sync_cache_accepts(
@@ -1420,7 +1587,34 @@ def run_assist(
                 lyrics = run_lyric_sync(paths["lyrics"], reference, paths["sync"])
                 cache_status["sync"] = "generated"
             else: cache_status["sync"] = "reused"
-            timing_source_path = paths["sync"]
+
+            # The aligner runs under its own interpreter, so the authored text
+            # goes through a file rather than three ffprobe passes. It lives
+            # beside the evidence it was aligned against, which is already
+            # private to this job folder.
+            atomic_write_text(paths["reference"], reference["text"])
+            coarse_sha = sha256_file(paths["sync"])
+            aligned = _cache_matches(
+                paths["aligned"], LYRIC_SYNC_VERSION, audio_sha,
+                accept=lambda value: _anchor_block_cache_accepts(
+                    value, whisper_sha256=source_sha, coarse_sha256=coarse_sha,
+                    reference_sha256=reference["sha256"]),
+            )
+            if aligned is None:
+                aligned = run_anchor_block_alignment(
+                    audio, paths["lyrics"], paths["reference"], paths["sync"],
+                    paths["aligned"], audio_duration=measured_duration,
+                    align_python=align_python, timeout=external_timeout,
+                    reference_sha256=reference["sha256"],
+                    reference_source=reference["source"],
+                    diagnostic_sink=output_dir / "lyrics.aligned.diagnostic.txt",
+                    runner=runner,
+                )
+                cache_status["alignment"] = "generated"
+            else:
+                cache_status["alignment"] = "reused"
+            lyrics = aligned
+            lyrics_lane_path = paths["aligned"]
         else:
             lyrics = _cache_matches(
                 paths["review"], LYRIC_REVIEW_VERSION, audio_sha,
@@ -1435,25 +1629,27 @@ def run_assist(
                 )
                 cache_status["review"] = "generated"
             else: cache_status["review"] = "reused"
-            timing_source_path = paths["review"]
 
-        timing_source_sha = sha256_file(timing_source_path)
-        aligned = _cache_matches(
-            paths["aligned"], lyrics["schema_version"], audio_sha,
-            accept=lambda value: _alignment_cache_accepts(
-                value, source_sha256=timing_source_sha),
-        )
-        if aligned is None:
-            aligned = run_forced_alignment(
-                audio, timing_source_path, paths["aligned"],
-                audio_duration=measured_duration, align_python=align_python,
-                timeout=external_timeout, runner=runner,
+            # No authored text: there is nothing to localize globally, because
+            # the transcription *is* the text. The per-cue MMS refinement is
+            # still the right tool for that lane and is unchanged.
+            timing_source_sha = sha256_file(paths["review"])
+            aligned = _cache_matches(
+                paths["aligned"], lyrics["schema_version"], audio_sha,
+                accept=lambda value: _alignment_cache_accepts(
+                    value, source_sha256=timing_source_sha),
             )
-            cache_status["alignment"] = "generated"
-        else:
-            cache_status["alignment"] = "reused"
-        lyrics = aligned
-        lyrics_lane_path = paths["aligned"]
+            if aligned is None:
+                aligned = run_forced_alignment(
+                    audio, paths["review"], paths["aligned"],
+                    audio_duration=measured_duration, align_python=align_python,
+                    timeout=external_timeout, runner=runner,
+                )
+                cache_status["alignment"] = "generated"
+            else:
+                cache_status["alignment"] = "reused"
+            lyrics = aligned
+            lyrics_lane_path = paths["aligned"]
     elif mode == "sections":
         # Scene changes may use already-established local lyric evidence, but
         # never trigger lyric generation and never inherit a semantic lane.
@@ -1484,10 +1680,20 @@ def run_assist(
                 if lyrics is not None:
                     timing_source_path = paths["review"]
             if lyrics is not None and timing_source_path is not None:
+                # Either acoustic lane may have produced the aligned artifact:
+                # the authored path writes an anchor/block lane over the sync
+                # proposal, the transcription path a per-cue refinement of the
+                # review lane. Accept whichever this workspace holds, and fall
+                # back to the coarse lane rather than to nothing.
                 aligned = _cache_matches(
                     paths["aligned"], lyrics["schema_version"], audio_sha,
-                    accept=lambda value: _alignment_cache_accepts(
-                        value, source_sha256=sha256_file(timing_source_path)),
+                    accept=lambda value: (
+                        _alignment_cache_accepts(
+                            value, source_sha256=sha256_file(timing_source_path))
+                        or _anchor_block_cache_accepts(
+                            value, whisper_sha256=source_sha,
+                            coarse_sha256=sha256_file(timing_source_path),
+                            reference_sha256=None)),
                 )
                 if aligned is not None:
                     lyrics = aligned
@@ -1546,9 +1752,18 @@ def run_assist(
         "result_counts": {
             "lyrics": len(lyrics.get("lines", [])) if lyrics else 0,
             "lyrics_unmatched": len(lyrics.get("unmatched", [])) if lyrics else 0,
+            # Additive: unresolved lines and review flags are the LT1 review
+            # surface. They are never cues, so they cannot reach the bridge.
+            "lyrics_unresolved": len(lyrics.get("unresolved", [])) if lyrics else 0,
+            "lyrics_review_flags": (
+                len(lyrics.get("review_flags", [])) if lyrics else 0),
             "sections": len(plan.get("sections", [])),
             "semantics": len(semantic.get("segments", [])) if semantic else 0,
         },
+        "lyric_localization": (
+            {"policy": lyrics.get("localization_policy"),
+             "policy_version": lyrics.get("localization_policy_version")}
+            if lyrics and lyrics.get("localization_policy") else None),
     }
     atomic_write_json(paths["manifest"], manifest)
     return manifest

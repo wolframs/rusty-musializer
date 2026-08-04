@@ -184,6 +184,7 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
 
     lyric_assets = (
         "tools/import_whisper.py", "tools/force_align_lyrics.py",
+        "tools/lyric_anchor_block.py", "tools/anchor_block_align.py",
         "prompts/lyrics_cleanup_system.md",
         "schemas/codex-lyric-review-output-v1.schema.json",
         "schemas/lyric-review-v1.schema.json",
