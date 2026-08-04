@@ -245,6 +245,81 @@ pub mod caption_fx {
     pub const PLATE_ROUNDNESS_DEFAULT: f64 = 0.12;
 }
 
+/// How one caption drive's raw 0..=1 value maps to the amount an effect uses —
+/// the same quiet/loud in→out ranges, curve and clamp the Tune editor gives a
+/// scene route (UX0-C14, 2026-08-04).
+///
+/// The input is the drive's *shaped* value ([`super::caption_effects::
+/// drive_value`]), so "Beat" stays a pulse and "RMS" stays perceptual before
+/// tuning refines the window. Evaluation delegates to
+/// [`ParameterMapping::evaluate_mapping`], so the semantics — including the
+/// clamp asymmetry the route differential harness pins — cannot drift from the
+/// scene routes'. The default is the identity (0..1 → 0..1, linear, clamped)
+/// and, like the rest of the effects block, a default is never serialized.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DriveTuning {
+    pub input_min: f64,
+    pub input_max: f64,
+    pub output_min: f64,
+    pub output_max: f64,
+    pub curve: Interpolation,
+    pub clamp: bool,
+}
+
+impl Default for DriveTuning {
+    fn default() -> Self {
+        Self {
+            input_min: 0.0,
+            input_max: 1.0,
+            output_min: 0.0,
+            output_max: 1.0,
+            curve: Interpolation::Linear,
+            clamp: true,
+        }
+    }
+}
+
+impl DriveTuning {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Drive values and effect amounts are both 0..=1, so every endpoint lives
+    /// there too; the input window must be non-degenerate. Equal *outputs* are
+    /// fine — a flat amount is a legitimate authored choice here, unlike a
+    /// route, where the flat spelling is reserved for slider constants.
+    #[must_use]
+    pub fn validate(&self) -> bool {
+        let unit = |value: f64| value.is_finite() && (0.0..=1.0).contains(&value);
+        unit(self.input_min)
+            && unit(self.input_max)
+            && unit(self.output_min)
+            && unit(self.output_max)
+            && self.input_max > self.input_min
+    }
+
+    /// The tuned amount for one drive sample, clamped to the 0..=1 the effects
+    /// consume. `None` never survives to a caller: a mapping this type's
+    /// `validate` admits cannot fail evaluation on a finite sample, but the
+    /// fallback keeps a stale in-memory draft harmless — it falls back to the
+    /// raw drive.
+    #[must_use]
+    pub fn apply(&self, drive: f64) -> f64 {
+        ParameterMapping::evaluate_mapping(
+            drive,
+            self.input_min,
+            self.input_max,
+            self.output_min,
+            self.output_max,
+            self.curve,
+            self.clamp,
+        )
+        .unwrap_or(drive)
+        .clamp(0.0, 1.0)
+    }
+}
+
 /// Caption text effects: glow, soft shadow and plate shape.
 ///
 /// First `.musi` extension past the frozen C (operator decision, 2026-08-03).
@@ -264,10 +339,14 @@ pub struct CaptionEffects {
     pub glow_pulse: EffectDrive,
     /// How much of the intensity the pulse owns: 0 is steady, 1 swings to zero.
     pub glow_pulse_depth: f64,
+    /// Maps the pulse drive's raw value to the amount the pulse uses.
+    pub pulse_tuning: DriveTuning,
     /// Shifts the glow hue per frame.
     pub glow_hue_drive: EffectDrive,
     /// Degrees of hue swept across the drive's range.
     pub glow_hue_range: f64,
+    /// Maps the hue drive's raw value to the amount the sweep uses.
+    pub hue_tuning: DriveTuning,
     /// Softens the `Shadow` backing; 0 is the legacy hard copy.
     pub shadow_blur: f64,
     /// Scales the shadow colour's alpha; 1 is the legacy value.
@@ -284,8 +363,10 @@ impl Default for CaptionEffects {
             glow_rgba: caption_fx::GLOW_RGBA_DEFAULT,
             glow_pulse: EffectDrive::None,
             glow_pulse_depth: caption_fx::PULSE_DEPTH_DEFAULT,
+            pulse_tuning: DriveTuning::default(),
             glow_hue_drive: EffectDrive::None,
             glow_hue_range: caption_fx::HUE_RANGE_DEFAULT,
+            hue_tuning: DriveTuning::default(),
             shadow_blur: caption_fx::SHADOW_BLUR_DEFAULT,
             shadow_opacity: caption_fx::SHADOW_OPACITY_DEFAULT,
             plate_roundness: caption_fx::PLATE_ROUNDNESS_DEFAULT,
@@ -333,7 +414,8 @@ impl CaptionEffects {
             self.plate_roundness,
             caption_fx::PLATE_ROUNDNESS_MINIMUM,
             caption_fx::PLATE_ROUNDNESS_MAXIMUM,
-        )
+        ) && self.pulse_tuning.validate()
+            && self.hue_tuning.validate()
     }
 }
 

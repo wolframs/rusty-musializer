@@ -29,7 +29,8 @@ use musializer_core::project::caption_effects::EffectInputs;
 use musializer_core::scene::{SceneDescriptor, SceneFrame, SceneId, SceneInstance, StatelessScene};
 use musializer_core::scenes as core_scenes;
 use musializer_runtime::font::Faces;
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Rectangle};
+use musializer_runtime::halo::HaloBlur;
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Rectangle};
 
 use crate::scenes;
 
@@ -234,6 +235,14 @@ pub struct SceneRenderer {
     /// before Cadence has drawn at all. A compiled shader does not prove the
     /// atlas built, so the report carries the outcome and not the intent.
     cadence_text: &'static str,
+    /// The offscreen blur behind the caption glow halo (UX0-C11). Owned here
+    /// like the other GPU resources: one shader and one buffer pair for the
+    /// whole application, not a reload per scene switch.
+    caption_halo: HaloBlur,
+    /// What the glow did on the last caption frame — `off`, `blurred`, or
+    /// `unavailable` — because a frame with no halo and a frame whose halo
+    /// silently failed to build are the same picture.
+    caption_halo_last: &'static str,
 }
 
 impl SceneRenderer {
@@ -266,6 +275,8 @@ impl SceneRenderer {
             sdf_text,
             sdf_error,
             cadence_text: "none",
+            caption_halo: HaloBlur::load(rl, thread),
+            caption_halo_last: "none",
         })
     }
 
@@ -284,6 +295,27 @@ impl SceneRenderer {
             ),
         };
         format!("{shader}, cadence-text={}", self.cadence_text)
+    }
+
+    /// One line naming the caption glow's mechanism and last outcome, for its
+    /// own report row rather than a suffix on [`SceneRenderer::describe`]: the
+    /// headless gate pins that line's grammar exactly (one assertion is a full
+    /// string match), so the halo's evidence lives on a line it owns.
+    #[must_use]
+    pub fn describe_caption_halo(&self) -> String {
+        if self.caption_halo.available() {
+            // `describe()` is "rt-blur" when whole, and names a refused mask
+            // shader otherwise — a state where the glow still blurs but the
+            // soft shadow has fallen back to its hard copy, which no capture
+            // can tell from an authored hard shadow.
+            format!(
+                "{} last={}",
+                self.caption_halo.describe(),
+                self.caption_halo_last
+            )
+        } else {
+            format!("FALLBACK ({})", self.caption_halo.describe())
+        }
     }
 
     /// Draws the bound scene into `boundary`.
@@ -310,110 +342,133 @@ impl SceneRenderer {
         pixel_scale: f32,
     ) {
         let id = instance.id();
-        match id {
-            SceneId::Spectrum => {
-                scenes::spectrum::draw(d, frame, &mut self.circle, boundary, pixel_scale);
-            }
-            SceneId::PulseField => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::pulse_field::draw(d, state, frame, boundary, pixel_scale);
+        // The scene clip lives here rather than at the call site, because the
+        // caption halo below must run with *no* scissor active: its offscreen
+        // blur passes redirect the framebuffer, and a scissor rect is global GL
+        // state in screen coordinates that would clip the buffer with a
+        // rectangle meant for the preview panel. The rect is the same one the
+        // preview loop used to hold around this whole call, so a scene that
+        // draws past its boundary still cannot paint over a panel
+        // (`plug.c:7712-7716`).
+        {
+            let mut scene_clip = d.begin_scissor_mode(
+                boundary.x as i32,
+                boundary.y as i32,
+                boundary.width as i32,
+                boundary.height as i32,
+            );
+            let d: &mut RaylibDrawHandle<'_> = &mut scene_clip;
+            match id {
+                SceneId::Spectrum => {
+                    scenes::spectrum::draw(d, frame, &mut self.circle, boundary, pixel_scale);
                 }
-            }
-            SceneId::OrbitalLattice => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::orbital_lattice::draw(d, state, frame, boundary);
+                SceneId::PulseField => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::pulse_field::draw(d, state, frame, boundary, pixel_scale);
+                    }
                 }
-            }
-            SceneId::AsciiField => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::ascii_field::draw(
-                        d,
-                        state,
-                        frame,
-                        boundary,
-                        pixel_scale,
-                        assets.ascii_grid,
-                    );
+                SceneId::OrbitalLattice => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::orbital_lattice::draw(d, state, frame, boundary);
+                    }
                 }
-            }
-            SceneId::SongAtlas => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::song_atlas::draw(
-                        d,
-                        state,
-                        frame,
-                        boundary,
-                        pixel_scale,
-                        assets.atlas_map,
-                    );
+                SceneId::AsciiField => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::ascii_field::draw(
+                            d,
+                            state,
+                            frame,
+                            boundary,
+                            pixel_scale,
+                            assets.ascii_grid,
+                        );
+                    }
                 }
-            }
-            SceneId::SpectralTerrarium => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::spectral_terrarium::draw(d, frame, state, &mut self.circle, boundary);
+                SceneId::SongAtlas => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::song_atlas::draw(
+                            d,
+                            state,
+                            frame,
+                            boundary,
+                            pixel_scale,
+                            assets.atlas_map,
+                        );
+                    }
                 }
-            }
-            SceneId::Constellation => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::constellation::draw(d, frame, state, &mut self.circle, boundary);
+                SceneId::SpectralTerrarium => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::spectral_terrarium::draw(
+                            d,
+                            frame,
+                            state,
+                            &mut self.circle,
+                            boundary,
+                        );
+                    }
                 }
-            }
-            SceneId::Cadence => {
-                if let Some(state) = state_of(instance, id) {
-                    // The caption face, Alegreya, which is what the oracle draws
-                    // Cadence with (`plug.c:1329` hands `p->font` to the scene
-                    // renderer, and `scene_cadence.c:449` uses it). Not the
-                    // interface face: this scene typesets lyrics, and the interface
-                    // atlas carries only the codepoints the chrome needs.
-                    let bitmap = fonts.caption();
-                    // The distance field, but only with the shader that reads it,
-                    // and only over the codepoints this cue actually needs — the
-                    // atlas is built on the first Cadence frame rather than at
-                    // startup, so nine other scenes do not pay for it.
-                    //
-                    // No cue means the scene draws its idle particle ring and no
-                    // type at all, so the atlas is not requested then either: a
-                    // 200 ms build for a frame with no glyphs in it is a stall
-                    // paid for nothing.
-                    let cue = frame
-                        .lyric
-                        .map(|lyric| lyric.text.as_str())
-                        .filter(|text| !text.is_empty());
-                    let sdf_face = match (self.sdf_text.is_some(), cue) {
-                        (true, Some(text)) => fonts.cadence_sdf(text),
-                        _ => None,
-                    };
-                    let mut faces = match &sdf_face {
-                        Some(face) => scenes::cadence::CadenceType {
-                            text: face.face(),
-                            ink: bitmap,
-                            sdf: self.sdf_text.as_mut(),
-                        },
-                        None => scenes::cadence::CadenceType {
-                            text: bitmap,
-                            ink: bitmap,
-                            sdf: None,
-                        },
-                    };
-                    // `ambient` rather than `bitmap` when there is no cue, because
-                    // the two are different frames: one fell back, the other had
-                    // nothing to typeset.
-                    self.cadence_text = if cue.is_none() {
-                        "ambient"
-                    } else {
-                        faces.describe()
-                    };
-                    scenes::cadence::draw(d, frame, state, &mut faces, boundary, pixel_scale);
+                SceneId::Constellation => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::constellation::draw(d, frame, state, &mut self.circle, boundary);
+                    }
                 }
-            }
-            SceneId::Loom => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::loom::draw(d, frame, state, boundary, pixel_scale);
+                SceneId::Cadence => {
+                    if let Some(state) = state_of(instance, id) {
+                        // The caption face, Alegreya, which is what the oracle draws
+                        // Cadence with (`plug.c:1329` hands `p->font` to the scene
+                        // renderer, and `scene_cadence.c:449` uses it). Not the
+                        // interface face: this scene typesets lyrics, and the interface
+                        // atlas carries only the codepoints the chrome needs.
+                        let bitmap = fonts.caption();
+                        // The distance field, but only with the shader that reads it,
+                        // and only over the codepoints this cue actually needs — the
+                        // atlas is built on the first Cadence frame rather than at
+                        // startup, so nine other scenes do not pay for it.
+                        //
+                        // No cue means the scene draws its idle particle ring and no
+                        // type at all, so the atlas is not requested then either: a
+                        // 200 ms build for a frame with no glyphs in it is a stall
+                        // paid for nothing.
+                        let cue = frame
+                            .lyric
+                            .map(|lyric| lyric.text.as_str())
+                            .filter(|text| !text.is_empty());
+                        let sdf_face = match (self.sdf_text.is_some(), cue) {
+                            (true, Some(text)) => fonts.cadence_sdf(text),
+                            _ => None,
+                        };
+                        let mut faces = match &sdf_face {
+                            Some(face) => scenes::cadence::CadenceType {
+                                text: face.face(),
+                                ink: bitmap,
+                                sdf: self.sdf_text.as_mut(),
+                            },
+                            None => scenes::cadence::CadenceType {
+                                text: bitmap,
+                                ink: bitmap,
+                                sdf: None,
+                            },
+                        };
+                        // `ambient` rather than `bitmap` when there is no cue, because
+                        // the two are different frames: one fell back, the other had
+                        // nothing to typeset.
+                        self.cadence_text = if cue.is_none() {
+                            "ambient"
+                        } else {
+                            faces.describe()
+                        };
+                        scenes::cadence::draw(d, frame, state, &mut faces, boundary, pixel_scale);
+                    }
                 }
-            }
-            SceneId::Pentagram => {
-                if let Some(state) = state_of(instance, id) {
-                    scenes::pentagram::draw(d, frame, state, &mut self.circle, boundary);
+                SceneId::Loom => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::loom::draw(d, frame, state, boundary, pixel_scale);
+                    }
+                }
+                SceneId::Pentagram => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::pentagram::draw(d, frame, state, &mut self.circle, boundary);
+                    }
                 }
             }
         }
@@ -429,7 +484,7 @@ impl SceneRenderer {
                     frame.audio.beat_phase,
                     frame.audio.spectral_flux,
                 );
-                scenes::caption::draw_scene_lyric_overlay(
+                self.caption_halo_last = scenes::caption::draw_scene_lyric_overlay(
                     d,
                     frame.lyric,
                     fonts,
@@ -437,6 +492,7 @@ impl SceneRenderer {
                     pixel_scale,
                     style,
                     &inputs,
+                    &mut self.caption_halo,
                 );
             }
         }

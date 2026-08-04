@@ -331,6 +331,59 @@ authored so pre-effects `.musi` files stay byte-identical. Divergence rows in
 `AGENTS.md`; captures and luma/chroma gates in `tools/headless_check.sh`
 (`lyrics-effects-*`, `lyrics-picker-*`, `fx-glow`, `fx-soft-shadow`).
 
+**Review round, 2026-08-04 (operator played with the landed batch):** all six
+landed the same day. The glow is a real two-pass Gaussian over an offscreen
+buffer (`runtime::halo`); the backing tuners live beside BACKING on the Style
+pane; a hue drive saturates achromatic bases with the drive value; PULSE/HUE
+carry a full mapping editor (quiet/loud in→out, curve, clamp, live meter,
+transfer graph) built from `ui/mapping_editor.rs` — the same componentry the
+Tune route editor now draws with, over the same `evaluate_mapping` semantics —
+persisted as optional `pulse_tuning`/`hue_tuning` blocks that leave earlier
+files byte-identical; scene routes gained the `time` source; and tooltips
+cover the caption panes and the Tune editor. Probe `tune=pulse|hue`, capture
+`lyrics-tune-pulse-960x640`; probe runs without `hover=` can no longer
+photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
+
+**Items:**
+
+- [x] **UX0-C11 — real glow:** the 17-tap additive glow reads as discrete copies
+      ("gravitational lensing") once RADIUS grows, and 100 % GLOW is thin.
+      Replace with an offscreen render-texture blur so radius widens a single
+      halo; re-measure the fx gate deltas and re-run the zero-strength control.
+      *Done 2026-08-04: two-pass separable Gaussian in `runtime::halo` +
+      `halo_blur.fs`, composited additively twice; gate glow delta 123 (taps
+      measured 125), zero-strength control exactly 0, radius sweep 0.08/0.3/0.6
+      → 169/135/95 with one widening halo and no copies
+      (`build/glow-evidence/`); glow export deterministic across runs and
+      intact inside the supersampled target. `GLOW_TAPS` is now unused (core
+      cleanup belongs to the core stream). Follow-up, same day: the soft shadow
+      rides the same blur through `halo_mask.fs` (luminance-as-alpha, normal
+      blending); the seeder's soft-shadow fixture is now bright enough to
+      measure (soft-vs-hard delta 152, was 3-4), the zero-blur variant
+      degenerates to the legacy composition at exactly delta 0 (a standing
+      in-gate control), and `SHADOW_TAPS` is now also unused outside core.
+      Evidence under `build/shadow-evidence/`.*
+- [x] **UX0-C12 — effects pane grouping:** BLUR/SHADE/ROUND are backing tuners,
+      not effects; move them to the Style pane beside BACKING (contextual to
+      Shadow/Plate) so the Effects pane is glow-only.
+- [x] **UX0-C13 — achromatic hue drives:** a hue drive on a white/grey/black glow
+      colour does nothing; blend saturation in with the drive so an achromatic
+      base still sweeps colour.
+- [x] **UX0-C14 — drive tuning layer:** give PULSE/HUE the Tune popover's
+      quiet/loud in→out ranges, curve and live readout, by extracting the
+      mapping editor from `panels/tune.rs` into shared componentry.
+- [x] **UX0-C15 — Time route source:** add the caption pane's Time drive (8 s
+      triangle) as an `AnalysisSource` for scene routes; keep the route
+      differential harnesses green (additive token).
+- [x] **UX0-C16 — styling tooltips:** tooltips across the caption Style/Effects
+      panes and the Tune mapping editor, using the existing widget tooltip path.
+- [ ] **UX0-C17 — give the caption tune editor room:** the mapping editor fits
+      the caption pane's 160 px only by cutting Swap, exiling the transfer
+      graph to the other column and packing the curve row 6 px from the floor.
+      Growing the pane when a disclosure opens means changing
+      `lyrics_editor_layout`'s harness-pinned panel heights — a deliberate
+      layout change, so it queues rather than sneaks in.
+
 - [ ] **UX0-C01 — clip export:** expose render in/out or start/duration controls
       and drive the existing windowed `RenderPlan` path (`review` 3.1).
 - [ ] **UX0-C02 — vertical and square output:** add explicit width/height output

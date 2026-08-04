@@ -512,6 +512,7 @@ pub fn source_label(source: AnalysisSource) -> &'static str {
         AnalysisSource::SpectralFlux => "Flux",
         AnalysisSource::BeatPhase => "Beat",
         AnalysisSource::Band => "Band",
+        AnalysisSource::Time => "Time",
     }
 }
 
@@ -543,6 +544,15 @@ pub fn anchor_label(source: AnalysisSource, high: bool) -> &'static str {
                 "Beat end"
             } else {
                 "Beat start"
+            }
+        }
+        // The Time triangle's axis is the eight-second cycle, not loudness: 0 at
+        // the cycle boundaries, 1 at the midpoint.
+        AnalysisSource::Time => {
+            if high {
+                "Cycle peak"
+            } else {
+                "Cycle low"
             }
         }
     }

@@ -40,9 +40,9 @@ use crate::project::assets;
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
 use crate::project::model::{
     capacity, AnalysisLaneKind, AnalysisLaneReference, AsciiImageAsset, AssetMode, AudioAsset,
-    BlendMode, CaptionAnchor, CaptionBox, CaptionEffects, CaptionFace, CaptionStyle, EffectDrive,
-    FontAsset, Metadata, OutputFormat, OutputQuality, OutputSettings, ParameterCue, Project,
-    Provenance, SceneEntry, ScenePreset, SceneSwitchSuggestion, SceneSwitchSuggestions,
+    BlendMode, CaptionAnchor, CaptionBox, CaptionEffects, CaptionFace, CaptionStyle, DriveTuning,
+    EffectDrive, FontAsset, Metadata, OutputFormat, OutputQuality, OutputSettings, ParameterCue,
+    Project, Provenance, SceneEntry, ScenePreset, SceneSwitchSuggestion, SceneSwitchSuggestions,
     MAX_ANALYSIS_LANES, MAX_CUES, MAX_MAPPINGS_PER_SCENE, MAX_SCENES, MAX_SCENE_PRESETS,
     SCENE_SWITCH_CAPACITY,
 };
@@ -344,10 +344,21 @@ fn write_project(out: &mut String, project: &Project) {
         write_string(out, effects.glow_pulse.canonical_name());
         out.push_str(",\"glow_pulse_depth\":");
         write_f64(out, effects.glow_pulse_depth);
+        // The tuning blocks follow their drives and are themselves written only
+        // when authored, so an effects file from before UX0-C14 stays
+        // byte-identical on a round trip.
+        if !effects.pulse_tuning.is_default() {
+            out.push_str(",\"pulse_tuning\":");
+            write_drive_tuning(out, &effects.pulse_tuning);
+        }
         out.push_str(",\"glow_hue_drive\":");
         write_string(out, effects.glow_hue_drive.canonical_name());
         out.push_str(",\"glow_hue_range\":");
         write_f64(out, effects.glow_hue_range);
+        if !effects.hue_tuning.is_default() {
+            out.push_str(",\"hue_tuning\":");
+            write_drive_tuning(out, &effects.hue_tuning);
+        }
         out.push_str(",\"shadow_blur\":");
         write_f64(out, effects.shadow_blur);
         out.push_str(",\"shadow_opacity\":");
@@ -1452,10 +1463,12 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
     Ok(style)
 }
 
-/// The `effects` block: once present, all ten members are required, matching
-/// the parent style's all-or-nothing contract.
+/// The `effects` block: once present, all ten 2026-08-03 members are required,
+/// matching the parent style's all-or-nothing contract. The two tuning blocks
+/// post-date them (UX0-C14) and are optional with the identity as default —
+/// the same forward-compatibility shape `effects` itself has inside the style.
 fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 12] = [
         "glow_strength",
         "glow_radius",
         "glow_rgba",
@@ -1466,6 +1479,8 @@ fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
         "shadow_blur",
         "shadow_opacity",
         "plate_roundness",
+        "pulse_tuning",
+        "hue_tuning",
     ];
     let mut effects = CaptionEffects::default();
     let mut seen = Seen::default();
@@ -1482,7 +1497,9 @@ fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
             6 => effects.glow_hue_range = parser.f64()?,
             7 => effects.shadow_blur = parser.f64()?,
             8 => effects.shadow_opacity = parser.f64()?,
-            _ => effects.plate_roundness = parser.f64()?,
+            9 => effects.plate_roundness = parser.f64()?,
+            10 => effects.pulse_tuning = parse_drive_tuning(parser)?,
+            _ => effects.hue_tuning = parse_drive_tuning(parser)?,
         }
         Ok(())
     })?;
@@ -1490,6 +1507,54 @@ fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
         return Err(ProjectIoError::MissingField);
     }
     Ok(effects)
+}
+
+fn write_drive_tuning(out: &mut String, tuning: &DriveTuning) {
+    out.push_str("{\"input_min\":");
+    write_f64(out, tuning.input_min);
+    out.push_str(",\"input_max\":");
+    write_f64(out, tuning.input_max);
+    out.push_str(",\"output_min\":");
+    write_f64(out, tuning.output_min);
+    out.push_str(",\"output_max\":");
+    write_f64(out, tuning.output_max);
+    out.push_str(",\"curve\":");
+    write_string(out, tuning.curve.canonical_name());
+    out.push_str(",\"clamp\":");
+    out.push_str(if tuning.clamp { "true" } else { "false" });
+    out.push('}');
+}
+
+/// A drive tuning block: once present, all six members are required — the
+/// all-or-nothing contract every optional block in this format carries.
+fn parse_drive_tuning(parser: &mut Parser<'_>) -> Parsed<DriveTuning> {
+    const NAMES: [&str; 6] = [
+        "input_min",
+        "input_max",
+        "output_min",
+        "output_max",
+        "curve",
+        "clamp",
+    ];
+    let mut tuning = DriveTuning::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => tuning.input_min = parser.f64()?,
+            1 => tuning.input_max = parser.f64()?,
+            2 => tuning.output_min = parser.f64()?,
+            3 => tuning.output_max = parser.f64()?,
+            4 => tuning.curve = parser.enum_value(Interpolation::from_canonical_name)?,
+            _ => tuning.clamp = parser.bool()?,
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x3f) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(tuning)
 }
 
 /// `parse_project` (`project_io.c:304-306`).
@@ -2365,8 +2430,17 @@ mod tests {
             glow_rgba: 0x39FF_88E0,
             glow_pulse: EffectDrive::Bass,
             glow_pulse_depth: 0.75,
+            pulse_tuning: DriveTuning {
+                input_min: 0.2,
+                input_max: 0.9,
+                output_min: 0.1,
+                output_max: 1.0,
+                curve: Interpolation::Smoothstep,
+                clamp: true,
+            },
             glow_hue_drive: EffectDrive::Time,
             glow_hue_range: 200.0,
+            hue_tuning: DriveTuning::default(),
             shadow_blur: 0.12,
             shadow_opacity: 0.9,
             plate_roundness: 0.3,
@@ -2375,10 +2449,39 @@ mod tests {
         assert!(text.contains("\"effects\":{\"glow_strength\":"));
         assert!(text.contains("\"glow_rgba\":\"39ff88e0\""));
         assert!(text.contains("\"glow_pulse\":\"bass\""));
+        assert!(
+            text.contains("\"pulse_tuning\":{\"input_min\":0.2,")
+                && text.contains("\"curve\":\"smoothstep\""),
+            "an authored tuning block is written: {text}"
+        );
+        assert!(
+            !text.contains("\"hue_tuning\""),
+            "a default tuning block must not widen pre-tuning effects files"
+        );
         let reparsed = round_trip(&project);
         assert_eq!(
             reparsed.caption_style.effects,
             project.caption_style.effects
+        );
+    }
+
+    #[test]
+    fn a_half_specified_drive_tuning_is_refused() {
+        let mut project = valid_project();
+        project.caption_style.effects.glow_strength = 0.5;
+        project.caption_style.effects.hue_tuning.output_max = 0.7;
+        let text = serialize(&project).unwrap();
+        assert!(text.contains("\"hue_tuning\""));
+        let reduced = text.replace("\"input_max\":1,", "");
+        assert!(reduced != text);
+        assert_eq!(
+            deserialize(reduced.as_bytes()).unwrap_err(),
+            ProjectIoError::MissingField
+        );
+        let misspelled = text.replace("\"output_max\":0.7", "\"output_maxx\":0.7");
+        assert_eq!(
+            deserialize(misspelled.as_bytes()).unwrap_err(),
+            ProjectIoError::UnknownField
         );
     }
 

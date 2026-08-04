@@ -29,10 +29,12 @@
 
 use std::path::PathBuf;
 
+use musializer_core::project::caption_effects::drive_value;
 use musializer_core::project::editor_draft::{LyricDraftState, LyricDraftValues};
 use musializer_core::project::lyrics::{self, LyricCue, LyricsDocument, LyricsError};
 use musializer_core::project::model::{
-    caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, EffectDrive,
+    caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, DriveTuning,
+    EffectDrive,
 };
 use musializer_core::ui::lyric_lane_edit::{
     self, LyricLaneClick, LyricLaneSelection, LyricLaneZone,
@@ -45,12 +47,13 @@ use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::{GlyphRepertoire, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
+use super::super::mapping_editor;
 use super::super::shell::{draw_timeline_playhead, Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::DEFAULT_TIMELINE_HEIGHT;
 use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
-use crate::cli::{CaptionPickerProbe, UiProbe};
+use crate::cli::{CaptionPickerProbe, CaptionTuneProbe, UiProbe};
 use crate::workspace::{Track, Workspace};
 
 /// The cue lane's height, and the gap between it and the editor below.
@@ -191,6 +194,23 @@ mod caption_id {
     pub const GLOW_COLOR: u32 = 80;
     /// The Style/Effects toggle in the caption pane header.
     pub const EFFECTS_TOGGLE: u32 = 88;
+    /// The two `~` tune-openers on the effects form: `+0` pulse, `+1` hue.
+    pub const TUNE_OPEN: u32 = 96;
+    /// The tune editor's own controls (UX0-C14).
+    pub const TUNE_CLAMP: u32 = 104;
+    pub const TUNE_RESET: u32 = 105;
+    pub const TUNE_CURVE_PREVIOUS: u32 = 106;
+    pub const TUNE_CURVE_NEXT: u32 = 107;
+    /// The two anchor pairs' four sliders, in low-in/low-out/high-in/high-out
+    /// order.
+    pub const TUNE_SLIDERS: u32 = 112;
+    /// Tooltip ids for the `caption_slider` tracks (UX0-C16), offset by the
+    /// slider's drag id. Sliders claim no widget id of their own, but a
+    /// tooltip dwell is keyed by id, so each track needs a stable one.
+    pub const SLIDER_HINTS: u32 = 128;
+    /// Tooltip ids for whole rows — the choice rows, swatch rows and the
+    /// anchor grid — which are made of per-cell widgets and want one tip.
+    pub const ZONE_HINTS: u32 = 160;
 }
 
 /// The amber a lyric block is drawn in (`lyrics_editor_ui.c:998`).
@@ -439,10 +459,16 @@ pub struct LyricEditor {
     /// Held rather than recomputed from the pointer so a drag that leaves the
     /// track keeps moving the control it started on. `1..=3` are the SIZE, WIDTH
     /// and INSET sliders; `4..=6` are the picker's square, hue bar and alpha
-    /// bar; `10..=16` are the effects form's seven sliders.
+    /// bar; `10..=16` are the effects form's sliders (10-12 glow, 13 sweep,
+    /// 14-16 the backing tuners, now drawn on the style form).
     style_drag: u8,
     /// The free colour picker, closed unless a custom swatch opened it.
     picker: CaptionPicker,
+    /// Which drive's tuning editor claims the effects form's left column
+    /// (UX0-C14), or `None`. Mutually exclusive with the picker — they occupy
+    /// the same space, and a control painted under another claims the press
+    /// first.
+    tune_target: Option<TuneTarget>,
     lane_selection: LyricLaneSelection,
     lane_drag: LaneDrag,
     /// Cue count as of the last frame, so [`Self::timeline_height`] can ask the
@@ -506,6 +532,7 @@ impl LyricEditor {
             effects_pane: false,
             style_drag: 0,
             picker: CaptionPicker::default(),
+            tune_target: None,
             lane_selection: LyricLaneSelection::new(),
             lane_drag: LaneDrag::default(),
             cue_count: 0,
@@ -843,6 +870,20 @@ impl LyricEditor {
                 None => honoured = false,
             }
         }
+        if let Some(target) = probe.caption_tune {
+            // The tune editor is a disclosure inside the effects form, and it
+            // shares the left column with the picker — the probe mirrors the
+            // opener buttons: effects pane on, picker closed.
+            self.style_pane = true;
+            self.font_pane = false;
+            self.effects_pane = true;
+            honoured &= probe.caption_picker.is_none();
+            self.picker.target = None;
+            self.tune_target = Some(match target {
+                CaptionTuneProbe::Pulse => TuneTarget::Pulse,
+                CaptionTuneProbe::Hue => TuneTarget::Hue,
+            });
+        }
         if let Some(path) = probe.lyrics_reference_path.as_ref() {
             track.lyrics_reference_path = Some(PathBuf::from(path));
         }
@@ -888,7 +929,7 @@ impl LyricEditor {
         };
         format!(
             "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}, \
-             face={} field={} missing={} picker={}",
+             face={} field={} missing={} picker={} tune={}",
             track.lyrics.len(),
             pane,
             selected,
@@ -920,6 +961,9 @@ impl LyricEditor {
             // picker; `picker=ink` is what makes the frame self-describing, and
             // `picker=none` is what proves the toggle closes again.
             self.picker.target.map_or("none", |target| target.token()),
+            // The tune editor claims the same column (UX0-C14), with the same
+            // ambiguity and the same cure.
+            self.tune_target.map_or("none", |target| target.token()),
         )
     }
 }
@@ -2198,10 +2242,11 @@ impl Shell {
                 .clicked
             {
                 editor.effects_pane = !editor.effects_pane;
-                // Whichever picker was open belongs to the form being left; an
-                // open picker floating over the other form would write into a
-                // control that is no longer on screen.
+                // Whichever picker or tune editor was open belongs to the form
+                // being left; an open one floating over the other form would
+                // write into a control that is no longer on screen.
                 editor.picker.target = None;
+                editor.tune_target = None;
             }
         }
         let form = UiRect::new(
@@ -2294,17 +2339,115 @@ impl Shell {
                 ) {
                     changed = true;
                 }
+                // Row-level tips (UX0-C16), offered here rather than inside the
+                // column because they follow its visibility and this frame owns
+                // the `ShellInput` the pointer comes from.
+                self.zone_hint(d, input, 2, layout.face, "Typeface for caption cues");
+                self.zone_hint(
+                    d,
+                    input,
+                    3,
+                    layout.backing,
+                    "What sits behind the text; its tuners appear beside PLACE",
+                );
+                let grid = UiRect::new(
+                    layout.anchor[0].x,
+                    layout.anchor[0].y,
+                    layout.anchor[2].x + layout.anchor[2].width - layout.anchor[0].x,
+                    layout.anchor[8].y + layout.anchor[8].height - layout.anchor[0].y,
+                );
+                self.zone_hint(
+                    d,
+                    input,
+                    4,
+                    grid,
+                    "Where the caption sits; the grid mirrors the frame",
+                );
+                self.zone_hint(
+                    d,
+                    input,
+                    7,
+                    layout.import_face,
+                    "Bundle a font file into the project for the Imported face",
+                );
             }
+        }
+
+        // The contextual backing tuners (UX0-C12), beside the PLACE grid so the
+        // controls that style the backing sit with the control that chooses it.
+        // None shows nothing — there is nothing to tune.
+        #[rustfmt::skip]
+        let tuners: [(&str, f64, f64, u8, &str); 2] = match style.box_style {
+            CaptionBox::Shadow => [
+                ("BLUR",  caption_fx::SHADOW_BLUR_MINIMUM,    caption_fx::SHADOW_BLUR_MAXIMUM,    14,
+                 "Softens the shadow copy; 0 is the hard offset"),
+                ("SHADE", caption_fx::SHADOW_OPACITY_MINIMUM, caption_fx::SHADOW_OPACITY_MAXIMUM, 15,
+                 "How dark the shadow draws"),
+            ],
+            CaptionBox::Plate => [
+                ("ROUND", caption_fx::PLATE_ROUNDNESS_MINIMUM, caption_fx::PLATE_ROUNDNESS_MAXIMUM, 16,
+                 "Corner roundness of the plate and its outline"),
+                ("", 0.0, 0.0, 0, ""),
+            ],
+            CaptionBox::None => [("", 0.0, 0.0, 0, ""); 2],
+        };
+        for (row, (label, minimum, maximum, drag_id, tip)) in tuners.into_iter().enumerate() {
+            if label.is_empty() {
+                continue;
+            }
+            let bar = layout.tuner[row];
+            let value = match drag_id {
+                14 => &mut style.effects.shadow_blur,
+                15 => &mut style.effects.shadow_opacity,
+                _ => &mut style.effects.plate_roundness,
+            };
+            let readout = format!("{:.1}%", *value * 100.0);
+            let width = widgets::measure(font, &readout, 12.0).min(44.0);
+            caption_label(
+                d,
+                font,
+                label,
+                layout.tuner_caption[row].x,
+                layout.tuner_caption[row].y,
+                layout.tuner_caption[row].height,
+            );
+            widgets::draw_text(
+                d,
+                font,
+                &readout,
+                layout.tuner_caption[row].x + layout.tuner_caption[row].width - width,
+                layout.tuner_caption[row].y,
+                12.0,
+                color::ui_ink(),
+            );
+            if bar.width >= 60.0
+                && caption_slider(
+                    d,
+                    input.ui_scale,
+                    &mut editor.style_drag,
+                    drag_id,
+                    bar,
+                    minimum,
+                    maximum,
+                    value,
+                )
+            {
+                changed = true;
+            }
+            self.slider_hint(d, input, drag_id, bar, editor.style_drag, tip);
         }
 
         let readout_width = 44.0;
         #[rustfmt::skip]
-        let sliders: [(&str, f64, f64, u8); 3] = [
-            ("SIZE",  caption::SIZE_MINIMUM,   caption::SIZE_MAXIMUM,   1),
-            ("WIDTH", caption::WIDTH_MINIMUM,  caption::WIDTH_MAXIMUM,  2),
-            ("INSET", caption::MARGIN_MINIMUM, caption::MARGIN_MAXIMUM, 3),
+        let sliders: [(&str, f64, f64, u8, &str); 3] = [
+            ("SIZE",  caption::SIZE_MINIMUM,   caption::SIZE_MAXIMUM,   1,
+             "Caption height as a fraction of the frame, so exports match the preview"),
+            ("WIDTH", caption::WIDTH_MINIMUM,  caption::WIDTH_MAXIMUM,  2,
+             "How wide a caption may grow before it wraps"),
+            ("INSET", caption::MARGIN_MINIMUM, caption::MARGIN_MAXIMUM, 3,
+             "Margin between the caption and the frame edge"),
         ];
-        for (index, (label, minimum, maximum, drag_id)) in sliders.into_iter().enumerate() {
+        for (index, (label, minimum, maximum, drag_id, tip)) in sliders.into_iter().enumerate() {
             let bar = layout.sliders[index];
             caption_label(d, font, label, layout.right_label_x, bar.y, bar.height);
             if bar.width < 60.0 {
@@ -2327,6 +2470,7 @@ impl Shell {
             ) {
                 changed = true;
             }
+            self.slider_hint(d, input, drag_id, bar, editor.style_drag, tip);
             let readout = format!("{:.1}%", *value * 100.0);
             let width = widgets::measure(font, &readout, 12.0).min(readout_width);
             widgets::draw_text(
@@ -2362,6 +2506,13 @@ impl Shell {
             Some(SwatchChoice::Custom) => editor.picker.toggle(CaptionColor::Ink),
             None => {}
         }
+        self.zone_hint(
+            d,
+            input,
+            5,
+            layout.ink,
+            "Text colour; the last cell opens the free picker",
+        );
 
         // Kept live even with backing "None": switching back should restore the
         // colour that was chosen rather than reset it.
@@ -2387,6 +2538,13 @@ impl Shell {
             Some(SwatchChoice::Custom) => editor.picker.toggle(CaptionColor::Plate),
             None => {}
         }
+        self.zone_hint(
+            d,
+            input,
+            6,
+            layout.plate,
+            "Backing colour for Shadow and Plate; the last cell opens the free picker",
+        );
 
         widgets::draw_text(
             d,
@@ -2736,10 +2894,12 @@ impl Shell {
         let mut changed = false;
         let layout = CaptionEffectsLayout::compose(form);
 
-        // The left column, or the glow picker in its place — the same
-        // mutual exclusion the style form has, for the same press-claim reason.
-        // An Ink or Plate picker cannot be open here: the pane toggle closes the
-        // picker, and this form's only opener targets Glow.
+        // The left column, or the glow picker or a tune editor in its place —
+        // the same mutual exclusion the style form has, for the same
+        // press-claim reason. An Ink or Plate picker cannot be open here: the
+        // pane toggle closes the picker, and this form's only opener targets
+        // Glow. Picker and tune editor close each other at their openers, so
+        // at most one of the three bodies draws.
         if editor.picker.target == Some(CaptionColor::Glow) {
             if self.caption_picker(
                 d,
@@ -2752,6 +2912,8 @@ impl Shell {
             ) {
                 changed = true;
             }
+        } else if let Some(target) = editor.tune_target {
+            changed |= self.caption_tune_editor(d, input, &layout.editor, target, &mut style);
         } else {
             changed |= self.effects_left_column(d, input, editor, &layout, &mut style);
         }
@@ -2782,67 +2944,356 @@ impl Shell {
                 }
             }
         }
+        self.zone_hint(
+            d,
+            input,
+            1,
+            layout.hue,
+            "Which figure sweeps the glow's colour; white and grey bases gain colour as it rises",
+        );
 
-        #[rustfmt::skip]
-        let right_sliders: [(&str, UiRect, f64, f64, u8, usize); 4] = [
-            ("SWEEP", layout.sweep, caption_fx::HUE_RANGE_MINIMUM,      caption_fx::HUE_RANGE_MAXIMUM,      13, 0),
-            ("BLUR",  layout.blur,  caption_fx::SHADOW_BLUR_MINIMUM,    caption_fx::SHADOW_BLUR_MAXIMUM,    14, 1),
-            ("SHADE", layout.shade, caption_fx::SHADOW_OPACITY_MINIMUM, caption_fx::SHADOW_OPACITY_MAXIMUM, 15, 2),
-            ("ROUND", layout.round, caption_fx::PLATE_ROUNDNESS_MINIMUM, caption_fx::PLATE_ROUNDNESS_MAXIMUM, 16, 3),
-        ];
-        for (label, bar, minimum, maximum, drag_id, which) in right_sliders {
-            caption_label(d, font, label, layout.right_label_x, bar.y, bar.height);
-            if bar.width < 60.0 {
-                continue;
-            }
-            let value = match which {
-                0 => &mut style.effects.glow_hue_range,
-                1 => &mut style.effects.shadow_blur,
-                2 => &mut style.effects.shadow_opacity,
-                _ => &mut style.effects.plate_roundness,
-            };
+        caption_label(
+            d,
+            font,
+            "SWEEP",
+            layout.right_label_x,
+            layout.sweep.y,
+            layout.sweep.height,
+        );
+        if layout.sweep.width >= 60.0 {
             if caption_slider(
                 d,
                 input.ui_scale,
                 &mut editor.style_drag,
-                drag_id,
-                bar,
-                minimum,
-                maximum,
-                value,
+                13,
+                layout.sweep,
+                caption_fx::HUE_RANGE_MINIMUM,
+                caption_fx::HUE_RANGE_MAXIMUM,
+                &mut style.effects.glow_hue_range,
             ) {
                 changed = true;
             }
-            let readout = if which == 0 {
-                format!("{:.0}\u{b0}", *value)
-            } else {
-                format!("{:.1}%", *value * 100.0)
-            };
+            let readout = format!("{:.0}\u{b0}", style.effects.glow_hue_range);
             let width = widgets::measure(font, &readout, 12.0).min(44.0);
             widgets::draw_text(
                 d,
                 font,
                 &readout,
                 layout.readout_right - width,
-                bar.y + 5.0,
+                layout.sweep.y + 5.0,
                 12.0,
                 color::ui_ink(),
             );
+            self.slider_hint(
+                d,
+                input,
+                13,
+                layout.sweep,
+                editor.style_drag,
+                "How many degrees of hue the drive sweeps through at full value",
+            );
         }
 
-        widgets::draw_text(
+        // The two tune-openers. Each replaces the left column with the mapping
+        // editor for its drive — the same quiet/loud windows, curve and live
+        // meter the Tune inspector gives a routed setting (UX0-C14).
+        caption_label(
             d,
             font,
-            "Drives follow the music. BLUR and SHADE soften the Shadow backing; ROUND shapes the Plate.",
-            layout.note.x,
-            layout.note.y,
-            12.0,
-            color::ui_muted(),
+            "TUNE",
+            layout.right_label_x,
+            layout.tune[0].y,
+            layout.tune[0].height,
         );
+        for (index, target) in [TuneTarget::Pulse, TuneTarget::Hue].into_iter().enumerate() {
+            let open = editor.tune_target == Some(target);
+            let label = match target {
+                TuneTarget::Pulse => "Pulse ~",
+                TuneTarget::Hue => "Hue ~",
+            };
+            let id = widgets::widget_id(ns::CAPTION, caption_id::TUNE_OPEN + index as u32);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                layout.tune[index],
+                label,
+                open,
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            if state.clicked {
+                editor.tune_target = if open { None } else { Some(target) };
+                // The tune editor and the picker share the left column; the
+                // opener that wins closes the other.
+                editor.picker.target = None;
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                layout.tune[index],
+                match target {
+                    TuneTarget::Pulse => "Shape how the pulse drive maps to glow intensity",
+                    TuneTarget::Hue => "Shape how the hue drive maps to the colour sweep",
+                },
+            );
+        }
+
+        // Beside the open editor: the transfer graph, sampling the same
+        // `DriveTuning::apply` the resolver maps with. With no editor open the
+        // space carries the note instead.
+        if let Some(target) = editor.tune_target {
+            let tuning = target.read(&style);
+            let live = f64::from(drive_value(target.drive(&style), &input.effect_inputs));
+            mapping_editor::transfer_graph(
+                d,
+                layout.graph,
+                (tuning.input_min, tuning.input_max),
+                0.0,
+                1.0,
+                Some(live),
+                &|source| Some(tuning.apply(source)),
+            );
+        } else {
+            widgets::draw_text(
+                d,
+                font,
+                "Drives follow the music; Tune shapes the response. Backing softness lives on the Style pane.",
+                layout.note.x,
+                layout.note.y,
+                12.0,
+                color::ui_muted(),
+            );
+        }
 
         if changed {
             editor.push(LyricsEdit::SetCaptionStyle(Box::new(style)));
         }
+    }
+
+    /// The drive tuning editor (UX0-C14), in the effects form's left column:
+    /// heading with Clamp and Reset, the live meter, the quiet/loud anchor
+    /// pairs and the curve stepper — the Tune inspector's route editor, built
+    /// from the same [`mapping_editor`] pieces, writing a [`DriveTuning`]
+    /// straight into the style instead of staging a route draft.
+    fn caption_tune_editor(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        layout: &CaptionTuneLayout,
+        target: TuneTarget,
+        style: &mut CaptionStyle,
+    ) -> bool {
+        let font = input.fonts.ui();
+        let mut tuning = target.read(style);
+        let mut changed = false;
+        let drive = target.drive(style);
+        let drive_label = DRIVE_LABELS[index_of(EffectDrive::ALL, drive)];
+
+        widgets::draw_text(
+            d,
+            font,
+            &format!("{} \u{b7} {}", target.heading(), drive_label),
+            layout.heading.x,
+            layout.heading.y,
+            12.0,
+            color::ui_muted(),
+        );
+        let clamp_id = widgets::widget_id(ns::CAPTION, caption_id::TUNE_CLAMP);
+        let state = self.widgets.text_button(
+            d,
+            font,
+            clamp_id,
+            layout.clamp,
+            "Clamp",
+            tuning.clamp,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        if state.clicked {
+            tuning.clamp = !tuning.clamp;
+            changed = true;
+        }
+        self.widgets.hint(
+            d,
+            state,
+            clamp_id,
+            layout.clamp,
+            "Hold the drive inside the quiet/loud window; off lets the curve extrapolate past it",
+        );
+        let reset_id = widgets::widget_id(ns::CAPTION, caption_id::TUNE_RESET);
+        let state = self.widgets.text_button(
+            d,
+            font,
+            reset_id,
+            layout.reset,
+            "Reset",
+            false,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        if state.clicked && !tuning.is_default() {
+            tuning = DriveTuning::default();
+            changed = true;
+        }
+        self.widgets.hint(
+            d,
+            state,
+            reset_id,
+            layout.reset,
+            "Back to the identity mapping: 0..1 in, 0..1 out, linear",
+        );
+
+        // The live line and meter: the drive's value this frame, and what the
+        // tuning maps it to — the same numbers the overlay's resolver uses.
+        //
+        // Deliberately "DRIVE", not "LIVE RMS": the scene Tune editor's meter
+        // shows the *raw* source, while a caption drive is already shaped
+        // (RMS is square-rooted, Beat is cubed). Two meters carrying the same
+        // label on different scales would quietly disagree side by side; the
+        // heading above names the source, and this line names the thing it
+        // actually measures.
+        let live = f64::from(drive_value(drive, &input.effect_inputs));
+        let arrow = mapping_editor::arrow(font.all_loaded());
+        widgets::draw_text(
+            d,
+            font,
+            &format!("DRIVE {live:.3} {arrow} {:.2}", tuning.apply(live)),
+            layout.meter_caption.x,
+            layout.meter_caption.y,
+            12.0,
+            color::ui_muted(),
+        );
+        mapping_editor::meter(
+            d,
+            layout.meter,
+            mapping_editor::window_position(tuning.input_min, tuning.input_max, live),
+        );
+
+        // The two anchors, at the route editor's stride. The minimum window
+        // width keeps `input_max > input_min` true — the same reason a route
+        // refuses a degenerate window, enforced here at the slider instead of
+        // at a failed save.
+        const WINDOW_MINIMUM: f64 = 0.01;
+        for (high, y) in [(false, layout.quiet_y), (true, layout.loud_y)] {
+            let name = drive_anchor_label(drive, high);
+            let (anchor_input, anchor_output) = if high {
+                (tuning.input_max, tuning.output_max)
+            } else {
+                (tuning.input_min, tuning.output_min)
+            };
+            let caption = format!("{name}  {anchor_input:.2} {arrow} {anchor_output:.2}");
+            let slot = caption_id::TUNE_SLIDERS + if high { 2 } else { 0 };
+            let edit = mapping_editor::anchor_pair(
+                d,
+                &mut self.widgets,
+                font,
+                layout.x,
+                y,
+                layout.width,
+                &mapping_editor::AnchorPair {
+                    caption: &caption,
+                    input_fraction: anchor_input as f32,
+                    output_fraction: anchor_output as f32,
+                    input_id: widgets::widget_id(ns::CAPTION, slot),
+                    output_id: widgets::widget_id(ns::CAPTION, slot + 1),
+                    arrow_ok: font.all_loaded(),
+                },
+            );
+            if let Some(fraction) = edit.input {
+                let fraction = f64::from(fraction);
+                if high {
+                    tuning.input_max = fraction.max(tuning.input_min + WINDOW_MINIMUM).min(1.0);
+                } else {
+                    tuning.input_min = fraction.min(tuning.input_max - WINDOW_MINIMUM).max(0.0);
+                }
+                changed = true;
+            }
+            if let Some(fraction) = edit.output {
+                if high {
+                    tuning.output_max = f64::from(fraction);
+                } else {
+                    tuning.output_min = f64::from(fraction);
+                }
+                changed = true;
+            }
+        }
+
+        if let Some(curve) = mapping_editor::curve_stepper(
+            d,
+            &mut self.widgets,
+            font,
+            layout.x,
+            layout.curve_y,
+            layout.width,
+            widgets::widget_id(ns::CAPTION, caption_id::TUNE_CURVE_PREVIOUS),
+            widgets::widget_id(ns::CAPTION, caption_id::TUNE_CURVE_NEXT),
+            tuning.curve,
+        ) {
+            tuning.curve = curve;
+            changed = true;
+        }
+
+        if changed {
+            target.write(style, tuning);
+        }
+        changed
+    }
+
+    /// Offers a tooltip for one of the `caption_slider` tracks, which return no
+    /// [`widgets::ButtonState`] of their own — the hover is derived from the
+    /// pointer, and an active drag on the slider counts as pressed so the tip
+    /// stands down while the value is moving (UX0-C16).
+    fn slider_hint(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        drag_id: u8,
+        bar: UiRect,
+        style_drag: u8,
+        text: &str,
+    ) {
+        let mouse = input.ui_scale.mouse(d);
+        let state = widgets::ButtonState {
+            hovered: bar.contains_point(mouse.x, mouse.y),
+            clicked: false,
+            pressed: style_drag == drag_id,
+        };
+        self.widgets.hint(
+            d,
+            state,
+            widgets::widget_id(ns::CAPTION, caption_id::SLIDER_HINTS + u32::from(drag_id)),
+            bar,
+            text,
+        );
+    }
+
+    /// A row-level tooltip for controls built from per-cell widgets — choice
+    /// rows, swatch rows, the anchor grid — where one tip should speak for the
+    /// group (UX0-C16). The synthetic state never reports `pressed`, so the
+    /// tip stands down only by leaving the row.
+    fn zone_hint(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        slot: u32,
+        zone: UiRect,
+        text: &str,
+    ) {
+        let mouse = input.ui_scale.mouse(d);
+        let state = widgets::ButtonState {
+            hovered: zone.contains_point(mouse.x, mouse.y),
+            clicked: false,
+            pressed: false,
+        };
+        self.widgets.hint(
+            d,
+            state,
+            widgets::widget_id(ns::CAPTION, caption_id::ZONE_HINTS + slot),
+            zone,
+            text,
+        );
     }
 
     /// GLOW, RADIUS, COLOR, PULSE and DEPTH — the space the glow picker claims.
@@ -2858,12 +3309,15 @@ impl Shell {
         let mut changed = false;
 
         #[rustfmt::skip]
-        let sliders: [(&str, UiRect, f64, f64, u8, usize); 3] = [
-            ("GLOW",   layout.glow,   caption_fx::GLOW_STRENGTH_MINIMUM, caption_fx::GLOW_STRENGTH_MAXIMUM, 10, 0),
-            ("RADIUS", layout.radius, caption_fx::GLOW_RADIUS_MINIMUM,   caption_fx::GLOW_RADIUS_MAXIMUM,   11, 1),
-            ("DEPTH",  layout.depth,  caption_fx::PULSE_DEPTH_MINIMUM,   caption_fx::PULSE_DEPTH_MAXIMUM,   12, 2),
+        let sliders: [(&str, UiRect, f64, f64, u8, usize, &str); 3] = [
+            ("GLOW",   layout.glow,   caption_fx::GLOW_STRENGTH_MINIMUM, caption_fx::GLOW_STRENGTH_MAXIMUM, 10, 0,
+             "Halo brightness; 0 turns the glow off"),
+            ("RADIUS", layout.radius, caption_fx::GLOW_RADIUS_MINIMUM,   caption_fx::GLOW_RADIUS_MAXIMUM,   11, 1,
+             "Halo size, as a fraction of the text size"),
+            ("DEPTH",  layout.depth,  caption_fx::PULSE_DEPTH_MINIMUM,   caption_fx::PULSE_DEPTH_MAXIMUM,   12, 2,
+             "How much of the glow the pulse owns: 0 steady, 100% swings to nothing"),
         ];
-        for (label, bar, minimum, maximum, drag_id, which) in sliders {
+        for (label, bar, minimum, maximum, drag_id, which, tip) in sliders {
             caption_label(d, font, label, layout.label_x, bar.y, bar.height);
             if bar.width < 60.0 {
                 continue;
@@ -2885,6 +3339,7 @@ impl Shell {
             ) {
                 changed = true;
             }
+            self.slider_hint(d, input, drag_id, bar, editor.style_drag, tip);
             let readout = format!("{:.1}%", *value * 100.0);
             let width = widgets::measure(font, &readout, 12.0).min(44.0);
             widgets::draw_text(
@@ -2915,17 +3370,20 @@ impl Shell {
             Color::get_color(style.effects.glow_rgba),
         );
         d.draw_rectangle_lines_ex(widgets::rectangle(layout.color_cell), 1.0, color::ui_rule());
-        if self
-            .widgets
-            .button(
-                d,
-                widgets::widget_id(ns::CAPTION, caption_id::GLOW_COLOR),
-                layout.color_cell,
-            )
-            .clicked
-        {
+        let color_id = widgets::widget_id(ns::CAPTION, caption_id::GLOW_COLOR);
+        let state = self.widgets.button(d, color_id, layout.color_cell);
+        if state.clicked {
             editor.picker.toggle(CaptionColor::Glow);
+            // The picker and the tune editor share the left column.
+            editor.tune_target = None;
         }
+        self.widgets.hint(
+            d,
+            state,
+            color_id,
+            layout.color_cell,
+            "The glow's base colour; click for the free picker",
+        );
         let (red, green, blue, _) = widgets::unpack_rgba(style.effects.glow_rgba);
         widgets::draw_text(
             d,
@@ -2961,6 +3419,13 @@ impl Shell {
                 }
             }
         }
+        self.zone_hint(
+            d,
+            input,
+            0,
+            layout.pulse,
+            "Which figure pulses the glow: loudness, bass, the beat, movement, or the clock",
+        );
         changed
     }
 
@@ -3182,6 +3647,96 @@ impl CaptionColor {
     }
 }
 
+/// Which drive's tuning the effects form's editor is open on (UX0-C14).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TuneTarget {
+    Pulse,
+    Hue,
+}
+
+impl TuneTarget {
+    /// For the report line and the `--ui-probe` key.
+    const fn token(self) -> &'static str {
+        match self {
+            Self::Pulse => "pulse",
+            Self::Hue => "hue",
+        }
+    }
+
+    /// The editor's heading names the drive it maps, because opening it
+    /// replaces the controls that were in that space.
+    const fn heading(self) -> &'static str {
+        match self {
+            Self::Pulse => "PULSE TUNING",
+            Self::Hue => "HUE TUNING",
+        }
+    }
+
+    const fn drive(self, style: &CaptionStyle) -> EffectDrive {
+        match self {
+            Self::Pulse => style.effects.glow_pulse,
+            Self::Hue => style.effects.glow_hue_drive,
+        }
+    }
+
+    const fn read(self, style: &CaptionStyle) -> DriveTuning {
+        match self {
+            Self::Pulse => style.effects.pulse_tuning,
+            Self::Hue => style.effects.hue_tuning,
+        }
+    }
+
+    fn write(self, style: &mut CaptionStyle, tuning: DriveTuning) {
+        match self {
+            Self::Pulse => style.effects.pulse_tuning = tuning,
+            Self::Hue => style.effects.hue_tuning = tuning,
+        }
+    }
+}
+
+/// The two ends of a drive's axis, for the anchor captions. The route editor's
+/// `anchor_label` answers this for `AnalysisSource`; the drives have their own
+/// axes ([`EffectDrive`] is not that enum), so the wording lives here.
+const fn drive_anchor_label(drive: EffectDrive, high: bool) -> &'static str {
+    match drive {
+        EffectDrive::Rms | EffectDrive::Bass => {
+            if high {
+                "Loud"
+            } else {
+                "Quiet"
+            }
+        }
+        EffectDrive::Flux => {
+            if high {
+                "Busy"
+            } else {
+                "Calm"
+            }
+        }
+        EffectDrive::Beat => {
+            if high {
+                "Beat peak"
+            } else {
+                "Beat tail"
+            }
+        }
+        EffectDrive::Time => {
+            if high {
+                "Cycle peak"
+            } else {
+                "Cycle low"
+            }
+        }
+        EffectDrive::None => {
+            if high {
+                "High"
+            } else {
+                "Low"
+            }
+        }
+    }
+}
+
 /// The free colour picker's state while it is open.
 ///
 /// **Hue, saturation and value are held here rather than re-derived from the
@@ -3289,6 +3844,12 @@ struct CaptionFormLayout {
     sliders: [UiRect; 3],
     /// Where each slider's percentage readout is right-aligned to.
     readout_right: f32,
+    /// The contextual backing tuners (UX0-C12), in the space right of the PLACE
+    /// grid: BLUR and SHADE when the backing is Shadow, ROUND alone for Plate.
+    /// They are backing *styling*, so they live beside the BACKING chooser
+    /// rather than on the effects form. Caption line above, slider below.
+    tuner_caption: [UiRect; 2],
+    tuner: [UiRect; 2],
     ink: UiRect,
     plate: UiRect,
     /// The "sizes are fractions of the frame" note, moved out of the left column
@@ -3376,6 +3937,18 @@ impl CaptionFormLayout {
             );
         }
 
+        // Beside the anchor grid, which ends at `left_x + 70`; the 16 px gap
+        // keeps a missed grid press from landing on a slider.
+        let tuner_x = left_x + 86.0;
+        let tuner_width = left_width - 86.0;
+        let mut tuner_caption = [UiRect::new(0.0, 0.0, 0.0, 0.0); 2];
+        let mut tuner = [UiRect::new(0.0, 0.0, 0.0, 0.0); 2];
+        for row in 0..2 {
+            let top = form.y + 58.0 + row as f32 * 38.0;
+            tuner_caption[row] = UiRect::new(tuner_x, top, tuner_width, 12.0);
+            tuner[row] = UiRect::new(tuner_x, top + 12.0, tuner_width, Self::CELL);
+        }
+
         Self {
             label_x: form.x,
             right_label_x,
@@ -3387,6 +3960,8 @@ impl CaptionFormLayout {
             remove_face,
             sliders,
             readout_right: right_x + right_width,
+            tuner_caption,
+            tuner,
             ink: UiRect::new(right_x, form.y + 86.0, right_width, Self::CELL),
             plate: UiRect::new(right_x, form.y + 114.0, right_width, Self::CELL),
             note: UiRect::new(right_label_x, form.y + 140.0, column_width, 12.0),
@@ -3429,6 +4004,12 @@ impl CaptionFormLayout {
         for rect in self.sliders {
             rects.push(("slider", rect));
         }
+        for rect in self.tuner_caption {
+            rects.push(("tuner_caption", rect));
+        }
+        for rect in self.tuner {
+            rects.push(("tuner", rect));
+        }
         rects
     }
 }
@@ -3461,16 +4042,54 @@ struct CaptionEffectsLayout {
     hue: UiRect,
     /// Hue sweep, in degrees.
     sweep: UiRect,
-    /// Shadow blur.
-    blur: UiRect,
-    /// Shadow opacity.
-    shade: UiRect,
-    /// Plate roundness.
-    round: UiRect,
+    /// The two tune-openers, `[pulse, hue]` (UX0-C14). The backing tuners that
+    /// used this column (BLUR/SHADE/ROUND) are backing styling and moved to the
+    /// style form beside BACKING (UX0-C12).
+    tune: [UiRect; 2],
+    /// The transfer graph, drawn beside the open tune editor so the shape and
+    /// the sliders are visible together.
+    graph: UiRect,
     note: UiRect,
     /// The free picker claims the left column here exactly as it does on the
     /// style form, so the rects are the same ones.
     picker: CaptionPickerLayout,
+    /// The tune editor, which claims the same left column as the picker.
+    editor: CaptionTuneLayout,
+}
+
+/// The open tune editor's rectangles, all inside the effects form's left
+/// column (UX0-C14): heading row with Clamp/Reset, live meter, two anchor
+/// pairs at the route editor's 40 px stride, and the curve stepper.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptionTuneLayout {
+    heading: UiRect,
+    clamp: UiRect,
+    reset: UiRect,
+    meter_caption: UiRect,
+    meter: UiRect,
+    /// The anchor pairs' caption baselines; each pair is 40 px tall
+    /// ([`mapping_editor::anchor_pair`]).
+    quiet_y: f32,
+    loud_y: f32,
+    curve_y: f32,
+    x: f32,
+    width: f32,
+}
+
+impl CaptionTuneLayout {
+    /// The full extent of one anchor pair, for the containment test: caption
+    /// at `y`, sliders 15 px below and 20 px tall
+    /// ([`mapping_editor::anchor_pair`]).
+    #[cfg(test)]
+    fn anchor_rect(&self, y: f32) -> UiRect {
+        UiRect::new(self.x, y, self.width, 35.0)
+    }
+
+    /// The curve stepper's row (34 px steppers at each end, 22 px tall).
+    #[cfg(test)]
+    fn curve_rect(&self) -> UiRect {
+        UiRect::new(self.x, self.curve_y, self.width, 22.0)
+    }
 }
 
 impl CaptionEffectsLayout {
@@ -3503,26 +4122,45 @@ impl CaptionEffectsLayout {
             depth: UiRect::new(left_x, form.y + 108.0, left_slider, CaptionFormLayout::CELL),
             hue: UiRect::new(right_x, form.y, right_width, CaptionFormLayout::ROW),
             sweep: UiRect::new(right_x, form.y + ROW, right_slider, CaptionFormLayout::CELL),
-            blur: UiRect::new(
-                right_x,
-                form.y + ROW * 2.0,
-                right_slider,
-                CaptionFormLayout::CELL,
-            ),
-            shade: UiRect::new(
-                right_x,
-                form.y + ROW * 3.0,
-                right_slider,
-                CaptionFormLayout::CELL,
-            ),
-            round: UiRect::new(
-                right_x,
-                form.y + ROW * 4.0,
-                right_slider,
-                CaptionFormLayout::CELL,
-            ),
+            tune: [
+                UiRect::new(
+                    right_x,
+                    form.y + 60.0,
+                    (right_width - 6.0) * 0.5,
+                    CaptionFormLayout::CELL,
+                ),
+                UiRect::new(
+                    right_x + (right_width - 6.0) * 0.5 + 6.0,
+                    form.y + 60.0,
+                    (right_width - 6.0) * 0.5,
+                    CaptionFormLayout::CELL,
+                ),
+            ],
+            graph: UiRect::new(right_x, form.y + 92.0, right_width, 60.0),
             note: UiRect::new(form.x, form.y + 140.0, form.width, 12.0),
             picker: CaptionFormLayout::compose(form).picker,
+            editor: CaptionTuneLayout {
+                heading: UiRect::new(form.x, form.y + 4.0, column_width - 112.0, 12.0),
+                clamp: UiRect::new(
+                    form.x + column_width - 108.0,
+                    form.y,
+                    52.0,
+                    CaptionFormLayout::CELL,
+                ),
+                reset: UiRect::new(
+                    form.x + column_width - 52.0,
+                    form.y,
+                    52.0,
+                    CaptionFormLayout::CELL,
+                ),
+                meter_caption: UiRect::new(form.x, form.y + 26.0, column_width, 12.0),
+                meter: UiRect::new(form.x, form.y + 40.0, column_width, 7.0),
+                quiet_y: form.y + 52.0,
+                loud_y: form.y + 92.0,
+                curve_y: form.y + 132.0,
+                x: form.x,
+                width: column_width,
+            },
         }
     }
 
@@ -3537,9 +4175,9 @@ impl CaptionEffectsLayout {
             ("depth", self.depth),
             ("hue", self.hue),
             ("sweep", self.sweep),
-            ("blur", self.blur),
-            ("shade", self.shade),
-            ("round", self.round),
+            ("tune.pulse", self.tune[0]),
+            ("tune.hue", self.tune[1]),
+            ("graph", self.graph),
             ("note", self.note),
             ("picker.heading", self.picker.heading),
             ("picker.done", self.picker.done),
@@ -3547,6 +4185,14 @@ impl CaptionEffectsLayout {
             ("picker.hue", self.picker.hue),
             ("picker.alpha", self.picker.alpha),
             ("picker.readout", self.picker.readout),
+            ("editor.heading", self.editor.heading),
+            ("editor.clamp", self.editor.clamp),
+            ("editor.reset", self.editor.reset),
+            ("editor.meter_caption", self.editor.meter_caption),
+            ("editor.meter", self.editor.meter),
+            ("editor.quiet", self.editor.anchor_rect(self.editor.quiet_y)),
+            ("editor.loud", self.editor.anchor_rect(self.editor.loud_y)),
+            ("editor.curve", self.editor.curve_rect()),
         ]
     }
 }
@@ -4569,6 +5215,20 @@ mod tests {
         // The effects form's two drive rows, one cell per drive.
         ids.extend((0..DRIVE_LABELS.len() as u32).map(|i| caption_id::PULSE_DRIVE + i));
         ids.extend((0..DRIVE_LABELS.len() as u32).map(|i| caption_id::HUE_DRIVE + i));
+        // The tune editor (UX0-C14): the two openers, its buttons, its four
+        // anchor sliders.
+        ids.extend((0..2).map(|i| caption_id::TUNE_OPEN + i));
+        ids.extend([
+            caption_id::TUNE_CLAMP,
+            caption_id::TUNE_RESET,
+            caption_id::TUNE_CURVE_PREVIOUS,
+            caption_id::TUNE_CURVE_NEXT,
+        ]);
+        ids.extend((0..4).map(|i| caption_id::TUNE_SLIDERS + i));
+        // The tooltip dwell ids share the keyed space (UX0-C16): drag ids 1..=20
+        // for the slider tracks, and the row zones.
+        ids.extend((1..=20).map(|i| caption_id::SLIDER_HINTS + i));
+        ids.extend((0..8).map(|i| caption_id::ZONE_HINTS + i));
 
         let control_count = ids.len();
         ids.sort_unstable();
@@ -4651,6 +5311,36 @@ mod tests {
             "the glow picker lives on the effects form"
         );
         assert_eq!(fresh.picker.target, Some(CaptionColor::Glow));
+    }
+
+    /// UX0-C14: the tune probe opens the effects form's editor, the report line
+    /// says so, and the editor and the picker cannot both hold the left column.
+    #[test]
+    fn the_tune_editor_is_reachable_and_excludes_the_picker() {
+        let mut editor = LyricEditor::new();
+        let mut track = test_track("/tmp/tune.wav", 0);
+        let probe = UiProbe {
+            caption_tune: Some(CaptionTuneProbe::Pulse),
+            ..UiProbe::default()
+        };
+        assert!(editor.apply_probe(&probe, &mut track));
+        assert!(editor.style_pane && editor.effects_pane);
+        assert_eq!(editor.tune_target, Some(TuneTarget::Pulse));
+        assert_eq!(editor.picker.target, None);
+        let line = editor.describe(Some(&track));
+        assert!(line.contains("tune=pulse"), "{line:?}");
+        assert!(line.contains("picker=none"), "{line:?}");
+
+        // Both at once is a dishonoured probe: the two claim the same column,
+        // and a capture that photographed one while asserting the other would
+        // pass on the wrong frame.
+        let both = UiProbe {
+            caption_tune: Some(CaptionTuneProbe::Hue),
+            caption_picker: Some(CaptionPickerProbe::Glow),
+            ..UiProbe::default()
+        };
+        let mut fresh = LyricEditor::new();
+        assert!(!fresh.apply_probe(&both, &mut track));
     }
 
     /// The one thing an RGBA colour cannot carry, and the reason the picker holds

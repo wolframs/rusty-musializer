@@ -4,12 +4,13 @@
 //! Layout stays in `musializer-core`; this file is only the application-side
 //! composition that turns the layout into a box, shadow and glyph draw calls.
 
-use musializer_core::project::caption_effects::{self, EffectInputs, GLOW_TAPS, SHADOW_TAPS};
+use musializer_core::project::caption_effects::{self, EffectInputs, ResolvedGlow};
 use musializer_core::project::caption_layout::{self, CaptionLayout};
 use musializer_core::project::model::{CaptionAnchor, CaptionBox, CaptionStyle};
 use musializer_core::scene::LyricCue;
 use musializer_runtime::draw;
-use musializer_runtime::font::Faces;
+use musializer_runtime::font::{FaceRef, Faces};
+use musializer_runtime::halo::{self, HaloBlur};
 use raylib::consts::BlendMode;
 use raylib::prelude::{
     Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Rectangle,
@@ -127,6 +128,15 @@ fn compose(
 /// supersampling, and the shared 64 px atlas magnified that far is a blur. See
 /// [`Faces::caption_at`], which quantizes the size, caches two atlases and falls
 /// back — visibly, in the report line — when it cannot build one.
+/// The extra return: what the glow did this frame, for the renderer's report
+/// line. `"off"` is no glow resolved, `"blurred"` a drawn halo, and
+/// `"unavailable"` a resolved glow the blur pipeline could not draw — the state
+/// a capture cannot distinguish from `"off"` on its own, which is why it is a
+/// word and not a pixel.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the caption crossing: draw target, cue, faces, geometry, style, drives, blur"
+)]
 pub fn draw_scene_lyric_overlay(
     d: &mut RaylibDrawHandle<'_>,
     lyric: Option<&LyricCue>,
@@ -135,12 +145,13 @@ pub fn draw_scene_lyric_overlay(
     pixel_scale: f32,
     style: &CaptionStyle,
     inputs: &EffectInputs,
-) {
+    blur: &mut HaloBlur,
+) -> &'static str {
     let Some(lyric) = lyric else {
-        return;
+        return "off";
     };
     let Some(font_size) = caption_font_size(boundary, &lyric.text, pixel_scale, style) else {
-        return;
+        return "off";
     };
     // One resolution, held across both the measurement and the draw. Two calls
     // could hand back two different atlases if a resize landed between them, and
@@ -154,7 +165,7 @@ pub fn draw_scene_lyric_overlay(
         font_size,
         &mut |text, size, spacing| font.measure_text(text, size, spacing).x,
     ) else {
-        return;
+        return "off";
     };
     // Deterministic per frame: the drives read the same figures the scenes do,
     // so an export reproduces the preview's pulse exactly.
@@ -175,31 +186,33 @@ pub fn draw_scene_lyric_overlay(
         );
     }
 
-    // The glow ignores the scissor on purpose: a halo is *supposed* to spill
-    // past the composed box, and clipping it would print the box's outline into
-    // the haze. The taps are still bounded — radius is a fraction of the font
-    // size — so nothing reaches far.
-    if let Some(glow) = fx.glow {
-        let glow_alpha = f32::from((glow.rgba & 0xFF) as u8) / 255.0;
-        let glow_color = Color::get_color(glow.rgba);
-        d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
-            for line in line_positions(&composition) {
-                for tap in GLOW_TAPS {
-                    blend.draw_text_ex(
-                        font.face(),
-                        line.text,
-                        Vector2::new(
-                            line.position.x + tap.dx * glow.radius_px,
-                            line.position.y + tap.dy * glow.radius_px,
-                        ),
-                        composition.font_size,
-                        composition.spacing,
-                        draw::color_alpha(glow_color, glow_alpha * tap.weight),
-                    );
-                }
-            }
-        });
-    }
+    // The glow ignores the caption's own scissor on purpose: a halo is
+    // *supposed* to spill past the composed box, and clipping it would print
+    // the box's outline into the haze. It is clipped to `boundary` instead, so
+    // it cannot spill over a panel.
+    let glow_status = match fx.glow {
+        Some(glow) => draw_glow_halo(d, blur, &composition, &font, glow, boundary),
+        None => "off",
+    };
+
+    // The soft shadow rides the same blur as the glow (operator-approved
+    // follow-up to UX0-C11, 2026-08-04): its 9-tap table had the identical
+    // discrete-copy pathology, hidden only because the fixture was dark on
+    // dark. The buffer is *built* here, before any scissor begins — the
+    // offscreen passes must run unclipped — and *composited* inside the box
+    // scissor below, because unlike the glow the shadow keeps the legacy
+    // decision of staying inside the caption box.
+    let soft_shadow = if style.box_style == CaptionBox::Shadow && fx.shadow_blur_px > 0.0 {
+        build_glyph_halo(
+            d,
+            blur,
+            &composition,
+            &font,
+            (fx.shadow_blur_px * 0.55).max(0.75),
+        )
+    } else {
+        None
+    };
 
     // The layout's three-line ellipsis is the semantic limit; the scissor is the
     // paint limit if an imported face has unusual metrics (`plug.c:1285-1288`).
@@ -209,39 +222,41 @@ pub fn draw_scene_lyric_overlay(
         composition.box_rect.width as i32,
         composition.box_rect.height as i32,
     );
+    let shadow_offset = pixel_scale.max(composition.font_size * 0.055);
+    let shadow_alpha = f32::from(box_color.a) / 255.0 * fx.shadow_alpha_scale;
+    // One whole-block composite rather than one per line: the blur already
+    // holds every line's coverage, and per-line compositing would draw each
+    // line's penumbra over the previous line's ink.
+    let soft_shadow_drawn = match soft_shadow {
+        Some(dest) => blur.composite_masked(
+            &mut clipped,
+            Rectangle::new(
+                dest.x + shadow_offset,
+                dest.y + shadow_offset,
+                dest.width,
+                dest.height,
+            ),
+            draw::color_alpha(box_color, shadow_alpha),
+        ),
+        None => false,
+    };
     for line in line_positions(&composition) {
-        if style.box_style == CaptionBox::Shadow {
-            let offset = pixel_scale.max(composition.font_size * 0.055);
-            let anchor = Vector2::new(line.position.x + offset, line.position.y + offset);
-            let base_alpha = f32::from(box_color.a) / 255.0 * fx.shadow_alpha_scale;
-            if fx.shadow_blur_px > 0.0 {
-                // The soft shadow: the same colour budget spread over a ring
-                // of taps, so blurring never darkens the composite.
-                for tap in SHADOW_TAPS {
-                    clipped.draw_text_ex(
-                        font.face(),
-                        line.text,
-                        Vector2::new(
-                            anchor.x + tap.dx * fx.shadow_blur_px,
-                            anchor.y + tap.dy * fx.shadow_blur_px,
-                        ),
-                        composition.font_size,
-                        composition.spacing,
-                        draw::color_alpha(box_color, base_alpha * tap.weight),
-                    );
-                }
-            } else {
-                // Legacy: one hard copy, exactly the C's composition when the
-                // effects block is default (`shadow_opacity` 1).
-                clipped.draw_text_ex(
-                    font.face(),
-                    line.text,
-                    anchor,
-                    composition.font_size,
-                    composition.spacing,
-                    draw::color_alpha(box_color, base_alpha),
-                );
-            }
+        // The hard copy: the legacy composition when `shadow_blur` is 0
+        // (exactly the C's, with `shadow_opacity` 1), and the *visible*
+        // fallback when the mask shader was refused — a sharp shadow a capture
+        // can see beats a silently missing soft one.
+        if style.box_style == CaptionBox::Shadow && !soft_shadow_drawn {
+            clipped.draw_text_ex(
+                font.face(),
+                line.text,
+                Vector2::new(
+                    line.position.x + shadow_offset,
+                    line.position.y + shadow_offset,
+                ),
+                composition.font_size,
+                composition.spacing,
+                draw::color_alpha(box_color, shadow_alpha),
+            );
         }
         clipped.draw_text_ex(
             font.face(),
@@ -252,6 +267,120 @@ pub fn draw_scene_lyric_overlay(
             text_color,
         );
     }
+    drop(clipped);
+    glow_status
+}
+
+/// Builds and composites the blurred glow halo (UX0-C11).
+///
+/// The 17-tap ring this replaces resolved into visible discrete copies of the
+/// text once the radius grew — inherent to finite taps — and read thin at full
+/// strength. The halo is now the glyph coverage Gaussian-blurred offscreen
+/// ([`HaloBlur`]) and composited additively, so a larger radius widens one
+/// halo instead of separating seventeen.
+///
+/// Sizing is derived from the *drawn* font size and radius in pixels — both
+/// already carry `pixel_scale` — so export supersampling scales the halo with
+/// everything else, and the same project and frame always produce the same
+/// pixels.
+fn draw_glow_halo(
+    d: &mut RaylibDrawHandle<'_>,
+    blur: &mut HaloBlur,
+    composition: &Composition,
+    font: &FaceRef<'_>,
+    glow: ResolvedGlow,
+    boundary: Rectangle,
+) -> &'static str {
+    // The authored radius names the visible reach of the haze, and a Gaussian
+    // stays visible to roughly 2.5 sigma, so sigma is well under the radius.
+    let Some(dest) = build_glyph_halo(
+        d,
+        blur,
+        composition,
+        font,
+        (glow.radius_px * 0.55).max(0.75),
+    ) else {
+        return "unavailable";
+    };
+    let Some(texture) = blur.result() else {
+        return "unavailable";
+    };
+    // The resolved colour's alpha byte *is* the final intensity. Compositing
+    // the buffer twice is deliberate luminosity shaping, not double-counting:
+    // additive blending saturates against bright pixels, and the second pass is
+    // what makes 100 % strength read as hot at the core while the skirt of the
+    // Gaussian stays a haze. (The old taps carried 1.5x weight headroom for the
+    // same reason.)
+    let tint = Color::get_color(glow.rgba);
+    let source = Rectangle::new(0.0, 0.0, texture.width as f32, -(texture.height as f32));
+    let mut clipped = d.begin_scissor_mode(
+        boundary.x as i32,
+        boundary.y as i32,
+        boundary.width as i32,
+        boundary.height as i32,
+    );
+    let mut blend = clipped.begin_blend_mode(BlendMode::BLEND_ADDITIVE);
+    for _ in 0..2 {
+        draw::draw_texture_pro(
+            &mut blend,
+            texture,
+            source,
+            dest,
+            Vector2::zero(),
+            0.0,
+            tint,
+        );
+    }
+    "blurred"
+}
+
+/// Renders the caption's glyph coverage into the blur buffer at `sigma` screen
+/// pixels and returns the on-screen rectangle the finished buffer maps onto
+/// ([`HaloBlur::result`] texel grid = `down` screen pixels per texel). Shared
+/// by the glow and the soft shadow, whose builds differ only in sigma and in
+/// how the result is composited.
+///
+/// Sizing is derived from the *drawn* font size and radius in pixels — both
+/// already carry `pixel_scale` — so export supersampling scales the halo with
+/// everything else, and the same project and frame always produce the same
+/// pixels. Must run with no scissor active (see [`HaloBlur::render`]).
+fn build_glyph_halo(
+    d: &mut RaylibDrawHandle<'_>,
+    blur: &mut HaloBlur,
+    composition: &Composition,
+    font: &FaceRef<'_>,
+    sigma: f32,
+) -> Option<Rectangle> {
+    // Everything past 3 sigma is under half a percent of peak and invisible
+    // over any material; the buffer is padded exactly that far. The caller's
+    // sigma floor keeps a sub-pixel radius from degenerating the kernel.
+    let spread = (sigma * 3.0).ceil();
+    let left = (composition.box_rect.x - spread).floor();
+    let top = (composition.box_rect.y - spread).floor();
+    let right = (composition.box_rect.x + composition.box_rect.width + spread).ceil();
+    let bottom = (composition.box_rect.y + composition.box_rect.height + spread).ceil();
+    // Blur at reduced resolution once sigma outgrows the kernel: one buffer
+    // texel per `down` screen pixels, so the shader's sigma stays bounded. A
+    // halo has no high frequencies, so the bilinear upsample is free quality.
+    let down = (sigma / halo::MAX_SIGMA_TEXELS).ceil().max(1.0);
+    let width = ((right - left) / down).ceil() as i32;
+    let height = ((bottom - top) / down).ceil() as i32;
+    let built = blur.render(d, width, height, sigma / down, |target| {
+        for line in line_positions(composition) {
+            target.draw_text_ex(
+                font.face(),
+                line.text,
+                Vector2::new(
+                    (line.position.x - left) / down,
+                    (line.position.y - top) / down,
+                ),
+                composition.font_size / down,
+                composition.spacing / down,
+                Color::WHITE,
+            );
+        }
+    });
+    built.then(|| Rectangle::new(left, top, width as f32 * down, height as f32 * down))
 }
 
 struct PlacedLine<'a> {

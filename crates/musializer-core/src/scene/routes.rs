@@ -22,9 +22,13 @@ use super::SceneId;
 /// (`scene_routes.h:16`).
 pub const ROUTES_PER_SCENE: usize = MAX_CONTROLS;
 
-/// Which per-frame audio figure drives a route (`project.h:60-67`).
+/// Which per-frame figure drives a route (`project.h:60-67`, plus `Time`).
 ///
 /// Discriminants are persisted in `.musi`, so they are a compatibility surface.
+/// `Time` post-dates the frozen C (UX0-C15, 2026-08-04): the same eight-second
+/// triangle clock the caption effects' Time drive uses, so a route can breathe
+/// without any audio at all. Additive — every C-era token keeps its meaning,
+/// which is what keeps the route differential harnesses green.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum AnalysisSource {
@@ -34,15 +38,18 @@ pub enum AnalysisSource {
     BeatPhase = 3,
     /// One analyzer band, selected by `band_index`.
     Band = 4,
+    /// The deterministic eight-second triangle clock ([`time_triangle`]).
+    Time = 5,
 }
 
 impl AnalysisSource {
-    pub const ALL: [AnalysisSource; 5] = [
+    pub const ALL: [AnalysisSource; 6] = [
         AnalysisSource::Rms,
         AnalysisSource::Peak,
         AnalysisSource::SpectralFlux,
         AnalysisSource::BeatPhase,
         AnalysisSource::Band,
+        AnalysisSource::Time,
     ];
 
     /// The codec's canonical name, as `--route` specs and `.musi` files spell it.
@@ -54,6 +61,7 @@ impl AnalysisSource {
             AnalysisSource::SpectralFlux => "spectral_flux",
             AnalysisSource::BeatPhase => "beat_phase",
             AnalysisSource::Band => "band",
+            AnalysisSource::Time => "time",
         }
     }
 
@@ -159,23 +167,51 @@ impl ParameterMapping {
     /// past the output endpoints. Reproduced as written.
     #[must_use]
     pub fn evaluate(&self, source_value: f64) -> Option<f64> {
+        Self::evaluate_mapping(
+            source_value,
+            self.input_min,
+            self.input_max,
+            self.output_min,
+            self.output_max,
+            self.interpolation,
+            self.clamp,
+        )
+    }
+
+    /// The mapping arithmetic itself, factored out of [`ParameterMapping`] so the
+    /// caption effects' drive tuning (`project::caption_effects`) applies the
+    /// *same* semantics — including the C's clamp asymmetry — instead of a
+    /// re-derivation that could drift. The body is byte-for-byte the pinned
+    /// `musi_mapping_evaluate` port; the route differential harness is the
+    /// contract on it.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn evaluate_mapping(
+        source_value: f64,
+        input_min: f64,
+        input_max: f64,
+        output_min: f64,
+        output_max: f64,
+        interpolation: Interpolation,
+        clamp: bool,
+    ) -> Option<f64> {
         if !source_value.is_finite()
-            || !self.input_min.is_finite()
-            || !self.input_max.is_finite()
-            || self.input_max <= self.input_min
-            || !self.output_min.is_finite()
-            || !self.output_max.is_finite()
+            || !input_min.is_finite()
+            || !input_max.is_finite()
+            || input_max <= input_min
+            || !output_min.is_finite()
+            || !output_max.is_finite()
         {
             return None;
         }
-        let mut amount = (source_value - self.input_min) / (self.input_max - self.input_min);
-        let result = if self.clamp {
+        let mut amount = (source_value - input_min) / (input_max - input_min);
+        let result = if clamp {
             amount = amount.clamp(0.0, 1.0);
-            let shaped = self.interpolation.shape(amount);
-            self.output_min + (self.output_max - self.output_min) * shaped
+            let shaped = interpolation.shape(amount);
+            output_min + (output_max - output_min) * shaped
         } else {
-            let shaped = self.interpolation.shape(amount);
-            self.output_min + (self.output_max - self.output_min) * shaped
+            let shaped = interpolation.shape(amount);
+            output_min + (output_max - output_min) * shaped
         };
         result.is_finite().then_some(result)
     }
@@ -235,10 +271,24 @@ impl ParameterMapping {
     }
 }
 
+/// The canonical eight-second triangle clock shared by [`AnalysisSource::Time`]
+/// and the caption effects' Time drive: 0 at each cycle boundary, 1 at the
+/// four-second midpoint, continuous across the wrap.
+///
+/// One definition on purpose — a scene route and a caption glow driven by
+/// "Time" must peak on the same frame or the two features stop looking like
+/// one clock.
+#[must_use]
+pub fn time_triangle(time_seconds: f64) -> f64 {
+    let cycle = (time_seconds / 8.0).fract();
+    1.0 - (2.0 * cycle - 1.0).abs()
+}
+
 /// The per-frame source values a route can bind to (`scene_routes.h:29-36`).
 ///
-/// A mirror of [`super::SceneAudioFrame`]'s figures, deliberately kept free of
-/// the scene module's drawing concerns so this stays headless.
+/// A mirror of [`super::SceneAudioFrame`]'s figures plus the deterministic
+/// clock, deliberately kept free of the scene module's drawing concerns so
+/// this stays headless.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RouteSources<'a> {
     pub bands: &'a [f32],
@@ -246,17 +296,21 @@ pub struct RouteSources<'a> {
     pub peak: f32,
     pub spectral_flux: f32,
     pub beat_phase: f32,
+    /// Playback (or export frame) time. `SceneAudioFrame` carries no clock, so
+    /// [`RouteSources::from_audio`] takes it separately.
+    pub time_seconds: f64,
 }
 
 impl<'a> RouteSources<'a> {
     #[must_use]
-    pub fn from_audio(audio: &super::SceneAudioFrame<'a>) -> Self {
+    pub fn from_audio(audio: &super::SceneAudioFrame<'a>, time_seconds: f64) -> Self {
         Self {
             bands: audio.bands,
             rms: audio.rms,
             peak: audio.peak,
             spectral_flux: audio.spectral_flux,
             beat_phase: audio.beat_phase,
+            time_seconds,
         }
     }
 
@@ -274,6 +328,10 @@ impl<'a> RouteSources<'a> {
             AnalysisSource::SpectralFlux => self.spectral_flux,
             AnalysisSource::BeatPhase => self.beat_phase,
             AnalysisSource::Band => *self.bands.get(band_index as usize)?,
+            AnalysisSource::Time => {
+                let wave = time_triangle(self.time_seconds);
+                return wave.is_finite().then_some(wave);
+            }
         };
         sample.is_finite().then_some(sample as f64)
     }
@@ -930,5 +988,33 @@ mod tests {
         ] {
             assert!(parse_route_spec(spec).is_none(), "accepted {spec}");
         }
+    }
+
+    #[test]
+    fn the_time_triangle_is_continuous_and_bounded() {
+        assert!((time_triangle(0.0)).abs() < 1e-12);
+        assert!((time_triangle(4.0) - 1.0).abs() < 1e-12);
+        assert!((time_triangle(8.0)).abs() < 1e-12);
+        assert!((time_triangle(7.999) - time_triangle(8.001)).abs() < 1e-3);
+        for step in 0..800 {
+            let value = time_triangle(step as f64 * 0.037);
+            assert!((0.0..=1.0).contains(&value));
+        }
+    }
+
+    #[test]
+    fn a_time_route_reads_the_clock_and_needs_no_audio() {
+        let sources = RouteSources {
+            time_seconds: 4.0,
+            ..RouteSources::default()
+        };
+        assert_eq!(sources.value(AnalysisSource::Time, 0), Some(1.0));
+
+        let (scene, route) = parse_route_spec("loom.weight:time:0:0:1:0.4:2.2").unwrap();
+        assert_eq!(route.source, AnalysisSource::Time);
+        assert!(route.is_valid_for(scene));
+        // The band rule covers Time exactly as it covers RMS: a nonzero band
+        // index refuses the route.
+        assert!(parse_route_spec("loom.weight:time:3:0:1:0.4:2.2").is_none());
     }
 }

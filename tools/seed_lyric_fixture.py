@@ -186,8 +186,17 @@ def main() -> int:
             # reshaped plate corners alone clear the threshold.
             effects["glow_strength"] = 0.9
         else:
-            effects["shadow_blur"] = 0.18
-            effects["shadow_opacity"] = 0.85
+            # Made measurable for the RT-blur shadow (UX0-C11 follow-up,
+            # 2026-08-04): the original near-black shadow over the scene's
+            # near-black corner measured 3-4 whatever the blur did. A bright
+            # warm shadow gives the difference gate real luma, and opacity
+            # stays at its default 1.0 so the gate's zero-blur variant
+            # degenerates byte-exactly to the legacy hard-shadow composition —
+            # the standing negative control. (`shadow_opacity` is therefore no
+            # longer exercised by this fixture; its arithmetic is a pinned
+            # passthrough in `core::project::caption_effects` unit tests.)
+            effects["shadow_blur"] = 0.3
+            project["caption_style"]["box_rgba"] = "ffd27ae8"
         project["caption_style"]["effects"] = effects
     if args.scene_plan:
         midpoint = round(duration / 2.0, 3)

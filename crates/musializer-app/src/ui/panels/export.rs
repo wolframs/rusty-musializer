@@ -1004,7 +1004,7 @@ impl ExportSession {
         audio_frame.track_beat(&mut analysis.beat, self.job().scene_time());
         let time_seconds = self.job().scene_time();
         app.apply_auto_scene_switch(time_seconds);
-        let sources = RouteSources::from_audio(&audio_frame);
+        let sources = RouteSources::from_audio(&audio_frame, time_seconds);
         let base = *app.settings();
         let routed = app.routes().apply(app.scene.id(), &sources, &base);
         let effective = routed.as_ref().unwrap_or(&base);

@@ -160,6 +160,12 @@ pub struct ShellInput<'a> {
     /// predates this and stays because the toolbar's readout is the only caller
     /// that wants one scalar without knowing what a source is.
     pub route_sources: RouteSources<'a>,
+    /// The caption effect drives' figures for the same frame — RMS, the
+    /// trail-derived bass, beat phase, flux and the clock — so the effects
+    /// pane's live meters read exactly what the overlay's resolver read
+    /// (UX0-C14). Not derivable from `route_sources`: bass comes from the
+    /// *trails*, which no route source carries.
+    pub effect_inputs: musializer_core::project::caption_effects::EffectInputs,
     /// The shared per-user preset library, its selection, and whether the store
     /// file is writable (`p->shared_presets`, `plug.c:265-270`).
     pub presets: SharedPresetsView<'a>,

@@ -17,6 +17,7 @@ pub mod audio_bridge;
 pub mod decode;
 pub mod draw;
 pub mod font;
+pub mod halo;
 pub mod preset_files;
 pub mod process;
 pub mod project_files;

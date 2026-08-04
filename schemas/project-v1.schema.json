@@ -374,7 +374,7 @@
         "shadow_opacity",
         "plate_roundness"
       ],
-      "description": "All members are required once the object is present, matching caption_style's all-or-nothing contract. Lengths are fractions of the resolved font size, never pixels.",
+      "description": "All 2026-08-03 members are required once the object is present, matching caption_style's all-or-nothing contract; the two tuning blocks post-date them and are optional with the identity mapping as default. Lengths are fractions of the resolved font size, never pixels.",
       "properties": {
         "glow_strength": {
           "type": "number",
@@ -427,6 +427,59 @@
           "minimum": 0.0,
           "maximum": 0.5,
           "description": "Corner roundness of the plate backing. 0.12 is the historical constant."
+        },
+        "pulse_tuning": {
+          "$ref": "#/$defs/caption_drive_tuning"
+        },
+        "hue_tuning": {
+          "$ref": "#/$defs/caption_drive_tuning"
+        }
+      }
+    },
+    "caption_drive_tuning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_min",
+        "input_max",
+        "output_min",
+        "output_max",
+        "curve",
+        "clamp"
+      ],
+      "description": "Maps a drive's shaped 0..1 value to the amount the effect uses, with scene-route mapping semantics. input_max must be greater than input_min; equal outputs (a flat amount) are permitted.",
+      "properties": {
+        "input_min": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "input_max": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "output_min": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "output_max": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "curve": {
+          "enum": [
+            "step",
+            "linear",
+            "smoothstep",
+            "ease_in",
+            "ease_out"
+          ]
+        },
+        "clamp": {
+          "type": "boolean"
         }
       }
     },
@@ -538,7 +591,8 @@
             "peak",
             "spectral_flux",
             "beat_phase",
-            "band"
+            "band",
+            "time"
           ]
         },
         "band_index": {

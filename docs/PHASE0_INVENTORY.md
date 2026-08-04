@@ -196,7 +196,10 @@ The three pre-pass flags (`-h`, `--help`, `--version`) never reach this loop.
   `scene_settings_descriptor_by_key`; the scene is **derived from the key**, not
   from the currently selected scene (`:184-188`).
 - `SOURCE`: `rms` | `peak` | `spectral_flux` | `beat_phase` | `band`
-  (`:140-149`, matched against `musi_analysis_source_name`).
+  (`:140-149`, matched against `musi_analysis_source_name`). *Post-legacy
+  (UX0-C15, 2026-08-04): the Rust rewrite additionally accepts `time`, an
+  eight-second triangle clock. This inventory documents the frozen C only;
+  the C cannot parse a `time` route.*
 - `BAND`: `strtoul`, must consume the whole field, `<= 0xFFFF` (`:152-153`).
   Then `scene_route_valid` (`src/scene_routes.c:45-49`) requires: if
   `SOURCE == band` then `BAND < 256` (`AUDIO_ANALYZER_MAX_BANDS`,
@@ -766,7 +769,8 @@ details are derived, never serialized separately (`:614`).
 `<= audio.duration_seconds` (`:764`).
 
 **`mapping`** (`:431-511`) — all nine required: `parameter` (`stable_name`),
-`source` (`rms` | `peak` | `spectral_flux` | `beat_phase` | `band`),
+`source` (`rms` | `peak` | `spectral_flux` | `beat_phase` | `band`; the Rust
+rewrite also writes `time` post-legacy, which the C cannot read),
 `band_index` (integer 0..65535, default **0**), `input_min`, `input_max`,
 `output_min`, `output_max` (numbers), `interpolation` (`step` | `linear` |
 `smoothstep` | `ease_in` | `ease_out`), `clamp` (bool, default **true**).

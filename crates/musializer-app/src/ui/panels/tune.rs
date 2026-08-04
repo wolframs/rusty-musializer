@@ -35,14 +35,15 @@
 //!    the same wording the C uses when a source is unavailable
 //!    (`plug.c:5673-5674`).
 
-use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
+use musializer_core::scene::routes::{AnalysisSource, ParameterMapping, RouteTable};
 use musializer_core::scene::settings::{self, SettingDescriptor};
 use musializer_core::scene::SceneId;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::route_editor_state::{self, RouteEditorState};
 use musializer_core::ui::workspace_layout::UiRect;
-use raylib::prelude::{RaylibDraw, RaylibDrawHandle, Vector2};
+use raylib::prelude::RaylibDrawHandle;
 
+use super::super::mapping_editor::{self, AnchorPair};
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
 use super::super::theme::{color, metric};
@@ -86,9 +87,6 @@ const ROUTE_EDITOR_ROW_GAP: f32 = 4.0;
 
 /// `gap` in `scene_route_editor_panel` (`plug.c:5648`).
 const GAP: f32 = 5.0;
-/// The column between an anchor's two sliders, holding the arrow
-/// (`plug.c:5723`).
-const ARROW_WIDTH: f32 = 18.0;
 
 // -- widget ids ---------------------------------------------------------------
 //
@@ -395,22 +393,30 @@ impl Shell {
             let toggle = UiRect::new(row.x + row.width - 26.0, row.y - 3.0, 26.0, 20.0);
             let toggle_id =
                 widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTE_TOGGLE + index as u32);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    toggle_id,
-                    toggle,
-                    "~",
-                    routed || expanded > 0.0,
-                    ButtonStyle::Neutral,
-                    Some(metric::UI_FONT_CAPTION),
-                )
-                .clicked
-            {
+            let toggle_state = self.widgets.text_button(
+                d,
+                font,
+                toggle_id,
+                toggle,
+                "~",
+                routed || expanded > 0.0,
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            if toggle_state.clicked {
                 self.toggle_route_editor(input, index, committed.as_ref(), expanded > 0.0);
             }
+            self.widgets.hint(
+                d,
+                toggle_state,
+                toggle_id,
+                toggle,
+                if routed {
+                    "Edit the route driving this setting"
+                } else {
+                    "Route this setting to an audio source instead of the slider"
+                },
+            );
 
             // The label and the readout are drawn for *every* row, expanded
             // included (`plug.c:6156-6190`): the C's editor replaces the slider
@@ -707,7 +713,7 @@ impl Shell {
                 "LIVE {} {:.3} {} {:.*}",
                 route_editor_state::source_label(draft.source),
                 live,
-                arrow(font.all_loaded()),
+                mapping_editor::arrow(font.all_loaded()),
                 descriptor.precision as usize,
                 mapped
             ),
@@ -730,8 +736,11 @@ impl Shell {
         );
         cursor += 24.0;
 
-        // 2. The five sources (`plug.c:5683-5697`).
-        let source_width = (area.width - GAP * 4.0) / 5.0;
+        // 2. The sources (`plug.c:5683-5697`, plus the post-legacy Time clock —
+        // the count comes from `ALL` so a new source widens the row instead of
+        // silently missing its button).
+        let source_count = AnalysisSource::ALL.len() as f32;
+        let source_width = (area.width - GAP * (source_count - 1.0)) / source_count;
         for (slot_index, source) in AnalysisSource::ALL.into_iter().enumerate() {
             let button = UiRect::new(
                 area.x + slot_index as f32 * (source_width + GAP),
@@ -740,22 +749,33 @@ impl Shell {
                 22.0,
             );
             let id = widgets::widget_id(widgets::id::INSPECTOR, slot::SOURCE + slot_index as u32);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id,
-                    button,
-                    route_editor_state::source_label(source),
-                    draft.source == source,
-                    ButtonStyle::Neutral,
-                    Some(metric::UI_FONT_CAPTION),
-                )
-                .clicked
-            {
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                button,
+                route_editor_state::source_label(source),
+                draft.source == source,
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            if state.clicked {
                 self.with_editor(|host| host.state.set_source(source));
             }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                button,
+                match source {
+                    AnalysisSource::Rms => "Overall loudness, smoothed",
+                    AnalysisSource::Peak => "The loudest instant in the window",
+                    AnalysisSource::SpectralFlux => "How much the spectrum is moving",
+                    AnalysisSource::BeatPhase => "Position inside the current beat, 0 to 1",
+                    AnalysisSource::Band => "One analyzer band, chosen below",
+                    AnalysisSource::Time => "An eight-second triangle clock; needs no audio",
+                },
+            );
         }
         cursor += 26.0;
 
@@ -815,7 +835,6 @@ impl Shell {
         // relationship the route actually is.
         let span = descriptor.maximum - descriptor.minimum;
         let span = if span <= 0.0 { 1.0 } else { span };
-        let pair_width = (area.width - ARROW_WIDTH - GAP * 2.0) * 0.5;
         for anchor in 0..2u32 {
             let high = anchor == 1;
             let name = route_editor_state::anchor_label(draft.source, high);
@@ -829,51 +848,34 @@ impl Shell {
             } else {
                 draft.output_min
             };
-            widgets::draw_text(
+            let caption = format!(
+                "{name}  {anchor_input:.2} {} {:.*}",
+                mapping_editor::arrow(font.all_loaded()),
+                descriptor.precision as usize,
+                anchor_output
+            );
+            let (input_slot, output_slot) = if high {
+                (slot::INPUT_HIGH, slot::OUTPUT_HIGH)
+            } else {
+                (slot::INPUT_LOW, slot::OUTPUT_LOW)
+            };
+            let edit = mapping_editor::anchor_pair(
                 d,
+                &mut self.widgets,
                 font,
-                &format!(
-                    "{name}  {anchor_input:.2} {} {:.*}",
-                    arrow(font.all_loaded()),
-                    descriptor.precision as usize,
-                    anchor_output
-                ),
                 area.x,
                 cursor,
-                12.0,
-                color::ui_muted(),
-            );
-            let input_slider = UiRect::new(area.x, cursor + 15.0, pair_width, 20.0);
-            let output_slider = UiRect::new(
-                area.x + pair_width + ARROW_WIDTH + GAP * 2.0,
-                cursor + 15.0,
-                pair_width,
-                20.0,
-            );
-            let arrow_glyph = arrow(font.all_loaded());
-            let arrow_size = widgets::measure(font, arrow_glyph, 14.0);
-            widgets::draw_text(
-                d,
-                font,
-                arrow_glyph,
-                area.x + pair_width + GAP + (ARROW_WIDTH - arrow_size) * 0.5,
-                cursor + 15.0 + (20.0 - 14.0) * 0.5,
-                14.0,
-                color::ui_muted(),
-            );
-
-            let id = widgets::widget_id(
-                widgets::id::INSPECTOR,
-                if high {
-                    slot::INPUT_HIGH
-                } else {
-                    slot::INPUT_LOW
+                area.width,
+                &AnchorPair {
+                    caption: &caption,
+                    input_fraction: anchor_input as f32,
+                    output_fraction: (anchor_output as f32 - descriptor.minimum) / span,
+                    input_id: widgets::widget_id(widgets::id::INSPECTOR, input_slot),
+                    output_id: widgets::widget_id(widgets::id::INSPECTOR, output_slot),
+                    arrow_ok: font.all_loaded(),
                 },
             );
-            if let Some(fraction) = self
-                .widgets
-                .slider(d, id, input_slider, anchor_input as f32)
-            {
+            if let Some(fraction) = edit.input {
                 self.with_editor(|host| {
                     if high {
                         host.state.set_input_max(f64::from(fraction))
@@ -882,16 +884,7 @@ impl Shell {
                     }
                 });
             }
-            let id = widgets::widget_id(
-                widgets::id::INSPECTOR,
-                if high {
-                    slot::OUTPUT_HIGH
-                } else {
-                    slot::OUTPUT_LOW
-                },
-            );
-            let normalized = (anchor_output as f32 - descriptor.minimum) / span;
-            if let Some(fraction) = self.widgets.slider(d, id, output_slider, normalized) {
+            if let Some(fraction) = edit.output {
                 let value = f64::from(descriptor.minimum + fraction * span);
                 self.with_editor(|host| {
                     if high {
@@ -904,56 +897,36 @@ impl Shell {
             cursor += 40.0;
         }
 
-        // 5. The transfer graph (`plug.c:5778-5782`).
+        // 5. The transfer graph (`plug.c:5778-5782`). The sample closure is
+        // `output_value` — the same function the frame loop maps with — so
+        // curve shape, swapped outputs, clamping and toggle quantization draw
+        // exactly as they will play.
         let plot = UiRect::new(area.x, cursor, area.width, 64.0);
-        transfer_graph(d, plot, &draft, descriptor, live);
+        mapping_editor::transfer_graph(
+            d,
+            plot,
+            (draft.input_min, draft.input_max),
+            f64::from(descriptor.minimum),
+            f64::from(span),
+            live,
+            &|source| draft.output_value(descriptor, source),
+        );
         cursor += 70.0;
 
         // 6. The curve stepper (`plug.c:5784-5808`).
-        let curve_previous = UiRect::new(area.x, cursor, 34.0, 22.0);
-        let curve_next = UiRect::new(area.x + area.width - 34.0, cursor, 34.0, 22.0);
-        let curves = Interpolation::ALL.len();
-        let current = Interpolation::ALL
-            .iter()
-            .position(|curve| *curve == draft.interpolation)
-            .unwrap_or(0);
-        for (id_slot, step, label, boundary) in [
-            (slot::CURVE_PREVIOUS, curves - 1, "<", curve_previous),
-            (slot::CURVE_NEXT, 1, ">", curve_next),
-        ] {
-            let id = widgets::widget_id(widgets::id::INSPECTOR, id_slot);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id,
-                    boundary,
-                    label,
-                    false,
-                    ButtonStyle::Neutral,
-                    Some(metric::UI_FONT_CAPTION),
-                )
-                .clicked
-            {
-                let next = Interpolation::ALL[(current + step) % curves];
-                self.with_editor(|host| host.state.set_curve(next));
-            }
-        }
-        let caption = format!(
-            "Curve: {}",
-            route_editor_state::curve_label(draft.interpolation)
-        );
-        let width = widgets::measure(font, &caption, 13.0);
-        widgets::draw_text(
+        if let Some(next) = mapping_editor::curve_stepper(
             d,
+            &mut self.widgets,
             font,
-            &caption,
-            area.x + (area.width - width) * 0.5,
-            cursor + (22.0 - 13.0) * 0.5,
-            13.0,
-            color::ui_ink(),
-        );
+            area.x,
+            cursor,
+            area.width,
+            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_PREVIOUS),
+            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_NEXT),
+            draft.interpolation,
+        ) {
+            self.with_editor(|host| host.state.set_curve(next));
+        }
         cursor += 26.0;
 
         // 7. The action row (`plug.c:5810-5871`).
@@ -1004,39 +977,47 @@ impl Shell {
         let id =
             |slot_index: u32| widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION + slot_index);
 
-        if self
-            .widgets
-            .text_button(
-                d,
-                font,
-                id(0),
-                boundary(0),
-                labels[0],
-                draft.clamp,
-                ButtonStyle::Neutral,
-                Some(font_size),
-            )
-            .clicked
-        {
+        let state = self.widgets.text_button(
+            d,
+            font,
+            id(0),
+            boundary(0),
+            labels[0],
+            draft.clamp,
+            ButtonStyle::Neutral,
+            Some(font_size),
+        );
+        if state.clicked {
             let next = !draft.clamp;
             self.with_editor(|host| host.state.set_clamp(next));
         }
-        if self
-            .widgets
-            .text_button(
-                d,
-                font,
-                id(1),
-                boundary(1),
-                labels[1],
-                false,
-                ButtonStyle::Neutral,
-                Some(font_size),
-            )
-            .clicked
-        {
+        self.widgets.hint(
+            d,
+            state,
+            id(0),
+            boundary(0),
+            "Hold the source inside the quiet/loud window; off lets the curve extrapolate",
+        );
+        let state = self.widgets.text_button(
+            d,
+            font,
+            id(1),
+            boundary(1),
+            labels[1],
+            false,
+            ButtonStyle::Neutral,
+            Some(font_size),
+        );
+        if state.clicked {
             self.with_editor(|host| host.state.swap_output());
         }
+        self.widgets.hint(
+            d,
+            state,
+            id(1),
+            boundary(1),
+            "Exchange the two output values, inverting the response",
+        );
 
         // SEAM 2: committing needs `&mut RouteTable`, which the shell never sees.
         // The enable rules are the oracle's so the row still teaches what Apply
@@ -1130,12 +1111,7 @@ impl Shell {
         let fill = self
             .live_value(input, route.source, route.band_index)
             .map_or(0.0, |live| route_editor_state::meter_position(route, live));
-        widgets::fill(d, bar, color::ui_rule());
-        widgets::fill(
-            d,
-            UiRect::new(bar.x, bar.y, bar.width * fill, bar.height),
-            color::accent(),
-        );
+        mapping_editor::meter(d, bar, fill);
     }
 
     /// SEAM 3: this frame's value for one analysis source.
@@ -1171,94 +1147,6 @@ fn committed_route<'a>(
 ) -> Option<&'a ParameterMapping> {
     let table: &RouteTable = &input.workspace.current()?.scene_routes;
     route_editor_state::find_route(table, scene, index)
-}
-
-/// The transfer curve: source level across, setting value up
-/// (`scene_route_transfer_graph`, `plug.c:5592-5641`).
-///
-/// Every sample goes through [`ParameterMapping::output_value`] — the same
-/// function the frame loop uses — so curve shape, swapped outputs, clamping and
-/// toggle quantization are drawn exactly as they will play. The shaded band is
-/// the span between the two anchors; the dot rides the curve at the live value.
-fn transfer_graph(
-    d: &mut RaylibDrawHandle<'_>,
-    plot: UiRect,
-    route: &ParameterMapping,
-    descriptor: &SettingDescriptor,
-    live: Option<f64>,
-) {
-    if plot.is_empty() {
-        return;
-    }
-    widgets::fill(d, plot, color::ui_raised());
-    let window_left = route.input_min.clamp(0.0, 1.0) as f32;
-    let window_right = route.input_max.clamp(0.0, 1.0) as f32;
-    if window_right > window_left {
-        let mut shade = color::accent();
-        shade.a = (0.12 * 255.0) as u8;
-        widgets::fill(
-            d,
-            UiRect::new(
-                plot.x + plot.width * window_left,
-                plot.y,
-                plot.width * (window_right - window_left),
-                plot.height,
-            ),
-            shade,
-        );
-    }
-    d.draw_rectangle_lines_ex(widgets::rectangle(plot), 1.0, color::ui_rule());
-
-    let mut span = f64::from(descriptor.maximum) - f64::from(descriptor.minimum);
-    if span <= 0.0 {
-        span = 1.0;
-    }
-    const SAMPLES: i32 = 64;
-    let mut previous: Option<Vector2> = None;
-    for step in 0..=SAMPLES {
-        let source = f64::from(step) / f64::from(SAMPLES);
-        let Some(value) = route.output_value(descriptor, source) else {
-            previous = None;
-            continue;
-        };
-        let point = Vector2::new(
-            plot.x + plot.width * source as f32,
-            plot.y + plot.height * (1.0 - ((value - f64::from(descriptor.minimum)) / span) as f32),
-        );
-        if let Some(from) = previous {
-            d.draw_line_ex(from, point, 2.0, color::accent());
-        }
-        previous = Some(point);
-    }
-
-    if let Some(live) = live {
-        if let Some(mapped) = route.output_value(descriptor, live) {
-            let dot = Vector2::new(
-                plot.x + plot.width * live.clamp(0.0, 1.0) as f32,
-                plot.y
-                    + plot.height
-                        * (1.0 - ((mapped - f64::from(descriptor.minimum)) / span) as f32),
-            );
-            d.draw_circle_v(dot, 4.0, color::ui_ink());
-            d.draw_circle_v(dot, 2.5, color::accent());
-        }
-    }
-}
-
-/// `→`, or `->` on the fallback face.
-///
-/// raylib's default face stops at ASCII 126 and draws U+2192 as a missing-glyph
-/// box. The interface face has it (`font::ui_codepoint`'s `0x2190..=0x2199`
-/// range), so the substitution is reachable only when that face failed to load —
-/// exactly the guard `widgets`'s ellipsis already carries, for the same reason.
-/// Takes `loaded` rather than the face itself so both substitutions are testable
-/// without a window — a `Face::Default` can only be built by calling raylib.
-fn arrow(loaded: bool) -> &'static str {
-    if loaded {
-        "\u{2192}"
-    } else {
-        "->"
-    }
 }
 
 /// The same guard for [`route_editor_state::summary`], which carries U+00B7 and
@@ -1419,8 +1307,6 @@ mod tests {
             ascii_fallback(false, "Band 2 \u{00B7} Smooth \u{00B7} 0.40 \u{2192} 2.20"),
             "Band 2 - Smooth - 0.40 -> 2.20"
         );
-        assert_eq!(arrow(false), "->");
-        assert_eq!(arrow(true), "\u{2192}");
     }
 
     #[test]

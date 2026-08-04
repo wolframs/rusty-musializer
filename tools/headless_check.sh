@@ -543,6 +543,32 @@ else
         "panel=lyrics,style=effects,play=1" || SWEEP_FAILED=1
     lyric_capture "lyrics-picker-glow-960x640" 960x640 \
         "panel=lyrics,picker=glow,play=1" || SWEEP_FAILED=1
+    # The drive tuning editor (UX0-C14): a disclosure behind the effects form's
+    # Tune buttons, so without its own probe it would join the list of surfaces
+    # that shipped unphotographed.
+    lyric_capture "lyrics-tune-pulse-960x640" 960x640 \
+        "panel=lyrics,tune=pulse,play=1" || SWEEP_FAILED=1
+    # One caption tooltip actually in a frame (UX0-C16). Probe runs suppress
+    # tips unless `hover=` asks for one, so without this capture every tip the
+    # caption panes gained would be unphotographed — the welcome-screen blind
+    # spot again. 250x466 is the GLOW slider at 960x640; its tip box lands
+    # above the bar, and the crop below sits inside the box where the bare
+    # frame is plain panel (measured: bare 247/247, tip 20/239).
+    lyric_capture "lyrics-tip-glow-960x640" 960x640 \
+        "panel=lyrics,style=effects,play=1,hover=250x466" || SWEEP_FAILED=1
+    TIP_STATS="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/lyrics-tip-glow-960x640.png,crop=85:10:165:436,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YMAX \
+        -of csv=p=0 2>/dev/null | head -1)"
+    TIP_MIN="${TIP_STATS%%,*}"
+    TIP_MAX="${TIP_STATS##*,}"
+    echo "caption tooltip:  box luma min=${TIP_MIN:-?} text luma max=${TIP_MAX:-?}"
+    if [ -z "$TIP_STATS" ] \
+        || [ "${TIP_MIN%%.*}" -ge 100 ] 2>/dev/null \
+        || [ "${TIP_MAX%%.*}" -lt 180 ] 2>/dev/null; then
+        echo "FAIL: no tooltip where the GLOW slider's tip should be" >&2
+        SWEEP_FAILED=1
+    fi
     lyric_capture "lyrics-fonts-1280x720" 1280x720 \
         "panel=lyrics,style=caption,fonts=consent,play=1" \
         || SWEEP_FAILED=1
@@ -576,6 +602,10 @@ else
         "lyrics-picker-glow-960x640:pane caption-effects" \
         "lyrics-effects-960x640:pane caption-effects" \
         "lyrics-effects-960x640:picker=none" \
+        "lyrics-effects-960x640:tune=none" \
+        "lyrics-tune-pulse-960x640:tune=pulse" \
+        "lyrics-tune-pulse-960x640:pane caption-effects" \
+        "lyrics-tune-pulse-960x640:picker=none" \
         "lyrics-style-1280x720:picker=none" \
         "lyrics-style-960x640:picker=none"; do
         name="${pair%%:*}"
@@ -711,7 +741,27 @@ make_frame_lane_variant box-shadow spectrum shadow
 # only authored difference is the effects block itself.
 make_frame_lane_variant fx-glow spectrum plate "" glow
 make_frame_lane_variant fx-soft-shadow spectrum shadow "" soft-shadow
-for name in shared-caption cadence loom full box-none box-shadow fx-glow fx-soft-shadow; do
+# Two hand-derived companions for the soft shadow (UX0-C11 follow-up):
+# `fx-shadow-hard` is the soft-shadow fixture with *only* its blur zeroed, so
+# the delta against fx-soft-shadow isolates exactly what the blur drew — the
+# same colours hard versus blurred, nothing else authored differently. And
+# `fx-shadow-legacy` is the same fixture with the whole effects block removed,
+# so hard-versus-legacy pins that a zeroed blur degenerates byte-exactly to
+# the legacy composition (asserted as exactly 0 below).
+make_frame_lane_variant fx-shadow-hard spectrum shadow "" soft-shadow
+make_frame_lane_variant fx-shadow-legacy spectrum shadow "" soft-shadow
+python3 - "$FRAME_LANE_DIR/fx-shadow-hard/cues.musi" "$FRAME_LANE_DIR/fx-shadow-legacy/cues.musi" <<'EOF'
+import json, pathlib, sys
+hard = pathlib.Path(sys.argv[1])
+document = json.loads(hard.read_text())
+document["caption_style"]["effects"]["shadow_blur"] = 0.0
+hard.write_text(json.dumps(document, indent=2) + "\n")
+legacy = pathlib.Path(sys.argv[2])
+document = json.loads(legacy.read_text())
+del document["caption_style"]["effects"]
+legacy.write_text(json.dumps(document, indent=2) + "\n")
+EOF
+for name in shared-caption cadence loom full box-none box-shadow fx-glow fx-soft-shadow fx-shadow-hard fx-shadow-legacy; do
     frame_lane_capture "$name" || SWEEP_FAILED=1
 done
 
@@ -729,35 +779,75 @@ caption_fx_delta() {
         | head -1 | cut -d. -f1
 }
 GLOW_DELTA="$(caption_fx_delta fx-glow shared-caption)"
-SHADOW_DELTA="$(caption_fx_delta fx-soft-shadow box-shadow)"
+# The shadow's baseline is its own zero-blur twin, not the legacy box-shadow
+# frame: the two differ *only* in `shadow_blur`, so the delta isolates exactly
+# what the blur moved. Against the legacy frame the number would also carry the
+# fixture's recoloured shadow, and a bright hard shadow alone would clear any
+# threshold with the blur broken — the same trap the first fx-glow fixture
+# (authored roundness) was rejected for.
+SHADOW_DELTA="$(caption_fx_delta fx-soft-shadow fx-shadow-hard)"
+# Standing negative control: with the blur zeroed, the effects path must
+# degenerate byte-exactly to the legacy hard-shadow composition, so the
+# zero-blur twin against the no-effects-block twin is asserted as exactly 0.
+SHADOW_ZERO_DELTA="$(caption_fx_delta fx-shadow-hard fx-shadow-legacy)"
 # The control: a frame diffed against itself must be exactly zero, or the
-# instrument itself is broken and both assertions above are meaningless.
+# instrument itself is broken and every assertion here is meaningless.
 SELF_DELTA="$(caption_fx_delta shared-caption shared-caption)"
-echo "caption fx delta: glow=$GLOW_DELTA soft-shadow=$SHADOW_DELTA control=$SELF_DELTA"
+echo "caption fx delta: glow=$GLOW_DELTA soft-shadow=$SHADOW_DELTA shadow-zero=$SHADOW_ZERO_DELTA control=$SELF_DELTA"
 if [ "${SELF_DELTA:-1}" -ne 0 ]; then
     echo "FAIL: the fx difference control is $SELF_DELTA, not 0" >&2
     SWEEP_FAILED=1
 fi
-# Measured: glow 125 (an additive amber halo), soft shadow 4. The shadow's
-# number is small because the fixture is honest about the feature — a
-# near-black shadow blurring over a near-black scene corner moves almost no
-# luma, and widening the blur to 0.35 was tried and still measured 4. What
-# makes 4 a real assertion is the pair of anchors around it: the frames are
-# deterministic (asserted below) and the self-diff control is exactly 0, so
-# "the blur taps drew" is the only thing that separates 4 from 0.
+if [ "${SHADOW_ZERO_DELTA:-1}" -ne 0 ]; then
+    echo "FAIL: a zeroed shadow blur did not degenerate to the legacy composition (delta $SHADOW_ZERO_DELTA)" >&2
+    SWEEP_FAILED=1
+fi
+# Measured 2026-08-04, after UX0-C11 replaced the 17-tap glow with the
+# offscreen render-texture blur and the follow-up moved the soft shadow onto
+# the same blur (`halo_mask.fs` composites the buffer's luminance as coverage
+# alpha): glow 123 (was 125 with the taps — the peak barely moves because the
+# halo core saturates the same pixels; what changed is the skirt, now one
+# widening Gaussian instead of discrete text copies), soft shadow 152 against
+# its zero-blur twin (blur 0.15 measures 131, 0.4 measures 152 — evidence
+# under build/shadow-evidence/). The shadow's old number was 3-4, because the
+# original fixture blurred a near-black shadow over a near-black scene corner;
+# the seeder now authors a bright warm shadow (`box_rgba ffd27ae8`, blur 0.3)
+# so the gate measures the blur rather than the fixture's modesty. The
+# hard-versus-legacy degeneration control measured exactly 0 on first run.
+# Both thresholds keep ~4x headroom under their measured values.
 #
-# Negative control, run by hand while these thresholds were chosen: a project
-# carrying an explicit all-default effects block measured **exactly 0**
-# against the no-block baseline — captured in a separate run, so the zero also
-# pins cross-run determinism — and the first fx-glow fixture, which authored
-# plate roundness alongside the glow, was rejected because the reshaped
-# corners alone would have cleared the glow threshold with the glow broken.
+# Negative controls, re-run by hand for the RT-blur halo (2026-08-04): a copy
+# of the fx-glow fixture — project *and* its `.assets` bundle — with
+# `glow_strength` hand-edited to 0.0 measured **exactly 0** against the
+# shared-caption baseline, captured in a separate run, so the zero also pins
+# cross-run determinism. A radius sweep at strength 1.0 measured 169 / 135 /
+# 95 peak delta at radius 0.08 / 0.3 / 0.6 (wider halo, same energy, lower
+# peak), with captures under build/glow-evidence/. The original controls
+# stand: an explicit all-default effects block measured exactly 0 against the
+# no-block baseline, and the first fx-glow fixture, which authored plate
+# roundness alongside the glow, was rejected because the reshaped corners
+# alone would have cleared the glow threshold with the glow broken.
 if [ -z "$GLOW_DELTA" ] || [ "$GLOW_DELTA" -lt 32 ]; then
     echo "FAIL: the authored glow changed the frame by ${GLOW_DELTA:-nothing} (< 32)" >&2
     SWEEP_FAILED=1
 fi
-if [ -z "$SHADOW_DELTA" ] || [ "$SHADOW_DELTA" -lt 2 ]; then
-    echo "FAIL: the soft shadow changed the frame by ${SHADOW_DELTA:-nothing} (< 2)" >&2
+if [ -z "$SHADOW_DELTA" ] || [ "$SHADOW_DELTA" -lt 32 ]; then
+    echo "FAIL: the soft shadow changed the frame by ${SHADOW_DELTA:-nothing} (< 32)" >&2
+    SWEEP_FAILED=1
+fi
+# The halo's own report line (UX0-C11). The pixel delta above proves *something*
+# drew; this proves it was the blurred halo and not a fallback, and — the case a
+# capture cannot carry — that the no-effects baseline was `off` rather than
+# `unavailable`, which are the same picture with different meanings.
+GLOW_HALO_LINE="$(sed -n 's/^caption halo: *//p' "$FRAME_LANE_DIR/fx-glow/preview.txt" | head -1)"
+BASE_HALO_LINE="$(sed -n 's/^caption halo: *//p' "$FRAME_LANE_DIR/shared-caption/preview.txt" | head -1)"
+echo "caption halo: fx-glow=[${GLOW_HALO_LINE:-<absent>}] baseline=[${BASE_HALO_LINE:-<absent>}]"
+if [ "$GLOW_HALO_LINE" != "rt-blur last=blurred" ]; then
+    echo "FAIL: the authored glow did not draw through the RT blur: ${GLOW_HALO_LINE:-<absent>}" >&2
+    SWEEP_FAILED=1
+fi
+if [ "$BASE_HALO_LINE" != "rt-blur last=off" ]; then
+    echo "FAIL: the no-effects baseline's halo state is not off: ${BASE_HALO_LINE:-<absent>}" >&2
     SWEEP_FAILED=1
 fi
 

@@ -7,12 +7,13 @@
 //! [`EffectInputs`] built from the same [`crate::scene::SceneAudioFrame`].
 //!
 //! The renderer stays dumb on purpose. It receives resolved pixels-and-colours
-//! ([`ResolvedCaptionFx`]) plus a fixed tap table ([`GLOW_TAPS`]), so the whole
-//! of "what does the music do to the glow this frame" is testable here without
-//! a window.
+//! ([`ResolvedCaptionFx`]), so the whole of "what does the music do to the
+//! glow this frame" is testable here without a window. Both the glow and the
+//! soft shadow are drawn from the same Gaussian blur of the glyph coverage
+//! (`runtime::halo`, UX0-C11) — additively for the halo, as a
+//! luminance-masked tint for the penumbra.
 
 use crate::project::model::{CaptionEffects, EffectDrive};
-use std::f32::consts::FRAC_1_SQRT_2;
 
 /// The audio figures an effect drive may read, plus the deterministic clock.
 ///
@@ -87,10 +88,10 @@ pub fn drive_value(drive: EffectDrive, inputs: &EffectInputs) -> f32 {
             remaining * remaining * remaining
         }
         EffectDrive::Flux => clamp01(inputs.flux * 4.0),
-        EffectDrive::Time => {
-            let cycle = (inputs.time_seconds / 8.0).fract() as f32;
-            1.0 - (2.0 * cycle - 1.0).abs()
-        }
+        // One triangle definition for the whole application: scene routes'
+        // `AnalysisSource::Time` reads the same clock, so "Time" peaks on the
+        // same frame everywhere.
+        EffectDrive::Time => crate::scene::routes::time_triangle(inputs.time_seconds) as f32,
     }
 }
 
@@ -98,8 +99,8 @@ pub fn drive_value(drive: EffectDrive, inputs: &EffectInputs) -> f32 {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ResolvedGlow {
     /// Hue-shifted colour whose alpha **is** the final intensity. The renderer
-    /// splits it across [`GLOW_TAPS`] and draws additively; it must not scale
-    /// it again.
+    /// tints the blurred halo with it exactly once; it must not scale it
+    /// again.
     pub rgba: u32,
     /// Halo radius in pixels at the resolved font size.
     pub radius_px: f32,
@@ -147,78 +148,32 @@ fn resolve_glow(
         strength
     } else {
         let depth = clamp01(effects.glow_pulse_depth as f32);
-        strength * (1.0 - depth + depth * drive_value(effects.glow_pulse, inputs))
+        let tuned = effects
+            .pulse_tuning
+            .apply(f64::from(drive_value(effects.glow_pulse, inputs))) as f32;
+        strength * (1.0 - depth + depth * tuned)
     };
     let base_alpha = (effects.glow_rgba & 0xFF) as f32 / 255.0;
     let alpha = clamp01(intensity * base_alpha);
     if alpha < 1.0 / 255.0 {
         return None;
     }
-    let shift = if effects.glow_hue_drive == EffectDrive::None {
-        0.0
+    let shifted = if effects.glow_hue_drive == EffectDrive::None {
+        effects.glow_rgba
     } else {
-        (effects.glow_hue_range as f32) * drive_value(effects.glow_hue_drive, inputs)
+        let tuned = effects
+            .hue_tuning
+            .apply(f64::from(drive_value(effects.glow_hue_drive, inputs)))
+            as f32;
+        let shift = (effects.glow_hue_range as f32) * tuned;
+        hue_drive_rgba(effects.glow_rgba, shift, tuned)
     };
-    let shifted = hue_shift_rgba(effects.glow_rgba, shift);
     let rgba = (shifted & 0xFFFF_FF00) | (alpha * 255.0).round() as u32;
     Some(ResolvedGlow {
         rgba,
         radius_px: (effects.glow_radius as f32) * font_size_px,
     })
 }
-
-/// One additive glow tap: a unit offset (scaled by the radius) and its share of
-/// the resolved alpha.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GlowTap {
-    pub dx: f32,
-    pub dy: f32,
-    pub weight: f32,
-}
-
-/// Two rings of eight plus a centre tap.
-///
-/// The outer ring sits at the full radius, the inner at 0.55 of it and rotated
-/// 22.5° so the two never line up into visible spokes. Weights sum to ~1.5
-/// rather than 1.0: additive blending saturates against bright pixels, and the
-/// headroom is what makes the halo's core read as hot instead of washed flat.
-/// The renderer multiplies each weight by the resolved alpha per tap.
-#[rustfmt::skip]
-pub const GLOW_TAPS: [GlowTap; 17] = [
-    GlowTap { dx:  1.0,        dy:  0.0,        weight: 0.075 },
-    GlowTap { dx:  FRAC_1_SQRT_2, dy:  FRAC_1_SQRT_2, weight: 0.075 },
-    GlowTap { dx:  0.0,        dy:  1.0,        weight: 0.075 },
-    GlowTap { dx: -FRAC_1_SQRT_2, dy:  FRAC_1_SQRT_2, weight: 0.075 },
-    GlowTap { dx: -1.0,        dy:  0.0,        weight: 0.075 },
-    GlowTap { dx: -FRAC_1_SQRT_2, dy: -FRAC_1_SQRT_2, weight: 0.075 },
-    GlowTap { dx:  0.0,        dy: -1.0,        weight: 0.075 },
-    GlowTap { dx:  FRAC_1_SQRT_2, dy: -FRAC_1_SQRT_2, weight: 0.075 },
-    GlowTap { dx:  0.5081329, dy:  0.21048355, weight: 0.1   },
-    GlowTap { dx:  0.21048355, dy:  0.5081329, weight: 0.1   },
-    GlowTap { dx: -0.21048355, dy:  0.5081329, weight: 0.1   },
-    GlowTap { dx: -0.5081329, dy:  0.21048355, weight: 0.1   },
-    GlowTap { dx: -0.5081329, dy: -0.21048355, weight: 0.1   },
-    GlowTap { dx: -0.21048355, dy: -0.5081329, weight: 0.1   },
-    GlowTap { dx:  0.21048355, dy: -0.5081329, weight: 0.1   },
-    GlowTap { dx:  0.5081329, dy: -0.21048355, weight: 0.1   },
-    GlowTap { dx:  0.0,        dy:  0.0,        weight: 0.1   },
-];
-
-/// Nine taps for the soft shadow: the same outer ring at reduced weight plus a
-/// dominant centre, drawn with normal (not additive) blending, so a blurred
-/// shadow stays a shadow rather than a dark glow.
-#[rustfmt::skip]
-pub const SHADOW_TAPS: [GlowTap; 9] = [
-    GlowTap { dx:  1.0,        dy:  0.0,        weight: 0.09 },
-    GlowTap { dx:  FRAC_1_SQRT_2, dy:  FRAC_1_SQRT_2, weight: 0.09 },
-    GlowTap { dx:  0.0,        dy:  1.0,        weight: 0.09 },
-    GlowTap { dx: -FRAC_1_SQRT_2, dy:  FRAC_1_SQRT_2, weight: 0.09 },
-    GlowTap { dx: -1.0,        dy:  0.0,        weight: 0.09 },
-    GlowTap { dx: -FRAC_1_SQRT_2, dy: -FRAC_1_SQRT_2, weight: 0.09 },
-    GlowTap { dx:  0.0,        dy: -1.0,        weight: 0.09 },
-    GlowTap { dx:  FRAC_1_SQRT_2, dy: -FRAC_1_SQRT_2, weight: 0.09 },
-    GlowTap { dx:  0.0,        dy:  0.0,        weight: 0.28 },
-];
 
 /// Rotates an `0xRRGGBBAA` colour's hue by `degrees`, preserving saturation,
 /// value and alpha.
@@ -228,7 +183,28 @@ pub const SHADOW_TAPS: [GlowTap; 9] = [
 /// math. Standard hexcone conversion; the round trip is pinned by tests.
 #[must_use]
 pub fn hue_shift_rgba(rgba: u32, degrees: f32) -> u32 {
-    if degrees == 0.0 {
+    hue_drive_rgba(rgba, degrees, 0.0)
+}
+
+/// [`hue_shift_rgba`] with a drive: the hue rotates by `degrees` **and** the
+/// drive blends saturation toward full — and, in proportion to how achromatic
+/// the base is, value too.
+///
+/// This is the UX0-C13 fix. A pure rotation is the identity on white, grey and
+/// black, so an authored achromatic glow silently ignored its hue drive — the
+/// author saw a working control do nothing. With the drive in the colour math,
+/// an achromatic base *sweeps into* colour as the drive rises and returns to
+/// the authored colour in silence: white pulses to a full hue, grey to a
+/// bright one, black blooms from nothing. A fully saturated base is unchanged
+/// (the blend is the identity at saturation 1), so authored vivid colours keep
+/// their landed behaviour exactly.
+///
+/// Both blends are continuous and monotonic in the base saturation, so
+/// dragging the picker through "almost grey" cannot pop.
+#[must_use]
+pub fn hue_drive_rgba(rgba: u32, degrees: f32, drive: f32) -> u32 {
+    let drive = drive.clamp(0.0, 1.0);
+    if degrees == 0.0 && drive == 0.0 {
         return rgba;
     }
     let r = ((rgba >> 24) & 0xFF) as f32 / 255.0;
@@ -239,10 +215,11 @@ pub fn hue_shift_rgba(rgba: u32, degrees: f32) -> u32 {
     let maximum = r.max(g).max(b);
     let minimum = r.min(g).min(b);
     let chroma = maximum - minimum;
+    // Achromatic bases take hue 0 (red) as the sweep's origin; without a drive
+    // the saturation blend below is the identity there, so greys the author
+    // picked as greys stay greys — the pre-C13 behaviour.
     let hue = if chroma == 0.0 {
-        // Achromatic: hue rotation is the identity, and inventing a hue here
-        // would tint greys the author picked as greys.
-        return rgba;
+        0.0
     } else if maximum == r {
         60.0 * (((g - b) / chroma).rem_euclid(6.0))
     } else if maximum == g {
@@ -250,8 +227,14 @@ pub fn hue_shift_rgba(rgba: u32, degrees: f32) -> u32 {
     } else {
         60.0 * ((r - g) / chroma + 4.0)
     };
-    let saturation = chroma / maximum;
+    let saturation = if maximum > 0.0 { chroma / maximum } else { 0.0 };
     let value = maximum;
+
+    let saturation = saturation + (1.0 - saturation) * drive;
+    // Value lifts only as far as the base lacks saturation: a dark *saturated*
+    // red keeps its darkness, while black — where a saturation blend alone
+    // still yields black — blooms toward full brightness with the drive.
+    let value = value + (1.0 - value) * drive * (1.0 - chroma);
 
     let hue = (hue + degrees).rem_euclid(360.0);
     let c = value * saturation;
@@ -370,6 +353,21 @@ mod tests {
     }
 
     #[test]
+    fn a_driven_hue_saturates_achromatic_bases_instead_of_ignoring_them() {
+        // White at full drive sweeps to the full hue at 120°: pure green.
+        assert_eq!(hue_drive_rgba(0xFFFF_FFFF, 120.0, 1.0), 0x00FF_00FF);
+        // Black blooms toward the bright hue rather than staying invisible.
+        assert_eq!(hue_drive_rgba(0x0000_00FF, 240.0, 1.0), 0x0000_FFFF);
+        // No drive, no change: the authored grey stays the authored grey.
+        assert_eq!(hue_drive_rgba(0x8080_80C0, 0.0, 0.0), 0x8080_80C0);
+        // A fully saturated base is untouched by the blend — landed behaviour.
+        assert_eq!(hue_drive_rgba(0xFF00_00FF, 0.0, 1.0), 0xFF00_00FF);
+        // Half drive on white is halfway into the sweep, not a pop.
+        let half = hue_drive_rgba(0xFFFF_FFFF, 0.0, 0.5);
+        assert_eq!(half, 0xFF80_80FF, "half-saturated red keeps full value");
+    }
+
+    #[test]
     fn resolved_alpha_is_strength_times_the_authored_alpha() {
         let effects = CaptionEffects {
             glow_strength: 0.5,
@@ -420,16 +418,58 @@ mod tests {
     }
 
     #[test]
-    fn glow_tap_weights_carry_the_documented_headroom() {
-        let total: f32 = GLOW_TAPS.iter().map(|tap| tap.weight).sum();
-        assert!(
-            (total - 1.5).abs() < 1e-4,
-            "additive headroom is 1.5, got {total}"
-        );
-        let shadow: f32 = SHADOW_TAPS.iter().map(|tap| tap.weight).sum();
-        assert!(
-            (shadow - 1.0).abs() < 1e-4,
-            "shadow taps sum to 1, got {shadow}"
-        );
+    fn drive_tuning_shapes_the_pulse_with_route_mapping_semantics() {
+        use crate::project::model::DriveTuning;
+        use crate::scene::routes::Interpolation;
+        // A window of 0.5..1.0 mapped to 0..1: an RMS of 0.25 (drive 0.5 after
+        // the square root) sits at the window's floor and the pulse at full
+        // depth goes dark; the identity default would have kept it half lit.
+        let effects = CaptionEffects {
+            glow_strength: 1.0,
+            glow_pulse: EffectDrive::Rms,
+            glow_pulse_depth: 1.0,
+            pulse_tuning: DriveTuning {
+                input_min: 0.5,
+                input_max: 1.0,
+                output_min: 0.0,
+                output_max: 1.0,
+                curve: Interpolation::Linear,
+                clamp: true,
+            },
+            ..CaptionEffects::default()
+        };
+        let quarter = EffectInputs {
+            rms: 0.25,
+            ..quiet()
+        };
+        assert_eq!(resolve(&effects, &quarter, 64.0).glow, None, "tuned dark");
+        let identity = CaptionEffects {
+            pulse_tuning: DriveTuning::default(),
+            ..effects.clone()
+        };
+        assert!(resolve(&identity, &quarter, 64.0).glow.is_some());
+
+        // A swapped hue tuning (1 -> 0) inverts the sweep: silence is the far
+        // end of the range, full drive is the authored colour.
+        let swapped = CaptionEffects {
+            glow_strength: 1.0,
+            glow_hue_drive: EffectDrive::Rms,
+            glow_hue_range: 120.0,
+            glow_rgba: 0xFF00_00FF,
+            hue_tuning: DriveTuning {
+                output_min: 1.0,
+                output_max: 0.0,
+                ..DriveTuning::default()
+            },
+            ..CaptionEffects::default()
+        };
+        let loud = EffectInputs {
+            rms: 1.0,
+            ..quiet()
+        };
+        let glow = resolve(&swapped, &loud, 64.0).glow.expect("glow on");
+        assert_eq!(glow.rgba, 0xFF00_00FF, "full drive maps to amount 0");
+        let glow = resolve(&swapped, &quiet(), 64.0).glow.expect("glow on");
+        assert_eq!(glow.rgba, 0x00FF_00FF, "silence maps to the full sweep");
     }
 }

@@ -187,6 +187,10 @@ pub struct UiProbe {
     /// `picker=ink|plate`: open the caption pane's free colour picker. Implies
     /// `style=caption`, since the picker is a disclosure inside that pane.
     pub caption_picker: Option<CaptionPickerProbe>,
+    /// `tune=pulse|hue`: open the effects form's drive tuning editor
+    /// (UX0-C14). Implies `style=effects`; refuses to combine with `picker=`,
+    /// which claims the same column.
+    pub caption_tune: Option<CaptionTuneProbe>,
     /// `route=KEY`: open the Tune inspector's route editor on the setting that
     /// `KEY` names, e.g. `route=loom.weight` or the full `settings.loom.weight`.
     ///
@@ -286,6 +290,17 @@ pub enum CaptionPickerProbe {
     Ink,
     /// `picker=plate`: the backing colour.
     Plate,
+}
+
+/// `tune=` in a `--ui-probe` spec (UX0-C14), for the same reason as
+/// [`CaptionPickerProbe`]: the tuning editor is a disclosure behind a button,
+/// and a headless run has no click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptionTuneProbe {
+    /// `tune=pulse`: the glow pulse drive's mapping.
+    Pulse,
+    /// `tune=hue`: the hue drive's mapping.
+    Hue,
 }
 
 /// `fonts=` in a `--ui-probe` spec (`musializer.c:202-217`).
@@ -846,6 +861,13 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
                 _ => return None,
             });
         }
+        "tune" => {
+            probe.caption_tune = Some(match value {
+                "pulse" => CaptionTuneProbe::Pulse,
+                "hue" => CaptionTuneProbe::Hue,
+                _ => return None,
+            });
+        }
         "assist" => {
             probe.assist = Some(AssistProbe::from_word(value)?);
         }
@@ -1378,6 +1400,18 @@ mod tests {
         assert_eq!(probe.caption_picker, Some(CaptionPickerProbe::Plate));
         assert!(parse_ui_probe("panel=lyrics,picker=1").is_none());
         assert!(parse_ui_probe("panel=lyrics,picker=text").is_none());
+    }
+
+    #[test]
+    fn ui_probe_names_the_tune_editor_by_drive() {
+        // UX0-C14: the tuning editor is a disclosure behind a button, so it
+        // needs a probe for the same reason the picker does.
+        let probe = parse_ui_probe("panel=lyrics,tune=pulse").unwrap();
+        assert_eq!(probe.caption_tune, Some(CaptionTuneProbe::Pulse));
+        let probe = parse_ui_probe("panel=lyrics,style=effects,tune=hue").unwrap();
+        assert_eq!(probe.caption_tune, Some(CaptionTuneProbe::Hue));
+        assert!(parse_ui_probe("panel=lyrics,tune=glow").is_none());
+        assert!(parse_ui_probe("panel=lyrics,tune=").is_none());
     }
 
     #[test]

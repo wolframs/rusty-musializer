@@ -652,7 +652,16 @@ fn run() -> Result<std::process::ExitCode, String> {
             if let Some(height) = probe.timeline_height {
                 app.shell.ui_preferences.timeline_height = Some(height);
             }
-            app.shell.widgets.tooltip_delay = 0.0;
+            // `hover=` means "photograph this tooltip now"; its absence must
+            // mean *no* tooltip can fire, or the frame depends on wherever the
+            // X server happened to leave the pointer — with tips across the
+            // caption panes (UX0-C16), a fresh Xvfb's centred pointer lands on
+            // a hinted control and pops one into an unrelated capture.
+            app.shell.widgets.tooltip_delay = if probe.hover.is_some() {
+                0.0
+            } else {
+                f64::INFINITY
+            };
             hover_at = probe.hover;
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
@@ -957,7 +966,7 @@ fn run() -> Result<std::process::ExitCode, String> {
         // Routes are evaluated into a staged copy, and the frame reads the staged
         // copy. Preview and export come through the same path, which is what keeps
         // routed parameters identical between them (`plug.c:1147-1166`).
-        let sources = RouteSources::from_audio(&audio_frame);
+        let sources = RouteSources::from_audio(&audio_frame, time_seconds);
         // Copied out of `app` rather than borrowed from it. `settings()` and
         // `routes()` borrow the whole `App` (they choose between the current
         // track's tables and the pending ones), so holding either across
@@ -1027,6 +1036,13 @@ fn run() -> Result<std::process::ExitCode, String> {
                 delete_armed: app.preset_delete_armed,
             },
             route_sources: sources,
+            effect_inputs: musializer_core::project::caption_effects::EffectInputs::from_audio(
+                time_seconds,
+                frame.audio.rms,
+                frame.audio.trails,
+                frame.audio.beat_phase,
+                frame.audio.spectral_flux,
+            ),
             band_count: spectrum.band_count(),
             peak_band: report.peak_band_last,
             rms: frame.audio.rms,
@@ -1054,26 +1070,15 @@ fn run() -> Result<std::process::ExitCode, String> {
             // contrast checks see the same number the window is cleared with.
             d.clear_background(ui::theme::color::background());
 
-            // Scene first, chrome over it, and the scene clipped to its own
-            // rectangle so a scene that draws past its boundary cannot paint over
-            // a panel (`plug.c:7712-7716`).
+            // Scene first, chrome over it. The scene-clipping scissor lives
+            // inside `SceneRenderer::draw` now (`plug.c:7712-7716` still
+            // applies): the caption glow's offscreen blur passes must run with
+            // no scissor active, so the renderer owns exactly when the clip is
+            // on — around the scene and the halo composite, never around the
+            // blur build.
             if !layout.preview.is_empty() {
                 let preview = ui::widgets::rectangle(ui_scale.physical_rect(layout.preview));
-                let mut scissor = d.begin_scissor_mode(
-                    preview.x as i32,
-                    preview.y as i32,
-                    preview.width as i32,
-                    preview.height as i32,
-                );
-                renderer.draw(
-                    &mut scissor,
-                    &fonts,
-                    &app.scene,
-                    &frame,
-                    assets,
-                    preview,
-                    1.0,
-                );
+                renderer.draw(&mut d, &fonts, &app.scene, &frame, assets, preview, 1.0);
             }
 
             let mut ui_draw = d.begin_mode2D(ui_scale.camera());
@@ -2930,6 +2935,12 @@ impl Report {
         // shader belongs to the renderer, and a compiled shader is not the same
         // claim as a Cadence frame that actually typeset through it.
         println!("scene text:      {}", renderer.describe());
+        // The caption glow's mechanism and last outcome (UX0-C11), on its own
+        // line because the gate pins `scene text:`'s grammar exactly. A frame
+        // with no halo and a frame whose halo silently failed to build are the
+        // same picture; `off` versus `unavailable` is a claim only this line
+        // can carry.
+        println!("caption halo:    {}", renderer.describe_caption_halo());
         println!(
             "ui layout:       scale={} sidebar={} inspector={} timeline={}",
             (fonts.ui().scale() * 100.0).round() as u16,
