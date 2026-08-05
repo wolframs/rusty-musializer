@@ -189,11 +189,12 @@ fn main() -> std::process::ExitCode {
     // no raylib call has been made, and `cli::parse` has not been reached — so
     // no other thread can be reading the environment concurrently.
     let session_credentials = unsafe { assist_env::import_session_credentials() };
-    // Only the fingerprint travels onward. The AI settings dialog says "session
-    // only" from it without ever holding a second copy of the key (AP3).
-    let session_fingerprint = session_credentials.openrouter_fingerprint();
-
-    match run(session_fingerprint) {
+    // The credential itself travels onward to exactly one owner — the Assist
+    // controller, which is the only thing in the application that may hand one
+    // to a child (P4, §4 E1). Everything else, the AI settings dialog included,
+    // gets the fingerprint and says "session only" from it, without ever holding
+    // a second copy of the key (AP3, §3 "one owner").
+    match run(session_credentials) {
         Ok(status) => status,
         Err(message) => {
             eprintln!("musializer: {message}");
@@ -202,7 +203,10 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run(session_fingerprint: Option<String>) -> Result<std::process::ExitCode, String> {
+fn run(
+    session_credentials: musializer_runtime::assist::env::SessionCredentials,
+) -> Result<std::process::ExitCode, String> {
+    let session_fingerprint = session_credentials.openrouter_fingerprint();
     // Keeps the raylib-5-5-link crate in the link graph; see its build.rs.
     let raylib_version = musializer_runtime::ensure_raylib_linked();
 
@@ -370,6 +374,7 @@ fn run(session_fingerprint: Option<String>) -> Result<std::process::ExitCode, St
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
     let mut assist = AssistController::new(&application_directory);
+    assist.set_session_credentials(session_credentials);
     app.workspace.assist.helper_available = assist.helper_available();
 
     // The shared preset store, read once (`plug.c:8397-8410`). A store that

@@ -34,9 +34,42 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use musializer_core::assist::execution::ExecutionSnapshot;
+use musializer_core::assist::secret::Secret;
+
 use super::process_group::{
     signal_group_or_process, wait_bounded, Delivery, ShutdownPolicy, Signal, WaitOutcome,
 };
+
+/// The environment variable the helper reads its provider credential from.
+///
+/// Duplicated from `assist::env` deliberately: that constant is about taking the
+/// key *out* of this process, and this one is about putting it into exactly one
+/// child. Two names for two directions, and a test asserts they agree.
+const CREDENTIAL_VARIABLE: &str = "OPENROUTER_API_KEY";
+
+/// A credential this job is allowed to hand to its helper.
+///
+/// The type exists so the authorization is not a comment. There is no way to
+/// build one except from an [`ExecutionSnapshot`] that
+/// [`ExecutionSnapshot::authorizes_credential`] accepts — a graph with a route
+/// that opens a socket, every one of which carries this job's own confirmation
+/// (§4 E1, §5 invariant 2). A local-only job cannot construct one at all, which
+/// is what makes "a planted key never reaches a local child" a property of the
+/// types rather than of the call site being careful.
+///
+/// It borrows rather than owns for §3's "one owner" rule: the key is not copied
+/// to reach the child, and the borrow ends when [`AssistJob::start`] returns.
+#[derive(Clone, Copy, Debug)]
+pub struct AuthorizedCredential<'a>(&'a Secret);
+
+impl<'a> AuthorizedCredential<'a> {
+    /// The only constructor. `None` means this job may not send one.
+    #[must_use]
+    pub fn for_snapshot(snapshot: &ExecutionSnapshot, secret: &'a Secret) -> Option<Self> {
+        snapshot.authorizes_credential().then_some(Self(secret))
+    }
+}
 
 /// `ASSIST_JOB_TIMEOUT_SECONDS` (`src/assist_ui_state.h:8`). Forty minutes; the
 /// same number is passed to the helper as `--timeout 2400`, so both sides agree
@@ -189,6 +222,35 @@ pub struct AssistSpec<'a> {
     pub mode: AssistMode,
     /// An explicitly chosen lyric sheet, or `None`.
     pub lyrics_file: Option<&'a Path>,
+    /// The `musializer.assist-execution/v1` record for this job, already written
+    /// (`runtime::assist::plan::write_snapshot`).
+    ///
+    /// A path rather than the record itself: it is provenance, and provenance
+    /// that exists only as an argument is provenance a crash loses. The helper
+    /// reads it, configures every route from it, and embeds it in the manifest
+    /// and in each artifact's `provenance` (§6).
+    pub execution_snapshot: Option<&'a Path>,
+    /// The provider credential, when — and only when — this job's snapshot
+    /// authorizes one. It goes into the child's **environment** and nowhere
+    /// else: never argv (E2), never a log (E3), never the manifest (E4).
+    pub credential: Option<AuthorizedCredential<'a>>,
+    /// `assist.json`'s `local_runtimes` overrides (§2), each `None` when the
+    /// user has not set one and the helper's own discovery should decide.
+    ///
+    /// These are flags rather than environment variables on purpose. The helper
+    /// reads `MUSIALIZER_WHISPER_BIN`, `MUSIALIZER_WHISPER_MODEL` and
+    /// `MUSIALIZER_ALIGN_PYTHON` as *defaults* for the same three flags, so
+    /// passing them here makes the dialog's setting win over an inherited
+    /// environment rather than race with it.
+    pub local_runtimes: LocalRuntimeOverrides<'a>,
+}
+
+/// The three local-runtime paths the AI settings dialog can override.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LocalRuntimeOverrides<'a> {
+    pub whisper_bin: Option<&'a Path>,
+    pub whisper_model: Option<&'a Path>,
+    pub align_python: Option<&'a Path>,
 }
 
 /// A running `external_analysis.py` child and its artifacts.
@@ -260,6 +322,33 @@ impl AssistJob {
             if lyrics.is_file() {
                 command.arg("--lyrics-file").arg(lyrics);
             }
+        }
+        // The frozen route graph. A path, never the record: an argv is the wrong
+        // place for provenance, and `/proc/*/cmdline` is a place this project
+        // scans rather than fills.
+        if let Some(snapshot) = spec.execution_snapshot {
+            command.arg("--execution-snapshot").arg(snapshot);
+        }
+        for (flag, path) in [
+            ("--whisper-bin", spec.local_runtimes.whisper_bin),
+            ("--whisper-model", spec.local_runtimes.whisper_model),
+            ("--align-python", spec.local_runtimes.align_python),
+        ] {
+            if let Some(path) = path {
+                command.arg(flag).arg(path);
+            }
+        }
+        // The one deliberate credential hand-off in the application (§4 E1).
+        //
+        // `Command::env` writes into *this* child's environment block only; the
+        // parent's environment was emptied of the variable at startup, so no
+        // other child — ffmpeg, kdialog, a font import — can inherit it, and a
+        // job whose snapshot did not authorize one could not build the token
+        // this arm needs. `AP1`'s strip and this line are the two halves of the
+        // same rule: nothing gets the key by default, and exactly one thing gets
+        // it on purpose.
+        if let Some(AuthorizedCredential(secret)) = spec.credential {
+            command.env(CREDENTIAL_VARIABLE, secret.expose());
         }
 
         let log_file = std::fs::File::create(&artifacts.log).map_err(AssistError::Workspace)?;
@@ -464,7 +553,13 @@ impl Drop for AssistJob {
 
 #[cfg(test)]
 mod tests {
+    use musializer_core::assist::execution::{self, ExecutionSnapshot, WorkflowKind};
+
     use super::*;
+
+    /// The sentinel `tools/secret_canary_check.sh` plants, spelled the same way
+    /// so a grep of this file finds the same string the gate greps for.
+    const CANARY: &str = "sk-or-v1-MUSICANARY7Q4X2ZK9aaaabbbbcccc";
 
     struct Scratch(PathBuf);
 
@@ -508,7 +603,29 @@ mod tests {
             duration_seconds: 40.5,
             mode,
             lyrics_file: None,
+            execution_snapshot: None,
+            credential: None,
+            local_runtimes: LocalRuntimeOverrides::default(),
         }
+    }
+
+    /// A snapshot whose graph is what the argument says, resolved through the
+    /// real resolver rather than hand-built — the point of the credential tests
+    /// is that the *resolution* decides, so a hand-built snapshot would test
+    /// nothing.
+    fn snapshot(kind: WorkflowKind, confirmed: bool) -> ExecutionSnapshot {
+        execution::resolve(
+            &musializer_core::assist::settings::AssistSettings::default(),
+            kind,
+            true,
+            &execution::ExecutionFacts {
+                resolved_at_utc: "2026-08-05T12:00:00Z".to_string(),
+                credential_present: true,
+                credential_fingerprint: Some("0a1b2c3d".to_string()),
+                boundary_confirmed: confirmed,
+                ..execution::ExecutionFacts::default()
+            },
+        )
     }
 
     fn poll_until_finished(job: &mut AssistJob) -> AssistPoll {
@@ -611,6 +728,117 @@ mod tests {
         assert!(
             !argv.contains(&"--lyrics-file".to_string()),
             "no sheet was chosen, so none may be passed"
+        );
+        assert!(
+            !argv.contains(&"--execution-snapshot".to_string()),
+            "no snapshot was resolved, so none may be passed"
+        );
+    }
+
+    /// The child's whole view of the hand-off: its argv, and every variable it
+    /// can see. Written by the fake helper, so both are what the kernel actually
+    /// gave it rather than what this side believes it sent.
+    fn child_report(spec: &AssistSpec<'_>) -> (Vec<String>, String) {
+        let mut job = AssistJob::start(spec, 0).expect("start");
+        assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
+        let argv = std::fs::read_to_string(job.bridge_path())
+            .expect("bridge")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let environ = std::fs::read_to_string(spec.output_dir.join("child-environ.txt"))
+            .expect("environ dump");
+        (argv, environ)
+    }
+
+    fn reporting_helper(scratch: &Scratch) -> PathBuf {
+        scratch.fake_helper(
+            "helper.py",
+            "pathlib.Path(sys.argv[sys.argv.index('--bridge') + 1])\
+             .write_text('\\n'.join(sys.argv[1:]))\n\
+             out = pathlib.Path(sys.argv[3]) / 'child-environ.txt'\n\
+             out.write_text('\\n'.join(f'{k}={v}' for k, v in sorted(os.environ.items())))",
+        )
+    }
+
+    /// §4 E1, and the negative control the canary gate runs from the outside: a
+    /// job whose route graph never leaves the machine cannot be given a
+    /// credential, even when one is right there and the caller asks.
+    #[test]
+    fn a_local_only_job_cannot_be_handed_a_credential_at_all() {
+        let scratch = Scratch::new("credential-local");
+        let helper = reporting_helper(&scratch);
+        let secret = Secret::new(CANARY.to_string());
+        let local = snapshot(WorkflowKind::Lyrics, true);
+        assert!(!local.has_remote_route());
+        // The token is not constructible, which is the point: the authorization
+        // is a property of the type rather than a rule the call site has to
+        // remember.
+        assert!(AuthorizedCredential::for_snapshot(&local, &secret).is_none());
+
+        let mut spec = spec(&helper, &scratch.0, AssistMode::Lyrics);
+        spec.credential = AuthorizedCredential::for_snapshot(&local, &secret);
+        let (argv, environ) = child_report(&spec);
+        assert!(
+            !environ.contains("MUSICANARY"),
+            "a local-only job's child saw the credential"
+        );
+        assert!(!environ.contains("OPENROUTER_API_KEY="));
+        assert!(!argv.iter().any(|value| value.contains("MUSICANARY")));
+    }
+
+    /// The other half: a confirmed remote job's child **does** get the key, in
+    /// its environment, and the argv still carries no character of it (E2).
+    #[test]
+    fn a_confirmed_remote_job_receives_the_credential_in_its_environment_only() {
+        let scratch = Scratch::new("credential-remote");
+        let helper = reporting_helper(&scratch);
+        let secret = Secret::new(CANARY.to_string());
+        let remote = snapshot(WorkflowKind::Mimo, true);
+        assert!(remote.sends_audio_off_machine());
+        let snapshot_path = scratch.join("assist-execution.json");
+        std::fs::write(&snapshot_path, remote.to_bytes().unwrap()).unwrap();
+
+        let mut spec = spec(&helper, &scratch.0, AssistMode::Mimo);
+        spec.execution_snapshot = Some(&snapshot_path);
+        spec.credential =
+            Some(AuthorizedCredential::for_snapshot(&remote, &secret).expect("authorized"));
+        let (argv, environ) = child_report(&spec);
+        assert!(
+            environ.contains(&format!("OPENROUTER_API_KEY={CANARY}")),
+            "the authorized child did not receive the credential"
+        );
+        assert!(
+            !argv.iter().any(|value| value.contains("MUSICANARY")),
+            "no flag may take a key (E2): {argv:?}"
+        );
+        let index = argv
+            .iter()
+            .position(|value| value == "--execution-snapshot")
+            .expect("the snapshot path is passed");
+        assert_eq!(argv[index + 1], snapshot_path.to_string_lossy());
+        // And the snapshot the child was pointed at carries no key either (E4).
+        assert!(!std::fs::read_to_string(&snapshot_path)
+            .unwrap()
+            .contains("MUSICANARY"));
+    }
+
+    /// §5 invariant 2: a remote graph the user has not confirmed authorizes
+    /// nothing, so the job runs with no credential rather than with one nobody
+    /// agreed to.
+    #[test]
+    fn an_unconfirmed_remote_job_is_not_authorized() {
+        let secret = Secret::new(CANARY.to_string());
+        let unconfirmed = snapshot(WorkflowKind::Mimo, false);
+        assert!(unconfirmed.has_remote_route());
+        assert!(AuthorizedCredential::for_snapshot(&unconfirmed, &secret).is_none());
+    }
+
+    #[test]
+    fn the_credential_variable_is_the_one_the_startup_strip_removes() {
+        assert_eq!(
+            CREDENTIAL_VARIABLE,
+            crate::assist::env::OPENROUTER_KEY_VARIABLE
         );
     }
 

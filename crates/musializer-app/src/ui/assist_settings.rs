@@ -56,9 +56,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use musializer_core::assist::contracts::{
-    Boundary, ContractId, FallbackPolicy, RouteType, ALL_CONTRACTS,
-};
+use musializer_core::assist::contracts::{ContractId, FallbackPolicy, RouteType, ALL_CONTRACTS};
 use musializer_core::assist::models_dir::ModelsDirResolution;
 use musializer_core::assist::secret::Secret;
 use musializer_core::assist::settings::{
@@ -586,13 +584,6 @@ pub struct CodexEffort {
     pub reasoning_effort: String,
 }
 
-/// The label a Codex route shows when discovery never ran or failed.
-///
-/// §5 rule 6: "Codex discovery failure preserves `Codex default`. Never a
-/// guessed model id." The string is exactly the one
-/// `tools/codex_model_discovery.py` uses.
-pub const CODEX_DEFAULT_LABEL: &str = "Codex default";
-
 /// A cache slot: absent, unreadable, or a document.
 #[derive(Clone, Debug)]
 pub enum CacheSlot<T> {
@@ -734,166 +725,19 @@ impl Readiness {
     }
 }
 
-/// The three "first missing piece" sentences, named so the badge, its tooltip
-/// and the tests cannot spell them differently.
-pub const NO_KEY: &str = "No key";
-pub const NO_MODEL: &str = "No model chosen";
-pub const NO_ENDPOINT: &str = "No eligible endpoint";
-
-/// The built-in `recommended` profile (§2: "`recommended` is built in and
-/// unwritable").
+/// The routing half of this dialog lives in `musializer-core`.
 ///
-/// Seeded **only** from evidence this repository holds, the same rule
-/// `assist::suitability` follows: `mms-ctc` for `TC-ALIGN` is the benchmarked
-/// aligner, `whisper.cpp` is the coarse lane the production path already runs,
-/// `xiaomi/mimo-v2.5` is what `tools/mimo_openrouter.py` uses, and the planner is
-/// the deterministic one.
-///
-/// `TC-VERIFY` deliberately has **no** recommended route. Independent timing
-/// verification was never benchmarked here, and inventing a default for it would
-/// be the invented field the honesty rule forbids — the dialog says "no
-/// recommended route" and offers the eligible ones.
-#[must_use]
-pub fn recommended_route(contract: ContractId) -> Option<Route> {
-    let route = |route_type: RouteType, runtime: &str, model: Option<&str>| Route {
-        contract,
-        route_type,
-        runtime_id: runtime.to_string(),
-        model_id: model.map(str::to_string),
-        model_path: None,
-        reasoning_effort: (route_type == RouteType::Codex).then_some(ReasoningEffort::Medium),
-        fallback: FallbackPolicy::None,
-        provider: (route_type == RouteType::OpenRouter).then(|| Provider::defaults_for(contract)),
-    };
-    match contract {
-        ContractId::Measured => Some(route(RouteType::Builtin, "builtin-analyzer", None)),
-        ContractId::Coarse => Some(route(
-            RouteType::LocalProc,
-            "whisper.cpp",
-            Some("whisper.cpp"),
-        )),
-        ContractId::Align => Some(route(RouteType::LocalProc, "mms-ctc", Some("mms-ctc"))),
-        ContractId::Wording => Some(route(RouteType::Codex, "codex", None)),
-        ContractId::Semantic => Some(route(
-            RouteType::OpenRouter,
-            "openrouter",
-            Some("xiaomi/mimo-v2.5"),
-        )),
-        ContractId::Plan => Some(route(RouteType::Builtin, "builtin-planner", None)),
-        ContractId::Verify => None,
-    }
-}
-
-/// Where a resolved route came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RouteOrigin {
-    /// The built-in `recommended` profile.
-    Recommended,
-    /// A per-task override stored in the active profile.
-    Override,
-    /// Neither: the contract has no recommended route and none was chosen.
-    Unrouted,
-}
-
-impl RouteOrigin {
-    #[must_use]
-    pub const fn token(self) -> &'static str {
-        match self {
-            RouteOrigin::Recommended => "recommended",
-            RouteOrigin::Override => "override",
-            RouteOrigin::Unrouted => "unrouted",
-        }
-    }
-}
-
-/// One contract's resolved route: what the **next** job would use.
-#[derive(Clone, Debug)]
-pub struct ResolvedRoute {
-    pub contract: ContractId,
-    pub route: Option<Route>,
-    pub origin: RouteOrigin,
-}
-
-impl ResolvedRoute {
-    /// The model identity to display. An absent `model_id` on a Codex route is
-    /// `Codex default` — the documented fallback, not a guess (§5 rule 6).
-    #[must_use]
-    pub fn model_label(&self) -> String {
-        let Some(route) = &self.route else {
-            return "\u{2014}".to_string();
-        };
-        match (&route.model_id, route.route_type) {
-            (Some(id), _) => id.clone(),
-            (None, RouteType::Codex) => CODEX_DEFAULT_LABEL.to_string(),
-            (None, RouteType::Builtin) => route.runtime_id.clone(),
-            (None, _) => "not chosen".to_string(),
-        }
-    }
-
-    #[must_use]
-    pub fn route_label(&self) -> String {
-        match &self.route {
-            Some(route) => format!("{} / {}", route.route_type.token(), route.runtime_id),
-            None => "no route".to_string(),
-        }
-    }
-
-    /// The boundary the resolved route would actually operate at.
-    ///
-    /// Two halves, and both matter. A `builtin` or `local-proc` route opens no
-    /// socket, so it is `local-only` whatever the contract's ceiling is —
-    /// telling a user that a local Whisper lane sends audio off the machine
-    /// would be the worst kind of wrong. A remote route reaches the contract's
-    /// ceiling exactly, because the ceiling *is* what that contract's inputs
-    /// are: §1 gives `TC-WORDING` bounded JSON and `TC-SEMANTIC` complete audio,
-    /// so the route type's own minimum (`text-leaves-machine` for both) would
-    /// understate the second one.
-    #[must_use]
-    pub fn boundary(&self) -> Boundary {
-        match &self.route {
-            Some(route) if route.route_type.minimum_boundary().rank() == 0 => Boundary::LocalOnly,
-            Some(_) => self.contract.max_boundary(),
-            None => Boundary::LocalOnly,
-        }
-    }
-
-    /// The route as one greppable token for the report line.
-    #[must_use]
-    pub fn compact(&self) -> String {
-        match &self.route {
-            Some(route) => format!("{}/{}", route.route_type.token(), route.runtime_id),
-            None => "no-route".to_string(),
-        }
-    }
-}
-
-/// Applies §2's inheritance: a stored route for the active profile wins, an
-/// absent one inherits the built-in `recommended` profile.
-#[must_use]
-pub fn resolve_route(settings: &AssistSettings, contract: ContractId) -> ResolvedRoute {
-    if let Some(stored) = settings
-        .profile(&settings.active_profile)
-        .and_then(|profile| profile.routes.get(&contract))
-    {
-        return ResolvedRoute {
-            contract,
-            route: Some(stored.clone()),
-            origin: RouteOrigin::Override,
-        };
-    }
-    match recommended_route(contract) {
-        Some(route) => ResolvedRoute {
-            contract,
-            route: Some(route),
-            origin: RouteOrigin::Recommended,
-        },
-        None => ResolvedRoute {
-            contract,
-            route: None,
-            origin: RouteOrigin::Unrouted,
-        },
-    }
-}
+/// It was written here for the dry-run summary — "what the **next** job would
+/// use" — and tranche P4 needs the identical answer at Start, where it becomes
+/// the execution snapshot (`docs/ASSIST_PROVIDER_CONTRACTS.md` §6). Two copies
+/// of a routing table is exactly the drift that would put one answer on screen
+/// and a different one in a job's provenance, so the resolver moved down to
+/// `core::assist::execution` and this is the same function, re-exported. Every
+/// call site below is unchanged.
+pub use musializer_core::assist::execution::{
+    recommended_route, resolve_route, ResolvedRoute, RouteOrigin, CODEX_DEFAULT_LABEL, NO_ENDPOINT,
+    NO_KEY, NO_MODEL,
+};
 
 /// The user profile the first override creates. `recommended` cannot be stored
 /// (§2), so editing while it is active has to copy-on-write into something.
@@ -6334,6 +6178,11 @@ impl AssistSettingsDialog {
 
 #[cfg(test)]
 mod tests {
+    // `Boundary` is used only by the tests now that route resolution moved to
+    // `core::assist::execution`; importing it here rather than at module scope
+    // keeps the non-test build free of an unused import.
+    use musializer_core::assist::contracts::Boundary;
+
     use super::*;
 
     /// A syntactically valid key with a unique sentinel, the same shape

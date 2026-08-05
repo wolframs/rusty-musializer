@@ -50,6 +50,7 @@
 
 use std::path::{Path, PathBuf};
 
+use musializer_core::assist::execution::{self, ContractSnapshot, ExecutionSnapshot};
 use musializer_core::project::analysis_bridge;
 use musializer_core::project::analysis_candidate::{
     self, AnalysisCandidate, Lanes, LyricReviewEntry, LyricReviewKind, LyricsReview,
@@ -67,9 +68,12 @@ use musializer_core::ui::assist_ui_state::{
 };
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
+use musializer_runtime::assist::env::SessionCredentials;
+use musializer_runtime::assist::plan::{self, ExecutionPlan, PlanInputs};
 use musializer_runtime::font::UiFonts;
 use musializer_runtime::process::assist::{
-    AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, StopReason,
+    AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, AuthorizedCredential,
+    LocalRuntimeOverrides, StopReason,
 };
 use musializer_runtime::process::font_import::find_assist_helper;
 use musializer_runtime::project_files::sha256_file_hex;
@@ -169,6 +173,22 @@ pub struct AssistController {
     /// `FileExists` every frame from inside the drawing pair; once is enough, and
     /// a syscall per frame is not free.
     helper: Option<PathBuf>,
+    /// The credential imported from the environment at startup, if any.
+    ///
+    /// Held here rather than on `Shell` because this is the only thing in the
+    /// application that may hand one to a child (§4 E1), and §3's "one owner"
+    /// rule is easiest to keep when the owner is the thing that needs it. The
+    /// dialog gets the fingerprint and nothing else.
+    session: SessionCredentials,
+    /// The route graph the **running** job was started with.
+    ///
+    /// §5 invariant 3: resolved once at Start and never re-resolved. Kept so the
+    /// staged candidate and the report can name what actually ran without going
+    /// back to the settings file, which by then may say something else.
+    running_snapshot: Option<ExecutionSnapshot>,
+    /// The route graph that produced the staged candidate, read back from the
+    /// manifest so its model ids are the observed ones (§6).
+    staged_snapshot: Option<ExecutionSnapshot>,
 }
 
 impl AssistController {
@@ -180,7 +200,47 @@ impl AssistController {
             job: None,
             nonce: 0,
             helper: find_assist_helper(application_directory),
+            session: SessionCredentials::empty(),
+            running_snapshot: None,
+            staged_snapshot: None,
         }
+    }
+
+    /// Hands over the startup credential import.
+    ///
+    /// Takes ownership: after this call `main` holds no copy, which is the whole
+    /// of §3's "one owner, no `Clone`" rule expressed as a move. It is the only
+    /// route by which a key reaches a child, and even then only through
+    /// [`AuthorizedCredential`], which a local-only job cannot construct.
+    pub fn set_session_credentials(&mut self, session: SessionCredentials) {
+        self.session = session;
+    }
+
+    /// The fingerprint of the session credential, for the AI settings dialog.
+    /// Never the key.
+    #[must_use]
+    pub fn session_fingerprint(&self) -> Option<String> {
+        self.session.openrouter_fingerprint()
+    }
+
+    /// The route graph a running job was started with, or `None` when nothing is
+    /// running.
+    #[must_use]
+    pub fn running_snapshot(&self) -> Option<&ExecutionSnapshot> {
+        self.running_snapshot.as_ref()
+    }
+
+    /// The route graph that produced the **staged** result, with the model ids
+    /// the helper observed (§6).
+    ///
+    /// It sits here rather than on `AnalysisCandidate` because that type is
+    /// `musializer-core/src/project/`, which this tranche does not own. The
+    /// candidate and this value are staged and cleared together, so the pair is
+    /// as inert as the candidate is; moving the field onto the candidate itself
+    /// is a one-line change for whoever next opens that file.
+    #[must_use]
+    pub fn staged_snapshot(&self) -> Option<&ExecutionSnapshot> {
+        self.staged_snapshot.as_ref()
     }
 
     #[must_use]
@@ -287,6 +347,76 @@ impl AssistController {
             workspace_hash(&audio, duration)
         ));
 
+        // §5 invariant 3: the route graph is resolved **here**, once, and the
+        // result is what provenance records. Pressing Start is the confirmation
+        // (§5 invariant 2), so this is the one resolution that may carry
+        // `boundary_confirmed`; the panel's own preview above resolves with it
+        // false and shows the same routes.
+        let has_reference =
+            resolve_lyric_reference(workspace.current()).0 != AssistLyricReference::None;
+        let session_fingerprint = self.session.openrouter_fingerprint();
+        let resolved = plan::resolve(&PlanInputs {
+            kind_token: job_mode(mode).argument(),
+            has_lyric_reference: has_reference,
+            boundary_confirmed: true,
+            session_fingerprint: session_fingerprint.as_deref(),
+            doctor_report: doctor_report_path().as_deref(),
+        });
+        // Everything that must be true before a process exists (§5 invariant 4).
+        // A missing key and a constraint that leaves no endpoint are refusals,
+        // not things to discover from a helper's stderr forty minutes later.
+        if let Some(block) = resolved.first_block() {
+            let session = &mut workspace.assist;
+            session.job_state = AssistJobState::Failed;
+            session.failure_detail = block.sentence();
+            return vec![AssistNotice::new(
+                Severity::Warning,
+                "Analysis could not start",
+                block.sentence(),
+            )];
+        }
+        let snapshot_path = match plan::write_snapshot(&output_dir, &resolved.snapshot) {
+            Ok(path) => path,
+            Err(error) => {
+                let session = &mut workspace.assist;
+                session.job_state = AssistJobState::Failed;
+                session.failure_detail = capitalize_sentence(&error.to_string());
+                return vec![AssistNotice::new(
+                    Severity::Error,
+                    "Analysis could not start",
+                    session.failure_detail.clone(),
+                )];
+            }
+        };
+        report_routing(&format!("start {}", resolved.describe()));
+
+        // The credential, and only where the graph authorizes one. `stored`
+        // outlives the spawn because the borrow does; the session copy is the
+        // fallback, in the order §3 gives — a persisted key first, then the one
+        // imported from the environment for this run.
+        let stored = plan::openrouter_secret(&resolved.credential_lookup);
+        let secret = stored.as_ref().or_else(|| self.session.openrouter());
+        let credential = secret
+            .and_then(|secret| AuthorizedCredential::for_snapshot(&resolved.snapshot, secret));
+
+        // The dialog's local-runtime overrides reach the helper as flags, which
+        // is what makes them win over an inherited `MUSIALIZER_WHISPER_BIN`
+        // rather than race with it.
+        let whisper_bin = resolved
+            .local_runtimes
+            .whisper_bin
+            .as_deref()
+            .map(Path::new);
+        let whisper_model = resolved
+            .local_runtimes
+            .whisper_model
+            .as_deref()
+            .map(Path::new);
+        let align_python = resolved
+            .local_runtimes
+            .align_python
+            .as_deref()
+            .map(Path::new);
         let spec = AssistSpec {
             helper: &helper,
             audio: &audio,
@@ -294,10 +424,18 @@ impl AssistController {
             duration_seconds: duration,
             mode: job_mode(mode),
             lyrics_file: sheet.as_deref(),
+            execution_snapshot: Some(&snapshot_path),
+            credential,
+            local_runtimes: LocalRuntimeOverrides {
+                whisper_bin,
+                whisper_model,
+                align_python,
+            },
         };
         match AssistJob::start(&spec, self.nonce) {
             Ok(job) => {
                 self.nonce = job.artifacts().nonce;
+                self.running_snapshot = Some(resolved.snapshot.clone());
                 let session = &mut workspace.assist;
                 session.bridge_path = job.bridge_path().display().to_string();
                 session.log_path = job.log_path().display().to_string();
@@ -414,6 +552,27 @@ impl AssistController {
                 // rather than from the bridge. Staged with the candidate, so it
                 // is as inert as the candidate is.
                 stage_lyrics_review(&mut loaded.candidate, &output_dir);
+                // §6: the staged result exposes the graph that produced it, with
+                // the model ids the helper **observed** rather than the ones it
+                // was asked for. Read back from the manifest for exactly that
+                // reason — `running_snapshot` holds what was resolved, and the
+                // difference between the two is the whole point of the field.
+                self.staged_snapshot = staged_execution_snapshot(&output_dir)
+                    .or_else(|| self.running_snapshot.clone());
+                report_routing(&format!(
+                    "staged mode={} contracts={} observed={}",
+                    mode.argument(),
+                    self.staged_snapshot.as_ref().map_or_else(
+                        || "none".to_string(),
+                        |snapshot| snapshot
+                            .contracts
+                            .iter()
+                            .map(ContractSnapshot::compact)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                    staged_execution_snapshot(&output_dir).is_some(),
+                ));
                 // Written back exactly as C does (`plug.c:3446-3450`), so the
                 // next run does not hash the whole file again.
                 if let Some(digest) = loaded.audio_sha256 {
@@ -917,6 +1076,137 @@ thread_local! {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Tranche P4: the resolved route graph.
+//
+// The confirmation step is where a user decides, so it is where the routes have
+// to be legible: which model, what stays here, what leaves and under which
+// policy. Resolving that reads `assist.json`, the `0600` credentials file and
+// the catalog cache, which is four `stat`s and a parse — the per-frame syscall
+// this file already refuses for the helper probe.
+//
+// So it is resolved once and cached against a key that changes exactly when the
+// answer can: the workflow, whether an authored sheet was found, and whether the
+// AI settings dialog is open (closing it is the only way a user can have changed
+// the settings without leaving this panel). No clock, no file watch, and no stat
+// per frame.
+//
+// `Shell`'s own fields are not this file's to add to, which is why this is a
+// `thread_local!` beside the report caches rather than a member.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// `(cache key, plan)` for the confirmation body.
+    static CONFIRMATION_PLAN: std::cell::RefCell<Option<(String, ExecutionPlan)>> = const {
+        std::cell::RefCell::new(None)
+    };
+
+    /// The last `assist routing:` line printed.
+    static LAST_ROUTING_REPORT: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// Publishes the resolved graph's own evidence.
+///
+/// A capture of the confirmation shows six short rows and cannot tell a resolved
+/// `local-proc/whisper.cpp` from a fallback the panel invented, so the line
+/// carries the routes as tokens, whether anything leaves the machine, where the
+/// credential came from and what is blocking. The gate asserts against this
+/// rather than against pixel positions.
+fn report_routing(line: &str) {
+    LAST_ROUTING_REPORT.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist routing:  {line}");
+            last.clear();
+            last.push_str(line);
+        }
+    });
+}
+
+/// The execution snapshot a finished job's manifest embedded, if any.
+///
+/// Read from `assist-manifest.json` rather than from the `assist-execution.json`
+/// this side wrote, because the two differ on purpose: the file is what was
+/// **resolved**, and the manifest's copy carries the model ids the helper
+/// **observed** (§6). Bounded and schema-checked like every other document this
+/// panel reads from a job folder.
+fn staged_execution_snapshot(output_dir: &str) -> Option<ExecutionSnapshot> {
+    if output_dir.is_empty() {
+        return None;
+    }
+    let bytes = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let embedded = manifest.get("execution_snapshot")?;
+    serde_json::from_value(embedded.clone()).ok()
+}
+
+/// A doctor report to read runtime identity from, when one has been taken.
+///
+/// There is no persisted doctor report in an ordinary run — nothing writes one —
+/// so `runtime_version` and `model_sha256` are `null` in the snapshot unless the
+/// dialog's own probe seam names a file. That is the honest answer: a version
+/// nobody measured is not a version, and §6 is explicit that a snapshot lacking
+/// exact local model identity is not benchmark evidence.
+fn doctor_report_path() -> Option<PathBuf> {
+    std::env::var_os(crate::ui::assist_settings::PROBE_DOCTOR_VARIABLE)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// The route graph the confirmation is showing, resolved at most once per change
+/// of the cache key above.
+fn confirmation_plan(
+    mode: AssistMode,
+    has_lyric_reference: bool,
+    settings_open: bool,
+    session_fingerprint: Option<&str>,
+) -> ExecutionPlan {
+    let key = format!(
+        "{}|{has_lyric_reference}|{settings_open}|{}",
+        job_mode(mode).argument(),
+        session_fingerprint.unwrap_or("-"),
+    );
+    CONFIRMATION_PLAN.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((cached, resolved)) = slot.as_ref() {
+            if cached == &key {
+                return resolved.clone();
+            }
+        }
+        // `boundary_confirmed` is false here on purpose: this is what the job
+        // *would* use, and the user has not agreed to it yet. Pressing Start is
+        // the confirmation, and `AssistController::start` resolves again with it
+        // true — which is also the resolution that becomes provenance (§5
+        // invariant 3).
+        let resolved = plan::resolve(&PlanInputs {
+            kind_token: job_mode(mode).argument(),
+            has_lyric_reference,
+            boundary_confirmed: false,
+            session_fingerprint,
+            doctor_report: doctor_report_path().as_deref(),
+        });
+        report_routing(&format!("confirm {}", resolved.describe()));
+        *slot = Some((key, resolved.clone()));
+        resolved
+    })
+}
+
+/// The cached plan without resolving one.
+///
+/// `Shell::assist_timeline_height` runs *before* the panel draws, and it has the
+/// session but not the track — so it cannot ask whether an authored sheet
+/// exists, which is one of the inputs. It reads the cache instead. The
+/// consequence is exact and bounded: on the single frame a confirmation first
+/// arms, the strip is sized without the route block and the block is clipped;
+/// every frame after it is the right height. Sizing it a frame late is better
+/// than resolving the graph from a function that would have to guess one of its
+/// inputs.
+fn cached_confirmation_plan() -> Option<ExecutionPlan> {
+    CONFIRMATION_PLAN.with(|slot| slot.borrow().as_ref().map(|(_, resolved)| resolved.clone()))
+}
+
 /// Publishes the AI settings entry point's own evidence (tranche AP3).
 ///
 /// The button has to be present in **every** panel state, and a capture cannot
@@ -1338,7 +1628,17 @@ pub(crate) fn apply_probe_state(
     let current = workspace.current_index();
     match state {
         crate::cli::AssistProbe::Confirm => {
-            // Unchanged from the one-word grammar this replaced.
+            // Unchanged from the one-word grammar this replaced, except that
+            // the workflow is now selectable (tranche P4). It has to be: the
+            // resolved route graph the confirmation draws is *different* for a
+            // local `lyrics` job and a remote `mimo` one, and photographing only
+            // the default would leave the branch that sends audio off the
+            // machine — the one the whole confirmation exists for — with no
+            // capture at all. Gated on the variable being set, so every existing
+            // `assist=confirm` capture keeps the mode it had.
+            if std::env::var_os(PROBE_LANES_VARIABLE).is_some() {
+                workspace.assist.select_mode(probe_mode());
+            }
             workspace.assist.set_confirmation_pending(true);
         }
         crate::cli::AssistProbe::Candidate => {
@@ -1521,6 +1821,224 @@ fn review_block_height(candidate: Option<&AnalysisCandidate>) -> f32 {
     // is indistinguishable from a broken one.
     let rows = shown.max(1) + usize::from(hidden > 0);
     18.0 + rows as f32 * REVIEW_ROW_HEIGHT + 4.0
+}
+
+// ---------------------------------------------------------------------------
+// Tranche P4: the resolved-graph block on the confirmation.
+//
+// Extra height on this side of the boundary, exactly as the LT1 review list is
+// and for the same reason: `assist_ui_state::ui_layout` reserves 84 px for the
+// confirmation body and is pinned against the frozen C by
+// `tools/differential_assist_ui.sh`, so this cannot be squeezed into it. Both
+// places that size the panel add the same block, and it is drawn **below** the
+// Start/Cancel row so a window too short for the whole panel loses the routes
+// and keeps the decision.
+// ---------------------------------------------------------------------------
+
+/// The 12 px text the route rows are drawn in. Same size as the review list, so
+/// the two blocks read as one vocabulary.
+const ROUTE_FONT_SIZE: f32 = 12.0;
+
+/// Row pitch for the route list.
+const ROUTE_ROW_HEIGHT: f32 = 15.0;
+
+/// Where the route block starts, measured from the confirmation body's top:
+/// after the 36 px Start/Cancel row at +48 and its 10 px of slack. With a lyric
+/// reference row present the buttons move down by the same amount the reference
+/// row costs, and [`route_block_offset`] adds it.
+const ROUTE_BLOCK_OFFSET: f32 = 94.0;
+
+/// How far below the body top the route block starts, given the layout.
+fn route_block_offset(layout: &AssistUiLayout) -> f32 {
+    if layout.reference_y > 0.0 {
+        ROUTE_BLOCK_OFFSET + (layout.reference_y - layout.content_y) - 8.0
+    } else {
+        ROUTE_BLOCK_OFFSET
+    }
+}
+
+/// The height the route block adds, or 0 when there is nothing to draw it for.
+///
+/// Zero for every body except the confirmation, which is what keeps every
+/// pre-P4 capture's geometry where it was.
+fn route_block_height(content: AssistPanelContent, plan: Option<&ExecutionPlan>) -> f32 {
+    if content != AssistPanelContent::Confirmation {
+        return 0.0;
+    }
+    let Some(plan) = plan else {
+        return 0.0;
+    };
+    // One heading, one row per composed contract, one summary sentence, and one
+    // more when there is something extra to say: a downgraded `ask` policy, a
+    // settings file that would not load, or a refusal.
+    18.0 + (plan.snapshot.contracts.len() + 1 + route_notes(plan).len()) as f32 * ROUTE_ROW_HEIGHT
+        + 4.0
+}
+
+/// The sentences below the route rows, in the order they matter.
+///
+/// The first is always present and is the one §5 lets the panel state as a fact
+/// rather than a promise: **no applied fallback in this graph can raise a
+/// boundary**, measured over the graph rather than asserted. The rest appear
+/// only when there is something extra to say, and each is a thing the user would
+/// otherwise have to discover from a failed run.
+fn route_notes(plan: &ExecutionPlan) -> Vec<(String, raylib::prelude::Color)> {
+    let mut notes = Vec::new();
+    if let Some(block) = plan.first_block() {
+        notes.push((block.sentence(), color::ui_danger()));
+    }
+    if let Some(error) = &plan.settings_error {
+        notes.push((
+            format!("The AI settings file could not be read ({error}); the built-in recommended routes are in use."),
+            color::ui_warning(),
+        ));
+    }
+    if !plan.ask_resolved_to_none.is_empty() {
+        notes.push((
+            format!(
+                "Fallback \u{201c}ask\u{201d} on {} is applied as \u{201c}none\u{201d}: this build cannot pause a running job for an answer, so a failed route fails its task.",
+                plan.ask_resolved_to_none
+                    .iter()
+                    .map(|contract| contract.token())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            color::ui_warning(),
+        ));
+    }
+    notes
+}
+
+/// One route row's text, in the grammar the settings dialog's dry-run summary
+/// uses so the two surfaces cannot describe the same route differently.
+fn route_row(entry: &ContractSnapshot) -> String {
+    let boundary = match entry.boundary_applied.rank() {
+        0 => "stays on this machine",
+        1 => "text leaves this machine",
+        _ => "audio leaves this machine",
+    };
+    format!(
+        "{}  \u{00b7}  {}  \u{00b7}  {boundary}  \u{00b7}  fallback {}",
+        entry.contract.human_label(),
+        if entry.model_id.is_empty() {
+            entry.runtime_id.clone()
+        } else {
+            entry.model_id.clone()
+        },
+        entry.fallback_policy.token(),
+    )
+}
+
+/// Draws the resolved graph under the Start/Cancel row.
+///
+/// Terse on purpose: one heading that says whether anything leaves the machine,
+/// one row per composed task naming its model and its boundary, and the §5
+/// invariant stated as the measurement it is. A user deciding whether to press
+/// Start needs those four facts and nothing else — the whole matrix, the
+/// suitability overlay and the constraint editors are one button away on the
+/// AI settings dialog, which the heading row already carries.
+fn draw_route_graph(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &UiFonts,
+    boundary: UiRect,
+    layout: &AssistUiLayout,
+    padding: f32,
+    plan: &ExecutionPlan,
+) {
+    let x = boundary.x + padding;
+    let mut y = boundary.y + layout.content_y + route_block_offset(layout);
+    let width = (boundary.width - padding * 2.0).max(0.0);
+    let snapshot = &plan.snapshot;
+
+    let leaves = snapshot.sends_audio_off_machine();
+    let heading = if leaves {
+        format!(
+            "Resolved routes \u{2014} audio leaves this machine for {} of {} tasks",
+            snapshot
+                .contracts
+                .iter()
+                .filter(|entry| entry.boundary_applied.rank() >= 2)
+                .count(),
+            snapshot.contracts.len(),
+        )
+    } else if snapshot.has_remote_route() {
+        "Resolved routes \u{2014} derived text leaves this machine; no audio does".to_string()
+    } else {
+        "Resolved routes \u{2014} nothing leaves this machine".to_string()
+    };
+    widgets::draw_text(
+        d,
+        font,
+        &heading,
+        x,
+        y,
+        ROUTE_FONT_SIZE,
+        if leaves {
+            color::ui_warning()
+        } else {
+            color::ui_muted()
+        },
+    );
+    y += 18.0;
+
+    let measure = |text: &str| widgets::measure(font, text, ROUTE_FONT_SIZE);
+    for entry in &snapshot.contracts {
+        widgets::draw_text(
+            d,
+            font,
+            &ellipsize(&route_row(entry), width, &measure),
+            x,
+            y,
+            ROUTE_FONT_SIZE,
+            if entry.boundary_applied.rank() >= 2 {
+                color::ui_warning()
+            } else {
+                color::ui_ink()
+            },
+        );
+        y += ROUTE_ROW_HEIGHT;
+    }
+
+    // The §5 invariant-1 sentence, and it is a measurement rather than a
+    // promise: `any_fallback_can_raise_boundary` walks the applied policies and
+    // the whole boundary ladder. If it ever answered true this line would say
+    // so, which is the only reason it is worth drawing.
+    let raises = execution::any_fallback_can_raise_boundary(&snapshot.contracts);
+    widgets::draw_text(
+        d,
+        font,
+        &ellipsize(
+            if raises {
+                "A fallback in this graph could move data to a wider boundary."
+            } else {
+                "No fallback here can widen a boundary: raising one needs a new decision, and this job takes none."
+            },
+            width,
+            &measure,
+        ),
+        x,
+        y,
+        ROUTE_FONT_SIZE,
+        if raises {
+            color::ui_danger()
+        } else {
+            color::ui_muted()
+        },
+    );
+    y += ROUTE_ROW_HEIGHT;
+
+    for (note, tint) in route_notes(plan) {
+        widgets::draw_text(
+            d,
+            font,
+            &ellipsize(&note, width, &measure),
+            x,
+            y,
+            ROUTE_FONT_SIZE,
+            tint,
+        );
+        y += ROUTE_ROW_HEIGHT;
+    }
 }
 
 /// The tint a row carries: an unplaced line is a warning, a disagreement is
@@ -2085,10 +2603,13 @@ impl Shell {
             session.panel_content(),
             session.mode().uses_lyric_reference(),
         );
-        // The LT1 review list is extra height on this side of the boundary; see
-        // the note above `REVIEW_FONT_SIZE`. Zero without a review, so a panel
-        // that had no such artifact asks for exactly what it asked for before.
-        let required = layout.required_height + review_block_height(session.candidate.as_ref());
+        // The LT1 review list and the P4 route block are extra height on this
+        // side of the boundary; see the notes above `REVIEW_FONT_SIZE` and
+        // `ROUTE_FONT_SIZE`. Both are zero for a panel that has neither, so a
+        // body without them asks for exactly what it asked for before.
+        let required = layout.required_height
+            + review_block_height(session.candidate.as_ref())
+            + route_block_height(session.panel_content(), cached_confirmation_plan().as_ref());
         assist_ui_state::timeline_height(window.1, metric::HUD_BUTTON_SIZE, required)
     }
 
@@ -2115,12 +2636,25 @@ impl Shell {
         let panel_content = session.panel_content();
         let layout =
             assist_ui_state::ui_layout(width, panel_content, session.mode().uses_lyric_reference());
+        // Tranche P4: the resolved route graph the confirmation names. Resolved
+        // here rather than inside the body so both the box height and the block
+        // come from one answer, and cached so this is not four `stat`s a frame.
+        let routes = (panel_content == AssistPanelContent::Confirmation).then(|| {
+            confirmation_plan(
+                session.mode(),
+                resolve_lyric_reference(input.workspace.current()).0 != AssistLyricReference::None,
+                self.assist_settings.is_open(),
+                self.session_credential_fingerprint.as_deref(),
+            )
+        });
         // The box is the height the body needs, not the height the band happens
         // to have. They agree when `Shell::timeline_height` asked for this panel;
         // clamping is what keeps the panel from drawing a half-empty box when it
         // did not — which is exactly what this build looks like until the
         // `timeline_height` seam in Agent J's note is wired.
-        let required = layout.required_height + review_block_height(session.candidate.as_ref());
+        let required = layout.required_height
+            + review_block_height(session.candidate.as_ref())
+            + route_block_height(panel_content, routes.as_ref());
         let boundary = UiRect::new(content.x + padding, top, width, available.min(required));
         if boundary.is_empty() {
             return;
@@ -2327,6 +2861,9 @@ impl Shell {
             gap,
             commands,
         );
+        if let Some(routes) = routes.as_ref() {
+            draw_route_graph(&mut clip, font, boundary, &layout, padding, routes);
+        }
     }
 
     /// The four workflow buttons, with their data-boundary badges
@@ -3108,6 +3645,9 @@ mod tests {
             job: None,
             nonce: 0,
             helper: None,
+            session: SessionCredentials::empty(),
+            running_snapshot: None,
+            staged_snapshot: None,
         }
     }
 

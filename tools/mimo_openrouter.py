@@ -140,6 +140,7 @@ def normalize_semantic_score(
     audio_duration: float,
     request_settings: dict[str, Any],
     response_metadata: dict[str, Any] | None = None,
+    requested_model: str = MODEL,
 ) -> dict[str, Any]:
     audio_duration = duration(audio_duration)
     audio_sha256 = audio_hash(audio_sha256)
@@ -189,7 +190,12 @@ def normalize_semantic_score(
         "source_kind": "mimo_openrouter",
         "audio_sha256": audio_sha256,
         "schema_version": SCORE_SCHEMA_VERSION,
-        "model": str(metadata.get("model") or MODEL),
+        # §6: `model_id` is OBSERVED, not inferred. OpenRouter reports the
+        # model it actually served, which can differ from the requested slug
+        # when a variant is routed; the request is only the fallback for a
+        # response that reported nothing.
+        "model": str(metadata.get("model") or requested_model),
+        "requested_model": requested_model,
         "provider": metadata.get("provider"),
         "prompt_version": PROMPT_VERSION,
         "request_settings": request_settings,
@@ -209,38 +215,89 @@ def normalize_semantic_score(
     }
 
 
+def request_settings(
+    *,
+    model: str = MODEL,
+    audio_duration: float,
+    audio_format: str,
+    provider_order: list[str] | None = None,
+    provider_only: list[str] | None = None,
+    provider_ignore: list[str] | None = None,
+    allow_fallbacks: bool = True,
+    zero_data_retention: bool = False,
+    max_price: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """The identity of one request, as both the cache key and the provenance.
+
+    Every field a user can change is in here, which is what makes tranche P4's
+    rule work: an artifact produced under a different model or a different
+    provider policy has a different identity and is regenerated rather than
+    reused (docs/ASSIST_PROVIDER_CONTRACTS.md §5 rule 7). The three price
+    bounds and the two provider allow/deny lists were previously not part of it
+    at all, so changing them silently reused the old answer.
+    """
+    return {
+        "model": model,
+        "prompt_version": PROMPT_VERSION,
+        "prompt_sha256": canonical_sha256(SYSTEM_PROMPT),
+        "response_schema_version": SCORE_SCHEMA_VERSION,
+        "model_output_schema_sha256": canonical_sha256(MODEL_OUTPUT_SCHEMA),
+        "audio_duration_seconds": duration(audio_duration),
+        "audio_format": audio_format,
+        "allow_fallbacks": allow_fallbacks,
+        "zero_data_retention": zero_data_retention,
+        "provider_order": provider_order or [],
+        "provider_only": provider_only or [],
+        "provider_ignore": provider_ignore or [],
+        "max_price": dict(sorted((max_price or {}).items())),
+    }
+
+
 def build_request(
     audio_bytes: bytes,
     *,
     audio_format: str,
     audio_duration: float,
+    model: str = MODEL,
     provider_order: list[str] | None = None,
+    provider_only: list[str] | None = None,
+    provider_ignore: list[str] | None = None,
     allow_fallbacks: bool = True,
     zero_data_retention: bool = False,
+    max_price: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     measured_duration = duration(audio_duration)
-    settings: dict[str, Any] = {
-        "model": MODEL,
-        "prompt_version": PROMPT_VERSION,
-        "prompt_sha256": canonical_sha256(SYSTEM_PROMPT),
-        "response_schema_version": SCORE_SCHEMA_VERSION,
-        "model_output_schema_sha256": canonical_sha256(MODEL_OUTPUT_SCHEMA),
-        "audio_duration_seconds": measured_duration,
-        "audio_format": audio_format,
-        "allow_fallbacks": allow_fallbacks,
-        "zero_data_retention": zero_data_retention,
-        "provider_order": provider_order or [],
-    }
+    settings = request_settings(
+        model=model,
+        audio_duration=measured_duration,
+        audio_format=audio_format,
+        provider_order=provider_order,
+        provider_only=provider_only,
+        provider_ignore=provider_ignore,
+        allow_fallbacks=allow_fallbacks,
+        zero_data_retention=zero_data_retention,
+        max_price=max_price,
+    )
     provider: dict[str, Any] = {
         "allow_fallbacks": allow_fallbacks,
         "require_parameters": True,
     }
     if provider_order:
         provider["order"] = provider_order
+    if provider_only:
+        provider["only"] = provider_only
+    if provider_ignore:
+        provider["ignore"] = provider_ignore
+    # Sent as OpenRouter states it, and never weakened here: if the constraint
+    # leaves no endpoint the API refuses and that refusal is reported verbatim
+    # (§5 invariant 4). The application already refuses, before spawning, every
+    # constraint that is unsatisfiable without asking a provider.
     if zero_data_retention:
         provider["zdr"] = True
+    if max_price:
+        provider["max_price"] = dict(sorted(max_price.items()))
     payload = {
-        "model": MODEL,
+        "model": model,
         "messages": [{
             "role": "user",
             "content": [
@@ -366,9 +423,13 @@ def analyze_to_cache(
     *,
     audio_duration: float,
     audio_format: str | None = None,
+    model: str = MODEL,
     provider_order: list[str] | None = None,
+    provider_only: list[str] | None = None,
+    provider_ignore: list[str] | None = None,
     allow_fallbacks: bool = True,
     zero_data_retention: bool = False,
+    max_price: dict[str, float] | None = None,
     transport: Transport = urllib.request.urlopen,
     sleeper: Callable[[float], None] = time.sleep,
     _audio_bytes: bytes | None = None,
@@ -384,9 +445,13 @@ def analyze_to_cache(
             audio_bytes,
             audio_format=selected_format,
             audio_duration=audio_duration,
+            model=model,
             provider_order=provider_order,
+            provider_only=provider_only,
+            provider_ignore=provider_ignore,
             allow_fallbacks=allow_fallbacks,
             zero_data_retention=zero_data_retention,
+            max_price=max_price,
         )
     else:
         payload, settings = _prepared_request
@@ -398,6 +463,7 @@ def analyze_to_cache(
         audio_duration=audio_duration,
         request_settings=settings,
         response_metadata=response,
+        requested_model=str(settings.get("model") or model),
     )
     cache_key = canonical_sha256({"audio_sha256": audio_hash, **settings})
     envelope = {
@@ -417,7 +483,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("cache", type=Path, nargs="?")
     parser.add_argument("--duration", required=True, type=float)
     parser.add_argument("--audio-format")
-    parser.add_argument("--provider", action="append", dest="providers")
+    # The model is a flag rather than a constant as of tranche P4: it is
+    # resolved from the TC-SEMANTIC route in the execution snapshot, and the
+    # default below is only what an unrouted command line falls back to.
+    parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--provider", action="append", dest="providers",
+                        help="preferred provider slug, in order; repeatable")
+    parser.add_argument("--only", action="append", dest="only",
+                        help="restrict routing to these provider slugs; repeatable")
+    parser.add_argument("--ignore", action="append", dest="ignore",
+                        help="never route to these provider slugs; repeatable")
+    parser.add_argument("--max-price-prompt", type=float)
+    parser.add_argument("--max-price-completion", type=float)
+    parser.add_argument("--max-price-audio", type=float)
     parser.add_argument("--no-fallbacks", action="store_true")
     parser.add_argument("--zdr", action="store_true", help="require Zero Data Retention providers")
     parser.add_argument("--dry-run", action="store_true")
@@ -427,13 +505,24 @@ def main(argv: list[str] | None = None) -> int:
         audio_snapshot = _snapshot_audio(args.audio)
         audio_bytes, audio_hash = audio_snapshot
         audio_format = (args.audio_format or args.audio.suffix.lstrip(".")).lower()
+        max_price = {
+            name: value for name, value in (
+                ("prompt", args.max_price_prompt),
+                ("completion", args.max_price_completion),
+                ("audio", args.max_price_audio),
+            ) if value is not None
+        }
         payload, settings = build_request(
             audio_bytes,
             audio_format=audio_format,
             audio_duration=args.duration,
+            model=args.model,
             provider_order=args.providers,
+            provider_only=args.only,
+            provider_ignore=args.ignore,
             allow_fallbacks=not args.no_fallbacks,
             zero_data_retention=args.zdr,
+            max_price=max_price,
         )
         if args.dry_run:
             dump = redacted_request_dump(payload, settings, audio_hash)
@@ -451,9 +540,13 @@ def main(argv: list[str] | None = None) -> int:
             args.cache,
             audio_duration=args.duration,
             audio_format=audio_format,
+            model=args.model,
             provider_order=args.providers,
+            provider_only=args.only,
+            provider_ignore=args.ignore,
             allow_fallbacks=not args.no_fallbacks,
             zero_data_retention=args.zdr,
+            max_price=max_price,
             _audio_bytes=audio_bytes,
             _prepared_request=(payload, settings),
         )

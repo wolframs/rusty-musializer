@@ -79,6 +79,37 @@ MEASURED_CHANNELS = 1
 MEASURED_WINDOW = 2048
 MEASURED_HOP = 1024
 
+# Tranche P4: the frozen route graph the application resolves at Start.
+#
+# `docs/ASSIST_PROVIDER_CONTRACTS.md` §6. The application writes it into the job
+# folder before this process exists and passes the path; nothing here resolves a
+# route, and nothing here rewrites that file. What this module does with it is
+# three things: configure the model and provider constraints of every remote
+# lane, key cache acceptance on the route identity (§5 rule 7), and embed it —
+# with the model ids it OBSERVED rather than the ones it was asked for — in the
+# manifest and in each produced artifact's provenance.
+EXECUTION_SNAPSHOT_SCHEMA = "musializer.assist-execution/v1"
+EXECUTION_SNAPSHOT_BYTE_LIMIT = 256 * 1024
+
+# The fields of a contract row that make up its cache identity.
+#
+# Deliberately excludes everything observed — `provider_served`,
+# `runtime_version`, `model_sha256` — because those describe the run rather than
+# the route, and including them would regenerate every artifact whenever a
+# provider rebalanced. There is exactly one implementation of this list, here,
+# and the identity is compared as a dict rather than a digest so a mismatch is
+# legible in the manifest a user can open.
+EXECUTION_ROUTE_IDENTITY_FIELDS = (
+    "contract", "route_type", "runtime_id", "model_id", "reasoning_effort",
+    "boundary_applied", "audio_scope", "provider_constraints",
+    "fallback_policy",
+)
+
+# The label the settings dialog uses for a Codex route with no chosen model
+# (§5 rule 6). It is a documented fallback, not a model id, so it must never
+# reach `codex exec --model`.
+CODEX_DEFAULT_LABEL = "Codex default"
+
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -720,7 +751,8 @@ def codex_review_request(source: dict[str, Any]) -> str:
 
 def run_codex_review(
     lyrics: Path, output: Path, *, codex_bin: str = "codex",
-    model: str | None = None, timeout: float = 600.0, dry_run: bool = False,
+    model: str | None = None, reasoning_effort: str | None = None,
+    timeout: float = 600.0, dry_run: bool = False,
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     source = read_json(lyrics)
@@ -736,10 +768,15 @@ def run_codex_review(
     ]
     if model:
         argv[2:2] = ["--model", model]
+    # `codex exec -c` sets a config key; the reasoning effort is one, and it is
+    # the only way to state it per invocation. Inserted after the model so the
+    # argv order is stable enough to assert on.
+    if reasoning_effort:
+        argv[2:2] = ["-c", f"model_reasoning_effort={reasoning_effort}"]
     request = {
         "dry_run": dry_run, "timeout_seconds": timeout,
         "source_sha256": source_sha, "prompt_sha256": prompt_sha,
-        "model": model, "argv": argv,
+        "model": model, "reasoning_effort": reasoning_effort, "argv": argv,
         "stdin": "<repository prompt plus private lyric evidence omitted>",
     }
     if dry_run:
@@ -791,8 +828,10 @@ def run_codex_review(
             "source_kind": "codex_lyric_review",
             "prompt_version": LYRIC_PROMPT_VERSION,
             "prompt_sha256": prompt_sha,
+            # §6: what `codex exec --model` was actually invoked with. An
+            # absent flag is the documented `codex-default`, never a guess.
             "model": model or "codex-default",
-            "request_settings": {"sandbox": "read-only", "ephemeral": True},
+            "request_settings": _codex_request_settings(reasoning_effort),
         },
         "lines": lines,
         "notes": notes,
@@ -1132,6 +1171,144 @@ def atomic_write_text(path: Path, value: str) -> None:
         raise
 
 
+# A probe seam, and the narrowest one that can prove what it has to prove.
+#
+# `tools/secret_canary_check.sh` has to show that a **local-only** job's helper
+# never sees the provider credential, and "the boolean says absent" only checks
+# one variable name — a key smuggled under another name would pass. Dumping the
+# whole environment and scanning it for the sentinel catches that, and it is the
+# child's own view rather than the parent's belief about it.
+#
+# Gated on `--dry-run`, because a dry run opens no socket and produces no
+# artifact a user keeps. Inert when unset.
+ENVIRONMENT_DUMP_VARIABLE = "MUSIALIZER_ASSIST_ENV_DUMP"
+
+# The companion seam, and the reason there is one at all: `AssistSpec` builds the
+# **production** argv and has no `--dry-run`, on purpose — a flag the application
+# can pass is a flag a job can accidentally run under. But the canary gate has to
+# exercise the real spawn path, credential decision included, without contacting
+# a model. So the dry run is asked for through the environment instead: setting
+# this to a path implies `--dry-run` and writes the report there rather than to a
+# stdout the supervisor discards. Inert when unset.
+DRY_RUN_REPORT_VARIABLE = "MUSIALIZER_ASSIST_DRY_RUN_REPORT"
+
+
+def _dump_environment_for_probe() -> str | None:
+    destination = os.environ.get(ENVIRONMENT_DUMP_VARIABLE, "").strip()
+    if not destination:
+        return None
+    path = Path(destination)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(f"{name}={value}" for name, value in sorted(os.environ.items())),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def read_execution_snapshot(path: Path | None) -> dict[str, Any] | None:
+    """Reads the frozen route graph, or refuses it.
+
+    A missing path is `None` and means "this run was not routed" — the command
+    line, and every pre-P4 caller. A path that exists but is not a
+    `musializer.assist-execution/v1` record is an error rather than a silent
+    fall back to defaults: a job that believes it is routed and is not would
+    record provenance nobody chose.
+    """
+    if path is None:
+        return None
+    if not path.is_file():
+        raise AnalysisValidationError(f"execution snapshot {path} does not exist")
+    if path.stat().st_size > EXECUTION_SNAPSHOT_BYTE_LIMIT:
+        raise AnalysisValidationError("execution snapshot is implausibly large")
+    document = read_json(path)
+    if not isinstance(document, dict):
+        raise AnalysisValidationError("execution snapshot must be a JSON object")
+    if document.get("snapshot_schema") != EXECUTION_SNAPSHOT_SCHEMA:
+        raise AnalysisValidationError(
+            f"execution snapshot declares {document.get('snapshot_schema')!r}, "
+            f"not {EXECUTION_SNAPSHOT_SCHEMA}")
+    contracts = document.get("contracts")
+    if not isinstance(contracts, list):
+        raise AnalysisValidationError("execution snapshot has no contracts array")
+    return document
+
+
+def execution_route(snapshot: dict[str, Any] | None, contract: str) -> dict[str, Any] | None:
+    """One contract's row, or `None` when the run composed no such stage."""
+    if not snapshot:
+        return None
+    for entry in snapshot.get("contracts", []):
+        if isinstance(entry, dict) and entry.get("contract") == contract:
+            return entry
+    return None
+
+
+def route_identity(snapshot: dict[str, Any] | None, contract: str) -> dict[str, Any] | None:
+    """The identity a cached artifact for this contract has to match (§5 rule 7)."""
+    entry = execution_route(snapshot, contract)
+    if entry is None:
+        return None
+    return {field: entry.get(field) for field in EXECUTION_ROUTE_IDENTITY_FIELDS}
+
+
+def execution_provenance(snapshot: dict[str, Any] | None,
+                         contract: str) -> dict[str, Any] | None:
+    """The per-contract identity every produced artifact carries (§6)."""
+    identity = route_identity(snapshot, contract)
+    if identity is None:
+        return None
+    return {
+        "snapshot_schema": snapshot.get("snapshot_schema"),
+        "settings_schema": snapshot.get("settings_schema"),
+        "profile_id": snapshot.get("profile_id"),
+        "resolved_at_utc": snapshot.get("resolved_at_utc"),
+        "contract": contract,
+        "route_identity": identity,
+    }
+
+
+def _execution_route_accepts(document: dict[str, Any],
+                             identity: dict[str, Any] | None) -> bool:
+    """Whether a cached artifact was produced by this contract's route.
+
+    Split out from `_provenance_matches` because the two alignment lanes have
+    their own acceptance functions with their own digests; this is the one
+    clause they share (§5 rule 7). An unrouted run compares nothing, which is
+    what keeps the command line's behaviour exactly as it was.
+    """
+    if identity is None:
+        return True
+    recorded = document.get("provenance")
+    if not isinstance(recorded, dict):
+        return False
+    execution = recorded.get("execution")
+    return (isinstance(execution, dict)
+            and execution.get("route_identity") == identity)
+
+
+def _attach_execution(path: Path, document: dict[str, Any],
+                      execution: dict[str, Any] | None) -> dict[str, Any]:
+    """Stamps a produced artifact with the route that produced it, on disk.
+
+    Done after the lane wrote its file rather than inside every lane runner:
+    the runners are also the command line's, and threading a snapshot through
+    five signatures to reach one dict key would be five chances to forget one.
+    Rewriting is safe because the artifact is this job's own and the digest the
+    next stage takes is computed after this returns.
+    """
+    if execution is None:
+        return document
+    provenance = document.setdefault("provenance", {})
+    if not isinstance(provenance, dict):
+        return document
+    if provenance.get("execution") == execution:
+        return document
+    provenance["execution"] = execution
+    atomic_write_json(path, document)
+    return document
+
+
 def _cache_matches(
     path: Path,
     schema_version: str,
@@ -1156,9 +1333,24 @@ def _provenance_matches(
     source_kind: str, request_settings: dict[str, Any] | None = None,
     model: str | None = None, prompt_version: str | None = None,
     prompt_sha256: str | None = None,
+    execution_route: dict[str, Any] | None = None,
 ) -> bool:
     provenance = document.get("provenance")
     if not isinstance(provenance, dict): return False
+    # §5 rule 7: cache acceptance compares route identity per contract. An
+    # artifact produced by a different model, runtime or provider policy is
+    # regenerated, never reused — the same rule LT1 applied to the localization
+    # policy, keyed by contract instead of by lane.
+    #
+    # A routed run refuses an artifact that carries no identity at all, which
+    # invalidates every cache written before this tranche. That is the correct
+    # direction: an unknown route is not a matching route.
+    if execution_route is not None:
+        recorded = provenance.get("execution")
+        if not isinstance(recorded, dict):
+            return False
+        if recorded.get("route_identity") != execution_route:
+            return False
     if (provenance.get("adapter") != adapter or
             provenance.get("adapter_version") != adapter_version or
             provenance.get("source_kind") != source_kind):
@@ -1197,7 +1389,7 @@ def _measured_cache_accepts(document: dict[str, Any]) -> bool:
 
 def _whisper_cache_accepts(
     document: dict[str, Any], *, measured_duration: float,
-    model: Path | None,
+    model: Path | None, execution_route: dict[str, Any] | None = None,
 ) -> bool:
     audio = document.get("audio", {})
     if (not isinstance(audio, dict) or
@@ -1226,11 +1418,14 @@ def _whisper_cache_accepts(
         adapter="tools/external_analysis.py",
         adapter_version=ADAPTER_VERSION,
         source_kind="whisper_import",
+        execution_route=execution_route,
     )
 
 
 def _review_cache_accepts(
     document: dict[str, Any], *, source_sha256: str, model: str | None,
+    reasoning_effort: str | None = None,
+    execution_route: dict[str, Any] | None = None,
 ) -> bool:
     prompt_sha = sha256_file(LYRIC_PROMPT)
     return (document.get("source", {}).get("sha256") == source_sha256 and
@@ -1242,31 +1437,78 @@ def _review_cache_accepts(
                 model=model or "codex-default",
                 prompt_version=LYRIC_PROMPT_VERSION,
                 prompt_sha256=prompt_sha,
-                request_settings={"sandbox": "read-only", "ephemeral": True},
+                request_settings=_codex_request_settings(reasoning_effort),
+                execution_route=execution_route,
             ))
+
+
+def _codex_request_settings(reasoning_effort: str | None) -> dict[str, Any]:
+    """The identity of a Codex review request.
+
+    `reasoning_effort` joined it in tranche P4: it is a routing choice a user
+    makes in the AI settings dialog, and a review produced at `low` is not the
+    review `high` would have produced. A run that names no effort keeps the
+    pre-P4 two-key dict byte-for-byte, so an existing cache stays valid.
+    """
+    settings: dict[str, Any] = {"sandbox": "read-only", "ephemeral": True}
+    if reasoning_effort:
+        settings["reasoning_effort"] = reasoning_effort
+    return settings
+
+
+def _semantic_route(route: dict[str, Any] | None) -> dict[str, Any]:
+    """The TC-SEMANTIC route's model and provider constraints, as sent.
+
+    Everything comes from the snapshot the application froze at Start. An
+    unrouted run — the command line — falls back to the helper's own default
+    model with no constraints, which is exactly what it did before tranche P4.
+    """
+    constraints = (route or {}).get("provider_constraints") or {}
+    if not isinstance(constraints, dict):
+        constraints = {}
+    max_price = {
+        name: constraints[key]
+        for name, key in (("prompt", "max_price_prompt"),
+                          ("completion", "max_price_completion"),
+                          ("audio", "max_price_audio"))
+        if isinstance(constraints.get(key), (int, float))
+    }
+    return {
+        "model": (route or {}).get("model_id") or mimo_adapter.MODEL,
+        "order": list(constraints.get("order") or []),
+        "only": list(constraints.get("only") or []),
+        "ignore": list(constraints.get("ignore") or []),
+        # The two defaults below are the *helper's* pre-P4 behaviour, kept so an
+        # unrouted command line is unchanged. A routed run always states both.
+        "allow_fallbacks": bool(constraints.get("allow_fallbacks", True))
+                           if route else True,
+        "zdr_required": bool(constraints.get("zdr_required", False)),
+        "max_price": max_price,
+    }
 
 
 def _mimo_request_identity(
     audio: Path, *, audio_sha: str, measured_duration: float, zdr: bool,
+    semantic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    audio_format = audio.suffix.lstrip(".").lower()
-    settings = {
-        "model": mimo_adapter.MODEL,
-        "prompt_version": mimo_adapter.PROMPT_VERSION,
-        "prompt_sha256": canonical_sha256(mimo_adapter.SYSTEM_PROMPT),
-        "response_schema_version": mimo_adapter.SCORE_SCHEMA_VERSION,
-        "model_output_schema_sha256": canonical_sha256(mimo_adapter.MODEL_OUTPUT_SCHEMA),
-        "audio_duration_seconds": measured_duration,
-        "audio_format": audio_format,
-        "allow_fallbacks": True,
-        "zero_data_retention": zdr,
-        "provider_order": [],
-    }
+    semantic = semantic or _semantic_route(None)
+    settings = mimo_adapter.request_settings(
+        model=semantic["model"],
+        audio_duration=measured_duration,
+        audio_format=audio.suffix.lstrip(".").lower(),
+        provider_order=semantic["order"],
+        provider_only=semantic["only"],
+        provider_ignore=semantic["ignore"],
+        allow_fallbacks=semantic["allow_fallbacks"],
+        zero_data_retention=zdr,
+        max_price=semantic["max_price"],
+    )
     return {"audio_sha256": audio_sha, **settings}
 
 
 def _mimo_cache_accepts(
     envelope: dict[str, Any], *, request_identity: dict[str, Any],
+    execution_route: dict[str, Any] | None = None,
 ) -> bool:
     normalized = envelope.get("normalized")
     return (isinstance(normalized, dict) and
@@ -1281,9 +1523,16 @@ def _mimo_cache_accepts(
                     key: value for key, value in request_identity.items()
                     if key != "audio_sha256"
                 },
-                model=mimo_adapter.MODEL,
+                # The *requested* model, not the served one: a response that
+                # was routed to a variant is still an answer to this route, and
+                # comparing the observed id would regenerate on every reroute.
+                model=None,
                 prompt_version=mimo_adapter.PROMPT_VERSION,
-            ))
+                execution_route=execution_route,
+            ) and
+            normalized.get("provenance", {}).get("requested_model",
+                                                 mimo_adapter.MODEL)
+            == request_identity["model"])
 
 
 # Discovery roots, most preferred first: the durable per-user install (its
@@ -1477,6 +1726,8 @@ def run_assist(
     lyrics_file: Path | None = None,
     zdr: bool = False, external_timeout: float = 2400.0,
     allow_dotenv: bool = True,
+    execution_snapshot: Path | None = None,
+    codex_reasoning_effort: str | None = None,
     dry_run: bool = False, runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     """Run one complete, cache-aware UI action and emit JSON plus TSV bridge."""
@@ -1504,6 +1755,35 @@ def run_assist(
     whisper_bin = whisper_bin or detected_bin
     whisper_model = whisper_model or detected_model
     align_python = align_python or _default_alignment_python()
+
+    # The frozen route graph (§6). Read once; never rewritten, and never
+    # re-resolved — the snapshot the application wrote at Start is the whole of
+    # what this run is allowed to do.
+    snapshot = read_execution_snapshot(execution_snapshot)
+    routes = {
+        contract: route_identity(snapshot, contract)
+        for contract in ("TC-MEASURED", "TC-COARSE", "TC-WORDING",
+                         "TC-ALIGN", "TC-SEMANTIC", "TC-PLAN")
+    }
+    stamps = {
+        contract: execution_provenance(snapshot, contract)
+        for contract in routes
+    }
+    semantic_route = _semantic_route(execution_route(snapshot, "TC-SEMANTIC"))
+    wording_route = execution_route(snapshot, "TC-WORDING") or {}
+    # §5 rule 6: `Codex default` is a documented label, not a model id, so it
+    # never reaches `codex exec --model`.
+    routed_codex_model = wording_route.get("model_id")
+    if routed_codex_model in (None, "", CODEX_DEFAULT_LABEL):
+        routed_codex_model = None
+    codex_model = routed_codex_model or codex_model
+    codex_reasoning_effort = (wording_route.get("reasoning_effort")
+                              or codex_reasoning_effort)
+    # ZDR is the route's, when the route states one. `--zdr` remains the command
+    # line's way to ask, and the two agree by OR rather than by override: a
+    # constraint is never weakened here (§5 invariant 4).
+    zdr = bool(zdr or semantic_route["zdr_required"])
+
     actions = ["measured", "plan", "bridge"]
     if mode in {"lyrics", "all"}:
         actions[1:1] = [
@@ -1519,6 +1799,32 @@ def run_assist(
             "external_timeout_seconds": external_timeout,
             "credentials": "environment only; omitted",
             "dotenv_fallback": allow_dotenv,
+            # E7: membership, never the value. This is how a gate proves the
+            # application's deliberate hand-off worked without a plaintext sink
+            # to scan — a boolean and a fingerprint, the same pair §6 records.
+            "openrouter_credential_present":
+                bool(os.environ.get("OPENROUTER_API_KEY", "").strip()),
+            "openrouter_credential_fingerprint": (
+                hashlib.sha256(
+                    os.environ["OPENROUTER_API_KEY"].strip().encode("utf-8")
+                ).hexdigest()[:8]
+                if os.environ.get("OPENROUTER_API_KEY", "").strip() else None),
+            "execution_snapshot": snapshot,
+            "environment_dump": _dump_environment_for_probe(),
+            "resolved_routes": {
+                "semantic_model": semantic_route["model"],
+                "semantic_zdr": zdr,
+                "semantic_provider": {
+                    key: semantic_route[key]
+                    for key in ("order", "only", "ignore", "allow_fallbacks",
+                                "max_price")
+                },
+                "codex_model": codex_model or CODEX_DEFAULT_LABEL,
+                "codex_reasoning_effort": codex_reasoning_effort,
+                "whisper_bin": str(whisper_bin) if whisper_bin else None,
+                "whisper_model": str(whisper_model) if whisper_model else None,
+                "align_python": str(align_python) if align_python else None,
+            },
         }
 
     cache_status: dict[str, str] = {}
@@ -1547,6 +1853,7 @@ def run_assist(
             paths["lyrics"], "musializer.lyric-timing/v1", audio_sha,
             accept=lambda value: _whisper_cache_accepts(
                 value, measured_duration=measured_duration, model=whisper_model,
+                execution_route=routes["TC-COARSE"],
             ),
         )
         if whisper_lane is None:
@@ -1557,6 +1864,8 @@ def run_assist(
                 whisper_bin=whisper_bin, model=whisper_model,
                 timeout=external_timeout, runner=runner,
             )
+            whisper_lane = _attach_execution(
+                paths["lyrics"], whisper_lane, stamps["TC-COARSE"])
             cache_status["lyrics"] = "generated"
         else: cache_status["lyrics"] = "reused"
         source_sha = sha256_file(paths["lyrics"])
@@ -1596,9 +1905,11 @@ def run_assist(
             coarse_sha = sha256_file(paths["sync"])
             aligned = _cache_matches(
                 paths["aligned"], LYRIC_SYNC_VERSION, audio_sha,
-                accept=lambda value: _anchor_block_cache_accepts(
-                    value, whisper_sha256=source_sha, coarse_sha256=coarse_sha,
-                    reference_sha256=reference["sha256"]),
+                accept=lambda value: (
+                    _anchor_block_cache_accepts(
+                        value, whisper_sha256=source_sha, coarse_sha256=coarse_sha,
+                        reference_sha256=reference["sha256"])
+                    and _execution_route_accepts(value, routes["TC-ALIGN"])),
             )
             if aligned is None:
                 aligned = run_anchor_block_alignment(
@@ -1610,6 +1921,8 @@ def run_assist(
                     diagnostic_sink=output_dir / "lyrics.aligned.diagnostic.txt",
                     runner=runner,
                 )
+                aligned = _attach_execution(
+                    paths["aligned"], aligned, stamps["TC-ALIGN"])
                 cache_status["alignment"] = "generated"
             else:
                 cache_status["alignment"] = "reused"
@@ -1620,13 +1933,18 @@ def run_assist(
                 paths["review"], LYRIC_REVIEW_VERSION, audio_sha,
                 accept=lambda value: _review_cache_accepts(
                     value, source_sha256=source_sha, model=codex_model,
+                    reasoning_effort=codex_reasoning_effort,
+                    execution_route=routes["TC-WORDING"],
                 ),
             )
             if lyrics is None:
                 lyrics = run_codex_review(
                     paths["lyrics"], paths["review"], codex_bin=codex_bin,
-                    model=codex_model, timeout=external_timeout, runner=runner,
+                    model=codex_model, reasoning_effort=codex_reasoning_effort,
+                    timeout=external_timeout, runner=runner,
                 )
+                lyrics = _attach_execution(
+                    paths["review"], lyrics, stamps["TC-WORDING"])
                 cache_status["review"] = "generated"
             else: cache_status["review"] = "reused"
 
@@ -1636,8 +1954,9 @@ def run_assist(
             timing_source_sha = sha256_file(paths["review"])
             aligned = _cache_matches(
                 paths["aligned"], lyrics["schema_version"], audio_sha,
-                accept=lambda value: _alignment_cache_accepts(
-                    value, source_sha256=timing_source_sha),
+                accept=lambda value: (
+                    _alignment_cache_accepts(value, source_sha256=timing_source_sha)
+                    and _execution_route_accepts(value, routes["TC-ALIGN"])),
             )
             if aligned is None:
                 aligned = run_forced_alignment(
@@ -1645,6 +1964,8 @@ def run_assist(
                     audio_duration=measured_duration, align_python=align_python,
                     timeout=external_timeout, runner=runner,
                 )
+                aligned = _attach_execution(
+                    paths["aligned"], aligned, stamps["TC-ALIGN"])
                 cache_status["alignment"] = "generated"
             else:
                 cache_status["alignment"] = "reused"
@@ -1705,28 +2026,44 @@ def run_assist(
     if mode in {"mimo", "all"}:
         request_identity = _mimo_request_identity(
             audio, audio_sha=audio_sha, measured_duration=measured_duration, zdr=zdr,
+            semantic=semantic_route,
+        )
+        accepts = lambda value: _mimo_cache_accepts(
+            value, request_identity=request_identity,
+            execution_route=routes["TC-SEMANTIC"],
         )
         envelope = _cache_matches(
             paths["semantic"], "musializer.analysis-cache/v1", audio_sha,
-            accept=lambda value: _mimo_cache_accepts(
-                value, request_identity=request_identity,
-            ),
+            accept=accepts,
         )
         if envelope is None:
             command = [
                 sys.executable, str(ROOT / "tools/mimo_openrouter.py"), str(audio),
                 str(paths["semantic"]), "--duration", f"{measured_duration:.9f}",
+                "--model", semantic_route["model"],
             ]
+            for slug in semantic_route["order"]: command.extend(["--provider", slug])
+            for slug in semantic_route["only"]: command.extend(["--only", slug])
+            for slug in semantic_route["ignore"]: command.extend(["--ignore", slug])
+            for name, value in sorted(semantic_route["max_price"].items()):
+                command.extend([f"--max-price-{name}", f"{value:.9g}"])
+            if not semantic_route["allow_fallbacks"]: command.append("--no-fallbacks")
             if zdr: command.append("--zdr")
             _run(command, timeout=external_timeout,
                  env=_openrouter_env(allow_dotenv=allow_dotenv), runner=runner)
             envelope = _cache_matches(
                 paths["semantic"], "musializer.analysis-cache/v1", audio_sha,
-                accept=lambda value: _mimo_cache_accepts(
-                    value, request_identity=request_identity,
-                ),
+                accept=lambda value: (
+                    _mimo_cache_accepts(value, request_identity=request_identity)),
             )
             if envelope is None: raise RuntimeError("MiMo helper produced an invalid cache")
+            # The envelope wraps the artifact, so the stamp goes on the
+            # normalized document inside it rather than on the wrapper.
+            normalized = envelope.get("normalized")
+            if isinstance(normalized, dict) and stamps["TC-SEMANTIC"] is not None:
+                normalized.setdefault("provenance", {})["execution"] = \
+                    stamps["TC-SEMANTIC"]
+                atomic_write_json(paths["semantic"], envelope)
             cache_status["semantic"] = "generated"
         else: cache_status["semantic"] = "reused"
         semantic = _semantic_document(envelope)
@@ -1740,15 +2077,89 @@ def run_assist(
     manifest = build_assist_manifest(
         mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
         cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
+        execution_snapshot=observe_execution(
+            snapshot,
+            whisper=whisper_lane if mode in {"lyrics", "all", "sections"} else None,
+            review=lyrics if (lyrics or {}).get("lane") == "lyric_review" else None,
+            aligned=lyrics,
+            semantic=semantic,
+        ),
     )
     atomic_write_json(paths["manifest"], manifest)
     return manifest
 
 
+def observe_execution(
+    snapshot: dict[str, Any] | None, *,
+    whisper: dict[str, Any] | None = None,
+    review: dict[str, Any] | None = None,
+    aligned: dict[str, Any] | None = None,
+    semantic: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """The snapshot with every `model_id` replaced by what actually ran (§6).
+
+    This is the whole point of the field: "`model_id` is observed, not
+    inferred". For OpenRouter that is the `model` the response reported, which
+    can differ from the requested slug when a variant is served; for Codex it is
+    what `--model` was invoked with; for the local lanes it is the model file
+    the runner used. A stage that produced nothing this run keeps the resolved
+    identity, because there is nothing to have observed.
+
+    The file the application wrote is **not** touched. Re-resolving is what §5
+    invariant 3 forbids; recording what happened is what §6 requires, and those
+    are different operations on different copies.
+    """
+    if not snapshot:
+        return None
+    observed = json.loads(json.dumps(snapshot))
+    sources = {
+        "TC-COARSE": whisper,
+        "TC-WORDING": review,
+        "TC-ALIGN": aligned,
+        "TC-SEMANTIC": semantic,
+    }
+    for entry in observed.get("contracts", []):
+        if not isinstance(entry, dict):
+            continue
+        document = sources.get(entry.get("contract"))
+        if not isinstance(document, dict):
+            continue
+        provenance = document.get("provenance")
+        provenance = provenance if isinstance(provenance, dict) else {}
+        # The acoustic lanes record their model under `timing_refinement`
+        # rather than under `provenance`, because that block is the aligner's
+        # own identity. Both are consulted, provenance first, so a lane that
+        # gains a `provenance.model` later does not silently keep reporting the
+        # older one.
+        refinement = document.get("timing_refinement")
+        if isinstance(refinement, dict):
+            provenance = {**refinement, **{k: v for k, v in provenance.items()
+                                           if v is not None}}
+        model = provenance.get("model")
+        if isinstance(model, str) and model:
+            entry["model_id"] = model
+        served = provenance.get("provider")
+        if isinstance(served, str) and served:
+            entry["provider_served"] = served
+        for field, key in (("prompt_version", "prompt_version"),
+                           ("prompt_sha256", "prompt_sha256"),
+                           ("schema_version", "schema_version")):
+            value = provenance.get(key)
+            if isinstance(value, str) and value:
+                entry[field] = value
+        if entry.get("schema_version") is None:
+            declared = document.get("schema_version")
+            if isinstance(declared, str) and declared:
+                entry["schema_version"] = declared
+    return observed
+
+
 def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float,
                           cache_status: dict[str, Any], paths: dict[str, Path],
                           plan: dict[str, Any], lyrics: dict[str, Any] | None,
-                          semantic: dict[str, Any] | None) -> dict[str, Any]:
+                          semantic: dict[str, Any] | None,
+                          execution_snapshot: dict[str, Any] | None = None,
+                          ) -> dict[str, Any]:
     """`assist-manifest.json`, as the Assist panel reads it.
 
     Pure, so the lane rules below can be tested without a run: the panel decides
@@ -1798,6 +2209,11 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
         }
     elif lyrics:
         manifest["lyric_localization"] = None
+    # The frozen route graph, with the model ids this run observed (§6). Absent
+    # rather than null for an unrouted run: "this job carried no route graph"
+    # and "its routes were empty" are different answers.
+    if execution_snapshot is not None:
+        manifest["execution_snapshot"] = execution_snapshot
     return manifest
 
 
@@ -1841,7 +2257,13 @@ def main(argv: list[str] | None = None) -> int:
     assist.add_argument("--mode", choices=("lyrics", "sections", "mimo", "all"), required=True)
     assist.add_argument("--bridge", type=Path); assist.add_argument("--whisper-bin", type=Path)
     assist.add_argument("--whisper-model", type=Path); assist.add_argument("--codex-bin", default="codex")
-    assist.add_argument("--codex-model"); assist.add_argument("--align-python", type=Path)
+    assist.add_argument("--codex-model")
+    assist.add_argument("--codex-reasoning-effort",
+                        choices=("minimal", "low", "medium", "high"))
+    assist.add_argument("--execution-snapshot", type=Path,
+                        help="the musializer.assist-execution/v1 record the "
+                             "application froze at Start")
+    assist.add_argument("--align-python", type=Path)
     assist.add_argument("--semantic-cache", type=Path)
     assist.add_argument("--lyrics-file", type=Path)
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
@@ -1883,6 +2305,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "assist":
             if args.new_process_group:
                 _enter_process_group()
+            probe_report = os.environ.get(DRY_RUN_REPORT_VARIABLE, "").strip()
+            if probe_report:
+                args.dry_run = True
+                args.request_dump = Path(probe_report)
             result = run_assist(
                 args.audio, args.output_dir, audio_duration=args.duration, mode=args.mode,
                 bridge_path=args.bridge, whisper_bin=args.whisper_bin,
@@ -1891,7 +2317,10 @@ def main(argv: list[str] | None = None) -> int:
                 semantic_cache=args.semantic_cache,
                 lyrics_file=args.lyrics_file,
                 zdr=args.zdr, external_timeout=args.timeout,
-                allow_dotenv=not args.no_dotenv, dry_run=args.dry_run,
+                allow_dotenv=not args.no_dotenv,
+                execution_snapshot=args.execution_snapshot,
+                codex_reasoning_effort=args.codex_reasoning_effort,
+                dry_run=args.dry_run,
             )
             if args.dry_run:
                 if args.request_dump: atomic_write_json(args.request_dump, result)

@@ -974,6 +974,87 @@ lane against this file, because nothing validates it at runtime.
 `provenance.request_settings` gains `text_conditioning` and `vad_model_sha256`;
 see 9.3 for `MUSIALIZER_WHISPER_VAD_MODEL`.
 
+### 6.7 `musializer.assist-execution/v1` — the execution snapshot (tranche P4)
+
+Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §6. **Not in the frozen C**, which
+had one hard-coded OpenRouter model and no routing at all.
+
+One record per analysis run, resolved from `assist.json` at Start and written to
+`<job folder>/assist-execution.json` *before* the helper process exists. It is
+written once and never rewritten: §5 invariant 3 is that a settings edit
+mid-run affects the next job only, and the file on disk is what makes that
+checkable from outside the application.
+
+`musializer-core::assist::execution` owns the type and the resolver;
+`musializer-runtime::assist::plan` gathers the impure facts and writes it;
+`tools/external_analysis.py` reads it through `--execution-snapshot`.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `snapshot_schema` | string | `musializer.assist-execution/v1` |
+| `settings_schema` | string | the `assist.json` schema that resolved it |
+| `profile_id` | string | `recommended`, or the stored profile that was active |
+| `resolved_at_utc` | string | RFC 3339, from the wall clock at Start |
+| `contracts[]` | array | one row per composed `TC-*`, in pipeline order |
+| `catalog_revision` | string? | catalog cache schema plus fetch stamp; `null` means never fetched, which is **not** the same as an empty catalog |
+| `suitability_revision` | string? | the overlay version the rows were read against |
+| `credential_present` | bool | describes **this job**: false for a graph that opens no socket, whatever the credentials file holds |
+| `credential_fingerprint` | string? | `sha256(secret)[0..8]`; never the key, never the lookup label (E4) |
+
+Each `contracts[]` row: `contract`, `route_type`, `runtime_id`,
+`runtime_version?`, `model_id`, `model_sha256?`, `reasoning_effort?`,
+`boundary_applied`, `boundary_confirmed`, `audio_scope?`, `excerpt_spans[]`,
+`provider_constraints?`, `provider_served?`, `prompt_version?`,
+`prompt_sha256?`, `schema_version?`, `fallback_policy`, `fallback_taken`,
+`fallback_from?`. **Every field is serialized, including absent ones as
+`null`** — the opposite of `assist.json`'s skip-if-default rule, because a
+provenance record must distinguish "not written" from "no value".
+
+Three semantics are decided here rather than left implied:
+
+- **`fallback_policy` is the policy as *applied*.** `ask` never appears: this
+  build cannot pause a running job to show a substitute route and wait for an
+  answer, so `ask` resolves to `none` at Start — which cannot raise a boundary
+  by construction — and the pre-Start confirmation names every contract it did
+  that to. That is the implemented semantics, not an approximation.
+- **`model_id` is observed, not requested.** The file this application writes
+  carries the resolved identity; the copy embedded in `assist-manifest.json`
+  carries what actually ran — for OpenRouter the response's own `model` field,
+  for Codex what `codex exec --model` was invoked with, for the local lanes the
+  model file or pipeline the runner used. `provider_served` is filled in the
+  same way. The two copies differing is the point of the field.
+- **`runtime_version` and `model_sha256` are `null` unless a doctor report was
+  taken.** Nothing runs the doctor at Start, and a version nobody measured is
+  not a version.
+
+`assist-manifest.json` gains `execution_snapshot` (the observed copy; the key is
+**absent**, not null, for an unrouted run), and each produced artifact's
+`provenance` gains an `execution` block carrying `snapshot_schema`,
+`settings_schema`, `profile_id`, `resolved_at_utc`, `contract` and
+`route_identity`. `route_identity` is the subset of the contract row a user can
+change — `contract`, `route_type`, `runtime_id`, `model_id`,
+`reasoning_effort`, `boundary_applied`, `audio_scope`, `provider_constraints`,
+`fallback_policy` — and it is what cache acceptance compares (§5 rule 7), as a
+dict rather than a digest so a mismatch is legible in a file a user can open. A
+routed run refuses an artifact that carries no identity at all, which
+deliberately invalidates every cache written before this tranche: an unknown
+route is not a matching route.
+
+The helper flags tranche P4 adds, all optional and all inert when absent:
+
+| Tool | Flag | Purpose |
+| --- | --- | --- |
+| `external_analysis.py assist` | `--execution-snapshot PATH` | the record above; configures every route, keys cache acceptance, and is embedded in the manifest |
+| `external_analysis.py assist` | `--codex-reasoning-effort {minimal,low,medium,high}` | `TC-WORDING` effort; enters the review lane's cache identity, so a review produced at `low` is not reused for `high`. The snapshot's own `reasoning_effort` wins over the flag |
+| `mimo_openrouter.py` | `--model SLUG` | replaces the module's hard-coded `xiaomi/mimo-v2.5`, which is now only the unrouted default |
+| `mimo_openrouter.py` | `--only`, `--ignore` (repeatable) | OpenRouter `provider.only` / `provider.ignore`; `--provider` already carried `order` |
+| `mimo_openrouter.py` | `--max-price-prompt`, `--max-price-completion`, `--max-price-audio` | `provider.max_price`, USD per 1M tokens |
+
+All five join the request identity, so changing any of them regenerates the
+semantic lane instead of reusing an answer another policy produced. The
+credential still reaches the helper **only** through the environment: no flag
+here or anywhere takes a key (E2).
+
 ---
 
 ## 7. Resources
@@ -1443,6 +1524,8 @@ No C code reads either one; they are consumed by `tools/ui_capture.sh` and
 | `CUDA_VISIBLE_DEVICES` | `tools/musializer_doctor.py:114` | GPU-presence heuristic | `""` → falls through to a `/dev/dri/renderD128` probe (`:118`), then `{"kind": "none"}` (`:121`) | `.strip()`; treated as "GPU present" if non-empty and not literally `"-1"` |
 | whole `os.environ` (filter) | `tools/musializer_doctor.py:126-132` | Same credential stripping before invoking `nvidia-smi` | n/a | same substring blacklist |
 | `MUSIALIZER_WHISPER_BIN` / `_MODEL` | `tests/e2e/test_lyrics_assist_e2e.py:68-69` | e2e skip gating (`:100-105`) | test skipped | truthiness |
+| `MUSIALIZER_ASSIST_ENV_DUMP` | `tools/external_analysis.py`, `_dump_environment_for_probe()` | **Probe seam, tranche P4.** Writes this child's whole environment to the named path so `tools/secret_canary_check.sh` can prove a *local-only* job's helper never received the provider credential. A boolean would check one variable name; the dump catches a key smuggled under any other | nothing is written, and the dry-run report's `environment_dump` is `null` | `.strip()`ed path; **`--dry-run` only**, and a dry run opens no socket and produces no artifact a user keeps |
+| `MUSIALIZER_ASSIST_DRY_RUN_REPORT` | `tools/external_analysis.py::main` | **Probe seam, tranche P4.** Setting it to a path implies `--dry-run` and writes the report there. It exists because `AssistSpec` builds the *production* argv and deliberately has no `--dry-run` — a flag the application can pass is a flag a job can accidentally run under — while the canary gate has to exercise the real spawn path, credential decision included, without contacting a model | the command line decides, as before | `.strip()`ed path |
 
 ### 9.4 Read by the Rust rewrite
 

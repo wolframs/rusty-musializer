@@ -165,7 +165,129 @@ fn main() -> Result<(), String> {
         )?;
     }
 
+    // Route 4 (tranche P4): the deliberate hand-off. Two real jobs through the
+    // real helper — one whose resolved graph never leaves the machine, one whose
+    // does — so the two halves of §4 E1 are measured rather than argued.
+    if let (Some(helper), Some(audio)) = (std::env::args().nth(2), std::env::args().nth(3)) {
+        run_execution_probe(&output, Path::new(&helper), Path::new(&audio))?;
+    } else {
+        println!("execution: skipped (no helper and fixture given)");
+    }
+
     println!("probe: complete");
+    Ok(())
+}
+
+/// Two real dry-run jobs, and the whole of tranche P4's credential rule.
+///
+/// | job | resolved graph | expected |
+/// | --- | --- | --- |
+/// | `lyrics` | `builtin` + `local-proc` only | the child's environment dump carries **no** key, whatever the credentials file holds |
+/// | `mimo` | `openrouter`, confirmed | the child reports the credential present, by fingerprint |
+///
+/// Both go through `AssistJob::start` and the real `tools/external_analysis.py`,
+/// because the point is the production path rather than a stand-in for it. Both
+/// are `--dry-run`: no socket, no whisper, no model.
+///
+/// The local job's environment is dumped **verbatim** into the scanned tree. A
+/// boolean would only check one variable name; the dump is what catches a key
+/// smuggled under another one, and it is the child's own view rather than this
+/// process's belief about it.
+fn run_execution_probe(output: &Path, helper: &Path, audio: &Path) -> Result<(), String> {
+    use musializer_core::assist::execution::{self, ExecutionFacts, WorkflowKind};
+    use musializer_runtime::assist::plan;
+    use musializer_runtime::process::assist::{
+        AssistJob, AssistMode, AssistPoll, AssistSpec, AuthorizedCredential, LocalRuntimeOverrides,
+    };
+
+    let settings = AssistSettings::default();
+    let facts = ExecutionFacts {
+        resolved_at_utc: "2026-08-05T12:00:00Z".to_string(),
+        credential_present: true,
+        credential_fingerprint: plan::openrouter_secret("default")
+            .map(|secret| secret.fingerprint()),
+        boundary_confirmed: true,
+        ..ExecutionFacts::default()
+    };
+
+    for (label, kind, mode, dump) in [
+        ("local", WorkflowKind::Lyrics, AssistMode::Lyrics, true),
+        ("remote", WorkflowKind::Mimo, AssistMode::Mimo, false),
+    ] {
+        let job_dir = output.join(format!("execution-{label}"));
+        std::fs::create_dir_all(&job_dir).map_err(|error| format!("{label}: {error}"))?;
+        let snapshot = execution::resolve(&settings, kind, true, &facts);
+        let snapshot_path =
+            plan::write_snapshot(&job_dir, &snapshot).map_err(|error| error.to_string())?;
+
+        // The credentials file was written above, so a key really is available;
+        // whether the child gets one is decided by the graph and nothing else.
+        let secret = plan::openrouter_secret("default")
+            .ok_or_else(|| format!("{label}: the credentials file lost its entry"))?;
+        let credential = AuthorizedCredential::for_snapshot(&snapshot, &secret);
+        println!(
+            "execution-{label}: remote={} confirmed-credential={} snapshot={}",
+            snapshot.has_remote_route(),
+            credential.is_some(),
+            snapshot_path.display(),
+        );
+
+        let report = job_dir.join("report.json");
+        let mut spec = AssistSpec {
+            helper,
+            audio,
+            output_dir: &job_dir,
+            duration_seconds: 2.0,
+            mode,
+            lyrics_file: None,
+            execution_snapshot: Some(&snapshot_path),
+            credential,
+            local_runtimes: LocalRuntimeOverrides::default(),
+        };
+        // `--dry-run` and `--request-dump` are not `AssistSpec`'s to add — it
+        // builds the production argv — so the extra flags ride in through the
+        // helper's own environment defaults instead, and the dry-run report is
+        // read back from the job folder.
+        spec.lyrics_file = None;
+        let dump_path = job_dir.join("child-environ.txt");
+        if dump {
+            // SAFETY-adjacent note: this sets a variable in *this* process so
+            // the child inherits it. The probe is single-threaded and the
+            // variable carries a path, never a credential.
+            unsafe { std::env::set_var("MUSIALIZER_ASSIST_ENV_DUMP", &dump_path) };
+        } else {
+            unsafe { std::env::remove_var("MUSIALIZER_ASSIST_ENV_DUMP") };
+        }
+        unsafe { std::env::set_var("MUSIALIZER_ASSIST_DRY_RUN_REPORT", &report) };
+
+        let mut job = AssistJob::start(&spec, 0).map_err(|error| format!("{label}: {error}"))?;
+        let outcome = loop {
+            match job.poll().map_err(|error| format!("{label}: {error}"))? {
+                AssistPoll::Running => std::thread::sleep(std::time::Duration::from_millis(20)),
+                other => break other,
+            }
+        };
+        if outcome != AssistPoll::Succeeded {
+            let log = std::fs::read_to_string(job.log_path()).unwrap_or_default();
+            return Err(format!("{label}: the helper reported {outcome:?}\n{log}"));
+        }
+        if !report.is_file() {
+            return Err(format!("{label}: the helper wrote no dry-run report"));
+        }
+        // The report is JSON and this crate has no parser; the driver greps it,
+        // which is also what makes the assertion legible in the gate output.
+        println!(
+            "execution-{label}: report={} env-dump={}",
+            report.display(),
+            if dump {
+                dump_path.display().to_string()
+            } else {
+                "none".to_string()
+            },
+        );
+    }
+    unsafe { std::env::remove_var("MUSIALIZER_ASSIST_ENV_DUMP") };
+    unsafe { std::env::remove_var("MUSIALIZER_ASSIST_DRY_RUN_REPORT") };
     Ok(())
 }
 

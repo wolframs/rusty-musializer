@@ -1561,6 +1561,135 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Tranche P4: the resolved route graph on the confirmation.
+#
+# The confirmation is where the decision is made, so it is where the routes have
+# to be legible. Three frames, because three answers must look different and
+# only one of them was reachable before:
+#
+#   local     a Timed-lyrics job. Every task stays on this machine except the
+#             Codex wording review, which sends bounded JSON; the heading says
+#             so and no row is tinted as audio-leaving.
+#   remote    a MiMo job with a stubbed credential in a private 0600 file. One
+#             task sends the whole track, and both the heading and that row are
+#             warning-tinted.
+#   no-key    the same graph with no credential anywhere, which must refuse
+#             *before* anything spawns and name the repair (§5 invariant 4).
+#
+# The credential is a fixture in a throwaway config directory, never a real key,
+# and every run greps its own report for it. No socket is opened: nothing here
+# presses Start.
+# ---------------------------------------------------------------------------
+ROUTE_CONFIG="$OUT_DIR/assist-routes-config"
+ROUTE_STUB_KEY="sk-or-v1-P4STUB0000000000000000000000000000000000000000000000000000000000"
+rm -rf "$ROUTE_CONFIG"
+mkdir -p "$ROUTE_CONFIG/nokey" "$ROUTE_CONFIG/keyed/musializer" "$ROUTE_CONFIG/cache"
+printf '{"schema":"musializer.assist-credentials/v1","entries":{"openrouter/default":{"secret":"%s","label":"Gate stub"}}}\n' \
+    "$ROUTE_STUB_KEY" >"$ROUTE_CONFIG/keyed/musializer/credentials.json"
+chmod 700 "$ROUTE_CONFIG/keyed/musializer"
+chmod 600 "$ROUTE_CONFIG/keyed/musializer/credentials.json"
+
+assist_routes_capture() {
+    # assist_routes_capture NAME LANES CONFIG_HOME
+    local name="$1" lanes="$2" config="$3"
+    local out="$OUT_DIR/$name.png"
+    local log="$OUT_DIR/$name.txt"
+    set +e
+    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        XDG_CONFIG_HOME="$config" \
+        XDG_CACHE_HOME="$ROUTE_CONFIG/cache" \
+        MUSIALIZER_ASSIST_PROBE_LANES="$lanes" \
+        ./target/debug/musializer --mute "$FIXTURE" \
+            --size 1280x720 \
+            --probe-frames 30 \
+            --probe-shot "$out" \
+            --ui-probe "panel=assist,play=0,assist=confirm" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    local line
+    line="$(sed -n 's/^assist routing:  *//p' "$log" | tail -1)"
+    printf '%-28s exit=%s %s\n' "$name" "$status" "${line:-<no assist routing line>}"
+    if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
+        echo "FAIL: $name did not produce a frame, or exited $status" >&2
+        return 1
+    fi
+    # No capture, log or report may ever carry the fixture credential.
+    if grep -q -- "$ROUTE_STUB_KEY" "$log"; then
+        echo "FAIL: $name printed the stub credential" >&2
+        return 1
+    fi
+    return 0
+}
+
+assist_routes_saturation() {
+    # assist_routes_saturation NAME CROP (w:h:x:y). Mean chroma, which is how the
+    # LT1 block measures its own tinted rows; a colourless crop reads near zero.
+    ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/$1.png,crop=$2,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1
+}
+
+if [ "$ASSIST_WIRED" -eq 1 ]; then
+    assist_routes_capture assist-routes-local lyrics "$ROUTE_CONFIG/nokey" || SWEEP_FAILED=1
+    assist_routes_capture assist-routes-remote mimo "$ROUTE_CONFIG/keyed" || SWEEP_FAILED=1
+    assist_routes_capture assist-routes-nokey mimo "$ROUTE_CONFIG/nokey" || SWEEP_FAILED=1
+
+    ROUTE_LOCAL="$(sed -n 's/^assist routing:  *//p' "$OUT_DIR/assist-routes-local.txt" | tail -1)"
+    ROUTE_REMOTE="$(sed -n 's/^assist routing:  *//p' "$OUT_DIR/assist-routes-remote.txt" | tail -1)"
+    ROUTE_NOKEY="$(sed -n 's/^assist routing:  *//p' "$OUT_DIR/assist-routes-nokey.txt" | tail -1)"
+
+    # A lyrics job never sends audio, and its graph is the four local tasks plus
+    # the text-only wording review.
+    case "$ROUTE_LOCAL" in
+        *"TC-COARSE=local-proc/whisper.cpp[local-only]"*"TC-ALIGN=local-proc/mms-ctc[local-only]"*"audio-leaves=false"*"blocks=none"*) ;;
+        *) echo "FAIL: the local graph is not local: $ROUTE_LOCAL" >&2; SWEEP_FAILED=1 ;;
+    esac
+    # A MiMo job with a key resolves the OpenRouter route and blocks nothing.
+    case "$ROUTE_REMOTE" in
+        *"TC-SEMANTIC=openrouter/xiaomi/mimo-v2.5[audio-leaves-machine]"*"credential=file"*"blocks=none"*) ;;
+        *) echo "FAIL: the remote graph did not resolve: $ROUTE_REMOTE" >&2; SWEEP_FAILED=1 ;;
+    esac
+    # And without one it refuses, naming the contract and the missing piece
+    # rather than the word "blocked".
+    case "$ROUTE_NOKEY" in
+        *"credential=none"*"blocks=TC-SEMANTIC:No key"*) ;;
+        *) echo "FAIL: a keyless remote job was not refused: $ROUTE_NOKEY" >&2; SWEEP_FAILED=1 ;;
+    esac
+    # No applied fallback anywhere in any of the three can widen a boundary.
+    for name in local remote nokey; do
+        case "$(sed -n 's/^assist routing:  *//p' "$OUT_DIR/assist-routes-$name.txt" | tail -1)" in
+            *"ask-as-none=none"*) ;;
+            *) echo "FAIL: assist-routes-$name reports an unexpected ask policy" >&2
+               SWEEP_FAILED=1 ;;
+        esac
+    done
+    # The remote frame has to *look* different from the local one, or the block
+    # is drawing the same three lines whatever it resolved. Warning ink is the
+    # measurable difference: the heading and the audio-leaving row are tinted.
+    # `w:h:x:y`, the same grammar the LT1 review measurements use. The window
+    # spans the route block in both frames: the lyric-reference row makes the
+    # local panel taller, so the block starts a few pixels apart in the two.
+    ROUTE_BLOCK_CROP=700:100:18:595
+    ROUTE_SAT_LOCAL="$(assist_routes_saturation assist-routes-local "$ROUTE_BLOCK_CROP")"
+    ROUTE_SAT_REMOTE="$(assist_routes_saturation assist-routes-remote "$ROUTE_BLOCK_CROP")"
+    ROUTE_SAT_NOKEY="$(assist_routes_saturation assist-routes-nokey "$ROUTE_BLOCK_CROP")"
+    printf 'assist routes ink: local-sat=%s remote-sat=%s nokey-sat=%s\n' \
+        "${ROUTE_SAT_LOCAL:-?}" "${ROUTE_SAT_REMOTE:-?}" "${ROUTE_SAT_NOKEY:-?}"
+    if ! awk -v a="${ROUTE_SAT_LOCAL:-0}" -v b="${ROUTE_SAT_REMOTE:-0}" \
+        'BEGIN{exit !(b > a + 1)}'; then
+        echo "FAIL: the audio-leaving graph is not drawn any differently" >&2
+        SWEEP_FAILED=1
+    fi
+    if grep -rqs -- "$ROUTE_STUB_KEY" "$OUT_DIR"/assist-routes-*.txt; then
+        echo "FAIL: the stub credential reached a gate report" >&2
+        SWEEP_FAILED=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Tranche LT1: unresolved lines and review flags, by name and time range.
 #
 # The localizer's failures are sparse and specific, so a count alone sends the

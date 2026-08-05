@@ -69,7 +69,18 @@ cargo build --quiet -p musializer-runtime --example assist_canary_probe
 PROBE="$REPO_ROOT/target/debug/examples/assist_canary_probe"
 [ -x "$PROBE" ] || fail "the canary probe did not build"
 
-OPENROUTER_API_KEY="$CANARY_KEY" "$PROBE" "$WORK/probe" >"$WORK/probe.log" 2>&1 \
+# Route 4 (tranche P4) needs a real fixture and the real helper, so the fixture
+# is built before the probe rather than after it.
+FIXTURE="$WORK/fixture.wav"
+if [ -x target/debug/make-fixture-wav ]; then
+    target/debug/make-fixture-wav "$FIXTURE" 2
+else
+    cargo run --quiet --bin make-fixture-wav -- "$FIXTURE" 2
+fi
+
+OPENROUTER_API_KEY="$CANARY_KEY" "$PROBE" "$WORK/probe" \
+    "$REPO_ROOT/tools/external_analysis.py" "$FIXTURE" \
+    >"$WORK/probe.log" 2>&1 \
     || { cat "$WORK/probe.log" >&2; fail "the canary probe exited non-zero"; }
 
 require "the planted key was not imported"           "imported: true"                    "$WORK/probe.log"
@@ -78,6 +89,63 @@ require "the secret's Debug is not redacted"         "debug-print: <redacted>"  
 require "the credentials file is not owner-only"     "credentials-file-mode: 0600"       "$WORK/probe.log"
 require "the credentials directory is not owner-only" "credentials-directory-mode: 0700" "$WORK/probe.log"
 require "the probe did not run to completion"        "probe: complete"                   "$WORK/probe.log"
+
+# ---------------------------------------------------------------------------
+# Tranche P4: the deliberate hand-off, both directions.
+#
+# AP1 took the key out of this application's environment and the desktop path
+# passes --no-dotenv, which between them left a *remote* desktop job with no key
+# path at all. P4 closes that by putting the credential into exactly one child's
+# environment, and only when the resolved route graph authorizes it. Both halves
+# are measured here, through `AssistJob::start` and the real helper:
+#
+#   local   a `lyrics` graph that never leaves the machine. The child's whole
+#           environment is dumped and scanned below; the key must not be in it,
+#           however the credentials file is configured.
+#   remote  a confirmed `mimo` graph. The child reports the credential present
+#           by fingerprint, which is delivery proven without a plaintext sink.
+# ---------------------------------------------------------------------------
+
+require "the local job resolved a remote route"      "execution-local: remote=false confirmed-credential=false snapshot=$WORK/probe/execution-local/assist-execution.json" "$WORK/probe.log"
+require "the remote job resolved no remote route"    "execution-remote: remote=true confirmed-credential=true snapshot=$WORK/probe/execution-remote/assist-execution.json" "$WORK/probe.log"
+
+LOCAL_REPORT="$WORK/probe/execution-local/report.json"
+REMOTE_REPORT="$WORK/probe/execution-remote/report.json"
+LOCAL_ENVIRON="$WORK/probe/execution-local/child-environ.txt"
+[ -s "$LOCAL_ENVIRON" ] || fail "the local job's child wrote no environment dump to scan"
+
+python3 - "$LOCAL_REPORT" "$REMOTE_REPORT" <<'PY' || fail "the credential hand-off is not what P4 specifies"
+import json, sys
+
+local = json.load(open(sys.argv[1]))
+remote = json.load(open(sys.argv[2]))
+
+assert local["openrouter_credential_present"] is False, \
+    "a local-only job's helper was given the provider credential"
+assert local["openrouter_credential_fingerprint"] is None
+assert remote["openrouter_credential_present"] is True, \
+    "a confirmed remote job's helper did not receive the credential"
+fingerprint = remote["openrouter_credential_fingerprint"]
+assert isinstance(fingerprint, str) and len(fingerprint) == 8, fingerprint
+
+# The snapshot is embedded and is the §6 record, field for field.
+snapshot = remote["execution_snapshot"]
+assert snapshot["snapshot_schema"] == "musializer.assist-execution/v1"
+assert snapshot["credential_present"] is True
+assert snapshot["credential_fingerprint"] == fingerprint
+assert local["execution_snapshot"]["credential_present"] is False, \
+    "a local-only job recorded a credential in its provenance"
+
+# The resolved route really reached the flags, rather than the helper's old
+# hard-coded model and default provider policy.
+routes = remote["resolved_routes"]
+assert routes["semantic_model"] == "xiaomi/mimo-v2.5", routes
+assert routes["semantic_zdr"] is True, "the audio contract's ZDR default was lost"
+assert routes["semantic_provider"]["allow_fallbacks"] is False, routes
+assert routes["codex_model"] == "Codex default", routes
+print(f"execution hand-off: local=absent remote=present({fingerprint}) "
+      f"model={routes['semantic_model']} zdr={routes['semantic_zdr']}")
+PY
 
 # ---------------------------------------------------------------------------
 # The desktop path refuses the repository .env fallback; the CLI keeps it.
@@ -103,13 +171,6 @@ PY
 # ---------------------------------------------------------------------------
 # A dry-run job, with the key in the environment the whole time.
 # ---------------------------------------------------------------------------
-
-FIXTURE="$WORK/fixture.wav"
-if [ -x target/debug/make-fixture-wav ]; then
-    target/debug/make-fixture-wav "$FIXTURE" 2
-else
-    cargo run --quiet --bin make-fixture-wav -- "$FIXTURE" 2
-fi
 
 for mode in mimo all; do
     OPENROUTER_API_KEY="$CANARY_KEY" python3 tools/external_analysis.py assist \
@@ -152,6 +213,14 @@ if [ "$NEGATIVE" -eq 1 ]; then
     # to notice. Without this, "zero occurrences" could be reporting a scan that
     # searches nothing.
     printf '{"leaked": "%s"}\n' "$CANARY_KEY" >"$ANALYSIS_DIR/leaked.json"
+fi
+
+# The local job's environment dump is *inside* the scanned tree, so a regression
+# that handed a local-only job the credential fails the scan below rather than
+# needing a check of its own. Asserted here as well, because a dump that was
+# never written would make that silent.
+if grep -q -- "$SENTINEL" "$LOCAL_ENVIRON"; then
+    fail "the local-only job's child inherited the provider credential"
 fi
 
 SCAN_ROOTS=("$WORK" "$ANALYSIS_DIR")

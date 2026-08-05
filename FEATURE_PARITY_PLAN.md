@@ -1400,9 +1400,89 @@ Not built here, and named rather than left implied:
   photographed in six of the seven bodies. Adding one needs `cli.rs`.
 - Provider `order`/`only`/`ignore` and price bounds are in the schema and in the
   dry-run summary, but have no editor yet; only `zdr_required` is editable.
-- Execution still ignores these settings entirely. Feeding the resolved route
-  graph into a job, and recording it as the execution snapshot (§6), is the next
-  tranche.
+- Execution ignored these settings entirely. **Tranche AP4 below closed that.**
+
+### AP4 — execution wiring
+
+Landed 2026-08-05. Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §5 and §6.
+The dialog edited settings that execution ignored; jobs now run on the resolved
+routes, and the graph they ran on is what provenance records.
+
+- [x] AP4-a resolve at Start, snapshot immutably. `core::assist::execution`
+      owns the resolver — **moved down from `ui/assist_settings.rs`**, which now
+      re-exports it, so the dry-run summary and the execution snapshot are the
+      same function called twice rather than two tables that can drift.
+      `runtime::assist::plan` gathers the impure facts and writes
+      `<job folder>/assist-execution.json` before the helper exists;
+      `AssistSpec` passes the path, the helper embeds the record in
+      `assist-manifest.json` and stamps each artifact's `provenance` with the
+      per-contract identity. Schema in `docs/PHASE0_INVENTORY.md` §6.7.
+- [x] AP4-b the actual flags. `mimo_openrouter.py`'s hard-coded
+      `xiaomi/mimo-v2.5` became `--model`, and it gained `--only`, `--ignore`
+      and the three `--max-price-*` bounds; `--provider` already carried
+      `order`. `external_analysis.py assist` gained `--execution-snapshot` and
+      `--codex-reasoning-effort`, and the three local-runtime flags it already
+      had are now passed from `assist.json`'s `local_runtimes`. **`model_id` in
+      the manifest is observed, not requested**: the OpenRouter response's own
+      `model` field, `codex exec --model`, or the model file the local lane ran.
+- [x] AP4-c the credential, deliberately. AP1 stripped `OPENROUTER_API_KEY` from
+      the application's environment and the desktop path passes `--no-dotenv`,
+      which between them left a remote desktop job with **no key path at all**;
+      this is the item that closed it. `AuthorizedCredential` is constructible
+      only from a snapshot with a route that opens a socket and this job's own
+      confirmation, so a local-only job cannot be handed one however the call
+      site is written. It goes into that one child's environment: never argv,
+      never a log, never the manifest.
+- [x] AP4-d the confirmation shows the resolved graph: one row per composed
+      task with its model and boundary, a heading that says whether audio
+      leaves, and §5 invariant 1 stated as a measurement rather than a promise
+      (`any_fallback_can_raise_boundary` walks the applied policies and the
+      whole ladder). Extra height on the app side, like the LT1 review list, so
+      `assist_ui_state::ui_layout` and its differential harness are untouched.
+- [x] AP4-e boundary invariants in execution. No cross-boundary fallback exists
+      anywhere in the path. **`ask` is resolved to `none` at Start** and named
+      in the confirmation, because this build cannot pause a running job for an
+      answer and a half-built pause that silently continued is the one thing §5
+      invariant 1 forbids; that is the implemented semantics, recorded in §6.7.
+      A missing key, an unrouted contract and a provider selection that is
+      unsatisfiable by construction all refuse **before** anything spawns, each
+      naming its own repair rather than the word "blocked".
+- [x] AP4-f cache acceptance by route identity (§5 rule 7), the LT1 pattern
+      keyed by contract. Evidence from a real local lyrics run on a fixture:
+      a second run reports every lane `reused`; editing `TC-ALIGN`'s model in
+      the snapshot makes that one lane `generated` and leaves `TC-COARSE`
+      `reused`.
+- [x] AP4-g negative controls, demonstrated and reverted (`sha256sum -c` clean):
+      authorizing every graph put `OPENROUTER_API_KEY=sk-or-v1-MUSICANARY…` in a
+      **local-only** job's child environment dump, which the canary scan finds;
+      disabling the missing-key refusal turned the gate's
+      `blocks=TC-SEMANTIC:No key` into `blocks=none` and failed one unit test.
+      A settings edit after Start left the running job's snapshot byte-identical
+      (`24bc2044…` both sides) and the manifest still recorded `mms-ctc` and
+      `recommended` while the file on disk said `qwen3-fa` and `studio`.
+
+Not built here, and named rather than left implied:
+
+- **`ask` mid-job.** Pausing a running job to offer a substitute route needs a
+  job state and a panel body nothing here has. Resolved to `none` at Start with
+  a visible note; recorded as the implemented semantics, not deferred silently.
+- **`TC-VERIFY` is composed by nothing.** Independent timing verification has no
+  lane in the helper, and offering a route for a stage that cannot run is the
+  invented capability the honesty rule forbids.
+- **A ZDR endpoint list.** `tools/provider_catalog.py` normalizes modalities,
+  context and price and carries no endpoints, so "no ZDR endpoint for this
+  model" is not decidable offline and is not claimed. What *is* refused
+  pre-spawn is a provider selection emptied by construction — `only` minus
+  `ignore`, a disjoint `order` with fallbacks off, a zero price bound — with the
+  message naming ZDR when it is also set. Beyond that `provider.zdr` is sent and
+  OpenRouter refuses rather than substituting.
+- **`prefer_gpu` and `stem_separation`** are in `assist.json` and reach no flag
+  yet; the helper has no stem lane to point them at.
+- **The staged snapshot lives on `AssistController`, not on
+  `AnalysisCandidate`.** That type is `musializer-core/src/project/`, outside
+  this tranche's files. The two are staged and cleared together, so the pair is
+  as inert as the candidate is; moving the field is a one-line change for
+  whoever next opens that file.
 
 ## P4 — honest status, stale handoffs and final gate
 
