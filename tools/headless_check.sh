@@ -2814,6 +2814,25 @@ case "$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-local-last.txt" | tail -1)
     *) echo "  scroll followed the focus to the bottom of Local models" ;;
 esac
 
+# 4c. Keyboard traversal at the narrow, stacked layout (LYRICS_TIMING_RESEARCH_PLAN.md
+#     negative control: "the dialog remains operable by keyboard and at every
+#     captured UI scale"). 4/4b prove Tab at 1280 and scroll-follows-focus at
+#     1280; 2b proves the 800px width renders the stacked routing table; neither
+#     proves Tab still lands a visible ring once the table has actually
+#     stacked. Same eight-step probe as 4, same baseline pattern as 4b, just at
+#     the narrow width against the unfocused `ai-routing-narrow` capture.
+ai_capture "ai-focus-narrow" 800x640 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    MUSIALIZER_ASSIST_SETTINGS_TAB=8 -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+FOCUS_NARROW_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-focus-narrow.txt" | tail -1)"
+echo "  focus (narrow): $FOCUS_NARROW_LINE"
+case "$FOCUS_NARROW_LINE" in
+    *"focus=8/"*) ;;
+    *) echo "FAIL: eight Tab steps at 800x640 did not land on control 8: $FOCUS_NARROW_LINE" >&2
+       AI_FAILED=1 ;;
+esac
+ai_focus_ring ai-focus-narrow ai-focus-narrow ai-routing-narrow \
+    "eight Tab steps at the narrow stacked layout" || AI_FAILED=1
+
 # 5. Escape closes. The dialog prints nothing once closed, and the panel behind
 #    it starts drawing again — which is the same seam as check 3, run backwards.
 ai_capture "ai-escape" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \

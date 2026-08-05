@@ -1093,6 +1093,33 @@ R9's navigation followed on 2026-08-05.
       unphotographable by anyone, gate included — add a probe seam for lane
       selection.
 
+### AP5 — acceptance evidence sweep (2026-08-05)
+
+The research plan's eleven provider-settings negative controls were audited
+control-by-control against live assertions: nine COVERED (one — keyboard
+operability at narrow scale — was PARTIAL and fixed during the sweep with the
+`ai-focus-narrow` gate capture), two PARTIAL with the missing piece named.
+Every AI-settings capture carries a report-line or pixel assertion. Canary
+scan coverage vs contracts §4: E1–E6, E8 (structural), E10 (structural) and
+E11 scanned; E7 and E9 are real gaps, below. Totals at sweep close:
+cargo 1269/0, python 110/0, full verify 21/0.
+
+- [ ] AP5-a modality-loss invalidation (control 2): `preflight()` checks
+      catalog membership by id only — a selected model that loses its required
+      modality in a refreshed catalog still reads Ready. Add a modality-fit
+      fact to `PreflightFacts` + tests (`core::assist::execution`).
+- [ ] AP5-b no-network-hang regression test (control 4): structurally
+      non-blocking (`thread::spawn` + `try_recv`), but nothing drives a stuck
+      child and times the poll; needs `poll_background`'s receiver handling
+      extracted raylib-free first.
+- [ ] AP5-c diagnostics/crash bundle collector (contracts §4 E7): named by the
+      design doc, never built. When built: name-marker env strip + canary
+      route + scan coverage. Related to the external support-bundle work in
+      the E-series, not part of it today.
+- [ ] AP5-d clipboard copy path (E9): the "Copy diagnostics" payload is proven
+      canary-free via `describe()`'s test, but no test exercises the copy call
+      site itself; needs a probe seam or a raylib-free extraction.
+
 ### AP1 — persistence foundation
 
 - [x] AP1-a (2026-08-04) `musializer.assist-settings/v1` in `musializer-core` (pure, no
