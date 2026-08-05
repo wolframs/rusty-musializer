@@ -15,6 +15,7 @@
 //! tested, but it lives app-side because `musializer_core::ui`'s module list is
 //! fixed by the ownership map and this geometry belongs to nobody else.
 
+pub mod assist_settings;
 pub mod icons;
 pub mod mapping_editor;
 pub mod panels;

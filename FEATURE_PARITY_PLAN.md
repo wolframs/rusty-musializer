@@ -1183,9 +1183,111 @@ R9's navigation followed on 2026-08-05.
       experimental (in use, never benchmarked). Negative control: defaulting an
       absent pair to `recommended` fails the lookup test; reverted
       byte-for-byte.
-- [ ] AP2-f offline/stale UX (cached catalog with an honest age badge, no
-      network hang) — deferred to the dialog tranche (P3), which owns the
-      surface it renders on.
+- [x] AP2-f (2026-08-05, with AP3) offline/stale UX: the OpenRouter section
+      shows the last valid cache, its age and an explicit badge
+      (`never fetched` / `unreadable` / `current` / `stale`), and `Refresh` is
+      disabled with its reason while `catalog.network_allowed` is false. **An
+      absent cache is "never fetched", not an empty catalog** — the gate asserts
+      both spellings. Nothing hangs: the fetch is a child process on a
+      background thread and the frame never waits on it.
+
+### AP3 — the AI settings entry point and dialog
+
+Design intent: `docs/LYRICS_TIMING_RESEARCH_PLAN.md`, "Visible settings entry
+point and dialog". Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md`. Landed
+2026-08-05 in `crates/musializer-app/src/ui/assist_settings.rs` (one module),
+plus the heading-row button in `ui/panels/assist.rs` and five wiring lines in
+`ui/shell.rs`/`main.rs`. **A settings surface only**: opening it starts no
+analysis and cannot touch a job in flight.
+
+- [x] AP3-a entry point: a persistent, text-labelled `AI settings` button with a
+      sliders icon at the right of the `ASSISTED ANALYSIS` heading row, drawn
+      before the body branches so it is present in every panel state. Evidence:
+      six captures, each carrying an `assist settings button:` line naming the
+      body it was drawn under, the panel width and whether the icon face loaded
+      (`Ready`, `Confirmation`, `Running`, `Candidate`, `Empty`/`Failed`, and the
+      960x640 minimum). **No narrow-width second header row**, and that is a
+      measurement: the narrowest assist panel any supported window produces is
+      668 px, so a second row would be a branch nothing could reach or
+      photograph. The auto-scenes toggle yields instead, which is the priority
+      the design document sets.
+- [x] AP3-b the modal: application-modal inside the window, scrollable, drawn
+      over everything, input-blocking. Blocking reuses the oracle's own claim
+      rule rather than a new mechanism — a full-window blocker in the shell's
+      widget bank, drawn before any panel, and the dialog draws into a bank of
+      its own. The timeline strip is **not drawn at all** while the modal is up,
+      because `ui/text_input.rs` reads raylib's keyboard directly and a key typed
+      into the masked field would otherwise also land in a lyric cue — a
+      credential in a `.musi` file.
+- [x] AP3-c five sections: Routing (one row per `TC-*`, boundary/route/model/
+      fallback/readiness, `TC-MEASURED` shown and locked, pickers filtered by
+      contract eligibility *and* the suitability overlay, `unsupported` never
+      offered, experimental behind a warning), Local models (models-directory
+      ladder with every losing candidate, doctor-style runtime identity),
+      Codex (executable readiness, discovered models or exactly `Codex default`,
+      reasoning effort per eligible task), OpenRouter (connection state, masked
+      key lifecycle, catalog with age and badge, Refresh), Privacy (remote-audio
+      policy, ZDR per audio contract, provenance, dry-run route summary).
+- [x] AP3-d keyboard: a dialog-scoped traversal ring, which is what makes it
+      complete rather than half a model — every focusable control is drawn by
+      the one module, so `focus_order` can be built from the live model. Tab /
+      Shift-Tab wrap, Enter activates exactly one control, Escape closes with one
+      explicit confirm step when there are unsaved edits. Evidence: a capture
+      after eight simulated Tab steps (`focus=8/23`, focus-ring chroma 132.1
+      against 128.1 for the same crop unfocused), an Escape assertion, and a
+      dirty-Escape assertion (`dirty=true confirm-close=true`).
+- [x] AP3-e honesty rules, each with its own gate assertion: absent cache is
+      "never fetched"; a corrupt settings file is an error and is **not
+      overwritten** (the gate re-reads the file); a loose-permission credentials
+      file shows the refusal, the mode and the fix, and its mode on disk is
+      unchanged; catalog strings are display data only.
+- [x] AP3-f the masked key field. The drawn string is a function of the
+      credential's **length alone**, which is what makes it assertable from a
+      capture rather than from a comment: the gate runs two probes with two
+      different 27-character secrets and compares the cropped field, which must
+      be byte-identical (and not blank — the darkest pixel is checked at 20). No
+      report line, log line or capture may contain the canary, and every dialog
+      run greps for it.
+- [x] AP3-g no live network in any capture. `Test` is the only control that can
+      open a socket and it is stubbed by `MUSIALIZER_ASSIST_SETTINGS_KEY_TEST` in
+      every gate run; `Refresh` is gated by `catalog.network_allowed`, which is
+      false by default. The real `Test` goes through `curl --config -` on stdin,
+      so no flag ever takes a key (E2) and nothing is written to disk.
+- [x] AP3-h negative controls, demonstrated and reverted byte-for-byte
+      (`sha256sum -c`): removing the modal guard around `timeline_strip` made the
+      Assist panel draw underneath the dialog and its `assist settings button:`
+      line appear in a dialog run, which the gate catches; drawing the pending
+      credential instead of the mask made the two field crops differ
+      (`34d17dbf…` against `1404c6bf…` where both are `c4735bf8…` when correct)
+      and put `sk-or-v1-MUSICANARY…` on screen.
+- [x] AP3-i one thing the gate caught that no review would have: the suitability
+      marker was drawn at 10 px, which is outside the native interface bank, and
+      the run reported `non-native-requests=40` — the exact scaled-atlas blur F0
+      rebuilt the shell's typography to delete. It is 11 px now and every section
+      reports zero. Two other defects came from captures rather than tests: the
+      marker overlapped the row beneath it at the plain row gap, and the routing
+      matrix's compact threshold was first written in *body* widths, which made
+      the table collapse at 900 px, come back at 810 and collapse again at 730 —
+      the vanish-and-reappear defect `core::ui::transport_bar` was rebuilt to make
+      unstateable. It is a dialog width now, with a monotonicity sweep pinning it.
+
+Probe seams, all environment variables in the style of
+`MUSIALIZER_ASSIST_PROBE_DIR` because `cli.rs` is not this tranche's file:
+`MUSIALIZER_ASSIST_SETTINGS_OPEN`, `_TAB`, `_SCROLL`, `_KEY`, `_NOW`,
+`_KEY_TEST`, `_REFRESH`, `_DOCTOR`, `_ESCAPE`, `_DIRTY`, `_ACTIVATE`. The last
+one is what makes the write path reachable at all: nothing in a headless run can
+press a key, so without it `Save` — and "Enter activates" — would only ever be a
+unit test. The gate uses it to commit an override and then re-reads the file.
+
+Not built here, and named rather than left implied:
+
+- The `Cancelling` panel body has no probe seam, so the entry point is
+  photographed in six of the seven bodies. Adding one needs `cli.rs`.
+- Provider `order`/`only`/`ignore` and price bounds are in the schema and in the
+  dry-run summary, but have no editor yet; only `zdr_required` is editable.
+- Execution still ignores these settings entirely. Feeding the resolved route
+  graph into a job, and recording it as the execution snapshot (§6), is the next
+  tranche.
 
 ## P4 — honest status, stale handoffs and final gate
 

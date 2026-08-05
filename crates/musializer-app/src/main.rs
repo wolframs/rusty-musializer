@@ -188,9 +188,12 @@ fn main() -> std::process::ExitCode {
     // SAFETY: nothing has run before this point — no thread has been spawned,
     // no raylib call has been made, and `cli::parse` has not been reached — so
     // no other thread can be reading the environment concurrently.
-    let _session_credentials = unsafe { assist_env::import_session_credentials() };
+    let session_credentials = unsafe { assist_env::import_session_credentials() };
+    // Only the fingerprint travels onward. The AI settings dialog says "session
+    // only" from it without ever holding a second copy of the key (AP3).
+    let session_fingerprint = session_credentials.openrouter_fingerprint();
 
-    match run() {
+    match run(session_fingerprint) {
         Ok(status) => status,
         Err(message) => {
             eprintln!("musializer: {message}");
@@ -199,7 +202,7 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-fn run() -> Result<std::process::ExitCode, String> {
+fn run(session_fingerprint: Option<String>) -> Result<std::process::ExitCode, String> {
     // Keeps the raylib-5-5-link crate in the link graph; see its build.rs.
     let raylib_version = musializer_runtime::ensure_raylib_linked();
 
@@ -345,7 +348,11 @@ fn run() -> Result<std::process::ExitCode, String> {
         presets_editable: false,
         preset_selection: 0,
         preset_delete_armed: false,
-        shell: Shell::with_preferences(ui_preferences),
+        shell: {
+            let mut shell = Shell::with_preferences(ui_preferences);
+            shell.session_credential_fingerprint = session_fingerprint;
+            shell
+        },
     };
     app.shell.set_ui_scale_override(options.ui_scale);
     if let Some(detail) = ui_preferences_warning {
@@ -648,6 +655,20 @@ fn run() -> Result<std::process::ExitCode, String> {
     // above is the opt-in persistence path; otherwise autosave must not commit a
     // one-off scene, route or render setting after launch.
     app.workspace.mark_command_line_state_clean();
+
+    // The AI settings modal's own probe seam (AP3). An environment variable
+    // rather than a `--ui-probe` key, matching `MUSIALIZER_ASSIST_PROBE_DIR` and
+    // `MUSIALIZER_ASSIST_PROBE_LANES`, and read here because opening the dialog
+    // reads four files and must happen once rather than per frame. Inert unless
+    // set, so no ordinary run is affected.
+    if let Some(section) = std::env::var(ui::assist_settings::PROBE_OPEN_VARIABLE)
+        .ok()
+        .as_deref()
+        .and_then(ui::assist_settings::Section::parse)
+    {
+        let fingerprint = app.shell.session_credential_fingerprint.clone();
+        app.shell.assist_settings.open(section, fingerprint);
+    }
 
     // The probe is one late, gated stage in the C. Keep *all* of it here: panel
     // state applied earlier was still a side effect after an unrelated CLI error.

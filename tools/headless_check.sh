@@ -2321,6 +2321,387 @@ if [ "$MISPLACED_STATUS" -eq 0 ] && [ "$ASSIST_WIRED" -eq 1 ]; then
     SWEEP_FAILED=1
 fi
 
+echo "=== the AI settings dialog (AP3) ==="
+# None of this is in the frozen C either, so a capture and a report line are the
+# only evidence the surface does what it claims. Everything the dialog reads is
+# a fixture written here: the settings file, the credentials file, both
+# discovery caches and a doctor report. No network is reachable from any run —
+# `MUSIALIZER_ASSIST_SETTINGS_KEY_TEST` stubs the one control that could open a
+# socket, and `catalog.network_allowed` gates the other.
+AI_DIR="$OUT_DIR/ai-settings"
+AI_CANARY="sk-or-v1-MUSICANARY7Q4X2ZK9"
+rm -rf "$AI_DIR"
+mkdir -p "$AI_DIR/config" "$AI_DIR/cache/musializer" "$AI_DIR/corrupt" "$AI_DIR/loose"
+AI_FAILED=0
+
+python3 - "$AI_DIR" <<'PYFIXTURES'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+# A settings file with one per-task override, so the routing matrix has both a
+# recommended row and an override row in the same picture.
+(root / "config/assist.json").write_text(json.dumps({
+    "schema": "musializer.assist-settings/v1",
+    "active_profile": "custom",
+    "profiles": [{"id": "custom", "label": "Custom", "routes": {
+        "TC-COARSE": {"contract": "TC-COARSE", "route_type": "local-proc",
+                       "runtime_id": "whisper.cpp", "model_id": "whisper.cpp",
+                       "fallback": "ask"}}}],
+    "catalog": {"network_allowed": True,
+                 "last_filters": {"input_modalities": "audio", "output_modalities": "text"},
+                 "last_refresh_utc": "2026-07-20T09:00:00Z"},
+}, indent=2) + "\n")
+(root / "corrupt/assist.json").write_text("{ broken")
+# A credentials file with the loose mode the read path must refuse rather than
+# repair. The secret is the canary, so a leak anywhere is greppable.
+(root / "loose/credentials.json").write_text(json.dumps({
+    "schema": "musializer.assist-credentials/v1",
+    "entries": {"openrouter/default": {"secret": "sk-or-v1-MUSICANARY7Q4X2ZK9",
+                                        "label": "Fixture"}},
+}, indent=2) + "\n")
+(root / "loose/credentials.json").chmod(0o644)
+
+cache = root / "cache/musializer"
+models = [
+    {"id": "xiaomi/mimo-v2.5", "name": "MiMo v2.5", "context_length": 131072,
+     "input_modalities": ["audio", "text"], "output_modalities": ["text"],
+     "pricing": {"prompt": "0.0000004", "completion": "0.0000012", "audio": "0.0000090"}},
+    {"id": "acme/never-measured", "name": "Acme Audio 1", "context_length": 32000,
+     "input_modalities": ["audio"], "output_modalities": ["text"],
+     "pricing": {"prompt": "0.0000010", "completion": None, "audio": None}},
+    # Every optional field absent, so "not reported" is in the picture rather
+    # than only in a test.
+    {"id": "acme/quiet", "name": "Acme Quiet", "context_length": None,
+     "input_modalities": ["audio"], "output_modalities": ["text"],
+     "pricing": {"prompt": None, "completion": None, "audio": None}},
+]
+(cache / "openrouter-models-v1.json").write_text(json.dumps({
+    "schema_version": "musializer.openrouter-catalog/v1",
+    "source_url": "https://openrouter.ai/api/v1/models",
+    "fetched_at_utc": "2026-07-20T09:00:00Z", "validated_at_utc": "2026-07-20T09:00:00Z",
+    "filters": {"input_modalities": "audio", "output_modalities": "text"},
+    "model_count": len(models), "unfiltered_model_count": 340, "models": models,
+}, indent=2, sort_keys=True) + "\n")
+(cache / "codex-models-v1.json").write_text(json.dumps({
+    "schema_version": "musializer.codex-model-catalog/v1",
+    "source": "codex app-server model/list", "fetched_at_utc": "2026-08-04T18:00:00Z",
+    "codex_bin": "codex", "model_count": 2, "models": [
+        {"id": "gpt-5.3-codex", "model": "gpt-5.3-codex", "display_name": "GPT-5.3 Codex",
+         "is_default": True, "hidden": False, "default_reasoning_effort": "medium",
+         "supported_reasoning_efforts": [{"reasoning_effort": e} for e in ("low", "medium", "high")],
+         "input_modalities": ["text"]},
+        {"id": "gpt-5.3-codex-mini", "model": "gpt-5.3-codex-mini",
+         "display_name": "GPT-5.3 Codex mini", "is_default": False, "hidden": False,
+         "default_reasoning_effort": "low",
+         "supported_reasoning_efforts": [{"reasoning_effort": "low"}],
+         "input_modalities": ["text"]},
+    ],
+}, indent=2, sort_keys=True) + "\n")
+(cache / "doctor.json").write_text(json.dumps({
+    "schema_version": "musializer.doctor/v1", "runtimes": {
+        "whisper": {"state": "available", "path": "/usr/local/bin/whisper-cli",
+                     "version": "whisper-cli 1.8.6",
+                     "model_path": "/opt/models/ggml-large-v3.bin", "model_sha256": "ab12cd34ef56",
+                     "language_support": "multilingual (99 languages)", "gpu_ready": True,
+                     "remediation": None},
+        "mms_ctc_aligner": {"state": "available", "path": "/opt/lyrics-align/bin/python",
+                             "version": "torchaudio 2.6.0", "model_path": "/opt/models/mms-ctc",
+                             "model_sha256": None,
+                             "language_support": "romanized text normalized to the MMS_FA alphabet",
+                             "gpu_ready": False, "remediation": None},
+        # Deliberately missing, so the picture carries a remediation string.
+        "stem_separator": {"state": "unavailable", "path": None, "version": None,
+                            "model_path": None, "model_sha256": None, "language_support": None,
+                            "gpu_ready": None,
+                            "remediation": "pip install demucs into the alignment venv"},
+    },
+}, indent=2, sort_keys=True) + "\n")
+PYFIXTURES
+
+# ai_capture NAME SIZE [VAR=VALUE ...] -- [extra musializer args]
+#
+# The clock is pinned so a cache age badge is the same number in every run, and
+# the key test is stubbed so no capture can reach the network.
+ai_capture() {
+    local name="$1" size="$2"
+    shift 2
+    local extra_env=()
+    while [ $# -gt 0 ] && [ "$1" != "--" ]; do extra_env+=("$1"); shift; done
+    [ "${1:-}" = "--" ] && shift
+    local out="$OUT_DIR/$name.png"
+    local log="$OUT_DIR/$name.txt"
+    set +e
+    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        MUSIALIZER_ASSIST_SETTINGS="$REPO_ROOT/$AI_DIR/config/assist.json" \
+        MUSIALIZER_ASSIST_CREDENTIALS="$REPO_ROOT/$AI_DIR/config/credentials.json" \
+        XDG_CACHE_HOME="$REPO_ROOT/$AI_DIR/cache" \
+        MUSIALIZER_ASSIST_SETTINGS_NOW=2026-08-05T12:00:00Z \
+        MUSIALIZER_ASSIST_SETTINGS_KEY_TEST=no-key \
+        "${extra_env[@]}" \
+        ./target/debug/musializer --mute "$FIXTURE" \
+            --size "$size" \
+            --probe-frames 20 \
+            --probe-shot "$out" \
+            "$@" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    printf '%-30s %-9s exit=%s\n' "$name" "$size" "$status"
+    if [ ! -f "$out" ] || [ "$status" -ne 0 ]; then
+        echo "FAIL: $name produced no frame, or exited $status" >&2
+        return 1
+    fi
+    # E4/E9: no capture, and no log, may ever contain a credential.
+    if grep -q "MUSICANARY" "$log"; then
+        echo "FAIL: $name leaked the credential canary into its report" >&2
+        return 1
+    fi
+    return 0
+}
+
+ai_report() {
+    # ai_report LOG PREFIX -- print the dialog's own evidence line
+    sed -n "s/^$2//p" "$OUT_DIR/$1.txt" | head -1
+}
+
+# 1. The entry point, in every panel state the probe can reach and at the
+#    narrowest supported window. The button is drawn from the heading row before
+#    the body branches, so "present in all six states" is a report assertion
+#    rather than six pictures somebody looked at.
+for state in ready confirm running candidate failed; do
+    spec="panel=assist,play=0"
+    [ "$state" = "ready" ] || spec="$spec,assist=$state"
+    ai_capture "ai-entry-$state" 1280x720 -- --ui-probe "$spec" || AI_FAILED=1
+    line="$(sed -n 's/^assist settings button: //p' "$OUT_DIR/ai-entry-$state.txt" | head -1)"
+    echo "  entry $state: ${line:-<absent>}"
+    case "$line" in
+        'visible=true label="AI settings"'*) ;;
+        *) echo "FAIL: the AI settings button is missing in the $state body" >&2; AI_FAILED=1 ;;
+    esac
+    case "$line" in
+        *icons=on*) ;;
+        *) echo "FAIL: the $state capture drew the entry point without its icon face" >&2; AI_FAILED=1 ;;
+    esac
+done
+ai_capture "ai-entry-narrow" 960x640 -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+NARROW_ENTRY="$(sed -n 's/^assist settings button: //p' "$OUT_DIR/ai-entry-narrow.txt" | head -1)"
+echo "  entry narrow: ${NARROW_ENTRY:-<absent>}"
+case "$NARROW_ENTRY" in
+    'visible=true label="AI settings"'*) ;;
+    *) echo "FAIL: the AI settings button is missing at the minimum window" >&2; AI_FAILED=1 ;;
+esac
+
+# 2. Each of the five sections, plus one at 150% and one at the minimum window.
+for section in routing local codex openrouter privacy; do
+    ai_capture "ai-$section" 1280x720 \
+        "MUSIALIZER_ASSIST_SETTINGS_OPEN=$section" \
+        "MUSIALIZER_ASSIST_SETTINGS_DOCTOR=$REPO_ROOT/$AI_DIR/cache/musializer/doctor.json" \
+        -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+    got="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-$section.txt" | head -1)"
+    echo "  $got"
+    case "$got" in
+        "section=$section "*) ;;
+        *) echo "FAIL: ai-$section opened on the wrong section: $got" >&2; AI_FAILED=1 ;;
+    esac
+done
+# One section at 150%. 1920 physical is 1280 logical, which is the smallest
+# window that keeps 150% above the shell's own logical minimum — 1280 at 150%
+# would be 853 logical and the scale is refused.
+ai_capture "ai-local-150" 1920x1080 MUSIALIZER_ASSIST_SETTINGS_OPEN=local \
+    "MUSIALIZER_ASSIST_SETTINGS_DOCTOR=$REPO_ROOT/$AI_DIR/cache/musializer/doctor.json" \
+    -- --ui-scale 150 --ui-probe "panel=assist,play=0" || AI_FAILED=1
+ai_capture "ai-openrouter-small" 960x640 MUSIALIZER_ASSIST_SETTINGS_OPEN=openrouter \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+# And the two honest degradations, named in the report rather than left to the
+# eye: below 882 px of dialog the section list becomes a top row of tabs and the
+# routing matrix stacks each contract onto two lines. Both are decided from the
+# window size, and a capture cannot tell a deliberate stack from a broken table.
+ai_capture "ai-routing-narrow" 800x640 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+for pair in "ai-routing:sections=rail routing=matrix" "ai-routing-narrow:sections=tabs routing=stacked"; do
+    want="${pair#*:}"
+    got="$(sed -n 's/^assist settings: //p' "$OUT_DIR/${pair%%:*}.txt" | head -1)"
+    case "$got" in
+        *"$want"*) echo "  ${pair%%:*}: $want" ;;
+        *) echo "FAIL: ${pair%%:*} expected $want, got: $got" >&2; AI_FAILED=1 ;;
+    esac
+done
+
+# 3. The modal really is modal. With the dialog open the timeline strip is not
+#    drawn at all, because the lyrics cue field reads raylib's keyboard directly
+#    and would otherwise receive keys typed into the masked field. The strip is
+#    the only thing that prints `assist settings button:`, so its absence from a
+#    dialog run is the assertion.
+if grep -q '^assist settings button:' "$OUT_DIR/ai-routing.txt"; then
+    echo "FAIL: the Assist panel drew underneath the modal, so its text field could take keys" >&2
+    AI_FAILED=1
+else
+    echo "  modal: the timeline strip is not drawn while the dialog is open"
+fi
+
+# 4. Keyboard traversal, photographed. A headless run has no keyboard any more
+#    than it has a pointer, so the probe applies the Tab steps.
+ai_capture "ai-focus-8" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    MUSIALIZER_ASSIST_SETTINGS_TAB=8 -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+FOCUS_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-focus-8.txt" | head -1)"
+echo "  focus: $FOCUS_LINE"
+case "$FOCUS_LINE" in
+    *"focus=8/"*) ;;
+    *) echo "FAIL: eight Tab steps did not land on control 8: $FOCUS_LINE" >&2; AI_FAILED=1 ;;
+esac
+# The ring is drawn, not merely counted: the accent rectangle around the eighth
+# control is the only blue in this crop of an otherwise white row.
+FOCUS_BLUE="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-focus-8.png,crop=240:40:556:135,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
+FOCUS_PLAIN="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-routing.png,crop=240:40:556:135,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
+echo "  focus ring chroma: focused=${FOCUS_BLUE:-?} unfocused=${FOCUS_PLAIN:-?}"
+python3 -c "import sys; sys.exit(0 if float('${FOCUS_BLUE:-0}') - float('${FOCUS_PLAIN:-0}') > 1.0 else 1)" \
+    || { echo "FAIL: no focus ring where the eighth Tab should have left one" >&2; AI_FAILED=1; }
+
+# 5. Escape closes. The dialog prints nothing once closed, and the panel behind
+#    it starts drawing again — which is the same seam as check 3, run backwards.
+ai_capture "ai-escape" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    MUSIALIZER_ASSIST_SETTINGS_ESCAPE=1 -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+if grep -q '^assist settings: section=' "$OUT_DIR/ai-escape.txt"; then
+    echo "FAIL: Escape did not close the dialog" >&2
+    AI_FAILED=1
+elif ! grep -q '^assist settings button:' "$OUT_DIR/ai-escape.txt"; then
+    echo "FAIL: Escape closed the dialog but the Assist panel never came back" >&2
+    AI_FAILED=1
+else
+    echo "  escape: the dialog closed and the panel behind it drew again"
+fi
+# And an unsaved edit gets one explicit confirm step rather than a silent
+# discard: the same single Escape leaves it open and says so.
+ai_capture "ai-escape-dirty" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    MUSIALIZER_ASSIST_SETTINGS_DIRTY=1 MUSIALIZER_ASSIST_SETTINGS_ESCAPE=1 \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+DIRTY_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-escape-dirty.txt" | head -1)"
+echo "  escape with edits: ${DIRTY_LINE:-<closed>}"
+case "$DIRTY_LINE" in
+    *"dirty=true confirm-close=true"*) ;;
+    *) echo "FAIL: Escape discarded unsaved edits without asking" >&2; AI_FAILED=1 ;;
+esac
+
+# 5b. Enter activates, and Save writes. Without the activate seam the whole
+#     write path would be unreachable from a headless run and "Enter activates"
+#     would only ever be a unit test. Its own copy of the settings file, so the
+#     write cannot change what every other capture above reads.
+cp "$AI_DIR/config/assist.json" "$AI_DIR/config/assist-save.json"
+ai_capture "ai-save" 1280x720 \
+    "MUSIALIZER_ASSIST_SETTINGS=$REPO_ROOT/$AI_DIR/config/assist-save.json" \
+    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_DIRTY=1 \
+    MUSIALIZER_ASSIST_SETTINGS_ACTIVATE=1 -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+SAVE_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-save.txt" | head -1)"
+echo "  save: ${SAVE_LINE:-<absent>}"
+case "$SAVE_LINE" in
+    *"dirty=false"*) ;;
+    *) echo "FAIL: Enter on the focused Save button did not commit the edit" >&2; AI_FAILED=1 ;;
+esac
+if ! grep -q '"TC-ALIGN"' "$AI_DIR/config/assist-save.json"; then
+    echo "FAIL: Save did not write the override to the settings file" >&2
+    AI_FAILED=1
+else
+    echo "  save: the TC-ALIGN override reached the settings file"
+fi
+
+# 6. The masked field. Two runs, two different credentials of the *same* length:
+#    if one character of either reached a pixel the crops would differ, because
+#    A and W are nowhere near the same width in Space Grotesk. The mask is a
+#    function of the length alone, so the two crops must be byte-identical.
+ai_capture "ai-key-a" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=openrouter \
+    "MUSIALIZER_ASSIST_SETTINGS_KEY=$AI_CANARY" -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+ai_capture "ai-key-b" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=openrouter \
+    "MUSIALIZER_ASSIST_SETTINGS_KEY=WWWWWWWWWWWWWWWWWWWWWWWWWWW" \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+for half in a b; do
+    ffmpeg -loglevel error -y -i "$OUT_DIR/ai-key-$half.png" \
+        -vf "crop=830:34:302:216" "$OUT_DIR/ai-key-$half-crop.png"
+done
+KEY_A="$(sha256sum "$OUT_DIR/ai-key-a-crop.png" | cut -d' ' -f1)"
+KEY_B="$(sha256sum "$OUT_DIR/ai-key-b-crop.png" | cut -d' ' -f1)"
+KEY_INK="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-key-a-crop.png,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+echo "  masked field: a=${KEY_A:0:16} b=${KEY_B:0:16} darkest=${KEY_INK:-?}"
+if [ "$KEY_A" != "$KEY_B" ]; then
+    echo "FAIL: two different keys of the same length drew different pixels" >&2
+    AI_FAILED=1
+fi
+# Two blank boxes would also match, which would make the check prove nothing.
+if [ "${KEY_INK:-255}" -ge 120 ] 2>/dev/null; then
+    echo "FAIL: the masked field drew nothing at all, so the match is vacuous" >&2
+    AI_FAILED=1
+fi
+case "$(sed -n 's/^assist settings key: //p' "$OUT_DIR/ai-key-a.txt" | head -1)" in
+    *'masked-len=25'*) echo "  masked field: 25 bullets for a 27-character key" ;;
+    *) echo "FAIL: the masked report line does not describe a masked field" >&2; AI_FAILED=1 ;;
+esac
+
+# 7. The stale badge, with its age. An absent cache is "never fetched", which is
+#    a different sentence from an empty catalog and is checked as one.
+CATALOG_LINE="$(sed -n 's/^assist settings discovery: //p' "$OUT_DIR/ai-openrouter.txt" | head -1)"
+echo "  discovery: $CATALOG_LINE"
+case "$CATALOG_LINE" in
+    'catalog=stale age="16 days ago" models=3'*) ;;
+    *) echo "FAIL: the catalog badge is not the stale one the fixture pins" >&2; AI_FAILED=1 ;;
+esac
+ai_capture "ai-no-cache" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=openrouter \
+    "XDG_CACHE_HOME=$REPO_ROOT/$AI_DIR/empty-cache" -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+case "$(sed -n 's/^assist settings discovery: //p' "$OUT_DIR/ai-no-cache.txt" | head -1)" in
+    'catalog=never fetched'*'codex=never fetched'*) echo "  no cache: never fetched, not empty" ;;
+    *) echo "FAIL: an absent cache was not reported as never fetched" >&2; AI_FAILED=1 ;;
+esac
+
+# 8. A corrupt settings file is an error state, not a silent reset.
+ai_capture "ai-corrupt" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=privacy \
+    "MUSIALIZER_ASSIST_SETTINGS=$REPO_ROOT/$AI_DIR/corrupt/assist.json" \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+case "$(sed -n 's/^assist settings stores: //p' "$OUT_DIR/ai-corrupt.txt" | head -1)" in
+    'settings=error: '*) echo "  corrupt settings: reported as an error" ;;
+    *) echo "FAIL: a corrupt settings file was not reported as an error" >&2; AI_FAILED=1 ;;
+esac
+if [ "$(cat "$AI_DIR/corrupt/assist.json")" != "{ broken" ]; then
+    echo "FAIL: the corrupt settings file was overwritten rather than reported" >&2
+    AI_FAILED=1
+fi
+
+# 9. A loose-permission credentials file is refused, and the refusal names the
+#    mode and the fix. Refused, not repaired: the mode on disk is untouched.
+ai_capture "ai-loose" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=openrouter \
+    "MUSIALIZER_ASSIST_CREDENTIALS=$REPO_ROOT/$AI_DIR/loose/credentials.json" \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+case "$(sed -n 's/^assist settings stores: //p' "$OUT_DIR/ai-loose.txt" | head -1)" in
+    *'credentials=refused(0644)'*) echo "  loose credentials: refused, mode reported" ;;
+    *) echo "FAIL: a 0644 credentials file was not refused" >&2; AI_FAILED=1 ;;
+esac
+LOOSE_MODE="$(stat -c '%a' "$AI_DIR/loose/credentials.json")"
+if [ "$LOOSE_MODE" != "644" ]; then
+    echo "FAIL: the loose credentials file was repaired (now $LOOSE_MODE) instead of refused" >&2
+    AI_FAILED=1
+fi
+
+# 10. Nothing above opened a socket. Every run stubbed the key test, and the
+#     refresh tools were never spawned — a live call in a capture would make the
+#     gate depend on OpenRouter being up, and would send an IP address from a
+#     check that claims to be offline.
+if grep -rl 'openrouter.ai' "$OUT_DIR"/ai-*.txt | grep -q . ; then
+    if grep -h 'openrouter.ai' "$OUT_DIR"/ai-*.txt | grep -qv 'assist settings'; then
+        echo "FAIL: a capture log mentions a live OpenRouter request" >&2
+        AI_FAILED=1
+    fi
+fi
+echo "  network: every run stubbed the key test and left catalog refresh unpressed"
+
+if [ "$AI_FAILED" -ne 0 ]; then
+    echo "FAIL: the AI settings dialog checks did not pass" >&2
+    exit 1
+fi
+
 echo "=== the analysis bridge importer ==="
 # `--analysis-bridge` applies rather than staging, so the evidence is that the
 # track's lyric lane changed. A bridge for other audio must be refused, which is

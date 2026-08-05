@@ -910,6 +910,32 @@ fn report_review_rows(line: &str) {
     });
 }
 
+thread_local! {
+    /// The last `assist settings button:` line printed.
+    static LAST_SETTINGS_BUTTON: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// Publishes the AI settings entry point's own evidence (tranche AP3).
+///
+/// The button has to be present in **every** panel state, and a capture cannot
+/// tell "the button is there" from "the heading row happens to be blank there".
+/// Naming the body it was drawn under, the panel width it had, and whether the
+/// icon face was available is what makes the six-state sweep an assertion
+/// instead of six pictures somebody looked at. The width is there because it is
+/// the one number that would change if a later layout squeezed the heading row.
+fn report_settings_button(line: &str) {
+    LAST_SETTINGS_BUTTON.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist settings button: {line}");
+            last.clear();
+            last.push_str(line);
+        }
+    });
+}
+
 /// Attaches the review where a result is staged. Both callers — a finished job
 /// and the probe — go through here so the two cannot drift.
 ///
@@ -2153,6 +2179,89 @@ impl Shell {
             metric::UI_FONT_HEADER,
             color::accent(),
         );
+        // The **AI settings** entry point (tranche AP3). Drawn from the heading
+        // row rather than from a workflow card, and drawn before the body
+        // branches, so it is present in every panel state — Ready, Confirmation,
+        // Running, Cancelling, Candidate and Empty alike. A control that only
+        // exists in one state is a control a user cannot rely on finding.
+        //
+        // It keeps its text label at every width: the icon is an addition beside
+        // the words, never a replacement for them, so `Faces::icons_available`
+        // being false costs decoration rather than meaning.
+        //
+        // There is no narrow-width second header row, and that is a measurement
+        // rather than a preference: the narrowest assist panel any supported
+        // window produces is 668 px (960 logical with the inspector open, via
+        // `WorkspaceFrame::assist_panel_width`), where the heading, the subtitle
+        // and a 152 px button all fit with room to spare. A second row would be
+        // a branch nothing could reach, photograph or review. What yields
+        // instead is the auto-scenes toggle below, which is the right priority:
+        // the entry point must be present in every state, and that one need not.
+        let settings_width = 152.0f32.min((boundary.width - padding * 2.0).max(0.0));
+        let settings_row = UiRect::new(
+            boundary.x + boundary.width - padding - settings_width,
+            boundary.y + 8.0,
+            settings_width,
+            30.0,
+        );
+        if !settings_row.is_empty() {
+            let id = widgets::widget_id(ASSIST_WIDGETS, 91);
+            let state = self.widgets.text_button(
+                &mut clip,
+                font,
+                id,
+                settings_row,
+                "AI settings",
+                self.assist_settings.is_open(),
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            self.widgets.hint(
+                &clip,
+                state,
+                id,
+                settings_row,
+                "Routing, local models, Codex, OpenRouter and privacy. Opening it starts nothing.",
+            );
+            if input.fonts.icons_available() {
+                // Drawn beside the label rather than through `icon_button`,
+                // which replaces the label with a glyph. The sliders glyph is
+                // the one the Tune control already uses for "settings for what
+                // you are looking at", so the vocabulary stays one vocabulary.
+                clip.draw_text_ex(
+                    input.fonts.icons(),
+                    &musializer_runtime::font::Icon::Sliders.glyph().to_string(),
+                    raylib::prelude::Vector2::new(settings_row.x + 9.0, settings_row.y + 8.0),
+                    15.0,
+                    0.0,
+                    if self.assist_settings.is_open() {
+                        color::white()
+                    } else {
+                        color::ui_muted()
+                    },
+                );
+            }
+            if state.clicked {
+                let fingerprint = self.session_credential_fingerprint.clone();
+                self.assist_settings
+                    .open(crate::ui::assist_settings::Section::Routing, fingerprint);
+            }
+            report_settings_button(&format!(
+                "visible=true label=\"AI settings\" body={:?} panel-width={:.0} icons={} rect={:.0},{:.0},{:.0},{:.0}",
+                panel_content,
+                boundary.width,
+                if input.fonts.icons_available() {
+                    "on"
+                } else {
+                    "text-only"
+                },
+                settings_row.x,
+                settings_row.y,
+                settings_row.width,
+                settings_row.height,
+            ));
+        }
+
         widgets::draw_text(
             &mut clip,
             font,
@@ -2167,7 +2276,7 @@ impl Shell {
         // again after a manual scene choice disabled it. Match the oracle's
         // compact header control and keep it absent when there is no plan to
         // operate on (`plug.c:2207-2226`).
-        if boundary.width >= 560.0 {
+        if boundary.width >= 560.0 + settings_width {
             if let Some((enabled, cue_count)) = input
                 .workspace
                 .current()
@@ -2179,7 +2288,7 @@ impl Shell {
                     if enabled { "On" } else { "Off" }
                 );
                 let toggle = UiRect::new(
-                    boundary.x + boundary.width - padding - 190.0,
+                    boundary.x + boundary.width - padding - settings_width - 8.0 - 190.0,
                     boundary.y + 8.0,
                     190.0,
                     metric::UI_BUTTON_HEIGHT,

@@ -270,6 +270,15 @@ pub struct Shell {
     ui_scale_override: Option<UiScalePreference>,
     split_drag: Option<SplitKind>,
     last_split_press: Option<(SplitKind, f64)>,
+    /// The **AI settings** modal (tranche AP3). Application-modal inside the
+    /// window, so it lives on `Shell` for the same reason every other
+    /// frame-surviving surface does.
+    pub assist_settings: super::assist_settings::AssistSettingsDialog,
+    /// `sha256(OPENROUTER_API_KEY)[0..8]` when one was imported from the
+    /// environment at startup, and nothing else — the key itself stays in
+    /// `main.rs`'s `SessionCredentials`. Set once, so the dialog can say
+    /// "session only" without holding a second copy of a credential.
+    pub session_credential_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,6 +562,8 @@ impl Shell {
             ui_scale_override: None,
             split_drag: None,
             last_split_press: None,
+            assist_settings: super::assist_settings::AssistSettingsDialog::new(),
+            session_credential_fingerprint: None,
         }
     }
 
@@ -798,8 +809,26 @@ impl Shell {
             d.set_mouse_cursor(raylib::consts::MouseCursor::MOUSE_CURSOR_DEFAULT);
         }
 
-        self.dropped_files(d, &mut commands);
-        self.keyboard(d, input, &mut commands);
+        // The AI settings modal is application-modal *inside* the window
+        // (tranche AP3). Blocking falls out of the oracle's own claim rule
+        // rather than a new mechanism: a press is claimed by the first widget to
+        // see it, so a full-window blocker drawn into this bank before any panel
+        // means nothing underneath can be pressed. The dialog draws its controls
+        // into a bank of its own, which this claim cannot reach. See
+        // `ui/assist_settings.rs`'s module comment.
+        let modal = self.assist_settings.is_open();
+        if modal {
+            self.widgets.button(
+                d,
+                widgets::widget_id(super::assist_settings::MODAL_BLOCK_NAMESPACE, 0),
+                UiRect::new(0.0, 0.0, input.window.0, input.window.1),
+            );
+        }
+
+        if !modal {
+            self.dropped_files(d, &mut commands);
+            self.keyboard(d, input, &mut commands);
+        }
 
         // The toolbar runs first because its band decides whether the timecode
         // fits beside the transport buttons, and the timeline is where it goes
@@ -810,7 +839,14 @@ impl Shell {
         if !self.fullscreen {
             self.tracks_panel(d, frame, input, &mut commands);
             self.scene_browser(d, frame, input, &mut commands);
-            self.timeline_strip(d, frame, input, toolbar, &mut commands);
+            // Not drawn under the modal, and not for tidiness: the lyrics cue
+            // field reads raylib's keyboard directly rather than through the
+            // widget bank (`ui/text_input.rs`), so a key typed into the modal's
+            // masked field would also land in a cue — a credential in a `.musi`
+            // file.
+            if !modal {
+                self.timeline_strip(d, frame, input, toolbar, &mut commands);
+            }
             if self.inspector_open {
                 self.inspector(d, frame, input, &mut commands);
             }
@@ -818,11 +854,20 @@ impl Shell {
         }
         self.notice_tray(d, input.fonts.ui(), frame.preview);
 
+        if modal {
+            self.assist_settings
+                .draw(d, input.fonts, input.window, input.ui_scale);
+        }
+
         // Last, and deliberately so: a tooltip belongs above everything, and the
         // toolbar that owns most of them is the *first* thing drawn. Requested
         // where the control is and drawn here is the only ordering that works.
+        // Suppressed under the modal, where a tip from a control the user cannot
+        // reach would be drawn over the dialog explaining it.
         if let Some(tooltip) = self.widgets.tooltip().cloned() {
-            widgets::draw_tooltip(d, input.fonts.ui(), &tooltip, input.window);
+            if !modal {
+                widgets::draw_tooltip(d, input.fonts.ui(), &tooltip, input.window);
+            }
         }
 
         self.notices.tick(f64::from(d.get_frame_time()));
