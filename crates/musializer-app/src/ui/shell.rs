@@ -855,6 +855,11 @@ impl Shell {
         self.notice_tray(d, input.fonts.ui(), frame.preview);
 
         if modal {
+            // AP3-R S11: the one fact the dialog cannot read off disk. It states
+            // that routing changes apply to the next job (§5 invariant 3), and
+            // without this it could never say whether there is a current one.
+            self.assist_settings
+                .set_job_running(input.workspace.assist.is_active());
             self.assist_settings
                 .draw(d, input.fonts, input.window, input.ui_scale);
         }

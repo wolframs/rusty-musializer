@@ -1444,6 +1444,34 @@ No C code reads either one; they are consumed by `tools/ui_capture.sh` and
 | whole `os.environ` (filter) | `tools/musializer_doctor.py:126-132` | Same credential stripping before invoking `nvidia-smi` | n/a | same substring blacklist |
 | `MUSIALIZER_WHISPER_BIN` / `_MODEL` | `tests/e2e/test_lyrics_assist_e2e.py:68-69` | e2e skip gating (`:100-105`) | test skipped | truthiness |
 
+### 9.4 Read by the Rust rewrite
+
+Not in the frozen C: the AI settings dialog (tranche AP3) has no oracle at all,
+and the surfaces below have no other way to be driven from a headless run.
+
+Two are real configuration a user may set; the rest are **probe seams**, each
+inert when unset, each read once in `AssistSettingsDialog::open`. They are
+environment variables rather than `--ui-probe` keys for the reason
+`MUSIALIZER_ASSIST_PROBE_DIR` already is: the probe grammar lives in `cli.rs`,
+which that tranche does not own.
+
+| Variable | Site | Purpose | Unset behaviour | Parsing |
+| --- | --- | --- | --- | --- |
+| `MUSIALIZER_ASSIST_SETTINGS` | `runtime::assist::files::settings_path` | Absolute override for `assist.json` | `$XDG_CONFIG_HOME/musializer/assist.json`, else `$HOME/.config/musializer/assist.json` (§2) | non-empty check only; used verbatim as a path |
+| `MUSIALIZER_ASSIST_CREDENTIALS` | `runtime::assist::files::credentials_path` | Absolute override for `credentials.json` | the same ladder with `credentials.json` (§3) | non-empty check only |
+| `MUSIALIZER_ASSIST_SETTINGS_OPEN` | `ui/assist_settings.rs`, `main.rs` | Opens the dialog on a section | dialog closed | `Section::parse`: `1`/`routing`, `local`/`local-models`, `codex`, `openrouter`, `privacy`/`diagnostics`, case-insensitive and trimmed; an unknown token opens nothing |
+| `MUSIALIZER_ASSIST_SETTINGS_TAB` | `apply_probe_state` | How many Tab steps to apply at open, so a focus ring is photographable | no steps | `u32`, **capped at 256**; a non-number is ignored |
+| `MUSIALIZER_ASSIST_SETTINGS_SCROLL` | `apply_probe_state`, applied in `draw_body` | Scroll offset in logical pixels, for photographing a section bottom | no scroll | `f32`, floored at 0; **applied on the first drawn frame**, not at open, then clamped against the measured content height |
+| `MUSIALIZER_ASSIST_SETTINGS_HOVER` | `apply_probe_state` | `1` lets the dialog's own tooltips fire immediately | with `_OPEN` set, the dwell is **infinite** so no stray pointer can pop a tip into a capture; otherwise the normal dwell | exact `1` after trimming |
+| `MUSIALIZER_ASSIST_SETTINGS_KEY` | `apply_probe_state` | A **fixture** credential to seed the masked Replace field with, so the mask can be photographed | field empty | non-empty string, used verbatim. Never a real key: the gate plants a sentinel here and greps every artifact for it |
+| `MUSIALIZER_ASSIST_SETTINGS_NOW` | `now_utc` | Pins "now" so a cache age badge is the same number in every run | the wall clock | `parse_rfc3339_utc`: exactly `YYYY-MM-DDTHH:MM:SSZ`; anything else yields no time and every age reads "age unknown" |
+| `MUSIALIZER_ASSIST_SETTINGS_KEY_TEST` | `start_key_test` | Stubs the `Test` outcome, so no capture opens a socket | the real `curl --config -` request | `KeyTest::parse`: `ok`, `invalid`, `revoked`, `rate-limited`, `no-network`, `no-key`. An unrecognized value is reported as a no-network failure **naming the variable**, never silently ignored |
+| `MUSIALIZER_ASSIST_SETTINGS_REFRESH` | `start_refresh` | Stubs the catalog/Codex `Refresh` outcome, for the same reason | the real `python3 tools/…` child | `ok` is a success status line; every other value is a stubbed failure echoing the value |
+| `MUSIALIZER_ASSIST_SETTINGS_DOCTOR` | `reload` | Reads a doctor report from a file instead of running `tools/musializer_doctor.py` | "Not probed" | a path; read and parsed as `musializer.doctor/v1`. A read or parse failure is shown as a doctor error, not as an absent report |
+| `MUSIALIZER_ASSIST_SETTINGS_ESCAPE` | `apply_probe_state` | Presses Escape once at open | no press | exact `1` after trimming. **Deferred by one frame when `_ACTIVATE` is also set**, because an Enter is only consumed while a control is being drawn |
+| `MUSIALIZER_ASSIST_SETTINGS_DIRTY` | `apply_probe_state` | Marks a real route override as edited, so the unsaved-changes confirm step is reachable | draft clean | exact `1`. Falls back to flipping `catalog.show_experimental` if the override left the draft clean, so the seam cannot silently test nothing |
+| `MUSIALIZER_ASSIST_SETTINGS_ACTIVATE` | `apply_probe_state` | Presses Enter once on the focused control | no press | exact `1`. This is what makes `Save`, `Forget` and `Test` reachable from a headless run at all |
+
 `tools/google_fonts.py`, `tools/analyze_audio.py`, `tools/lyric_align.py`,
 `tools/lyric_anchor_block.py`, `tools/anchor_block_align.py`,
 `tools/import_whisper.py`, and `tools/analysis_io.py` read **no** environment

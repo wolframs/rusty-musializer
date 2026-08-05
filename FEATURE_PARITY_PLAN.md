@@ -1191,6 +1191,119 @@ R9's navigation followed on 2026-08-05.
       both spellings. Nothing hangs: the fetch is a child process on a
       background thread and the frame never waits on it.
 
+### AP3-R — fresh-eyes review fixes for the AI settings dialog
+
+Independent review of `d46d956` (2026-08-05): twelve confirmed findings, one
+suspected; fixtures under `build/review/`. No item silently dropped. **Complete
+2026-08-05.** Every item is evidenced against the reviewer's own fixture, and the
+gate carries the checks so none of them can regress quietly.
+
+- [x] S1 a failed settings load is invisible on Routing (identical pixels to a
+      clean load) — persistent load-error banner on every section, matrix in an
+      explicit disabled state. Evidence: the reviewer measured max luma
+      difference **0** between a clean routing capture and both a corrupt-file
+      and an unknown-`active_profile` one; it is **218** now, and the ring drops
+      from 16 tabstops to 6 (Close plus the five section tabs). The gate's
+      corrupt fixture opens on `routing`.
+- [x] S2 Save force-switched `active_profile` to `custom`, orphaning the user's
+      own profile forever — `set_override` writes to the active profile whatever
+      its id, and only the read-only built-in `recommended` copies on write,
+      reusing an existing user profile rather than inventing a second `custom`.
+      The picker lists every profile in the file plus `recommended`. A
+      before/after test asserts the profile list is unchanged and the active one
+      still active.
+- [x] S3 READY said Ready on a route with no model chosen and no eligible
+      catalog entry — readiness ANDs credential, model choice and an eligible
+      endpoint (§5 invariant 4) and names the **first** missing piece. An absent
+      catalog is `Unknown("Catalog never fetched")`, not a confident block.
+      Evidence: the reviewer's `falseready` fixture went `[ready]` → `[blocked]`,
+      and the gate pins the reason as `No model chosen`.
+- [x] S4 no keyboard scrolling; Tab walked focus below the fold invisibly —
+      scroll-follows-focus (the ring's own draw records where it went), plus
+      PageUp/PageDown/Home/End. Off-screen focus is now unstateable rather than
+      merely fixed, and `focus-rect=`/`focus-visible=` are in the report.
+- [x] S5 ~15 dead tabstops on a fresh install; disabled controls carried no
+      tooltip (`picker()` returned before `hint()`) — one shared predicate per
+      control, used by both `focus_order` and the drawing code, asserted in both
+      directions by a test. `hint()` moved before the early return and every
+      disabled control names its reason.
+- [x] S6 TC-VERIFY's fallback picker was drawn enabled and silently did nothing
+      until a route existed — disabled, hinted "Choose a route first".
+- [x] S7 catalog strings unsanitised for display — one `sanitize_display` for
+      every catalog-, Codex- and doctor-derived string: control **and bidi**
+      characters stripped, whitespace collapsed, hard-capped with an ellipsis.
+      `field_line` ellipsizes the label column independently of the value column.
+      Checked against the reviewer's pathological fixture (1322-character id,
+      embedded newline and tab, right-to-left override).
+- [x] S8 the built-in recommended profile's own models were labelled
+      experimental and their pickers permanently disabled — `whisper.cpp` /
+      TC-COARSE is a `recommended` suitability row on the four-track benchmark's
+      own Whisper evidence (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`,
+      2026-08-04, `anchor-block-mms/1`, `musializer.lyric-timing/v1`).
+      `xiaomi/mimo-v2.5` stays experimental. A picker whose only option is the
+      current selection is disabled **with** a hint naming the Show experimental
+      toggle when that filter is what emptied it.
+- [x] S9 comprehension — `ContractId::human_label()` drawn as the primary text
+      with the `TC-*` token dimmed beneath, a boundary legend under the matrix,
+      readiness badges made hoverable so their tooltip carries the whole
+      remediation, the "No key" hint pointing at the OpenRouter section, and the
+      credentials path shown in the OpenRouter Connection block. The CONTRACT
+      column widened 104 → 150 px, which moved `ROUTING_MATRIX_DIALOG_WIDTH`
+      882 → 928 and `ROUTING_MATRIX_BODY_WIDTH` 676 → 722 with it.
+- [x] S10 `MUSIALIZER_ASSIST_SETTINGS_SCROLL` was dead (clamped against an
+      unmeasured height) — applied on the first drawn frame instead. The gate
+      captures the bottom of `local` (scroll 261 of 261) and of `openrouter`
+      (102 of 102, against a catalog long enough to overflow), and the report
+      carries `overflow=` and `at-bottom=` so a section that fits cannot pass as
+      a section that scrolled.
+- [x] S11 the dialog could not tell a running job from an idle one — one boolean
+      from the shell (`workspace.assist.is_active()`), a banner on every section,
+      and `job-running=` in the report. Gate: `--ui-probe assist=running` reports
+      `true` with a 208 luma difference at the top of the body.
+- [x] S12 a schema-invalid credentials *entry* reported "not valid JSON" with no
+      path, entry or fix — `CredentialFault::{Io, NotJson, Schema, TooLarge}`,
+      each with its own remediation, and the schema one names the entry. The
+      second pass reads key names and the JSON *type* of `secret` only; no entry
+      is ever deserialized, so no secret is materialized by the diagnosis.
+- [x] S13 (confirmed) `commit_key`/`forget_key` wrote the credentials file
+      immediately while the settings metadata went only into the dirty draft, so
+      Forget then Escape-discard left `saved` claiming `mode: file` with a dead
+      fingerprint. Both stores move together now, and the settings file is
+      rewritten too when there were no other unsaved edits. Evidence on the
+      reviewer's two-provider fixture: after Forget, `assist.json`'s credential
+      block is gone and the other provider's entry is byte-identical.
+- [x] S14 the `MUSIALIZER_ASSIST_SETTINGS_*` env vars are documented in
+      `docs/PHASE0_INVENTORY.md` §9.4, with the two path overrides, and
+      including the new `_HOVER` seam.
+
+One seam was added rather than only fixed: `MUSIALIZER_ASSIST_SETTINGS_HOVER`.
+The dialog draws into a `Widgets` bank of its own, so `--ui-probe hover=`'s
+zeroing of the shell's tooltip dwell never reached it — the badge and
+disabled-control tooltips this tranche added were unphotographable, and a slow
+run could have popped an unrelated one into a capture. With `_OPEN` set the
+dialog's dwell is infinite unless `_HOVER=1` asks for a tip, which is the same
+rule `main.rs` applies to the shell's bank. `MUSIALIZER_ASSIST_SETTINGS_ESCAPE`
+also defers by one frame when `_ACTIVATE` is set, because an Enter is only
+consumed while a control is being drawn — without it the reviewer's
+"Forget then Escape" sequence silently tested the Escape alone.
+
+Negative controls, demonstrated and reverted byte-for-byte (`sha256sum -c`):
+
+| perturbation | the gate | the unit tests |
+| --- | --- | --- |
+| `if !has_model` → `if false && !has_model` in `readiness` | fails: the reason reads `No eligible endpoint` where `No model chosen` is due | **1 failed**, 304 passed |
+| the scroll-follows-focus correction skipped | fails: `focus-rect=688,858` against a body ending at 668, `focus-visible=false` | **305 passed** |
+| `settings_editable()` forced true | fails: 17 tabstops where 6 are due, and no `load-error=true` | **1 failed**, 304 passed |
+
+The first one is the instructive pair. Its first version **passed**: the gate
+asserted only `[blocked]`, and the fixture's catalog also leaves no eligible
+endpoint, so removing the model check swapped one blocked reason for another and
+the check never noticed. The routing report line carries the readiness *label*
+rather than its token because of it — `blocked` is one word for four different
+missing pieces, and a check that can only see the word is a check that can only
+see a quarter of the invariant. The second is `layout`'s lesson again: a property
+the unit suite cannot express at all, caught by a capture.
+
 ### AP3 — the AI settings entry point and dialog
 
 Design intent: `docs/LYRICS_TIMING_RESEARCH_PLAN.md`, "Visible settings entry
@@ -1274,10 +1387,12 @@ analysis and cannot touch a job in flight.
 Probe seams, all environment variables in the style of
 `MUSIALIZER_ASSIST_PROBE_DIR` because `cli.rs` is not this tranche's file:
 `MUSIALIZER_ASSIST_SETTINGS_OPEN`, `_TAB`, `_SCROLL`, `_KEY`, `_NOW`,
-`_KEY_TEST`, `_REFRESH`, `_DOCTOR`, `_ESCAPE`, `_DIRTY`, `_ACTIVATE`. The last
-one is what makes the write path reachable at all: nothing in a headless run can
-press a key, so without it `Save` — and "Enter activates" — would only ever be a
-unit test. The gate uses it to commit an override and then re-reads the file.
+`_KEY_TEST`, `_REFRESH`, `_DOCTOR`, `_ESCAPE`, `_DIRTY`, `_ACTIVATE`, and
+`_HOVER` (added by AP3-R). The `_ACTIVATE` one is what makes the write path
+reachable at all: nothing in a headless run can press a key, so without it
+`Save` — and "Enter activates" — would only ever be a unit test. The gate uses it
+to commit an override and then re-reads the file. All of them are documented in
+`docs/PHASE0_INVENTORY.md` §9.4.
 
 Not built here, and named rather than left implied:
 

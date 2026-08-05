@@ -63,7 +63,7 @@ use musializer_core::assist::models_dir::ModelsDirResolution;
 use musializer_core::assist::secret::Secret;
 use musializer_core::assist::settings::{
     AssistSettings, CredentialMode, Profile, Provider, ReasoningEffort, Route, StemSeparation,
-    SCHEMA as SETTINGS_SCHEMA,
+    RECOMMENDED_PROFILE, SCHEMA as SETTINGS_SCHEMA,
 };
 use musializer_core::assist::suitability::{self, Suitability};
 use musializer_core::ui::workspace_layout::UiRect;
@@ -128,6 +128,17 @@ pub const PROBE_ESCAPE_VARIABLE: &str = "MUSIALIZER_ASSIST_SETTINGS_ESCAPE";
 /// Marks a route override as edited at open, so the unsaved-changes confirm step
 /// is reachable from a capture.
 pub const PROBE_DIRTY_VARIABLE: &str = "MUSIALIZER_ASSIST_SETTINGS_DIRTY";
+
+/// Lets the dialog's own tooltips fire, and immediately.
+///
+/// The dialog draws into a [`Widgets`] bank of its own, so `--ui-probe hover=`'s
+/// zeroing of the shell's dwell never reached it — the badge and disabled-control
+/// tooltips this tranche added were unphotographable, and a stray pointer left
+/// in the middle of an Xvfb screen could pop an unrelated one into a capture on a
+/// slow run. Set to `1` to photograph a tip; **any** dialog probe run with this
+/// unset holds the dwell at infinity, which is the same rule and the same reason
+/// `main.rs` applies to the shell's bank.
+pub const PROBE_HOVER_VARIABLE: &str = "MUSIALIZER_ASSIST_SETTINGS_HOVER";
 
 /// Presses Enter once on the focused control. Without it, "Enter activates" is
 /// only ever a unit test — nothing in a headless run can press a key, so the
@@ -413,8 +424,68 @@ pub enum CredentialState {
     /// Refused, not repaired (§3, "read refusal"). The mode is shown because the
     /// fix is `chmod 600` and the user needs to know what it is now.
     Refused { path: String, mode: u32 },
-    /// Any other read failure.
-    Error(String),
+    /// The file exists and could not be used, with the three cases separated
+    /// (AP3-R S12).
+    ///
+    /// One `Error(String)` used to carry all of them, and the string it carried
+    /// for a schema-invalid *entry* was "the credentials file is not valid JSON
+    /// for this schema" — which names no path, no entry and no fix, and is a
+    /// factually wrong sentence when the file parses as JSON perfectly well.
+    Unusable {
+        kind: CredentialFault,
+        path: String,
+        /// The entry the fault is in, when it is in one. Never its value.
+        entry: Option<String>,
+    },
+}
+
+/// Why a credentials file could not be used. Each is a different fix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialFault {
+    /// The bytes could not be read at all.
+    Io,
+    /// The bytes are not JSON.
+    NotJson,
+    /// The bytes are JSON, but not this schema — a named `schema` mismatch, a
+    /// missing `entries` map, or an entry whose shape is wrong.
+    Schema,
+    /// Over the size cap, refused before parsing.
+    TooLarge,
+}
+
+impl CredentialFault {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            CredentialFault::Io => "io",
+            CredentialFault::NotJson => "not-json",
+            CredentialFault::Schema => "schema",
+            CredentialFault::TooLarge => "too-large",
+        }
+    }
+
+    /// What the user does about it. The whole point of separating the cases.
+    #[must_use]
+    pub const fn remediation(self) -> &'static str {
+        match self {
+            CredentialFault::Io => {
+                "Check that the path exists and that you can read it, then reopen this dialog."
+            }
+            CredentialFault::NotJson => {
+                "The file is not JSON at all. Move it aside and use Replace below to store the key \
+                 again; Musializer will not overwrite it while it is still there."
+            }
+            CredentialFault::Schema => {
+                "The file is valid JSON but not a musializer.assist-credentials/v1 store. Each \
+                 entry must be an object with a string \"secret\". Repair the named entry, or move \
+                 the file aside and use Replace below."
+            }
+            CredentialFault::TooLarge => {
+                "The file is over the size cap and was refused before it was parsed. Move it aside \
+                 and use Replace below to store the key again."
+            }
+        }
+    }
 }
 
 impl CredentialState {
@@ -425,7 +496,10 @@ impl CredentialState {
             CredentialState::Session { fingerprint } => format!("session({fingerprint})"),
             CredentialState::File { fingerprint, .. } => format!("file({fingerprint})"),
             CredentialState::Refused { mode, .. } => format!("refused({mode:04o})"),
-            CredentialState::Error(reason) => format!("error: {reason}"),
+            CredentialState::Unusable { kind, entry, .. } => match entry {
+                Some(entry) => format!("unusable({} entry={entry})", kind.token()),
+                None => format!("unusable({})", kind.token()),
+            },
         }
     }
 
@@ -599,14 +673,12 @@ pub enum Readiness {
 }
 
 impl Readiness {
-    #[must_use]
-    pub fn token(&self) -> &str {
-        match self {
-            Readiness::Ready => "ready",
-            Readiness::Blocked(_) => "blocked",
-            Readiness::Unknown(_) => "unknown",
-        }
-    }
+    // There was a `token()` here — `ready` / `blocked` / `unknown` — and it was
+    // what the report line carried. It is gone because one word for four
+    // different missing pieces is what let a negative control for AP3-R S3 pass:
+    // removing the model check swapped `No model chosen` for `No eligible
+    // endpoint` and the gate, which could only see `blocked`, noticed nothing.
+    // The report carries `label()` instead.
 
     fn tint(&self) -> Color {
         match self {
@@ -624,7 +696,49 @@ impl Readiness {
             Readiness::Unknown(reason) => reason.clone(),
         }
     }
+
+    /// The full sentence behind the badge, for its tooltip.
+    ///
+    /// The badge itself is 96 px wide and its text is ellipsized to fit, which
+    /// turned "pip install torchaudio into the alignment venv" into
+    /// "pip inst…" — a remediation nobody could act on (AP3-R S9). The label is
+    /// the short form and this is the long one, and the badge is hoverable so
+    /// that both exist.
+    #[must_use]
+    pub fn hint(&self) -> String {
+        match self {
+            Readiness::Ready => {
+                "Every piece this route needs is present: its runtime, its model, and a \
+                 credential where one is required."
+                    .to_string()
+            }
+            Readiness::Blocked(reason) => match reason.as_str() {
+                NO_KEY => format!(
+                    "{reason}. OpenRouter needs a key before this route can run. Add one in the \
+                     OpenRouter section of this dialog, then Test it."
+                ),
+                NO_MODEL => format!(
+                    "{reason}. The route names a provider but no model, so there is nothing to \
+                     send the request to. Pick one in the MODEL column."
+                ),
+                NO_ENDPOINT => format!(
+                    "{reason}. The cached catalog offers no model this contract can use under the \
+                     current filters. Refresh the catalog, or turn on Show experimental."
+                ),
+                other => format!("Blocked: {other}"),
+            },
+            Readiness::Unknown(reason) => {
+                format!("{reason}. Nothing has measured this yet, so neither ready nor blocked is a claim this dialog can make.")
+            }
+        }
+    }
 }
+
+/// The three "first missing piece" sentences, named so the badge, its tooltip
+/// and the tests cannot spell them differently.
+pub const NO_KEY: &str = "No key";
+pub const NO_MODEL: &str = "No model chosen";
+pub const NO_ENDPOINT: &str = "No eligible endpoint";
 
 /// The built-in `recommended` profile (§2: "`recommended` is built in and
 /// unwritable").
@@ -781,13 +895,58 @@ pub fn resolve_route(settings: &AssistSettings, contract: ContractId) -> Resolve
     }
 }
 
-/// The user profile overrides are written into. `recommended` cannot be stored
-/// (§2), so the first override creates this one.
+/// The user profile the first override creates. `recommended` cannot be stored
+/// (§2), so editing while it is active has to copy-on-write into something.
 pub const OVERRIDE_PROFILE_ID: &str = "custom";
 pub const OVERRIDE_PROFILE_LABEL: &str = "Custom";
 
-/// Stores a per-task override, creating the `custom` profile on first use and
-/// making it active.
+/// Which profile [`set_override`] would write to, and whether reaching it means
+/// switching the active profile.
+///
+/// Split out from the write so a test can assert the *decision* without
+/// mutating anything, and so the Profile picker can name the target in its
+/// tooltip rather than the user discovering it after the fact.
+#[must_use]
+pub fn override_target(settings: &AssistSettings) -> (String, bool) {
+    // The active profile, whatever its id, when it is one the file actually
+    // carries. This is the whole of AP3-R S2: the first version force-switched
+    // `active_profile` to `custom` on **every** override, so a user with a
+    // profile called `studio` had their edit written into a second profile and
+    // `studio` left behind, still in the file, never active again. An override
+    // is an edit to what is selected, not a reason to select something else.
+    if settings.active_profile != RECOMMENDED_PROFILE
+        && settings.profile(&settings.active_profile).is_some()
+    {
+        return (settings.active_profile.clone(), false);
+    }
+    // The built-in profile is read-only (§2), so an edit made while it is
+    // active copies into a user profile. An existing one is reused rather than
+    // a second `custom` invented beside it — two near-identical profiles is how
+    // a settings file becomes unreadable, and the picker lists them all anyway.
+    if let Some(existing) = settings
+        .profile(OVERRIDE_PROFILE_ID)
+        .or_else(|| settings.profiles.first())
+    {
+        return (existing.id.clone(), true);
+    }
+    (OVERRIDE_PROFILE_ID.to_string(), true)
+}
+
+/// Every profile the picker offers: `recommended` first, then every profile the
+/// file carries, in file order.
+///
+/// The built-in one is always offered even when the file has none of its own,
+/// because it is the thing every absent route inherits from and a picker that
+/// could not name it would make the inheritance invisible.
+#[must_use]
+pub fn profile_options(settings: &AssistSettings) -> Vec<String> {
+    let mut options = vec![RECOMMENDED_PROFILE.to_string()];
+    options.extend(settings.profiles.iter().map(|profile| profile.id.clone()));
+    options
+}
+
+/// Stores a per-task override in the **active** profile, copying `recommended`
+/// into a user profile first when that is what is active.
 ///
 /// Removing an override that equals the recommended route again drops the entry,
 /// so a user who cycles back to the default gets a file that says so rather than
@@ -795,21 +954,27 @@ pub const OVERRIDE_PROFILE_LABEL: &str = "Custom";
 pub fn set_override(settings: &mut AssistSettings, route: Route) {
     let contract = route.contract;
     let matches_recommended = recommended_route(contract).is_some_and(|base| base == route);
-    if settings.profile(OVERRIDE_PROFILE_ID).is_none() {
+    let (target, switches) = override_target(settings);
+    if settings.profile(&target).is_none() {
         if matches_recommended {
+            // Nothing to store and nothing to remove: creating a profile to
+            // hold the value it already inherits would be a file that pins
+            // today's default forever.
             return;
         }
         settings.profiles.push(Profile {
-            id: OVERRIDE_PROFILE_ID.to_string(),
+            id: target.clone(),
             label: OVERRIDE_PROFILE_LABEL.to_string(),
             routes: BTreeMap::new(),
         });
     }
-    settings.active_profile = OVERRIDE_PROFILE_ID.to_string();
+    if switches {
+        settings.active_profile = target.clone();
+    }
     let Some(profile) = settings
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == OVERRIDE_PROFILE_ID)
+        .find(|profile| profile.id == target)
     else {
         return;
     };
@@ -1153,16 +1318,20 @@ pub const RAIL_MINIMUM_WIDTH: f32 = 790.0;
 /// collapse at 900 px, come back at 810, and collapse again at 730. That is
 /// exactly the vanish-and-reappear defect `core::ui::transport_bar` was rebuilt
 /// to make unstateable, and the property to assert is monotonicity, not a
-/// threshold. 882 is where a rail-mode body reaches the 676 px the six columns
+/// threshold. 928 is where a rail-mode body reaches the 722 px the six columns
 /// need; below it every layout stacks, rail or tabs.
-pub const ROUTING_MATRIX_DIALOG_WIDTH: f32 = 882.0;
+///
+/// It was 882 against a 676 px body until AP3-R S9 widened the CONTRACT column
+/// to carry a plain-language name. The pair moves together and a test checks
+/// that it did.
+pub const ROUTING_MATRIX_DIALOG_WIDTH: f32 = 928.0;
 
 /// The narrowest body the six-column matrix fits in: the five fixed columns, the
 /// five gaps, and the 90 px floor under the flexible MODEL column. Read by the
 /// test that ties the two constants together — the dialog threshold above is
 /// only correct *because* it produces at least this body.
 #[cfg(test)]
-pub const ROUTING_MATRIX_BODY_WIDTH: f32 = 676.0;
+pub const ROUTING_MATRIX_BODY_WIDTH: f32 = 722.0;
 
 impl DialogLayout {
     #[must_use]
@@ -1387,13 +1556,49 @@ pub struct AssistSettingsDialog {
     overwrite_armed: bool,
 
     focus: usize,
+    /// The traversal ring, refreshed once per frame.
+    ///
+    /// Cached rather than recomputed on every `is_focused` call: the ring is
+    /// built from the live model, and with a 2000-model catalog rebuilding it
+    /// per control meant cloning 2000 strings per control per frame. Empty
+    /// outside a drawn frame, where [`Self::focused`] computes it instead — so a
+    /// unit test that sets `section` and asks never sees a stale answer.
+    ring: Vec<ControlId>,
     /// Set by Enter; consumed by the control that owns [`Self::focus`].
     activate: bool,
     /// Escape with unsaved edits asks once rather than discarding (§ the design
     /// document's "no silent discard").
     confirm_close: bool,
+    /// A probe Escape held until the frame that consumes a probe Enter has run.
+    pending_escape: bool,
+    /// The focused control's box, recorded by [`Self::focus_ring`] as it draws.
+    ///
+    /// This is what makes scroll-follows-focus possible without a second layout
+    /// pass: every focusable control already asks for its ring, so the one place
+    /// that draws it is the one place that knows where it ended up.
+    focused_bounds: Option<UiRect>,
+    /// The scrolling viewport from the last drawn frame, which is what
+    /// [`Self::focused_bounds`] has to stay inside.
+    last_content: Option<UiRect>,
+    /// The focus moved and the view has not caught up yet.
+    focus_follow: bool,
 
     scroll: f32,
+    /// A scroll offset asked for before anything had been measured.
+    ///
+    /// [`PROBE_SCROLL_VARIABLE`] is applied at open, where `content_height` is
+    /// still zero from the previous section, so clamping it there clamped it to
+    /// zero and the seam was dead (AP3-R S10). Held until the first drawn frame
+    /// has measured the body instead.
+    pending_scroll: Option<f32>,
+    /// The body height the last drawn frame used, for PageUp/PageDown.
+    last_body_height: f32,
+    /// Whether an analysis job is running right now.
+    ///
+    /// Threaded in from the shell rather than owned here: the dialog reads
+    /// files, and "is a helper process alive" is the Assist panel's state
+    /// (§5 invariant 3 is what the banner it drives is about).
+    job_running: bool,
     /// The content height the previous frame measured. One frame late on
     /// purpose: an immediate-mode body knows its own height only after drawing
     /// it, and a measure pass would double every string measurement.
@@ -1446,9 +1651,17 @@ impl AssistSettingsDialog {
             test_returns_to_pending: false,
             overwrite_armed: false,
             focus: 0,
+            ring: Vec::new(),
             activate: false,
             confirm_close: false,
+            pending_escape: false,
+            focused_bounds: None,
+            last_content: None,
+            focus_follow: false,
             scroll: 0.0,
+            pending_scroll: None,
+            last_body_height: 0.0,
+            job_running: false,
             content_height: 0.0,
             background: None,
             status: None,
@@ -1467,6 +1680,16 @@ impl AssistSettingsDialog {
         self.draft != self.saved
     }
 
+    /// Tells the dialog whether a helper process is alive right now (AP3-R S11).
+    ///
+    /// One boolean from the shell, refreshed every frame. The dialog states in
+    /// its subtitle that changes apply to the next job (§5 invariant 3) and had
+    /// no way to know whether there *was* a current one, so the promise was
+    /// never shown being kept.
+    pub fn set_job_running(&mut self, running: bool) {
+        self.job_running = running;
+    }
+
     /// Opens the dialog and reads everything it displays, once.
     ///
     /// `session_fingerprint` is `SessionCredentials::openrouter_fingerprint()` —
@@ -1476,8 +1699,13 @@ impl AssistSettingsDialog {
         self.open = true;
         self.section = section;
         self.focus = 0;
+        self.ring.clear();
         self.scroll = 0.0;
+        self.pending_scroll = None;
+        self.focused_bounds = None;
+        self.focus_follow = false;
         self.confirm_close = false;
+        self.pending_escape = false;
         self.activate = false;
         self.status = None;
         self.key_test = None;
@@ -1544,7 +1772,7 @@ impl AssistSettingsDialog {
                     path: path.display().to_string(),
                     mode,
                 },
-                Err(error) => CredentialState::Error(error.to_string()),
+                Err(error) => classify_credential_fault(path, &error),
             },
         };
         if matches!(self.credentials, CredentialState::None) {
@@ -1588,6 +1816,17 @@ impl AssistSettingsDialog {
     /// The probe seams, applied after a real load so a capture photographs the
     /// real surface with one fact changed rather than a mock of it.
     fn apply_probe_state(&mut self) {
+        // A probe-driven run is one where `_OPEN` put the dialog here. In one,
+        // the dwell is infinite unless `_HOVER` asks for a tip, so a capture
+        // never depends on where the X server happened to leave the pointer.
+        if std::env::var_os(PROBE_OPEN_VARIABLE).is_some() {
+            self.widgets.tooltip_delay =
+                if std::env::var(PROBE_HOVER_VARIABLE).is_ok_and(|text| text.trim() == "1") {
+                    0.0
+                } else {
+                    f64::INFINITY
+                };
+        }
         if let Ok(text) = std::env::var(PROBE_KEY_VARIABLE) {
             if !text.is_empty() {
                 self.pending_key = Some(Secret::new(text));
@@ -1620,7 +1859,11 @@ impl AssistSettingsDialog {
         }
         if let Ok(text) = std::env::var(PROBE_SCROLL_VARIABLE) {
             if let Ok(offset) = text.trim().parse::<f32>() {
-                self.scroll = offset.max(0.0);
+                // Deferred to the first drawn frame. Setting `scroll` here put
+                // the offset in front of a clamp against a content height
+                // nothing had measured yet, so every value clamped to zero and
+                // no section bottom was ever photographed (AP3-R S10).
+                self.pending_scroll = Some(offset.max(0.0));
             }
         }
         if let Ok(text) = std::env::var(PROBE_ACTIVATE_VARIABLE) {
@@ -1630,38 +1873,150 @@ impl AssistSettingsDialog {
         }
         if let Ok(text) = std::env::var(PROBE_ESCAPE_VARIABLE) {
             if text.trim() == "1" {
-                self.escape();
+                if self.activate {
+                    // Enter and then Escape: the Enter is only consumed by a
+                    // control while one is being *drawn*, so closing here would
+                    // throw it away and the pair would silently test the Escape
+                    // alone. Deferred by exactly one frame, which is the shortest
+                    // gap a headless run can put between two key presses. Alone,
+                    // Escape stays immediate — that keeps "the dialog prints
+                    // nothing at all once closed" assertable.
+                    self.pending_escape = true;
+                } else {
+                    self.escape();
+                }
             }
         }
     }
 
+    // -- one expression per control ----------------------------------------
+    //
+    // AP3-R S5. Every one of these is called from exactly two places: the ring
+    // builder below, and the control's own drawing code. They exist because the
+    // two were written separately the first time and drifted — the ring offered
+    // ~15 tabstops on a fresh install that landed on controls drawn disabled,
+    // and Tab walked through every one of them doing nothing. A predicate that
+    // cannot be stated twice cannot disagree with itself.
+
+    /// Whether the settings on screen may be edited at all.
+    ///
+    /// False when the file failed to load: the draft started from the built-in
+    /// defaults rather than from the user's file, so an edit would be an edit to
+    /// something they never chose, and Save over it is already an explicit
+    /// two-press action (AP3-R S1).
+    #[must_use]
+    fn settings_editable(&self) -> bool {
+        !matches!(self.settings_source, SettingsSource::Error(_))
+    }
+
+    fn save_enabled(&self) -> bool {
+        self.is_dirty() && !matches!(self.settings_source, SettingsSource::NoPath)
+    }
+
+    fn profile_picker_enabled(&self) -> bool {
+        self.settings_editable() && profile_options(&self.draft).len() > 1
+    }
+
+    fn experimental_toggle_enabled(&self) -> bool {
+        self.settings_editable()
+    }
+
+    fn route_cell_enabled(&self, contract: ContractId) -> bool {
+        self.settings_editable()
+            && !contract.is_locked()
+            && contract.eligible_route_types().len() > 1
+    }
+
+    fn model_cell_enabled(&self, contract: ContractId) -> bool {
+        self.settings_editable()
+            && !contract.is_locked()
+            && self.model_options_for(contract).len() > 1
+    }
+
+    /// AP3-R S6: `TC-VERIFY` has no recommended route, so its fallback picker
+    /// had nothing to write a policy onto and silently did nothing when pressed.
+    fn fallback_cell_enabled(&self, contract: ContractId) -> bool {
+        self.settings_editable()
+            && !contract.is_locked()
+            && contract.allowed_fallbacks().len() > 1
+            && resolve_route(&self.draft, contract).route.is_some()
+    }
+
+    fn doctor_enabled(&self) -> bool {
+        self.background.is_none()
+    }
+
+    fn codex_effort_enabled(&self, contract: ContractId) -> bool {
+        self.settings_editable()
+            && resolve_route(&self.draft, contract)
+                .route
+                .is_some_and(|route| route.route_type == RouteType::Codex)
+    }
+
+    fn codex_refresh_enabled(&self) -> bool {
+        self.background.is_none() && self.codex_binary.is_some()
+    }
+
+    fn key_test_enabled(&self) -> bool {
+        self.background.is_none() && (self.pending_key.is_some() || self.credentials.is_usable())
+    }
+
+    fn key_replace_enabled(&self) -> bool {
+        self.background.is_none() && self.pending_key.is_some() && self.key_tested_ok
+    }
+
+    fn key_untested_enabled(&self) -> bool {
+        self.background.is_none() && self.pending_key.is_some()
+    }
+
+    fn key_forget_enabled(&self) -> bool {
+        self.background.is_none() && matches!(self.credentials, CredentialState::File { .. })
+    }
+
+    fn catalog_refresh_enabled(&self) -> bool {
+        self.background.is_none() && self.draft.catalog.network_allowed
+    }
+
+    fn zdr_enabled(&self, contract: ContractId) -> bool {
+        self.settings_editable()
+            && resolve_route(&self.draft, contract)
+                .route
+                .is_some_and(|route| route.route_type == RouteType::OpenRouter)
+    }
+
     /// Which controls Tab walks, in visual order, for the open section.
     ///
-    /// Built from the live model rather than from a constant list: a contract
-    /// with no eligible models has no model picker, and a ring that stopped on a
-    /// control nobody drew would be a focus ring pointing at nothing.
+    /// Built from the live model rather than from a constant list, and filtered
+    /// by the very predicates the drawing code uses: a control drawn disabled is
+    /// not a tabstop, because a ring that stops somewhere Enter does nothing is
+    /// a ring that has taught the user Enter does nothing.
     #[must_use]
     pub fn focus_order(&self) -> Vec<ControlId> {
-        let mut order = vec![FOCUS_SAVE, FOCUS_CLOSE];
+        let mut order = Vec::new();
+        if self.save_enabled() {
+            order.push(FOCUS_SAVE);
+        }
+        order.push(FOCUS_CLOSE);
         for (index, _) in Section::ALL.iter().enumerate() {
             order.push(FOCUS_TAB_BASE + index as ControlId);
         }
         match self.section {
             Section::Routing => {
-                order.push(FOCUS_ROUTING_PROFILE);
-                order.push(FOCUS_ROUTING_EXPERIMENTAL);
+                if self.profile_picker_enabled() {
+                    order.push(FOCUS_ROUTING_PROFILE);
+                }
+                if self.experimental_toggle_enabled() {
+                    order.push(FOCUS_ROUTING_EXPERIMENTAL);
+                }
                 for (index, contract) in ALL_CONTRACTS.into_iter().enumerate() {
-                    if contract.is_locked() {
-                        continue;
-                    }
                     let index = index as ControlId;
-                    if contract.eligible_route_types().len() > 1 {
+                    if self.route_cell_enabled(contract) {
                         order.push(FOCUS_ROUTE_BASE + index);
                     }
-                    if !self.model_options_for(contract).is_empty() {
+                    if self.model_cell_enabled(contract) {
                         order.push(FOCUS_MODEL_BASE + index);
                     }
-                    if contract.allowed_fallbacks().len() > 1 {
+                    if self.fallback_cell_enabled(contract) {
                         order.push(FOCUS_FALLBACK_BASE + index);
                     }
                 }
@@ -1670,27 +2025,43 @@ impl AssistSettingsDialog {
                 order.push(FOCUS_MODELS_DIR);
                 order.push(FOCUS_MODELS_GPU);
                 order.push(FOCUS_MODELS_STEMS);
-                order.push(FOCUS_MODELS_DOCTOR);
+                if self.doctor_enabled() {
+                    order.push(FOCUS_MODELS_DOCTOR);
+                }
             }
             Section::Codex => {
-                for (index, _) in CODEX_ELIGIBLE.iter().enumerate() {
-                    order.push(FOCUS_CODEX_EFFORT_BASE + index as ControlId);
+                for (index, contract) in CODEX_ELIGIBLE.into_iter().enumerate() {
+                    if self.codex_effort_enabled(contract) {
+                        order.push(FOCUS_CODEX_EFFORT_BASE + index as ControlId);
+                    }
                 }
-                order.push(FOCUS_CODEX_REFRESH);
+                if self.codex_refresh_enabled() {
+                    order.push(FOCUS_CODEX_REFRESH);
+                }
             }
             Section::OpenRouter => {
                 order.push(FOCUS_KEY_FIELD);
-                order.push(FOCUS_KEY_TEST);
-                order.push(FOCUS_KEY_REPLACE);
-                order.push(FOCUS_KEY_SAVE_UNTESTED);
-                order.push(FOCUS_KEY_FORGET);
+                if self.key_test_enabled() {
+                    order.push(FOCUS_KEY_TEST);
+                }
+                if self.key_replace_enabled() {
+                    order.push(FOCUS_KEY_REPLACE);
+                }
+                if self.key_untested_enabled() {
+                    order.push(FOCUS_KEY_SAVE_UNTESTED);
+                }
+                if self.key_forget_enabled() {
+                    order.push(FOCUS_KEY_FORGET);
+                }
                 order.push(FOCUS_CATALOG_NETWORK);
                 order.push(FOCUS_CATALOG_REFRESH_ON_OPEN);
-                order.push(FOCUS_CATALOG_REFRESH);
+                if self.catalog_refresh_enabled() {
+                    order.push(FOCUS_CATALOG_REFRESH);
+                }
             }
             Section::Privacy => {
                 for (index, contract) in ALL_CONTRACTS.into_iter().enumerate() {
-                    if contract.max_boundary().rank() >= 2 {
+                    if contract.max_boundary().rank() >= 2 && self.zdr_enabled(contract) {
                         order.push(FOCUS_PRIVACY_ZDR_BASE + index as ControlId);
                     }
                 }
@@ -1700,17 +2071,30 @@ impl AssistSettingsDialog {
         order
     }
 
+    /// Rebuilds [`Self::ring`]. Called once per drawn frame and whenever the
+    /// focus moves, never per control.
+    fn refresh_ring(&mut self) {
+        self.ring = self.focus_order();
+    }
+
     /// The focused control, or `None` when the ring is empty.
     #[must_use]
     pub fn focused(&self) -> Option<ControlId> {
-        let order = self.focus_order();
-        order.get(self.focus % order.len().max(1)).copied()
+        if self.ring.is_empty() {
+            let order = self.focus_order();
+            return order.get(self.focus % order.len().max(1)).copied();
+        }
+        self.ring.get(self.focus % self.ring.len()).copied()
     }
 
     /// Where the ring is, for the report line: `index/total`.
     #[must_use]
     pub fn focus_position(&self) -> (usize, usize) {
-        let total = self.focus_order().len();
+        let total = if self.ring.is_empty() {
+            self.focus_order().len()
+        } else {
+            self.ring.len()
+        };
         (if total == 0 { 0 } else { self.focus % total }, total)
     }
 
@@ -1719,18 +2103,48 @@ impl AssistSettingsDialog {
         // again to discard". Here rather than in the keyboard handler, so a
         // press that moves the focus cancels it too.
         self.confirm_close = false;
-        let total = self.focus_order().len();
+        self.refresh_ring();
+        let total = self.ring.len();
         if total == 0 {
             self.focus = 0;
             return;
         }
         let current = (self.focus % total) as isize;
         self.focus = (current + step).rem_euclid(total as isize) as usize;
+        // AP3-R S4: the view follows the focus rather than the focus being
+        // allowed to leave the view. A parallel "scrolling feature" would have
+        // left off-screen focus stateable; this makes it unstateable, which is
+        // why it is here and not in the keyboard handler.
+        self.focus_follow = true;
     }
 
     /// Whether `id` has the focus ring this frame.
     fn is_focused(&self, id: ControlId) -> bool {
         self.focused() == Some(id)
+    }
+
+    /// How far the body can scroll, from the last frame's measurement.
+    ///
+    /// Reported alongside `scroll=` so a capture can say "this **is** the bottom"
+    /// rather than only "this is 261 px down". A section that happens to fit
+    /// entirely is at its bottom with a scroll of zero, and a check that only
+    /// looked at the offset could not tell that from a dead seam (AP3-R S10).
+    fn scroll_overflow(&self) -> f32 {
+        (self.content_height - self.last_body_height).max(0.0)
+    }
+
+    /// Whether the focused control is one the body scrolls.
+    ///
+    /// Save, Close and the five section tabs live in the chrome, which does not
+    /// move — following the focus onto one of them would scroll the body for a
+    /// control that is already visible and never in it.
+    fn focus_is_in_body(&self) -> bool {
+        match self.focused() {
+            Some(FOCUS_SAVE | FOCUS_CLOSE) | None => false,
+            Some(id) => {
+                !(FOCUS_TAB_BASE..FOCUS_TAB_BASE + Section::ALL.len() as ControlId).contains(&id)
+            }
+        }
     }
 
     /// Whether `id` was activated by Enter this frame. Consuming, so one Enter
@@ -1757,6 +2171,18 @@ impl AssistSettingsDialog {
     }
 
     fn model_options_for(&self, contract: ContractId) -> Vec<String> {
+        self.model_options_at(contract, self.draft.catalog.show_experimental)
+    }
+
+    /// What the same picker would offer with `Show experimental` on.
+    ///
+    /// Only ever compared with [`Self::model_options_for`], to answer whether
+    /// the experimental filter is what left a picker with one option (AP3-R S8).
+    fn model_options_with_experimental(&self, contract: ContractId) -> Vec<String> {
+        self.model_options_at(contract, true)
+    }
+
+    fn model_options_at(&self, contract: ContractId, show_experimental: bool) -> Vec<String> {
         let resolved = resolve_route(&self.draft, contract);
         let Some(route) = &resolved.route else {
             return Vec::new();
@@ -1766,12 +2192,41 @@ impl AssistSettingsDialog {
             route.route_type,
             self.catalog.document(),
             self.codex.document(),
-            self.draft.catalog.show_experimental,
+            show_experimental,
             route.model_id.as_deref(),
         )
     }
 
+    /// How many catalog entries this contract could actually be pointed at,
+    /// ignoring whatever is currently selected.
+    ///
+    /// Deliberately **not** [`Self::model_options_for`]: that one always
+    /// includes the selected id, because a picker that dropped the value it is
+    /// showing could not be used to change it. Readiness is the opposite
+    /// question — whether the constraints leave anything at all — so the escape
+    /// hatch has to be off, or a route pointed at a model the catalog has never
+    /// heard of would count as its own evidence that it can run.
+    fn openrouter_eligible(&self, contract: ContractId) -> usize {
+        model_options(
+            contract,
+            RouteType::OpenRouter,
+            self.catalog.document(),
+            self.codex.document(),
+            self.draft.catalog.show_experimental,
+            None,
+        )
+        .len()
+    }
+
     /// Readiness for one resolved route.
+    ///
+    /// §5 invariant 4: **every** required piece has to be present, and the badge
+    /// names the *first* one that is not. Before AP3-R S3 this answered `Ready`
+    /// for an OpenRouter route the moment a credential existed — with no model
+    /// chosen and no eligible catalog entry — which is the one direction a
+    /// readiness badge must never be wrong in. The order is the order the
+    /// pieces are needed in: a credential, then something to send, then somewhere
+    /// that would accept it.
     ///
     /// Every "not ready" answer names what to do about it, and every "we have not
     /// looked" answer says so rather than claiming a failure.
@@ -1780,6 +2235,22 @@ impl AssistSettingsDialog {
         let Some(route) = &resolved.route else {
             return Readiness::Blocked("No route chosen".to_string());
         };
+        // 1. The credential, where the route type needs one. Codex authenticates
+        //    itself and the local lanes open no socket, so only OpenRouter does.
+        if route.route_type == RouteType::OpenRouter && !self.credentials.is_usable() {
+            return Readiness::Blocked(NO_KEY.to_string());
+        }
+        // 2. Something to send. A Codex route with no `model_id` is the
+        //    documented `Codex default` (§5 rule 6), which is a choice; every
+        //    other route type with no model has nothing to run.
+        let has_model = match (route.route_type, &route.model_id) {
+            (RouteType::Builtin | RouteType::Codex, _) => true,
+            (_, Some(id)) => !id.is_empty(),
+            (_, None) => false,
+        };
+        if !has_model {
+            return Readiness::Blocked(NO_MODEL.to_string());
+        }
         match route.route_type {
             RouteType::Builtin => Readiness::Ready,
             RouteType::LocalProc => {
@@ -1795,25 +2266,29 @@ impl AssistSettingsDialog {
                 {
                     None => Readiness::Unknown("Run doctor".to_string()),
                     Some(identity) if identity.state == "available" => Readiness::Ready,
-                    Some(identity) => Readiness::Blocked(
+                    Some(identity) => Readiness::Blocked(sanitize_display(
                         identity
                             .remediation
-                            .clone()
-                            .unwrap_or_else(|| identity.state.clone()),
-                    ),
+                            .as_deref()
+                            .unwrap_or(identity.state.as_str()),
+                    )),
                 }
             }
             RouteType::Codex => match &self.codex_binary {
                 Some(_) => Readiness::Ready,
                 None => Readiness::Blocked("codex not on PATH".to_string()),
             },
-            RouteType::OpenRouter => {
-                if self.credentials.is_usable() {
-                    Readiness::Ready
-                } else {
-                    Readiness::Blocked("No key".to_string())
+            // 3. Somewhere that would accept it. An absent catalog is "we have
+            //    not looked", not "there is nothing" — the same distinction the
+            //    never-fetched badge makes, and the reason this is `Unknown`
+            //    rather than a blocked route with a confident-sounding reason.
+            RouteType::OpenRouter => match self.catalog.document() {
+                None => Readiness::Unknown("Catalog never fetched".to_string()),
+                Some(_) if self.openrouter_eligible(resolved.contract) == 0 => {
+                    Readiness::Blocked(NO_ENDPOINT.to_string())
                 }
-            }
+                Some(_) => Readiness::Ready,
+            },
         }
     }
 
@@ -1832,17 +2307,37 @@ impl AssistSettingsDialog {
             .focused()
             .map_or_else(|| "none".to_string(), |id| id.to_string());
         let (rail, stacked) = self.last_layout.unwrap_or((true, false));
+        // The focused control's box and whether it is inside the scrolling
+        // viewport. Reported rather than inferred, because "Tab walked somewhere
+        // below the fold" and "Tab walked somewhere visible" are the same
+        // picture otherwise (AP3-R S4).
+        let (focus_rect, focus_visible) = match (self.focused_bounds, self.last_content) {
+            (Some(rect), Some(content)) => (
+                format!(
+                    "{:.0},{:.0},{:.0},{:.0}",
+                    rect.x, rect.y, rect.width, rect.height
+                ),
+                (rect.y >= content.y - 1.0
+                    && rect.y + rect.height <= content.y + content.height + 1.0)
+                    || !self.focus_is_in_body(),
+            ),
+            _ => ("none".to_string(), true),
+        };
         let mut lines = vec![format!(
-            "assist settings: section={} focus={focus}/{total} control={focused} dirty={} confirm-close={} scroll={:.0} sections={} routing={} busy={}",
+            "assist settings: section={} focus={focus}/{total} control={focused} dirty={} confirm-close={} scroll={:.0} overflow={:.0} at-bottom={} sections={} routing={} busy={} job-running={} load-error={} focus-rect={focus_rect} focus-visible={focus_visible}",
             self.section.token(),
             self.is_dirty(),
             self.confirm_close,
             self.scroll,
+            self.scroll_overflow(),
+            self.scroll >= self.scroll_overflow() - 0.5,
             if rail { "rail" } else { "tabs" },
             if stacked { "stacked" } else { "matrix" },
             self.background
                 .as_ref()
                 .map_or("none", Background::label),
+            self.job_running,
+            !self.settings_editable(),
         )];
         lines.push(format!(
             "assist settings stores: settings={} path={} credentials={} models-dir={}",
@@ -1892,12 +2387,17 @@ impl AssistSettingsDialog {
             .into_iter()
             .map(|contract| {
                 let resolved = resolve_route(&self.draft, contract);
+                // The readiness *label*, not its token. `blocked` is one word for
+                // four different missing pieces, and a gate that could only see
+                // the word could not tell "no key" from "no model chosen" —
+                // which is exactly how a negative control for AP3-R S3 passed
+                // while the check it perturbed was disabled.
                 format!(
                     "{}={}/{}[{}]{}",
                     contract.token(),
                     resolved.compact(),
                     resolved.model_label(),
-                    self.readiness(&resolved).token(),
+                    self.readiness(&resolved).label(),
                     if resolved.origin == RouteOrigin::Override {
                         "*"
                     } else {
@@ -1925,6 +2425,72 @@ impl AssistSettingsDialog {
         ));
         lines
     }
+}
+
+/// Separates "could not read it", "it is not JSON" and "it is JSON but an entry
+/// is wrong", and names the offending entry (AP3-R S12).
+///
+/// The core store returns one `Format` error for the last two, because it stops
+/// at the first serde failure and serde does not distinguish them. So the second
+/// pass happens here — and it is deliberately **structural**: the file is parsed
+/// as a bare `serde_json::Value` and only *key names* and the JSON *type* of the
+/// `secret` member are ever looked at. No `CredentialEntry` is deserialized and
+/// no value is read, so no secret is materialized by the diagnosis, let alone
+/// displayed. The canary check in the gate covers the claim.
+fn classify_credential_fault(path: &Path, error: &AssistFileError) -> CredentialState {
+    use musializer_core::assist::credentials::CredentialsError;
+    let display = path.display().to_string();
+    let unusable = |kind, entry| CredentialState::Unusable {
+        kind,
+        path: display.clone(),
+        entry,
+    };
+    match error {
+        AssistFileError::Read(_) | AssistFileError::Directory(_) | AssistFileError::Write(_) => {
+            unusable(CredentialFault::Io, None)
+        }
+        AssistFileError::Credentials(CredentialsError::TooLarge) => {
+            unusable(CredentialFault::TooLarge, None)
+        }
+        AssistFileError::Credentials(CredentialsError::Schema(_)) => {
+            unusable(CredentialFault::Schema, None)
+        }
+        AssistFileError::Credentials(CredentialsError::Invalid(_)) => {
+            unusable(CredentialFault::Schema, first_malformed_entry(path))
+        }
+        AssistFileError::Credentials(CredentialsError::Format) => {
+            let Ok(bytes) = std::fs::read(path) else {
+                return unusable(CredentialFault::Io, None);
+            };
+            match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Err(_) => unusable(CredentialFault::NotJson, None),
+                Ok(_) => unusable(CredentialFault::Schema, first_malformed_entry(path)),
+            }
+        }
+        _ => unusable(CredentialFault::Io, None),
+    }
+}
+
+/// The name of the first entry whose shape is wrong, if the file is JSON.
+///
+/// Names only. The `secret` member is inspected with `is_string()` and never
+/// read, which is the whole reason this walks a `Value` instead of asking the
+/// typed parser to tell it more.
+fn first_malformed_entry(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let document: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let entries = document.get("entries")?.as_object()?;
+    for (name, entry) in entries {
+        let well_formed = entry.as_object().is_some_and(|entry| {
+            entry
+                .get("secret")
+                .is_some_and(serde_json::Value::is_string)
+        });
+        if !well_formed {
+            return Some(sanitize_display(name));
+        }
+    }
+    None
 }
 
 /// The account label a credential is stored under. §2's `lookup_id`, defaulting
@@ -2090,8 +2656,13 @@ impl AssistSettingsDialog {
             return;
         }
         self.widgets.begin_frame(ui_scale);
+        // Once per frame, before anything asks whether it has the focus. See
+        // the field comment: this used to be rebuilt inside every `is_focused`.
+        self.refresh_ring();
+        self.focused_bounds = None;
         let layout = DialogLayout::of(window);
         self.last_layout = Some((layout.rail_on_left, layout.routing_compact()));
+        self.last_content = Some(layout.content);
         let font = fonts.ui();
 
         // The scrim is opaque enough that the workspace behind it reads as
@@ -2114,6 +2685,10 @@ impl AssistSettingsDialog {
         // inherited the focus index.
         self.activate = false;
         report(&self.describe());
+        if self.pending_escape {
+            self.pending_escape = false;
+            self.escape();
+        }
     }
 
     fn draw_header(&mut self, d: &mut RaylibDrawHandle<'_>, fonts: &Faces, layout: DialogLayout) {
@@ -2284,10 +2859,19 @@ impl AssistSettingsDialog {
         if body.is_empty() {
             return;
         }
+        self.last_body_height = body.height;
         // The scroll bound uses the height the *previous* frame measured; see
         // the field comment. It is clamped before drawing, so a section that got
         // shorter cannot leave the view past its own end for a frame.
         let overflow = (self.content_height - body.height).max(0.0);
+        // A scroll asked for before the body had ever been measured is applied
+        // here, on the first frame that has a measurement to clamp it against
+        // (AP3-R S10).
+        if self.content_height > 0.0 {
+            if let Some(pending) = self.pending_scroll.take() {
+                self.scroll = pending;
+            }
+        }
         self.scroll = self.scroll.clamp(0.0, overflow);
 
         let pointer = ui_scale.mouse(d);
@@ -2311,6 +2895,33 @@ impl AssistSettingsDialog {
         }
         self.content_height = cursor - top + 16.0;
         drop(clip);
+
+        // AP3-R S4: the view follows the focus. Applied after the body has drawn
+        // because that is when the focused control's box is known — an
+        // immediate-mode body has no layout to consult beforehand — so the
+        // correction lands on the next frame, which is one frame and invisible.
+        if self.focus_follow {
+            if let (Some(rect), true) = (self.focused_bounds, self.focus_is_in_body()) {
+                let overflow = (self.content_height - body.height).max(0.0);
+                let top_edge = layout.content.y + 8.0;
+                let bottom_edge = layout.content.y + layout.content.height - 8.0;
+                let delta = if rect.y < top_edge {
+                    rect.y - top_edge
+                } else if rect.y + rect.height > bottom_edge {
+                    rect.y + rect.height - bottom_edge
+                } else {
+                    0.0
+                };
+                if delta != 0.0 {
+                    self.scroll = (self.scroll + delta).clamp(0.0, overflow);
+                }
+                self.focus_follow = false;
+            } else if self.focused_bounds.is_some() {
+                // Chrome control: nothing to follow, and leaving the flag armed
+                // would make the next body draw jump for it.
+                self.focus_follow = false;
+            }
+        }
 
         // The scrollbar is drawn outside the scissor so it is never clipped by
         // the content it describes.
@@ -2345,10 +2956,17 @@ impl AssistSettingsDialog {
 
     // -- shared drawing pieces ---------------------------------------------
 
-    fn focus_ring(&self, d: &mut RaylibDrawHandle<'_>, boundary: UiRect, id: ControlId) {
+    /// Draws the focus ring, and records where it went.
+    ///
+    /// The recording is what makes scroll-follows-focus a property rather than a
+    /// second feature: every focusable control in this file already calls this,
+    /// including the disabled ones, so there is no control whose position the
+    /// scroller can fail to know.
+    fn focus_ring(&mut self, d: &mut RaylibDrawHandle<'_>, boundary: UiRect, id: ControlId) {
         if !self.is_focused(id) || boundary.is_empty() {
             return;
         }
+        self.focused_bounds = Some(boundary);
         d.draw_rectangle_lines_ex(
             widgets::rectangle(UiRect::new(
                 boundary.x - 3.0,
@@ -2385,14 +3003,23 @@ impl AssistSettingsDialog {
         if boundary.is_empty() {
             return false;
         }
+        let id = widgets::widget_id(DIALOG_WIDGETS, widget);
         if !enabled {
+            // AP3-R S5: the hint comes *before* the early return. A disabled
+            // control with no tooltip is the one control on screen that cannot
+            // say why it is disabled, which is exactly the case a tooltip is
+            // for. The hover state comes from a real widget registration —
+            // `disabled_button` draws and nothing else — and the claim it takes
+            // is wanted anyway: a press on a disabled control inside a modal
+            // should land nowhere rather than on whatever is underneath.
+            let state = self.widgets.button(d, id, boundary);
             self.widgets
                 .disabled_button(d, font, boundary, label, Some(metric::UI_FONT_CAPTION));
+            self.widgets.hint(d, state, id, boundary, tip);
             self.focus_ring(d, boundary, focus);
             let _ = self.take_activation(focus);
             return false;
         }
-        let id = widgets::widget_id(DIALOG_WIDGETS, widget);
         let state = self.widgets.text_button(
             d,
             font,
@@ -2421,11 +3048,21 @@ impl AssistSettingsDialog {
         label: &str,
         on: bool,
         tip: &str,
+        enabled: bool,
     ) -> bool {
         if boundary.is_empty() {
             return false;
         }
         let id = widgets::widget_id(DIALOG_WIDGETS, widget);
+        if !enabled {
+            let state = self.widgets.button(d, id, boundary);
+            self.widgets
+                .disabled_button(d, font, boundary, label, Some(metric::UI_FONT_CAPTION));
+            self.widgets.hint(d, state, id, boundary, tip);
+            self.focus_ring(d, boundary, focus);
+            let _ = self.take_activation(focus);
+            return false;
+        }
         let state = self.widgets.text_button(
             d,
             font,
@@ -2440,6 +3077,124 @@ impl AssistSettingsDialog {
         self.focus_ring(d, boundary, focus);
         state.clicked || self.take_activation(focus)
     }
+
+    /// A readiness pill with a tooltip carrying the whole remediation.
+    ///
+    /// The badge is 96 px and ellipsizes; the sentence a user has to act on is
+    /// longer than that in every interesting case (AP3-R S9). Registering the
+    /// box as a widget is what makes it hoverable at all — `badge` is a free
+    /// function that only draws.
+    fn readiness_badge(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        widget: u32,
+        boundary: UiRect,
+        readiness: &Readiness,
+    ) {
+        if boundary.is_empty() {
+            return;
+        }
+        let id = widgets::widget_id(DIALOG_WIDGETS, widget);
+        let state = self.widgets.button(d, id, boundary);
+        badge(d, font, boundary, &readiness.label(), readiness.tint());
+        self.widgets.hint(d, state, id, boundary, &readiness.hint());
+    }
+
+    /// The banner drawn at the top of **every** section body.
+    ///
+    /// Two facts, both of which used to be invisible where the user was looking:
+    ///
+    /// - **A failed settings load** (AP3-R S1). It was reported only on Privacy,
+    ///   and the reviewer measured a routing capture of a corrupt file as
+    ///   pixel-identical to a clean one — the matrix drew the built-in defaults
+    ///   and said nothing. A banner on every section, plus the matrix drawn
+    ///   explicitly disabled, is what makes the two states distinguishable
+    ///   wherever you are standing.
+    /// - **A job in flight** (AP3-R S11). The dialog promises that changes apply
+    ///   to the next job; that promise is only meaningful when it can say
+    ///   whether there is a current one.
+    fn draw_banners(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        body: UiRect,
+        cursor: &mut f32,
+    ) {
+        if self.job_running {
+            banner(
+                d,
+                font,
+                body,
+                cursor,
+                "A job is running \u{2014} these settings apply to the next job. The running one \
+                 keeps the route graph it snapshotted at Start.",
+                color::ui_warning(),
+            );
+        }
+        match &self.settings_source {
+            SettingsSource::Error(reason) => {
+                let path = self.settings_path.as_ref().map_or_else(
+                    || "<no path>".to_string(),
+                    |path| path.display().to_string(),
+                );
+                let text = format!(
+                    "Settings could not be loaded: {reason}. {path} is left exactly as it is, and \
+                     everything below shows the built-in defaults rather than your file \u{2014} so \
+                     the controls are disabled. Repair or move the file, or see Privacy \u{2192} \
+                     Configuration provenance.",
+                );
+                banner(d, font, body, cursor, &text, color::ui_danger());
+            }
+            SettingsSource::NoPath => {
+                banner(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "No per-user configuration directory could be resolved, so nothing here can be \
+                     saved. Set XDG_CONFIG_HOME or HOME. See Privacy \u{2192} Configuration \
+                     provenance.",
+                    color::ui_danger(),
+                );
+            }
+            SettingsSource::Absent | SettingsSource::Loaded => {}
+        }
+    }
+}
+
+/// A bordered notice block, drawn full-width at the top of a section body.
+fn banner(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &musializer_runtime::font::UiFonts,
+    body: UiRect,
+    cursor: &mut f32,
+    text: &str,
+    tint: Color,
+) {
+    if body.width <= 24.0 {
+        return;
+    }
+    let lines = wrap(font, text, body.width - 24.0, metric::UI_FONT_CAPTION);
+    let height = lines.len() as f32 * 17.0 + 12.0;
+    let boundary = UiRect::new(body.x, *cursor, body.width, height);
+    widgets::fill(d, boundary, color::ui_raised());
+    d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, tint);
+    widgets::fill(d, UiRect::new(boundary.x, boundary.y, 3.0, height), tint);
+    let mut y = *cursor + 6.0;
+    for line in lines {
+        widgets::draw_text(
+            d,
+            font,
+            &line,
+            body.x + 12.0,
+            y,
+            metric::UI_FONT_CAPTION,
+            tint,
+        );
+        y += 17.0;
+    }
+    *cursor += height + 8.0;
 }
 
 /// The header's second line. A free function because it needs neither the
@@ -2556,6 +3311,11 @@ fn subheading(
 }
 
 /// A `label: value` line, with the value in ink and the label muted.
+///
+/// **Both columns are ellipsized, independently.** The label column is as
+/// likely to be a catalog string as the value column — the OpenRouter list draws
+/// the model *id* as its label — and a label measured against nothing printed
+/// straight through the value beside it (AP3-R S7).
 fn field_line(
     d: &mut RaylibDrawHandle<'_>,
     font: &musializer_runtime::font::UiFonts,
@@ -2565,16 +3325,21 @@ fn field_line(
     value: &str,
     tint: Color,
 ) {
+    let offset = 186.0f32.min(body.width * 0.4);
     widgets::draw_text(
         d,
         font,
-        label,
+        &ellipsize(
+            font,
+            label,
+            (offset - 8.0).max(16.0),
+            metric::UI_FONT_CAPTION,
+        ),
         body.x,
         *cursor,
         metric::UI_FONT_CAPTION,
         color::ui_muted(),
     );
-    let offset = 186.0f32.min(body.width * 0.4);
     let available = (body.width - offset).max(24.0);
     widgets::draw_text(
         d,
@@ -2668,6 +3433,82 @@ fn wrap(
     lines
 }
 
+/// The longest run of characters any externally-sourced string may contribute
+/// to a drawn row.
+///
+/// A bound rather than a guess, and deliberately generous: a model id of 160
+/// characters is already absurd, and every column ellipsizes against the face
+/// afterwards anyway. The point of the cap is that
+/// [`sanitize_display`]'s cost is bounded by its *output*, so a 4000-character
+/// name cannot make a row measurement walk 4000 glyphs on every frame.
+pub const DISPLAY_CAP: usize = 160;
+
+/// Whether a character reorders text without drawing anything.
+///
+/// `char::is_control` does not cover these: they are format characters, so a
+/// right-to-left override survives a control-character strip and silently
+/// reverses everything after it in the row. The reviewer's fixture carries one
+/// (`b/rtl-\u{202e}reversed\u{202c}-and--nul`), which is why they are named here
+/// rather than assumed absent.
+fn is_bidi_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// The one filter every catalog-, Codex- and doctor-derived string goes through
+/// before it is measured or drawn (E6, AP3-R S7).
+///
+/// Three things, in one place because they are one rule — *a string from
+/// outside this application is data, not layout*:
+///
+/// - **Control and bidi-format characters are dropped.** A newline in a model id
+///   made the row below it collide with this one, and a right-to-left override
+///   reverses the rest of the line including the label beside it.
+/// - **Whitespace runs collapse to one space**, so a name padded with forty tabs
+///   occupies one column rather than the whole row.
+/// - **The length is hard-capped with an ellipsis.** A 1300-character id
+///   overprinted the row it was in; the column ellipsizer alone could not save it
+///   because the *measurement* of the untruncated string is what cost the frame.
+///
+/// It is deliberately not a validator. Nothing here refuses a string — a catalog
+/// entry with a hostile id still appears, it simply cannot rearrange the page.
+#[must_use]
+pub fn sanitize_display(text: &str) -> String {
+    let mut out = String::new();
+    let mut drawn = 0usize;
+    let mut pending_space = false;
+    for character in text.chars() {
+        // A bidi override is *deleted*, not turned into a space: it sits between
+        // two halves of a word that were meant to be one, and inserting a
+        // separator would change the text rather than only its direction.
+        if is_bidi_control(character) {
+            continue;
+        }
+        if character.is_control() || character.is_whitespace() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && drawn > 0 {
+            if drawn >= DISPLAY_CAP {
+                out.push('\u{2026}');
+                return out;
+            }
+            out.push(' ');
+            drawn += 1;
+        }
+        pending_space = false;
+        if drawn >= DISPLAY_CAP {
+            out.push('\u{2026}');
+            return out;
+        }
+        out.push(character);
+        drawn += 1;
+    }
+    out
+}
+
 /// Truncates with an ellipsis rather than letting a value print past its column.
 fn ellipsize(
     font: &musializer_runtime::font::UiFonts,
@@ -2705,6 +3546,7 @@ impl AssistSettingsDialog {
         layout: &DialogLayout,
     ) {
         let font = fonts.ui();
+        self.draw_banners(d, font, body, cursor);
         heading(
             d, font, body, cursor,
             Section::Routing.heading(),
@@ -2713,16 +3555,29 @@ impl AssistSettingsDialog {
         );
 
         // Profile and the experimental gate.
+        let options = profile_options(&self.draft);
+        let active = self.draft.active_profile.clone();
         let profile_label = format!(
             "Profile: {}",
-            if self.draft.active_profile == "recommended" {
+            if active == RECOMMENDED_PROFILE {
                 "Recommended (built in)".to_string()
             } else {
-                format!("{} (per-task overrides)", self.draft.active_profile)
+                format!("{} (per-task overrides)", sanitize_display(&active))
             }
         );
         let profile_box = UiRect::new(body.x, *cursor, 250.0f32.min(body.width), CONTROL_HEIGHT);
-        let has_overrides = self.draft.profile(OVERRIDE_PROFILE_ID).is_some();
+        let (target, switches) = override_target(&self.draft);
+        let profile_tip = format!(
+            "{} profile(s) in this file, plus the built-in Recommended one. Edits go to {}{}.",
+            options.len(),
+            sanitize_display(&target),
+            if switches {
+                ", which this would make active"
+            } else {
+                ""
+            }
+        );
+        let profile_enabled = self.profile_picker_enabled();
         if self.picker(
             d,
             font,
@@ -2730,14 +3585,23 @@ impl AssistSettingsDialog {
             FOCUS_ROUTING_PROFILE,
             profile_box,
             &profile_label,
-            "Switch between the built-in Recommended profile and your per-task overrides",
-            has_overrides,
-        ) {
-            self.draft.active_profile = if self.draft.active_profile == "recommended" {
-                OVERRIDE_PROFILE_ID.to_string()
+            if profile_enabled {
+                &profile_tip
+            } else if self.settings_editable() {
+                "This file carries no profile of its own yet, so the built-in Recommended one is \
+                 the only choice. Changing any route below creates one."
             } else {
-                "recommended".to_string()
-            };
+                "Disabled: the settings file failed to load, so there is no profile list to \
+                 choose from."
+            },
+            profile_enabled,
+        ) {
+            // Every profile in the file, plus `recommended` — not a two-state
+            // flip between `recommended` and `custom`, which could not reach a
+            // profile called anything else (AP3-R S2).
+            if let Some(next) = cycle(&options, Some(&active)) {
+                self.draft.active_profile = next;
+            }
         }
         let experimental_box = UiRect::new(
             body.x + profile_box.width + 8.0,
@@ -2760,6 +3624,7 @@ impl AssistSettingsDialog {
             show_experimental,
             "Unmeasured models are hidden by default. Turning this on offers them with a warning; \
              a model measured and failed is never offered.",
+            self.experimental_toggle_enabled(),
         ) {
             self.draft.catalog.show_experimental = !show_experimental;
         }
@@ -2784,6 +3649,20 @@ impl AssistSettingsDialog {
         }
 
         *cursor += 8.0;
+        // The boundary legend (AP3-R S9). The BOUNDARY column is three tokens
+        // nobody outside this document has met, and the ladder they belong to is
+        // the single most consequential thing on the page.
+        paragraph(
+            d,
+            font,
+            body,
+            cursor,
+            "BOUNDARY: local-only \u{2014} nothing leaves this machine, no socket is opened. \
+             text-leaves-machine \u{2014} derived text or JSON leaves, never audio. \
+             audio-leaves-machine \u{2014} audio bytes leave, and every job asks first.",
+            color::ui_muted(),
+        );
+        *cursor += 4.0;
         paragraph(
             d,
             font,
@@ -2807,8 +3686,15 @@ impl AssistSettingsDialog {
     /// Column widths for the six-column matrix. Derived from the body width so
     /// the flexible MODEL column absorbs the slack rather than every column
     /// drifting.
+    ///
+    /// The CONTRACT column is 150 px rather than the original 104 because it now
+    /// carries the plain-language name over the `TC-*` token (AP3-R S9), and
+    /// "Independent timing verification" needs the room. Widening it moves the
+    /// narrowest body the matrix fits in, which is why
+    /// [`ROUTING_MATRIX_DIALOG_WIDTH`] moved with it — the two constants are
+    /// tied together by a test.
     fn routing_columns(width: f32) -> [f32; 6] {
-        let fixed = [104.0f32, 132.0, 118.0, 106.0, 96.0];
+        let fixed = [150.0f32, 132.0, 118.0, 106.0, 96.0];
         let gaps = 6.0 * 5.0;
         let model = (width - fixed.iter().sum::<f32>() - gaps).max(90.0);
         [fixed[0], fixed[1], fixed[2], model, fixed[3], fixed[4]]
@@ -2844,7 +3730,25 @@ impl AssistSettingsDialog {
             let readiness = self.readiness(&resolved);
             let mut x = body.x;
 
-            let name = if resolved.origin == RouteOrigin::Override {
+            // The plain-language name is the primary text and the stable token
+            // is the dimmed second line (AP3-R S9). The token is what files,
+            // snapshots and cache acceptance are keyed on, so it stays on
+            // screen — but "TC-COARSE" was the *only* thing the row said it did.
+            widgets::draw_text(
+                d,
+                font,
+                &ellipsize(
+                    font,
+                    contract.human_label(),
+                    columns[0],
+                    metric::UI_FONT_CAPTION,
+                ),
+                x,
+                row_y + 1.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_ink(),
+            );
+            let token = if resolved.origin == RouteOrigin::Override {
                 format!("{}*", contract.token())
             } else {
                 contract.token().to_string()
@@ -2852,11 +3756,11 @@ impl AssistSettingsDialog {
             widgets::draw_text(
                 d,
                 font,
-                &name,
+                &token,
                 x,
-                row_y + 6.0,
-                metric::UI_FONT_CAPTION,
-                color::ui_ink(),
+                row_y + 16.0,
+                MARKER_FONT_SIZE,
+                color::ui_muted(),
             );
             x += columns[0] + 6.0;
 
@@ -2905,12 +3809,12 @@ impl AssistSettingsDialog {
                 &resolved,
             );
             x += columns[4] + 6.0;
-            badge(
+            self.readiness_badge(
                 d,
                 font,
+                900 + index as u32,
                 UiRect::new(x, row_y + 3.0, columns[5], 20.0),
-                &readiness.label(),
-                readiness.tint(),
+                &readiness,
             );
 
             *cursor += MATRIX_ROW_PITCH;
@@ -2929,42 +3833,49 @@ impl AssistSettingsDialog {
         for (index, contract) in ALL_CONTRACTS.into_iter().enumerate() {
             let resolved = resolve_route(&self.draft, contract);
             let readiness = self.readiness(&resolved);
-            let name = if resolved.origin == RouteOrigin::Override {
+            let token = if resolved.origin == RouteOrigin::Override {
                 format!("{}*", contract.token())
             } else {
                 contract.token().to_string()
             };
+            let available = (body.width - 108.0).max(40.0);
             widgets::draw_text(
                 d,
                 font,
-                &name,
+                &ellipsize(
+                    font,
+                    contract.human_label(),
+                    available,
+                    metric::UI_FONT_CAPTION,
+                ),
                 body.x,
                 *cursor,
                 metric::UI_FONT_CAPTION,
                 color::ui_ink(),
             );
-            widgets::draw_text(
+            self.readiness_badge(
                 d,
                 font,
-                resolved.boundary().token(),
-                body.x + 110.0,
-                *cursor,
-                11.0,
-                color::ui_muted(),
-            );
-            badge(
-                d,
-                font,
+                900 + index as u32,
                 UiRect::new(
                     body.x + body.width - 96.0,
                     *cursor - 3.0,
                     96.0f32.min(body.width),
                     18.0,
                 ),
-                &readiness.label(),
-                readiness.tint(),
+                &readiness,
             );
-            *cursor += 20.0;
+            *cursor += 15.0;
+            widgets::draw_text(
+                d,
+                font,
+                &format!("{token} \u{00b7} {}", resolved.boundary().token()),
+                body.x,
+                *cursor,
+                MARKER_FONT_SIZE,
+                color::ui_muted(),
+            );
+            *cursor += 16.0;
             let third = ((body.width - 12.0) / 3.0).max(60.0);
             self.routing_route_cell(
                 d,
@@ -3007,7 +3918,7 @@ impl AssistSettingsDialog {
         resolved: &ResolvedRoute,
     ) {
         let eligible = contract.eligible_route_types();
-        let enabled = !contract.is_locked() && eligible.len() > 1;
+        let enabled = self.route_cell_enabled(contract);
         let label = if contract.is_locked() {
             "locked".to_string()
         } else {
@@ -3016,12 +3927,35 @@ impl AssistSettingsDialog {
                 |route| route.route_type.token().to_string(),
             )
         };
-        let tip = format!(
-            "{}: {} eligible route type(s) \u{00b7} caps at {}",
-            contract.token(),
-            eligible.len(),
-            contract.max_boundary().token()
-        );
+        // The disabled reasons are as specific as the enabled one, because a
+        // disabled control's tooltip is the only place it can explain itself
+        // (AP3-R S5).
+        let tip = if enabled {
+            format!(
+                "{} ({}): {} eligible route type(s) \u{00b7} caps at {}",
+                contract.human_label(),
+                contract.token(),
+                eligible.len(),
+                contract.max_boundary().token()
+            )
+        } else if !self.settings_editable() {
+            "Disabled: the settings file failed to load, so this is showing the built-in default \
+             rather than your file."
+                .to_string()
+        } else if contract.is_locked() {
+            format!(
+                "{} is the built-in deterministic analyzer and is not user-routable (§7).",
+                contract.token()
+            )
+        } else {
+            format!(
+                "{} has exactly one eligible route type ({}), so there is nothing to switch to.",
+                contract.token(),
+                eligible
+                    .first()
+                    .map_or("none", |route_type| route_type.token())
+            )
+        };
         if self.picker(
             d,
             font,
@@ -3069,28 +4003,56 @@ impl AssistSettingsDialog {
         resolved: &ResolvedRoute,
     ) {
         let options = self.model_options_for(contract);
-        let label = resolved.model_label();
+        let label = sanitize_display(&resolved.model_label());
         let status = resolved
             .route
             .as_ref()
             .and_then(|route| route.model_id.as_deref())
             .map(|id| suitability::status(id, contract));
-        let tip = match status {
-            Some(Suitability::Recommended) => format!(
-                "{label}: recommended for {} on this repository's own benchmark",
-                contract.token()
-            ),
-            Some(Suitability::Experimental) => format!(
-                "{label}: experimental \u{2014} no Musializer benchmark for {}",
-                contract.token()
-            ),
-            Some(Suitability::Unsupported) => format!(
-                "{label}: measured and failed for {}; it is never offered",
-                contract.token()
-            ),
-            None => format!("{} models offered for {}", options.len(), contract.token()),
+        let enabled = self.model_cell_enabled(contract);
+        let tip = if !enabled && !self.settings_editable() {
+            "Disabled: the settings file failed to load, so this is showing the built-in default \
+             rather than your file."
+                .to_string()
+        } else if !enabled && !contract.is_locked() {
+            // AP3-R S8: a picker whose only option is what is already selected
+            // is disabled — but *why* it is the only option matters. When the
+            // experimental filter is what emptied it, the control names the
+            // toggle that would refill it rather than looking broken.
+            let with_experimental = self.model_options_with_experimental(contract).len();
+            if with_experimental > options.len() {
+                format!(
+                    "Only {} model is offered for {}. {} more become available with \
+                     \"Show experimental\" turned on, above.",
+                    options.len(),
+                    contract.token(),
+                    with_experimental - options.len()
+                )
+            } else {
+                format!(
+                    "{} is the only model offered for {}. A model measured and failed is never \
+                     offered, whatever this is set to.",
+                    label,
+                    contract.token()
+                )
+            }
+        } else {
+            match status {
+                Some(Suitability::Recommended) => format!(
+                    "{label}: recommended for {} on this repository's own benchmark",
+                    contract.token()
+                ),
+                Some(Suitability::Experimental) => format!(
+                    "{label}: experimental \u{2014} no Musializer benchmark for {}",
+                    contract.token()
+                ),
+                Some(Suitability::Unsupported) => format!(
+                    "{label}: measured and failed for {}; it is never offered",
+                    contract.token()
+                ),
+                None => format!("{} models offered for {}", options.len(), contract.token()),
+            }
         };
-        let enabled = !contract.is_locked() && options.len() > 1;
         if self.picker(
             d,
             font,
@@ -3155,20 +4117,41 @@ impl AssistSettingsDialog {
         resolved: &ResolvedRoute,
     ) {
         let allowed = contract.allowed_fallbacks();
-        let enabled = !contract.is_locked() && allowed.len() > 1;
+        let enabled = self.fallback_cell_enabled(contract);
         let label = resolved.route.as_ref().map_or_else(
             || "\u{2014}".to_string(),
             |route| route.fallback.token().to_string(),
         );
-        let tip = format!(
-            "{}: {}",
-            contract.token(),
-            allowed
-                .iter()
-                .map(|policy| policy.token())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let tip = if enabled {
+            format!(
+                "{}: {}",
+                contract.token(),
+                allowed
+                    .iter()
+                    .map(|policy| policy.token())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else if !self.settings_editable() {
+            "Disabled: the settings file failed to load, so this is showing the built-in default \
+             rather than your file."
+                .to_string()
+        } else if resolved.route.is_none() {
+            // AP3-R S6: this was drawn enabled and did nothing. A fallback is a
+            // policy *for a route*, so with no route there is nothing to attach
+            // one to.
+            format!(
+                "Choose a route first: {} has no recommended route, so there is nothing for a \
+                 fallback policy to apply to.",
+                contract.token()
+            )
+        } else {
+            format!(
+                "{} allows only the {} fallback policy.",
+                contract.token(),
+                allowed.first().map_or("none", |policy| policy.token())
+            )
+        };
         if self.picker(
             d,
             font,
@@ -3211,6 +4194,7 @@ impl AssistSettingsDialog {
         cursor: &mut f32,
     ) {
         let font = fonts.ui();
+        self.draw_banners(d, font, body, cursor);
         heading(
             d,
             font,
@@ -3355,10 +4339,10 @@ impl AssistSettingsDialog {
                     body,
                     cursor,
                     "Report schema",
-                    if report.schema_version.is_empty() {
-                        "not reported"
+                    &if report.schema_version.is_empty() {
+                        "not reported".to_string()
                     } else {
-                        report.schema_version.as_str()
+                        sanitize_display(&report.schema_version)
                     },
                     color::ui_muted(),
                 );
@@ -3380,7 +4364,7 @@ impl AssistSettingsDialog {
                                 body,
                                 cursor,
                                 "State",
-                                &identity.state,
+                                &sanitize_display(&identity.state),
                                 if identity.state == "available" {
                                     color::ui_success()
                                 } else {
@@ -3408,7 +4392,10 @@ impl AssistSettingsDialog {
                                     body,
                                     cursor,
                                     name,
-                                    value.as_deref().unwrap_or("not reported"),
+                                    &value.as_deref().map_or_else(
+                                        || "not reported".to_string(),
+                                        sanitize_display,
+                                    ),
                                     if value.is_some() {
                                         color::ui_ink()
                                     } else {
@@ -3417,7 +4404,14 @@ impl AssistSettingsDialog {
                                 );
                             }
                             if let Some(remediation) = &identity.remediation {
-                                paragraph(d, font, body, cursor, remediation, color::ui_warning());
+                                paragraph(
+                                    d,
+                                    font,
+                                    body,
+                                    cursor,
+                                    &sanitize_display(remediation),
+                                    color::ui_warning(),
+                                );
                             }
                         }
                     }
@@ -3441,6 +4435,7 @@ impl AssistSettingsDialog {
             },
             gpu,
             "Ask the local runtimes for a GPU device when one is available",
+            true,
         ) {
             self.draft.local_runtimes.prefer_gpu = !gpu;
         }
@@ -3473,7 +4468,7 @@ impl AssistSettingsDialog {
             150.0f32.min((body.width - gpu_box.width - stems_box.width - 16.0).max(0.0)),
             CONTROL_HEIGHT,
         );
-        let busy = self.background.is_some();
+        let doctor_enabled = self.doctor_enabled();
         if self.picker(
             d,
             font,
@@ -3481,8 +4476,12 @@ impl AssistSettingsDialog {
             FOCUS_MODELS_DOCTOR,
             doctor_box,
             "Run doctor",
-            "Runs tools/musializer_doctor.py --json and reads the runtime identities from it",
-            !busy,
+            if doctor_enabled {
+                "Runs tools/musializer_doctor.py --json and reads the runtime identities from it"
+            } else {
+                "Disabled while another background job is running in this dialog."
+            },
+            doctor_enabled,
         ) {
             self.start_doctor();
         }
@@ -3557,6 +4556,7 @@ impl AssistSettingsDialog {
         cursor: &mut f32,
     ) {
         let font = fonts.ui();
+        self.draw_banners(d, font, body, cursor);
         heading(
             d,
             font,
@@ -3672,25 +4672,27 @@ impl AssistSettingsDialog {
                         cursor,
                         &format!(
                             "{}{}",
-                            model.id,
+                            sanitize_display(&model.id),
                             if model.is_default { " (default)" } else { "" }
                         ),
                         &format!(
                             "{} \u{00b7} efforts: {} \u{00b7} default: {}",
-                            if model.display_name.is_empty() {
+                            sanitize_display(if model.display_name.is_empty() {
                                 model.id.as_str()
                             } else {
                                 model.display_name.as_str()
-                            },
+                            }),
                             if efforts.is_empty() {
                                 "not reported".to_string()
                             } else {
-                                efforts.join("/")
+                                sanitize_display(&efforts.join("/"))
                             },
-                            model
-                                .default_reasoning_effort
-                                .as_deref()
-                                .unwrap_or("not reported"),
+                            sanitize_display(
+                                model
+                                    .default_reasoning_effort
+                                    .as_deref()
+                                    .unwrap_or("not reported")
+                            ),
                         ),
                         color::ui_ink(),
                     );
@@ -3705,6 +4707,7 @@ impl AssistSettingsDialog {
                 .route
                 .as_ref()
                 .is_some_and(|route| route.route_type == RouteType::Codex);
+            let enabled = self.codex_effort_enabled(contract);
             let effort = resolved
                 .route
                 .as_ref()
@@ -3712,16 +4715,16 @@ impl AssistSettingsDialog {
             widgets::draw_text(
                 d,
                 font,
-                contract.token(),
+                &format!("{} ({})", contract.human_label(), contract.token()),
                 body.x,
                 *cursor + 6.0,
-                metric::UI_FONT_CAPTION,
+                MARKER_FONT_SIZE,
                 color::ui_ink(),
             );
             let boundary = UiRect::new(
-                body.x + 132.0,
+                body.x + 232.0,
                 *cursor,
-                180.0f32.min((body.width - 132.0).max(0.0)),
+                180.0f32.min((body.width - 232.0).max(0.0)),
                 CONTROL_HEIGHT,
             );
             let label = if is_codex {
@@ -3732,6 +4735,17 @@ impl AssistSettingsDialog {
             } else {
                 "not a Codex route".to_string()
             };
+            let tip = if enabled {
+                "minimal / low / medium / high".to_string()
+            } else if !self.settings_editable() {
+                "Disabled: the settings file failed to load.".to_string()
+            } else {
+                format!(
+                    "{} is not routed through Codex, so it has no reasoning effort to set. \
+                     Change its ROUTE to codex on the Routing page first.",
+                    contract.token()
+                )
+            };
             if self.picker(
                 d,
                 font,
@@ -3739,8 +4753,8 @@ impl AssistSettingsDialog {
                 FOCUS_CODEX_EFFORT_BASE + index as ControlId,
                 boundary,
                 &label,
-                "minimal / low / medium / high",
-                is_codex,
+                &tip,
+                enabled,
             ) {
                 if let Some(mut route) = resolved.route.clone() {
                     route.reasoning_effort = Some(match effort {
@@ -3756,7 +4770,7 @@ impl AssistSettingsDialog {
         }
 
         *cursor += 4.0;
-        let busy = self.background.is_some();
+        let refresh_enabled = self.codex_refresh_enabled();
         let refresh = UiRect::new(body.x, *cursor, 190.0f32.min(body.width), CONTROL_HEIGHT);
         if self.picker(
             d,
@@ -3765,8 +4779,14 @@ impl AssistSettingsDialog {
             FOCUS_CODEX_REFRESH,
             refresh,
             "Refresh Codex models",
-            "Runs tools/codex_model_discovery.py, which starts a short-lived `codex app-server`",
-            !busy && self.codex_binary.is_some(),
+            if refresh_enabled {
+                "Runs tools/codex_model_discovery.py, which starts a short-lived `codex app-server`"
+            } else if self.codex_binary.is_none() {
+                "Disabled: `codex` is not on this session's PATH, so there is nothing to ask."
+            } else {
+                "Disabled while another background job is running in this dialog."
+            },
+            refresh_enabled,
         ) {
             self.start_refresh(RefreshKind::Codex);
         }
@@ -3823,6 +4843,7 @@ impl AssistSettingsDialog {
         cursor: &mut f32,
     ) {
         let font = fonts.ui();
+        self.draw_banners(d, font, body, cursor);
         heading(
             d, font, body, cursor,
             Section::OpenRouter.heading(),
@@ -3831,6 +4852,22 @@ impl AssistSettingsDialog {
         );
 
         subheading(d, font, body, cursor, "Connection");
+        // The path the key is read from and written to, here rather than only on
+        // the Privacy page (AP3-R S9): every remediation on this page — chmod,
+        // Forget, "there is nowhere to store a key" — names a file the section
+        // otherwise never showed.
+        field_line(
+            d,
+            font,
+            body,
+            cursor,
+            "Credentials file",
+            &self.credentials_path.as_ref().map_or_else(
+                || "no per-user configuration directory".to_string(),
+                |path| path.display().to_string(),
+            ),
+            color::ui_muted(),
+        );
         match self.credentials.clone() {
             CredentialState::None => {
                 field_line(
@@ -3908,8 +4945,49 @@ impl AssistSettingsDialog {
                     color::ui_muted(),
                 );
             }
-            CredentialState::Error(reason) => {
-                field_line(d, font, body, cursor, "Key", &reason, color::ui_danger());
+            CredentialState::Unusable { kind, path, entry } => {
+                field_line(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "Key",
+                    &match (kind, &entry) {
+                        (CredentialFault::Io, _) => {
+                            "unusable \u{2014} could not be read".to_string()
+                        }
+                        (CredentialFault::NotJson, _) => {
+                            "unusable \u{2014} the file is not JSON".to_string()
+                        }
+                        (CredentialFault::TooLarge, _) => {
+                            "unusable \u{2014} over the size cap".to_string()
+                        }
+                        (CredentialFault::Schema, Some(entry)) => {
+                            format!("unusable \u{2014} the {entry} entry is malformed")
+                        }
+                        (CredentialFault::Schema, None) => {
+                            "unusable \u{2014} not a credentials store of this schema".to_string()
+                        }
+                    },
+                    color::ui_danger(),
+                );
+                paragraph(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    &format!("{path}: {}", kind.remediation()),
+                    color::ui_danger(),
+                );
+                paragraph(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "The file is left exactly as it is. Musializer does not rewrite a credentials \
+                     file it could not read, for the same reason it does not repair a loose one.",
+                    color::ui_muted(),
+                );
             }
         }
 
@@ -3935,8 +5013,10 @@ impl AssistSettingsDialog {
 
         let has_pending = self.pending_key.is_some();
         let busy = self.background.is_some();
+        let busy_reason = "Disabled while another background job is running in this dialog.";
         let button_width = 118.0f32.min((body.width - 24.0) / 4.0);
         let mut x = body.x;
+        let test_enabled = self.key_test_enabled();
         let test = UiRect::new(x, *cursor, button_width, CONTROL_HEIGHT);
         if self.picker(
             d,
@@ -3945,12 +5025,19 @@ impl AssistSettingsDialog {
             FOCUS_KEY_TEST,
             test,
             "Test",
-            "GET /api/v1/key \u{2014} read-only, non-inference, spends no credits",
-            !busy && (has_pending || self.credentials.is_usable()),
+            if test_enabled {
+                "GET /api/v1/key \u{2014} read-only, non-inference, spends no credits"
+            } else if busy {
+                busy_reason
+            } else {
+                "Disabled: there is no key to test. Type or paste one above, or store one first."
+            },
+            test_enabled,
         ) {
             self.start_key_test();
         }
         x += button_width + 8.0;
+        let replace_enabled = self.key_replace_enabled();
         let replace = UiRect::new(x, *cursor, button_width, CONTROL_HEIGHT);
         if self.picker(
             d,
@@ -3959,12 +5046,22 @@ impl AssistSettingsDialog {
             FOCUS_KEY_REPLACE,
             replace,
             "Replace",
-            "Commits the typed key. Enabled once a Test has succeeded.",
-            !busy && has_pending && self.key_tested_ok,
+            if replace_enabled {
+                "Commits the typed key. Enabled once a Test has succeeded."
+            } else if busy {
+                busy_reason
+            } else if has_pending {
+                "Disabled until a Test succeeds for the key typed above (§3). Save untested \
+                 commits it without one."
+            } else {
+                "Disabled: nothing has been typed in the field above."
+            },
+            replace_enabled,
         ) {
             self.commit_key();
         }
         x += button_width + 8.0;
+        let untested_enabled = self.key_untested_enabled();
         let untested = UiRect::new(x, *cursor, button_width + 30.0, CONTROL_HEIGHT);
         if self.picker(
             d,
@@ -3973,12 +5070,19 @@ impl AssistSettingsDialog {
             FOCUS_KEY_SAVE_UNTESTED,
             untested,
             "Save untested",
-            "Commits without a Test. The dialog will not claim the key works.",
-            !busy && has_pending,
+            if untested_enabled {
+                "Commits without a Test. The dialog will not claim the key works."
+            } else if busy {
+                busy_reason
+            } else {
+                "Disabled: nothing has been typed in the field above."
+            },
+            untested_enabled,
         ) {
             self.commit_key();
         }
         x += untested.width + 8.0;
+        let forget_enabled = self.key_forget_enabled();
         let forget = UiRect::new(x, *cursor, button_width, CONTROL_HEIGHT);
         if self.picker(
             d,
@@ -3987,8 +5091,15 @@ impl AssistSettingsDialog {
             FOCUS_KEY_FORGET,
             forget,
             "Forget",
-            "Removes this provider's entry and rewrites the file; other providers are untouched",
-            !busy && matches!(self.credentials, CredentialState::File { .. }),
+            if forget_enabled {
+                "Removes this provider's entry and rewrites the file; other providers are untouched"
+            } else if busy {
+                busy_reason
+            } else {
+                "Disabled: there is no stored key in the credentials file to forget. A session-only \
+                 key disappears when Musializer exits."
+            },
+            forget_enabled,
         ) {
             self.forget_key();
         }
@@ -4042,11 +5153,13 @@ impl AssistSettingsDialog {
                 );
             }
             CacheSlot::Loaded(cache) => {
-                let source = cache.source_url.clone();
+                let source = sanitize_display(&cache.source_url);
                 let filters: Vec<String> = cache
                     .filters
                     .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
+                    .map(|(key, value)| {
+                        format!("{}={}", sanitize_display(key), sanitize_display(value))
+                    })
                     .collect();
                 let models = cache.models.clone();
                 field_line(d, font, body, cursor, "Source", &source, color::ui_muted());
@@ -4074,6 +5187,12 @@ impl AssistSettingsDialog {
                 );
                 *cursor += 4.0;
                 for model in models.iter().take(CATALOG_ROWS) {
+                    // Every string below is catalog data, so every one of them
+                    // goes through `sanitize_display` before it is measured
+                    // (E6, AP3-R S7). The reviewer's fixture carries a
+                    // 1322-character id, a name with an embedded newline and a
+                    // right-to-left override; all three used to reach the
+                    // renderer verbatim.
                     let status = suitability::status(&model.id, ContractId::Semantic);
                     let modalities = format!(
                         "{} \u{2192} {}",
@@ -4088,11 +5207,15 @@ impl AssistSettingsDialog {
                         |length| format!("{length:.0} ctx"),
                     );
                     let price = match (&model.pricing.audio, &model.pricing.prompt, &model.pricing.completion) {
-                        (Some(audio), _, _) => format!("audio ${audio}"),
-                        (None, Some(prompt), Some(completion)) => {
-                            format!("in ${prompt} / out ${completion}")
+                        (Some(audio), _, _) => format!("audio ${}", sanitize_display(audio)),
+                        (None, Some(prompt), Some(completion)) => format!(
+                            "in ${} / out ${}",
+                            sanitize_display(prompt),
+                            sanitize_display(completion)
+                        ),
+                        (None, Some(prompt), None) => {
+                            format!("in ${}", sanitize_display(prompt))
                         }
-                        (None, Some(prompt), None) => format!("in ${prompt}"),
                         _ => "price not reported".to_string(),
                     };
                     field_line(
@@ -4100,13 +5223,13 @@ impl AssistSettingsDialog {
                         font,
                         body,
                         cursor,
-                        &model.id,
+                        &sanitize_display(&model.id),
                         &format!(
                             "{} \u{00b7} {modalities} \u{00b7} {context} \u{00b7} {price} \u{00b7} {}",
                             if model.name.is_empty() {
-                                "name not reported"
+                                "name not reported".to_string()
                             } else {
-                                model.name.as_str()
+                                sanitize_display(&model.name)
                             },
                             status.token()
                         ),
@@ -4148,6 +5271,7 @@ impl AssistSettingsDialog {
             },
             network,
             "Off means Refresh is the only thing that can open a socket, and it is disabled",
+            true,
         ) {
             self.draft.catalog.network_allowed = !network;
         }
@@ -4165,10 +5289,12 @@ impl AssistSettingsDialog {
             },
             refresh_on_open,
             "Fetch a stale catalog when this section opens. Needs network access.",
+            true,
         ) {
             self.draft.catalog.refresh_on_open = !refresh_on_open;
         }
         x += toggle_width + 8.0;
+        let catalog_refresh_enabled = self.catalog_refresh_enabled();
         if self.picker(
             d,
             font,
@@ -4176,9 +5302,16 @@ impl AssistSettingsDialog {
             FOCUS_CATALOG_REFRESH,
             UiRect::new(x, *cursor, toggle_width, CONTROL_HEIGHT),
             "Refresh now",
-            "Runs tools/provider_catalog.py. Fetching a public catalog still discloses your IP \
-             address, which is why it is never disguised as an offline action.",
-            !busy && network,
+            if catalog_refresh_enabled {
+                "Runs tools/provider_catalog.py. Fetching a public catalog still discloses your IP \
+                 address, which is why it is never disguised as an offline action."
+            } else if busy {
+                busy_reason
+            } else {
+                "Disabled: Network access is off, which is what stops this from opening a socket. \
+                 Turn it on beside this button."
+            },
+            catalog_refresh_enabled,
         ) {
             self.start_refresh(RefreshKind::OpenRouter);
         }
@@ -4279,6 +5412,7 @@ impl AssistSettingsDialog {
         cursor: &mut f32,
     ) {
         let font = fonts.ui();
+        self.draw_banners(d, font, body, cursor);
         heading(
             d, font, body, cursor,
             Section::Privacy.heading(),
@@ -4308,23 +5442,20 @@ impl AssistSettingsDialog {
                 .as_ref()
                 .and_then(|route| route.provider.as_ref())
                 .is_some_and(|provider| provider.zdr_required);
-            let is_remote = resolved
-                .route
-                .as_ref()
-                .is_some_and(|route| route.route_type == RouteType::OpenRouter);
+            let is_remote = self.zdr_enabled(contract);
             widgets::draw_text(
                 d,
                 font,
-                contract.token(),
+                &format!("{} ({})", contract.human_label(), contract.token()),
                 body.x,
                 *cursor + 6.0,
-                metric::UI_FONT_CAPTION,
+                MARKER_FONT_SIZE,
                 color::ui_ink(),
             );
             let boundary = UiRect::new(
-                body.x + 132.0,
+                body.x + 232.0,
                 *cursor,
-                220.0f32.min((body.width - 132.0).max(0.0)),
+                220.0f32.min((body.width - 232.0).max(0.0)),
                 CONTROL_HEIGHT,
             );
             let tip = "Zero-data-retention endpoints only. If that leaves no eligible endpoint \
@@ -4348,6 +5479,7 @@ impl AssistSettingsDialog {
                     },
                     zdr,
                     tip,
+                    true,
                 )
             } else {
                 self.picker(
@@ -4357,7 +5489,13 @@ impl AssistSettingsDialog {
                     FOCUS_PRIVACY_ZDR_BASE + index as ControlId,
                     boundary,
                     "local route \u{00b7} nothing leaves",
-                    tip,
+                    if self.settings_editable() {
+                        "This contract resolves to a local route, so no data leaves this machine \
+                         and there is no provider policy to set. Route it through OpenRouter on \
+                         the Routing page to get one."
+                    } else {
+                        "Disabled: the settings file failed to load."
+                    },
                     false,
                 )
             };
@@ -4434,7 +5572,7 @@ impl AssistSettingsDialog {
             body,
             cursor,
             "Active profile",
-            &self.draft.active_profile,
+            &sanitize_display(&self.draft.active_profile),
             color::ui_muted(),
         );
         field_line(
@@ -4514,11 +5652,15 @@ impl AssistSettingsDialog {
                 // The resolved route's own contract, not the loop variable: if
                 // the two ever disagreed the whole summary would be describing a
                 // different task than it names.
-                resolved.contract.token(),
+                &format!(
+                    "{} ({})",
+                    resolved.contract.human_label(),
+                    resolved.contract.token()
+                ),
                 &format!(
                     "{} \u{00b7} {} \u{00b7} {} \u{00b7} fallback {} \u{00b7} {} \u{00b7} {}",
                     resolved.route_label(),
-                    resolved.model_label(),
+                    sanitize_display(&resolved.model_label()),
                     resolved.boundary().token(),
                     resolved
                         .route
@@ -4598,6 +5740,25 @@ impl AssistSettingsDialog {
         }
         if d.is_key_pressed(Key::KEY_ENTER) || d.is_key_pressed(Key::KEY_KP_ENTER) {
             self.activate = true;
+        }
+
+        // AP3-R S4. Neither hand-drawn field has a caret, so Home and End have
+        // no text meaning to take here — and a scrollable modal with no keyboard
+        // way down it is a modal a keyboard user cannot finish reading. The
+        // values are clamped in `draw_body` against the height it measured, so
+        // an over-large End is bounded by the same expression the wheel is.
+        let page = (self.last_body_height - 48.0).max(96.0);
+        if repeat(d, Key::KEY_PAGE_DOWN) {
+            self.scroll += page;
+        }
+        if repeat(d, Key::KEY_PAGE_UP) {
+            self.scroll = (self.scroll - page).max(0.0);
+        }
+        if d.is_key_pressed(Key::KEY_HOME) {
+            self.scroll = 0.0;
+        }
+        if d.is_key_pressed(Key::KEY_END) {
+            self.scroll = self.content_height;
         }
 
         let typing_key = self.is_focused(FOCUS_KEY_FIELD);
@@ -4691,6 +5852,16 @@ impl AssistSettingsDialog {
 enum RefreshKind {
     OpenRouter,
     Codex,
+}
+
+/// The half-sentence a credential status line ends with, depending on whether
+/// the settings file was rewritten with it.
+fn settings_follow_up(persisted: bool) -> &'static str {
+    if persisted {
+        " The settings file records its fingerprint."
+    } else {
+        " Save to record its fingerprint in the settings file."
+    }
 }
 
 impl RefreshKind {
@@ -4860,17 +6031,20 @@ impl AssistSettingsDialog {
         }
         match files::save_credentials(&path, &store) {
             Ok(()) => {
-                self.draft.credentials.openrouter.mode = CredentialMode::File;
-                self.draft.credentials.openrouter.lookup_id = lookup;
-                self.draft.credentials.openrouter.fingerprint = Some(fingerprint.clone());
-                self.draft.credentials.openrouter.label = label.clone();
+                let record = musializer_core::assist::settings::CredentialRecord {
+                    mode: CredentialMode::File,
+                    lookup_id: lookup,
+                    fingerprint: Some(fingerprint.clone()),
+                    label: label.clone(),
+                };
+                let persisted = self.record_credential(record);
                 self.credentials = CredentialState::File { fingerprint, label };
                 self.key_tested_ok = false;
                 self.status = Some((
                     format!(
-                        "Key stored in {} (mode 0600). Save to record its fingerprint in the \
-                         settings file.",
-                        path.display()
+                        "Key stored in {} (mode 0600).{}",
+                        path.display(),
+                        settings_follow_up(persisted)
                     ),
                     color::ui_success(),
                 ));
@@ -4895,12 +6069,16 @@ impl AssistSettingsDialog {
         match files::forget_credential(&path, "openrouter", &lookup) {
             Ok(true) => {
                 self.credentials = CredentialState::None;
-                self.draft.credentials.openrouter =
-                    musializer_core::assist::settings::CredentialRecord::default();
+                let persisted = self.record_credential(
+                    musializer_core::assist::settings::CredentialRecord::default(),
+                );
                 self.key_test = None;
                 self.key_tested_ok = false;
                 self.status = Some((
-                    "Key forgotten. Other providers' entries were left byte-identical.".to_string(),
+                    format!(
+                        "Key forgotten. Other providers' entries were left byte-identical.{}",
+                        settings_follow_up(persisted)
+                    ),
                     color::ui_success(),
                 ));
             }
@@ -4914,6 +6092,49 @@ impl AssistSettingsDialog {
                 self.status = Some((format!("Could not forget: {error}"), color::ui_danger()));
             }
         }
+    }
+
+    /// Records a credential operation in **both** settings stores at once
+    /// (AP3-R S13).
+    ///
+    /// The defect this replaces: `commit_key` and `forget_key` wrote the
+    /// credentials file immediately and put the matching metadata only in the
+    /// *draft*. So Forget followed by Escape-discard threw the draft away and
+    /// left `saved` — the record the rest of the dialog and the next Save read —
+    /// still claiming `mode: file` with the fingerprint of a key that no longer
+    /// existed anywhere. A credential operation is not an edit that can be
+    /// discarded: it already happened, on disk, in another file.
+    ///
+    /// So it lands in `saved` and `draft` together, which also means it never
+    /// moves the dirty flag. The settings *file* is rewritten too when that is
+    /// safe — there were no other unsaved edits to sweep along with it, and the
+    /// file on disk is one this dialog could read. Otherwise it is left alone and
+    /// the status line says a Save is still owed, because silently writing a
+    /// draft the user is still editing is the worse failure.
+    ///
+    /// Returns whether the settings file itself was rewritten.
+    fn record_credential(
+        &mut self,
+        record: musializer_core::assist::settings::CredentialRecord,
+    ) -> bool {
+        let was_clean = !self.is_dirty();
+        self.draft.credentials.openrouter = record.clone();
+        self.saved.credentials.openrouter = record;
+        let writable = matches!(
+            self.settings_source,
+            SettingsSource::Loaded | SettingsSource::Absent
+        );
+        if !was_clean || !writable {
+            return false;
+        }
+        let Some(path) = self.settings_path.clone() else {
+            return false;
+        };
+        if files::save_settings(&path, &self.saved).is_ok() {
+            self.settings_source = SettingsSource::Loaded;
+            return true;
+        }
+        false
     }
 
     /// Rebuilds one discovery cache through its Python tool, off the frame
@@ -5241,7 +6462,7 @@ mod tests {
     /// sum to the body width.
     #[test]
     fn the_routing_columns_fill_the_body_without_overflowing_it() {
-        for width in [ROUTING_MATRIX_BODY_WIDTH, 700.0, 860.0, 1010.0] {
+        for width in [ROUTING_MATRIX_BODY_WIDTH, 760.0, 860.0, 1010.0] {
             let columns = AssistSettingsDialog::routing_columns(width);
             let total: f32 = columns.iter().sum::<f32>() + 6.0 * 5.0;
             assert!(
@@ -5298,7 +6519,11 @@ mod tests {
             let mut dialog = dialog();
             dialog.section = section;
             let total = dialog.focus_order().len();
-            assert!(total >= 8, "{section:?} offers only {total} controls");
+            // Close and the five section tabs are always reachable; everything
+            // else depends on state, and since AP3-R S5 a control drawn
+            // disabled is not a tabstop. A default dialog with no key, no
+            // catalog and no `codex` on PATH legitimately offers little else.
+            assert!(total >= 6, "{section:?} offers only {total} controls");
             let start = dialog.focused();
             for _ in 0..total {
                 dialog.focus_next(1);
@@ -5890,6 +7115,640 @@ mod tests {
             open.button_at(panel, control, at(false, true)).clicked,
             "the control is unreachable even without the blocker, so the check proves nothing"
         );
+    }
+
+    // -- AP3-R -------------------------------------------------------------
+
+    fn audio_catalog(ids: &[&str]) -> CatalogCache {
+        CatalogCache {
+            schema_version: "musializer.openrouter-catalog/v1".to_string(),
+            source_url: String::new(),
+            fetched_at_utc: None,
+            filters: BTreeMap::new(),
+            models: ids
+                .iter()
+                .map(|id| CatalogModel {
+                    id: (*id).to_string(),
+                    input_modalities: vec!["audio".to_string()],
+                    output_modalities: vec!["text".to_string()],
+                    ..CatalogModel::default()
+                })
+                .collect(),
+        }
+    }
+
+    /// S1. A settings file that failed to load leaves the routing matrix
+    /// showing built-in defaults, so every control on it is disabled and the
+    /// ring skips all of them. The reviewer measured a corrupt-file routing
+    /// capture as pixel-identical to a clean one; this is the model half of the
+    /// fix, and the gate photographs the other half.
+    #[test]
+    fn a_failed_settings_load_disables_the_whole_routing_matrix() {
+        let mut dialog = dialog();
+        dialog.section = Section::Routing;
+        let clean = dialog.focus_order();
+        assert!(clean.contains(&FOCUS_ROUTING_EXPERIMENTAL));
+        assert!(dialog.settings_editable());
+
+        dialog.settings_source = SettingsSource::Error("the file is not valid JSON".to_string());
+        assert!(!dialog.settings_editable());
+        let broken = dialog.focus_order();
+        assert!(!broken.contains(&FOCUS_ROUTING_EXPERIMENTAL));
+        assert!(!broken.contains(&FOCUS_ROUTING_PROFILE));
+        for (index, contract) in ALL_CONTRACTS.into_iter().enumerate() {
+            let index = index as ControlId;
+            assert!(!dialog.route_cell_enabled(contract));
+            assert!(!dialog.model_cell_enabled(contract));
+            assert!(!dialog.fallback_cell_enabled(contract));
+            assert!(!dialog.zdr_enabled(contract));
+            for base in [FOCUS_ROUTE_BASE, FOCUS_MODEL_BASE, FOCUS_FALLBACK_BASE] {
+                assert!(!broken.contains(&(base + index)));
+            }
+        }
+        // The section tabs and Close stay: the error is escapable and the other
+        // sections are still worth reading.
+        assert!(broken.contains(&FOCUS_CLOSE));
+        assert!(broken.contains(&FOCUS_TAB_BASE));
+        // And it is in the report, on every section, not only on Privacy.
+        for section in Section::ALL {
+            dialog.section = section;
+            assert!(
+                dialog.describe()[0].contains("load-error=true"),
+                "{section:?} does not report the failed load"
+            );
+        }
+    }
+
+    /// S2. The bug: `set_override` force-switched `active_profile` to `custom`,
+    /// so a user editing their own `studio` profile got the edit written into a
+    /// second profile and `studio` left in the file, never active again.
+    ///
+    /// The before/after is the whole assertion — every profile that was in the
+    /// file is still in it, and the one that was active is still active.
+    #[test]
+    fn an_override_writes_to_the_active_profile_and_orphans_no_other() {
+        let mut settings = AssistSettings {
+            active_profile: "studio".to_string(),
+            profiles: vec![
+                Profile {
+                    id: "studio".to_string(),
+                    label: "Studio".to_string(),
+                    routes: BTreeMap::new(),
+                },
+                Profile {
+                    id: "live".to_string(),
+                    label: "Live".to_string(),
+                    routes: BTreeMap::new(),
+                },
+            ],
+            ..AssistSettings::default()
+        };
+        let before: Vec<String> = settings.profiles.iter().map(|p| p.id.clone()).collect();
+
+        let mut route = recommended_route(ContractId::Coarse).unwrap();
+        route.fallback = FallbackPolicy::Ask;
+        set_override(&mut settings, route);
+
+        let after: Vec<String> = settings.profiles.iter().map(|p| p.id.clone()).collect();
+        assert_eq!(before, after, "a profile was added, removed or reordered");
+        assert_eq!(
+            settings.active_profile, "studio",
+            "the active profile was switched out from under the edit"
+        );
+        assert!(settings
+            .profile("studio")
+            .is_some_and(|profile| profile.routes.contains_key(&ContractId::Coarse)));
+        assert!(settings
+            .profile("live")
+            .is_some_and(|profile| profile.routes.is_empty()));
+        settings.validate().expect("still a valid record");
+    }
+
+    /// S2, the other half: the built-in profile is read-only, so an edit made
+    /// while it is active copies into a user profile — reusing an existing one
+    /// rather than inventing a second `custom` beside it.
+    #[test]
+    fn editing_the_built_in_profile_copies_into_a_user_profile() {
+        let mut fresh = AssistSettings::default();
+        assert_eq!(
+            override_target(&fresh),
+            (OVERRIDE_PROFILE_ID.to_string(), true)
+        );
+        let mut route = recommended_route(ContractId::Coarse).unwrap();
+        route.fallback = FallbackPolicy::Ask;
+        set_override(&mut fresh, route.clone());
+        assert_eq!(fresh.active_profile, OVERRIDE_PROFILE_ID);
+        assert_eq!(fresh.profiles.len(), 1);
+
+        let mut existing = AssistSettings {
+            active_profile: RECOMMENDED_PROFILE.to_string(),
+            profiles: vec![Profile {
+                id: "studio".to_string(),
+                label: "Studio".to_string(),
+                routes: BTreeMap::new(),
+            }],
+            ..AssistSettings::default()
+        };
+        assert_eq!(override_target(&existing), ("studio".to_string(), true));
+        set_override(&mut existing, route);
+        assert_eq!(existing.profiles.len(), 1, "a second profile was invented");
+        assert_eq!(existing.active_profile, "studio");
+        existing.validate().expect("still a valid record");
+    }
+
+    /// S2. The picker offers every profile the file carries, plus the built-in
+    /// one — not a two-state flip that could never reach a third.
+    #[test]
+    fn the_profile_picker_lists_every_profile_in_the_file() {
+        let settings = AssistSettings {
+            active_profile: "studio".to_string(),
+            profiles: vec![
+                Profile {
+                    id: "studio".to_string(),
+                    label: "Studio".to_string(),
+                    routes: BTreeMap::new(),
+                },
+                Profile {
+                    id: "live".to_string(),
+                    label: "Live".to_string(),
+                    routes: BTreeMap::new(),
+                },
+            ],
+            ..AssistSettings::default()
+        };
+        assert_eq!(
+            profile_options(&settings),
+            vec![
+                RECOMMENDED_PROFILE.to_string(),
+                "studio".to_string(),
+                "live".to_string()
+            ]
+        );
+        // And cycling reaches all three and comes back.
+        let options = profile_options(&settings);
+        let mut seen = vec!["studio".to_string()];
+        let mut current = "studio".to_string();
+        for _ in 0..3 {
+            current = cycle(&options, Some(&current)).unwrap();
+            seen.push(current.clone());
+        }
+        assert_eq!(seen[3], "studio", "the cycle did not return");
+        assert!(seen.contains(&"live".to_string()));
+        assert!(seen.contains(&RECOMMENDED_PROFILE.to_string()));
+        assert_eq!(profile_options(&AssistSettings::default()).len(), 1);
+    }
+
+    /// S3. §5 invariant 4. The reviewer's fixture: a stored key, an OpenRouter
+    /// route, and **no model chosen** reported `Ready`. Every required piece has
+    /// to be present, and the badge names the first one that is not.
+    #[test]
+    fn readiness_names_the_first_missing_piece() {
+        let mut dialog = dialog();
+        let mut settings = AssistSettings::default();
+        let mut route = recommended_route(ContractId::Semantic).unwrap();
+        route.model_id = None;
+        set_override(&mut settings, route);
+        dialog.draft = settings;
+        let semantic = resolve_route(&dialog.draft, ContractId::Semantic);
+
+        // No credential: the first thing missing.
+        assert_eq!(
+            dialog.readiness(&semantic),
+            Readiness::Blocked(NO_KEY.to_string())
+        );
+
+        // With one, the missing model is next — this is the exact state that
+        // used to answer `Ready`.
+        dialog.credentials = CredentialState::File {
+            fingerprint: "0a1b2c3d".to_string(),
+            label: None,
+        };
+        assert_eq!(
+            dialog.readiness(&semantic),
+            Readiness::Blocked(NO_MODEL.to_string())
+        );
+
+        // With a model but no catalog, "we have not looked" rather than a
+        // confident claim in either direction.
+        let mut settings = AssistSettings::default();
+        set_override(
+            &mut settings,
+            recommended_route(ContractId::Semantic).unwrap(),
+        );
+        dialog.draft = AssistSettings::default();
+        let semantic = resolve_route(&dialog.draft, ContractId::Semantic);
+        assert!(matches!(dialog.readiness(&semantic), Readiness::Unknown(_)));
+
+        // A catalog whose entries the current constraints all filter out blocks,
+        // and names the constraint rather than the credential.
+        dialog.catalog = CacheSlot::Loaded(audio_catalog(&["acme/never-measured"]));
+        assert!(!dialog.draft.catalog.show_experimental);
+        assert_eq!(
+            dialog.readiness(&semantic),
+            Readiness::Blocked(NO_ENDPOINT.to_string())
+        );
+
+        // And with everything present, Ready — the same catalog, once the filter
+        // that emptied it is turned off.
+        dialog.draft.catalog.show_experimental = true;
+        assert_eq!(dialog.readiness(&semantic), Readiness::Ready);
+    }
+
+    /// S3. The eligibility count ignores the selected id, or a route pointed at
+    /// a model the catalog never heard of would be its own evidence.
+    #[test]
+    fn the_eligible_count_does_not_count_the_selection_itself() {
+        let mut dialog = dialog();
+        dialog.catalog = CacheSlot::Loaded(audio_catalog(&["text/only"]));
+        dialog.draft.catalog.show_experimental = true;
+        // The picker keeps the selected id so it stays changeable...
+        assert!(dialog
+            .model_options_for(ContractId::Semantic)
+            .contains(&"xiaomi/mimo-v2.5".to_string()));
+        // ...and readiness still sees zero eligible entries.
+        assert_eq!(dialog.openrouter_eligible(ContractId::Semantic), 1);
+        dialog.catalog = CacheSlot::Loaded(CatalogCache {
+            schema_version: "musializer.openrouter-catalog/v1".to_string(),
+            source_url: String::new(),
+            fetched_at_utc: None,
+            filters: BTreeMap::new(),
+            models: vec![CatalogModel {
+                id: "text/only".to_string(),
+                input_modalities: vec!["text".to_string()],
+                output_modalities: vec!["text".to_string()],
+                ..CatalogModel::default()
+            }],
+        });
+        assert_eq!(dialog.openrouter_eligible(ContractId::Semantic), 0);
+    }
+
+    /// S4. The focus moving arms the follow, and a chrome control does not.
+    #[test]
+    fn moving_the_focus_arms_the_scroll_to_follow_it() {
+        let mut dialog = dialog();
+        dialog.section = Section::LocalModels;
+        assert!(!dialog.focus_follow);
+        dialog.focus_next(1);
+        assert!(dialog.focus_follow, "Tab did not ask the view to follow");
+
+        // Close and the tabs live in the chrome, which does not scroll.
+        dialog.focus = 0;
+        dialog.refresh_ring();
+        assert_eq!(dialog.focused(), Some(FOCUS_CLOSE));
+        assert!(!dialog.focus_is_in_body());
+        let last = dialog.ring.len() - 1;
+        dialog.focus = last;
+        assert_eq!(dialog.focused(), Some(FOCUS_MODELS_DOCTOR));
+        assert!(dialog.focus_is_in_body());
+    }
+
+    /// S5. The ring and the drawing code share one expression per control, so a
+    /// tabstop can never land on something drawn disabled. Asserted in both
+    /// directions, because "the ring is a subset" alone is satisfied by an empty
+    /// ring.
+    #[test]
+    fn the_ring_holds_exactly_the_controls_that_are_enabled() {
+        let mut dialog = dialog();
+        dialog.credentials = CredentialState::File {
+            fingerprint: "0a1b2c3d".to_string(),
+            label: None,
+        };
+        dialog.draft.catalog.network_allowed = true;
+        for section in Section::ALL {
+            dialog.section = section;
+            let ring = dialog.focus_order();
+            for (index, contract) in ALL_CONTRACTS.into_iter().enumerate() {
+                let index = index as ControlId;
+                assert_eq!(
+                    ring.contains(&(FOCUS_ROUTE_BASE + index)),
+                    section == Section::Routing && dialog.route_cell_enabled(contract),
+                    "{section:?} route {contract:?}"
+                );
+                assert_eq!(
+                    ring.contains(&(FOCUS_MODEL_BASE + index)),
+                    section == Section::Routing && dialog.model_cell_enabled(contract),
+                    "{section:?} model {contract:?}"
+                );
+                assert_eq!(
+                    ring.contains(&(FOCUS_FALLBACK_BASE + index)),
+                    section == Section::Routing && dialog.fallback_cell_enabled(contract),
+                    "{section:?} fallback {contract:?}"
+                );
+                assert_eq!(
+                    ring.contains(&(FOCUS_PRIVACY_ZDR_BASE + index)),
+                    section == Section::Privacy
+                        && contract.max_boundary().rank() >= 2
+                        && dialog.zdr_enabled(contract),
+                    "{section:?} zdr {contract:?}"
+                );
+            }
+            assert_eq!(
+                ring.contains(&FOCUS_KEY_FORGET),
+                section == Section::OpenRouter && dialog.key_forget_enabled()
+            );
+            assert_eq!(
+                ring.contains(&FOCUS_CATALOG_REFRESH),
+                section == Section::OpenRouter && dialog.catalog_refresh_enabled()
+            );
+            assert_eq!(ring.contains(&FOCUS_SAVE), dialog.save_enabled());
+        }
+        // And the enabled side really does vary, or the equalities above would
+        // be comparing false with false everywhere.
+        assert!(dialog.key_forget_enabled());
+        assert!(dialog.catalog_refresh_enabled());
+        assert!(dialog.save_enabled(), "the draft edit above left it clean");
+        assert!(!dialog.model_cell_enabled(ContractId::Align));
+    }
+
+    /// S6. `TC-VERIFY` has no recommended route, so there is nothing for a
+    /// fallback policy to apply to. It was drawn enabled and silently did
+    /// nothing when pressed.
+    #[test]
+    fn the_fallback_picker_needs_a_route_before_it_is_offered() {
+        let mut dialog = dialog();
+        assert!(resolve_route(&dialog.draft, ContractId::Verify)
+            .route
+            .is_none());
+        assert!(ContractId::Verify.allowed_fallbacks().len() > 1);
+        assert!(!dialog.fallback_cell_enabled(ContractId::Verify));
+        assert!(dialog.fallback_cell_enabled(ContractId::Coarse));
+
+        // Give it a route and the picker becomes real.
+        let route = Route {
+            contract: ContractId::Verify,
+            route_type: RouteType::LocalProc,
+            runtime_id: "whisper.cpp".to_string(),
+            model_id: Some("whisper.cpp".to_string()),
+            model_path: None,
+            reasoning_effort: None,
+            fallback: FallbackPolicy::None,
+            provider: None,
+        };
+        set_override(&mut dialog.draft, route);
+        assert!(dialog.fallback_cell_enabled(ContractId::Verify));
+    }
+
+    /// S7. Catalog strings are display data. The three cases are the reviewer's
+    /// own fixture: a 1322-character id, an embedded newline and tab, and a
+    /// right-to-left override that a control-character strip does not catch.
+    #[test]
+    fn a_hostile_catalog_string_cannot_rearrange_the_page() {
+        let long_id = format!("a/{}", "long-model-id-segment-".repeat(60));
+        assert_eq!(long_id.chars().count(), 1322);
+        let sanitized = sanitize_display(&long_id);
+        assert_eq!(sanitized.chars().count(), DISPLAY_CAP + 1);
+        assert!(sanitized.ends_with('\u{2026}'));
+
+        assert_eq!(sanitize_display("c/newline\nand\ttab"), "c/newline and tab");
+        assert_eq!(sanitize_display("line1\nline2"), "line1 line2");
+        assert_eq!(
+            sanitize_display("b/rtl-\u{202e}reversed\u{202c}-and--nul"),
+            "b/rtl-reversed-and--nul"
+        );
+        for character in sanitize_display("a\u{0}b\u{7}c\u{200f}d\u{2066}e").chars() {
+            assert!(!character.is_control() && !is_bidi_control(character));
+        }
+        // Whitespace collapses rather than accumulating, and nothing is padded.
+        assert_eq!(
+            sanitize_display("  emoji \u{1f3b5}   x  "),
+            "emoji \u{1f3b5} x"
+        );
+        assert_eq!(sanitize_display(""), "");
+        assert_eq!(sanitize_display("   "), "");
+        // A string already fit for display is returned unchanged, so ordinary
+        // ids do not gain an ellipsis.
+        assert_eq!(sanitize_display("xiaomi/mimo-v2.5"), "xiaomi/mimo-v2.5");
+    }
+
+    /// S8. The coarse lane the production path already runs is recommended on
+    /// the four-track benchmark's own Whisper evidence, so its picker is not
+    /// hidden behind `Show experimental` on a fresh install.
+    #[test]
+    fn the_coarse_lane_is_recommended_on_the_benchmarks_evidence() {
+        assert_eq!(
+            suitability::status("whisper.cpp", ContractId::Coarse),
+            Suitability::Recommended
+        );
+        let row = suitability::row("whisper.cpp", ContractId::Coarse).unwrap();
+        assert_eq!(row.evidence_date, Some("2026-08-04"));
+        assert_eq!(row.prompt_version, Some("anchor-block-mms/1"));
+        assert_eq!(row.schema_version, Some("musializer.lyric-timing/v1"));
+        assert!(row.evidence.contains("LYRICS_TIMING_BENCHMARK_RESULTS.md"));
+        // Offered without asking, which is what "recommended" buys.
+        let offered = model_options(
+            ContractId::Coarse,
+            RouteType::LocalProc,
+            None,
+            None,
+            false,
+            None,
+        );
+        assert_eq!(offered, vec!["whisper.cpp".to_string()]);
+        // And the experimental one stays experimental.
+        assert_eq!(
+            suitability::status("xiaomi/mimo-v2.5", ContractId::Semantic),
+            Suitability::Experimental
+        );
+    }
+
+    /// S8. A picker with one option is disabled, and when the experimental
+    /// filter is what emptied it the control can say so.
+    #[test]
+    fn a_single_option_picker_knows_whether_the_filter_emptied_it() {
+        let mut dialog = dialog();
+        dialog.catalog =
+            CacheSlot::Loaded(audio_catalog(&["xiaomi/mimo-v2.5", "acme/never-measured"]));
+        // Experimental off: only the selected id survives, so the picker is
+        // disabled — and turning the toggle on would add two.
+        assert_eq!(dialog.model_options_for(ContractId::Semantic).len(), 1);
+        assert!(!dialog.model_cell_enabled(ContractId::Semantic));
+        assert_eq!(
+            dialog
+                .model_options_with_experimental(ContractId::Semantic)
+                .len(),
+            2
+        );
+        dialog.draft.catalog.show_experimental = true;
+        assert!(dialog.model_cell_enabled(ContractId::Semantic));
+    }
+
+    /// S9. The plain-language names are drawn, and a badge's tooltip carries the
+    /// whole remediation the 96 px pill ellipsized away.
+    #[test]
+    fn a_badge_hint_carries_what_the_pill_cannot() {
+        assert_eq!(
+            ContractId::Coarse.human_label(),
+            "Coarse lyric localization"
+        );
+        assert_eq!(
+            ContractId::Verify.human_label(),
+            "Independent timing verification"
+        );
+        let key = Readiness::Blocked(NO_KEY.to_string());
+        assert!(key.hint().contains("OpenRouter section"));
+        assert!(key.hint().len() > key.label().len() * 4);
+        assert!(Readiness::Blocked(NO_MODEL.to_string())
+            .hint()
+            .contains("MODEL column"));
+        assert!(Readiness::Blocked(NO_ENDPOINT.to_string())
+            .hint()
+            .contains("Show experimental"));
+        assert!(Readiness::Unknown("Run doctor".to_string())
+            .hint()
+            .starts_with("Run doctor"));
+        assert!(Readiness::Ready.hint().contains("credential"));
+    }
+
+    /// S11. The dialog can say whether the promise it makes in its subtitle is
+    /// about a job that exists.
+    #[test]
+    fn a_running_job_is_named_in_the_report() {
+        let mut dialog = dialog();
+        assert!(dialog.describe()[0].contains("job-running=false"));
+        dialog.set_job_running(true);
+        assert!(dialog.describe()[0].contains("job-running=true"));
+    }
+
+    /// S12. Three faults, three fixes, and the schema one names the entry. The
+    /// second pass reads key names only — the canary is in the file's `secret`
+    /// values and must reach neither the state nor the report.
+    #[test]
+    fn a_credentials_fault_is_diagnosed_rather_than_called_invalid_json() {
+        use musializer_core::assist::credentials::CredentialsError;
+        let directory = std::env::temp_dir().join(format!(
+            "musializer-ap3r-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let not_json = directory.join("not-json.json");
+        std::fs::write(&not_json, b"{ broken").unwrap();
+        let state = classify_credential_fault(
+            &not_json,
+            &AssistFileError::Credentials(CredentialsError::Format),
+        );
+        assert!(matches!(
+            state,
+            CredentialState::Unusable {
+                kind: CredentialFault::NotJson,
+                ..
+            }
+        ));
+        assert_eq!(state.token(), "unusable(not-json)");
+
+        // Valid JSON, wrong entry shape — the reviewer's `corruptentry` fixture.
+        let bad_entry = directory.join("bad-entry.json");
+        std::fs::write(
+            &bad_entry,
+            br#"{"schema":"musializer.assist-credentials/v1","entries":{
+                "openrouter/default":{"secret":12345},
+                "someoneelse/work":{"secret":"sk-other-KEEPME99"}}}"#,
+        )
+        .unwrap();
+        let state = classify_credential_fault(
+            &bad_entry,
+            &AssistFileError::Credentials(CredentialsError::Format),
+        );
+        match &state {
+            CredentialState::Unusable { kind, entry, .. } => {
+                assert_eq!(*kind, CredentialFault::Schema);
+                assert_eq!(entry.as_deref(), Some("openrouter/default"));
+            }
+            other => panic!("expected a schema fault, got {other:?}"),
+        }
+        assert!(state.token().contains("entry=openrouter/default"));
+        // The other entry's secret is in the same file and must not travel.
+        assert!(!format!("{state:?}").contains("KEEPME99"));
+        assert!(!CredentialFault::Schema.remediation().contains("KEEPME99"));
+
+        let state = classify_credential_fault(
+            &directory.join("absent.json"),
+            &AssistFileError::Read(directory.join("absent.json")),
+        );
+        assert!(matches!(
+            state,
+            CredentialState::Unusable {
+                kind: CredentialFault::Io,
+                ..
+            }
+        ));
+        // Each fault names a different thing to do.
+        let fixes: std::collections::BTreeSet<&str> = [
+            CredentialFault::Io,
+            CredentialFault::NotJson,
+            CredentialFault::Schema,
+            CredentialFault::TooLarge,
+        ]
+        .into_iter()
+        .map(CredentialFault::remediation)
+        .collect();
+        assert_eq!(fixes.len(), 4);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// S13. The reviewer's suspected desync, reproduced and made unstateable.
+    ///
+    /// `forget_key` used to put the cleared credential record only in the
+    /// *draft*, so Escape-discard threw it away and `saved` — what the rest of
+    /// the dialog reads, and what the next Save writes — still claimed
+    /// `mode: file` with the fingerprint of a key that no longer existed. A
+    /// credential operation already happened on disk; it is not an edit.
+    #[test]
+    fn a_credential_operation_survives_an_escape_discard() {
+        let mut dialog = dialog();
+        let stored = musializer_core::assist::settings::CredentialRecord {
+            mode: CredentialMode::File,
+            lookup_id: "default".to_string(),
+            fingerprint: Some("0a1b2c3d".to_string()),
+            label: Some("Personal".to_string()),
+        };
+        dialog.saved.credentials.openrouter = stored.clone();
+        dialog.draft.credentials.openrouter = stored;
+        assert!(!dialog.is_dirty());
+
+        // No settings path, so nothing is written to disk — the in-memory
+        // agreement is the property under test.
+        dialog.settings_path = None;
+        let persisted = dialog
+            .record_credential(musializer_core::assist::settings::CredentialRecord::default());
+        assert!(!persisted);
+
+        // Both stores moved, so the operation did not arm the dirty flag...
+        assert!(
+            !dialog.is_dirty(),
+            "a credential operation was staged as an unsaved edit"
+        );
+        // ...and a discard cannot bring the forgotten key back.
+        dialog.draft = dialog.saved.clone();
+        assert_eq!(
+            dialog.saved.credentials.openrouter,
+            musializer_core::assist::settings::CredentialRecord::default()
+        );
+        assert_eq!(
+            dialog.saved.credentials.openrouter.mode,
+            CredentialMode::None
+        );
+        assert!(dialog.saved.credentials.openrouter.fingerprint.is_none());
+        assert!(dialog.draft.credentials.openrouter.fingerprint.is_none());
+
+        // And an operation made *while* there are other unsaved edits leaves the
+        // file alone rather than sweeping them in.
+        dialog.draft.catalog.show_experimental = true;
+        assert!(dialog.is_dirty());
+        let persisted =
+            dialog.record_credential(musializer_core::assist::settings::CredentialRecord {
+                mode: CredentialMode::File,
+                lookup_id: "default".to_string(),
+                fingerprint: Some("beefcafe".to_string()),
+                label: None,
+            });
+        assert!(!persisted);
+        assert_eq!(
+            dialog.saved.credentials.openrouter.fingerprint.as_deref(),
+            Some("beefcafe")
+        );
+        assert!(dialog.is_dirty(), "the unrelated edit was swallowed");
     }
 
     /// Modality eligibility is necessary and not sufficient, and `TC-ALIGN` can

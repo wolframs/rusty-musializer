@@ -2528,6 +2528,83 @@ for pair in "ai-routing:sections=rail routing=matrix" "ai-routing-narrow:section
     esac
 done
 
+# 2c. The bottom of the two tallest sections (AP3-R S10).
+#     `MUSIALIZER_ASSIST_SETTINGS_SCROLL` used to be applied at open, in front of
+#     a clamp against a content height nothing had measured yet, so every value
+#     clamped to zero and **no section bottom had ever been photographed**. It is
+#     applied on the first frame that has a measurement now, which is why the
+#     assertion reads the last report line rather than the first.
+#
+#     OpenRouter gets a catalog long enough to fill its own list, because the
+#     three-model fixture every other check uses fits on one screen — a bottom
+#     capture of a section that never scrolls is a check that cannot fail.
+python3 - "$AI_DIR" <<'PYBIG'
+import json, pathlib, sys
+cache = pathlib.Path(sys.argv[1]) / "bigcache/musializer"
+cache.mkdir(parents=True, exist_ok=True)
+models = [
+    {"id": f"vendor{i // 4}/audio-model-{i:02d}", "name": f"Vendor {i // 4} Audio {i:02d}",
+     "context_length": 32000 + i, "input_modalities": ["audio", "text"],
+     "output_modalities": ["text"],
+     "pricing": {"prompt": "0.0000004", "completion": "0.0000012", "audio": "0.0000090"}}
+    for i in range(20)
+]
+(cache / "openrouter-models-v1.json").write_text(json.dumps({
+    "schema_version": "musializer.openrouter-catalog/v1",
+    "source_url": "https://openrouter.ai/api/v1/models",
+    "fetched_at_utc": "2026-07-20T09:00:00Z", "validated_at_utc": "2026-07-20T09:00:00Z",
+    "filters": {"input_modalities": "audio", "output_modalities": "text"},
+    "model_count": len(models), "unfiltered_model_count": 340, "models": models,
+}, indent=2, sort_keys=True) + "\n")
+PYBIG
+for section in local openrouter; do
+    bottom_env=("MUSIALIZER_ASSIST_SETTINGS_OPEN=$section"
+                "MUSIALIZER_ASSIST_SETTINGS_DOCTOR=$REPO_ROOT/$AI_DIR/cache/musializer/doctor.json"
+                MUSIALIZER_ASSIST_SETTINGS_SCROLL=4000)
+    [ "$section" = "openrouter" ] &&
+        bottom_env+=("XDG_CACHE_HOME=$REPO_ROOT/$AI_DIR/bigcache-root")
+    [ "$section" = "openrouter" ] && rm -rf "$AI_DIR/bigcache-root" &&
+        mkdir -p "$AI_DIR/bigcache-root" &&
+        cp -r "$AI_DIR/bigcache/musializer" "$AI_DIR/bigcache-root/musializer"
+    ai_capture "ai-$section-bottom" 1280x720 "${bottom_env[@]}" \
+        -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+    BOTTOM="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-$section-bottom.txt" | tail -1)"
+    SCROLLED="$(printf '%s\n' "$BOTTOM" | sed -n 's/.*scroll=\([0-9]*\).*/\1/p')"
+    OVERFLOW="$(printf '%s\n' "$BOTTOM" | sed -n 's/.*overflow=\([0-9]*\).*/\1/p')"
+    echo "  $section bottom: scroll=${SCROLLED:-?} of overflow=${OVERFLOW:-?}"
+    # The bottom, whatever the section's height. A section that fits entirely is
+    # at its bottom at zero, and asserting only `scroll > 0` could not tell that
+    # from the dead seam this replaces — which is why the overflow is reported.
+    case "$BOTTOM" in
+        *"at-bottom=true"*) ;;
+        *) echo "FAIL: the $section capture is not at the bottom of its section" >&2
+           AI_FAILED=1 ;;
+    esac
+    if [ "${OVERFLOW:-0}" -gt 0 ] 2>/dev/null; then
+        if [ "${SCROLLED:-0}" -le 0 ] 2>/dev/null; then
+            echo "FAIL: the scroll seam is dead, so the bottom of $section is unphotographed" >&2
+            AI_FAILED=1
+        fi
+        # And the picture really moved: the top of the body differs from the
+        # unscrolled capture of the same section.
+        BOTTOM_DELTA="$(ffprobe -v error -f lavfi \
+            -i "movie=$OUT_DIR/ai-$section.png,crop=830:400:302:90[a];movie=$OUT_DIR/ai-$section-bottom.png,crop=830:400:302:90[b];[a][b]blend=all_mode=difference,signalstats" \
+            -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+        echo "  $section bottom: max luma difference against the unscrolled capture = ${BOTTOM_DELTA:-?}"
+        python3 -c "import sys; sys.exit(0 if float('${BOTTOM_DELTA:-0}') > 20.0 else 1)" \
+            || { echo "FAIL: the $section capture scrolled by a number but not by pixels" >&2; AI_FAILED=1; }
+    else
+        echo "  $section bottom: the section fits without scrolling at this window"
+    fi
+done
+# At least one of the two really does overflow, or the pair above would be
+# asserting nothing about the seam that was dead.
+if ! grep -h '^assist settings: ' "$OUT_DIR/ai-local-bottom.txt" "$OUT_DIR/ai-openrouter-bottom.txt" \
+    | grep -qv 'overflow=0 '; then
+    echo "FAIL: neither section overflowed, so the scroll seam is untested" >&2
+    AI_FAILED=1
+fi
+
 # 3. The modal really is modal. With the dialog open the timeline strip is not
 #    drawn at all, because the lyrics cue field reads raylib's keyboard directly
 #    and would otherwise receive keys typed into the masked field. The strip is
@@ -2544,23 +2621,69 @@ fi
 #    than it has a pointer, so the probe applies the Tab steps.
 ai_capture "ai-focus-8" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
     MUSIALIZER_ASSIST_SETTINGS_TAB=8 -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
-FOCUS_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-focus-8.txt" | head -1)"
+FOCUS_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-focus-8.txt" | tail -1)"
 echo "  focus: $FOCUS_LINE"
 case "$FOCUS_LINE" in
     *"focus=8/"*) ;;
     *) echo "FAIL: eight Tab steps did not land on control 8: $FOCUS_LINE" >&2; AI_FAILED=1 ;;
 esac
-# The ring is drawn, not merely counted: the accent rectangle around the eighth
-# control is the only blue in this crop of an otherwise white row.
-FOCUS_BLUE="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/ai-focus-8.png,crop=240:40:556:135,signalstats" \
-    -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
-FOCUS_PLAIN="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/ai-routing.png,crop=240:40:556:135,signalstats" \
-    -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
-echo "  focus ring chroma: focused=${FOCUS_BLUE:-?} unfocused=${FOCUS_PLAIN:-?}"
-python3 -c "import sys; sys.exit(0 if float('${FOCUS_BLUE:-0}') - float('${FOCUS_PLAIN:-0}') > 1.0 else 1)" \
-    || { echo "FAIL: no focus ring where the eighth Tab should have left one" >&2; AI_FAILED=1; }
+
+# ai_focus_ring LOG PNG BASELINE_PNG -- assert a ring was drawn where the report
+# says the focus is.
+#
+# The crop comes from the report's own `focus-rect=` rather than from a
+# hand-measured rectangle (AP3-R S4). A pinned crop is a second, silent claim
+# about where a control is, and it is wrong the moment a column width changes —
+# which this tranche changed. Reading the box the dialog says it drew makes the
+# check about the ring rather than about the layout.
+ai_focus_ring() {
+    local log="$1" shot="$2" baseline="$3" what="$4"
+    local line rect x y w h focused plain
+    line="$(sed -n 's/^assist settings: //p' "$OUT_DIR/$log.txt" | tail -1)"
+    case "$line" in
+        *"focus-visible=true"*) ;;
+        *) echo "FAIL: $what left the focus off screen: $line" >&2; return 1 ;;
+    esac
+    rect="$(printf '%s\n' "$line" | sed -n 's/.*focus-rect=\([0-9,]*\).*/\1/p')"
+    if [ -z "$rect" ] || [ "$rect" = "none" ]; then
+        echo "FAIL: $what reported no focus rectangle: $line" >&2
+        return 1
+    fi
+    IFS=, read -r x y w h <<EOF
+$rect
+EOF
+    x=$((x - 6)); y=$((y - 6)); w=$((w + 12)); h=$((h + 12))
+    focused="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/$shot.png,crop=$w:$h:$x:$y,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
+    plain="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/$baseline.png,crop=$w:$h:$x:$y,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
+    echo "  $what: rect=$rect chroma focused=${focused:-?} unfocused=${plain:-?}"
+    python3 -c "import sys; sys.exit(0 if float('${focused:-0}') - float('${plain:-0}') > 1.0 else 1)" \
+        || { echo "FAIL: no focus ring where $what says the focus is" >&2; return 1; }
+    return 0
+}
+ai_focus_ring ai-focus-8 ai-focus-8 ai-routing "eight Tab steps" || AI_FAILED=1
+
+# 4b. Scroll follows focus (AP3-R S4). The last control of Local models is below
+#     the fold with a doctor report loaded — the reviewer measured tabs 7, 8 and
+#     9 as byte-identical pictures, because the ring was being drawn off screen
+#     and clipped away. The ring has to be *in* the picture, which is what the
+#     crop from `focus-rect` asserts.
+AI_LOCAL_RING="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-local.txt" | tail -1 \
+    | sed -n 's|.*focus=[0-9]*/\([0-9]*\).*|\1|p')"
+ai_capture "ai-local-last" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=local \
+    "MUSIALIZER_ASSIST_SETTINGS_DOCTOR=$REPO_ROOT/$AI_DIR/cache/musializer/doctor.json" \
+    "MUSIALIZER_ASSIST_SETTINGS_TAB=$((AI_LOCAL_RING - 1))" \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+ai_focus_ring ai-local-last ai-local-last ai-local "the last Local models control" || AI_FAILED=1
+case "$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-local-last.txt" | tail -1)" in
+    *"scroll=0 "*)
+        echo "FAIL: tabbing to the last control did not scroll it into view" >&2
+        AI_FAILED=1 ;;
+    *) echo "  scroll followed the focus to the bottom of Local models" ;;
+esac
 
 # 5. Escape closes. The dialog prints nothing once closed, and the panel behind
 #    it starts drawing again — which is the same seam as check 3, run backwards.
@@ -2657,14 +2780,44 @@ case "$(sed -n 's/^assist settings discovery: //p' "$OUT_DIR/ai-no-cache.txt" | 
     *) echo "FAIL: an absent cache was not reported as never fetched" >&2; AI_FAILED=1 ;;
 esac
 
-# 8. A corrupt settings file is an error state, not a silent reset.
-ai_capture "ai-corrupt" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=privacy \
+# 8. A corrupt settings file is an error state, not a silent reset — and it says
+#    so **on Routing**, which is where a user configuring routes is standing
+#    (AP3-R S1).
+#
+#    The fixture deliberately opens on `routing` rather than on `privacy`: the
+#    independent review measured a corrupt-file routing capture as *pixel
+#    identical* to a clean one, because the matrix drew the built-in defaults and
+#    said nothing anywhere on the page. The two assertions below are the two
+#    halves of the fix — a load error reported wherever you are standing, and a
+#    matrix drawn explicitly disabled underneath it.
+ai_capture "ai-corrupt" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
     "MUSIALIZER_ASSIST_SETTINGS=$REPO_ROOT/$AI_DIR/corrupt/assist.json" \
     -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
 case "$(sed -n 's/^assist settings stores: //p' "$OUT_DIR/ai-corrupt.txt" | head -1)" in
     'settings=error: '*) echo "  corrupt settings: reported as an error" ;;
     *) echo "FAIL: a corrupt settings file was not reported as an error" >&2; AI_FAILED=1 ;;
 esac
+CORRUPT_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-corrupt.txt" | tail -1)"
+case "$CORRUPT_LINE" in
+    *"load-error=true"*) echo "  corrupt settings: the banner state is reported on routing" ;;
+    *) echo "FAIL: routing does not report the failed load: $CORRUPT_LINE" >&2; AI_FAILED=1 ;;
+esac
+# Every routing control disabled means the ring is only Close plus the five
+# section tabs. A number, so "explicitly disabled" is not a matter of opinion.
+case "$CORRUPT_LINE" in
+    *"focus=0/6 "*) echo "  corrupt settings: the routing matrix offers no tabstop" ;;
+    *) echo "FAIL: a corrupt file left routing controls focusable: $CORRUPT_LINE" >&2; AI_FAILED=1 ;;
+esac
+for crop_name in ai-routing ai-corrupt; do
+    ffmpeg -loglevel error -y -i "$OUT_DIR/$crop_name.png" \
+        -vf "crop=1040:700:120:20" "$OUT_DIR/$crop_name-crop.png"
+done
+CORRUPT_DELTA="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-routing-crop.png[a];movie=$OUT_DIR/ai-corrupt-crop.png[b];[a][b]blend=all_mode=difference,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "  corrupt settings: max luma difference against a clean routing capture = ${CORRUPT_DELTA:-?}"
+python3 -c "import sys; sys.exit(0 if float('${CORRUPT_DELTA:-0}') > 40.0 else 1)" \
+    || { echo "FAIL: a failed settings load is invisible on Routing" >&2; AI_FAILED=1; }
 if [ "$(cat "$AI_DIR/corrupt/assist.json")" != "{ broken" ]; then
     echo "FAIL: the corrupt settings file was overwritten rather than reported" >&2
     AI_FAILED=1
@@ -2684,6 +2837,124 @@ if [ "$LOOSE_MODE" != "644" ]; then
     echo "FAIL: the loose credentials file was repaired (now $LOOSE_MODE) instead of refused" >&2
     AI_FAILED=1
 fi
+
+# 9b. §5 invariant 4: READY means every required piece is present (AP3-R S3).
+#     The fixture is the reviewer's: a stored, well-permissioned key and an
+#     OpenRouter route with **no model chosen**. That reported `Ready` — the one
+#     direction a readiness badge must never be wrong in.
+python3 - "$AI_DIR" <<'PYREADY'
+import json, os, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / "ready"
+root.mkdir(parents=True, exist_ok=True)
+(root / "assist.json").write_text(json.dumps({
+    "schema": "musializer.assist-settings/v1",
+    "active_profile": "overrides",
+    "profiles": [{"id": "overrides", "label": "Overrides", "routes": {
+        "TC-SEMANTIC": {"contract": "TC-SEMANTIC", "route_type": "openrouter",
+                         "runtime_id": "openrouter", "fallback": "none"}}}],
+}, indent=2) + "\n")
+credentials = root / "credentials.json"
+credentials.write_text(json.dumps({
+    "schema": "musializer.assist-credentials/v1",
+    "entries": {"openrouter/default": {"secret": "sk-or-v1-MUSICANARY7Q4X2ZK9",
+                                        "label": "Fixture"}},
+}, indent=2) + "\n")
+credentials.chmod(0o600)
+os.chmod(root, 0o700)
+# A credentials file whose *entry* is schema-invalid while the file is perfectly
+# good JSON. It reported "not valid JSON" with no path, entry or fix.
+entry = pathlib.Path(sys.argv[1]) / "badentry"
+entry.mkdir(parents=True, exist_ok=True)
+bad = entry / "credentials.json"
+bad.write_text(json.dumps({
+    "schema": "musializer.assist-credentials/v1",
+    "entries": {"openrouter/default": {"secret": 12345}},
+}, indent=2) + "\n")
+bad.chmod(0o600)
+os.chmod(entry, 0o700)
+PYREADY
+ai_capture "ai-ready-no-model" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    "MUSIALIZER_ASSIST_SETTINGS=$REPO_ROOT/$AI_DIR/ready/assist.json" \
+    "MUSIALIZER_ASSIST_CREDENTIALS=$REPO_ROOT/$AI_DIR/ready/credentials.json" \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+READY_LINE="$(sed -n 's/^assist settings routing: //p' "$OUT_DIR/ai-ready-no-model.txt" | tail -1)"
+echo "  readiness: $(printf '%s\n' "$READY_LINE" | tr ' ' '\n' | grep TC-SEMANTIC)"
+case "$(sed -n 's/^assist settings stores: //p' "$OUT_DIR/ai-ready-no-model.txt" | head -1)" in
+    *'credentials=file('*) ;;
+    *) echo "FAIL: the readiness fixture has no usable credential, so it tests nothing" >&2
+       AI_FAILED=1 ;;
+esac
+# The *reason*, not just "blocked". A negative control that removed the
+# model check still read `[blocked]`, because this fixture's catalog also
+# leaves no eligible endpoint — so the check passed while the thing it was
+# written for was disabled. Naming the first missing piece is what makes it
+# a check.
+case "$READY_LINE" in
+    *'TC-SEMANTIC=openrouter/openrouter/not chosen[No model chosen]'*) ;;
+    *) echo "FAIL: a route with a key but no model does not name the missing model" >&2
+       AI_FAILED=1 ;;
+esac
+
+# 9c. A schema-invalid credentials *entry* is diagnosed, not called invalid JSON,
+#     and it names the entry (AP3-R S12). The file is left exactly as it is.
+ai_capture "ai-bad-entry" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=openrouter \
+    "MUSIALIZER_ASSIST_CREDENTIALS=$REPO_ROOT/$AI_DIR/badentry/credentials.json" \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+case "$(sed -n 's/^assist settings stores: //p' "$OUT_DIR/ai-bad-entry.txt" | head -1)" in
+    *'credentials=unusable(schema entry=openrouter/default)'*)
+        echo "  bad credentials entry: named, with the fault separated from 'not JSON'" ;;
+    *) echo "FAIL: a schema-invalid credentials entry was not diagnosed" >&2; AI_FAILED=1 ;;
+esac
+if ! grep -q '"secret": 12345' "$AI_DIR/badentry/credentials.json"; then
+    echo "FAIL: the unreadable credentials file was rewritten rather than reported" >&2
+    AI_FAILED=1
+fi
+
+# 9d. A job in flight is stated where the settings promise is made (AP3-R S11).
+#     The dialog says routing changes apply to the next job; the banner is what
+#     makes that promise about something.
+for state in running ready; do
+    spec="panel=assist,play=0"
+    [ "$state" = "ready" ] || spec="$spec,assist=$state"
+    ai_capture "ai-job-$state" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+        -- --ui-probe "$spec" || AI_FAILED=1
+    GOT="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-job-$state.txt" | tail -1 \
+        | sed -n 's/.*\(job-running=[a-z]*\).*/\1/p')"
+    WANT="job-running=false"
+    [ "$state" = "running" ] && WANT="job-running=true"
+    echo "  job banner: $state -> ${GOT:-<absent>}"
+    if [ "$GOT" != "$WANT" ]; then
+        echo "FAIL: the dialog reports $GOT with the panel in the $state state" >&2
+        AI_FAILED=1
+    fi
+done
+JOB_DELTA="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-job-ready.png,crop=840:40:300:85[a];movie=$OUT_DIR/ai-job-running.png,crop=840:40:300:85[b];[a][b]blend=all_mode=difference,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "  job banner: max luma difference at the top of the body = ${JOB_DELTA:-?}"
+python3 -c "import sys; sys.exit(0 if float('${JOB_DELTA:-0}') > 40.0 else 1)" \
+    || { echo "FAIL: the running-job banner is reported but not drawn" >&2; AI_FAILED=1; }
+
+# 9e. A readiness badge carries its whole remediation in a tooltip (AP3-R S9).
+#     The pill is 96 px and ellipsizes; the sentence a user has to act on is
+#     longer than that in every interesting case. A headless run has no pointer,
+#     so the hover is parked by the probe — the same seam the transport row's
+#     tooltips are photographed through.
+ai_capture "ai-badge-hint" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+    MUSIALIZER_ASSIST_SETTINGS_HOVER=1 \
+    -- --ui-probe "panel=assist,play=0,hover=1088x355" || AI_FAILED=1
+BADGE_INK="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-badge-hint.png,crop=700:120:420:330,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+BADGE_PLAIN="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-routing.png,crop=700:120:420:330,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+BADGE_DELTA="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-routing.png,crop=700:120:420:330[a];movie=$OUT_DIR/ai-badge-hint.png,crop=700:120:420:330[b];[a][b]blend=all_mode=difference,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "  badge tooltip: darkest hovered=${BADGE_INK:-?} unhovered=${BADGE_PLAIN:-?} delta=${BADGE_DELTA:-?}"
+python3 -c "import sys; sys.exit(0 if float('${BADGE_DELTA:-0}') > 40.0 else 1)" \
+    || { echo "FAIL: hovering the No key badge drew no tooltip" >&2; AI_FAILED=1; }
 
 # 10. Nothing above opened a socket. Every run stubbed the key test, and the
 #     refresh tools were never spawned — a live call in a capture would make the

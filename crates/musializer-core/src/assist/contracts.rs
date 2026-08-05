@@ -186,6 +186,26 @@ impl ContractId {
         }
     }
 
+    /// The plain-language name, drawn as the primary text wherever a `TC-*`
+    /// token appears in the interface.
+    ///
+    /// The tokens are stable identifiers for files, snapshots and cache
+    /// acceptance (§7 decision 1) — they are not names a user can read. Each
+    /// string here is §1's own "task" column, so the two cannot drift into
+    /// describing different things.
+    #[must_use]
+    pub const fn human_label(self) -> &'static str {
+        match self {
+            Self::Measured => "Measured audio features",
+            Self::Coarse   => "Coarse lyric localization",
+            Self::Align    => "Known-text forced alignment",
+            Self::Wording  => "Lyric wording review",
+            Self::Semantic => "Semantic / feeling analysis",
+            Self::Plan     => "Scene-plan reasoning",
+            Self::Verify   => "Independent timing verification",
+        }
+    }
+
     /// The highest boundary a route for this contract may reach.
     ///
     /// `TC-ALIGN` is `local-only` by contract even though remote aligners
@@ -268,6 +288,25 @@ mod tests {
         }
         assert_eq!(ContractId::parse("TC-NOPE"), None);
         assert_eq!(ContractId::parse("tc-measured"), None);
+    }
+
+    /// Every contract has a plain-language name, and no two share one. The
+    /// interface draws these as the primary text with the token dimmed beside
+    /// them, so a duplicate would put two different tasks under one heading.
+    #[test]
+    fn every_contract_has_a_distinct_human_label() {
+        let mut seen = std::collections::BTreeSet::new();
+        for contract in ALL_CONTRACTS {
+            let label = contract.human_label();
+            assert!(!label.is_empty(), "{} has no label", contract.token());
+            assert!(
+                !label.starts_with("TC-"),
+                "{} is labelled with its own token",
+                contract.token()
+            );
+            assert!(seen.insert(label), "{label:?} labels two contracts");
+        }
+        assert_eq!(seen.len(), ALL_CONTRACTS.len());
     }
 
     #[test]

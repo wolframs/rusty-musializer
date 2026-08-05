@@ -32,7 +32,7 @@ use crate::assist::contracts::ContractId;
 /// The overlay's version, recorded as `suitability_revision` in an execution
 /// snapshot (§6). Bump the date when a row changes so an old snapshot stays
 /// interpretable.
-pub const OVERLAY_REVISION: &str = "musializer.assist-suitability/2026-08-04";
+pub const OVERLAY_REVISION: &str = "musializer.assist-suitability/2026-08-05";
 
 /// How fit a model is for a contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -160,6 +160,32 @@ pub const OVERLAY: &[SuitabilityRow] = &[
             "the aligner's own score does not separate right from wrong (median 0.139 correct vs 0.142 wrong); flag cross-lane disagreement instead",
             "repeated chorus phrases can select the wrong occurrence; the correct response is the unresolved state",
             "short one-word exclamations with weak acoustic evidence can drift unflagged (shipped-the-disposition line 41, 134.6 s against 156.2 s)",
+        ],
+    },
+    // The same 2026-08-04 four-track benchmark, from the other end of the same
+    // pipeline: every `anchor→block MMS` row in that scoreboard was produced
+    // from whisper.cpp coarse evidence, so the 15/15, 33/33, 51/51 and 42/42
+    // coverage figures *are* the measurement of this lane under TC-COARSE. The
+    // decision-gate section pins the configuration that produced them —
+    // whisper-cli 1.8.6 with `condition_on_prev_text=False` and no VAD — which
+    // is why the row can name a prompt and schema version at all. Added by
+    // tranche AP3-R (S8): before it, the coarse lane the production path already
+    // runs was labelled experimental by the *absence* of a row, and its picker
+    // was disabled by default as a result.
+    SuitabilityRow {
+        model_id: "whisper.cpp",
+        contract: ContractId::Coarse,
+        status: Suitability::Recommended,
+        evidence_date: Some("2026-08-04"),
+        evidence: "docs/LYRICS_TIMING_BENCHMARK_RESULTS.md: the four-track benchmark ran on this Whisper evidence; decision gates fix the configuration",
+        prompt_version: Some("anchor-block-mms/1"),
+        schema_version: Some("musializer.lyric-timing/v1"),
+        audio_scope: AudioScope::WholeTrack,
+        languages: &["measured on four English tracks; whisper.cpp is multilingual and unmeasured beyond them"],
+        limitations: &[
+            "loops or drops outro lines on its own: the canary track's two outro lines needed the anchor→block lane to recover them",
+            "VAD is off because Silero v6.2.0 rejects sung vocals over accompaniment (0.4 s kept of 114.84 s); a VAD model is opt-in through MUSIALIZER_WHISPER_VAD_MODEL",
+            "coarse evidence only: its own timings are never used as the final lyric timing, which is what TC-ALIGN is for",
         ],
     },
     // Failed its decision gate on the same day and on the same four tracks.
@@ -307,6 +333,12 @@ mod tests {
                 (
                     "mms-ctc",
                     ContractId::Align,
+                    Suitability::Recommended,
+                    Some("2026-08-04")
+                ),
+                (
+                    "whisper.cpp",
+                    ContractId::Coarse,
                     Suitability::Recommended,
                     Some("2026-08-04")
                 ),
