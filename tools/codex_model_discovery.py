@@ -40,6 +40,7 @@ result is exactly `DEFAULT_LABEL` with an empty model list -- never a guess.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import queue
@@ -315,3 +316,61 @@ def read_cache(cache_file: Optional[Path] = None,
     if not isinstance(document.get("models"), list):
         return None
     return document
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    refresh_cmd = sub.add_parser("refresh", help="ask codex app-server for its model list")
+    # `--codex-bin` exists because `PATH` is not a reliable answer to "where is
+    # codex" in a GUI process: one started from a desktop entry inherits the
+    # session manager's minimal PATH, not the login shell's. The dialog resolves
+    # the binary itself (`musializer_runtime::assist::discover`) and hands the
+    # answer down, rather than making this tool repeat a search that already
+    # failed in the parent.
+    refresh_cmd.add_argument("--codex-bin", default="codex",
+                              help="path to the codex executable (default: found on PATH)")
+    refresh_cmd.add_argument("--timeout", type=float, default=8.0)
+    refresh_cmd.add_argument("--cache-dir", type=Path, help="override $XDG_CACHE_HOME/musializer")
+    refresh_cmd.add_argument("--json", action="store_true")
+
+    show_cmd = sub.add_parser("show", help="print the current cache, if any")
+    show_cmd.add_argument("--cache-dir", type=Path)
+
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+    cache_file = (args.cache_dir / CACHE_FILENAME) if args.cache_dir else None
+
+    if args.command == "refresh":
+        result = refresh_and_cache(codex_bin=args.codex_bin, timeout=args.timeout,
+                                    cache_file=cache_file)
+        if args.json:
+            print(json.dumps({"supported": result.supported, "error": result.error,
+                              "model_count": len(result.models)},
+                              ensure_ascii=False, indent=2))
+        elif result.supported:
+            print(f"cached {len(result.models)} models to "
+                  f"{cache_file if cache_file else cache_path()}")
+        else:
+            # A failed discovery leaves the prior valid cache alone, which is
+            # why this is a message rather than a deletion.
+            print(f"discovery failed: {result.error}")
+        return 0 if result.supported else 1
+
+    if args.command == "show":
+        document = read_cache(cache_file)
+        if document is None:
+            print("no valid cache")
+            return 1
+        print(json.dumps(document, ensure_ascii=False, indent=2))
+        return 0
+
+    return 2  # pragma: no cover - argparse enforces a valid subcommand
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

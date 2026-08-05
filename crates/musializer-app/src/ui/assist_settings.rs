@@ -65,6 +65,7 @@ use musializer_core::assist::settings::{
 };
 use musializer_core::assist::suitability::{self, Suitability};
 use musializer_core::ui::workspace_layout::UiRect;
+use musializer_runtime::assist::discover::{self, Discovery};
 use musializer_runtime::assist::files::{self, AssistFileError};
 use musializer_runtime::assist::models;
 use musializer_runtime::font::Faces;
@@ -716,6 +717,16 @@ impl Readiness {
                     "{reason}. The cached catalog offers no model this contract can use under the \
                      current filters. Refresh the catalog, or turn on Show experimental."
                 ),
+                CODEX_NOT_FOUND => format!(
+                    "{reason}. It is not on this process's PATH, in any common install location, \
+                     or on your login shell's PATH. The Codex section lists everywhere this \
+                     looked; set local_runtimes.codex_bin to fix it directly."
+                ),
+                CODEX_OVERRIDE_MISSING => format!(
+                    "{reason}. local_runtimes.codex_bin names a path that is not a runnable file, \
+                     and an explicit setting is never quietly replaced by a guess. Fix it or \
+                     remove it."
+                ),
                 other => format!("Blocked: {other}"),
             },
             Readiness::Unknown(reason) => {
@@ -875,9 +886,24 @@ pub fn modalities_fit(contract: ContractId, model: &CatalogModel) -> bool {
 /// Filtered by contract eligibility **and** the suitability overlay:
 /// `unsupported` is never offered however the picker is configured, and
 /// `experimental` needs `catalog.show_experimental` (§1 and
-/// `assist::suitability`). The currently selected id is always included even
-/// when it would otherwise be filtered out, because a picker that silently drops
-/// the value it is showing cannot be used to change it.
+/// `assist::suitability`).
+///
+/// **The currently selected id is not an exception to that** (operator ruling,
+/// 2026-08-05). It used to be: the id was re-inserted after the filter so a
+/// picker could never drop the value it was showing. The consequence was the
+/// defect the ruling settles — `TC-SEMANTIC`'s only model is experimental, so
+/// with `Show experimental` off the escape hatch put it straight back and the
+/// row displayed `xiaomi/mimo-v2.5` with an orange `experimental` marker while
+/// the toggle read `off`. A toggle whose own row contradicts it is worse than
+/// no toggle.
+///
+/// So this list is now strictly *what may be offered*. What is **configured** is
+/// a separate question with a separate answer: the MODEL cell still draws the
+/// configured id, because hiding it would lie about the configuration, and
+/// [`AssistSettingsDialog::routing_model_cell`] says in words that it is not on
+/// offer. `selected` is still taken, and still keeps the value in its own list —
+/// but only when the value is one the filter would have offered anyway, so
+/// cycling stays stable for every model that is legitimately on the list.
 #[must_use]
 pub fn model_options(
     contract: ContractId,
@@ -893,6 +919,12 @@ pub fn model_options(
             .iter()
             .map(|id| (*id).to_string())
             .collect(),
+        // Codex returns before the overlay, on purpose. The overlay is an
+        // allowlist of *this repository's* evidence and holds no Codex row, so
+        // every discovered Codex id would resolve to `experimental` and the
+        // whole section would empty itself the moment the toggle went off. What
+        // Codex offers is Codex's own answer to `model/list`, not a Musializer
+        // benchmark claim, and §5 rule 6 already governs it.
         RouteType::Codex => {
             let mut ids = vec![CODEX_DEFAULT_LABEL.to_string()];
             if let Some(cache) = codex {
@@ -916,13 +948,44 @@ pub fn model_options(
         }),
     };
     options.retain(|id| suitability::status(id, contract).offered(show_experimental));
-    if let Some(selected) = selected {
-        if !selected.is_empty() && !options.iter().any(|id| id == selected) {
+    // A selected id the *catalog* does not carry — a stale cache, a hand-edited
+    // profile — is kept, so its own picker can still show and cycle it. A
+    // selected id the *overlay* filters out is not, which is the ruling above.
+    if let Some(selected) = selected.filter(|id| !id.is_empty()) {
+        if !options.iter().any(|id| id == selected)
+            && suitability::status(selected, contract).offered(show_experimental)
+        {
             options.insert(0, selected.to_string());
         }
     }
     options
 }
+
+/// The words drawn under a MODEL cell, describing the **configured** model.
+///
+/// Defect B, second half. The marker used to be the bare suitability token, so
+/// an orange `experimental` sat under a row while `Show experimental: off` sat
+/// above it, and nothing on screen said which of the two was lying. Neither was:
+/// the model *is* experimental and it *is* not on offer. Both facts are in the
+/// text now, and the leading phrase is the one that survives being ellipsized
+/// into a 202 px column.
+///
+/// `None` for a recommended model — a row with nothing to warn about says
+/// nothing, which is what makes the warning readable when there is one.
+#[must_use]
+pub fn model_marker(status: Suitability, show_experimental: bool) -> Option<&'static str> {
+    match status {
+        Suitability::Recommended => None,
+        Suitability::Experimental if show_experimental => Some("configured: experimental"),
+        Suitability::Experimental => Some("not offered: experimental"),
+        Suitability::Unsupported => Some("not offered: unsupported"),
+    }
+}
+
+/// The sentence the operator specified for a contract the filter leaves with
+/// nothing to offer, verbatim.
+pub const NO_OFFERABLE_MODEL: &str = "No recommended model for this task \u{2014} turn on Show \
+                                      experimental";
 
 /// The next entry in a cycling picker. Returns the first option when the current
 /// value is absent, and `None` when there is nothing to offer.
@@ -1205,11 +1268,17 @@ impl DialogLayout {
         let mut tabs = [UiRect::new(0.0, 0.0, 0.0, 0.0); 5];
         let content;
         if rail_on_left {
+            // `RAIL_WIDTH - DIALOG_PADDING * 2.0`, not `- DIALOG_PADDING`. The
+            // rail's right edge *is* the divider (`content.x` below), so one
+            // padding put the buttons flush against the rule while leaving a
+            // comfortable gap on the dialog's side — an asymmetry the operator
+            // called out by name. Both gaps are now `DIALOG_PADDING`, and
+            // `section_gaps` reports them so a capture can prove it.
             for (index, tab) in tabs.iter_mut().enumerate() {
                 *tab = UiRect::new(
                     dialog.x + DIALOG_PADDING,
                     body_top + DIALOG_PADDING + index as f32 * 38.0,
-                    RAIL_WIDTH - DIALOG_PADDING,
+                    (RAIL_WIDTH - DIALOG_PADDING * 2.0).max(0.0),
                     32.0,
                 );
             }
@@ -1269,6 +1338,32 @@ impl DialogLayout {
         )
     }
 
+    /// The gap on each side of the section list: from the dialog's left border
+    /// to the first button, and from the buttons' right edge to whatever bounds
+    /// them there — the divider in rail mode, the dialog's right border in tabs
+    /// mode.
+    ///
+    /// Returned as a pair rather than asserted here so the *drawn* geometry is
+    /// what the report line and the gate measure. A symmetry nothing photographs
+    /// is a symmetry nobody reviews, and this one shipped broken for three
+    /// tranches.
+    #[must_use]
+    pub fn section_gaps(&self) -> (f32, f32) {
+        let first = self.tabs[0];
+        let last = self.tabs[self.tabs.len() - 1];
+        let right_bound = if self.rail_on_left {
+            self.content.x
+        } else {
+            self.dialog.x + self.dialog.width
+        };
+        let right_edge = if self.rail_on_left {
+            first.x + first.width
+        } else {
+            last.x + last.width
+        };
+        (first.x - self.dialog.x, right_bound - right_edge)
+    }
+
     /// Whether the routing matrix has to stack. See
     /// [`ROUTING_MATRIX_DIALOG_WIDTH`] for why this is not measured against the
     /// body it describes.
@@ -1319,6 +1414,18 @@ const FOCUS_PRIVACY_COPY: ControlId = 810;
 /// The contracts a Codex reasoning effort applies to: the two `codex`-eligible
 /// contracts in §1's table.
 const CODEX_ELIGIBLE: [ContractId; 2] = [ContractId::Wording, ContractId::Plan];
+
+/// The executable discovery looks for.
+const CODEX_BINARY: &str = "codex";
+
+/// The two readiness reasons a Codex route can be blocked for.
+///
+/// Named constants for the reason `NO_KEY` and `NO_MODEL` are: the report line
+/// carries the *label*, and a gate that matched on a substring of a sentence
+/// would keep passing after the sentence changed meaning. Neither says "not on
+/// PATH" any more, because `PATH` is one rung of four.
+pub const CODEX_NOT_FOUND: &str = "codex not found";
+pub const CODEX_OVERRIDE_MISSING: &str = "codex_bin path is wrong";
 
 // ---------------------------------------------------------------------------
 // Background work
@@ -1379,7 +1486,22 @@ pub struct AssistSettingsDialog {
 
     catalog: CacheSlot<CatalogCache>,
     codex: CacheSlot<CodexCache>,
-    codex_binary: Option<PathBuf>,
+    /// Where `codex` is, how it was found, and everywhere that was looked.
+    ///
+    /// Defect C. This was `Option<PathBuf>` from `which("codex")`, and it said
+    /// "codex not on PATH" about a binary the operator can run by typing its
+    /// name: a GUI process started from a desktop entry inherits the session
+    /// manager's minimal `PATH`, not the login shell's. The whole ladder and the
+    /// reasons are `musializer_runtime::assist::discover`.
+    codex_discovery: Option<Discovery>,
+    /// The thorough pass, which may spawn `npm` and a login shell. Polled like
+    /// any other background job; it is deliberately **not** in
+    /// [`Background`], because it must not disable the buttons that check
+    /// `background.is_none()` and it starts without the user pressing anything.
+    codex_probe: Option<mpsc::Receiver<Discovery>>,
+    /// One thorough pass per process. The cache in `discover` makes a second one
+    /// cheap, but a thread per dialog open is still a thread per dialog open.
+    codex_probe_done: bool,
     doctor: Option<DoctorReport>,
     doctor_error: Option<String>,
 
@@ -1458,6 +1580,17 @@ pub struct AssistSettingsDialog {
     /// window is narrow" from "the table is broken" — so the report names which
     /// arrangement is in the picture.
     last_layout: Option<(bool, bool)>,
+    /// The whole layout from the last drawn frame, so the report can print the
+    /// section list's two gaps in pixels rather than the constants they were
+    /// derived from. A capture is checked against these numbers.
+    last_geometry: Option<DialogLayout>,
+    /// The box the "no offerable model" sentence was drawn into last frame.
+    ///
+    /// Reported so the gate can measure *that* band for ink. Comparing the two
+    /// experimental captures cannot do it: turning the toggle on adds its own
+    /// warning above the matrix and shifts every row, so every band differs and
+    /// a difference proves nothing.
+    last_starved_band: Option<UiRect>,
 }
 
 impl Default for AssistSettingsDialog {
@@ -1486,7 +1619,9 @@ impl AssistSettingsDialog {
             models_dir_focused: false,
             catalog: CacheSlot::NeverFetched,
             codex: CacheSlot::NeverFetched,
-            codex_binary: None,
+            codex_discovery: None,
+            codex_probe: None,
+            codex_probe_done: false,
             doctor: None,
             doctor_error: None,
             pending_key: None,
@@ -1511,6 +1646,8 @@ impl AssistSettingsDialog {
             status: None,
             now: None,
             last_layout: None,
+            last_geometry: None,
+            last_starved_band: None,
         }
     }
 
@@ -1642,7 +1779,7 @@ impl AssistSettingsDialog {
         self.codex = read_cache("codex-models-v1.json", |document: &CodexCache| {
             document.schema_version == "musializer.codex-model-catalog/v1"
         });
-        self.codex_binary = which("codex");
+        self.resolve_codex();
         self.doctor = None;
         self.doctor_error = None;
         if let Ok(path) = std::env::var(PROBE_DOCTOR_VARIABLE) {
@@ -1653,6 +1790,72 @@ impl AssistSettingsDialog {
                 }) {
                 Ok(report) => self.doctor = Some(report),
                 Err(reason) => self.doctor_error = Some(reason),
+            }
+        }
+    }
+
+    /// Finds `codex`, cheaply now and thoroughly in a moment.
+    ///
+    /// Defect C, and the reason it is split in two: the cheap ladder is stat
+    /// calls, so it runs inline and the section has an answer on the first
+    /// frame; the last two rungs can spawn `npm` and the user's login shell, so
+    /// they run on a thread and land whenever they land. Nothing here runs per
+    /// frame — `reload` is called on open, and `discover::resolve_cached`
+    /// memoizes for the process, so a login shell runs at most once a session.
+    fn resolve_codex(&mut self) {
+        let override_path = self.draft.local_runtimes.codex_bin.clone();
+        let cheap = discover::resolve_cached(
+            CODEX_BINARY,
+            override_path.as_deref(),
+            discover::Options::default(),
+        );
+        let settled = !matches!(cheap.outcome, discover::Outcome::NotFound);
+        self.codex_discovery = Some(cheap);
+        if settled || self.codex_probe_done || self.codex_probe.is_some() {
+            return;
+        }
+        if !discover::subprocess_permitted() {
+            // The gate sets this. A check that shells out to the operator's real
+            // login shell would depend on their rc files, and the headless run
+            // exists to be independent of the session it runs in.
+            self.codex_probe_done = true;
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(discover::resolve_cached(
+                CODEX_BINARY,
+                override_path.as_deref(),
+                discover::Options::thorough(),
+            ));
+        });
+        self.codex_probe = Some(receiver);
+    }
+
+    /// The resolved `codex`, when there is one.
+    fn codex_binary(&self) -> Option<&Path> {
+        self.codex_discovery.as_ref().and_then(Discovery::path)
+    }
+
+    /// Collects the thorough pass. Separate from [`Self::poll_background`]
+    /// because it holds no user-facing slot: it starts on its own and must never
+    /// make Save or Refresh look busy.
+    fn poll_codex_probe(&mut self) {
+        let Some(receiver) = &self.codex_probe else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(discovery) => {
+                self.codex_probe = None;
+                self.codex_probe_done = true;
+                // The thorough pass only ever *improves* on the cheap one, so a
+                // `NotFound` from it replaces a `NotFound` and nothing else.
+                self.codex_discovery = Some(discovery);
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                self.codex_probe = None;
+                self.codex_probe_done = true;
             }
         }
     }
@@ -1771,10 +1974,58 @@ impl AssistSettingsDialog {
             && contract.eligible_route_types().len() > 1
     }
 
+    /// Enabled when the picker can reach a value it is not already showing.
+    ///
+    /// `len() > 1` until defect B, which was the same test only while the
+    /// selected id was force-fed back into the list. It is not any more, so the
+    /// interesting case is a list of exactly one option that is *not* what is
+    /// configured — the one press that moves `TC-SEMANTIC` off an experimental
+    /// model and onto the offered one. `len() > 1` would have drawn that
+    /// disabled.
     fn model_cell_enabled(&self, contract: ContractId) -> bool {
-        self.settings_editable()
-            && !contract.is_locked()
-            && self.model_options_for(contract).len() > 1
+        if !self.settings_editable() || contract.is_locked() {
+            return false;
+        }
+        let configured = self.configured_model(contract);
+        self.model_options_for(contract)
+            .iter()
+            .any(|option| Some(option.as_str()) != configured.as_deref())
+    }
+
+    /// The model id the settings name for a contract, whether or not any picker
+    /// would offer it. The configuration is a fact about the file; what is
+    /// offered is a fact about the filter, and defect B is what happens when one
+    /// surface tries to be both.
+    fn configured_model(&self, contract: ContractId) -> Option<String> {
+        resolve_route(&self.draft, contract)
+            .route
+            .and_then(|route| route.model_id)
+            .filter(|id| !id.is_empty())
+    }
+
+    /// The overlay's verdict on the configured model, when there is one.
+    fn configured_status(&self, contract: ContractId) -> Option<Suitability> {
+        self.configured_model(contract)
+            .map(|id| suitability::status(&id, contract))
+    }
+
+    /// The contracts whose MODEL picker has nothing at all to offer, and whose
+    /// list `Show experimental` would refill.
+    ///
+    /// Excludes the locked contract and any contract with no route: neither has
+    /// a picker for the toggle to be about, and naming them would send the user
+    /// to a control that would not change anything.
+    fn contracts_without_an_offer(&self) -> Vec<ContractId> {
+        if self.draft.catalog.show_experimental {
+            return Vec::new();
+        }
+        ALL_CONTRACTS
+            .into_iter()
+            .filter(|contract| !contract.is_locked())
+            .filter(|contract| resolve_route(&self.draft, *contract).route.is_some())
+            .filter(|contract| self.model_options_for(*contract).is_empty())
+            .filter(|contract| !self.model_options_with_experimental(*contract).is_empty())
+            .collect()
     }
 
     /// AP3-R S6: `TC-VERIFY` has no recommended route, so its fallback picker
@@ -1798,7 +2049,7 @@ impl AssistSettingsDialog {
     }
 
     fn codex_refresh_enabled(&self) -> bool {
-        self.background.is_none() && self.codex_binary.is_some()
+        self.background.is_none() && self.codex_binary().is_some()
     }
 
     fn key_test_enabled(&self) -> bool {
@@ -2118,9 +2369,23 @@ impl AssistSettingsDialog {
                     )),
                 }
             }
-            RouteType::Codex => match &self.codex_binary {
-                Some(_) => Readiness::Ready,
-                None => Readiness::Blocked("codex not on PATH".to_string()),
+            // Defect C. "not on PATH" was a claim the dialog could not support:
+            // `PATH` is one rung of four, and it is the rung a desktop-entry
+            // launch is worst at. Each answer now names what actually happened,
+            // and the one that means "we have not finished looking" is `Unknown`
+            // rather than a confident refusal.
+            RouteType::Codex => match self.codex_discovery.as_ref().map(|d| &d.outcome) {
+                Some(discover::Outcome::Found { .. }) => Readiness::Ready,
+                Some(discover::Outcome::OverrideMissing { .. }) => {
+                    Readiness::Blocked(CODEX_OVERRIDE_MISSING.to_string())
+                }
+                Some(discover::Outcome::NotFound) if self.codex_probe.is_some() => {
+                    Readiness::Unknown("Looking for codex".to_string())
+                }
+                Some(discover::Outcome::NotFound) => {
+                    Readiness::Blocked(CODEX_NOT_FOUND.to_string())
+                }
+                None => Readiness::Unknown("Looking for codex".to_string()),
             },
             // 3. Somewhere that would accept it. An absent catalog is "we have
             //    not looked", not "there is nothing" — the same distinction the
@@ -2183,6 +2448,35 @@ impl AssistSettingsDialog {
             self.job_running,
             !self.settings_editable(),
         )];
+        // The section list's own geometry, in the pixels a capture can be
+        // measured in. The gap to the divider and the gap to the dialog's border
+        // must be equal; the operator caught them at 0 and 14 (defect A), and a
+        // number in the report is what lets the gate catch a regression without
+        // anybody looking at a picture.
+        if let Some(layout) = self.last_geometry {
+            let (left, right) = layout.section_gaps();
+            let first = layout.tabs[0];
+            let last = layout.tabs[layout.tabs.len() - 1];
+            lines.push(format!(
+                "assist settings chrome: mode={} dialog-x={:.0} dialog-w={:.0} first-tab={:.0},{:.0},{:.0},{:.0} last-tab-right={:.0} bound-x={:.0} gap-left={:.0} gap-right={:.0} symmetric={}",
+                if layout.rail_on_left { "rail" } else { "tabs" },
+                layout.dialog.x,
+                layout.dialog.width,
+                first.x,
+                first.y,
+                first.width,
+                first.height,
+                last.x + last.width,
+                if layout.rail_on_left {
+                    layout.content.x
+                } else {
+                    layout.dialog.x + layout.dialog.width
+                },
+                left,
+                right,
+                (left - right).abs() <= 0.5,
+            ));
+        }
         lines.push(format!(
             "assist settings stores: settings={} path={} credentials={} models-dir={}",
             self.settings_source.token(),
@@ -2218,8 +2512,9 @@ impl AssistSettingsDialog {
                 .map_or(0, |cache| cache.models.len()),
             codex_badge.token(),
             self.codex.document().map_or(0, |cache| cache.models.len()),
-            self.codex_binary
+            self.codex_discovery
                 .as_ref()
+                .and_then(Discovery::path)
                 .map_or_else(|| "absent".to_string(), |path| path.display().to_string()),
             match (&self.doctor, &self.doctor_error) {
                 (Some(_), _) => "loaded".to_string(),
@@ -2227,6 +2522,32 @@ impl AssistSettingsDialog {
                 (None, None) => "not run".to_string(),
             },
         ));
+        // Defect C's evidence. `codex-bin=absent` above cannot distinguish "it
+        // is not installed" from "this process's PATH is the desktop entry's",
+        // which is the whole defect — so the method, the override state and the
+        // list of places looked in are their own line. The searched list is what
+        // a user acts on, so it is printed rather than counted.
+        if let Some(discovery) = &self.codex_discovery {
+            lines.push(format!(
+                "assist settings codex: {} probing={} subprocess={} shell={} override={} searched={}",
+                discovery.summary(),
+                self.codex_probe.is_some(),
+                discovery.consulted_subprocess,
+                discover::shell_label(),
+                self.draft
+                    .local_runtimes
+                    .codex_bin
+                    .as_deref()
+                    .unwrap_or("<unset>"),
+                discovery.searched.len(),
+            ));
+            if discovery.path().is_none() {
+                lines.push(format!(
+                    "assist settings codex searched: {}",
+                    discovery.searched.join(" | ")
+                ));
+            }
+        }
         let routes: Vec<String> = ALL_CONTRACTS
             .into_iter()
             .map(|contract| {
@@ -2251,6 +2572,50 @@ impl AssistSettingsDialog {
             })
             .collect();
         lines.push(format!("assist settings routing: {}", routes.join(" ")));
+        // Defect B's evidence. The *offer* and the *configuration* are printed
+        // as separate fields per contract, because the defect was the two being
+        // read off one string — a capture showing `xiaomi/mimo-v2.5` under
+        // `Show experimental: off` is correct or wrong depending on which of the
+        // two the row is claiming to be, and only this line says.
+        let pickers: Vec<String> = ALL_CONTRACTS
+            .into_iter()
+            .filter(|contract| !contract.is_locked())
+            .map(|contract| {
+                let configured = self.configured_model(contract);
+                let options = self.model_options_for(contract);
+                let status = self.configured_status(contract);
+                format!(
+                    "{}{{configured={} status={} marker=\"{}\" offers=[{}]}}",
+                    contract.token(),
+                    configured.as_deref().unwrap_or("<none>"),
+                    status.map_or("<none>", Suitability::token),
+                    status
+                        .and_then(|status| model_marker(
+                            status,
+                            self.draft.catalog.show_experimental
+                        ))
+                        .unwrap_or(""),
+                    options.join(","),
+                )
+            })
+            .collect();
+        lines.push(format!(
+            "assist settings pickers: show-experimental={} starved=[{}] starved-band={} {}",
+            self.draft.catalog.show_experimental,
+            self.contracts_without_an_offer()
+                .iter()
+                .map(|contract| contract.token().to_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            self.last_starved_band.map_or_else(
+                || "none".to_string(),
+                |band| format!(
+                    "{:.0},{:.0},{:.0},{:.0}",
+                    band.x, band.y, band.width, band.height
+                )
+            ),
+            pickers.join(" "),
+        ));
         let masked = masked_field(
             self.pending_key
                 .as_ref()
@@ -2420,16 +2785,12 @@ fn strip_credential_variables(command: &mut Command) {
     }
 }
 
-/// The first `PATH` entry holding an executable called `name`.
-///
-/// Membership only — nothing is run, and the answer is used to say "codex is not
-/// on PATH" rather than to invent a version.
-fn which(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|directory| directory.join(name))
-        .find(|candidate| candidate.is_file())
-}
+// There was a `which` here. It is gone, and its removal is defect C: `PATH`
+// membership was the *only* thing the dialog asked, so a GUI process started
+// from a desktop entry — which inherits the session manager's minimal PATH —
+// reported "codex not on PATH" about a binary the operator runs by name every
+// day. The replacement is `musializer_runtime::assist::discover`, which asks
+// four questions in order and can say which one answered.
 
 /// `tools/<name>`, resolved the way `find_assist_helper` resolves the analysis
 /// helper (`process::font_import::find_helper`): beside the executable, one and
@@ -2495,6 +2856,7 @@ impl AssistSettingsDialog {
             return;
         }
         self.poll_background(d);
+        self.poll_codex_probe();
         self.keyboard(d);
         if !self.open {
             return;
@@ -2507,6 +2869,7 @@ impl AssistSettingsDialog {
         let layout = DialogLayout::of(window);
         self.last_layout = Some((layout.rail_on_left, layout.routing_compact()));
         self.last_content = Some(layout.content);
+        self.last_geometry = Some(layout);
         let font = fonts.ui();
 
         // The scrim is opaque enough that the workspace behind it reads as
@@ -3493,6 +3856,35 @@ impl AssistSettingsDialog {
         }
 
         *cursor += 8.0;
+        // Defect B. A contract the filter leaves with nothing to offer says so
+        // in a full-width sentence, because the MODEL column has 202 px and the
+        // sentence a user has to act on does not fit in it. The cell keeps
+        // showing the configured model — hiding it would misreport the file —
+        // and this is where the row explains why that model is not a choice.
+        let starved = self.contracts_without_an_offer();
+        self.last_starved_band = None;
+        if !starved.is_empty() {
+            let named = starved
+                .iter()
+                .map(|contract| contract.token().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let top = *cursor;
+            paragraph(
+                d,
+                font,
+                body,
+                cursor,
+                &format!(
+                    "{NO_OFFERABLE_MODEL}: {named}. The MODEL cell still shows what your settings \
+                     configure, marked \"not offered\" \u{2014} it is the configuration, not an \
+                     offer.",
+                ),
+                color::ui_warning(),
+            );
+            self.last_starved_band = Some(UiRect::new(body.x, top, body.width, *cursor - top));
+            *cursor += 4.0;
+        }
         // The boundary legend (AP3-R S9). The BOUNDARY column is three tokens
         // nobody outside this document has met, and the ladder they belong to is
         // the single most consequential thing on the page.
@@ -3854,16 +4246,28 @@ impl AssistSettingsDialog {
             .and_then(|route| route.model_id.as_deref())
             .map(|id| suitability::status(id, contract));
         let enabled = self.model_cell_enabled(contract);
+        let show_experimental = self.draft.catalog.show_experimental;
+        let with_experimental = self.model_options_with_experimental(contract).len();
         let tip = if !enabled && !self.settings_editable() {
             "Disabled: the settings file failed to load, so this is showing the built-in default \
              rather than your file."
                 .to_string()
+        } else if options.is_empty() && with_experimental > 0 && !contract.is_locked() {
+            // Defect B: the picker offers nothing, and the cell is still showing
+            // the configured model. Both facts, in that order, because the
+            // second one is what makes the first look like a bug.
+            format!(
+                "{NO_OFFERABLE_MODEL}. {} is what your settings configure for {}, and it is \
+                 experimental, so with the toggle off no picker offers it. It is shown because \
+                 hiding it would misreport your configuration.",
+                label,
+                contract.token()
+            )
         } else if !enabled && !contract.is_locked() {
             // AP3-R S8: a picker whose only option is what is already selected
             // is disabled — but *why* it is the only option matters. When the
             // experimental filter is what emptied it, the control names the
             // toggle that would refill it rather than looking broken.
-            let with_experimental = self.model_options_with_experimental(contract).len();
             if with_experimental > options.len() {
                 format!(
                     "Only {} model is offered for {}. {} more become available with \
@@ -3881,17 +4285,29 @@ impl AssistSettingsDialog {
                 )
             }
         } else {
+            // Every one of these says whether it is describing the *configured*
+            // model or the *offer*, because defect B was exactly the two being
+            // conflated.
             match status {
                 Some(Suitability::Recommended) => format!(
-                    "{label}: recommended for {} on this repository's own benchmark",
+                    "Configured: {label} \u{2014} recommended for {} on this repository's own \
+                     benchmark. {} model(s) offered.",
+                    contract.token(),
+                    options.len()
+                ),
+                Some(Suitability::Experimental) if show_experimental => format!(
+                    "Configured: {label} \u{2014} experimental, no Musializer benchmark for {}. \
+                     It is offered because \"Show experimental\" is on.",
                     contract.token()
                 ),
                 Some(Suitability::Experimental) => format!(
-                    "{label}: experimental \u{2014} no Musializer benchmark for {}",
-                    contract.token()
+                    "Configured: {label} \u{2014} experimental, so with \"Show experimental\" off \
+                     it is not offered by any picker. {} other model(s) are.",
+                    options.len()
                 ),
                 Some(Suitability::Unsupported) => format!(
-                    "{label}: measured and failed for {}; it is never offered",
+                    "Configured: {label} \u{2014} measured and failed for {}; it is never offered, \
+                     whatever the toggle says.",
                     contract.token()
                 ),
                 None => format!("{} models offered for {}", options.len(), contract.token()),
@@ -3932,22 +4348,24 @@ impl AssistSettingsDialog {
         // the gate refuses any request outside it, because a scaled atlas is the
         // blur this shell rebuilt its typography to delete. The first draft asked
         // for 10 and the run reported `non-native-requests=40`.
-        if let Some(status) = status {
-            if status != Suitability::Recommended {
-                widgets::draw_text(
-                    d,
-                    font,
-                    status.token(),
-                    boundary.x + 2.0,
-                    boundary.y + boundary.height + 1.0,
-                    MARKER_FONT_SIZE,
-                    if status == Suitability::Unsupported {
-                        color::ui_danger()
-                    } else {
-                        color::ui_warning()
-                    },
-                );
-            }
+        //
+        // The text is `model_marker`'s, not `status.token()`'s: the bare token
+        // read as a claim about the offer, which is the half of defect B a
+        // capture could see.
+        if let Some(marker) = status.and_then(|status| model_marker(status, show_experimental)) {
+            widgets::draw_text(
+                d,
+                font,
+                &ellipsize(font, marker, boundary.width - 2.0, MARKER_FONT_SIZE),
+                boundary.x + 2.0,
+                boundary.y + boundary.height + 1.0,
+                MARKER_FONT_SIZE,
+                if status == Some(Suitability::Unsupported) {
+                    color::ui_danger()
+                } else {
+                    color::ui_warning()
+                },
+            );
         }
     }
 
@@ -4412,39 +4830,13 @@ impl AssistSettingsDialog {
         );
 
         subheading(d, font, body, cursor, "Executable");
-        match &self.codex_binary {
-            Some(path) => field_line(
-                d,
-                font,
-                body,
-                cursor,
-                "codex",
-                &path.display().to_string(),
-                color::ui_success(),
-            ),
-            None => {
-                field_line(
-                    d,
-                    font,
-                    body,
-                    cursor,
-                    "codex",
-                    "not on PATH",
-                    color::ui_danger(),
-                );
-                paragraph(
-                    d,
-                    font,
-                    body,
-                    cursor,
-                    "Install Codex and make sure `codex` is on this session's PATH. Musializer \
-                     never reads Codex's authentication files.",
-                    color::ui_muted(),
-                );
-            }
-        }
+        self.draw_codex_executable(d, font, body, cursor);
 
         subheading(d, font, body, cursor, "Discovered models");
+        // §5 rule 6 is unchanged by defect C: whatever discovery concludes, the
+        // *model* list falls back to exactly `Codex default` and never to a
+        // guessed id. Finding the binary differently does not license inventing
+        // what it can run.
         let stamp = self
             .codex
             .document()
@@ -4625,8 +5017,9 @@ impl AssistSettingsDialog {
             "Refresh Codex models",
             if refresh_enabled {
                 "Runs tools/codex_model_discovery.py, which starts a short-lived `codex app-server`"
-            } else if self.codex_binary.is_none() {
-                "Disabled: `codex` is not on this session's PATH, so there is nothing to ask."
+            } else if self.codex_binary().is_none() {
+                "Disabled: `codex` could not be found, so there is nothing to ask. The Executable \
+                 block above lists everywhere this looked."
             } else {
                 "Disabled while another background job is running in this dialog."
             },
@@ -4635,6 +5028,154 @@ impl AssistSettingsDialog {
             self.start_refresh(RefreshKind::Codex);
         }
         *cursor += CONTROL_HEIGHT + 8.0;
+    }
+}
+
+impl AssistSettingsDialog {
+    /// The Executable block of the Codex section.
+    ///
+    /// Defect C's user-facing half. Three things have to be on screen and only
+    /// one of them was: **where** it is, **how** it was found, and — when it was
+    /// not — **where this looked**, because "not on PATH" sent the operator to
+    /// fix a `PATH` that was already correct in every shell they use.
+    fn draw_codex_executable(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        body: UiRect,
+        cursor: &mut f32,
+    ) {
+        let Some(discovery) = self.codex_discovery.clone() else {
+            field_line(
+                d,
+                font,
+                body,
+                cursor,
+                "codex",
+                "looking\u{2026}",
+                color::ui_muted(),
+            );
+            return;
+        };
+        match &discovery.outcome {
+            discover::Outcome::Found { path, method } => {
+                field_line(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "codex",
+                    &sanitize_display(&path.display().to_string()),
+                    color::ui_success(),
+                );
+                field_line(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "found by",
+                    &format!("{} \u{2014} {}", method.token(), method.explanation()),
+                    color::ui_muted(),
+                );
+                if *method == discover::Method::LoginShell {
+                    // The one hit worth explaining unprompted: it means this
+                    // process's own environment is missing something the user's
+                    // shell has, which is normal under a desktop entry and
+                    // surprising if you have not met it.
+                    paragraph(
+                        d,
+                        font,
+                        body,
+                        cursor,
+                        "This process's own PATH does not carry codex \u{2014} it was found by \
+                         asking your login shell. That is expected when Musializer is started \
+                         from a desktop entry rather than a terminal.",
+                        color::ui_muted(),
+                    );
+                }
+            }
+            discover::Outcome::OverrideMissing { path, reason } => {
+                // Loud, and no fallback. The user typed this path.
+                field_line(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "codex",
+                    &format!(
+                        "{}: {reason}",
+                        sanitize_display(&path.display().to_string())
+                    ),
+                    color::ui_danger(),
+                );
+                paragraph(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "The codex_bin setting in assist.json names this path. Discovery is not \
+                     attempted while it is set: an explicit setting that quietly fell back to \
+                     something else would look like it does nothing. Fix the path or remove the \
+                     setting.",
+                    color::ui_warning(),
+                );
+            }
+            discover::Outcome::NotFound => {
+                let still_looking = self.codex_probe.is_some();
+                field_line(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    "codex",
+                    if still_looking {
+                        "looking\u{2026}"
+                    } else {
+                        "not found"
+                    },
+                    if still_looking {
+                        color::ui_muted()
+                    } else {
+                        color::ui_danger()
+                    },
+                );
+                paragraph(
+                    d,
+                    font,
+                    body,
+                    cursor,
+                    if still_looking {
+                        "Not on this process's PATH or in a common install location. Still asking \
+                         your login shell."
+                    } else if discovery.consulted_subprocess {
+                        "Install Codex, or set local_runtimes.codex_bin in assist.json to its \
+                         path. Musializer never reads Codex's authentication files."
+                    } else {
+                        "Install Codex, or set local_runtimes.codex_bin in assist.json to its \
+                         path. The login-shell lookup was switched off for this run, so this is \
+                         not a complete search."
+                    },
+                    color::ui_muted(),
+                );
+                // Where it looked. Printed, not counted: a list is what a user
+                // can compare against where they know the binary is.
+                //
+                // Sanitized **per entry** and joined afterwards, not the other
+                // way round. `sanitize_display` caps its output at
+                // `DISPLAY_CAP`, so sanitizing the joined string turned twelve
+                // directories into the first one and an ellipsis — which a
+                // capture caught and no test would have, because the function
+                // was doing exactly what it says.
+                subheading_row(d, font, body, cursor, "Looked in");
+                let looked = discovery
+                    .searched
+                    .iter()
+                    .map(|entry| sanitize_display(entry))
+                    .collect::<Vec<_>>()
+                    .join(" \u{00b7} ");
+                paragraph(d, font, body, cursor, &looked, color::ui_muted());
+            }
+        }
     }
 }
 
@@ -5075,7 +5616,18 @@ impl AssistSettingsDialog {
                             } else {
                                 sanitize_display(&model.name)
                             },
-                            status.token()
+                            // Defect B applies here too. This is a *cache
+                            // listing*, not a picker, so the row keeps naming
+                            // the verdict — but a bare `experimental` under
+                            // `Show experimental: off` reads as an offer, and
+                            // the whole ruling is that the two are different
+                            // claims. Whether the toggle would offer this row is
+                            // the second half.
+                            if status.offered(self.draft.catalog.show_experimental) {
+                                status.token().to_string()
+                            } else {
+                                format!("{} \u{00b7} not offered", status.token())
+                            }
                         ),
                         if status == Suitability::Unsupported {
                             color::ui_danger()
@@ -6034,6 +6586,13 @@ impl AssistSettingsDialog {
             }
             RefreshKind::Codex => {
                 command.arg("refresh");
+                // The resolved path, not the bare name. The tool would spawn
+                // `codex` from *its* PATH, which is this process's PATH — the
+                // exact environment defect C is about. Handing it the answer we
+                // already found is what makes discovery worth doing.
+                if let Some(path) = self.codex_binary() {
+                    command.arg("--codex-bin").arg(path);
+                }
             }
         }
         // The same rule `external_analysis.py::_safe_local_env` applies to its own
@@ -6305,6 +6864,47 @@ mod tests {
         assert!(seen_tabs, "the rail was never shed");
         assert!(DialogLayout::of((1280.0, 720.0)).rail_on_left);
         assert!(!DialogLayout::of((760.0, 640.0)).rail_on_left);
+    }
+
+    /// Defect A. The section list is inset by the same gap on both sides, in
+    /// **both** arrangements.
+    ///
+    /// It shipped at 0 px against the divider and 14 px against the dialog's
+    /// border, which reads as the buttons having fallen off the rail. Asserted
+    /// as a sweep rather than at one window, because the tabs arrangement
+    /// derives its cell width by division and a rounding change there would
+    /// break the right-hand gap alone.
+    #[test]
+    fn the_section_list_is_inset_equally_on_both_sides() {
+        let mut width = 1600.0f32;
+        let mut rail_windows = 0;
+        let mut tab_windows = 0;
+        while width >= 640.0 {
+            let layout = DialogLayout::of((width, 800.0));
+            let (left, right) = layout.section_gaps();
+            assert!(
+                (left - right).abs() <= 0.5,
+                "{width}px ({}): left gap {left} against right gap {right}",
+                if layout.rail_on_left { "rail" } else { "tabs" }
+            );
+            assert!(left > 0.0, "{width}px: the list touches the dialog border");
+            if layout.rail_on_left {
+                rail_windows += 1;
+                // And the gap is the dialog's own padding, not some third
+                // number that happens to match on both sides.
+                assert!((left - DIALOG_PADDING).abs() <= 0.5, "{width}px: {left}");
+                // The rail's right edge stops short of the divider it is
+                // measured against, which is the thing the operator saw.
+                assert!(layout.tabs[0].x + layout.tabs[0].width < layout.content.x);
+            } else {
+                tab_windows += 1;
+            }
+            width -= 4.0;
+        }
+        assert!(
+            rail_windows > 0 && tab_windows > 0,
+            "one arrangement went untested"
+        );
     }
 
     /// The routing matrix stacks rather than clipping, and its columns always
@@ -6579,7 +7179,12 @@ mod tests {
             ],
             "a text-only model was offered as an audio route"
         );
-        // A selected model the filter would drop stays in its own picker.
+        // Defect B, and the reversal it records. A selected model the filter
+        // drops is **not** put back: the escape hatch that used to do it is what
+        // made `Show experimental: off` display an experimental model with an
+        // orange marker, and a toggle its own row contradicts is worse than no
+        // toggle. The configuration is still shown — by the cell, in words, not
+        // by smuggling it into the offer list.
         let with_selected = model_options(
             ContractId::Semantic,
             RouteType::OpenRouter,
@@ -6588,7 +7193,74 @@ mod tests {
             false,
             Some("xiaomi/mimo-v2.5"),
         );
-        assert_eq!(with_selected, vec!["xiaomi/mimo-v2.5".to_string()]);
+        assert!(
+            with_selected.is_empty(),
+            "the selected experimental model was offered with the toggle off: {with_selected:?}"
+        );
+        // Turn the toggle on and the very same call offers it.
+        assert!(model_options(
+            ContractId::Semantic,
+            RouteType::OpenRouter,
+            Some(&catalog),
+            None,
+            true,
+            Some("xiaomi/mimo-v2.5"),
+        )
+        .contains(&"xiaomi/mimo-v2.5".to_string()));
+        // A selected id the *catalog* has never heard of is a different case and
+        // keeps its escape hatch, so a stale cache does not strand a picker —
+        // but only while the overlay would offer it.
+        let stale = model_options(
+            ContractId::Semantic,
+            RouteType::OpenRouter,
+            Some(&catalog),
+            None,
+            true,
+            Some("acme/vanished"),
+        );
+        assert_eq!(stale.first().map(String::as_str), Some("acme/vanished"));
+        assert!(model_options(
+            ContractId::Semantic,
+            RouteType::OpenRouter,
+            Some(&catalog),
+            None,
+            false,
+            Some("acme/vanished"),
+        )
+        .is_empty());
+    }
+
+    /// Defect B, the marker. Its words describe the configured model and say
+    /// whether it is on offer; `recommended` is silent so the warnings read.
+    #[test]
+    fn the_marker_describes_the_configuration_and_not_the_offer() {
+        assert_eq!(model_marker(Suitability::Recommended, false), None);
+        assert_eq!(model_marker(Suitability::Recommended, true), None);
+        assert_eq!(
+            model_marker(Suitability::Experimental, true),
+            Some("configured: experimental")
+        );
+        assert_eq!(
+            model_marker(Suitability::Experimental, false),
+            Some("not offered: experimental")
+        );
+        // Never offered at any toggle setting, so the toggle is not mentioned.
+        for show in [false, true] {
+            assert_eq!(
+                model_marker(Suitability::Unsupported, show),
+                Some("not offered: unsupported")
+            );
+        }
+        // Every marker leads with the fact that survives ellipsis into 202 px.
+        for marker in [
+            model_marker(Suitability::Experimental, false),
+            model_marker(Suitability::Unsupported, false),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(marker.starts_with("not offered"), "{marker}");
+        }
     }
 
     /// Absent Codex discovery offers exactly `Codex default` — never a guessed
@@ -6888,10 +7560,24 @@ mod tests {
             "assist settings routing: TC-MEASURED=",
             "assist settings key: state=refused(0644)",
             "network-allowed=false",
+            // Defect B: the offer and the configuration, as separate fields.
+            "assist settings pickers: show-experimental=false",
+            "TC-SEMANTIC{configured=xiaomi/mimo-v2.5 status=experimental \
+             marker=\"not offered: experimental\" offers=[]}",
+            "starved=[TC-SEMANTIC]",
         ] {
             assert!(joined.contains(key), "the report has no {key:?}:\n{joined}");
         }
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 6);
+        // Defect A: the chrome line appears once a frame has been drawn, and
+        // carries the two gaps in pixels.
+        dialog.last_geometry = Some(DialogLayout::of((1280.0, 720.0)));
+        let drawn = dialog.describe().join("\n");
+        assert!(
+            drawn.contains("assist settings chrome: mode=rail")
+                && drawn.contains("gap-left=14 gap-right=14 symmetric=true"),
+            "the chrome line does not measure the section gaps:\n{drawn}"
+        );
         let closed = AssistSettingsDialog::new();
         assert_eq!(
             closed.describe(),
@@ -7400,16 +8086,17 @@ mod tests {
         );
     }
 
-    /// S8. A picker with one option is disabled, and when the experimental
-    /// filter is what emptied it the control can say so.
+    /// S8, rewritten for defect B. With the filter on, `TC-SEMANTIC` has
+    /// **nothing** to offer — not "only the selected id" — and the row still
+    /// shows what the settings configure.
     #[test]
     fn a_single_option_picker_knows_whether_the_filter_emptied_it() {
         let mut dialog = dialog();
         dialog.catalog =
             CacheSlot::Loaded(audio_catalog(&["xiaomi/mimo-v2.5", "acme/never-measured"]));
-        // Experimental off: only the selected id survives, so the picker is
-        // disabled — and turning the toggle on would add two.
-        assert_eq!(dialog.model_options_for(ContractId::Semantic).len(), 1);
+        // Experimental off: both catalog models are unmeasured, so the picker
+        // offers nothing at all. This is the operator's screenshot.
+        assert!(dialog.model_options_for(ContractId::Semantic).is_empty());
         assert!(!dialog.model_cell_enabled(ContractId::Semantic));
         assert_eq!(
             dialog
@@ -7417,8 +8104,53 @@ mod tests {
                 .len(),
             2
         );
+        // The configuration is still readable, and the row says in words that it
+        // is a configuration rather than an offer.
+        assert_eq!(
+            dialog.configured_model(ContractId::Semantic).as_deref(),
+            Some("xiaomi/mimo-v2.5")
+        );
+        assert_eq!(
+            dialog.configured_status(ContractId::Semantic),
+            Some(Suitability::Experimental)
+        );
+        assert_eq!(
+            dialog.contracts_without_an_offer(),
+            vec![ContractId::Semantic],
+            "the contract with no offerable model is not named"
+        );
         dialog.draft.catalog.show_experimental = true;
         assert!(dialog.model_cell_enabled(ContractId::Semantic));
+        assert!(dialog.contracts_without_an_offer().is_empty());
+    }
+
+    /// Defect B. One offered model plus a configured one that is filtered out is
+    /// the case `len() > 1` drew disabled — the single press that moves the
+    /// contract onto something that *is* offered.
+    #[test]
+    fn a_picker_is_enabled_when_its_one_option_is_not_what_is_configured() {
+        let mut dialog = dialog();
+        // `mms-ctc` is the recommended aligner and `qwen3-fa` is unsupported, so
+        // TC-ALIGN offers exactly one model at either toggle setting.
+        let mut route = recommended_route(ContractId::Align).unwrap();
+        assert_eq!(dialog.model_options_for(ContractId::Align).len(), 1);
+        assert!(
+            !dialog.model_cell_enabled(ContractId::Align),
+            "the one option is what is configured, so there is nowhere to go"
+        );
+        // Point it at a model nothing offers. The one offered option is now
+        // somewhere else, and the picker has to be able to reach it.
+        route.model_id = Some("qwen3-fa".to_string());
+        set_override(&mut dialog.draft, route);
+        assert_eq!(dialog.model_options_for(ContractId::Align).len(), 1);
+        assert!(
+            dialog.model_cell_enabled(ContractId::Align),
+            "a picker with one reachable option was drawn disabled"
+        );
+        assert_eq!(
+            dialog.configured_status(ContractId::Align),
+            Some(Suitability::Unsupported)
+        );
     }
 
     /// S9. The plain-language names are drawn, and a badge's tooltip carries the

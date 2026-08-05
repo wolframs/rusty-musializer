@@ -1554,6 +1554,33 @@ which that tranche does not own.
 | `MUSIALIZER_ASSIST_SETTINGS_ESCAPE` | `apply_probe_state` | Presses Escape once at open | no press | exact `1` after trimming. **Deferred by one frame when `_ACTIVATE` is also set**, because an Enter is only consumed while a control is being drawn |
 | `MUSIALIZER_ASSIST_SETTINGS_DIRTY` | `apply_probe_state` | Marks a real route override as edited, so the unsaved-changes confirm step is reachable | draft clean | exact `1`. Falls back to flipping `catalog.show_experimental` if the override left the draft clean, so the seam cannot silently test nothing |
 | `MUSIALIZER_ASSIST_SETTINGS_ACTIVATE` | `apply_probe_state` | Presses Enter once on the focused control | no press | exact `1`. This is what makes `Save`, `Forget` and `Test` reachable from a headless run at all |
+| `MUSIALIZER_ASSIST_DISCOVERY` | `runtime::assist::discover::subprocess_permitted` | Switches off the two external-binary discovery rungs that spawn a child (`npm config get prefix`, and `$SHELL -lc 'command -v …'`) | the whole ladder runs, on a background thread | `off`, `0` or `path-only` (trimmed, case-insensitive) disable them; anything else, including absent, leaves them on. `tools/headless_check.sh` sets `off`: a gate that shelled out to the operator's real login shell would depend on their rc files |
+
+### 9.x `local_runtimes.codex_bin` (added 2026-08-05)
+
+`assist.json`'s `local_runtimes` block gains a fourth optional path override
+alongside `whisper_bin`, `whisper_model` and `align_python`:
+
+| Key | Type | Default | Semantics |
+| --- | --- | --- | --- |
+| `codex_bin` | string, optional | absent | An explicit path to the `codex` executable. Absent means "discover it"; present means **only** this path is tried, and a set-but-missing value is a loud failure (`codex_bin path is wrong`) rather than a fallback — the same rule `whisper_bin` follows |
+
+The field is skipped when absent, so a file that never sets it is byte-identical
+to a pre-2026-08-05 one and the schema version does not move. Discovery, when
+the key is absent, is the four-rung ladder in
+`musializer_runtime::assist::discover`: `PATH`, then a documented list of common
+install locations (`~/.local/bin`, `~/.local/npm-global/bin`, `~/.npm-global/bin`,
+`$(npm config get prefix)/bin`, `~/.volta/bin`, `~/.bun/bin`, `~/.asdf/shims`,
+`~/.nvm/versions/node/*/bin`, `/usr/local/bin`, `/opt/homebrew/bin`,
+`~/.cargo/bin`), then the login shell's own `PATH`. The last rung exists because
+a GUI process started from a desktop entry inherits the session manager's
+minimal `PATH`, which is why the dialog used to report "codex not on PATH" about
+a binary the user runs by name.
+
+`tools/codex_model_discovery.py` gained a command line at the same time —
+`refresh [--codex-bin PATH] [--timeout S] [--cache-dir DIR] [--json]` and
+`show [--cache-dir DIR]` — because the dialog's Refresh button had always
+invoked it as a program and the module had no `__main__` at all.
 
 `tools/google_fonts.py`, `tools/analyze_audio.py`, `tools/lyric_align.py`,
 `tools/lyric_anchor_block.py`, `tools/anchor_block_align.py`,

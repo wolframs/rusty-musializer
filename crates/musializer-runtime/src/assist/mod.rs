@@ -8,6 +8,7 @@
 //!
 //! Design authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §2, §3 and §4 (E1).
 
+pub mod discover;
 pub mod env;
 pub mod files;
 pub mod models;

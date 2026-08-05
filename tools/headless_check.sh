@@ -2567,6 +2567,7 @@ ai_capture() {
         XDG_CACHE_HOME="$REPO_ROOT/$AI_DIR/cache" \
         MUSIALIZER_ASSIST_SETTINGS_NOW=2026-08-05T12:00:00Z \
         MUSIALIZER_ASSIST_SETTINGS_KEY_TEST=no-key \
+        MUSIALIZER_ASSIST_DISCOVERY=off \
         "${extra_env[@]}" \
         ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
@@ -3115,6 +3116,323 @@ if grep -rl 'openrouter.ai' "$OUT_DIR"/ai-*.txt | grep -q . ; then
     fi
 fi
 echo "  network: every run stubbed the key test and left catalog refresh unpressed"
+
+# 11. Defect A (operator, 2026-08-05). The section rail's buttons sat flush
+#     against the vertical divider while keeping a comfortable gap to the
+#     dialog's left border. Both gaps must be the same.
+#
+#     Measured twice on purpose: the dialog reports the geometry it drew, and
+#     the *capture* is then scanned for the same two numbers. A report line
+#     alone would pass if the buttons were drawn somewhere other than their
+#     layout rect, which is precisely the class of error a layout constant
+#     cannot rule out.
+echo "  --- defect A: the section rail's two gaps ---"
+for pair in "ai-routing:rail" "ai-routing-narrow:tabs"; do
+    log="${pair%%:*}"
+    want="${pair#*:}"
+    CHROME="$(sed -n 's/^assist settings chrome: //p' "$OUT_DIR/$log.txt" | head -1)"
+    echo "  $log: ${CHROME:-<absent>}"
+    case "$CHROME" in
+        "mode=$want "*) ;;
+        *) echo "FAIL: $log did not draw the $want arrangement" >&2; AI_FAILED=1; continue ;;
+    esac
+    case "$CHROME" in
+        *symmetric=true*) ;;
+        *) echo "FAIL: $log draws the section list with unequal gaps" >&2; AI_FAILED=1 ;;
+    esac
+done
+# And the same two numbers off the pixels, for the rail. The first rail button
+# is the selected one, so it is a dark fill against the dialog's light surface
+# and its edges are unambiguous; the divider is a single darker column.
+python3 - "$OUT_DIR/ai-routing.png" \
+    "$(sed -n 's/^assist settings chrome: //p' "$OUT_DIR/ai-routing.txt" | head -1)" <<'PYRAIL' || AI_FAILED=1
+import subprocess, sys
+
+png, chrome = sys.argv[1], sys.argv[2]
+fields = dict(part.split("=", 1) for part in chrome.split() if "=" in part)
+tab = [float(v) for v in fields["first-tab"].split(",")]
+row = int(tab[1] + tab[3] / 2.0)
+
+probe = subprocess.run(
+    ["ffprobe", "-v", "error", "-select_streams", "v:0",
+     "-show_entries", "stream=width,height", "-of", "csv=p=0:s=,", png],
+    capture_output=True, text=True).stdout.strip()
+width, height = (int(v) for v in probe.split(","))
+raw = subprocess.run(
+    ["ffmpeg", "-v", "error", "-i", png, "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+    capture_output=True).stdout
+scan = raw[row * width:(row + 1) * width]
+
+# The dialog's own surface is the brightest thing on this row; the workspace
+# behind the scrim is much darker. Find the surface, then the button inside it.
+surface = max(scan)
+if surface < 200:
+    print(f"FAIL: row {row} of {png} carries no dialog surface (max luma {surface})")
+    raise SystemExit(1)
+left = next(x for x in range(width) if scan[x] >= surface - 4)
+# The dialog's border is one darker column immediately left of its fill, and it
+# is what `dialog.x` names -- so both gaps are measured to a border column and
+# the two numbers are comparable with each other and with the report.
+dialog_x = left - 1
+button_left = next(x for x in range(left, width) if scan[x] < surface - 4)
+button_right = button_left
+while scan[button_right + 1] < surface - 4:
+    button_right += 1
+divider = next(x for x in range(button_right + 1, width) if scan[x] < surface - 4)
+
+gap_left = button_left - dialog_x
+gap_right = divider - (button_right + 1)
+print(f"  ai-routing pixels: dialog-border={dialog_x} button={button_left}..{button_right} "
+      f"divider={divider} gap-left={gap_left}px gap-right={gap_right}px")
+if gap_left != gap_right:
+    print(f"FAIL: the rail is inset {gap_left}px on the left and {gap_right}px on the right")
+    raise SystemExit(1)
+if gap_left < 4:
+    print(f"FAIL: the rail has no gap at all ({gap_left}px)")
+    raise SystemExit(1)
+# And the capture agrees with what the dialog said it drew.
+for name, measured in (("gap-left", gap_left), ("gap-right", gap_right)):
+    if abs(float(fields[name]) - measured) > 0.5:
+        print(f"FAIL: reported {name}={fields[name]} against {measured} in the picture")
+        raise SystemExit(1)
+PYRAIL
+
+# 12. Defect B (operator, 2026-08-05). `Show experimental: off` displayed
+#     TC-SEMANTIC's model with an orange `experimental` marker, because the
+#     picker re-inserted the selected id after the filter dropped it. The
+#     ruling: the toggle governs what any picker OFFERS, the configured model is
+#     still shown, and the row says in words which of the two it is.
+echo "  --- defect B: the experimental filter ---"
+python3 - "$AI_DIR" <<'PYEXPERIMENTAL'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / "experimental"
+root.mkdir(parents=True, exist_ok=True)
+# Nothing but the toggle differs between the two, so the pair isolates it.
+for name, show in (("off", False), ("on", True)):
+    (root / f"assist-{name}.json").write_text(json.dumps({
+        "schema": "musializer.assist-settings/v1",
+        "active_profile": "recommended",
+        "catalog": {"show_experimental": show},
+    }, indent=2) + "\n")
+PYEXPERIMENTAL
+for state in off on; do
+    ai_capture "ai-experimental-$state" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+        "MUSIALIZER_ASSIST_SETTINGS=$REPO_ROOT/$AI_DIR/experimental/assist-$state.json" \
+        -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+    PICKERS="$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-$state.txt" | head -1)"
+    echo "  experimental $state: $(printf '%s' "$PICKERS" | grep -o 'TC-SEMANTIC{[^}]*}')"
+    echo "  experimental $state: $(printf '%s' "$PICKERS" | grep -o 'starved=\[[^]]*\]')"
+done
+# With the toggle off: nothing offered, the configuration still readable, and
+# the marker says which of the two it is.
+case "$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-off.txt" | head -1)" in
+    *'TC-SEMANTIC{configured=xiaomi/mimo-v2.5 status=experimental marker="not offered: experimental" offers=[]}'*)
+        echo "  toggle off: the picker offers nothing and the row says why" ;;
+    *) echo "FAIL: an experimental model is still offered with the toggle off" >&2; AI_FAILED=1 ;;
+esac
+case "$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-off.txt" | head -1)" in
+    *'starved=[TC-SEMANTIC]'*) ;;
+    *) echo "FAIL: the contract with no offerable model is not named" >&2; AI_FAILED=1 ;;
+esac
+# With it on: the same model is offered, and the marker changes meaning.
+case "$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-on.txt" | head -1)" in
+    *'TC-SEMANTIC{configured=xiaomi/mimo-v2.5 status=experimental marker="configured: experimental" offers=[xiaomi/mimo-v2.5,acme/never-measured,acme/quiet]}'*)
+        echo "  toggle on: three models offered, marker names the configuration" ;;
+    *) echo "FAIL: the toggle does not refill the picker" >&2; AI_FAILED=1 ;;
+esac
+case "$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-on.txt" | head -1)" in
+    *'starved=[]'*) ;;
+    *) echo "FAIL: a contract is still starved with the toggle on" >&2; AI_FAILED=1 ;;
+esac
+# The sentence has to be *drawn*, not merely reported: a warning nothing
+# photographs is a warning nobody reads. Comparing the two captures would not
+# show it — the ON case draws its own warning above the matrix and shifts every
+# row down, so *everything* differs. So the dialog reports the band it drew the
+# sentence into, and the band is measured for ink.
+STARVED_BAND="$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-off.txt" \
+    | head -1 | sed -n 's/.*starved-band=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\1:\2:\3:\4/p')"
+if [ -z "$STARVED_BAND" ]; then
+    echo "FAIL: the dialog reports no band for the \"No recommended model\" sentence" >&2
+    AI_FAILED=1
+else
+    SB_X="${STARVED_BAND%%:*}"; SB_REST="${STARVED_BAND#*:}"
+    SB_Y="${SB_REST%%:*}";      SB_REST="${SB_REST#*:}"
+    SB_W="${SB_REST%%:*}";      SB_H="${SB_REST#*:}"
+    STARVED_INK="$(ffprobe -v error -f lavfi \
+        -i "movie=$OUT_DIR/ai-experimental-off.png,crop=$SB_W:$SB_H:$SB_X:$SB_Y,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+    echo "  no-offerable-model sentence: band ${SB_W}x${SB_H}+${SB_X}+${SB_Y} darkest luma = ${STARVED_INK:-?}"
+    python3 -c "import sys; sys.exit(0 if float('${STARVED_INK:-255}') < 200.0 else 1)" \
+        || { echo "FAIL: the \"No recommended model\" sentence is reported but not drawn" >&2
+             AI_FAILED=1; }
+fi
+# And with the toggle on, no band is claimed at all.
+case "$(sed -n 's/^assist settings pickers: //p' "$OUT_DIR/ai-experimental-on.txt" | head -1)" in
+    *starved-band=none*) ;;
+    *) echo "FAIL: a starved-model sentence is claimed with the toggle on" >&2; AI_FAILED=1 ;;
+esac
+
+# 13. Defect C (operator, 2026-08-05). "codex not on PATH" was false: a GUI
+#     process started from a desktop entry inherits the session manager's
+#     minimal PATH, and codex lives in an npm global prefix that is on the login
+#     shell's PATH only. Every rung of the replacement ladder is exercised
+#     against a fixture, with `HOME` and `PATH` under this script's control so
+#     the result does not depend on what is installed on the machine.
+echo "  --- defect C: finding codex ---"
+CODEX_DIR="$OUT_DIR/codex-discovery"
+rm -rf "$CODEX_DIR"
+mkdir -p "$CODEX_DIR/home/.local/npm-global/bin" "$CODEX_DIR/onpath" \
+         "$CODEX_DIR/elsewhere" "$CODEX_DIR/emptyhome"
+for stub in "$CODEX_DIR/home/.local/npm-global/bin/codex" "$CODEX_DIR/onpath/codex" \
+            "$CODEX_DIR/elsewhere/codex"; do
+    printf '#!/bin/sh\nexit 0\n' >"$stub"
+    chmod 755 "$stub"
+done
+# A login shell that puts codex somewhere nothing here has heard of. `sh -l`
+# sources $HOME/.profile, which is the most portable of the login-shell files.
+mkdir -p "$CODEX_DIR/shellhome"
+printf 'export PATH="%s:$PATH"\n' "$REPO_ROOT/$CODEX_DIR/elsewhere" \
+    >"$CODEX_DIR/shellhome/.profile"
+python3 - "$AI_DIR" "$REPO_ROOT/$CODEX_DIR" <<'PYCODEX'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1]) / "codex"
+root.mkdir(parents=True, exist_ok=True)
+# TC-WORDING routes through Codex by default, so its readiness badge is the
+# user-visible consequence of every answer below.
+(root / "assist.json").write_text(json.dumps({
+    "schema": "musializer.assist-settings/v1",
+    "active_profile": "recommended",
+}, indent=2) + "\n")
+(root / "assist-override-missing.json").write_text(json.dumps({
+    "schema": "musializer.assist-settings/v1",
+    "active_profile": "recommended",
+    "local_runtimes": {"codex_bin": f"{sys.argv[2]}/nowhere/codex"},
+}, indent=2) + "\n")
+PYCODEX
+
+# codex_capture NAME HOME PATH DISCOVERY [VAR=VALUE ...]
+#
+# `env -i` on purpose: the point of every case below is what this process's own
+# environment does and does not carry, so inheriting the operator's would make
+# the answers depend on their shell.
+codex_capture() {
+    local name="$1" home="$2" path="$3" discovery="$4" settings="$5"
+    shift 5
+    local out="$OUT_DIR/$name.png"
+    local log="$OUT_DIR/$name.txt"
+    set +e
+    env -i -u WAYLAND_DISPLAY \
+        DISPLAY="$DISPLAY_NUM" \
+        PATH="$path" \
+        HOME="$REPO_ROOT/$home" \
+        SHELL=/bin/sh \
+        XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        XDG_CACHE_HOME="$REPO_ROOT/$AI_DIR/cache" \
+        MUSIALIZER_ASSIST_SETTINGS="$REPO_ROOT/$settings" \
+        MUSIALIZER_ASSIST_CREDENTIALS="$REPO_ROOT/$AI_DIR/config/credentials.json" \
+        MUSIALIZER_ASSIST_SETTINGS_NOW=2026-08-05T12:00:00Z \
+        MUSIALIZER_ASSIST_SETTINGS_KEY_TEST=no-key \
+        MUSIALIZER_ASSIST_DISCOVERY="$discovery" \
+        MUSIALIZER_ASSIST_SETTINGS_OPEN=codex \
+        "$@" \
+        ./target/debug/musializer --mute "$FIXTURE" \
+            --size 1280x720 --probe-frames 300 --probe-shot "$out" \
+            --ui-probe "panel=assist,play=0" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    printf '%-30s exit=%s\n' "$name" "$status"
+    [ -f "$out" ] && [ "$status" -eq 0 ]
+}
+
+# C1: on PATH. The rung that always worked, kept as the control.
+codex_capture "ai-codex-path" "$CODEX_DIR/emptyhome" \
+    "$REPO_ROOT/$CODEX_DIR/onpath:/usr/bin:/bin" off "$AI_DIR/codex/assist.json" || AI_FAILED=1
+# C2: **the operator's case.** A desktop entry's PATH, and codex in an npm
+#     global prefix. This is the run that used to say "codex not on PATH".
+codex_capture "ai-codex-wellknown" "$CODEX_DIR/home" \
+    "/usr/bin:/bin" off "$AI_DIR/codex/assist.json" || AI_FAILED=1
+# C3: nowhere this script has heard of, reachable only through the login shell.
+#     Discovery is left on for this one — it is the rung being tested — and the
+#     shell is `/bin/sh` against a fixture `$HOME`, never the operator's.
+codex_capture "ai-codex-loginshell" "$CODEX_DIR/shellhome" \
+    "/usr/bin:/bin" on "$AI_DIR/codex/assist.json" || AI_FAILED=1
+# C4: genuinely absent. The searched list is the whole point of the picture.
+codex_capture "ai-codex-absent" "$CODEX_DIR/emptyhome" \
+    "/usr/bin:/bin" on "$AI_DIR/codex/assist.json" || AI_FAILED=1
+# C5: a set-but-missing override fails loudly and does **not** fall back to the
+#     copy sitting on PATH.
+codex_capture "ai-codex-override-missing" "$CODEX_DIR/home" \
+    "$REPO_ROOT/$CODEX_DIR/onpath:/usr/bin:/bin" on \
+    "$AI_DIR/codex/assist-override-missing.json" || AI_FAILED=1
+
+for expect in \
+    "ai-codex-path:via=PATH:Ready" \
+    "ai-codex-wellknown:via=well-known:Ready" \
+    "ai-codex-loginshell:via=login-shell:Ready" \
+    "ai-codex-absent:codex=absent:codex not found" \
+    "ai-codex-override-missing:override-missing:codex_bin path is wrong" ; do
+    log="${expect%%:*}"
+    rest="${expect#*:}"
+    want="${rest%%:*}"
+    ready="${rest#*:}"
+    GOT="$(sed -n 's/^assist settings codex: //p' "$OUT_DIR/$log.txt" | tail -1)"
+    echo "  $log: ${GOT:-<absent>}"
+    case "$GOT" in
+        *"$want"*) ;;
+        *) echo "FAIL: $log expected $want" >&2; AI_FAILED=1 ;;
+    esac
+    # `sed`, not `tr ' ' '\n' | grep`: the model label is `Codex default`, and
+    # splitting on spaces cut the field in half — the check then compared the
+    # wrong half and failed for a reason that had nothing to do with codex.
+    WORDING="$(sed -n 's/^assist settings routing: //p' "$OUT_DIR/$log.txt" | tail -1 \
+        | sed -n 's/.*\(TC-WORDING=[^[]*\[[^]]*\]\).*/\1/p')"
+    echo "    readiness: $WORDING"
+    case "$WORDING" in
+        *"[$ready]"*) ;;
+        *) echo "FAIL: $log reports TC-WORDING as $WORDING, wanted [$ready]" >&2; AI_FAILED=1 ;;
+    esac
+done
+# The sentence the defect is named after must be gone everywhere.
+if grep -rq 'not on PATH' "$OUT_DIR"/ai-codex-*.txt; then
+    echo "FAIL: a run still claims codex is 'not on PATH'" >&2
+    AI_FAILED=1
+fi
+# The override case never even looked past the override, which is what "loud
+# failure, not a fallback" means. One searched entry, and it is the override.
+case "$(sed -n 's/^assist settings codex: //p' "$OUT_DIR/ai-codex-override-missing.txt" | tail -1)" in
+    *"searched=1"*) echo "  override: refused without falling back to the copy on PATH" ;;
+    *) echo "FAIL: a set-but-missing override fell through to discovery" >&2; AI_FAILED=1 ;;
+esac
+# The absent case lists where it looked, in the report and in the picture. The
+# list is what a user compares against where they know their binary is.
+SEARCHED="$(sed -n 's/^assist settings codex searched: //p' "$OUT_DIR/ai-codex-absent.txt" | tail -1)"
+echo "  searched: $SEARCHED"
+for place in "PATH: /usr/bin" ".local/npm-global/bin" ".volta/bin" ".asdf/shims" \
+             "/opt/homebrew/bin" "login shell"; do
+    case "$SEARCHED" in
+        *"$place"*) ;;
+        *) echo "FAIL: the searched list never mentions $place" >&2; AI_FAILED=1 ;;
+    esac
+done
+# Drawn, not only reported: the found and absent captures must differ in the
+# Executable block, and the absent one must carry more rows than the found one.
+CODEX_DELTA="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/ai-codex-wellknown.png,crop=840:110:300:160[a];movie=$OUT_DIR/ai-codex-absent.png,crop=840:110:300:160[b];[a][b]blend=all_mode=difference,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "  codex block: max luma difference between found and absent = ${CODEX_DELTA:-?}"
+python3 -c "import sys; sys.exit(0 if float('${CODEX_DELTA:-0}') > 40.0 else 1)" \
+    || { echo "FAIL: the Executable block draws the same thing found or not" >&2; AI_FAILED=1; }
+# §5 rule 6 survives all of it: discovery failure yields exactly `Codex
+# default`, never a guessed model id.
+for log in ai-codex-absent ai-codex-override-missing; do
+    case "$(sed -n 's/^assist settings routing: //p' "$OUT_DIR/$log.txt" | tail -1)" in
+        *'TC-WORDING=codex/codex/Codex default'*) ;;
+        *) echo "FAIL: $log invented a Codex model id" >&2; AI_FAILED=1 ;;
+    esac
+done
+echo "  model fallback: exactly \"Codex default\" in every unresolved run"
 
 if [ "$AI_FAILED" -ne 0 ]; then
     echo "FAIL: the AI settings dialog checks did not pass" >&2

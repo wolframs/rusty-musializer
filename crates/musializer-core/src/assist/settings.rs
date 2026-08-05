@@ -191,6 +191,16 @@ pub struct LocalRuntimes {
     /// Overrides `MUSIALIZER_ALIGN_PYTHON`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub align_python: Option<String>,
+    /// An explicit path to the `codex` executable.
+    ///
+    /// Discovery finds it on `PATH`, in a documented list of install locations,
+    /// and finally through the login shell — see
+    /// `musializer_runtime::assist::discover`. This is the escape hatch for the
+    /// installation none of that reaches, and it follows the same rule as
+    /// `whisper_bin`: set-but-missing is a **loud failure**, never a silent
+    /// fallback to whatever discovery would have found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex_bin: Option<String>,
     pub prefer_gpu: bool,
     pub stem_separation: StemSeparation,
 }
@@ -474,6 +484,7 @@ fn validate_local_runtimes(runtimes: &LocalRuntimes) -> Result<(), SettingsError
         ("whisper_bin", &runtimes.whisper_bin),
         ("whisper_model", &runtimes.whisper_model),
         ("align_python", &runtimes.align_python),
+        ("codex_bin", &runtimes.codex_bin),
     ] {
         if let Some(value) = value {
             check_string(name, value)?;

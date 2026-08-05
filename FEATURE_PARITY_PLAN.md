@@ -1093,6 +1093,33 @@ R9's navigation followed on 2026-08-05.
       unphotographable by anyone, gate included — add a probe seam for lane
       selection.
 
+### AP6 — operator-reported dialog defects (2026-08-05)
+
+Reported from the running app, so each fix carries a capture.
+
+- [x] AP6-a the section rail sat flush against the divider; both insets are now
+      `DIALOG_PADDING` and `section_gaps()` is asserted in rail and tabs layouts
+      (pixel-scanned from the capture, not just reported).
+- [x] AP6-b `Show experimental: off` still offered the experimental model. The
+      selected-id escape hatch past the overlay filter was the defect. Offers
+      are now strictly what may be offered; the configured model is still shown
+      and marked `not offered: experimental`; a contract left with nothing
+      offerable gets a full-width sentence naming the toggle.
+- [x] AP6-c `codex not on PATH` was false — a desktop-entry process inherits a
+      minimal PATH. `runtime::assist::discover` resolves override → PATH →
+      eleven well-known install prefixes → login-shell PATH, with executability
+      checks, a 2.5 s child timeout, per-process memoization, and the resolved
+      path plus the method shown in the Codex section (searched list when
+      absent). `Codex default` remains the only model fallback.
+- [x] AP6-d found while wiring AP6-c: `tools/codex_model_discovery.py` had no
+      `__main__`, so "Refresh Codex models" imported the module, exited 0 and
+      reported success. It now has `refresh`/`show` subcommands with tests.
+- [ ] AP6-e deferred discovery: ffmpeg (lives in `runtime::process`), whisper-cli
+      (paired to its install tree by `external_analysis.py` — a PATH-first
+      answer could select a binary that does not match its model) and the
+      alignment venv interpreter (not a PATH name at all). Each needs its own
+      decision; none is a small change.
+
 ### AP5 — acceptance evidence sweep (2026-08-05)
 
 The research plan's eleven provider-settings negative controls were audited

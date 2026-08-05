@@ -632,6 +632,45 @@ class CodexModelDiscoveryTests(unittest.TestCase):
             self.assertEqual(cache_file.stat().st_mtime_ns, mtime_before)
             self.assertEqual(cache_file.read_bytes(), bytes_before)
 
+    def test_the_command_line_honours_an_explicit_codex_binary(self) -> None:
+        """Defect C. The AI settings dialog's Refresh button runs this module as
+        a program, and until now the module had no ``__main__`` at all: the
+        button spawned ``python3 codex_model_discovery.py refresh``, which
+        imported the module, did nothing, exited 0, and reported success.
+
+        ``--codex-bin`` is the other half. The dialog resolves ``codex`` through
+        the four-rung ladder in ``musializer_runtime::assist::discover`` and
+        hands the answer down, because this tool's own ``PATH`` is the parent's
+        ``PATH`` -- the exact environment that failed to find it.
+        """
+        stub = self._write_stub(_NEW_CODEX_TAIL)
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            # A shell wrapper, so the argument really is a single path to an
+            # executable rather than a list this test constructed.
+            wrapper = cache_dir / "codex-stub"
+            wrapper.write_text(f'#!/bin/sh\nexec {sys.executable} -u {stub} "$@"\n')
+            wrapper.chmod(0o755)
+
+            status = codex_model_discovery.main(
+                ["refresh", "--codex-bin", str(wrapper), "--cache-dir", str(cache_dir),
+                 "--timeout", "5"])
+            self.assertEqual(status, 0)
+            cached = codex_model_discovery.read_cache(
+                cache_dir / codex_model_discovery.CACHE_FILENAME)
+            assert cached is not None
+            self.assertEqual(cached["model_count"], 2)
+            self.assertEqual(cached["codex_bin"], str(wrapper))
+
+    def test_a_failed_refresh_exits_non_zero_rather_than_claiming_success(self) -> None:
+        """The dialog reads the exit status to decide whether to say "refreshed"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            status = codex_model_discovery.main(
+                ["refresh", "--codex-bin", "musializer-test-definitely-not-a-real-binary",
+                 "--cache-dir", tmp, "--timeout", "2"])
+            self.assertEqual(status, 1)
+            self.assertFalse((Path(tmp) / codex_model_discovery.CACHE_FILENAME).exists())
+
 
 # --- OpenRouter provider catalog (AP2-d) ------------------------------------
 
