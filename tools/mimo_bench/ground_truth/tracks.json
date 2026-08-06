@@ -1,0 +1,35 @@
+{
+  "schema": "musializer.mimo-bench-ground-truth/v1",
+  "note": "Operator-authored truth for the three dimensions no measurement in this repository provides. Tempo comes from measured.json, lyric positions from lyrics.aligned.json plus ground_truth_adjudication.json, and section boundaries from measured.json summary.sections — none of those belong here. Every entry below starts as `unadjudicated`, and the scorers ABSTAIN rather than guess while it says so. `tools/mimo_bench/run.py plan` prints how many dimensions are still abstaining.",
+  "how_to_fill": {
+    "key": "Set tonic to a pitch name (C, C#, Db, ... using either spelling; the scorer normalizes enharmonics) and mode to `major`, `minor`, `dorian`, `mixolydian`, `phrygian`, `lydian`, `locrian` or `modal`. Set status to `adjudicated`. If the excerpt has no stable tonal centre, set status to `none` and leave tonic null; a model claiming a key is then scored as a false claim rather than abstaining.",
+    "meter": "Set value to a time signature string such as `4/4`, `3/4`, `6/8`, `7/8`, or `free` when there is no metre. Set status to `adjudicated`.",
+    "instruments": "`present` is the list a careful listener would name for THIS 100 s excerpt, in canonical lexicon terms (see INSTRUMENT_LEXICON in scorers.py; unknown names are reported by the plan command so the lexicon can grow). `allowed_extra` are plausible names that neither count for recall nor against precision — a synth pad you are unsure about. `absent` are hallucination canaries: instruments definitely NOT present, each of which costs precision hard when claimed."
+  },
+  "tracks": {
+    "shut-up-cat": {
+      "excerpt": {"start_seconds": 30.0, "seconds": 100.0},
+      "key": {"status": "unadjudicated", "tonic": null, "mode": null},
+      "meter": {"status": "unadjudicated", "value": null},
+      "instruments": {
+        "status": "unadjudicated",
+        "present": [],
+        "allowed_extra": [],
+        "absent": []
+      },
+      "notes": ""
+    },
+    "constellation-whale": {
+      "excerpt": {"start_seconds": 0.0, "seconds": 100.0},
+      "key": {"status": "unadjudicated", "tonic": null, "mode": null},
+      "meter": {"status": "unadjudicated", "value": null},
+      "instruments": {
+        "status": "unadjudicated",
+        "present": [],
+        "allowed_extra": [],
+        "absent": []
+      },
+      "notes": "The adjudicated line 24 text is \"Neither major, neither minor\", which is a lyric about tonality and not evidence of one. Do not let it stand in for the key entry."
+    }
+  }
+}

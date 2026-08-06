@@ -35,6 +35,10 @@ authoritative code and evidence without reconstructing the project from scratch.
   [`LYRICS_TIMING_WEB_EVIDENCE.md`](LYRICS_TIMING_WEB_EVIDENCE.md) are the trimmed
   local benchmark and the published/community evidence that together justified
   the anchor→block MMS design the research plan narrowed down to.
+- [`MIMO_BENCHMARK_PLAN.md`](MIMO_BENCHMARK_PLAN.md) is the designed-but-not-yet-run
+  benchmark of `xiaomi/mimo-v2.5`'s musical description: chunking, prompt register
+  and output-shaping axes, with the scoring rubric and cost projection. Running it
+  spends credits and sends audio off the machine.
 - [`../FEATURE_PARITY_PLAN.md`](../FEATURE_PARITY_PLAN.md) is the sole live
   completion queue and the C-to-Rust feature ledger.
 - [`../AGENTS.md`](../AGENTS.md) contains engineering constraints, the `unsafe`
