@@ -86,11 +86,33 @@ pub fn required_height(cue_count: usize) -> f32 {
 /// the form minimum instead of returning an error: the panel still has to be drawn
 /// somewhere, and the form is what must survive.
 pub fn panel_height(screen_height: f32, cue_count: usize) -> f32 {
+    panel_height_with_chrome(screen_height, cue_count, LYRIC_EDITOR_TIMELINE_CHROME)
+}
+
+/// [`panel_height`] for a shell whose chrome is **not** a constant (LX1-d).
+///
+/// The oracle's 158 px is the sum of a fixed timeline band, and every caller
+/// before this one could hard-code it. The lyric cue lane is now resizable by
+/// dragging its bottom edge, so the band above the panel grows with it and the
+/// sidebar protection above has to be measured against the chrome that is
+/// actually being spent — otherwise a taller lane silently eats the tracks
+/// panel, which is the exact failure [`LYRIC_EDITOR_TIMELINE_CHROME`]'s comment
+/// records happening once already, by one pixel.
+///
+/// A non-finite or negative `timeline_chrome` falls back to the constant rather
+/// than propagating: the panel still has to be drawn somewhere, and the oracle's
+/// number is the honest default.
+pub fn panel_height_with_chrome(screen_height: f32, cue_count: usize, timeline_chrome: f32) -> f32 {
     if !screen_height.is_finite() || screen_height <= 0.0 {
         return LYRIC_EDITOR_FORM_MINIMUM;
     }
+    let chrome = if timeline_chrome.is_finite() && timeline_chrome >= 0.0 {
+        timeline_chrome
+    } else {
+        LYRIC_EDITOR_TIMELINE_CHROME
+    };
     let mut wanted = required_height(cue_count);
-    let ceiling = screen_height - LYRIC_EDITOR_SIDEBAR_MINIMUM - LYRIC_EDITOR_TIMELINE_CHROME;
+    let ceiling = screen_height - LYRIC_EDITOR_SIDEBAR_MINIMUM - chrome;
     if wanted > ceiling {
         wanted = ceiling;
     }
@@ -237,6 +259,48 @@ mod tests {
         assert_eq!(visible_rows(0.0), 0);
         assert_eq!(visible_rows(-100.0), 0);
         assert_eq!(visible_rows(f32::NAN), 0);
+    }
+
+    #[test]
+    fn a_variable_chrome_protects_the_sidebar_by_the_chrome_actually_spent() {
+        // LX1-d. The delegation must be exact, or `panel_height`'s callers change
+        // behaviour for a feature they know nothing about.
+        for height in [640.0f32, 720.0, 900.0, 1080.0] {
+            for count in [0usize, 6, 8, 12, 1024] {
+                near(
+                    panel_height_with_chrome(height, count, LYRIC_EDITOR_TIMELINE_CHROME),
+                    panel_height(height, count),
+                    0.0,
+                );
+            }
+        }
+
+        // And the point of the parameter: spending more chrome must take the
+        // panel down, not the sidebar. 11 px of extra lane costs the panel 11 px
+        // at a window where the ceiling is what binds.
+        let base = panel_height_with_chrome(720.0, 12, 158.0);
+        let taller = panel_height_with_chrome(720.0, 12, 169.0);
+        near(base - taller, 11.0, 0.001);
+        for chrome in [158.0f32, 169.0, 180.0, 202.0] {
+            let panel = panel_height_with_chrome(1080.0, 8, chrome);
+            let sidebar = 1080.0 - (panel + chrome);
+            assert!(
+                sidebar >= LYRIC_EDITOR_SIDEBAR_MINIMUM - 0.01,
+                "chrome {chrome} left the sidebar {sidebar}"
+            );
+        }
+
+        // A broken chrome falls back rather than producing a nonsense panel.
+        near(
+            panel_height_with_chrome(1080.0, 8, f32::NAN),
+            panel_height(1080.0, 8),
+            0.0,
+        );
+        near(
+            panel_height_with_chrome(1080.0, 8, -50.0),
+            panel_height(1080.0, 8),
+            0.0,
+        );
     }
 
     #[test]

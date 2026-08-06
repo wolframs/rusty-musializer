@@ -115,9 +115,27 @@ it.
 | LX1-a | `CueOrigin` on `LyricCue` — user applied / AI certain / AI ambiguous / potential — filtered out of `at_time` and `cue_shadow`, persisted as an optional `origin` field, promoted to *user applied* by every editing operation | `core::project::lyrics`, `core::project::io`, `core::project::analysis_bridge` | **done** |
 | LX1-b | Overlap row assignment and clipboard arithmetic as raylib-free policy | `core::ui::lyric_lane_stack`, `core::ui::lyric_clipboard` | **done** |
 | LX1-c | The zoom/`Zoom out` row moves below the cue lane; `open_panel` reports where it goes | `ui/shell.rs`, `ui/panels/lyrics.rs` | **done** |
-| LX1-d | Lane rendering: per-origin colours, immediate non-sticky tooltips, overlap fan-out, a 1.5x lane resizable to 2x, Ctrl+C/X/V | `ui/panels/lyrics.rs` | open |
-| LX1-e | One visual system across the scene lane, waveform and cue lane — matching borders, insets and gaps | `ui/shell.rs`, `ui/panels/scene_timeline.rs` | open |
-| LX1-f | Unresolved and abstained lines become `Potential` cues at their coarse proposal, so the gap at 0:41–1:18 is editable; review list scrolls and can reveal its artifact | `ui/panels/assist.rs` | open |
+| LX1-d | Lane rendering: per-origin colours, immediate non-sticky tooltips, overlap fan-out, a 1.5x lane resizable to 2x, Ctrl+C/X/V | `ui/panels/lyrics.rs`, `ui/preferences.rs`, `ui/widgets.rs` | **done** |
+| LX1-e | One visual system across the scene lane, waveform and cue lane — matching borders, insets and gaps | `ui/shell.rs`, `ui/panels/scene_timeline.rs`, `ui/theme.rs` | **done** |
+| LX1-f | Unresolved and abstained lines become `Potential` cues at their coarse proposal, so the gap at 0:41–1:18 is editable; review list scrolls and can reveal its artifact | `ui/panels/assist.rs`, `core::project::analysis_candidate`, `runtime::process::reveal` | **done** |
+
+**A limit worth recording.** The lane's drag ceiling is derived from what the
+editing form (223 px) and the sidebar floor (301 px) still need, so 66 px is only
+reachable from a 1080p window up; at 720p the ceiling computes to the 33 px base.
+That is the correct trade — the panel yields before the sidebar does — and it was
+checked rather than assumed: rebuilding with the pre-LX1 22 px lane gives the
+*identical* `tracks Hidden` at 1280x720, so the taller lane costs the tracks panel
+nothing.
+
+**A gate that was wrong about correct drawing.** `tools/timeline_lane_alignment.py`
+first reported "0 seams" on every capture. The lanes were right; the detector
+demanded one unbroken run of trough colour, and the seam deliberately carries the
+tick columns and the playhead through it (`Shell::timeline_group_chrome`), so a
+1240 px seam with eight ticks in it had no run longer than about 155 px. It counts
+pixels now, which is immune to being interrupted. Negative control: shifting the
+cue lane 2 px right yields `lane3 playhead columns (11, 13) != lane1 (11,)`;
+reverted byte-for-byte, and all twelve captures agree again on `x=10..1269` at
+720p, `x=10..949` at the minimum window and `x=15..2034` at 1440p/150 %.
 
 **The decision worth recording.** `schema_version` does **not** move for LX1.
 `model.rs` accepts exactly one version, so bumping it would make this build
@@ -127,6 +145,71 @@ documented default, the mechanism `io.rs`'s module comment reserves for exactly
 this, and the same one `caption_style.effects` used. A cue nobody has marked
 serializes byte-for-byte as it did before, which is why
 `differential_project_io.sh` is still 2550 values with a delta of 0.
+
+**LX1-f's own decisions**, recorded because a later session will otherwise
+relitigate them:
+
+- **Proposals are parked at staging, not at Apply.** `stage_lyrics_review` is the
+  one seam both a finished job and `--ui-probe assist=candidate` go through, so
+  the lane the panel counts is the lane Apply publishes. Two insertion points
+  would be two chances for "Lyrics: 0 → 52" to stop describing what Apply does.
+- **A proposal with a start and no end gets 3.0 s**
+  (`assist::PROPOSAL_DEFAULT_SECONDS`). `LYRIC_MIN_CUE_SECONDS` is 0.02 s, which
+  the model accepts and no user can hit with a mouse; the point of parking a
+  proposal is to give them something to grab.
+- **A proposal with no time at all, or one starting inside the decoder's 0.25 s
+  padding tail, is not parked** and stays a review row. Clamping the second into
+  the track would claim a position it never made *and* fail `normalize_duration`
+  at Apply, breaking the placements around it.
+- **Parked proposals persist to `.musi`.** They are project content of a new kind
+  — an unanswered question the aligner asked — and the alternative (a session-only
+  overlay) would silently discard the work list on quit. `origin` already
+  round-trips, `at_time` and `cue_shadow` already skip them, and any edit promotes
+  one to `UserApplied`, so the persistence costs nothing observable in a frame or
+  an export.
+
+**LX1-e's system**, likewise. The operator's phrase was "three separately
+designed elements glued together", and the measurements confirmed it: at
+1280x720 the scene lane sat 4 px under its controls row inside a 1 px box, the
+waveform strip's box started on the *very next row* below it (rows 375 and 376,
+so two rules drew as one 2 px line), and the cue lane sat 5 px lower with a top
+rule, no sides and no bottom. Three playheads crossed them at two weights with a
+break in every gap.
+
+- **Three numbers, in `theme::metric`.** `LANE_BORDER` 1.0, `LANE_GAP` 5.0,
+  `LANE_PLAYHEAD_WIDTH` 2.0, plus `rgba::UI_LANE_TROUGH` for the seam. The gap
+  is 5 rather than 6 because `panels::lyrics` already spends exactly 5 and its
+  `LYRIC_EDITOR_TIMELINE_CHROME` assertion forbids that band growing; a
+  `const _: () = assert!` in `shell.rs` pins the two together, because a
+  disagreement there paints a seam over the cue lane and fails nowhere.
+- **The trailing gap is spent inside `SCENE_SECTION_HEIGHT` (54 → 60).**
+  `timeline_height` adds that constant to whatever the open panel asked for, so
+  a gap inside the section grows the band with it; a gap added below the section
+  would come out of the lyrics editor instead.
+- **`Shell::timeline_group_chrome` draws what no single lane can** — the seams,
+  one frame around all of them, and one playhead. The frame is what gives the
+  cue lane its missing left, right and bottom edges, so `panels::lyrics` needed
+  no edit at all.
+- **The upper seam is bounded by the lane that ended, not by `LANE_GAP`.** The
+  first version used the constant, and the negative control for a 3 px gap then
+  *passed* — the seam had simply painted over the lane's bottom border. Deriving
+  it from `SCENE_LANE_OFFSET + SCENE_LANE_HEIGHT` makes a wrong gap show as a
+  wrong seam.
+- **`tools/timeline_lane_alignment.py` is the contract**, run over ten captures
+  by `headless_check.sh`. It reads each lane's outermost frame column and its
+  playhead columns and requires them equal, because a lane inset by a different
+  amount maps the same second onto a different column and *nothing else here can
+  see it* — everything inside a lane moves together, so the frame still looks
+  self-coherent. It found two real defects on its first run: the tick at the
+  view's last visible second painted a rule one column outside the lane's right
+  border, and the tick at its first did the same on the left at 150 % scale.
+  Both bounds are now inset by `LANE_BORDER`.
+- **Its negative control was a 2 px inset on the waveform strip.** That moved
+  the lane's left edge 10 → 12, moved the group frame with it, and split the cue
+  lane's playhead into two columns (149 against 150–151) because
+  `panels::lyrics` still drew its own marker at the true position. All **1301**
+  unit tests stayed green throughout, which is the usual measurement: a
+  property assertion cannot pin a pixel.
 
 ## Start here next session (updated 2026-08-05)
 

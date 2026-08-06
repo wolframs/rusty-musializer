@@ -11,16 +11,36 @@ use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
-use super::super::shell::{
-    draw_timeline_playhead, Shell, ShellCommand, ShellInput, TimelineGesture,
-};
+use super::super::shell::{Shell, ShellCommand, ShellInput, TimelineGesture};
 use super::super::theme::{color, metric, rgba};
 use super::super::widgets::{self, ButtonStyle};
 
 pub const SCENE_CONTROLS_HEIGHT: f32 = 26.0;
 pub const SCENE_LANE_HEIGHT: f32 = 24.0;
-pub const SCENE_LANE_GAP: f32 = 4.0;
-pub const SCENE_SECTION_HEIGHT: f32 = SCENE_CONTROLS_HEIGHT + SCENE_LANE_GAP + SCENE_LANE_HEIGHT;
+
+/// Where this section's lane starts, measured from the top of the area it is
+/// handed.
+///
+/// Exported because `shell.rs` needs the *top of the first timed lane* to draw
+/// the group frame, and deriving it there from
+/// [`SCENE_SECTION_HEIGHT`] minus the pieces would be the same arithmetic
+/// written twice.
+pub const SCENE_LANE_OFFSET: f32 = SCENE_CONTROLS_HEIGHT + metric::LANE_GAP;
+
+/// Controls row, gap, lane, **and a trailing gap** (LX1-e).
+///
+/// The trailing [`metric::LANE_GAP`] is what puts a seam between this lane and
+/// the waveform strip below it. Before LX1-e the section ended flush against
+/// the lane's bottom border, so the strip's top border landed on the very next
+/// row and the two lanes drew as one box with a 2 px rule through it — the
+/// "glued together" the operator called out.
+///
+/// It has to be spent *here* rather than in `timeline_strip`: `timeline_height`
+/// adds this constant to whatever the open panel asked for, so a gap inside the
+/// section grows the band with it, while a gap added below the section would be
+/// taken out of the lyrics editor — which has a compile-time assertion against
+/// exactly that.
+pub const SCENE_SECTION_HEIGHT: f32 = SCENE_LANE_OFFSET + SCENE_LANE_HEIGHT + metric::LANE_GAP;
 
 /// A durable scene-plan mutation. Stable cue ids cross the draw/model boundary;
 /// vector indexes do not, because split and delete renumber them.
@@ -169,7 +189,7 @@ impl Shell {
         let controls = UiRect::new(area.x, area.y, area.width, SCENE_CONTROLS_HEIGHT);
         let lane = UiRect::new(
             area.x,
-            area.y + SCENE_CONTROLS_HEIGHT + SCENE_LANE_GAP,
+            area.y + SCENE_LANE_OFFSET,
             area.width,
             SCENE_LANE_HEIGHT,
         );
@@ -378,7 +398,11 @@ impl Shell {
         self.timeline_pan_gesture(d, input, lane);
         self.scene_lane_gesture(d, input, lane, commands);
         widgets::fill(d, lane, color::ui_raised());
-        d.draw_rectangle_lines_ex(widgets::rectangle(lane), 1.0, color::ui_rule());
+        d.draw_rectangle_lines_ex(
+            widgets::rectangle(lane),
+            metric::LANE_BORDER,
+            color::ui_rule(),
+        );
 
         let drag = self.scene_lane.drag;
         for (index, cue) in track.scene_switches.cues().iter().enumerate() {
@@ -469,14 +493,12 @@ impl Shell {
             );
         }
 
-        draw_timeline_playhead(
-            d,
-            self.timeline,
-            lane,
-            self.timeline_playhead_seconds(input.time_seconds),
-            1.0,
-            false,
-        );
+        // No playhead here since LX1-e. `Shell::timeline_group_chrome` draws one
+        // marker across every timed lane at [`metric::LANE_PLAYHEAD_WIDTH`],
+        // after the last of them: this lane used to draw its own at 1 px, the
+        // strip below drew a second at 2 px and the cue lane a third at 1 px, so
+        // one moment in time was marked three times at two weights with a break
+        // in each gap.
     }
 
     fn scene_lane_gesture(

@@ -55,7 +55,7 @@ use musializer_core::project::analysis_bridge;
 use musializer_core::project::analysis_candidate::{
     self, AnalysisCandidate, Lanes, LyricReviewEntry, LyricReviewKind, LyricsReview,
 };
-use musializer_core::project::lyrics::LyricsDocument;
+use musializer_core::project::lyrics::{self, CueOrigin, LyricCue, LyricsDocument};
 use musializer_core::project::model::{
     AnalysisLaneKind, AnalysisLaneReference, Provenance, MAX_ANALYSIS_LANES,
 };
@@ -66,6 +66,7 @@ use musializer_core::ui::assist_ui_state::{
     AssistMode, AssistPanelContent, AssistRequest, AssistSession, AssistStartBlock,
     AssistStatusInputs, AssistStatusTone, AssistUiLayout,
 };
+use musializer_core::ui::lyric_lane_edit::LYRIC_MIN_CUE_SECONDS;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::assist::env::SessionCredentials;
@@ -76,6 +77,7 @@ use musializer_runtime::process::assist::{
     LocalRuntimeOverrides, StopReason,
 };
 use musializer_runtime::process::font_import::find_assist_helper;
+use musializer_runtime::process::reveal::{self, RevealState};
 use musializer_runtime::project_files::sha256_file_hex;
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
 
@@ -972,6 +974,12 @@ pub(crate) struct ReviewDraw {
     pub rows: usize,
     /// Whether the "N of M shown" row survived.
     pub tail: bool,
+    /// Index of the first named row on screen (LX1-f).
+    ///
+    /// Zero for a list that fits, which is every capture taken before the list
+    /// could scroll. Reported because "rows_drawn=3" over a 24-line list is only
+    /// half an answer once the three can be any three of them.
+    pub first: usize,
 }
 
 /// The Assist review's own report line (review LT1, extended by LT1-R).
@@ -983,7 +991,12 @@ pub(crate) struct ReviewDraw {
 /// by eye.
 #[must_use]
 pub(crate) fn describe_review(candidate: Option<&AnalysisCandidate>, drawn: ReviewDraw) -> String {
-    let Some(review) = candidate.and_then(AnalysisCandidate::lyrics_review) else {
+    // Bound as a pair rather than through `and_then`, so the parked counts read
+    // the same candidate the review came from without an `expect` in a drawing
+    // path to prove it.
+    let Some((candidate, review)) =
+        candidate.and_then(|candidate| Some((candidate, candidate.lyrics_review()?)))
+    else {
         return "absent (this run left no lyrics-lane LT1 review artifact)".to_string();
     };
     let named: Vec<String> = review
@@ -991,15 +1004,23 @@ pub(crate) fn describe_review(candidate: Option<&AnalysisCandidate>, drawn: Revi
         .iter()
         .map(LyricReviewEntry::describe)
         .collect();
+    let parked = parked_summary(candidate);
     format!(
-        "unresolved={} flagged={} listed={} rows_drawn={} tail={} omitted={} counts={} \
-         manifest={}/{} policy={} | {}",
+        "unresolved={} flagged={} listed={} rows_drawn={} tail={} first={} omitted={} \
+         parked={}/{}/{} counts={} manifest={}/{} policy={} | {}",
         review.unresolved,
         review.flagged,
         review.entries.len(),
         drawn.rows,
         if drawn.tail { "yes" } else { "no" },
+        drawn.first,
         review.omitted,
+        // parked / placeable / unresolved (LX1-f). Three numbers because the
+        // gaps between them are the answer: parked < placeable is a capacity
+        // refusal, placeable < unresolved is lines with no proposed time.
+        parked.parked,
+        parked.parked + parked.refused,
+        parked.unresolved,
         if review.document_read {
             "document"
         } else {
@@ -1235,10 +1256,238 @@ fn report_settings_button(line: &str) {
 /// review is absent has nothing to wait for a frame for.
 fn stage_lyrics_review(candidate: &mut AnalysisCandidate, output_dir: &str) {
     LAST_REVIEW_REPORT.with(|last| last.borrow_mut().clear());
+    REVIEW_SCROLL.with(|first| first.set(0));
     let attached =
         read_lyrics_review(output_dir).is_some_and(|review| candidate.attach_lyrics_review(review));
     if !attached {
         report_review(describe_review(None, ReviewDraw::default()));
+        return;
+    }
+    // LX1-f. Done here, at the one seam both the real staging path and the probe
+    // go through, rather than in `apply_candidate_to_track`. The panel's counts
+    // must not lie about what Apply will do, and the only way to guarantee that
+    // is for the staged lane the panel counts to be the lane Apply publishes —
+    // two insertion points would be two chances to drift.
+    park_unresolved_proposals(candidate);
+}
+
+// ---------------------------------------------------------------------------
+// LX1-f: the proposals a review row cannot reach.
+//
+// The complaint this answers, in the operator's words: "lyrics between
+// 00:41..01:18 are just nowhere to be found for editing in the timeline (which
+// is the most comfortable way to edit mistimed lyrics in the UI)."
+//
+// They were nowhere because a line the localizer could not place has a *coarse
+// proposal window* and nothing carried it past the review list. The bridge could
+// not: its grammar is cues, and widening it to carry non-cues would move the
+// helper's "cues plus unresolved account for every authored line" invariant onto
+// both sides of the boundary. That reasoning was sound and is unchanged — what
+// was wrong was accepting its consequence.
+//
+// So the proposal is parked in the lane as a `CueOrigin::Potential` cue, which is
+// safe for exactly one reason: `LyricsDocument::at_time` skips it, so it cannot
+// reach a preview frame or an export, and `cue_shadow`/`shadowed_cues` ignore it
+// in both directions. It is a handle to drag, not content. The model promotes it
+// to `UserApplied` the moment anybody edits it, so dragging one into place is
+// what makes it real.
+// ---------------------------------------------------------------------------
+
+/// The window given to a proposal that has a start and no end.
+///
+/// Three seconds, and the alternative worth naming is the one that looks more
+/// principled and is wrong: [`LYRIC_MIN_CUE_SECONDS`] is 0.02 s, which is what
+/// the model will accept, and a 0.02 s cue at any usable timeline zoom is under
+/// one pixel wide. The whole point of parking a proposal is to give the user
+/// something to *grab*, so a window nobody can hit with a mouse fails the
+/// feature at its only job. Three seconds is a sung lyric line's own order of
+/// magnitude, so the parked block reads as a line rather than as a tick, and it
+/// is short enough that two consecutive proposals do not swallow each other.
+///
+/// It is not a placement and never pretends to be: the row says "proposed", the
+/// lane draws it in the `Potential` colour, and nothing displays it.
+pub const PROPOSAL_DEFAULT_SECONDS: f64 = 3.0;
+
+/// How close to the end of the staged lane a proposal may start.
+///
+/// The same 0.25 s [`load_candidate`] allows between the bridge's duration and
+/// the decoder's, and it is here for that exact reason: `apply_candidate_to_track`
+/// re-times the lane onto the **decoded** duration, and `normalize_duration`
+/// rejects the whole document if any cue starts at or after it. A proposal parked
+/// inside the padding tail would therefore turn a working Apply into a failed
+/// one — a coarse guess breaking the placements around it, which is the worst
+/// possible trade.
+const PROPOSAL_TAIL_GUARD_SECONDS: f64 = 0.25;
+
+/// What happened to a run's unresolved lines (LX1-f).
+///
+/// Four numbers rather than "how many were parked", because they answer four
+/// different questions and collapsing them is how a panel starts lying:
+/// `unresolved` is what the run could not place, `parked` is what the lane now
+/// carries, `unplaceable` is the lines that have no honest window at all, and
+/// `refused` is the lines that had one and did not fit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ParkedProposals {
+    /// Review rows whose line never became a cue.
+    pub unresolved: usize,
+    /// Proposals now in the staged lane as `Potential` cues.
+    pub parked: usize,
+    /// Unresolved lines with no proposed time this side can honour. These stay
+    /// review-only, and the panel still names them — a line that vanished from
+    /// *both* surfaces would be worse than the state this tranche replaces.
+    pub unplaceable: usize,
+    /// Proposals that had a usable window and were refused as a whole, because
+    /// the lane plus the proposals would exceed [`lyrics::CUE_CAPACITY`].
+    pub refused: usize,
+}
+
+impl ParkedProposals {
+    /// The sentence the candidate body adds to its lyrics count.
+    ///
+    /// Empty when there is nothing to say, so a run with no unresolved lines
+    /// reads exactly as it did before this tranche.
+    ///
+    /// It names the double count explicitly. A parked proposal is *both* a cue
+    /// in the "Lyrics: 40 -> 52" arithmetic and a row in the list below, and a
+    /// reader who is not told that will read 52 placements and 12 problems as 64
+    /// things — so the words "also listed below" are load-bearing, not padding.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        if self.unresolved == 0 {
+            return String::new();
+        }
+        if self.refused > 0 {
+            return format!(
+                "{} proposal{} could not be parked: the lane is at its {} cue limit",
+                self.refused,
+                if self.refused == 1 { "" } else { "s" },
+                lyrics::CUE_CAPACITY
+            );
+        }
+        if self.parked == 0 {
+            return format!(
+                "{} unresolved line{} proposed no usable time, so {} listed here only",
+                self.unplaceable,
+                if self.unplaceable == 1 { "" } else { "s" },
+                if self.unplaceable == 1 {
+                    "it is"
+                } else {
+                    "they are"
+                }
+            );
+        }
+        let mut text = format!(
+            "{} parked on the timeline as potential cues (also listed below)",
+            self.parked
+        );
+        if self.unplaceable > 0 {
+            text.push_str(&format!(
+                "; {} proposed no time and {} listed here only",
+                self.unplaceable,
+                if self.unplaceable == 1 { "is" } else { "are" }
+            ));
+        }
+        text
+    }
+}
+
+/// The window a proposal is parked at, or `None` when there is no honest one.
+///
+/// Three refusals, and each of them is a line that stays review-only rather than
+/// being parked somewhere invented:
+///
+/// - **No proposed start.** The localizer abstained without even a coarse view,
+///   so every second of the track is equally likely. Parking it at zero would put
+///   a block over the intro that means nothing.
+/// - **A start outside the staged lane.** A coarse view can propose past the end
+///   of the audio; clamping that to the last three seconds would claim a position
+///   the proposal never made. The tail guard is [`PROPOSAL_TAIL_GUARD_SECONDS`].
+/// - **Text the lyric model will not hold** — empty, over 511 bytes, or carrying
+///   a control character. Checked here rather than discovered by a failing
+///   `insert`, because `park_potential_cues` is all-or-nothing and one bad line
+///   would otherwise refuse the whole run's proposals.
+fn proposal_window(entry: &LyricReviewEntry, duration_seconds: f64) -> Option<(f64, f64)> {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return None;
+    }
+    if lyrics::validate_text(entry.text.trim()).is_err() {
+        return None;
+    }
+    let start = entry
+        .start_seconds
+        .filter(|start| start.is_finite() && *start >= 0.0)?;
+    let latest = duration_seconds - PROPOSAL_TAIL_GUARD_SECONDS - LYRIC_MIN_CUE_SECONDS;
+    if start > latest {
+        return None;
+    }
+    // The helper's own end when it gave one and it is after the start; otherwise
+    // the default window. A `coarse_end_seconds` at or before the start is a
+    // damaged record, not a zero-length line.
+    let end = match entry.end_seconds {
+        Some(end) if end.is_finite() && end > start => end,
+        _ => start + PROPOSAL_DEFAULT_SECONDS,
+    };
+    let end = end
+        .min(duration_seconds - PROPOSAL_TAIL_GUARD_SECONDS)
+        .max(start + LYRIC_MIN_CUE_SECONDS);
+    Some((start, end))
+}
+
+/// The proposals a candidate's review offers, in review order.
+fn proposal_cues(candidate: &AnalysisCandidate) -> Vec<LyricCue> {
+    let Some(review) = candidate.lyrics_review() else {
+        return Vec::new();
+    };
+    let duration = candidate.lyrics().duration_seconds();
+    review
+        .entries
+        .iter()
+        .filter(|entry| entry.kind.is_unresolved())
+        .filter_map(|entry| {
+            let (start_seconds, end_seconds) = proposal_window(entry, duration)?;
+            Some(LyricCue {
+                id: 0,
+                start_seconds,
+                end_seconds,
+                text: entry.text.trim().to_string(),
+                origin: CueOrigin::Potential,
+            })
+        })
+        .collect()
+}
+
+/// Parks every placeable proposal in the staged lane, or none of them.
+fn park_unresolved_proposals(candidate: &mut AnalysisCandidate) -> ParkedProposals {
+    let cues = proposal_cues(candidate);
+    if !cues.is_empty() {
+        candidate.park_potential_cues(&cues);
+    }
+    parked_summary(candidate)
+}
+
+/// What the lane and the review together say about the run's unresolved lines.
+///
+/// Derived from the candidate rather than remembered from the parking call, so
+/// the panel, the report line and a test all read the same document and cannot
+/// disagree about it after a clone.
+fn parked_summary(candidate: &AnalysisCandidate) -> ParkedProposals {
+    let Some(review) = candidate.lyrics_review() else {
+        return ParkedProposals::default();
+    };
+    let unresolved = review
+        .entries
+        .iter()
+        .filter(|entry| entry.kind.is_unresolved())
+        .count();
+    let placeable = proposal_cues(candidate).len();
+    let parked = candidate.potential_cue_count();
+    ParkedProposals {
+        unresolved,
+        parked,
+        unplaceable: unresolved.saturating_sub(placeable),
+        // All or nothing, so the only way a placeable proposal is not in the lane
+        // is a whole-run refusal.
+        refused: placeable.saturating_sub(parked),
     }
 }
 
@@ -2215,6 +2464,50 @@ const REVIEW_FIX_HINT: &str = "Click a line to open it in Lyrics";
 /// another's press.
 const REVIEW_ROW_WIDGET_BASE: u32 = 60;
 
+/// The heading row's control for getting to the job folder itself (LX1-f).
+///
+/// The operator's complaint named this: the list "refers to file, but no
+/// comfortable direct file opening". A Copy button that puts a path on the
+/// clipboard is not a route to a folder, it is homework, and the artifact strip
+/// has had one for as long as the panel has existed.
+///
+/// "Open folder" rather than "Reveal": `xdg-open` on a directory opens the
+/// directory, and "reveal" is the macOS word for selecting a file inside its
+/// parent, which is not what happens here.
+const REVEAL_LABEL: &str = "Open folder";
+
+/// Sized from the label at 12 px with the padding a text button adds, and short
+/// enough that the fix hint still fits beside it at 1280 px.
+const REVEAL_WIDTH: f32 = 92.0;
+
+/// Two pixels under the 18 px heading band, so the box cannot touch the first
+/// row's hit area.
+const REVEAL_HEIGHT: f32 = 16.0;
+
+/// Widget index of the Reveal control, in [`ASSIST_WIDGETS`].
+///
+/// `50` is the one gap left between the Copy strip (`40..43`) and the review rows
+/// (`60..63`). A colliding id would let one control release another's press.
+const REVEAL_WIDGET: u32 = 50;
+
+/// Whether this process is a headless probe run (LX1-f).
+///
+/// The gate's Xvfb *is* a reachable display and its `PATH` has `xdg-open`, so
+/// every guard in `reveal` except this one would pass — and a file manager
+/// opening during a capture is a process this repository did not ask for, on a
+/// display it does not own. Keyed on the probe variables this file already
+/// defines rather than on the CLI, whose parsing lives in `cli.rs`.
+fn assist_probe_run() -> bool {
+    [
+        PROBE_ARTIFACT_DIR_VARIABLE,
+        PROBE_LANES_VARIABLE,
+        PROBE_ACTIVATE_ROW_VARIABLE,
+        PROBE_REVIEW_SCROLL_VARIABLE,
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
 /// The cue that carries a review row's line, in the document the Lyrics panel
 /// edits (review LT1-R, R9).
 ///
@@ -2358,6 +2651,34 @@ thread_local! {
     static PROBE_ROW_PRESSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// Where a probe run parks the review list's scroll position (LX1-f).
+///
+/// [`PROBE_ACTIVATE_ROW_VARIABLE`]'s reason exactly: a headless run has no wheel
+/// any more than it has a click. Without this the scrolled state of the list
+/// joins the welcome screen and the three `None` fallbacks on the list of things
+/// this repository shipped with nothing able to photograph them.
+pub const PROBE_REVIEW_SCROLL_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_REVIEW_SCROLL";
+
+/// The first row a probe run wants on screen.
+fn probe_review_scroll() -> Option<usize> {
+    std::env::var(PROBE_REVIEW_SCROLL_VARIABLE)
+        .ok()?
+        .trim()
+        .parse::<usize>()
+        .ok()
+}
+
+thread_local! {
+    /// Index of the first named review row on screen.
+    ///
+    /// A `thread_local!` beside the report caches for the reason they are ones:
+    /// `Shell`'s own fields are not this file's to add to, and `AssistSession`
+    /// lives in `core::ui`, which this agent does not own either. Reset by
+    /// [`stage_lyrics_review`], so a new staged result opens at the top rather
+    /// than at the position the previous run was left scrolled to.
+    static REVIEW_SCROLL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The row a probe run wants pressed, once.
 fn probe_activated_row() -> Option<usize> {
     if PROBE_ROW_PRESSED.with(std::cell::Cell::get) {
@@ -2389,6 +2710,41 @@ fn review_row_capacity(first_row_y: f32, clip_bottom: f32) -> usize {
     }
 }
 
+/// Everything one frame of the review list did (LX1-f).
+///
+/// A struct rather than a widening tuple: the block now has three separable
+/// outcomes — what it drew, which row was pressed, and whether the Reveal
+/// control was — and a `(ReviewDraw, Option<usize>, bool)` is exactly the shape
+/// a caller gets wrong.
+pub(crate) struct ReviewFrame {
+    pub drawn: ReviewDraw,
+    pub activated: Option<usize>,
+    pub reveal: bool,
+}
+
+/// The pointer state the review list needs, gathered by the caller.
+///
+/// `draw_lyrics_review` is called from the one place that has a [`ShellInput`],
+/// and taking the two numbers rather than the input keeps this function's
+/// arithmetic drivable from a test.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ReviewPointer {
+    pub x: f32,
+    pub y: f32,
+    pub wheel: f32,
+}
+
+/// How many named rows a list of `entries` shows in `rows` rows, and where the
+/// window starts (LX1-f).
+///
+/// The scroll offset is clamped here rather than where it is stored, because the
+/// list length changes under it: a candidate discarded and another staged leaves
+/// a position that was valid for a longer list. Clamping at the point of use
+/// makes a stale offset unstateable instead of merely unlikely.
+fn review_window(entries: usize, shown: usize, requested_first: usize) -> usize {
+    requested_first.min(entries.saturating_sub(shown))
+}
+
 /// One frame of the review list, drawn and pressed.
 ///
 /// `document` is the lyric document the *Lyrics panel* edits, not the staged
@@ -2401,11 +2757,13 @@ fn draw_lyrics_review(
     font: &UiFonts,
     review: &LyricsReview,
     document: Option<&LyricsDocument>,
+    pointer: ReviewPointer,
+    reveal_state: RevealState,
     x: f32,
     y: f32,
     width: f32,
     clip_bottom: f32,
-) -> (ReviewDraw, Option<usize>) {
+) -> ReviewFrame {
     let measure = |line: &str| widgets::measure(font, line, REVIEW_FONT_SIZE);
     let mut row_y = y + 18.0;
     // The whole block, heading included, is dropped rather than half-drawn: a
@@ -2413,7 +2771,11 @@ fn draw_lyrics_review(
     // names and delivers none.
     let capacity = review_row_capacity(row_y, clip_bottom);
     if capacity == 0 {
-        return (ReviewDraw::default(), None);
+        return ReviewFrame {
+            drawn: ReviewDraw::default(),
+            activated: None,
+            reveal: false,
+        };
     }
     let (shown, hidden) = review_rows(review, capacity.min(REVIEW_MAX_ROWS));
 
@@ -2423,14 +2785,66 @@ fn draw_lyrics_review(
         format!("Lines to check ({})", review.policy)
     };
     widgets::draw_text(d, font, &heading, x, y, REASON_FONT_SIZE, color::accent());
-    let hint_width = widgets::measure(font, REVIEW_FIX_HINT, REVIEW_FONT_SIZE);
+
+    // The Reveal control takes the heading row's right edge, and the fix hint
+    // gives way to it rather than sharing: the hint is a footnote and the button
+    // is the thing the operator asked for by name.
+    let reveal_rect = UiRect::new(
+        x + width - REVEAL_WIDTH,
+        y - 2.0,
+        REVEAL_WIDTH,
+        REVEAL_HEIGHT,
+    );
+    let reveal_id = widgets::widget_id(ASSIST_WIDGETS, REVEAL_WIDGET);
+    let mut reveal = false;
     let heading_width = widgets::measure(font, &heading, REASON_FONT_SIZE);
-    if width - heading_width - hint_width >= 24.0 {
+    let reveal_drawn = width - heading_width >= REVEAL_WIDTH + 24.0;
+    if reveal_drawn {
+        // The hit box is registered whether or not the control is pressable, so
+        // a refusal can explain itself in a tooltip. `disabled_button` takes no
+        // id and therefore cannot carry one, and a greyed box that says nothing
+        // is the "blank region is indistinguishable from a broken one" failure
+        // wearing a border.
+        let state = widgets_state.button(d, reveal_id, reveal_rect);
+        if reveal_state.is_ready() {
+            if widgets_state
+                .text_button(
+                    d,
+                    font,
+                    reveal_id,
+                    reveal_rect,
+                    REVEAL_LABEL,
+                    false,
+                    ButtonStyle::Neutral,
+                    Some(REVIEW_FONT_SIZE),
+                )
+                .clicked
+            {
+                reveal = true;
+            }
+        } else {
+            widgets_state.disabled_button(
+                d,
+                font,
+                reveal_rect,
+                REVEAL_LABEL,
+                Some(REVIEW_FONT_SIZE),
+            );
+        }
+        widgets_state.hint(d, state, reveal_id, reveal_rect, reveal_state.reason());
+    }
+    let hint_width = widgets::measure(font, REVIEW_FIX_HINT, REVIEW_FONT_SIZE);
+    let hint_right = if reveal_drawn {
+        reveal_rect.x - 12.0
+    } else {
+        x + width
+    };
+    if hint_right - x - heading_width - hint_width >= 24.0 {
         widgets::draw_text(
             d,
             font,
             REVIEW_FIX_HINT,
-            x + width - hint_width,
+            hint_right - hint_width,
             y + 1.0,
             REVIEW_FONT_SIZE,
             color::ui_muted(),
@@ -2463,13 +2877,15 @@ fn draw_lyrics_review(
             REVIEW_FONT_SIZE,
             color::ui_muted(),
         );
-        return (
-            ReviewDraw {
+        return ReviewFrame {
+            drawn: ReviewDraw {
                 rows: 0,
                 tail: false,
+                first: 0,
             },
-            None,
-        );
+            activated: None,
+            reveal,
+        };
     }
 
     // Where the rows landed, so the headless gate can park a pointer on one
@@ -2479,8 +2895,30 @@ fn draw_lyrics_review(
          rows={shown} hint=\"{REVIEW_FIX_HINT}\""
     ));
 
+    // The scroll window (LX1-f). The wheel is only read when the pointer is over
+    // the rows, which is the rule every other list in this interface follows:
+    // a wheel that scrolled a list the pointer was nowhere near would fight the
+    // panel underneath it.
+    let list = UiRect::new(x, row_y - 2.0, width, shown as f32 * REVIEW_ROW_HEIGHT);
+    let mut first = REVIEW_SCROLL.with(std::cell::Cell::get);
+    if pointer.wheel != 0.0 && list.contains_point(pointer.x, pointer.y) {
+        // Whole rows per notch. A 15 px pitch under momentum would land the list
+        // between two rows, and a half-drawn name is what the row cap exists to
+        // prevent in the first place.
+        let step = -(pointer.wheel.round() as i64);
+        first = (first as i64 + step).max(0) as usize;
+    }
+    // A probe run has no wheel, so the capture takes its position from the
+    // environment. Applied after the wheel rather than before, because in a
+    // probe run there is no wheel to overrule.
+    if let Some(parked) = probe_review_scroll() {
+        first = parked;
+    }
+    let first = review_window(review.entries.len(), shown, first);
+    REVIEW_SCROLL.with(|scroll| scroll.set(first));
+
     let mut activated = None;
-    for (index, entry) in review.entries.iter().take(shown).enumerate() {
+    for (index, entry) in review.entries.iter().skip(first).take(shown).enumerate() {
         // The row is its own press area, full block width: a list row is the
         // affordance a reader already knows, and a hit box narrower than the ink
         // is a control that misses when you aim at it.
@@ -2495,7 +2933,12 @@ fn draw_lyrics_review(
         let cue = document.and_then(|document| review_entry_cue(entry, document));
         widgets_state.hint(d, state, id, row, &review_row_hint(entry, cue));
         if state.clicked {
-            activated = Some(index);
+            // The **entry's** index, not the screen row's. The widget id is keyed
+            // by screen row (the id space between the Copy strip and the
+            // auto-scene toggle only has room for the four the panel can draw),
+            // so the two diverge the moment the list is scrolled and the caller
+            // needs the one that indexes `review.entries`.
+            activated = Some(first + index);
         }
         widgets::draw_text(
             d,
@@ -2512,16 +2955,29 @@ fn draw_lyrics_review(
         // "N of M shown" rather than "+N more": it is the form that still reads
         // correctly when the panel is short enough that N is zero, which is the
         // case this row exists for.
+        //
+        // LX1-f changed what it says *after* the count. It used to defer to the
+        // job folder — "the full list is in the job folder's lyrics document" —
+        // which is the sentence the operator called undesirable, and rightly: it
+        // is an interface telling a user to go and read a JSON file. The list
+        // scrolls now, so the row names the gesture and the window instead, and
+        // the folder is a button on the heading row rather than a suggestion.
         let total = review.total_to_check();
+        let named = review.entries.len();
         let tail = if shown == 0 {
             format!(
-                "None of the {total} lines to check fit here; the full list is in the job \
-                 folder's lyrics document."
+                "None of the {total} lines to check fit here; open the job folder to read them."
+            )
+        } else if named > shown {
+            format!(
+                "Showing {}-{} of {total}; scroll the list, or open the job folder.",
+                first + 1,
+                first + shown
             )
         } else {
-            format!(
-                "{shown} of {total} shown; the full list is in the job folder's lyrics document."
-            )
+            // Fewer names than flags: the extra lines are ones the document
+            // could not name, and no amount of scrolling produces them.
+            format!("{shown} of {total} shown; the rest were flagged without a name.")
         };
         widgets::draw_text(
             d,
@@ -2533,13 +2989,15 @@ fn draw_lyrics_review(
             color::ui_muted(),
         );
     }
-    (
-        ReviewDraw {
+    ReviewFrame {
+        drawn: ReviewDraw {
             rows: shown,
             tail: hidden > 0,
+            first,
         },
         activated,
-    )
+        reveal,
+    }
 }
 
 /// Draws the sentence naming why Apply is greyed out, in the slot the row gave
@@ -3328,7 +3786,21 @@ impl Shell {
             // line which never became a cue at all, and an unresolved line is
             // exactly the case a user must be told about.
             let line = match candidate.lyrics_review() {
-                Some(review) => format!("Lyrics: {before} -> {after}  |  {}", review.summary()),
+                Some(review) => {
+                    // LX1-f. The parked proposals are inside `after`, so without
+                    // this clause the count silently includes cues the aligner
+                    // explicitly failed to place — and the reader has no way to
+                    // tell which part of "0 -> 52" is a placement.
+                    let parked = parked_summary(candidate).summary();
+                    if parked.is_empty() {
+                        format!("Lyrics: {before} -> {after}  |  {}", review.summary())
+                    } else {
+                        format!(
+                            "Lyrics: {before} -> {after}  |  {}  |  {parked}",
+                            review.summary()
+                        )
+                    }
+                }
                 None => {
                     let uncertain = candidate.uncertain_lyric_count();
                     if uncertain == 0 {
@@ -3445,12 +3917,22 @@ impl Shell {
             // send the user into. Not the candidate's staged lane: until Apply
             // runs, that lane's cues do not exist anywhere the user can drag one.
             let document = workspace.current().map(|track| &track.lyrics);
-            let (drawn, pressed) = draw_lyrics_review(
+            let mouse = input.ui_scale.mouse(d);
+            let pointer = ReviewPointer {
+                x: mouse.x,
+                y: mouse.y,
+                wheel: d.get_mouse_wheel_move(),
+            };
+            let folder = PathBuf::from(session.artifact_path(AssistArtifact::Folder));
+            let reveal_state = reveal::reveal_state(&folder, assist_probe_run());
+            let frame = draw_lyrics_review(
                 d,
                 &mut self.widgets,
                 font,
                 review,
                 document,
+                pointer,
+                reveal_state,
                 x,
                 action_y + REVIEW_BLOCK_OFFSET,
                 (boundary.width - padding * 2.0).max(0.0),
@@ -3460,10 +3942,36 @@ impl Shell {
                 // asked for and the list has to fit what it got.
                 boundary.y + boundary.height - 1.0,
             );
-            report_review(describe_review(Some(candidate), drawn));
+            report_review(describe_review(Some(candidate), frame.drawn));
+            if frame.reveal {
+                // The refusal is a whole sentence, and it names the fallback:
+                // "Copy folder" is right beside this button and does work with
+                // no display, so a machine that cannot open a file manager still
+                // has a route to the path.
+                let (severity, title, detail) =
+                    match reveal::reveal_directory(&folder, assist_probe_run()) {
+                        Ok(()) => (
+                            Severity::Info,
+                            "Opening the job folder",
+                            format!("{} was handed to your file manager.", folder.display()),
+                        ),
+                        Err(error) => (
+                            Severity::Warning,
+                            "The job folder could not be opened",
+                            format!("{error}. Copy folder puts the path on the clipboard instead."),
+                        ),
+                    };
+                self.notify(severity, title, &detail);
+            }
             // A probe press only reaches rows the panel drew, so a capture cannot
-            // claim to have pressed a row the scissor ate.
-            let pressed = pressed.or_else(|| probe_activated_row().filter(|row| *row < drawn.rows));
+            // claim to have pressed a row the scissor ate. It is offset by the
+            // scroll position for the same reason: the row a capture points at is
+            // the row on screen, not the row in the parse.
+            let pressed = frame.activated.or_else(|| {
+                probe_activated_row()
+                    .filter(|row| *row < frame.drawn.rows)
+                    .map(|row| frame.drawn.first + row)
+            });
             if let Some(entry) = pressed.and_then(|row| review.entries.get(row)) {
                 let outcome = self.open_lyric_review_row(entry, workspace, commands);
                 println!("assist review nav: {}", outcome.describe(entry));
@@ -4409,10 +4917,15 @@ mod tests {
                 Some(&candidate),
                 ReviewDraw {
                     rows: 2,
-                    tail: false
+                    tail: false,
+                    first: 0
                 }
             ),
-            "unresolved=1 flagged=2 listed=2 rows_drawn=2 tail=no omitted=0 counts=document \
+            // `parked=0/0/1`: this fixture's one unresolved line proposes 1:30.6
+            // against a 60 s staged lane, so it has no window this side can
+            // honour and stays review-only (LX1-f).
+            "unresolved=1 flagged=2 listed=2 rows_drawn=2 tail=no first=0 omitted=0 \
+             parked=0/0/1 counts=document \
              manifest=1/2 policy=anchor-block-mms | \
              UNPLACED line 26 proposed 1:30.6-1:34.2 \"hold the note until it breaks\" ; \
              CHECK line 1 at 0:12.0-0:16.0 \"we were never meant to stay\"",
@@ -4463,7 +4976,8 @@ mod tests {
         assert!(candidate.attach_lyrics_review(review));
         assert_eq!(
             describe_review(Some(&candidate), ReviewDraw::default()),
-            "unresolved=0 flagged=0 listed=0 rows_drawn=0 tail=no omitted=0 counts=document \
+            "unresolved=0 flagged=0 listed=0 rows_drawn=0 tail=no first=0 omitted=0 \
+             parked=0/0/0 counts=document \
              manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged"
         );
         // A row is still reserved for it: a blank region is indistinguishable
@@ -4988,5 +5502,324 @@ mod tests {
         for artifact in AssistArtifact::ALL {
             assert!(!Path::new(session.artifact_path(artifact)).exists());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Tranche LX1-f: proposals reach the timeline, and the list scrolls.
+    // -----------------------------------------------------------------------
+
+    /// The `unresolved[]`/`review_flags[]` pair a proposal-carrying job leaves.
+    ///
+    /// Windows are inside the probe bridge's 60 s duration on purpose: the
+    /// pre-existing `LT1_DOCUMENT` proposes 1:30.6, which is *past the end of the
+    /// staged lane*, and the whole point of a second fixture is that the two
+    /// cases must not share one.
+    const PARKED_DOCUMENT: &str = r#"{"localization_policy":"anchor-block-mms",
+        "unresolved":[
+            {"reference_line_index":25,"text":"hold the note until it breaks",
+             "reason":"no block placement","abstained":false,
+             "coarse_start_seconds":41.0,"coarse_end_seconds":44.5},
+            {"reference_line_index":26,"text":"an open ended proposal",
+             "reason":"no block placement","abstained":false,
+             "coarse_start_seconds":50.0,"coarse_end_seconds":null},
+            {"reference_line_index":30,"text":"and again, and again",
+             "reason":"repeated phrase could not be pinned","abstained":true,
+             "coarse_start_seconds":null,"coarse_end_seconds":null}],
+        "review_flags":[
+            {"reference_line_index":25,"text":"hold the note until it breaks",
+             "flag":"unresolved","reason":"no block placement",
+             "coarse_start_seconds":41.0},
+            {"reference_line_index":26,"text":"an open ended proposal",
+             "flag":"unresolved","reason":"no block placement",
+             "coarse_start_seconds":50.0},
+            {"reference_line_index":30,"text":"and again, and again",
+             "flag":"unresolved","reason":"repeated phrase could not be pinned"}]}"#;
+
+    const PARKED_MANIFEST: &str = r#"{"schema_version":"musializer.assist-manifest/v1",
+        "mode":"lyrics",
+        "result_counts":{"lyrics":2,"lyrics_unresolved":3,"lyrics_review_flags":3},
+        "lyric_localization":{"policy":"anchor-block-mms","policy_version":"3"}}"#;
+
+    /// A staged candidate with `PARKED_DOCUMENT`'s review already parked, exactly
+    /// as `stage_lyrics_review` leaves one.
+    fn parked_candidate(scratch: &Scratch, name: &str) -> AnalysisCandidate {
+        let folder = review_job_folder(scratch, name, PARKED_MANIFEST, PARKED_DOCUMENT);
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
+        stage_lyrics_review(&mut candidate, &folder.display().to_string());
+        candidate
+    }
+
+    #[test]
+    fn an_unresolved_line_with_a_proposal_becomes_one_potential_cue_at_that_window() {
+        let scratch = Scratch::new("lx1f-parked");
+        let candidate = parked_candidate(&scratch, "parked");
+
+        // Two of the three unresolved lines are placeable; the third proposed no
+        // time at all. Not deduplicated, not merged.
+        let parked: Vec<&LyricCue> = candidate
+            .lyrics()
+            .cues()
+            .iter()
+            .filter(|cue| cue.origin == CueOrigin::Potential)
+            .collect();
+        assert_eq!(parked.len(), 2);
+        assert_eq!(parked[0].text, "hold the note until it breaks");
+        assert!((parked[0].start_seconds - 41.0).abs() < 1e-9);
+        assert!((parked[0].end_seconds - 44.5).abs() < 1e-9);
+
+        // The window policy for a proposal with a start and no end, pinned as a
+        // **literal**. Writing `50.0 + PROPOSAL_DEFAULT_SECONDS` here reads like
+        // the careful version and is a tautology: it agrees with the constant
+        // whatever the constant is. The negative control for this tranche moved
+        // the default 3.0 -> 4.0 and this assertion passed, which is the exact
+        // "copied from our own output, and would then pass forever" failure
+        // `AGENTS.md` warns about. 53.0 is the number, and the separate
+        // assertion below is what names why it is that number.
+        assert_eq!(parked[1].text, "an open ended proposal");
+        assert!((parked[1].start_seconds - 50.0).abs() < 1e-9);
+        assert!(
+            (parked[1].end_seconds - 53.0).abs() < 1e-9,
+            "an open-ended proposal at 0:50 must be parked as 0:50-0:53, got {}",
+            parked[1].end_seconds
+        );
+        assert!(
+            (PROPOSAL_DEFAULT_SECONDS - 3.0).abs() < 1e-9,
+            "the literal above is 50 + this constant; change both or neither"
+        );
+
+        // The two the bridge placed are untouched, and the counts add up.
+        assert_eq!(candidate.lyrics().len(), 4);
+        assert_eq!(
+            parked_summary(&candidate),
+            ParkedProposals {
+                unresolved: 3,
+                parked: 2,
+                unplaceable: 1,
+                refused: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_proposed_time_parks_nothing_and_is_still_named() {
+        let scratch = Scratch::new("lx1f-unplaceable");
+        let candidate = parked_candidate(&scratch, "unplaceable");
+        let review = candidate.lyrics_review().expect("review");
+
+        // The abstained line has no coarse view, so there is nowhere honest to
+        // park it — and it must still be on the screen, because a line that
+        // vanished from *both* surfaces would be worse than the state before
+        // this tranche.
+        let named: Vec<&str> = review
+            .entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect();
+        assert!(named.contains(&"and again, and again"));
+        assert!(!candidate
+            .lyrics()
+            .cues()
+            .iter()
+            .any(|cue| cue.text == "and again, and again"));
+        assert_eq!(parked_summary(&candidate).unplaceable, 1);
+        assert!(parked_summary(&candidate)
+            .summary()
+            .contains("proposed no time"));
+    }
+
+    #[test]
+    fn a_proposal_outside_the_staged_lane_stays_review_only() {
+        // `LT1_DOCUMENT` proposes 1:30.6 against a 60 s staged lane. Clamping
+        // that into the track would claim a position the proposal never made,
+        // and — worse — a proposal inside the decoder's padding tail turns a
+        // working Apply into a failed one, because `normalize_duration` refuses
+        // a document with any cue starting at or after the decoded duration.
+        let scratch = Scratch::new("lx1f-outside");
+        let folder = review_job_folder(&scratch, "outside", LT1_MANIFEST, LT1_DOCUMENT);
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
+        stage_lyrics_review(&mut candidate, &folder.display().to_string());
+        assert_eq!(candidate.potential_cue_count(), 0);
+        assert_eq!(candidate.lyrics().len(), 2);
+
+        // And the guard is the tail, not the duration: 59.7 is inside a 60 s lane
+        // and still refused, 59.5 is the last second that is not.
+        let entry = |start: f64| LyricReviewEntry {
+            kind: LyricReviewKind::Unresolved,
+            line_number: 1,
+            text: "x".to_string(),
+            start_seconds: Some(start),
+            end_seconds: None,
+            reason: String::new(),
+            delta_seconds: None,
+        };
+        assert_eq!(proposal_window(&entry(60.1), 60.0), None);
+        assert_eq!(proposal_window(&entry(59.9), 60.0), None);
+        let (start, end) = proposal_window(&entry(59.0), 60.0).expect("inside the guard");
+        assert!((start - 59.0).abs() < 1e-9);
+        assert!(
+            (end - 59.75).abs() < 1e-9,
+            "the window is clipped to the guard, not to the duration: {end}"
+        );
+    }
+
+    #[test]
+    fn the_whole_batch_is_refused_rather_than_half_applied_at_the_cue_limit() {
+        // Reachable, not hypothetical: `REVIEW_ENTRY_CAPACITY` is 64 and
+        // `CUE_CAPACITY` is 1024, so a lane the helper filled past 960 is exactly
+        // where the sum bites. Half a run's proposals is worse than none — the
+        // gaps in the lane would stop meaning anything.
+        let mut document = String::from(
+            "MUSIALIZER_BRIDGE\t1\n\
+             AUDIO\t0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\t60000\n",
+        );
+        for index in 0..1000u64 {
+            let start = index * 55;
+            document.push_str(&format!(
+                "LYRIC\t{}\t{start}\t{}\t900\tnone\t{}\n",
+                index + 1,
+                start + 40,
+                b64("a placed line")
+            ));
+        }
+        // A bridge's section lane is mandatory and must reach the end of the
+        // audio (`analysis_bridge.rs:505-510`), so one covering section is part
+        // of the fixture rather than an oversight.
+        document.push_str(&format!(
+            "SECTION\t2000\t0\t60000\tspectrum\t500\t{}\n",
+            b64("[\"whole\"]")
+        ));
+        let bridge =
+            analysis_bridge::parse(document.as_bytes(), None, None).expect("the fixture parses");
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge, Lanes::ALL, 60.0, SCENE_COUNT as u32)
+                .expect("prepare");
+        assert_eq!(candidate.lyrics().len(), 1000);
+
+        let mut unresolved = String::new();
+        let mut flags = String::new();
+        for index in 0..64u64 {
+            if index > 0 {
+                unresolved.push(',');
+                flags.push(',');
+            }
+            let start = 1.0 + index as f64 * 0.5;
+            unresolved.push_str(&format!(
+                r#"{{"reference_line_index":{index},"text":"parked {index}",
+                    "reason":"no block placement","abstained":false,
+                    "coarse_start_seconds":{start},"coarse_end_seconds":null}}"#
+            ));
+            flags.push_str(&format!(
+                r#"{{"reference_line_index":{index},"text":"parked {index}",
+                    "flag":"unresolved","coarse_start_seconds":{start}}}"#
+            ));
+        }
+        let scratch = Scratch::new("lx1f-capacity");
+        let folder = review_job_folder(
+            &scratch,
+            "capacity",
+            PARKED_MANIFEST,
+            &format!(r#"{{"unresolved":[{unresolved}],"review_flags":[{flags}]}}"#),
+        );
+        let before = candidate.lyrics().clone();
+        stage_lyrics_review(&mut candidate, &folder.display().to_string());
+
+        let summary = parked_summary(&candidate);
+        assert_eq!(summary.unresolved, 64);
+        assert_eq!(summary.refused, 64);
+        assert_eq!(summary.parked, 0, "1000 + 64 > 1024, so none of them fit");
+        assert_eq!(
+            candidate.lyrics(),
+            &before,
+            "a refused batch must leave the staged lane byte-identical"
+        );
+        assert!(summary.summary().contains("could not be parked"));
+    }
+
+    #[test]
+    fn the_staged_preview_counts_what_apply_will_publish() {
+        // The panel's "Lyrics: 0 -> N" is read off the staged lane, so the whole
+        // reason parking happens at staging rather than at Apply is that these
+        // two numbers cannot then disagree.
+        let scratch = Scratch::new("lx1f-preview");
+        let candidate = parked_candidate(&scratch, "preview");
+        let staged = candidate.lyrics().len();
+
+        let mut lyrics = LyricsDocument::new(60.0).expect("document");
+        let mut sections = musializer_core::project::scene_switch::SceneSwitchTimeline::new();
+        let mut events = musializer_core::project::event_timeline::EventTimeline::new();
+        candidate
+            .apply(&mut lyrics, &mut sections, &mut events)
+            .expect("apply");
+        assert_eq!(lyrics.len(), staged);
+        assert_eq!(
+            lyrics
+                .cues()
+                .iter()
+                .filter(|cue| cue.origin == CueOrigin::Potential)
+                .count(),
+            2
+        );
+        // And none of them is a caption: the proposals are handles, not content.
+        assert!(lyrics.at_time(42.0).is_none());
+        assert!(lyrics.at_time(51.0).is_none());
+    }
+
+    #[test]
+    fn the_scroll_window_is_clamped_to_the_list_it_is_scrolling() {
+        // A stale offset is the failure mode: a 24-row list scrolled to 20, then
+        // a 4-row candidate staged under it, would draw rows 20..23 of four.
+        assert_eq!(review_window(24, 3, 0), 0);
+        assert_eq!(review_window(24, 3, 5), 5);
+        assert_eq!(review_window(24, 3, 21), 21);
+        assert_eq!(
+            review_window(24, 3, 22),
+            21,
+            "the last window is entries-shown"
+        );
+        assert_eq!(review_window(24, 3, usize::MAX), 21);
+        assert_eq!(review_window(4, 4, 3), 0, "a list that fits never scrolls");
+        assert_eq!(review_window(0, 3, 7), 0);
+        assert_eq!(review_window(2, 3, 1), 0, "shown may exceed the list");
+    }
+
+    #[test]
+    fn the_report_line_carries_the_scroll_position_and_the_parked_counts() {
+        let scratch = Scratch::new("lx1f-report");
+        let candidate = parked_candidate(&scratch, "report");
+        let line = describe_review(
+            Some(&candidate),
+            ReviewDraw {
+                rows: 3,
+                tail: true,
+                first: 4,
+            },
+        );
+        assert!(
+            line.starts_with(
+                "unresolved=3 flagged=3 listed=3 rows_drawn=3 tail=yes first=4 omitted=0 \
+                 parked=2/2/3 counts=document"
+            ),
+            "got {line}"
+        );
+        // `listed` is the parse and `rows_drawn` is the screen, and LX1-f must
+        // not have collapsed the distinction the previous review restored.
+        assert!(line.contains("listed=3 rows_drawn=3"));
+    }
+
+    #[test]
+    fn the_probe_scroll_seam_is_inert_unless_it_is_asked_for() {
+        assert_eq!(
+            PROBE_REVIEW_SCROLL_VARIABLE,
+            "MUSIALIZER_ASSIST_PROBE_REVIEW_SCROLL"
+        );
+        assert_eq!(probe_review_scroll(), None);
+        // And a probe run never opens a file manager, whatever the display says.
+        // The gate's Xvfb is a reachable display with `xdg-open` installed, so
+        // this ordering is the only thing between a capture and a stray window.
+        assert_eq!(
+            reveal::reveal_policy(true, true, true, true),
+            RevealState::Probe
+        );
+        assert!(!RevealState::Probe.is_ready());
     }
 }

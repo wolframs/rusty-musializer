@@ -12,6 +12,11 @@ pub mod ffmpeg;
 pub mod font_import;
 pub mod process_group;
 pub mod publish;
+// Tranche LX1-f. Revealing a job folder is a fourth, deliberately *unsupervised*
+// family: the child is backgrounded by a shell that exits at once, so what this
+// process waits for and reaps is the shell rather than the file manager. The
+// module comment carries the reasoning.
+pub mod reveal;
 // Agent H. One line, added rather than requested, because a module cannot
 // register itself; nothing else in Band 1 adds a module here.
 pub mod render_job;

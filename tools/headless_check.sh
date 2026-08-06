@@ -242,18 +242,26 @@ done
 # frame eight. The removed renderer pass used that boolean to paint a full-width
 # white gradient across the reflection floor — the short flash reported in both
 # preview and exports. Pin a quiet region far from the active bands. Negative
-# control: restoring the old pass raises this crop's YMAX from 21 to 55. The
-# fixed probe layout's preview now ends at y=400 after the scene lane was added,
-# so y=386 samples its last quiet 12 px without crossing into toolbar chrome.
-# Pin that split on this capture: per-user timeline preferences are intentionally
+# control: restoring the old pass raises this crop's YMAX from 21 to 55.
+#
+# Pin the split on this capture: per-user timeline preferences are intentionally
 # honoured elsewhere in the sweep, but letting one move a renderer negative
 # control made this crop sample white timeline chrome instead of the scene.
+#
+# The requested height must be a height the band can actually take, because
+# `Shell::resolved_timeline_height` clamps it up to
+# `SCENE_SECTION_HEIGHT + EVENT_ROW_HEIGHT + 150` and a *silently clamped*
+# request moves the split without moving this comment. 276 is that floor today
+# (60 + 66 + 150); it was 270 until LX1-e spent a lane gap inside the scene
+# section, and the six pixels the band gained put white chrome inside the old
+# y=386 crop. To re-derive after a band constant moves: the preview's last row
+# is `720 - band - 50`, so the crop is the 12 px ending two rows above it.
 capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
-    --ui-probe "play=1,timeline-height=270" \
+    --ui-probe "play=1,timeline-height=276" \
     || SWEEP_FAILED=1
 SPECTRUM_ONSETS="$(sed -n 's/^onsets: *\([0-9][0-9]*\) .*/\1/p' "$OUT_DIR/spectrum-onset-floor.txt")"
 SPECTRUM_FLOOR="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:386,signalstats" \
+    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:380,signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 echo "spectrum onset floor: onsets=${SPECTRUM_ONSETS:-?} peak-luma=${SPECTRUM_FLOOR:-?}"
 if [ "${SPECTRUM_ONSETS:-0}" -eq 0 ] 2>/dev/null \
@@ -1720,7 +1728,7 @@ ASSIST_REVIEW_DIR="$OUT_DIR/assist-review"
 rm -rf "$ASSIST_REVIEW_DIR"
 mkdir -p "$ASSIST_REVIEW_DIR/flagged" "$ASSIST_REVIEW_DIR/clear" \
          "$ASSIST_REVIEW_DIR/legacy" "$ASSIST_REVIEW_DIR/stale" \
-         "$ASSIST_REVIEW_DIR/navigate"
+         "$ASSIST_REVIEW_DIR/navigate" "$ASSIST_REVIEW_DIR/parked"
 
 cat >"$ASSIST_REVIEW_DIR/flagged/assist-manifest.json" <<'JSON'
 {
@@ -1892,6 +1900,60 @@ cat >"$ASSIST_REVIEW_DIR/navigate/lyrics.aligned.json" <<'JSON'
 }
 JSON
 
+# Tranche LX1-f. Ten unresolved lines whose coarse proposals are all *inside*
+# the probe bridge's 60 s lane, which is what `flagged` deliberately is not: its
+# two proposals are 1:30.6 and nothing at all, so neither can be parked and the
+# feature would have no capture at all.
+#
+# Ten because the list holds three named rows plus a tail, so this is the first
+# fixture in the tree that has to scroll — and a scroll a headless run cannot
+# reach is a scroll nobody reviews, which is why
+# MUSIALIZER_ASSIST_PROBE_REVIEW_SCROLL exists.
+{
+    printf '%s\n' '{' \
+        '  "schema_version": "musializer.lyric-sync/v1",' \
+        '  "lane": "lyric_sync",' \
+        '  "localization_policy": "anchor-block-mms",' \
+        '  "localization_policy_version": "3",' \
+        '  "lines": [],' \
+        '  "unresolved": ['
+    for index in $(seq 0 9); do
+        start="$(( index * 5 + 5 ))"
+        printf '    {"reference_line_index": %d, "line_position": %d, "kind": "lyric",\n' \
+            "$index" "$index"
+        printf '     "text": "a line nobody could pin, number %d", "reason": "no block placement",\n' \
+            "$index"
+        printf '     "abstained": false, "coarse_start_seconds": %d.0, "coarse_end_seconds": %d.5}' \
+            "$start" "$(( start + 2 ))"
+        [ "$index" -lt 9 ] && printf ','
+        printf '\n'
+    done
+    printf '%s\n' '  ],' '  "review_flags": ['
+    for index in $(seq 0 9); do
+        start="$(( index * 5 + 5 ))"
+        printf '    {"reference_line_index": %d, "text": "a line nobody could pin, number %d",\n' \
+            "$index" "$index"
+        printf '     "flag": "unresolved", "reason": "no block placement",\n'
+        printf '     "start_seconds": null, "end_seconds": null, "coarse_start_seconds": %d.0}' \
+            "$start"
+        [ "$index" -lt 9 ] && printf ','
+        printf '\n'
+    done
+    printf '%s\n' '  ],' \
+        '  "statistics": {"reference_lines": 10, "matched_lines": 0, "unresolved_lines": 10,' \
+        '                 "abstained_lines": 0, "review_flagged_lines": 10}' '}'
+} >"$ASSIST_REVIEW_DIR/parked/lyrics.aligned.json"
+cat >"$ASSIST_REVIEW_DIR/parked/assist-manifest.json" <<'JSON'
+{
+  "schema_version": "musializer.assist-manifest/v1",
+  "mode": "lyrics",
+  "artifacts": {"aligned": "/nonexistent/job/lyrics.aligned.json"},
+  "result_counts": {"lyrics": 2, "lyrics_unmatched": 10, "lyrics_unresolved": 10,
+                    "lyrics_review_flags": 10, "sections": 2, "semantics": 2},
+  "lyric_localization": {"policy": "anchor-block-mms", "policy_version": "3"}
+}
+JSON
+
 assist_review_capture() {
     # assist_review_capture NAME JOB_FOLDER [SIZE] [LANES] [PROBE_EXTRA]
     #
@@ -1911,6 +1973,7 @@ assist_review_capture() {
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_ASSIST_PROBE_DIR="$dir" \
         MUSIALIZER_ASSIST_PROBE_LANES="$lanes" \
+        MUSIALIZER_ASSIST_PROBE_REVIEW_SCROLL="${REVIEW_SCROLL:-}" \
         ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 30 \
@@ -2006,9 +2069,14 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     #
     # `rows_drawn=`/`tail=` are review LT1-R (R5): the line used to describe the
     # parse, which cannot be clipped, while the panel below it was being cut.
+    # `first=`/`parked=` are LX1-f. `parked=0/0/2` here on purpose: this fixture's
+    # two unresolved lines propose 1:30.6 and nothing at all, against a 60 s
+    # staged lane — so neither has a window this side can honour, and the
+    # `parked` folder below is where a proposal actually reaches the timeline.
     REVIEW_FLAGGED_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-flagged.txt")"
     case "$REVIEW_FLAGGED_LINE" in
-        "unresolved=2 flagged=4 listed=4 rows_drawn=4 tail=no omitted=0 counts=document \
+        "unresolved=2 flagged=4 listed=4 rows_drawn=4 tail=no first=0 omitted=0 \
+parked=0/0/2 counts=document \
 manifest=2/4 policy=anchor-block-mms | "*) ;;
         *)
             echo "FAIL: the flagged review did not report 2 unresolved, 4 flags and 4 rows:" >&2
@@ -2036,7 +2104,8 @@ manifest=2/4 policy=anchor-block-mms | "*) ;;
 
     REVIEW_CLEAR_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-clear.txt")"
     case "$REVIEW_CLEAR_LINE" in
-        "unresolved=0 flagged=0 listed=0 rows_drawn=0 tail=no omitted=0 counts=document \
+        "unresolved=0 flagged=0 listed=0 rows_drawn=0 tail=no first=0 omitted=0 \
+parked=0/0/0 counts=document \
 manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
         *)
             echo "FAIL: a run that placed every line did not say so: ${REVIEW_CLEAR_LINE:-<absent>}" >&2
@@ -2177,6 +2246,77 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     echo "review block saturation: stale=${REVIEW_SAT_STALE:-?} (control)"
     if [ "${REVIEW_SAT_STALE%%.*}" -ge 3 ] 2>/dev/null; then
         echo "FAIL: a run with no lyrics lane drew the previous run's review rows" >&2
+        SWEEP_FAILED=1
+    fi
+
+    # -----------------------------------------------------------------------
+    # Tranche LX1-f: proposals reach the lane, and the list scrolls.
+    #
+    # Two complaints, one fixture. Ten unresolved lines with in-range coarse
+    # proposals: every one of them becomes a `Potential` cue on the timeline (the
+    # 37-second hole), and ten of them do not fit in three rows (the "shows three
+    # lines max, rest refers to file").
+    # -----------------------------------------------------------------------
+    echo "--- LX1-f: parked proposals and a scrolling review list ---"
+    assist_review_capture assist-review-parked "$ASSIST_REVIEW_DIR/parked" || SWEEP_FAILED=1
+    REVIEW_SCROLL=5 assist_review_capture assist-review-scrolled \
+        "$ASSIST_REVIEW_DIR/parked" || SWEEP_FAILED=1
+
+    REVIEW_PARKED_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-parked.txt")"
+    echo "parked: ${REVIEW_PARKED_LINE:-<absent>}"
+    case "$REVIEW_PARKED_LINE" in
+        *"listed=10 rows_drawn=3 tail=yes first=0 omitted=0 parked=10/10/10 "*) ;;
+        *)
+            echo "FAIL: ten in-range proposals did not reach the staged lane:" >&2
+            echo "      ${REVIEW_PARKED_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    # `parked=10/...` is a count of `CueOrigin::Potential` cues in the *staged
+    # lane*, not of review rows, so the assertion above is already evidence that
+    # the proposals reached the document Apply will publish.
+
+    # And the scroll. `first=5` is the whole point: before LX1-f the list showed
+    # rows 0..2 and told the user to go and read a JSON file for the rest.
+    REVIEW_SCROLLED_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-scrolled.txt")"
+    echo "scrolled: ${REVIEW_SCROLLED_LINE:-<absent>}"
+    case "$REVIEW_SCROLLED_LINE" in
+        *"rows_drawn=3 tail=yes first=5 "*) ;;
+        *)
+            echo "FAIL: the review list did not scroll:" >&2
+            echo "      ${REVIEW_SCROLLED_LINE:-<absent>}" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    # A report line is a claim about a frame, so the two frames must differ.
+    if cmp -s "$OUT_DIR/assist-review-parked.png" "$OUT_DIR/assist-review-scrolled.png"; then
+        echo "FAIL: scrolling the review list changed nothing on screen" >&2
+        SWEEP_FAILED=1
+    fi
+    # Both frames drew coloured review rows where the panel says they are. The
+    # scrolled one is the interesting half: a list that scrolled its data and not
+    # its pixels would pass the line check and fail here.
+    REVIEW_SAT_PARKED="$(assist_review_saturation assist-review-parked 300:82:20:588)"
+    REVIEW_SAT_SCROLLED="$(assist_review_saturation assist-review-scrolled 300:82:20:588)"
+    echo "review block saturation: parked=${REVIEW_SAT_PARKED:-?} scrolled=${REVIEW_SAT_SCROLLED:-?}"
+    if [ "${REVIEW_SAT_PARKED%%.*}" -lt 3 ] 2>/dev/null \
+        || [ "${REVIEW_SAT_SCROLLED%%.*}" -lt 3 ] 2>/dev/null; then
+        echo "FAIL: a scrolled review list drew no rows" >&2
+        SWEEP_FAILED=1
+    fi
+    # The Open folder control, on the heading row's right edge. Disabled here --
+    # a probe run never spawns a file manager, whatever the display says -- so
+    # what this measures is that a *box* was drawn, which is the difference
+    # between a control that explains itself and a blank corner.
+    REVEAL_INK="$(assist_review_luma_min assist-review-parked 92:16:1168:589)"
+    REVEAL_CONTROL="$(assist_review_luma_min assist-review-legacy 92:16:1168:589)"
+    echo "review open-folder button: ink=${REVEAL_INK:-?} bare=${REVEAL_CONTROL:-?} (control)"
+    if [ "${REVEAL_INK%%.*}" -ge 200 ] 2>/dev/null; then
+        echo "FAIL: the Open folder control is not on screen" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "${REVEAL_CONTROL%%.*}" -lt 200 ] 2>/dev/null; then
+        echo "FAIL: the control is not a control; a pre-LT1 panel drew a folder button" >&2
         SWEEP_FAILED=1
     fi
 
@@ -3678,6 +3818,56 @@ if [ "$TYPO_STATUS" -eq 0 ]; then
 fi
 
 if [ "$ROUTE_EDITOR_FAILED" -ne 0 ]; then
+    SWEEP_FAILED=1
+fi
+
+echo "=== the timed lanes share one time axis ==="
+# LX1-e. The timeline band stacks the scene-plan lane, the waveform strip and —
+# when the lyrics editor is open — the lyric cue lane over the same
+# `TimelineView`. Three modules draw them and each is handed its own rectangle,
+# so a lane inset by a different amount maps the same second onto a different
+# column and the playhead lies about where a cue is. Nothing else here can see
+# that: everything inside a lane moves together, so every capture still looks
+# self-coherent. This reads the pixels — each lane's outermost frame column and
+# the columns its playhead occupies — and requires all of them to agree.
+#
+# It found two real defects on its first run, both off-by-one tick bounds in
+# `shell.rs::timeline_strip`: the tick at the view's last visible second painted
+# a rule one column outside the lane's right border, and the tick at its first
+# did the same on the left at 150 % scale. Its negative control was a 2 px inset
+# added to the waveform strip, which moved that lane's left edge 10 -> 12 and
+# split the cue lane's playhead into two columns, while all 1301 unit tests
+# stayed green.
+LANE_ALIGNMENT_FAILED=0
+lane_alignment() {
+    # lane_alignment NAME LANES [UI_SCALE]
+    local name="$1" lanes="$2" scale="${3:-100}"
+    local png="$OUT_DIR/$name.png"
+    if [ ! -f "$png" ]; then
+        echo "  $name: <no capture>"
+        return 0
+    fi
+    printf '%-30s lanes=%s scale=%s\n' "$name" "$lanes" "$scale"
+    if ! python3 tools/timeline_lane_alignment.py "$png" "$lanes" "$scale"; then
+        LANE_ALIGNMENT_FAILED=1
+    fi
+}
+for size in 1280x720 960x640; do
+    # No panel and Tune leave the band at two lanes; Lyrics adds the cue lane.
+    lane_alignment "panel-none-$size" 2
+    lane_alignment "panel-tune-$size" 2
+    lane_alignment "panel-export-$size" 2
+    lane_alignment "panel-lyrics-$size" 3
+    # The seeded project, which is the only frame with cue blocks in the lane.
+    lane_alignment "lyrics-cues-$size" 3
+done
+# The operator's own display. The shell picks 150 % on its own at 1440p, and a
+# 1 px logical border straddles two columns there — which is how the left-hand
+# tick bound was caught.
+lane_alignment "ui-scale-150-2560x1440" 2 150
+lane_alignment "ui-auto-2560x1440" 2 150
+if [ "$LANE_ALIGNMENT_FAILED" -ne 0 ]; then
+    echo "FAIL: the timed lanes do not share one time axis" >&2
     SWEEP_FAILED=1
 fi
 

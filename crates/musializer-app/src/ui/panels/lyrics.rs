@@ -36,9 +36,11 @@ use musializer_core::project::model::{
     caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, DriveTuning,
     EffectDrive,
 };
+use musializer_core::ui::lyric_clipboard::LyricClipboard;
 use musializer_core::ui::lyric_lane_edit::{
     self, LyricLaneClick, LyricLaneSelection, LyricLaneZone,
 };
+use musializer_core::ui::lyric_lane_stack::{row_geometry, shade_multiplier, LyricStack};
 use musializer_core::ui::lyrics_editor_layout::{self, LYRIC_EDITOR_ROW_HEIGHT};
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::text_edit::{TextEditError, TextRules};
@@ -56,12 +58,35 @@ use super::super::widgets::{self, ButtonStyle};
 use crate::cli::{CaptionPickerProbe, CaptionTuneProbe, UiProbe};
 use crate::workspace::{Track, Workspace};
 
-/// The cue lane's height, and the gap between it and the editor below.
+/// The cue lane's default height, and the gap between it and the editor below.
 ///
-/// 22 px is the oracle's lane: `plug.c` caps it there, which is also why its
-/// scene names — gated on a lane at least 28 px high — never appeared at all
-/// (`lyrics_editor_ui.c:1060-1066`).
-pub const LANE_HEIGHT: f32 = 22.0;
+/// 22 px was the oracle's lane ([`ORACLE_LANE_HEIGHT`]). **33 is 1.5x that, and
+/// the reason is the overlap fan-out** (LX1-d, operator request): a cluster of
+/// three or four live cues splits the lane into rows, and at 22 px the deepest
+/// row is a 9 px sliver with an edge handle at either end. The extra 11 px is
+/// what makes a stacked block a target rather than a line.
+pub const LANE_HEIGHT: f32 = 33.0;
+/// The tallest the lane's bottom-edge drag may make it: twice the new base.
+///
+/// A ceiling rather than "as much as you like" because every pixel here is a
+/// pixel off the editing form below, which has a hard 223 px minimum
+/// ([`lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM`]) — past this the lane
+/// would start deleting the controls it exists to feed.
+pub const LANE_HEIGHT_MAX: f32 = 66.0;
+/// The oracle's lane, kept only so [`the chrome assertion`](self) below still
+/// states what it always stated: this shell's fixed chrome plus a 22 px lane is
+/// exactly `LYRIC_EDITOR_TIMELINE_CHROME`.
+///
+/// `plug.c` caps its lane at 22, which is also why its scene names — gated on a
+/// lane at least 28 px high — never appeared at all
+/// (`lyrics_editor_ui.c:1060-1066`). Ours is now taller than that gate.
+const ORACLE_LANE_HEIGHT: f32 = 22.0;
+/// How deep the bottom-edge grab strip is, measured up from the lane's bottom.
+///
+/// Exactly the block inset (`lane.y + 3.0`, `height - 6.0`), so the strip is the
+/// band no block is ever drawn in and a resize press can never be a press on a
+/// cue. No handle is drawn: the operator asked for no visible border line there.
+const LANE_RESIZE_GRAB_PIXELS: f32 = 3.0;
 /// 5 px, and the 5 is not a taste decision — see [`CHROME_ABOVE_PANEL`].
 pub const LANE_GAP: f32 = 5.0;
 
@@ -87,22 +112,108 @@ const CHROME_ABOVE_PANEL: f32 = 93.0;
 /// The panel's own bottom margin inside the band.
 const PANEL_BOTTOM_PADDING: f32 = 10.0;
 
-/// This shell's chrome around the panel is **exactly** the oracle's
-/// `LYRIC_EDITOR_TIMELINE_CHROME` (`lyrics_editor_layout.h:35-37`), which is what
-/// lets [`lyrics_editor_layout::panel_height`]'s sidebar protection be used
-/// unchanged: that function subtracts 158 from the window before deciding how
-/// much the panel may take, so a shell spending more than 158 quietly breaks the
-/// guarantee.
+/// Everything the band spends around the panel **except** the lane itself, in
+/// the order [`Shell::draw_lyrics`] spends it: the chrome above, one gap under
+/// the waveform, the zoom row, a second gap under that, and the bottom margin.
 ///
-/// It did, by one pixel, and a capture is what showed it: at 1280x720 with six
-/// cues the tracks panel vanished entirely, because the sidebar came out at 300
-/// against a 301 floor. Hence a lane gap of 5 rather than 6, and hence this
-/// assertion rather than a comment asking the next reader to add up four
-/// constants.
+/// # Two corrections live in this constant, and both were silent
+///
+/// The old form of this was a `const` assertion that this shell's chrome is
+/// **exactly** the oracle's `LYRIC_EDITOR_TIMELINE_CHROME`
+/// (`lyrics_editor_layout.h:35-37`), which is what let
+/// `lyrics_editor_layout::panel_height`'s sidebar protection be used unchanged:
+/// that function subtracts 158 from the window before deciding how much the
+/// panel may take, so a shell spending more than 158 quietly breaks the
+/// guarantee. It did once, by one pixel — at 1280x720 with six cues the tracks
+/// panel vanished entirely, because the sidebar came out at 300 against a 301
+/// floor — which is why the gap is 5 rather than 6.
+///
+/// LX1-c then broke the same guarantee twice over, and the assertion did not
+/// notice because it was summing the constants rather than the layout:
+///
+/// - When the zoom row moved from above the lane to below it,
+///   [`CHROME_ABOVE_PANEL`] dropped by [`ZOOM_ROW_HEIGHT`] and the row's 28 px
+///   became part of the panel region — but [`LyricEditor::timeline_height`]
+///   never added them back, so the band was 28 px short of what the panel had
+///   been promised.
+/// - The move also introduced a **second** [`LANE_GAP`], between the zoom row
+///   and the editor, which no constant accounted for. That is another 5 px.
+///
+/// Together the editing form was drawn 33 px past the bottom of its panel — the
+/// exact defect `LYRIC_EDITOR_FORM_MINIMUM` exists to make impossible, and the
+/// one the oracle shipped. So this is no longer an equality with 158: it is 163
+/// at the oracle's 22 px lane, and the extra 5 px is stated below as the second
+/// gap rather than hidden inside a number. What makes the sidebar guarantee hold
+/// again is that `panel_height_with_chrome` is handed [`lane_chrome`]'s real
+/// answer instead of assuming the oracle's constant.
+const LANE_FIXED_CHROME: f32 =
+    CHROME_ABOVE_PANEL + LANE_GAP + ZOOM_ROW_HEIGHT + LANE_GAP + PANEL_BOTTOM_PADDING;
+
 const _: () = assert!(
-    CHROME_ABOVE_PANEL + PANEL_BOTTOM_PADDING + LANE_HEIGHT + LANE_GAP + ZOOM_ROW_HEIGHT
-        == lyrics_editor_layout::LYRIC_EDITOR_TIMELINE_CHROME
+    LANE_FIXED_CHROME
+        == lyrics_editor_layout::LYRIC_EDITOR_TIMELINE_CHROME - ORACLE_LANE_HEIGHT + LANE_GAP
 );
+
+/// The band's chrome around the panel for a given lane height.
+///
+/// One function, used by the band request, the sidebar protection and the
+/// resize ceiling alike, so the three cannot disagree about how much the lane
+/// costs — which is what went wrong in LX1-c.
+fn lane_chrome(lane_height: f32) -> f32 {
+    LANE_FIXED_CHROME + lane_height
+}
+
+/// The tallest lane this window can seat without taking the tracks panel with it.
+///
+/// The band is [`lane_chrome`] plus the panel, the panel never goes below the
+/// form's 223 px, and the sidebar keeps `LYRIC_EDITOR_SIDEBAR_MINIMUM`; solving
+/// those for the lane gives the number below. **Never below [`LANE_HEIGHT`]**,
+/// because on a 640 px window the sidebar is already yielding by the oracle's
+/// own rule and clamping the lane there would buy the tracks panel nothing while
+/// making the drag feel broken. So the rule is not "protect the sidebar" but
+/// "never make the sidebar worse than the default lane already does".
+fn lane_height_ceiling(window_height: f32) -> f32 {
+    if !window_height.is_finite() {
+        return LANE_HEIGHT;
+    }
+    let affordable = window_height
+        - SCENE_SECTION_ABOVE_BAND
+        - lyrics_editor_layout::LYRIC_EDITOR_SIDEBAR_MINIMUM
+        - lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM
+        - LANE_FIXED_CHROME;
+    // `clamp` cannot panic here: the low bound is the literal below the high one.
+    affordable.clamp(LANE_HEIGHT, LANE_HEIGHT_MAX)
+}
+
+/// The scene-plan section `Shell::timeline_height` adds to **every** panel's
+/// band, on top of what the panel asked for.
+///
+/// Accounted for here rather than in the caller, which is a compromise and is
+/// recorded as one. `LyricEditor::timeline_height` already takes an
+/// `extra_chrome` parameter meaning exactly this — "what else the band spends
+/// that the oracle's chrome constant does not know about" — and `shell.rs`
+/// passes `0.0`, so the sidebar protection has been measured against a band
+/// 60 px smaller than the one actually laid out ever since the scene lane
+/// landed. At a 1920x1080 window on a 1.25 rung that is the difference between
+/// a sidebar of 293 and one of 301, which is the difference between a tracks
+/// panel and no tracks panel at all — the same one-pixel class of defect
+/// `LANE_FIXED_CHROME`'s comment records.
+///
+/// The right fix is one argument in `shell.rs`; that file belongs to another
+/// tranche this session and the request is in LX1-d's report. **When it lands,
+/// delete this constant**, or the section will be counted twice.
+const SCENE_SECTION_ABOVE_BAND: f32 = super::scene_timeline::SCENE_SECTION_HEIGHT;
+
+/// What a requested lane height actually becomes in this window.
+///
+/// Pure, so the resize ladder is assertable without a window — a drag clamp that
+/// is only checkable by dragging is a drag clamp nobody checks.
+fn clamp_lane_height(requested: f32, window_height: f32) -> f32 {
+    if !requested.is_finite() {
+        return LANE_HEIGHT;
+    }
+    requested.clamp(LANE_HEIGHT, lane_height_ceiling(window_height))
+}
 
 /// Smallest editor that can host its own first row of controls.
 ///
@@ -223,15 +334,91 @@ mod caption_id {
     pub const ZONE_HINTS: u32 = 160;
 }
 
-/// The amber a lyric block is drawn in (`lyrics_editor_ui.c:998`).
+/// What each [`CueOrigin`] is drawn in (LX1-d).
 ///
-/// Not in `theme::rgba` because that is a shared file. It is a block fill rather
-/// than text, so nothing in the contrast suite would have an opinion about it;
-/// the request to move it there is in the report.
-const LYRIC_BLOCK: Color = Color::new(242, 190, 66, 255);
+/// The oracle has one amber for every block (`lyrics_editor_ui.c:998`) because
+/// it has one kind of cue. Since a document can now hold four, one amber is a
+/// lane that cannot answer the question the operator opened this work with:
+/// after an assist run, which of these did a machine place and which did I?
+///
+/// Not in `theme::rgba` because that is a shared file; the request to move them
+/// there is in the report.
+///
+/// # How they were chosen, with the numbers
+///
+/// Each is measured against the lane's own fill, which is `ui_raised` — pure
+/// white — through [`musializer_core::ui::contrast::ratio`], and the border is
+/// drawn at full alpha, so the border is what carries the code at every
+/// selection state. All four clear `AA_COMPONENT` (3.0), the WCAG bar for a
+/// non-text component, and the test at the bottom of this file recomputes them
+/// rather than trusting this table:
+///
+/// | origin | colour | vs the white lane |
+/// | --- | --- | --- |
+/// | `UserApplied` | `#1F7A4D` | 5.32 |
+/// | `InferredCertain` | `#2563C7` | 5.69 |
+/// | `InferredAmbiguous` | `#D07A00` | 3.25 |
+/// | `Potential` | `#7C7C86` | 4.13 |
+///
+/// The **semantics** are the operator's: green reads as settled, blue as a
+/// machine that is sure, amber as check-this, and `Potential` is deliberately
+/// the only achromatic one — a proposal is not content, and a grey block reads
+/// as scaffolding rather than as a line with an unusual colour. It also carries
+/// [`hatch`], so the one state that means "this is a guess, not a placement" is
+/// distinguished by texture as well as hue and survives a colour-blind reading.
+const fn origin_color(origin: CueOrigin) -> Color {
+    match origin {
+        CueOrigin::UserApplied => Color::new(0x1F, 0x7A, 0x4D, 255),
+        CueOrigin::InferredCertain => Color::new(0x25, 0x63, 0xC7, 255),
+        CueOrigin::InferredAmbiguous => Color::new(0xD0, 0x7A, 0x00, 255),
+        CueOrigin::Potential => Color::new(0x7C, 0x7C, 0x86, 255),
+    }
+}
+
+/// The four origins in the order the legend and the report line list them.
+///
+/// Canonical order, so a capture's legend and its `origins=` line can be read
+/// against each other without translating.
+const ORIGIN_ORDER: [CueOrigin; 4] = [
+    CueOrigin::UserApplied,
+    CueOrigin::InferredCertain,
+    CueOrigin::InferredAmbiguous,
+    CueOrigin::Potential,
+];
+
+/// The legend's word for one origin.
+///
+/// [`CueOrigin::token`] rather than [`CueOrigin::label`]: the labels are
+/// sentences ("AI inferred (ambiguous)") and four of them do not fit across the
+/// cue list's column at 960 px. The tokens are the persisted vocabulary, they
+/// are what the report line prints, and the full label is one hover away in the
+/// lane's tooltip.
+const fn origin_legend_word(origin: CueOrigin) -> &'static str {
+    origin.token()
+}
+
+/// Height of the colour-code legend drawn at the foot of the cue list.
+const LEGEND_ROW_HEIGHT: f32 = 16.0;
+/// Side of a legend swatch.
+const LEGEND_SWATCH: f32 = 10.0;
 
 fn lyric_lane_hover_allowed(lane: UiRect, pointer: Vector2, drag_active: bool) -> bool {
     !drag_active && lane.contains_point(pointer.x, pointer.y)
+}
+
+/// Whether the lane's Ctrl+C/X/V may fire (LX1-d).
+///
+/// Pure and named, because "which key combinations are refused while a field has
+/// focus" is exactly the kind of condition that reads as obviously right and is
+/// wrong at the one state nobody tried. All three arms are refusals: a focused
+/// cue field owns Ctrl+V for text, and the caption and font panes draw no lane
+/// at all, so a shortcut there would act on a selection that is not on screen.
+const fn lyric_clipboard_keys_allowed(
+    style_pane: bool,
+    font_pane: bool,
+    text_focused: bool,
+) -> bool {
+    !style_pane && !font_pane && !text_focused
 }
 
 /// The pale wash behind a selected row (`GetColor(0xE7ECFAFF)`, `:1238`).
@@ -484,6 +671,38 @@ pub struct LyricEditor {
     tune_target: Option<TuneTarget>,
     lane_selection: LyricLaneSelection,
     lane_drag: LaneDrag,
+    /// The lane's current height in logical pixels (LX1-d).
+    ///
+    /// The editor's own copy of `UiPreferences::lyric_lane_height`, synced at
+    /// the top of every draw. It has to live here because
+    /// [`Self::timeline_height`] is asked how tall the band should be *before*
+    /// the panel draws, and that method is handed nothing but the window — the
+    /// preference belongs to the shell and the shell asks the editor.
+    lane_height: f32,
+    /// What the lane was **actually** drawn at last frame.
+    ///
+    /// Differs from [`Self::lane_height`] only when the band the shell handed
+    /// this panel is shorter than the one it asked for, which a persisted
+    /// timeline split can do. Kept apart so the request survives a frame drawn
+    /// under a short band instead of being written down to it — and so the
+    /// report line states the drawn number, which is the one a capture shows.
+    lane_drawn: f32,
+    /// Whether the bottom-edge drag has the pointer.
+    lane_resizing: bool,
+    /// Copy/cut/paste, session-only (LX1-d). Never persisted: see
+    /// [`LyricClipboard`]'s module comment.
+    clipboard: LyricClipboard,
+    /// Rows the last drawn frame's overlap fan-out needed, for the report line.
+    stack_rows: usize,
+    /// Cue counts per origin in [`ORIGIN_ORDER`], for the report line.
+    origin_counts: [usize; ORIGIN_ORDER.len()],
+    /// Whether the lane put a tooltip on screen last frame, for the report line.
+    ///
+    /// A tip is the one surface here a capture can photograph but a log cannot
+    /// otherwise claim, and the requirement it has to meet — that it never
+    /// covers the lane it explains — is a geometric one. So the report says
+    /// whether there was one, and the gate measures where it landed.
+    tooltip_visible: bool,
     /// Cue count as of the last frame, so [`Self::timeline_height`] can ask the
     /// oracle's `lyric_editor_panel_height` for the right number of rows without
     /// the shell reaching into the workspace.
@@ -548,6 +767,13 @@ impl LyricEditor {
             tune_target: None,
             lane_selection: LyricLaneSelection::new(),
             lane_drag: LaneDrag::default(),
+            lane_height: LANE_HEIGHT,
+            lane_drawn: LANE_HEIGHT,
+            lane_resizing: false,
+            clipboard: LyricClipboard::default(),
+            stack_rows: 1,
+            origin_counts: [0; ORIGIN_ORDER.len()],
+            tooltip_visible: false,
             cue_count: 0,
             owner_slot: None,
             pending: Vec::new(),
@@ -806,20 +1032,28 @@ impl LyricEditor {
         reason = "part of the `main.rs` integration surface this fan-out does not wire; see the report"
     )]
     pub fn timeline_height(&self, window_height: f32, extra_chrome: f32) -> f32 {
-        let wanted = CHROME_ABOVE_PANEL
-            + PANEL_BOTTOM_PADDING
-            + LANE_HEIGHT
-            + LANE_GAP
-            // `panel_height`'s own ceiling is `screen_height - SIDEBAR_MINIMUM -
-            // TIMELINE_CHROME`, which is the guarantee that the sidebar keeps its
-            // floor. `extra_chrome` is whatever else the band spends above this
-            // editor that the oracle's chrome constant does not know about —
-            // today the manual event row, which landed in the same fan-out as
-            // this panel. Subtracting it from the screen height *here* is what
-            // keeps that guarantee true of the whole band rather than of this
-            // panel alone; a capture caught the alternative, with the tracks
-            // panel silently below its floor and not drawn.
-            + lyrics_editor_layout::panel_height(window_height - extra_chrome, self.cue_count);
+        // `extra_chrome` is whatever else the band spends above this editor that
+        // the oracle's chrome constant does not know about — today the manual
+        // event row, which landed in the same fan-out as this panel. Subtracting
+        // it from the screen height is what keeps the sidebar guarantee true of
+        // the whole band rather than of this panel alone; a capture caught the
+        // alternative, with the tracks panel silently below its floor and not
+        // drawn.
+        let available = window_height - extra_chrome;
+        let chrome = lane_chrome(clamp_lane_height(self.lane_height, available));
+        // The chrome is passed rather than assumed (LX1-d): `panel_height`'s own
+        // ceiling is `screen_height - SIDEBAR_MINIMUM - chrome`, so a lane the
+        // user has dragged taller must be in that subtraction or the extra
+        // height comes out of the tracks panel instead of out of the cue list.
+        // The scene section comes off the *window* rather than being added to
+        // the chrome, because it is not returned in this number — the shell adds
+        // it after asking. See [`SCENE_SECTION_ABOVE_BAND`].
+        let wanted = chrome
+            + lyrics_editor_layout::panel_height_with_chrome(
+                available - SCENE_SECTION_ABOVE_BAND,
+                self.cue_count,
+                chrome,
+            );
         let ceiling = window_height - metric::HUD_BUTTON_SIZE - DEFAULT_TIMELINE_HEIGHT;
         if wanted > ceiling {
             DEFAULT_TIMELINE_HEIGHT.max(ceiling)
@@ -940,9 +1174,22 @@ impl LyricEditor {
                 None => format!("#{} (stale)", self.selected_id),
             }
         };
+        // LX1-d. Everything the lane can now draw that a picture cannot be
+        // graded on: which provenance the blocks carry, whether the fan-out
+        // actually fanned, how tall the lane ended up, whether a copy landed,
+        // and whether a tip was on screen when the shutter fired. The rule this
+        // follows is the one three unwired `Option`s cost two bands:
+        // a surface that can draw without its data must say which one it did.
+        let origins = ORIGIN_ORDER
+            .iter()
+            .zip(self.origin_counts)
+            .map(|(origin, count)| format!("{}={count}", origin.token()))
+            .collect::<Vec<_>>()
+            .join(" ");
         format!(
             "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}, \
-             face={} field={} missing={} picker={} tune={}",
+             face={} field={} missing={} picker={} tune={}, origins {}, stack rows {}, \
+             lane height {:.0}, clipboard {}, tip {}",
             track.lyrics.len(),
             pane,
             selected,
@@ -977,6 +1224,15 @@ impl LyricEditor {
             // The tune editor claims the same column (UX0-C14), with the same
             // ambiguity and the same cure.
             self.tune_target.map_or("none", |target| target.token()),
+            origins,
+            // `1` means every cluster stayed flat, which is what the lane looked
+            // like before the fan-out existed — so a capture that photographs an
+            // overlapping document and still says `stack rows 1` is a capture of
+            // the feature not running.
+            self.stack_rows,
+            self.lane_drawn,
+            self.clipboard.len(),
+            if self.tooltip_visible { "on" } else { "off" },
         )
     }
 }
@@ -1071,7 +1327,41 @@ impl Shell {
         // the user would only see dragging stop working (`:989-992`).
         editor.lane_selection.prune(&track.lyrics);
 
-        let lane = UiRect::new(panel.x, panel.y, panel.width, LANE_HEIGHT);
+        // The persisted lane height, adopted here rather than at construction:
+        // `Shell::with_preferences` is in a file this tranche does not own, and
+        // the editor is the only thing that knows what a lane height means.
+        //
+        // Clamped against *this* window, not stored clamped, so a 66 px lane
+        // chosen on a large display comes back at 66 when the window is large
+        // again instead of being silently written down to what a small one
+        // afforded. The panel below shrinks to whatever the lane leaves, so a
+        // frame where the band has not caught up yet crowds the editor rather
+        // than drawing it past the bottom of the framebuffer.
+        editor.lane_height = clamp_lane_height(
+            self.ui_preferences.lyric_lane_height.unwrap_or(LANE_HEIGHT),
+            input.window.1,
+        );
+        // …and then reduced again to whatever the band it was actually given can
+        // spare. `Shell::timeline_height` asks for a band that seats the lane and
+        // the form both, but the answer is not binding: `resolved_timeline_height`
+        // clamps a persisted timeline split against a floor of its own, so a user
+        // who has ever dragged the timeline boundary gets a band this panel did
+        // not choose. **The form outranks the lane** in that case, for the same
+        // reason `panel_height` lets the form outrank the sidebar — the form is
+        // the point of the panel, and a lane that ate the Apply button would be
+        // the oracle's own defect wearing a new hat. The floor is the oracle's 22
+        // px lane rather than zero: a lane with no height is a lane whose cues
+        // cannot be seen or grabbed at all.
+        editor.lane_drawn = editor.lane_height.min(
+            (panel.height
+                - ZOOM_ROW_HEIGHT
+                - LANE_GAP
+                - lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM)
+                .max(ORACLE_LANE_HEIGHT),
+        );
+        self.lyric_lane_keys(d, input, editor, track);
+
+        let lane = UiRect::new(panel.x, panel.y, panel.width, editor.lane_drawn);
         // The zoom row's band sits between the lane and the editor, and this
         // function owns only the *gap*: `timeline_strip` draws into it, because
         // the readout belongs to the timeline rather than to the lyrics panel
@@ -1084,7 +1374,7 @@ impl Shell {
             panel.width,
             (panel.y + panel.height - boundary_top).max(0.0),
         );
-        self.lyric_lane(d, input, editor, track, lane);
+        self.lyric_lane(d, input, editor, track, lane, commands);
         if boundary.is_empty() {
             return zoom_row_y;
         }
@@ -1152,12 +1442,19 @@ impl Shell {
         editor: &mut LyricEditor,
         track: &Track,
         lane: UiRect,
+        commands: &mut Vec<ShellCommand>,
     ) {
         if lane.is_empty() {
             return;
         }
         self.timeline_pan_gesture(d, input, lane);
-        self.lane_gesture(d, input.ui_scale, editor, track, lane);
+        // The resize claims the pointer before the cue gesture sees it, because
+        // its strip is inside the lane and a press there must never also be a
+        // press on the block above it.
+        let resizing = self.lane_resize_gesture(d, input, editor, lane, commands);
+        if !resizing {
+            self.lane_gesture(d, input.ui_scale, editor, track, lane);
+        }
 
         widgets::fill(d, lane, color::ui_raised());
         d.draw_line_ex(
@@ -1194,7 +1491,28 @@ impl Shell {
             track.lyrics.shadowed_cues()
         };
 
-        for cue in track.lyrics.cues() {
+        // Where overlapping cues go (LX1-d). Built for the whole document rather
+        // than per pair, so a cue's row cannot change because of a cue it does
+        // not touch — see `lyric_lane_stack`'s three rules.
+        let stack = LyricStack::build(&track.lyrics);
+        let rows = stack.rows();
+        editor.stack_rows = rows;
+        editor.origin_counts = ORIGIN_ORDER.map(|origin| {
+            track
+                .lyrics
+                .cues()
+                .iter()
+                .filter(|cue| cue.origin == origin)
+                .count()
+        });
+        // The band the rows tile. The 3 px inset at either end is the oracle's
+        // and is load-bearing twice over: the bottom 3 px is the resize strip,
+        // and no block is ever drawn in it.
+        let content_y = lane.y + LANE_RESIZE_GRAB_PIXELS;
+        let content_height = (lane.height - LANE_RESIZE_GRAB_PIXELS * 2.0).max(1.0);
+        let mut tip: Option<(UiRect, String)> = None;
+
+        for (index, cue) in track.lyrics.cues().iter().enumerate() {
             let (preview_start, preview_end) = lane_preview_span(editor, cue);
             let Some(geometry) = timed_lane::block_geometry(
                 &view,
@@ -1205,14 +1523,16 @@ impl Shell {
             ) else {
                 continue;
             };
+            let slot = stack.slot(index);
+            let (row_offset, row_height) = row_geometry(content_height, rows, slot.row);
             // Clipped to the lane by the same geometry the hit test reads. A
             // boundary which scrolled off-screen is therefore never recreated
             // as a handle at the lane border.
             let block = UiRect::new(
                 geometry.left as f32,
-                lane.y + 3.0,
+                content_y + row_offset,
                 geometry.width() as f32,
-                lane.height - 6.0,
+                row_height,
             );
 
             let in_selection = editor.lane_selection.contains(cue.id);
@@ -1224,11 +1544,27 @@ impl Shell {
             } else {
                 0.38
             };
-            widgets::fill(d, block, fade(LYRIC_BLOCK, alpha));
-            d.draw_rectangle_lines_ex(widgets::rectangle(block), 1.0, LYRIC_BLOCK);
+            // Both the fill and the border darken with the row, because only the
+            // border survives the fill alpha at 0.38 — shading one and not the
+            // other would leave every unselected block looking like row 0.
+            let tint = shade(origin_color(cue.origin), shade_multiplier(slot.shade_steps));
+            widgets::fill(d, block, fade(tint, alpha));
+            d.draw_rectangle_lines_ex(widgets::rectangle(block), 1.0, tint);
+            // A proposal is hatched as well as greyed, so the one state that
+            // means "not a placement" is legible without colour vision at all.
+            //
+            // This cannot be confused with the shadow hatching below even though
+            // both are 45° strokes, because the two can never appear on the same
+            // block: `LyricsDocument::cue_shadow` returns `None` for a cue that
+            // is not displayable and skips one as a shadower, so a `Potential`
+            // block is never in `shadows` and never carries the warning wash.
+            // The pitch differs anyway, at twice the shadow's spacing.
+            if cue.origin == CueOrigin::Potential {
+                hatch_spaced(d, block, fade(tint, 0.9), HATCH_SPACING * 2.0);
+            }
             // A span the preview and the export will never show this cue in is
-            // greyed and hatched, so two blocks that draw the same amber stop
-            // meaning the same thing (review 1.14).
+            // greyed and hatched, so two blocks in one colour stop meaning the
+            // same thing (review 1.14).
             if let Some(shadow) = shadows.iter().find(|shadow| shadow.id == cue.id) {
                 for &(from, to) in &shadow.hidden {
                     let Some(hidden) = timed_lane::block_geometry(
@@ -1252,7 +1588,7 @@ impl Shell {
             }
             // The cue the form is bound to gets a second, inset outline.
             // Selection and form target are different things now that a drag can
-            // move several cues at once, and one shade of amber cannot say both.
+            // move several cues at once, and one colour cannot say both.
             if cue.id == editor.selected_id {
                 d.draw_rectangle_lines_ex(
                     widgets::rectangle(UiRect::new(
@@ -1281,6 +1617,17 @@ impl Shell {
                     color::ui_ink(),
                 );
             }
+            if hovered && !editor.lane_drag.active {
+                // Anchored to the **whole lane**, not to the block. That is the
+                // entire tooltip requirement expressed as geometry rather than
+                // as a rule to remember: `widgets::tooltip_box` puts the tip
+                // clear of its anchor's vertical extent, so an anchor spanning
+                // the lane cannot produce a tip that covers a neighbouring cue.
+                // Horizontally it still centres on the block, so it points at
+                // the thing it describes.
+                let anchor = UiRect::new(block.x, lane.y, block.width, lane.height);
+                tip = Some((anchor, lane_tooltip_text(cue)));
+            }
         }
 
         // The playhead, over the blocks. The strip above draws its own; this lane
@@ -1304,6 +1651,237 @@ impl Shell {
                 color::ui_muted(),
             );
         }
+
+        // Last in the lane, and nowhere else. Drawn here rather than deferred
+        // through `Widgets::hint` for two reasons that are both about this
+        // surface specifically:
+        //
+        // - **No dwell.** The operator asked for a tip that appears the instant
+        //   the pointer enters a block. `hint`'s delay is shared state that
+        //   every other control in the application depends on, and a lane that
+        //   zeroed it would take the strobe with it. Drawing locally means the
+        //   tip exists exactly on the frames the pointer is over a block and on
+        //   no others, which is also the "not sticky" requirement, for free.
+        // - **The face.** The tip carries the cue's *own words*, and
+        //   `widgets::draw_tooltip` types through the Latin-only chrome bank —
+        //   the same defect that drew Greek cue rows as `?` for weeks (UX0-A05).
+        //   The authored atlas is glyph-complete and is what the rows use.
+        //
+        // Z-order is safe in the one direction it needs to be: the waveform
+        // strip is drawn *before* the open panel, and `tooltip_box` prefers
+        // above, so the tip lands on top of the strip rather than under it.
+        editor.tooltip_visible = false;
+        if let Some((anchor, text)) = tip {
+            self.draw_lane_tooltip(d, input, anchor, &text);
+            editor.tooltip_visible = true;
+        }
+    }
+
+    /// The cue lane's own tooltip plate, typed through the authored face.
+    fn draw_lane_tooltip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        anchor: UiRect,
+        text: &str,
+    ) {
+        let authored = input.fonts.authored();
+        let size = metric::UI_FONT_CAPTION;
+        // Bounded before it is measured: a 512-character cue would otherwise ask
+        // for a plate wider than the window, and `tooltip_box` would clamp the
+        // box while the text kept going.
+        let budget = (input.window.0 * 0.5).max(160.0);
+        let fitted = authored.ellipsize(text, budget, size, 0.0);
+        let width = authored.measure_text(&fitted, size, 0.0).x;
+        let boundary = widgets::tooltip_box(anchor, width, input.window);
+        if boundary.is_empty() {
+            return;
+        }
+        let rect = widgets::rectangle(boundary);
+        d.draw_rectangle_rec(rect, color::ui_ink());
+        d.draw_rectangle_lines_ex(rect, 1.0, fade(color::white(), 0.18));
+        let (text_x, text_y) = widgets::tooltip_text_origin(boundary);
+        authored.draw_text(
+            d,
+            &fitted,
+            Vector2::new(text_x, text_y),
+            size,
+            0.0,
+            color::white(),
+        );
+    }
+
+    /// The lane's bottom-edge resize (LX1-d). Returns whether it owns the
+    /// pointer this frame, so the cue gesture can stand down.
+    ///
+    /// **No handle is drawn.** The operator was explicit — "don't add a visible
+    /// border line there, a desperate user will find the resize if they need
+    /// it" — so the only affordance is a two-pixel dimple that appears while the
+    /// strip is hovered and vanishes with the pointer. A cursor change would be
+    /// the conventional answer and is not available from here: `Shell::splitters`
+    /// runs after every panel and unconditionally sets the cursor back to
+    /// `MOUSE_CURSOR_DEFAULT`, so anything this file asks for is overwritten in
+    /// the same frame. The one-line change that would fix it is in the report.
+    ///
+    /// The strip is the lane's bottom [`LANE_RESIZE_GRAB_PIXELS`], which is
+    /// exactly the band no block is drawn in, so a resize press is never also a
+    /// press on a cue and the two gestures cannot both be started.
+    fn lane_resize_gesture(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        editor: &mut LyricEditor,
+        lane: UiRect,
+        commands: &mut Vec<ShellCommand>,
+    ) -> bool {
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+
+        let mouse = input.ui_scale.mouse(d);
+        let strip = UiRect::new(
+            lane.x,
+            lane.y + lane.height - LANE_RESIZE_GRAB_PIXELS,
+            lane.width,
+            LANE_RESIZE_GRAB_PIXELS,
+        );
+        let hovered = strip.contains_point(mouse.x, mouse.y);
+
+        if editor.lane_resizing {
+            if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+                editor.lane_height = clamp_lane_height(mouse.y - lane.y, input.window.1);
+                self.ui_preferences.lyric_lane_height = Some(editor.lane_height);
+            } else {
+                editor.lane_resizing = false;
+                // Written once, on release. The preference file is replaced
+                // atomically, and doing that on every frame of a drag would be
+                // sixty rewrites a second of a file the user may be editing.
+                commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+            }
+            return true;
+        }
+
+        if hovered && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
+            editor.lane_resizing = true;
+            return true;
+        }
+        if hovered {
+            // The whole affordance: a short dimple centred on the edge, only
+            // while the pointer is on it.
+            let width = 28.0f32.min(lane.width);
+            widgets::fill(
+                d,
+                UiRect::new(
+                    lane.x + (lane.width - width) * 0.5,
+                    lane.y + lane.height - 2.0,
+                    width,
+                    2.0,
+                ),
+                color::ui_muted(),
+            );
+        }
+        false
+    }
+
+    /// Copy, cut and paste over the lane selection (LX1-d).
+    ///
+    /// **Guarded on the text field, not on the pointer.** `Ctrl+V` inside the
+    /// cue field means paste *text* — the form's own hint row says so — and the
+    /// field reads raylib's keyboard directly, so this handler has to decline
+    /// while it has focus rather than expect to win. The style, effects and font
+    /// panes are excluded too: there is no lane on screen in any of them, and a
+    /// shortcut that acts on an invisible selection is the interface doing
+    /// something the user cannot see.
+    fn lyric_lane_keys(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        editor: &mut LyricEditor,
+        track: &Track,
+    ) {
+        use raylib::consts::KeyboardKey as Key;
+
+        if !lyric_clipboard_keys_allowed(
+            editor.style_pane,
+            editor.font_pane,
+            editor.text.is_focused(),
+        ) {
+            return;
+        }
+        if !(d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL)) {
+            return;
+        }
+        let copy = d.is_key_pressed(Key::KEY_C);
+        let cut = d.is_key_pressed(Key::KEY_X);
+        let paste = d.is_key_pressed(Key::KEY_V);
+
+        if copy || cut {
+            let ids = editor.lane_selection.ids().to_vec();
+            let Some(clipboard) = LyricClipboard::copy(&track.lyrics, &ids) else {
+                // A silent copy is indistinguishable from a broken one, and so
+                // is a silent refusal.
+                self.notify(
+                    Severity::Warning,
+                    "Nothing to copy",
+                    "Select one or more cues in the lane first.",
+                );
+                return;
+            };
+            let count = clipboard.len();
+            editor.clipboard = clipboard;
+            if cut {
+                for id in ids {
+                    editor.push(LyricsEdit::Delete { id });
+                }
+                editor.clear_draft();
+                editor.lane_selection.clear();
+            }
+            self.notify(
+                Severity::Success,
+                if cut { "Cues cut" } else { "Cues copied" },
+                &format!("{count} cue(s) on the clipboard. Ctrl+V pastes at the playhead."),
+            );
+            return;
+        }
+
+        if !paste {
+            return;
+        }
+        let at = self.timeline_playhead_seconds(input.time_seconds);
+        let pasted = match editor.clipboard.paste_at(&track.lyrics, at) {
+            Ok(pasted) => pasted,
+            Err(refusal) => {
+                self.notify(Severity::Warning, "Paste refused", &refusal.to_string());
+                return;
+            }
+        };
+        // Dry run first, against a copy of the document. `LyricsEdit::apply`
+        // runs the model's validating insert one cue at a time and `main.rs`
+        // stops at the first error, which would leave half a paste behind with
+        // no undo. Rehearsing it here makes the whole paste an all-or-nothing
+        // operation without giving this panel a way to write to the model.
+        let mut rehearsal = track.lyrics.clone();
+        for cue in &pasted {
+            if let Err(error) = rehearsal.insert(cue.clone()) {
+                self.notify(
+                    Severity::Warning,
+                    "Paste refused",
+                    &format!("Nothing was pasted: {error}"),
+                );
+                return;
+            }
+        }
+        let count = pasted.len();
+        for cue in pasted {
+            editor.push(LyricsEdit::Insert {
+                start_seconds: cue.start_seconds,
+                end_seconds: cue.end_seconds,
+                text: cue.text,
+            });
+        }
+        self.notify(
+            Severity::Success,
+            "Cues pasted",
+            &format!("{count} cue(s) at {}.", widgets::format_timestamp(at)),
+        );
     }
 
     /// The press, the drag and the release (`lane_gesture_update`, `:353-449`).
@@ -1635,8 +2213,16 @@ impl Shell {
             color::ui_muted(),
         );
 
-        let visible = if list.height > LYRIC_EDITOR_ROW_HEIGHT {
-            ((list.height - 32.0) / LYRIC_EDITOR_ROW_HEIGHT).max(0.0) as usize
+        // The legend takes the foot of the list, and the rows give it up: a
+        // colour code with no key is a colour code nobody can read, and this
+        // repository has a rule about a feature that cannot be discovered. It
+        // goes here rather than beside the lane because the list rows now carry
+        // the same swatches, so the key sits against two things it explains.
+        let legend = legend_rows(font, list.width);
+        let legend_height = legend as f32 * LEGEND_ROW_HEIGHT;
+        let rows_height = (list.height - 32.0 - legend_height).max(0.0);
+        let visible = if rows_height > 0.0 {
+            (rows_height / LYRIC_EDITOR_ROW_HEIGHT) as usize
         } else {
             0
         };
@@ -1714,11 +2300,25 @@ impl Shell {
                     color::accent(),
                 );
             }
+            // The row carries the lane's colour code too (LX1-d). Without it the
+            // legend below would explain a code that appears nowhere in the pane
+            // it is drawn in, and a cue scrolled out of the lane's visible span
+            // would have no provenance anywhere on screen.
+            widgets::fill(
+                d,
+                UiRect::new(
+                    boundary.x + 5.0,
+                    boundary.y + (boundary.height - LEGEND_SWATCH) * 0.5,
+                    LEGEND_SWATCH * 0.4,
+                    LEGEND_SWATCH,
+                ),
+                origin_color(cue.origin),
+            );
             widgets::draw_text(
                 d,
                 font,
                 &widgets::format_timestamp(cue.start_seconds),
-                boundary.x + 8.0,
+                boundary.x + 12.0,
                 boundary.y + 5.0,
                 metric::UI_FONT_VALUE,
                 color::ui_muted(),
@@ -1762,9 +2362,8 @@ impl Shell {
         }
 
         if track.lyrics.len() > visible && visible > 0 {
-            let thumb =
-                24.0f32.max((list.height - 32.0) * visible as f32 / track.lyrics.len() as f32);
-            let travel = list.height - 32.0 - thumb;
+            let thumb = 24.0f32.max(rows_height * visible as f32 / track.lyrics.len() as f32);
+            let travel = rows_height - thumb;
             let amount = first as f32 / (track.lyrics.len() - visible) as f32;
             widgets::fill(
                 d,
@@ -1777,6 +2376,18 @@ impl Shell {
                 color::accent(),
             );
         }
+
+        draw_origin_legend(
+            d,
+            font,
+            UiRect::new(
+                list.x,
+                list.y + list.height - legend_height,
+                list.width,
+                legend_height,
+            ),
+            legend,
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4451,17 +5062,130 @@ fn shadow_notice(document: &LyricsDocument, id: u64) -> Option<String> {
     }
 }
 
+/// Width one legend chip needs: swatch, gap, word, and the gap to the next.
+fn legend_chip_width(font: &UiFonts, origin: CueOrigin) -> f32 {
+    LEGEND_SWATCH
+        + 4.0
+        + widgets::measure(font, origin_legend_word(origin), metric::UI_FONT_CAPTION)
+        + 12.0
+}
+
+/// How many rows the legend needs at this width: one, or two if the four chips
+/// do not fit across.
+///
+/// Measured rather than assumed. The cue list is 48 % of a panel that is itself
+/// a fraction of the window, so at 960 px it is around 200 px wide and the four
+/// chips do not fit; at 1920 they do. A legend that ran off the edge would be a
+/// key with two of its four entries missing, which is worse than none.
+fn legend_rows(font: &UiFonts, width: f32) -> usize {
+    let total: f32 = ORIGIN_ORDER
+        .iter()
+        .map(|origin| legend_chip_width(font, *origin))
+        .sum();
+    if total <= width {
+        1
+    } else {
+        2
+    }
+}
+
+/// The colour key, laid out left to right and wrapped onto `rows`.
+fn draw_origin_legend(d: &mut RaylibDrawHandle<'_>, font: &UiFonts, boundary: UiRect, rows: usize) {
+    if boundary.is_empty() || rows == 0 {
+        return;
+    }
+    let per_row = ORIGIN_ORDER.len().div_ceil(rows.max(1));
+    for (index, origin) in ORIGIN_ORDER.iter().enumerate() {
+        let row = index / per_row.max(1);
+        let column = index % per_row.max(1);
+        let mut x = boundary.x;
+        for earlier in 0..column {
+            x += legend_chip_width(font, ORIGIN_ORDER[row * per_row + earlier]);
+        }
+        let y = boundary.y + row as f32 * LEGEND_ROW_HEIGHT;
+        if x + LEGEND_SWATCH > boundary.x + boundary.width {
+            continue;
+        }
+        widgets::fill(
+            d,
+            UiRect::new(
+                x,
+                y + (LEGEND_ROW_HEIGHT - LEGEND_SWATCH) * 0.5,
+                LEGEND_SWATCH,
+                LEGEND_SWATCH,
+            ),
+            origin_color(*origin),
+        );
+        // A `Potential` swatch is hatched exactly as its block is, so the key
+        // states the texture as well as the colour — the whole point of giving
+        // that one state a second channel.
+        if *origin == CueOrigin::Potential {
+            hatch_spaced(
+                d,
+                UiRect::new(
+                    x,
+                    y + (LEGEND_ROW_HEIGHT - LEGEND_SWATCH) * 0.5,
+                    LEGEND_SWATCH,
+                    LEGEND_SWATCH,
+                ),
+                fade(color::ui_raised(), 0.9),
+                4.0,
+            );
+        }
+        widgets::draw_text(
+            d,
+            font,
+            origin_legend_word(*origin),
+            x + LEGEND_SWATCH + 4.0,
+            y + 1.0,
+            metric::UI_FONT_CAPTION,
+            color::ui_muted(),
+        );
+    }
+}
+
+/// One line of a lane tooltip: the cue's words, its provenance, its span.
+///
+/// A function rather than an inline `format!` so the order is assertable — the
+/// text comes first because it is what identifies the cue to the person reading,
+/// and the label second because that is the question the colour code raised.
+fn lane_tooltip_text(cue: &LyricCue) -> String {
+    format!(
+        "{}  ·  {}  ·  {} – {}",
+        cue.text,
+        cue.origin.label(),
+        widgets::format_timestamp(cue.start_seconds),
+        widgets::format_timestamp(cue.end_seconds)
+    )
+}
+
+/// Multiplies a colour's channels, for [`shade_multiplier`]'s stack darkening.
+fn shade(color: Color, multiplier: f32) -> Color {
+    let scale = |channel: u8| (f32::from(channel) * multiplier.clamp(0.0, 1.0)) as u8;
+    Color::new(scale(color.r), scale(color.g), scale(color.b), color.a)
+}
+
 /// Spacing between the hatch strokes that mark a shadowed span.
 const HATCH_SPACING: f32 = 5.0;
 
 /// Diagonal hatching inside `rect`, clipped by construction (review 1.14).
+fn hatch(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color) {
+    hatch_spaced(d, rect, tint, HATCH_SPACING);
+}
+
+/// [`hatch`] at an explicit pitch (LX1-d).
+///
+/// The pitch is a parameter rather than a second function because a `Potential`
+/// block wants the same marks further apart — sparse reads as "provisional",
+/// dense as "something is wrong here" — and two implementations of a clipped
+/// diagonal would be two places to get the clipping wrong.
 ///
 /// No scissor: each stroke is a segment of the 45° line through the rect's bottom
 /// edge, and the parameter range is solved for the rect rather than drawn long
 /// and cut. A lane block is a few pixels wide on a long track, and starting a
 /// scissor per block would be a state change per cue per frame.
-fn hatch(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color) {
-    if rect.width <= 0.0 || rect.height <= 0.0 {
+fn hatch_spaced(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color, spacing: f32) {
+    if rect.width <= 0.0 || rect.height <= 0.0 || !spacing.is_finite() || spacing <= 0.0 {
         return;
     }
     let bottom = rect.y + rect.height;
@@ -4479,7 +5203,7 @@ fn hatch(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color) {
                 tint,
             );
         }
-        origin += HATCH_SPACING;
+        origin += spacing;
     }
 }
 
@@ -4496,6 +5220,7 @@ fn fade(color: Color, alpha: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use musializer_core::scene::SceneId;
+    use musializer_core::ui::contrast;
 
     use super::*;
 
@@ -4514,6 +5239,307 @@ mod tests {
                 .expect("the fixture cues are valid");
         }
         document
+    }
+
+    // -----------------------------------------------------------------------
+    // LX1-d: the colour code, the resize, the tooltip anchor, the shortcuts
+    // -----------------------------------------------------------------------
+
+    /// The lane's fill, which every block colour is measured against.
+    const LANE_FILL: u32 = 0xFFFF_FFFF;
+
+    fn packed(color: Color) -> u32 {
+        (u32::from(color.r) << 24)
+            | (u32::from(color.g) << 16)
+            | (u32::from(color.b) << 8)
+            | u32::from(color.a)
+    }
+
+    #[test]
+    fn every_origin_colour_is_legible_against_the_lane_it_is_drawn_on() {
+        // The border is drawn at full alpha at every selection state, so it is
+        // the border that has to clear the bar for a non-text component. The
+        // numbers in `origin_color`'s table are recomputed here rather than
+        // trusted: a colour written into a doc comment and never measured is
+        // exactly the amber severity label that shipped at 3.96:1.
+        let expected = [
+            (CueOrigin::UserApplied, 5.32f64),
+            (CueOrigin::InferredCertain, 5.69),
+            (CueOrigin::InferredAmbiguous, 3.25),
+            (CueOrigin::Potential, 4.13),
+        ];
+        for (origin, documented) in expected {
+            let measured = contrast::ratio(packed(origin_color(origin)), LANE_FILL);
+            assert!(
+                measured >= contrast::AA_COMPONENT,
+                "{} is {measured:.2}:1 on the lane",
+                origin.token()
+            );
+            assert!(
+                (measured - documented).abs() < 0.01,
+                "{} measures {measured:.2}, the table says {documented:.2}",
+                origin.token()
+            );
+        }
+        // And four distinct colours, which is the whole point of the code.
+        for (index, first) in ORIGIN_ORDER.iter().enumerate() {
+            for second in &ORIGIN_ORDER[index + 1..] {
+                assert_ne!(
+                    packed(origin_color(*first)),
+                    packed(origin_color(*second)),
+                    "{} and {} share a colour",
+                    first.token(),
+                    second.token()
+                );
+            }
+        }
+        // `Potential` is the only achromatic one, which is the non-hue half of
+        // its distinction; the hatch is the other half.
+        let grey = origin_color(CueOrigin::Potential);
+        assert_eq!(grey.r, grey.g, "the proposal swatch must read as grey");
+        for origin in [
+            CueOrigin::UserApplied,
+            CueOrigin::InferredCertain,
+            CueOrigin::InferredAmbiguous,
+        ] {
+            let color = origin_color(origin);
+            assert!(
+                color.r != color.g || color.g != color.b,
+                "{} must carry a hue",
+                origin.token()
+            );
+        }
+    }
+
+    #[test]
+    fn a_shaded_row_stays_the_colour_it_started_as() {
+        // Both the fill and the border are shaded, so the check that matters is
+        // that the deepest row is still recognisably its own colour rather than
+        // a hole in the lane — `shade_multiplier` caps at four steps for this.
+        for origin in ORIGIN_ORDER {
+            let base = origin_color(origin);
+            let deepest = shade(base, shade_multiplier(usize::MAX));
+            assert!(
+                contrast::ratio(packed(deepest), LANE_FILL) > contrast::AA_COMPONENT,
+                "{} goes illegible when it is stacked",
+                origin.token()
+            );
+            assert_eq!(shade(base, 1.0), base, "step 0 must not move the colour");
+            // Alpha is a selection state, never a stack depth.
+            assert_eq!(deepest.a, base.a);
+        }
+    }
+
+    #[test]
+    fn the_bands_chrome_still_adds_up_to_what_the_panel_is_promised() {
+        // The regression LX1-c shipped, stated as arithmetic: the boundary the
+        // editing form is drawn into must be exactly what
+        // `panel_height_with_chrome` returned, at every window and cue count.
+        // Before this tranche it was 33 px less.
+        let mut editor = LyricEditor::new();
+        for requested in [LANE_HEIGHT, 44.0, LANE_HEIGHT_MAX] {
+            editor.lane_height = requested;
+            for count in [0usize, 1, 6, 8, 12, 1024] {
+                editor.cue_count = count;
+                for window in [640.0f32, 720.0, 800.0, 1080.0, 1440.0, 2160.0] {
+                    let lane = clamp_lane_height(requested, window);
+                    let band = editor.timeline_height(window, 0.0);
+                    let boundary = band - lane_chrome(lane);
+                    let promised = lyrics_editor_layout::panel_height_with_chrome(
+                        window - SCENE_SECTION_ABOVE_BAND,
+                        count,
+                        lane_chrome(lane),
+                    );
+                    assert!(
+                        (boundary - promised).abs() < 0.001,
+                        "{window}px, {count} cues, {lane}px lane: boundary {boundary} \
+                         against a promised {promised}"
+                    );
+                    assert!(
+                        lyrics_editor_layout::form_fits(boundary),
+                        "{window}px, {count} cues, {lane}px lane: the form got {boundary}px"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_resize_clamp_never_takes_the_tracks_panel_with_it() {
+        // The operator asked for 33..66. What the *window* affords is a second
+        // bound, and this is the one that matters: past it the band grows into
+        // the sidebar and the tracks panel disappears entirely, which is the
+        // one-pixel defect `LANE_FIXED_CHROME`'s comment records.
+        let sidebar_floor = lyrics_editor_layout::LYRIC_EDITOR_SIDEBAR_MINIMUM;
+        let mut editor = LyricEditor::new();
+        editor.cue_count = 6;
+        // 758 px is where the arithmetic first has room for all of it: the
+        // sidebar floor, the scene section, this panel's fixed chrome, the base
+        // lane and the form's 223 px. Below that the form wins and the sidebar
+        // yields, which is the oracle's own documented behaviour at 640 — see
+        // `lyrics_editor_layout`'s module comment. Sweeping from 700 would be
+        // asserting a guarantee no window that short can keep.
+        let first_window_that_fits = sidebar_floor
+            + SCENE_SECTION_ABOVE_BAND
+            + LANE_FIXED_CHROME
+            + LANE_HEIGHT
+            + lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM;
+        assert_eq!(first_window_that_fits, 758.0);
+        let mut window = first_window_that_fits;
+        while window <= 2160.0 {
+            for requested in [0.0f32, LANE_HEIGHT, 40.0, LANE_HEIGHT_MAX, 400.0] {
+                let lane = clamp_lane_height(requested, window);
+                assert!(
+                    (LANE_HEIGHT..=LANE_HEIGHT_MAX).contains(&lane),
+                    "{window}px window, asked {requested}: got {lane}"
+                );
+                editor.lane_height = requested;
+                let band = editor.timeline_height(window, 0.0);
+                let sidebar = window - band;
+                assert!(
+                    sidebar >= sidebar_floor - 0.01,
+                    "{window}px window, {lane}px lane: the sidebar got {sidebar}"
+                );
+            }
+            window += 1.0;
+        }
+        // Below 700 px there is not enough window to protect the sidebar even at
+        // the base lane — that is the oracle's own documented yield at 640 — so
+        // the rule is "never worse than the base lane", and the clamp refuses to
+        // grow at all rather than making it worse.
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 640.0), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 720.0), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 771.0), 46.0);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 791.0), LANE_HEIGHT_MAX);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 1080.0), LANE_HEIGHT_MAX);
+        // Degenerate input falls back rather than propagating a NaN into a rect.
+        assert_eq!(clamp_lane_height(f32::NAN, 1080.0), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(48.0, f32::NAN), LANE_HEIGHT);
+    }
+
+    #[test]
+    fn a_lane_tooltip_never_covers_the_lane_it_explains() {
+        // The operator's hard requirement, and the reason the anchor is the lane
+        // rather than the block: a tip drawn over the lane hides the very blocks
+        // the user is scanning. Asserted as a rectangle intersection over every
+        // lane height, every block position and both window sizes the gate
+        // captures, because "it looked fine in the screenshot" is what this kind
+        // of geometry survives.
+        for window in [(960.0f32, 640.0f32), (1280.0, 720.0), (1920.0, 1080.0)] {
+            for lane_height in [LANE_HEIGHT, 44.0, LANE_HEIGHT_MAX] {
+                let lane = UiRect::new(20.0, window.1 - 300.0, window.0 - 40.0, lane_height);
+                let mut block_x = lane.x;
+                while block_x < lane.x + lane.width {
+                    let anchor = UiRect::new(block_x, lane.y, 40.0, lane.height);
+                    for text_width in [40.0f32, 220.0, 900.0] {
+                        let tip = widgets::tooltip_box(anchor, text_width, window);
+                        assert!(
+                            tip.intersect(lane).is_empty(),
+                            "a {text_width}px tip at x={block_x} over a {lane_height}px lane \
+                             landed on {tip:?} and overlaps the lane {lane:?}"
+                        );
+                        // And it is on screen, or it is not a tooltip.
+                        assert!(tip.y >= 0.0 && tip.y + tip.height <= window.1);
+                        assert!(tip.x >= 0.0 && tip.x + tip.width <= window.0 + 0.01);
+                    }
+                    block_x += 37.0;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_tooltip_says_what_the_block_could_not() {
+        let cue = LyricCue {
+            id: 3,
+            start_seconds: 61.5,
+            end_seconds: 64.25,
+            text: "Καλημέρα κόσμε".to_string(),
+            origin: CueOrigin::InferredAmbiguous,
+        };
+        let text = lane_tooltip_text(&cue);
+        assert!(text.starts_with("Καλημέρα κόσμε"), "{text}");
+        assert!(
+            text.contains(CueOrigin::InferredAmbiguous.label()),
+            "{text}"
+        );
+        assert!(text.contains(&widgets::format_timestamp(61.5)), "{text}");
+        assert!(text.contains(&widgets::format_timestamp(64.25)), "{text}");
+    }
+
+    #[test]
+    fn the_clipboard_shortcuts_stand_down_where_they_would_be_wrong() {
+        // Ctrl+V in the cue field means paste *text* — the form's own hint row
+        // says so — and the field reads raylib's keyboard directly, so the lane
+        // has to decline rather than expect to win the race.
+        assert!(lyric_clipboard_keys_allowed(false, false, false));
+        assert!(!lyric_clipboard_keys_allowed(false, false, true));
+        // And there is no lane on screen in the caption or font panes, so a
+        // shortcut there would act on a selection the user cannot see.
+        assert!(!lyric_clipboard_keys_allowed(true, false, false));
+        assert!(!lyric_clipboard_keys_allowed(false, true, false));
+        assert!(!lyric_clipboard_keys_allowed(true, true, true));
+    }
+
+    #[test]
+    fn the_report_line_carries_everything_a_capture_is_graded_on() {
+        let mut editor = LyricEditor::new();
+        let mut track = test_track("provenance", 0);
+        for (start, origin) in [
+            (1.0, CueOrigin::UserApplied),
+            (1.5, CueOrigin::InferredCertain),
+            (1.8, CueOrigin::InferredAmbiguous),
+            (2.0, CueOrigin::Potential),
+        ] {
+            track
+                .lyrics
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 3.0,
+                    text: format!("{origin:?}"),
+                    origin,
+                })
+                .expect("a valid fixture cue");
+        }
+        editor.enter_track(Some(0));
+        // The draw writes these; the report only prints them, so the test sets
+        // them the way a frame would rather than pretending `describe` derives
+        // them — that is the point of recording them during the draw.
+        let stack = LyricStack::build(&track.lyrics);
+        editor.stack_rows = stack.rows();
+        editor.origin_counts = ORIGIN_ORDER.map(|origin| {
+            track
+                .lyrics
+                .cues()
+                .iter()
+                .filter(|cue| cue.origin == origin)
+                .count()
+        });
+        editor.lane_drawn = 44.0;
+
+        let line = editor.describe(Some(&track));
+        assert!(
+            line.contains("origins user=1 certain=1 ambiguous=1 potential=1"),
+            "{line}"
+        );
+        assert!(line.contains("stack rows 4"), "{line}");
+        assert!(line.contains("lane height 44"), "{line}");
+        assert!(line.contains("clipboard 0"), "{line}");
+        assert!(line.contains("tip off"), "{line}");
+
+        // A capture that photographs an overlapping document and still says
+        // `stack rows 1` is a capture of the feature not running, so the flat
+        // case has to say something different.
+        let flat = test_track("flat", 3);
+        editor.stack_rows = LyricStack::build(&flat.lyrics).rows();
+        editor.origin_counts = [3, 0, 0, 0];
+        let line = editor.describe(Some(&flat));
+        assert!(line.contains("stack rows 1"), "{line}");
+        assert!(
+            line.contains("origins user=3 certain=0 ambiguous=0 potential=0"),
+            "{line}"
+        );
     }
 
     #[test]
@@ -4671,8 +5697,13 @@ mod tests {
             editor.cue_count = count;
             for window in [640.0f32, 720.0, 800.0, 1080.0, 1440.0, 2160.0] {
                 let band = editor.timeline_height(window, 0.0);
-                let panel = band - CHROME_ABOVE_PANEL - PANEL_BOTTOM_PADDING;
-                let boundary = panel - LANE_HEIGHT - LANE_GAP;
+                // `draw_lyrics`'s own arithmetic, through the one constant that
+                // now owns it. Spelling the subtraction out here was how the
+                // LX1-c regression hid: this test read `- LANE_HEIGHT -
+                // LANE_GAP` and never learned about the zoom row or its second
+                // gap, so it kept passing while the form was drawn 33 px below
+                // the panel.
+                let boundary = band - lane_chrome(clamp_lane_height(editor.lane_height, window));
                 assert!(
                     lyrics_editor_layout::form_fits(boundary),
                     "{window}px window, {count} cues: the form got {boundary}px"
@@ -4692,10 +5723,18 @@ mod tests {
         let mut editor = LyricEditor::new();
         editor.cue_count = 12;
         let at_640 = editor.timeline_height(640.0, 0.0);
-        let at_720 = editor.timeline_height(720.0, 0.0);
+        let at_800 = editor.timeline_height(800.0, 0.0);
         let at_1080 = editor.timeline_height(1080.0, 0.0);
-        assert!(at_720 > at_640);
-        assert!(at_1080 > at_720);
+        assert!(at_800 > at_640);
+        assert!(at_1080 > at_800);
+        // Below 758 px the band is pinned at the form's minimum and does *not*
+        // grow with the window, which is a deliberate consequence of LX1-d
+        // counting the scene section against the sidebar floor (see
+        // `SCENE_SECTION_ABOVE_BAND`). It was previously growing there only
+        // because the request under-counted its own chrome by 33 px, so the
+        // extra rows it claimed were drawn past the bottom of the panel. The
+        // real editor height at 720p moves by 5 px, not by 38.
+        assert_eq!(editor.timeline_height(720.0, 0.0), at_640);
     }
 
     #[test]
@@ -5209,8 +6248,7 @@ mod tests {
             editor.cue_count = count;
             for window in [640.0f32, 720.0, 800.0, 1080.0, 1440.0, 2160.0] {
                 let band = editor.timeline_height(window, 0.0);
-                let boundary =
-                    band - CHROME_ABOVE_PANEL - PANEL_BOTTOM_PADDING - LANE_HEIGHT - LANE_GAP;
+                let boundary = band - lane_chrome(clamp_lane_height(editor.lane_height, window));
                 // `Shell::caption_pane`'s arithmetic for the form it hands on.
                 let form_height = boundary - metric::UI_PANEL_PADDING * 2.0 - 38.0;
                 assert!(

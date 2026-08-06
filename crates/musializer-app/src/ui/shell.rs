@@ -28,6 +28,7 @@ use musializer_runtime::font::{Faces, UiFonts};
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::icons;
+use super::panels::{lyrics, scene_timeline};
 use super::preferences::UiPreferences;
 use super::scale::{UiScale, UiScalePreference};
 use super::shell_layout::{LayoutOverrides, WelcomeFrame, WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
@@ -300,6 +301,17 @@ struct TimelinePan {
     origin_x: f32,
     origin_start_seconds: f64,
 }
+
+/// The one coupling `Shell::timeline_group_chrome` cannot check at runtime.
+///
+/// The cue lane is drawn by `panels::lyrics`, which spends its own `LANE_GAP`
+/// between the waveform and the lane and cannot spend more — its
+/// `LYRIC_EDITOR_TIMELINE_CHROME` assertion forbids the band growing. The seam
+/// this shell paints into that gap is sized from [`metric::LANE_GAP`]. If the
+/// two ever disagree the seam is drawn over the cue lane or leaves a stripe of
+/// bare panel, and neither shows up as a failure anywhere — so it fails here,
+/// at compile time, instead.
+const _: () = assert!(lyrics::LANE_GAP == metric::LANE_GAP);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlayheadGeometry {
@@ -2848,8 +2860,29 @@ impl Shell {
         if strip.is_empty() {
             return;
         }
+        // Where the scene-plan lane actually ended, when it drew at all (LX1-e).
+        // `scene_plan_section` answers 0.0 when it could not seat its controls,
+        // and then the waveform *is* the first lane and there is no seam above
+        // it. Both edges are taken from the section's own constants rather than
+        // assumed to be `strip.y - LANE_GAP`: a seam derived from the gap it
+        // *should* be would keep painting a tidy 5 px band over the lane's
+        // bottom border if the section's budget ever drifted, which is exactly
+        // the failure the negative control for this tranche produced.
+        let scene_lane_bottom = (scene_row > 0.0).then_some(
+            content.y
+                + padding
+                + row
+                + scene_timeline::SCENE_LANE_OFFSET
+                + scene_timeline::SCENE_LANE_HEIGHT,
+        );
+        let lanes_top =
+            scene_lane_bottom.map_or(strip.y, |bottom| bottom - scene_timeline::SCENE_LANE_HEIGHT);
         d.draw_rectangle_rec(widgets::rectangle(strip), color::ui_raised());
-        d.draw_rectangle_lines_ex(widgets::rectangle(strip), 1.0, color::ui_rule());
+        d.draw_rectangle_lines_ex(
+            widgets::rectangle(strip),
+            metric::LANE_BORDER,
+            color::ui_rule(),
+        );
         self.timeline_pan_gesture(d, input, strip);
 
         if duration <= 0.0 {
@@ -2862,7 +2895,16 @@ impl Shell {
                 metric::UI_FONT_CAPTION,
                 color::ui_muted(),
             );
-            self.open_panel(d, input, content, strip, commands);
+            let zoom_row_y = self.open_panel(d, input, content, strip, commands);
+            self.timeline_group_chrome(
+                d,
+                lanes_top,
+                scene_lane_bottom,
+                strip,
+                zoom_row_y,
+                &[],
+                input.time_seconds,
+            );
             return;
         }
 
@@ -2907,6 +2949,11 @@ impl Shell {
         // Ticks from the ladder, chosen from the visible span rather than the
         // track length — picking it from the length left a zoomed-in window with
         // no label in it at all (`timeline_view.h:76-78`).
+        //
+        // Collected as well as drawn since LX1-e: the same columns are carried
+        // through the seams between lanes by `timeline_group_chrome`, and a
+        // second loop there could drift from this one.
+        let mut ticks: Vec<f32> = Vec::new();
         let step = timeline_view::tick_step(self.timeline.span_seconds);
         if step > 0.0 {
             let first = (self.timeline.start_seconds / step).floor() * step;
@@ -2916,7 +2963,28 @@ impl Shell {
                     .timeline
                     .x_at(tick, f64::from(strip.x), f64::from(strip.width))
                     as f32;
-                if x >= strip.x && x <= strip.x + strip.width {
+                // Ticks live strictly *inside* the lane's border ring, and both
+                // bounds are a fix rather than a tidy-up (LX1-e). A lane whose
+                // box spans columns `[x, x + width)` carries its rules on
+                // `x` and `x + width - 1`, and the old bounds were the closed
+                // interval `[x, x + width]`:
+                //
+                // - the tick at `x + width` painted a rule one column *outside*
+                //   the lane and dragged a clipped timestamp label off the edge
+                //   with it;
+                // - the tick at `x` — always present when the view starts on a
+                //   tick, which is every unzoomed track — sat under the left
+                //   border, invisible at 100 % and one column outside it at
+                //   150 %, where a 1 px logical line straddles two columns.
+                //
+                // Both were found by measurement rather than by eye:
+                // `tools/timeline_lane_alignment.py` reads the outermost rule
+                // column of every lane, and the waveform's disagreed with the
+                // other two by exactly one column at each end.
+                if x >= strip.x + metric::LANE_BORDER
+                    && x <= strip.x + strip.width - metric::LANE_BORDER
+                {
+                    ticks.push(x);
                     d.draw_line_ex(
                         Vector2::new(x, strip.y),
                         Vector2::new(x, strip.y + strip.height),
@@ -2952,18 +3020,6 @@ impl Shell {
             }
         }
 
-        // One bounded, pixel-snapped marker for every timed lane. The handle's
-        // centre moves inward at either edge while the line stays on the time,
-        // so the track-end triangle cannot overflow the PCM element.
-        draw_timeline_playhead(
-            d,
-            self.timeline,
-            strip,
-            self.timeline_playhead_seconds(input.time_seconds),
-            2.0,
-            true,
-        );
-
         // The open panel draws **before** the zoom row now, because it is the
         // panel that says where that row goes (LX1). The readout, the nudge-key
         // hint and the Zoom out button then land under every timed lane rather
@@ -2973,6 +3029,19 @@ impl Shell {
         // a gap the panel deliberately left empty, so the panel's widgets claim
         // their presses first and none of them overlaps the button below.
         let zoom_row_y = self.open_panel(d, input, content, strip, commands);
+
+        // Everything that makes the lanes one instrument rather than three, and
+        // it has to run here because `zoom_row_y` is the first moment the bottom
+        // of the last lane is known (LX1-e).
+        self.timeline_group_chrome(
+            d,
+            lanes_top,
+            scene_lane_bottom,
+            strip,
+            zoom_row_y,
+            &ticks,
+            input.time_seconds,
+        );
 
         // The zoom readout, so "why is the strip not the whole track" has an
         // answer on screen.
@@ -3060,6 +3129,104 @@ impl Shell {
                 }
             }
         }
+    }
+
+    /// The chrome that turns the stacked timed lanes into one instrument
+    /// (LX1-e).
+    ///
+    /// The operator's complaint was that the band read as "three separately
+    /// designed elements glued together", and it was three separate designs:
+    /// the scene lane sat 4 px under its controls row inside a 1 px box, the
+    /// waveform strip's box began on the *very next row* below it — so two 1 px
+    /// rules drew as one 2 px line — and the lyric cue lane sat 5 px lower with
+    /// a top rule, no sides and no bottom. Three playheads crossed them at two
+    /// different widths with a break in every gap.
+    ///
+    /// The system is three numbers ([`metric::LANE_BORDER`],
+    /// [`metric::LANE_GAP`], [`metric::LANE_PLAYHEAD_WIDTH`]) plus this
+    /// function, which draws what no single lane can:
+    ///
+    /// - **the seams.** Every gap between two adjacent lanes is filled with
+    ///   [`color::ui_lane_trough`] and carries the tick columns through, so the
+    ///   band reads as rows of one table rather than as boxes on a background.
+    /// - **the frame.** One outline around all of them. It supplies the cue
+    ///   lane's missing left, right and bottom edges without `panels::lyrics`
+    ///   having to draw a box of its own, and it is what makes the shared inset
+    ///   visible: the same two columns bound every lane.
+    /// - **the playhead.** One marker, one width, one handle, crossing every
+    ///   lane and every seam without a break.
+    ///
+    /// It runs last because `zoom_row_y` — the bottom of the last lane — is not
+    /// known until the open panel has drawn. Everything here is chrome over
+    /// content that is already on screen; nothing in it claims a press.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "every argument is one edge of the group, and bundling them into a struct \
+                  would only move the same list to its construction site"
+    )]
+    fn timeline_group_chrome(
+        &self,
+        d: &mut RaylibDrawHandle<'_>,
+        lanes_top: f32,
+        scene_lane_bottom: Option<f32>,
+        strip: UiRect,
+        lanes_bottom: f32,
+        ticks: &[f32],
+        time_seconds: f64,
+    ) {
+        let group = UiRect::new(
+            strip.x,
+            lanes_top,
+            strip.width,
+            (lanes_bottom - lanes_top).max(0.0),
+        );
+        if group.is_empty() {
+            return;
+        }
+
+        // A seam above the strip only when a lane actually drew above it, and
+        // one below only when a panel reported a lane of its own down there.
+        // The upper seam is bounded by the lane that ended, not by
+        // [`metric::LANE_GAP`], so a wrong gap shows up as a wrong seam instead
+        // of being painted over. The lower one has to be derived — the cue lane
+        // belongs to `panels::lyrics` — which is what the compile-time
+        // assertion beside [`PlayheadGeometry`] exists to keep honest.
+        let below_strip = strip.y + strip.height;
+        let seams = [
+            scene_lane_bottom.map(|bottom| (bottom, strip.y)),
+            (lanes_bottom > below_strip).then_some((below_strip, below_strip + metric::LANE_GAP)),
+        ];
+        for (top, bottom) in seams.into_iter().flatten() {
+            if bottom <= top || top < lanes_top || bottom > lanes_bottom {
+                continue;
+            }
+            let seam = UiRect::new(group.x, top, group.width, bottom - top);
+            widgets::fill(d, seam, color::ui_lane_trough());
+            for &x in ticks {
+                if x >= group.x && x <= group.x + group.width {
+                    d.draw_line_ex(
+                        Vector2::new(x, top),
+                        Vector2::new(x, bottom),
+                        metric::LANE_BORDER,
+                        color::ui_rule(),
+                    );
+                }
+            }
+        }
+
+        draw_timeline_playhead(
+            d,
+            self.timeline,
+            group,
+            self.timeline_playhead_seconds(time_seconds),
+            metric::LANE_PLAYHEAD_WIDTH,
+            true,
+        );
+        d.draw_rectangle_lines_ex(
+            widgets::rectangle(group),
+            metric::LANE_BORDER,
+            color::ui_rule(),
+        );
     }
 
     /// Dispatches to whichever bottom panel is open, and reports where the zoom

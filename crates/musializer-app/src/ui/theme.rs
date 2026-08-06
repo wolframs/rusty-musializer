@@ -26,6 +26,22 @@ pub mod rgba {
     pub const TRACK_BUTTON_HOVEROVER: u32 = 0xE7EA_F2FF;
     pub const WHITE: u32 = 0xFFFF_FFFF;
 
+    /// The groove the timed lanes sit in (LX1-e).
+    ///
+    /// The timeline band is three lanes over one time axis — scene plan,
+    /// waveform, lyric cues — and before LX1-e it read as three widgets glued
+    /// together: the scene lane and the waveform shared an edge, so their two
+    /// 1 px rules drew as one 2 px line, while the cue lane sat five pixels
+    /// lower with only a top rule and no box at all. The unifier is this one
+    /// tone painted into every gap *between* lanes, bounded left and right by
+    /// the group frame: the lanes then read as rows of one table rather than
+    /// as separate boxes that happen to be stacked.
+    ///
+    /// One step darker than [`UI_SURFACE`] and well lighter than [`UI_RULE`],
+    /// so a 5 px band is a seam rather than a stripe. [`Surface::Fill`]: no text
+    /// is ever drawn on it.
+    pub const UI_LANE_TROUGH: u32 = 0xE6E6_EAFF;
+
     /// The notice tray's card, floating over the scene preview.
     ///
     /// **Opaque, and that is the fix rather than an aesthetic choice**
@@ -110,7 +126,7 @@ pub mod rgba {
         dead_code,
         reason = "the palette audit in this module's tests is its only reader"
     )]
-    pub const ALL: [(&str, u32, Surface); 20] = [
+    pub const ALL: [(&str, u32, Surface); 21] = [
         ("accent", ACCENT, Surface::Chrome),
         ("background", BACKGROUND, Surface::Fill),
         ("ui_surface", UI_SURFACE, Surface::Fill),
@@ -128,6 +144,7 @@ pub mod rgba {
             Surface::Fill,
         ),
         ("white", WHITE, Surface::Inverted),
+        ("ui_lane_trough", UI_LANE_TROUGH, Surface::Fill),
         ("ui_overlay_surface", UI_OVERLAY_SURFACE, Surface::Fill),
         ("ui_overlay_ink", UI_OVERLAY_INK, Surface::DarkOverlay),
         ("ui_overlay_muted", UI_OVERLAY_MUTED, Surface::DarkOverlay),
@@ -183,6 +200,7 @@ pub mod color {
         ui_success = UI_SUCCESS;
         track_button_hoverover = TRACK_BUTTON_HOVEROVER;
         white = WHITE;
+        ui_lane_trough = UI_LANE_TROUGH;
         ui_overlay_surface = UI_OVERLAY_SURFACE;
         ui_overlay_ink = UI_OVERLAY_INK;
         ui_overlay_muted = UI_OVERLAY_MUTED;
@@ -219,6 +237,29 @@ pub mod metric {
     pub const UI_PANEL_PADDING: f32 = 10.0;
     pub const UI_CONTROL_GAP: f32 = 8.0;
     pub const UI_BUTTON_HEIGHT: f32 = 36.0;
+
+    // The timed-lane system (LX1-e). The timeline band stacks the scene plan
+    // lane, the waveform strip and the lyric cue lane over one time axis, and
+    // each was styled by a different agent at a different time: the scene lane
+    // sat 4 px under its controls row, the waveform shared an edge with it (so
+    // two 1 px rules drew as one 2 px line), and the cue lane sat 5 px lower
+    // with a top rule and no box. Three names, used by all three lanes, so the
+    // next lane cannot invent a fourth set of numbers.
+    //
+    // `LANE_GAP` is 5 rather than 6 because `panels::lyrics` already spends
+    // exactly 5 between the waveform and the cue lane, and its
+    // `LYRIC_EDITOR_TIMELINE_CHROME` assertion is what forbids that band from
+    // growing — `shell.rs` keeps a `const _: () = assert!` pinning the two
+    // together.
+
+    /// Every timed lane's outline, and the group frame around all of them.
+    pub const LANE_BORDER: f32 = 1.0;
+    /// The vertical gap between two adjacent timed lanes, and between the
+    /// scene-plan controls row and the first lane.
+    pub const LANE_GAP: f32 = 5.0;
+    /// The playhead's stroke. One marker crosses the whole group, so this is
+    /// the only width any timed lane's playhead is drawn at.
+    pub const LANE_PLAYHEAD_WIDTH: f32 = 2.0;
 }
 
 #[cfg(test)]

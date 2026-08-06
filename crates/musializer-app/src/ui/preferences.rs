@@ -15,12 +15,27 @@ use super::scale::UiScalePreference;
 const SCHEMA: &str = "musializer.ui-preferences/v1";
 const MAX_FILE_SIZE: u64 = 64 * 1024;
 
+/// What a persisted lyric cue lane height may be (LX1-d).
+///
+/// Deliberately wider than the panel's own 33..66 clamp and checked separately
+/// from the split widths: a lane is tens of pixels, not hundreds, so the shared
+/// `80.0..=4096.0` bound would reject every value this field can legitimately
+/// hold. The panel clamps again against the window it is drawn in, so this range
+/// only has to exclude values that are not a lane at all.
+const LANE_HEIGHT_RANGE: std::ops::RangeInclusive<f32> = 8.0..=256.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiPreferences {
     pub scale: UiScalePreference,
     pub sidebar_width: Option<f32>,
     pub inspector_width: Option<f32>,
     pub timeline_height: Option<f32>,
+    /// The lyric editor's cue lane height, dragged by its bottom edge (LX1-d).
+    ///
+    /// Here rather than in the `.musi` file for this module's stated reason: it
+    /// describes the operator's screen, not the music. A resize the user has to
+    /// redo every launch is the friction the resize was asked for to remove.
+    pub lyric_lane_height: Option<f32>,
 }
 
 impl UiPreferences {
@@ -34,6 +49,12 @@ impl UiPreferences {
         .into_iter()
         .flatten()
         .all(|value| value.is_finite() && (80.0..=4096.0).contains(&value))
+            // `into_iter().all` rather than `is_none_or`, which is stable only
+            // since 1.82 and this workspace's MSRV is 1.80.
+            && self
+                .lyric_lane_height
+                .into_iter()
+                .all(|value| value.is_finite() && LANE_HEIGHT_RANGE.contains(&value))
     }
 }
 
@@ -57,6 +78,14 @@ struct Document {
     sidebar_width: Option<f32>,
     inspector_width: Option<f32>,
     timeline_height: Option<f32>,
+    /// `default` rather than required, and that is the compatibility contract
+    /// rather than a convenience: every `ui.json` this application has already
+    /// written carries exactly the four fields above, and a fifth required one
+    /// would make all of them fail to parse — which this module treats as
+    /// corruption and refuses to overwrite, so the user would lose their splits
+    /// *and* be told the file is broken.
+    #[serde(default)]
+    lyric_lane_height: Option<f32>,
 }
 
 #[must_use]
@@ -97,6 +126,7 @@ pub fn load(path: &Path) -> Result<Option<UiPreferences>, UiPreferencesError> {
         sidebar_width: document.sidebar_width,
         inspector_width: document.inspector_width,
         timeline_height: document.timeline_height,
+        lyric_lane_height: document.lyric_lane_height,
     };
     preferences
         .sane()
@@ -117,6 +147,7 @@ pub fn save(path: &Path, preferences: UiPreferences) -> Result<(), UiPreferences
         sidebar_width: preferences.sidebar_width,
         inspector_width: preferences.inspector_width,
         timeline_height: preferences.timeline_height,
+        lyric_lane_height: preferences.lyric_lane_height,
     };
     let bytes = serde_json::to_vec_pretty(&document).map_err(|_| UiPreferencesError::Format)?;
     if let Some(parent) = path.parent() {
@@ -148,9 +179,50 @@ mod tests {
             sidebar_width: Some(384.0),
             inspector_width: Some(420.0),
             timeline_height: Some(460.0),
+            lyric_lane_height: Some(48.0),
         };
         save(&path, preferences).unwrap();
         assert_eq!(load(&path).unwrap(), Some(preferences));
+    }
+
+    #[test]
+    fn a_file_written_before_the_lane_was_resizable_still_opens() {
+        // LX1-d's compatibility contract, stated as a test rather than as a
+        // comment: this is the exact document a build before the resize wrote.
+        let path = scratch("pre-lane").join("ui.json");
+        std::fs::write(
+            &path,
+            br#"{"schema":"musializer.ui-preferences/v1","scale":"auto",
+                 "sidebar_width":300.0,"inspector_width":null,"timeline_height":null}"#,
+        )
+        .unwrap();
+        let loaded = load(&path).unwrap().expect("an older file still parses");
+        assert_eq!(loaded.sidebar_width, Some(300.0));
+        assert_eq!(loaded.lyric_lane_height, None);
+    }
+
+    #[test]
+    fn a_lane_height_outside_its_own_range_is_refused_rather_than_clamped() {
+        // The split widths' 80 px floor must not be applied to a lane: 33 is the
+        // lane's *default*, and a shared bound would reject every honest value.
+        let path = scratch("lane-range").join("ui.json");
+        for accepted in [8.0f32, 33.0, 66.0, 256.0] {
+            let preferences = UiPreferences {
+                lyric_lane_height: Some(accepted),
+                ..UiPreferences::default()
+            };
+            assert!(preferences.sane(), "{accepted} is a lane height");
+            save(&path, preferences).unwrap();
+            assert_eq!(load(&path).unwrap(), Some(preferences));
+        }
+        for refused in [0.0f32, -33.0, 257.0, f32::NAN] {
+            let preferences = UiPreferences {
+                lyric_lane_height: Some(refused),
+                ..UiPreferences::default()
+            };
+            assert!(!preferences.sane(), "{refused} is not a lane height");
+            assert_eq!(save(&path, preferences), Err(UiPreferencesError::Format));
+        }
     }
 
     #[test]

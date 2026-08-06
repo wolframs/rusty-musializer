@@ -19,7 +19,7 @@ use serde_json::Value;
 
 use crate::project::analysis_bridge::AnalysisBridge;
 use crate::project::event_timeline::EventTimeline;
-use crate::project::lyrics::LyricsDocument;
+use crate::project::lyrics::{CueOrigin, LyricCue, LyricsDocument, CUE_CAPACITY};
 use crate::project::scene_switch::{SceneSwitchCue, SceneSwitchTimeline, CAPACITY};
 use crate::scene::events::{EventRecord, EventType};
 use crate::scene::settings::SettingsSnapshot;
@@ -106,11 +106,22 @@ pub enum AnalysisCandidateError {
 //
 // Two rules, and they are the ones a later session will otherwise undo:
 //
-// - **An unresolved line is never a cue.** Nothing below feeds `prepare`, the
-//   bridge, or `LyricsDocument`. It is review text and only review text; the
-//   helper already refuses to write a lane whose cues plus unresolved do not
-//   account for every alignable authored line, and this side does not get a
-//   second opinion about that.
+// - **An unresolved line is never a *placement*.** Nothing below feeds `prepare`
+//   or the bridge; the helper already refuses to write a lane whose cues plus
+//   unresolved do not account for every alignable authored line, and this side
+//   does not get a second opinion about that.
+//
+//   Revised by LX1-f, and the revision is narrower than it looks. An unresolved
+//   line may now be *parked* in the lyric lane as a [`CueOrigin::Potential`] cue
+//   through [`AnalysisCandidate::park_potential_cues`], which is an explicit,
+//   separate call the bridge cannot make. It is still not a placement: a
+//   `Potential` cue is skipped by `LyricsDocument::at_time`, so it cannot reach a
+//   preview frame or an export, and it is skipped by the shadow analysis in both
+//   directions. What it can do is exist on the timeline lane, which is the one
+//   surface where retiming is comfortable and which a review row could not reach.
+//   The operator's complaint was a 37-second hole in that lane with no way to fix
+//   it in place; the account of "every authored line" is unchanged, only its
+//   reachability is.
 // - **Absence is not zero.** A pre-LT1 artifact carries none of these keys, and
 //   `parse_review_manifest` returns `None` for it, so the panel renders exactly
 //   what it rendered before LT1. A run that really did place everything says so
@@ -853,9 +864,9 @@ impl AnalysisCandidate {
     /// Attaches the review read from the finished job's artifacts.
     ///
     /// Inert by construction: this cannot add, move or remove a cue, and
-    /// [`Self::apply`] never looks at it. An unresolved line stays out of
-    /// `lyrics` because the helper never put it there — nothing here is a second
-    /// chance for one.
+    /// [`Self::apply`] never looks at it. Parking an unresolved line's proposal
+    /// in the lane is [`Self::park_potential_cues`], a separate call with its own
+    /// refusals, so attaching a review still changes no cue.
     ///
     /// Refuses, rather than storing, when the candidate has no lyrics lane: a
     /// review of a lane that was not staged would be a claim about content the
@@ -866,6 +877,64 @@ impl AnalysisCandidate {
         }
         self.lyrics_review = Some(review);
         true
+    }
+
+    /// Parks proposal cues in the staged lyric lane (LX1-f).
+    ///
+    /// Every cue is forced to [`CueOrigin::Potential`] and to an allocated id,
+    /// whatever the caller put in either field. Both are deliberate: the origin
+    /// is the *only* thing keeping these out of a rendered frame, and a caller
+    /// supplying its own ids could collide with the helper's.
+    ///
+    /// **All or nothing**, and that is the whole reason this takes a slice rather
+    /// than being called once per cue. A lane holding some of a run's proposals
+    /// is a lane whose gaps mean nothing — the user cannot tell "the aligner
+    /// placed this" from "the proposal did not fit" — so a capacity refusal or a
+    /// single invalid window leaves the document byte-identical and the caller
+    /// says so on screen. The staging copy is what buys that: `insert` sorts and
+    /// bumps a revision, so there is no cheap way to undo half of it in place.
+    ///
+    /// Returns whether the lane now carries them.
+    pub fn park_potential_cues(&mut self, cues: &[LyricCue]) -> bool {
+        if !self.available.lyrics {
+            return false;
+        }
+        if cues.is_empty() {
+            return true;
+        }
+        // Checked before anything is copied, because the sum is the interesting
+        // bound: a lane at 1020 cues and 8 proposals is a refusal even though
+        // neither number is near the cap on its own.
+        if self.lyrics.len() + cues.len() > CUE_CAPACITY {
+            return false;
+        }
+        let mut staged = self.lyrics.clone();
+        for cue in cues {
+            let parked = LyricCue {
+                id: 0,
+                origin: CueOrigin::Potential,
+                ..cue.clone()
+            };
+            if staged.insert(parked).is_err() {
+                return false;
+            }
+        }
+        self.lyrics = staged;
+        true
+    }
+
+    /// How many cues in the staged lane are parked proposals rather than
+    /// placements (LX1-f).
+    ///
+    /// Derived rather than counted into a field, so it cannot disagree with the
+    /// document it describes after a clone, an apply or a normalization.
+    #[must_use]
+    pub fn potential_cue_count(&self) -> usize {
+        self.lyrics
+            .cues()
+            .iter()
+            .filter(|cue| cue.origin == CueOrigin::Potential)
+            .count()
     }
 
     /// `analysis_candidate_prepare` (`analysis_candidate.c:91-130`).
@@ -1853,5 +1922,120 @@ mod tests {
             2,
             "three review entries must not have become cues"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tranche LX1-f: parked proposals.
+    // -----------------------------------------------------------------------
+
+    fn proposal(start: f64, end: f64, text: &str) -> LyricCue {
+        LyricCue {
+            // Deliberately hostile: an id the helper's own lane already uses, and
+            // an origin that would display. `park_potential_cues` must overwrite
+            // both, and a caller that trusted them would collide or publish.
+            id: 1,
+            start_seconds: start,
+            end_seconds: end,
+            text: text.to_string(),
+            origin: CueOrigin::UserApplied,
+        }
+    }
+
+    #[test]
+    fn parked_proposals_join_the_lane_with_their_origin_and_ids_forced() {
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        assert!(candidate.park_potential_cues(&[
+            proposal(40.0, 43.0, "hold the note until it breaks"),
+            proposal(50.0, 53.0, "and again, and again"),
+        ]));
+        assert_eq!(candidate.lyrics().len(), 4);
+        assert_eq!(candidate.potential_cue_count(), 2);
+
+        let ids: Vec<u64> = candidate.lyrics().cues().iter().map(|cue| cue.id).collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(ids.len(), unique.len(), "a parked cue reused a helper's id");
+        for cue in candidate.lyrics().cues() {
+            let parked = cue.start_seconds >= 40.0;
+            assert_eq!(cue.origin == CueOrigin::Potential, parked);
+        }
+        // The document is still valid, which is what `apply` will re-check.
+        candidate
+            .lyrics()
+            .validate()
+            .expect("the parked lane is valid");
+    }
+
+    #[test]
+    fn a_parked_proposal_reaches_apply_but_never_reaches_a_frame() {
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        assert!(candidate.park_potential_cues(&[proposal(40.0, 43.0, "a parked line")]));
+
+        let mut lyrics = LyricsDocument::new(DURATION).unwrap();
+        let mut sections = SceneSwitchTimeline::new();
+        let mut semantic_events = EventTimeline::new();
+        candidate
+            .apply(&mut lyrics, &mut sections, &mut semantic_events)
+            .unwrap();
+        assert_eq!(lyrics.len(), 3, "the proposal is in the applied lane");
+        assert!(
+            lyrics.at_time(41.0).is_none(),
+            "a parked proposal must never resolve to a displayed line"
+        );
+        assert!(
+            lyrics.at_time(1.5).is_some(),
+            "and it must not have disturbed the placements around it"
+        );
+    }
+
+    #[test]
+    fn parking_is_all_or_nothing_at_the_cue_limit_and_on_a_bad_window() {
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        let before = candidate.lyrics().clone();
+
+        // One cue short of the cap, so the sum is what refuses rather than
+        // either number on its own.
+        let mut wall: Vec<LyricCue> = Vec::new();
+        for index in 0..(CUE_CAPACITY - 1) {
+            let start = 10.0 + index as f64 * 1e-4;
+            wall.push(proposal(start, start + 5e-5, "filler"));
+        }
+        assert_eq!(wall.len() + candidate.lyrics().len(), CUE_CAPACITY + 1);
+        assert!(!candidate.park_potential_cues(&wall));
+        assert_eq!(
+            candidate.lyrics(),
+            &before,
+            "a refused batch must leave the lane byte-identical"
+        );
+
+        // And a single invalid window refuses the whole batch, not just itself:
+        // the second cue here ends before it starts.
+        assert!(!candidate.park_potential_cues(&[
+            proposal(40.0, 43.0, "a good one"),
+            proposal(50.0, 49.0, "a bad one"),
+        ]));
+        assert_eq!(candidate.lyrics(), &before);
+        assert_eq!(candidate.potential_cue_count(), 0);
+    }
+
+    #[test]
+    fn a_candidate_with_no_lyrics_lane_parks_nothing() {
+        let sections_only = Lanes {
+            lyrics: false,
+            sections: true,
+            semantics: false,
+        };
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), sections_only, DURATION, SCENES).unwrap();
+        assert!(!candidate.park_potential_cues(&[proposal(40.0, 43.0, "nowhere to go")]));
+        assert_eq!(candidate.potential_cue_count(), 0);
+        // An empty batch is a no-op rather than a refusal, so a run with nothing
+        // to park does not read as a failure.
+        let mut with = AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        assert!(with.park_potential_cues(&[]));
     }
 }

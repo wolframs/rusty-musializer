@@ -647,6 +647,24 @@ pub fn tooltip_box(anchor: UiRect, text_width: f32, window: (f32, f32)) -> UiRec
     UiRect::new(x, y, width, height)
 }
 
+/// Where the text starts inside a box [`tooltip_box`] returned.
+///
+/// Public for the one caller that cannot go through [`draw_tooltip`]: the lyric
+/// cue lane types the cue's **own words** into its tip, and those have to go
+/// through the glyph-complete authored atlas rather than the Latin-only chrome
+/// bank this module draws with (UX0-A05 — the panel drew Greek cue text as rows
+/// of `?` for weeks because nothing said which face served it). Exposing the
+/// origin rather than the two padding constants keeps the box's interior a
+/// detail of this module: a caller that wants a different face still cannot get
+/// the plate's geometry wrong.
+#[must_use]
+pub fn tooltip_text_origin(boundary: UiRect) -> (f32, f32) {
+    (
+        boundary.x + TOOLTIP_PADDING_X,
+        boundary.y + TOOLTIP_PADDING_Y,
+    )
+}
+
 const TOOLTIP_PADDING_X: f32 = 9.0;
 const TOOLTIP_PADDING_Y: f32 = 6.0;
 const TOOLTIP_GAP: f32 = 6.0;
