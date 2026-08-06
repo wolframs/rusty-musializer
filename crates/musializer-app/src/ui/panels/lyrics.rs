@@ -60,19 +60,35 @@ use crate::workspace::{Track, Workspace};
 
 /// The cue lane's default height, and the gap between it and the editor below.
 ///
-/// 22 px was the oracle's lane ([`ORACLE_LANE_HEIGHT`]). **33 is 1.5x that, and
-/// the reason is the overlap fan-out** (LX1-d, operator request): a cluster of
-/// three or four live cues splits the lane into rows, and at 22 px the deepest
-/// row is a 9 px sliver with an edge handle at either end. The extra 11 px is
-/// what makes a stacked block a target rather than a line.
-pub const LANE_HEIGHT: f32 = 33.0;
-/// The tallest the lane's bottom-edge drag may make it: twice the new base.
+/// 22 px was the oracle's lane ([`ORACLE_LANE_HEIGHT`]). **50 is 2.25x that**
+/// (49.5, rounded up to a whole pixel), and the number is the operator's,
+/// revised upward on 2026-08-06 after seeing the first attempt on a real track.
+///
+/// The first attempt was 1.5x, and the feedback names exactly why it was not
+/// enough: *"what happened to 1.5x-sizing the area that matters (where the user
+/// clicks)? Otherwise this is a pixel aiming fest."* The whole lane height is the
+/// click target — [`Shell::lane_gesture`] hit-tests the lane rect, not the block
+/// — so this constant **is** the affordance, and on a 3½ minute track zoomed to
+/// the whole song a cue is about 18 px wide. There is nothing to be done about
+/// the width at that zoom; the height is the axis that can be given away, so it
+/// is given away generously.
+pub const LANE_HEIGHT: f32 = 50.0;
+/// The tallest the lane's bottom-edge drag may make it: 3x the oracle's lane.
 ///
 /// A ceiling rather than "as much as you like" because every pixel here is a
 /// pixel off the editing form below, which has a hard 223 px minimum
 /// ([`lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM`]) — past this the lane
 /// would start deleting the controls it exists to feed.
 pub const LANE_HEIGHT_MAX: f32 = 66.0;
+/// The shortest the lane may be squeezed to on a window that cannot seat the
+/// default *and* the editing form.
+///
+/// The oracle's own lane, which is the honest floor: it is the height this panel
+/// shipped at for the whole rewrite, so a window that can only afford it is no
+/// worse off than it was. Below this the edge handles stop being distinguishable
+/// by hand ([`lyric_lane_edit::LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS`] is 18 px wide
+/// for the same reason).
+const LANE_HEIGHT_MIN: f32 = ORACLE_LANE_HEIGHT;
 /// The oracle's lane, kept only so [`the chrome assertion`](self) below still
 /// states what it always stated: this shell's fixed chrome plus a 22 px lane is
 /// exactly `LYRIC_EDITOR_TIMELINE_CHROME`.
@@ -83,10 +99,25 @@ pub const LANE_HEIGHT_MAX: f32 = 66.0;
 const ORACLE_LANE_HEIGHT: f32 = 22.0;
 /// How deep the bottom-edge grab strip is, measured up from the lane's bottom.
 ///
-/// Exactly the block inset (`lane.y + 3.0`, `height - 6.0`), so the strip is the
-/// band no block is ever drawn in and a resize press can never be a press on a
-/// cue. No handle is drawn: the operator asked for no visible border line there.
-const LANE_RESIZE_GRAB_PIXELS: f32 = 3.0;
+/// **7 px, and drawn.** It was 3 px and invisible, on the operator's original
+/// instruction that "a desperate user will find the resize if they need it" —
+/// and then the operator could not find it: *"the size increase of the lyrics
+/// cue bar doesn't seem to work"*, followed by *"I guess we do need a bit of a
+/// stronger border there for resizing"* (2026-08-06). Both halves of that were
+/// the same defect. A 3 px target is itself the pixel-aiming the taller lane
+/// exists to remove, and an affordance that only appears once the pointer is
+/// already on it cannot be found by a pointer that never lands there.
+///
+/// It still bounds the block band at both ends ([`Self::lyric_lane`] insets by
+/// it top and bottom), so no cue is ever drawn in the strip and a resize press
+/// can never be a press on a cue.
+const LANE_RESIZE_GRAB_PIXELS: f32 = 7.0;
+
+/// Breathing room above the blocks — the oracle's inset, and only at the top.
+///
+/// The bottom's inset is [`LANE_RESIZE_GRAB_PIXELS`] instead, so growing the
+/// grab strip does not silently cost the blocks twice what it costs once.
+const LANE_BLOCK_TOP_INSET: f32 = 3.0;
 /// 5 px, and the 5 is not a taste decision — see [`CHROME_ABOVE_PANEL`].
 pub const LANE_GAP: f32 = 5.0;
 
@@ -176,13 +207,36 @@ fn lane_height_ceiling(window_height: f32) -> f32 {
     if !window_height.is_finite() {
         return LANE_HEIGHT;
     }
-    let affordable = window_height
+    // **Two bounds, and only one of them is hard.**
+    //
+    // The sidebar bound is a preference. Below about 770 px it goes negative,
+    // and honouring it there would clamp the lane to nothing on a window where
+    // the sidebar is *already* yielding by the oracle's own rule — buying the
+    // tracks panel nothing and making the drag feel broken. So it only ever
+    // limits an upward drag, which is what the floor at `LANE_HEIGHT` expresses.
+    let sidebar_bound = window_height
         - SCENE_SECTION_ABOVE_BAND
         - lyrics_editor_layout::LYRIC_EDITOR_SIDEBAR_MINIMUM
         - lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM
         - LANE_FIXED_CHROME;
     // `clamp` cannot panic here: the low bound is the literal below the high one.
-    affordable.clamp(LANE_HEIGHT, LANE_HEIGHT_MAX)
+    let soft = sidebar_bound.clamp(LANE_HEIGHT, LANE_HEIGHT_MAX);
+
+    // The band bound is hard, and it is the one raising the lane to 2.25x found.
+    // `Self::timeline_height` caps the whole band at
+    // `window - HUD_BUTTON_SIZE - DEFAULT_TIMELINE_HEIGHT` whatever the panel
+    // asks for, so past this the form is *clipped* rather than merely cramped —
+    // at 640 px a 50 px lane left it 219 px against a promised 223, which is the
+    // "Enlarge the window" fallback appearing for an arithmetic reason instead
+    // of a real one. This one may take the lane below its default, because a
+    // shorter lane is a nuisance and a clipped form is a broken panel.
+    let band_bound = window_height
+        - metric::HUD_BUTTON_SIZE
+        - DEFAULT_TIMELINE_HEIGHT
+        - LANE_FIXED_CHROME
+        - lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM;
+
+    soft.min(band_bound).clamp(LANE_HEIGHT_MIN, LANE_HEIGHT_MAX)
 }
 
 /// The scene-plan section `Shell::timeline_height` adds to **every** panel's
@@ -209,10 +263,14 @@ const SCENE_SECTION_ABOVE_BAND: f32 = super::scene_timeline::SCENE_SECTION_HEIGH
 /// Pure, so the resize ladder is assertable without a window — a drag clamp that
 /// is only checkable by dragging is a drag clamp nobody checks.
 fn clamp_lane_height(requested: f32, window_height: f32) -> f32 {
+    let ceiling = lane_height_ceiling(window_height);
     if !requested.is_finite() {
-        return LANE_HEIGHT;
+        return LANE_HEIGHT.min(ceiling);
     }
-    requested.clamp(LANE_HEIGHT, lane_height_ceiling(window_height))
+    // The floor follows the ceiling down. On a window too short to seat the
+    // default lane *and* the form, the lane is what gives way — and `clamp`
+    // would panic if the floor were left above the ceiling.
+    requested.clamp(LANE_HEIGHT.min(ceiling), ceiling)
 }
 
 /// Smallest editor that can host its own first row of controls.
@@ -689,6 +747,10 @@ pub struct LyricEditor {
     lane_drawn: f32,
     /// Whether the bottom-edge drag has the pointer.
     lane_resizing: bool,
+    /// Whether the grip should draw in its emphasised form this frame. Set by
+    /// [`Shell::lane_resize_gesture`], read by [`Shell::draw_lane_resize_grip`],
+    /// because the two run either side of the lane's own fill.
+    lane_resize_hovered: bool,
     /// Copy/cut/paste, session-only (LX1-d). Never persisted: see
     /// [`LyricClipboard`]'s module comment.
     clipboard: LyricClipboard,
@@ -770,6 +832,7 @@ impl LyricEditor {
             lane_height: LANE_HEIGHT,
             lane_drawn: LANE_HEIGHT,
             lane_resizing: false,
+            lane_resize_hovered: false,
             clipboard: LyricClipboard::default(),
             stack_rows: 1,
             origin_counts: [0; ORIGIN_ORDER.len()],
@@ -1031,6 +1094,23 @@ impl LyricEditor {
         dead_code,
         reason = "part of the `main.rs` integration surface this fan-out does not wire; see the report"
     )]
+    /// The shortest band this editor can be drawn in without its form spilling.
+    ///
+    /// `Shell::resolved_timeline_height` clamps a *persisted* split against this,
+    /// and it used to be the literal `381.0` with a comment reading "121 chrome +
+    /// 10 bottom + 22 lane + 5 gap + the form's 223 px". Every one of those five
+    /// numbers moved in LX1 and the literal did not, so an operator who had once
+    /// dragged the band short kept a band 33 px too small across restarts and the
+    /// form drew "Enlarge the window to edit a cue." on a 1378 px-tall window.
+    ///
+    /// Derived from [`lane_chrome`] now, which is the same function the band
+    /// request and the resize ceiling use, so the three cannot drift again. It
+    /// excludes the scene section, because the shell adds that itself.
+    pub fn minimum_band_height(&self, window_height: f32) -> f32 {
+        lane_chrome(clamp_lane_height(self.lane_height, window_height))
+            + lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM
+    }
+
     pub fn timeline_height(&self, window_height: f32, extra_chrome: f32) -> f32 {
         // `extra_chrome` is whatever else the band spends above this editor that
         // the oracle's chrome constant does not know about — today the manual
@@ -1505,11 +1585,14 @@ impl Shell {
                 .filter(|cue| cue.origin == origin)
                 .count()
         });
-        // The band the rows tile. The 3 px inset at either end is the oracle's
-        // and is load-bearing twice over: the bottom 3 px is the resize strip,
-        // and no block is ever drawn in it.
-        let content_y = lane.y + LANE_RESIZE_GRAB_PIXELS;
-        let content_height = (lane.height - LANE_RESIZE_GRAB_PIXELS * 2.0).max(1.0);
+        // The band the rows tile. Asymmetric on purpose since the grab strip grew
+        // to 7 px: the top keeps the oracle's 3 px breathing room, and only the
+        // bottom gives up the whole strip, because every pixel spent above the
+        // blocks is click area bought back for nothing. No block is ever drawn in
+        // the strip, which is what lets a resize press never be a press on a cue.
+        let content_y = lane.y + LANE_BLOCK_TOP_INSET;
+        let content_height =
+            (lane.height - LANE_BLOCK_TOP_INSET - LANE_RESIZE_GRAB_PIXELS).max(1.0);
         let mut tip: Option<(UiRect, String)> = None;
 
         for (index, cue) in track.lyrics.cues().iter().enumerate() {
@@ -1670,6 +1753,17 @@ impl Shell {
         // Z-order is safe in the one direction it needs to be: the waveform
         // strip is drawn *before* the open panel, and `tooltip_box` prefers
         // above, so the tip lands on top of the strip rather than under it.
+        // The resize grip, over the lane's own fill and under the tip. This is
+        // where it has to be: `lane_resize_gesture` runs before the fill and
+        // anything it drew was painted over, which is why the affordance has
+        // never appeared in a single frame.
+        // "Resizable" is whether this window affords a *range*, not whether the
+        // lane is currently below the ceiling. A lane already dragged to the
+        // maximum can still be dragged back down, and hiding the handle there
+        // would make the gesture one-way.
+        let ceiling = lane_height_ceiling(input.window.1);
+        self.draw_lane_resize_grip(d, editor, lane, ceiling > LANE_HEIGHT.min(ceiling) + 0.5);
+
         editor.tooltip_visible = false;
         if let Some((anchor, text)) = tip {
             self.draw_lane_tooltip(d, input, anchor, &text);
@@ -1726,6 +1820,51 @@ impl Shell {
     /// The strip is the lane's bottom [`LANE_RESIZE_GRAB_PIXELS`], which is
     /// exactly the band no block is drawn in, so a resize press is never also a
     /// press on a cue and the two gestures cannot both be started.
+    /// The lane's resize handle, drawn **after** everything else in the lane.
+    ///
+    /// Always visible, not only under the pointer. The operator's original
+    /// instruction was that no border be drawn here — "a desperate user will find
+    /// the resize if they need it" — and then the operator could not find it and
+    /// asked for "a bit of a stronger border there for resizing" (2026-08-06).
+    /// Both requests are honoured by what this draws: two short grip lines
+    /// centred on the edge, which read as a handle rather than as a fourth lane
+    /// border, and which grow and darken while the pointer is on them or a drag
+    /// is live — so the state is legible without depending on a cursor shape the
+    /// window manager may decline to change.
+    fn draw_lane_resize_grip(
+        &self,
+        d: &mut RaylibDrawHandle<'_>,
+        editor: &LyricEditor,
+        lane: UiRect,
+        resizable: bool,
+    ) {
+        // A handle that cannot move is worse than none: it invites a drag that
+        // does nothing. On a window too short to seat more lane there is nothing
+        // to grab, and the lane says so by not offering.
+        if !resizable || lane.width < 48.0 {
+            return;
+        }
+        let emphasised = editor.lane_resize_hovered;
+        let width = if emphasised { 56.0f32 } else { 36.0 }.min(lane.width);
+        let tint = if emphasised {
+            color::ui_ink()
+        } else {
+            color::ui_muted()
+        };
+        for (index, offset) in [5.0f32, 3.0].into_iter().enumerate() {
+            widgets::fill(
+                d,
+                UiRect::new(
+                    lane.x + (lane.width - width) * 0.5,
+                    lane.y + lane.height - offset,
+                    width,
+                    1.0,
+                ),
+                widgets::alpha(tint, if index == 0 { 0.9 } else { 0.6 }),
+            );
+        }
+    }
+
     fn lane_resize_gesture(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -1744,6 +1883,13 @@ impl Shell {
             LANE_RESIZE_GRAB_PIXELS,
         );
         let hovered = strip.contains_point(mouse.x, mouse.y);
+        // Recorded rather than drawn here. This function runs *before* the lane
+        // is filled — it has to, because the gesture decides whether the lane is
+        // even the height it is about to be drawn at — so anything it painted
+        // would be covered by `widgets::fill(d, lane, ..)` on the next line. That
+        // is why the original hover dimple was never visible in any frame, hover
+        // or not, and why the operator reported the resize as simply not working.
+        editor.lane_resize_hovered = hovered || editor.lane_resizing;
 
         if editor.lane_resizing {
             if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
@@ -1762,21 +1908,6 @@ impl Shell {
         if hovered && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
             editor.lane_resizing = true;
             return true;
-        }
-        if hovered {
-            // The whole affordance: a short dimple centred on the edge, only
-            // while the pointer is on it.
-            let width = 28.0f32.min(lane.width);
-            widgets::fill(
-                d,
-                UiRect::new(
-                    lane.x + (lane.width - width) * 0.5,
-                    lane.y + lane.height - 2.0,
-                    width,
-                    2.0,
-                ),
-                color::ui_muted(),
-            );
         }
         false
     }
@@ -5384,7 +5515,7 @@ mod tests {
             + LANE_FIXED_CHROME
             + LANE_HEIGHT
             + lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM;
-        assert_eq!(first_window_that_fits, 758.0);
+        assert_eq!(first_window_that_fits, 775.0);
         let mut window = first_window_that_fits;
         while window <= 2160.0 {
             for requested in [0.0f32, LANE_HEIGHT, 40.0, LANE_HEIGHT_MAX, 400.0] {
@@ -5403,18 +5534,31 @@ mod tests {
             }
             window += 1.0;
         }
-        // Below 700 px there is not enough window to protect the sidebar even at
-        // the base lane — that is the oracle's own documented yield at 640 — so
-        // the rule is "never worse than the base lane", and the clamp refuses to
-        // grow at all rather than making it worse.
-        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 640.0), LANE_HEIGHT);
+        // The whole ladder, pinned. Below 700 px there is not enough window to
+        // protect the sidebar even at the base lane — that is the oracle's own
+        // documented yield at 640 — so the sidebar bound stops applying and the
+        // *band* bound takes over: at 640 the lane itself gives way to 46 so the
+        // editing form still gets its promised 223 px. Between there and 791 the
+        // lane sits at its 2.25x default and cannot be dragged; from 791 up the
+        // full 3x is reachable.
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 640.0), 46.0);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 720.0), LANE_HEIGHT);
-        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 771.0), 46.0);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 771.0), LANE_HEIGHT);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 791.0), LANE_HEIGHT_MAX);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 1080.0), LANE_HEIGHT_MAX);
+        // The operator's own window, which is the one this revision was asked
+        // for: the 2.25x default, draggable to the full 3x.
+        assert_eq!(clamp_lane_height(LANE_HEIGHT, 1378.0), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 1378.0), LANE_HEIGHT_MAX);
+        // And the floor never drops below the oracle's lane, however short the
+        // window gets.
+        for window in [1.0f32, 200.0, 480.0, 600.0] {
+            assert!(clamp_lane_height(LANE_HEIGHT_MAX, window) >= LANE_HEIGHT_MIN);
+        }
         // Degenerate input falls back rather than propagating a NaN into a rect.
         assert_eq!(clamp_lane_height(f32::NAN, 1080.0), LANE_HEIGHT);
         assert_eq!(clamp_lane_height(48.0, f32::NAN), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(f32::NAN, 640.0), 46.0);
     }
 
     #[test]
@@ -5727,14 +5871,30 @@ mod tests {
         let at_1080 = editor.timeline_height(1080.0, 0.0);
         assert!(at_800 > at_640);
         assert!(at_1080 > at_800);
-        // Below 758 px the band is pinned at the form's minimum and does *not*
-        // grow with the window, which is a deliberate consequence of LX1-d
-        // counting the scene section against the sidebar floor (see
-        // `SCENE_SECTION_ABOVE_BAND`). It was previously growing there only
-        // because the request under-counted its own chrome by 33 px, so the
-        // extra rows it claimed were drawn past the bottom of the panel. The
-        // real editor height at 720p moves by 5 px, not by 38.
-        assert_eq!(editor.timeline_height(720.0, 0.0), at_640);
+        // Below the fitting window the band is **form-pinned**: it does not grow
+        // with the window, and what little it does move is the lane giving way,
+        // not the editor gaining rows. Asserted as that rather than as
+        // `at_720 == at_640`, which was true only while the lane was short
+        // enough to fit everywhere — raising it to 2.25x made 640 the first
+        // window where the lane itself has to yield, and an equality would have
+        // read that correct behaviour as a regression.
+        let at_720 = editor.timeline_height(720.0, 0.0);
+        for window in [640.0f32, 720.0] {
+            let lane = clamp_lane_height(editor.lane_height, window);
+            let form = editor.timeline_height(window, 0.0) - lane_chrome(lane);
+            assert!(
+                (form - lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM).abs() < 0.001,
+                "{window}px: the form got {form}, not its pinned minimum"
+            );
+        }
+        // So the whole difference between the two bands is the lane's.
+        let lane_640 = clamp_lane_height(editor.lane_height, 640.0);
+        let lane_720 = clamp_lane_height(editor.lane_height, 720.0);
+        assert!(lane_720 > lane_640, "the taller window seats a taller lane");
+        assert!(
+            ((at_720 - at_640) - (lane_720 - lane_640)).abs() < 0.001,
+            "the band moved by something other than the lane"
+        );
     }
 
     #[test]

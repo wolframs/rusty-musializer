@@ -732,8 +732,11 @@ impl Shell {
                     super::panels::export::EXPORT_MIN_BAND_HEIGHT
                         - super::panels::scene_timeline::SCENE_SECTION_HEIGHT
                 }
-                // 121 chrome + 10 bottom + 22 lane + 5 gap + the form's 223 px.
-                UiPanel::Lyrics => 381.0,
+                // Asked, not asserted (LX1-d follow-up). This was the literal
+                // `381.0` with a comment adding up five constants, and all five
+                // moved when the lane grew and the zoom row moved below it. The
+                // panel owns those numbers, so the panel is what gets asked.
+                UiPanel::Lyrics => self.lyrics.minimum_band_height(window.1),
                 // Assist has no scrolling body, so its measured content remains the
                 // floor; resizing can give it room, never clip an action.
                 UiPanel::Assist => automatic - super::panels::scene_timeline::SCENE_SECTION_HEIGHT,

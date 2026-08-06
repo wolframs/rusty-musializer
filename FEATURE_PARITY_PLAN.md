@@ -115,9 +115,28 @@ it.
 | LX1-a | `CueOrigin` on `LyricCue` — user applied / AI certain / AI ambiguous / potential — filtered out of `at_time` and `cue_shadow`, persisted as an optional `origin` field, promoted to *user applied* by every editing operation | `core::project::lyrics`, `core::project::io`, `core::project::analysis_bridge` | **done** |
 | LX1-b | Overlap row assignment and clipboard arithmetic as raylib-free policy | `core::ui::lyric_lane_stack`, `core::ui::lyric_clipboard` | **done** |
 | LX1-c | The zoom/`Zoom out` row moves below the cue lane; `open_panel` reports where it goes | `ui/shell.rs`, `ui/panels/lyrics.rs` | **done** |
-| LX1-d | Lane rendering: per-origin colours, immediate non-sticky tooltips, overlap fan-out, a 1.5x lane resizable to 2x, Ctrl+C/X/V | `ui/panels/lyrics.rs`, `ui/preferences.rs`, `ui/widgets.rs` | **done** |
+| LX1-d | Lane rendering: per-origin colours, immediate non-sticky tooltips, overlap fan-out, a 2.25x lane resizable to 3x with a drawn grip, Ctrl+C/X/V | `ui/panels/lyrics.rs`, `ui/preferences.rs`, `ui/widgets.rs` | **done** |
 | LX1-e | One visual system across the scene lane, waveform and cue lane — matching borders, insets and gaps | `ui/shell.rs`, `ui/panels/scene_timeline.rs`, `ui/theme.rs` | **done** |
 | LX1-f | Unresolved and abstained lines become `Potential` cues at their coarse proposal, so the gap at 0:41–1:18 is editable; review list scrolls and can reveal its artifact | `ui/panels/assist.rs`, `core::project::analysis_candidate`, `runtime::process::reveal` | **done** |
+
+**The affordance nothing photographed.** The lane's resize grip was drawn inside
+`lane_resize_gesture`, which runs *before* `widgets::fill(d, lane, ..)` — so it
+was painted over in every frame the application has ever rendered, hover or not.
+The gesture worked, the clamp was right and `cargo test` was green; the operator
+reported the resize as simply not working. `tools/lyric_lane_capture.sh` now
+locates the lane by its seams and asserts two centred grip lines above its bottom
+edge, and asserts their *absence* on a window with no range to drag. Negative
+control: forcing `resizable` to `false` fails it. This is the "a surface nothing
+photographs does not get reviewed" rule catching a second instance.
+
+**The literal that drifted.** `Shell::resolved_timeline_height` clamped a
+persisted split against a hard-coded `381.0`, commented as "121 chrome + 10
+bottom + 22 lane + 5 gap + the form's 223 px". Every one of those five numbers
+moved in LX1, so an operator who had once dragged the band short kept a band 33
+px too small across restarts and the editing form drew "Enlarge the window to
+edit a cue." on a 1378 px-tall window. It asks `LyricEditor::minimum_band_height`
+now, which is built from the same `lane_chrome` the band request and the resize
+ceiling use.
 
 **A limit worth recording.** The lane's drag ceiling is derived from what the
 editing form (223 px) and the sidebar floor (301 px) still need, so 66 px is only

@@ -124,20 +124,20 @@ FAILED=0
 
 echo "=== the lane at both heights, at both gate sizes ==="
 printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
-capture lane-33-1280x720 1280x720 "panel=lyrics" || FAILED=1
-capture lane-33-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
+capture lane-base-1280x720 1280x720 "panel=lyrics" || FAILED=1
+capture lane-base-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
 
 printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"lyric_lane_height":66.0}\n' >"$PREFS"
-capture lane-66-1280x720 1280x720 "panel=lyrics,play=1" || FAILED=1
-capture lane-66-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
-capture lane-66-1920x1080 1920x1080 "panel=lyrics,play=1" || FAILED=1
+capture lane-max-1280x720 1280x720 "panel=lyrics,play=1" || FAILED=1
+capture lane-max-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
+capture lane-max-1920x1080 1920x1080 "panel=lyrics,play=1" || FAILED=1
 
 echo "=== the tooltip, parked over the middle of the overlap cluster ==="
 printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
 # The hover point is *found*, not guessed: the lane's position depends on the
 # window, the UI scale and the cue count, and a hard-coded pair is how
 # `--ui-probe hover=` silently photographs the wrong thing.
-read -r LANE_TOP LANE_BOTTOM HOVER_X HOVER_Y <<<"$(python3 - "$OUT_DIR/lane-33-1280x720.png" <<'PY'
+read -r LANE_TOP LANE_BOTTOM HOVER_X HOVER_Y <<<"$(python3 - "$OUT_DIR/lane-base-1280x720.png" <<'PY'
 import sys
 from PIL import Image
 
@@ -182,12 +182,13 @@ capture lane-tip-1280x720 1280x720 "panel=lyrics,hover=${HOVER_X}x${HOVER_Y}" ||
 
 echo "=== the report lines ==="
 for pair in \
-    "lane-33-1280x720:stack rows 3" \
-    "lane-33-960x640:stack rows 3" \
-    "lane-66-1920x1080:stack rows 3" \
-    "lane-33-1280x720:origins user=2 certain=2 ambiguous=2 potential=1" \
-    "lane-33-1280x720:lane height 33" \
-    "lane-66-1920x1080:lane height 66" \
+    "lane-base-1280x720:stack rows 3" \
+    "lane-base-960x640:stack rows 3" \
+    "lane-max-1920x1080:stack rows 3" \
+    "lane-base-1280x720:origins user=2 certain=2 ambiguous=2 potential=1" \
+    "lane-base-1280x720:lane height 50" \
+    "lane-max-1920x1080:lane height 66" \
+    "lane-base-960x640:lane height 46" \
     "lane-tip-1280x720:tip on"; do
     name="${pair%%:*}"
     want="${pair##*:}"
@@ -198,7 +199,7 @@ for pair in \
 done
 
 echo "=== the sidebar keeps its tracks panel ==="
-for name in lane-33-1280x720 lane-66-1280x720 lane-33-960x640 lane-66-960x640 lane-66-1920x1080; do
+for name in lane-base-1280x720 lane-max-1280x720 lane-base-960x640 lane-max-960x640 lane-max-1920x1080; do
     line="$(sed -n 's/^chrome: *//p' "$OUT_DIR/$name.txt" | head -1)"
     printf '%-28s %s\n' "$name" "$line"
 done
@@ -219,7 +220,7 @@ wanted = {
     "potential": (0x7C, 0x7C, 0x86),
 }
 failed = False
-for name in ("lane-33-1280x720", "lane-66-1920x1080"):
+for name in ("lane-base-1280x720", "lane-max-1920x1080"):
     image = Image.open(out / f"{name}.png").convert("RGB")
     counts = image.getcolors(maxcolors=1 << 22) or []
     present = {colour for _, colour in counts}
@@ -251,7 +252,7 @@ import numpy as np
 
 out = pathlib.Path(sys.argv[1])
 lane_top, lane_bottom = int(sys.argv[2]), int(sys.argv[3])
-plain = np.array(Image.open(out / "lane-33-1280x720.png").convert("RGB")).astype(int)
+plain = np.array(Image.open(out / "lane-base-1280x720.png").convert("RGB")).astype(int)
 tipped = np.array(Image.open(out / "lane-tip-1280x720.png").convert("RGB")).astype(int)
 difference = np.abs(plain - tipped).sum(axis=2)
 rows = np.where(difference.max(axis=1) > 40)[0]
@@ -278,6 +279,88 @@ print(
     f"{len(inside)} lane rows changed, all of them the hover wash"
 )
 PY
+[ $? -ne 0 ] && FAILED=1
+
+# The resize grip is drawn, and drawn where a pointer can reach it.
+#
+# This check exists because the grip was invisible in every frame the
+# application has ever rendered: `lane_resize_gesture` runs before the lane is
+# filled, so the dimple it painted was covered by `widgets::fill(d, lane, ..)`
+# on the very next line. Nothing caught it -- the gesture worked, the constant
+# was right, `cargo test` was green, and the operator reported the resize as
+# simply not working. A surface nothing photographs does not get reviewed.
+echo "=== the resize grip is on screen ==="
+python3 - "$OUT_DIR" <<'GRIP'
+import pathlib, sys
+from PIL import Image
+import numpy as np
+
+out = pathlib.Path(sys.argv[1])
+failed = False
+# Only the frames whose window can actually seat a taller lane draw a grip: a
+# handle that cannot move invites a drag that does nothing, so at 1280x720 its
+# *absence* is the assertion.
+for name, expected in (("lane-max-1920x1080", True), ("lane-base-1280x720", False)):
+    image = np.array(Image.open(out / f"{name}.png").convert("RGB")).astype(int)
+    trough = np.abs(image - np.array([230, 230, 234])).max(axis=-1) <= 4
+    seams = [y for y in range(image.shape[0]) if np.flatnonzero(trough[y]).size >= 300]
+    if not seams:
+        print(f"FAIL: {name}: no lane seams, so the lane could not be located", file=sys.stderr)
+        failed = True
+        continue
+    top = seams[-1] + 1
+    rule = np.abs(image - np.array([210, 210, 214])).max(axis=-1) <= 6
+    bottom = next(
+        (y for y in range(top + 12, min(top + 140, image.shape[0]))
+         if np.flatnonzero(rule[y]).size > image.shape[1] * 0.75),
+        None,
+    )
+    if bottom is None:
+        print(f"FAIL: {name}: no bottom rule under the cue lane", file=sys.stderr)
+        failed = True
+        continue
+    # Two 1 px lines just above the lane's bottom edge, centred, and narrow: a
+    # full-width run is a border, not a handle.
+    # The longest *contiguous* dark run in each of the last few rows, not every
+    # dark column in them. Two things live down there besides the grip: the
+    # playhead, which is one or two columns wherever the transport happens to
+    # be, and a cue block's own border. Taking all dark columns made the run
+    # look 1919 px wide because of the playhead; taking the longest run and then
+    # demanding it be narrow, centred and contiguous excludes both.
+    #
+    # A row range rather than two exact rows, because the grip's 5 px and 3 px
+    # offsets are logical and this frame is on the 1.25 scale rung.
+    width = image.shape[1]
+    found = []
+    for y in range(bottom - 8, bottom):
+        dark = image[y].max(axis=-1) < 225
+        best, run, start = (0, 0), 0, 0
+        for x, on in enumerate(dark):
+            if on:
+                if run == 0:
+                    start = x
+                run += 1
+                if run > best[1]:
+                    best = (start, run)
+            else:
+                run = 0
+        start, length = best
+        if length < 12 or length > width * 0.1:
+            continue
+        centre = start + length / 2.0
+        if abs(centre - width / 2.0) <= width * 0.02:
+            found.append((y, int(length)))
+    if expected and len(found) < 2:
+        print(f"FAIL: {name}: the resize grip is not on screen (found {found})", file=sys.stderr)
+        failed = True
+    elif not expected and found:
+        print(f"FAIL: {name}: a grip on a lane that cannot grow ({found})", file=sys.stderr)
+        failed = True
+    else:
+        state = f"grip rows {[y for y, _ in found]}" if found else "no grip, correctly"
+        print(f"{name}: lane {top}..{bottom}, {state}")
+sys.exit(1 if failed else 0)
+GRIP
 [ $? -ne 0 ] && FAILED=1
 
 if [ "$FAILED" -ne 0 ]; then
