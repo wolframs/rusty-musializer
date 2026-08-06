@@ -1055,6 +1055,26 @@ semantic lane instead of reusing an answer another policy produced. The
 credential still reaches the helper **only** through the environment: no flag
 here or anywhere takes a key (E2).
 
+### 6.8 `musializer.assist-settings/v1` — `assist.json` (tranche AP1)
+
+Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §2, which carries the full field
+table. **Not in the frozen C**, which had no persisted provider configuration at
+all. Owned by `musializer-core::assist::settings`
+(`AssistSettings`/`Profile`/`Route`/`Provider`/`LocalRuntimes`/`Catalog`/
+`CredentialRecord`, `deny_unknown_fields` throughout, capped at 256 KiB and 64
+profiles); resolved on disk by `runtime::assist::files::settings_path` (§9.4).
+A default-valued profile or field is never serialized, so a file written before
+a field existed stays byte-comparable.
+
+### 6.9 `musializer.assist-credentials/v1` — `credentials.json` (tranche AP1)
+
+Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §3-§4, which carries the
+permissions, atomic-write and secret-exposure rules. **Not in the frozen C**.
+Owned by `musializer-core::assist::credentials` (`CredentialStore`, capped at 64
+KiB and 64 entries, one object keyed by `provider/lookup_id`); resolved on disk
+by `runtime::assist::files::credentials_path` (§9.4), which also enforces the
+`0600`/`0700` refuse-not-repair rule before any secret byte is written.
+
 ---
 
 ## 7. Resources
@@ -1556,7 +1576,19 @@ which that tranche does not own.
 | `MUSIALIZER_ASSIST_SETTINGS_ACTIVATE` | `apply_probe_state` | Presses Enter once on the focused control | no press | exact `1`. This is what makes `Save`, `Forget` and `Test` reachable from a headless run at all |
 | `MUSIALIZER_ASSIST_DISCOVERY` | `runtime::assist::discover::subprocess_permitted` | Switches off the two external-binary discovery rungs that spawn a child (`npm config get prefix`, and `$SHELL -lc 'command -v …'`) | the whole ladder runs, on a background thread | `off`, `0` or `path-only` (trimmed, case-insensitive) disable them; anything else, including absent, leaves them on. `tools/headless_check.sh` sets `off`: a gate that shelled out to the operator's real login shell would depend on their rc files |
 
-### 9.x `local_runtimes.codex_bin` (added 2026-08-05)
+Three more probe seams, this time in `app::ui::panels::assist` (LT1-R, R9): the LT1
+review list and its row press cannot be synthesized as a literal or driven through
+`--ui-probe`'s grammar (owned by `cli.rs`, a different agent's file), so a headless
+capture points them at real state through environment variables instead, the same
+reason `MUSIALIZER_ASSIST_PROBE_DIR` above exists.
+
+| Variable | Site | Purpose | Unset behaviour | Parsing |
+| --- | --- | --- | --- | --- |
+| `MUSIALIZER_ASSIST_PROBE_DIR` | `PROBE_ARTIFACT_DIR_VARIABLE`, `probe_artifacts` | Points a probed job's `bridge_path`/`log_path`/`output_dir` at a real directory the gate wrote, so the three Copy buttons have real paths to photograph | `/nonexistent/musializer-assist-probe`; the Copy buttons draw disabled | non-empty and an existing directory, else the fallback path above |
+| `MUSIALIZER_ASSIST_PROBE_LANES` | `PROBE_LANES_VARIABLE`, `probe_mode` | Which `AssistMode` a probed candidate was run in, so a lyrics-only review layout is photographable | `AssistMode::All` | `lyrics`, `sections`, `mimo` (trimmed, case-insensitive); anything else is `All` |
+| `MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW` | `PROBE_ACTIVATE_ROW_VARIABLE`, `probe_activated_row` | Presses one lyric-review row through the real `Shell::open_lyric_review_row` path, since a headless run has no pointer that can click | no row pressed | `usize`; delivered once per process |
+
+### 9.5 `local_runtimes.codex_bin` (added 2026-08-05)
 
 `assist.json`'s `local_runtimes` block gains a fourth optional path override
 alongside `whisper_bin`, `whisper_model` and `align_python`:

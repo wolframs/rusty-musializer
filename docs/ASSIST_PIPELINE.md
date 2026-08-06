@@ -4,7 +4,11 @@ This document explains the current automatic-analysis path as a maintainable
 system. For installation, dependency discovery, commands, and privacy details,
 use [`tools/ANALYSIS_ADAPTERS.md`](../tools/ANALYSIS_ADAPTERS.md). For the dated
 experiment log and acceptance evidence behind the lyrics policy, use
-[`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md).
+[`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md). For provider
+task contracts, credential storage, the codex discovery ladder, and the
+execution-snapshot schema recorded in every job's provenance, use
+[`ASSIST_PROVIDER_CONTRACTS.md`](ASSIST_PROVIDER_CONTRACTS.md) and
+[`PHASE0_INVENTORY.md`](PHASE0_INVENTORY.md).
 
 ## Design contract
 
@@ -88,7 +92,9 @@ intermediate evidence plus a final TSV bridge. Depending on mode it coordinates:
   metadata;
 - anchor→block localization plus local MMS forced alignment for final lyric
   timing when authored text exists, and per-cue MMS refinement when it does not;
-- optional Codex or explicitly authorized OpenRouter semantic review;
+- optional Codex or explicitly authorized OpenRouter semantic review, routed
+  through a per-job task-contract graph resolved once at Start (see
+  [`ASSIST_PROVIDER_CONTRACTS.md`](ASSIST_PROVIDER_CONTRACTS.md) §1 and §6);
 - scene-plan construction and bridge serialization.
 
 The stable output directory permits reuse, but cache provenance includes source
@@ -103,7 +109,7 @@ lanes: lyrics, sections, and semantics. The Python writer validates its own
 output, but the Rust parser independently checks it because the helper boundary
 is untrusted.
 
-`AssistController::load_candidate` also checks that the digest identifies the
+`load_candidate` (`app::ui::panels::assist`) also checks that the digest identifies the
 selected audio and that duration agrees within the bounded decoder/container
 tail. [`AnalysisCandidate::prepare`](../crates/musializer-core/src/project/analysis_candidate.rs)
 retains only authorized lanes and validates their project-level invariants.
@@ -309,6 +315,7 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Assist state and mode authority parity | `tools/differential_assist_ui.sh` and core tests |
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |
 | Bridge bounds, identity, coverage, and staging | core bridge/candidate tests and app panel tests |
+| Execution snapshot: route resolution at Start, provenance, mid-job settings immutability | [`tests/test_assist_execution.py`](../tests/test_assist_execution.py), `core::assist::execution` tests, [`crates/musializer-runtime/examples/assist_canary_probe.rs`](../crates/musializer-runtime/examples/assist_canary_probe.rs) |
 | Installed helper and local-lyrics assets | `python3 tools/musializer_doctor.py --require local_lyrics` |
 | Support workflow | `tools/support_bundle_check.sh` |
 | Full repository gate | `tools/verify.sh` |

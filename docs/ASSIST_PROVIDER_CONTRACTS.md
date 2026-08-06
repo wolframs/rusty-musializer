@@ -56,7 +56,8 @@ Rules that follow from the table and are not negotiable per-route:
 ## 2. Non-secret preferences record
 
 One versioned, atomically replaced file in the per-user config directory.
-Path resolution follows `ui/preferences.rs`: `$MUSIALIZER_ASSIST_SETTINGS`, else
+Path resolution follows the same shape as `ui/preferences.rs` and is implemented
+in `runtime::assist::files::settings_path`: `$MUSIALIZER_ASSIST_SETTINGS`, else
 `$XDG_CONFIG_HOME/musializer/assist.json`, else `$HOME/.config/musializer/assist.json`.
 Size cap and `deny_unknown_fields` as in `ui/preferences.rs`; a corrupt file is
 an error, never a silent reset.
@@ -93,6 +94,10 @@ Provider (OpenRouter provider-selection constraints; never a secret)
 local_runtimes
   models_dir        string    operator decision: default <install dir>/models/,
                               fallback <home>/musializer/models; always shown
+  codex_bin         string?   an explicit path to the codex executable; overrides
+                              runtime::assist::discover's ladder entirely (AP6);
+                              set-but-missing refuses loudly rather than silently
+                              falling back to discovery
   whisper_bin       string?   overrides MUSIALIZER_WHISPER_BIN
   whisper_model     string?   overrides MUSIALIZER_WHISPER_MODEL
   align_python      string?   overrides MUSIALIZER_ALIGN_PYTHON
@@ -122,7 +127,7 @@ stays readable and byte-comparable.
 
 | aspect | rule |
 | --- | --- |
-| file | `$XDG_CONFIG_HOME/musializer/credentials.json`, schema `musializer.assist-credentials/v1`, one object keyed by `provider/lookup_id` |
+| file | `$MUSIALIZER_ASSIST_CREDENTIALS`, else `$XDG_CONFIG_HOME/musializer/credentials.json`, else `$HOME/.config/musializer/credentials.json`; schema `musializer.assist-credentials/v1`, one object keyed by `provider/lookup_id` |
 | permissions | file `0600`, containing directory `0700`, both set **before** any secret bytes are written |
 | write | write to a sibling temp file created with mode `0600`, `fsync`, then `rename` — never truncate-in-place |
 | read refusal | refuse to read and report an actionable error if the file is group- or world-readable, the way `ssh` refuses a loose private key. Do not silently repair it |
@@ -190,6 +195,9 @@ Invariants:
    catalog is preserved; the route is marked unresolvable rather than silently
    re-pointed at another model.
 6. **Codex discovery failure preserves `Codex default`.** Never a guessed model id.
+   Discovery itself (override, `PATH`, well-known install directories, then the
+   login shell's `PATH`) is `runtime::assist::discover` (AP6); this document
+   states the policy consequence, not the ladder.
 7. **Cache acceptance compares route identity per contract.** Changing the
    `TC-ALIGN` model must not reuse an artifact produced by another one; this
    extends the existing `_provenance_matches` model/prompt comparison to the

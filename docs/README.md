@@ -15,6 +15,9 @@ authoritative code and evidence without reconstructing the project from scratch.
 - [`PHASE0_INVENTORY.md`](PHASE0_INVENTORY.md) records the observable contract
   inherited from the frozen C application: CLI grammar, settings, schemas, and
   environment variables. It is a contract inventory, not a code tour.
+- [`ASSIST_PROVIDER_CONTRACTS.md`](ASSIST_PROVIDER_CONTRACTS.md) is the design
+  authority for Assist provider configuration: task contracts, the credentials
+  lifecycle, the secret-exposure inventory, and the execution-snapshot schema.
 
 ## Operations and evidence
 
@@ -25,6 +28,13 @@ authoritative code and evidence without reconstructing the project from scratch.
 - [`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md) is the dated
   investigation record for the 2026-08-01 lyrics timing repair, including the
   acceptance tracks, negative controls, and independent checks.
+- [`LYRICS_TIMING_RESEARCH_PLAN.md`](LYRICS_TIMING_RESEARCH_PLAN.md) is the
+  2026-08-04 global-localization research and design proposal; see its status
+  header for which parts shipped as LT1.
+- [`LYRICS_TIMING_BENCHMARK_RESULTS.md`](LYRICS_TIMING_BENCHMARK_RESULTS.md) and
+  [`LYRICS_TIMING_WEB_EVIDENCE.md`](LYRICS_TIMING_WEB_EVIDENCE.md) are the trimmed
+  local benchmark and the published/community evidence that together justified
+  the anchor→block MMS design the research plan narrowed down to.
 - [`../FEATURE_PARITY_PLAN.md`](../FEATURE_PARITY_PLAN.md) is the sole live
   completion queue and the C-to-Rust feature ledger.
 - [`../AGENTS.md`](../AGENTS.md) contains engineering constraints, the `unsafe`

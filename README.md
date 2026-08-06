@@ -9,9 +9,11 @@ Linux-first, hobby scope, agent-driven.
 ## What it does
 
 Opens an audio file, plays it, and draws one of ten visualiser scenes reacting to
-a real-time spectrum analysis of it. Projects are saved as `.musi` files that
-round-trip with the C original. Video is exported through FFmpeg as an external
-executable.
+a real-time spectrum analysis of it. Projects are saved as `.musi` files; a file
+using only the fields the frozen C already understands round-trips with it, but
+the format has since gained fields (caption effects, the `time` route) the C
+cannot read — see `AGENTS.md`, "The C is legacy". Video is exported through
+FFmpeg as an external executable.
 
 Scenes: Spectrum, Pulse Field, Orbital Lattice, ASCII Field, Song Atlas, Spectral
 Terrarium, Constellation, Cadence, Loom, Pentagram Orbits.

@@ -100,9 +100,31 @@ inspected at original resolution. Every UI font report used a scale-matched
 native atlas with zero non-native requests. The scene and export paths remain in
 framebuffer pixels outside the shell camera.
 
+## Start here next session (updated 2026-08-05)
+
+The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,
+provider contracts, persistence, discovery, the AI settings dialog, execution
+on resolved routes, and an audited evidence sweep. `tools/verify.sh` is 21
+passed / 0 failed and the tree is clean. What is open, in the order a session
+should pick it up:
+
+| # | Work | Where | Size |
+| --- | --- | --- | --- |
+| 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
+| 2 | AP5-a/b, AP6-e — modality-loss invalidation, no-network-hang test, and the deferred ffmpeg/whisper/venv discovery decisions | AP5, AP6 tranches | small each |
+| 3 | AP5-c/d — diagnostics bundle collector (never built, contracts §4 E7) and the clipboard canary path | AP5 tranche | c is a feature |
+| 4 | R9 remainder is **done**; nothing open in LT1 except what the benchmark may change | LT1-R | — |
+| 5 | **UX0** and the P0–P4 series below — the wider parity backlog, untouched by the assist work | this document | the bulk |
+
+Two standing facts a new session needs: the operator's OpenRouter key lives in
+`~/.config/musializer/credentials.json` (the repo `.env` is legacy CLI-only and
+the desktop path refuses it), and `xiaomi/mimo-v2.5` is `experimental` in the
+suitability overlay, so **Show experimental** must be on for the MiMo lane to
+be routable until a benchmark earns it a `recommended` row.
+
 ## Ordered completion map
 
-**UX0 is the next task.** Its work may be divided across agents where ownership
+**UX0 is the next task** once the items above are dispatched. Its work may be divided across agents where ownership
 does not overlap, but the complete review is one closure tranche and no named
 item may be silently dropped. When UX0 closes, resume the remaining A-G work in
 dependency order. P0 establishes the shared render path on which later assertions

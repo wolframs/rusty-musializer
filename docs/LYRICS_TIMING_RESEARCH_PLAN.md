@@ -13,6 +13,29 @@ gitignored `build/analysis/` tree. The research section uses sources available o
 current discovery shape and audio-model count; it did not submit audio or invoke
 inference.
 
+### Status as of the AP/LT1 workstream (2026-08-05, added by documentation audit)
+
+This document is a research/design proposal, not current behavior. What actually
+shipped, and where the up-to-date record is:
+
+- **"Proposed architecture" (anchor→block localization, invariants 1-5)** —
+  implemented in production as tranche LT1. See `docs/ASSIST_PIPELINE.md` for the
+  shipped control flow and `lyric_anchor_block.py`/`anchor_block_align.py` for
+  the code.
+- **"Experiment plan" (the five-phase, seven-variant matrix)** — trimmed by the
+  operator to two local lanes (whole-song Qwen3-ForcedAligner and anchor→block
+  MMS) before most of it ran. `LYRICS_TIMING_BENCHMARK_RESULTS.md` has the
+  trimmed scoreboard; `LYRICS_TIMING_WEB_EVIDENCE.md` records the published and
+  community evidence that answered the cut questions instead of re-running them.
+- **"Assistance provider configuration workstream"** — superseded by
+  `docs/ASSIST_PROVIDER_CONTRACTS.md`, which is the design authority where the
+  two disagree (see that document's own header) and reflects the AP1-AP6
+  implementation, including the credentials file, discovery ladder, and the AI
+  settings dialog this section only sketched.
+
+The rest of this document — the diagnosis, the evidence, and the reasoning
+that led to the above — is left as written below and not rewritten here.
+
 ## Answer first
 
 The user's diagnosis is correct: with authored metadata, word recognition is not

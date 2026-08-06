@@ -161,6 +161,7 @@ effectful work into three concerns:
 | Top-level interaction or resource lifetime | `musializer-app/src/main.rs`, `workspace.rs`, or `ui/shell.rs` |
 | Child process, dialog, or filesystem effect | `musializer-runtime/src/process` or another runtime adapter |
 | Assist evidence or model integration | `tools/external_analysis.py` and the focused helper; keep the bridge boundary stable |
+| Assist provider settings, credentials, discovery or route resolution | `musializer-core/src/assist` (settings, credentials, models_dir, execution snapshot), `musializer-runtime/src/assist` (files, discovery, env import) and `app/src/ui/assist_settings.rs`; see `ASSIST_PROVIDER_CONTRACTS.md` |
 | Lyrics alignment policy | `tools/force_align_lyrics.py`, regression tests, and the investigation record |
 
 ## Correctness layers
