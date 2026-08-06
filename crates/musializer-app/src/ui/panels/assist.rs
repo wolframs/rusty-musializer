@@ -4710,6 +4710,7 @@ mod tests {
                     start_seconds: start,
                     end_seconds: start + 2.0,
                     text: text.to_string(),
+                    origin: Default::default(),
                 })
                 .expect("cue");
         }

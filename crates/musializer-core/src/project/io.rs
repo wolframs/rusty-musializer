@@ -484,6 +484,19 @@ fn write_project(out: &mut String, project: &Project) {
         write_f64(out, cue.end_seconds);
         out.push_str(",\"text\":");
         write_string(out, &cue.text);
+        // LX1's origin is written **only when it is not the default**, which is
+        // the same rule `caption_style.effects` follows and it is load-bearing
+        // twice over: a project whose cues were all placed by hand stays
+        // byte-identical to what every earlier build wrote (so
+        // `differential_project_io.sh` keeps pinning the format it pins), and a
+        // reader that has never heard of the field sees a file it can still
+        // parse. The schema version therefore does not move — `model.rs` accepts
+        // exactly one, so bumping it would make this application refuse to open
+        // its own older files, which is the compatibility contract we do have.
+        if cue.origin != crate::project::lyrics::CueOrigin::default() {
+            out.push_str(",\"origin\":");
+            write_string(out, cue.origin.token());
+        }
         out.push('}');
     }
 
@@ -1200,7 +1213,14 @@ fn parse_lane(parser: &mut Parser<'_>) -> Parsed<AnalysisLaneReference> {
 }
 
 fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<LyricCue> {
-    const NAMES: [&str; 4] = ["id", "start_seconds", "end_seconds", "text"];
+    // `origin` is the one **optional** name here (LX1): absent means
+    // [`CueOrigin::UserApplied`], which is what makes every pre-LX1 file open
+    // unchanged. `has_all` below still demands the original four, so optional
+    // does not mean forgiving.
+    const NAMES: [&str; 5] = ["id", "start_seconds", "end_seconds", "text", "origin"];
+    /// Longest [`CueOrigin::token`]. Bounding the read before the lookup keeps
+    /// the "strings are bounded at parse time" rule the module comment states.
+    const ORIGIN_MAX_BYTES: usize = 16;
     let mut cue = LyricCue::default();
     let mut seen = Seen::default();
     parser.object(|parser, key| {
@@ -1210,7 +1230,16 @@ fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<LyricCue> {
             0 => cue.id = parser.u64()?,
             1 => cue.start_seconds = parser.f64()?,
             2 => cue.end_seconds = parser.f64()?,
-            _ => cue.text = parser.string(crate::project::lyrics::TEXT_MAX_BYTES)?,
+            3 => cue.text = parser.string(crate::project::lyrics::TEXT_MAX_BYTES)?,
+            // An unrecognised token is a hard error rather than a fallback to
+            // the default. Silently reading a future "verified" origin as
+            // "user applied" would be this codec lying about provenance, and
+            // provenance is the whole point of the field.
+            _ => {
+                let token = parser.string(ORIGIN_MAX_BYTES)?;
+                cue.origin = crate::project::lyrics::CueOrigin::from_token(&token)
+                    .ok_or(ProjectIoError::String)?;
+            }
         }
         Ok(())
     })?;
@@ -2662,6 +2691,7 @@ mod tests {
                 start_seconds: 1.0,
                 end_seconds: 2.0,
                 text: "first".into(),
+                origin: Default::default(),
             })
             .unwrap();
         project
@@ -2671,6 +2701,7 @@ mod tests {
                 start_seconds: 5.0,
                 end_seconds: 6.0,
                 text: "second".into(),
+                origin: Default::default(),
             })
             .unwrap();
         let text = serialize(&project).unwrap();
@@ -2682,6 +2713,89 @@ mod tests {
             deserialize(swapped.as_bytes()).unwrap_err(),
             ProjectIoError::Validation,
             "a file listing cues out of order must be refused, not sorted"
+        );
+    }
+
+    /// LX1. The origin field has no C counterpart, so `differential_project_io.sh`
+    /// cannot pin it — these do, and the first assertion is the one that keeps
+    /// that harness meaningful: a document of hand-placed cues must still
+    /// serialize to the exact bytes it did before the field existed.
+    #[test]
+    fn a_cue_origin_survives_the_round_trip_and_costs_a_default_cue_nothing() {
+        use crate::project::lyrics::CueOrigin;
+
+        let mut project = valid_project();
+        for (start, origin) in [
+            (1.0, CueOrigin::UserApplied),
+            (2.0, CueOrigin::InferredCertain),
+            (3.0, CueOrigin::InferredAmbiguous),
+            (4.0, CueOrigin::Potential),
+        ] {
+            project
+                .lyrics
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 0.5,
+                    text: format!("line at {start}"),
+                    origin,
+                })
+                .unwrap();
+        }
+        let text = serialize(&project).unwrap();
+
+        // The default is absent from the file, and the other three are present
+        // by name. Absence is the compatibility guarantee; presence is the
+        // provenance guarantee.
+        assert!(
+            text.contains("\"text\":\"line at 1\"}"),
+            "a user-applied cue must not gain a field: {text}"
+        );
+        for token in ["certain", "ambiguous", "potential"] {
+            assert!(
+                text.contains(&format!("\"origin\":\"{token}\"")),
+                "{token} must survive into the file: {text}"
+            );
+        }
+
+        let reloaded = deserialize(text.as_bytes()).unwrap();
+        let origins: Vec<CueOrigin> = reloaded
+            .lyrics
+            .cues()
+            .iter()
+            .map(|cue| cue.origin)
+            .collect();
+        assert_eq!(
+            origins,
+            vec![
+                CueOrigin::UserApplied,
+                CueOrigin::InferredCertain,
+                CueOrigin::InferredAmbiguous,
+                CueOrigin::Potential,
+            ]
+        );
+
+        // A file written before LX1 has no `origin` anywhere and still opens,
+        // with every cue reading as the user's. This is the case that would
+        // otherwise be found by a user losing a project, not by a test.
+        let stripped = text
+            .replace(",\"origin\":\"certain\"", "")
+            .replace(",\"origin\":\"ambiguous\"", "")
+            .replace(",\"origin\":\"potential\"", "");
+        assert!(!stripped.contains("origin"));
+        let legacy = deserialize(stripped.as_bytes()).unwrap();
+        assert!(legacy
+            .lyrics
+            .cues()
+            .iter()
+            .all(|cue| cue.origin == CueOrigin::UserApplied));
+
+        // And an origin this build has never heard of is refused rather than
+        // read as the default, because "user applied" is a claim about a human.
+        let forged = text.replace("\"origin\":\"certain\"", "\"origin\":\"verified\"");
+        assert_eq!(
+            deserialize(forged.as_bytes()).unwrap_err(),
+            ProjectIoError::String
         );
     }
 

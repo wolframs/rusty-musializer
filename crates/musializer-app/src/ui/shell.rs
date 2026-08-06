@@ -2964,6 +2964,16 @@ impl Shell {
             true,
         );
 
+        // The open panel draws **before** the zoom row now, because it is the
+        // panel that says where that row goes (LX1). The readout, the nudge-key
+        // hint and the Zoom out button then land under every timed lane rather
+        // than between the waveform and the cue lane.
+        //
+        // Draw order is safe in the one direction that matters: the row lands in
+        // a gap the panel deliberately left empty, so the panel's widgets claim
+        // their presses first and none of them overlaps the button below.
+        let zoom_row_y = self.open_panel(d, input, content, strip, commands);
+
         // The zoom readout, so "why is the strip not the whole track" has an
         // answer on screen.
         let zoom_label = if self.timeline.is_whole(duration) {
@@ -2986,7 +2996,7 @@ impl Shell {
             input.fonts.ui(),
             &zoom_label,
             strip.x,
-            strip.y + strip.height + 4.0,
+            zoom_row_y + 4.0,
             metric::UI_FONT_CAPTION,
             color::ui_muted(),
         );
@@ -3014,18 +3024,13 @@ impl Shell {
                 input.fonts.ui(),
                 hint,
                 hint_x,
-                strip.y + strip.height + 4.0,
+                zoom_row_y + 4.0,
                 metric::UI_FONT_CAPTION,
                 color::ui_disabled(),
             );
         }
 
-        let reset = UiRect::new(
-            strip.x + strip.width - 84.0,
-            strip.y + strip.height + 2.0,
-            84.0,
-            22.0,
-        );
+        let reset = UiRect::new(strip.x + strip.width - 84.0, zoom_row_y + 2.0, 84.0, 22.0);
         if content.contains(reset) {
             let reset_label = if self.timeline_manual_view {
                 "Follow"
@@ -3055,15 +3060,23 @@ impl Shell {
                 }
             }
         }
-
-        self.open_panel(d, input, content, strip, commands);
     }
 
-    /// Dispatches to whichever bottom panel is open.
+    /// Dispatches to whichever bottom panel is open, and reports where the zoom
+    /// row goes.
     ///
     /// One `match` in one place, so an agent fills a function in their own file
     /// and never edits this one. [`UiPanel::Tune`] is absent because the tuning
     /// controls are the right-hand inspector, not a bottom panel.
+    ///
+    /// The return value is the y the zoom readout, the nudge-key hint and the
+    /// Zoom out button draw at (LX1). Every panel but Lyrics answers "flush
+    /// against the strip", which is where that row has always been; the lyrics
+    /// editor answers with the bottom of its cue lane, so the readout lands
+    /// *under* all three timed lanes instead of cutting between two of them.
+    /// Returned rather than assumed because only the panel knows how tall its
+    /// lane ended up — and since LX1 the cue lane is resizable, so the answer is
+    /// not even constant within one panel.
     fn open_panel(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -3071,12 +3084,19 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
-    ) {
+    ) -> f32 {
+        let below_strip = strip.y + strip.height;
         match self.panel {
-            UiPanel::None | UiPanel::Tune => {}
-            UiPanel::Export => self.export_panel(d, input, content, strip, commands),
+            UiPanel::None | UiPanel::Tune => below_strip,
+            UiPanel::Export => {
+                self.export_panel(d, input, content, strip, commands);
+                below_strip
+            }
             UiPanel::Lyrics => self.lyrics_panel(d, input, content, strip, commands),
-            UiPanel::Assist => self.assist_panel(d, input, content, strip, commands),
+            UiPanel::Assist => {
+                self.assist_panel(d, input, content, strip, commands);
+                below_strip
+            }
         }
     }
 
@@ -4231,6 +4251,7 @@ mod tests {
                         } else {
                             format!("shared line {index}")
                         },
+                        origin: Default::default(),
                     })
                     .expect("the fixture cues are valid");
             }

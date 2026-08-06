@@ -13,7 +13,9 @@
 pub mod assist_ui_state;
 pub mod contrast;
 pub mod font_import_state;
+pub mod lyric_clipboard;
 pub mod lyric_lane_edit;
+pub mod lyric_lane_stack;
 pub mod lyrics_editor_layout;
 pub mod notice;
 pub mod route_editor_state;

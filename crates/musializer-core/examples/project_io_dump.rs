@@ -835,6 +835,13 @@ fn build_fixture() -> Project {
                 start_seconds,
                 end_seconds,
                 text: text.to_owned(),
+                // LX1 added `origin`, which is written only when it is not the
+                // default. This fixture keeps the default deliberately: the C
+                // oracle has no such field, so the only way the harness can
+                // stay a comparison is for the bytes it compares to be the
+                // ones both sides can produce. The field's own round trip is
+                // pinned by unit tests in `project::io` instead.
+                origin: Default::default(),
             })
             .expect("a valid lyric cue");
     }

@@ -2023,6 +2023,7 @@ mod tests {
                 start_seconds: 1.0,
                 end_seconds: 2.0,
                 text: "line".into(),
+                origin: Default::default(),
             })
             .unwrap();
         assert_eq!(project.validate(), Ok(()));

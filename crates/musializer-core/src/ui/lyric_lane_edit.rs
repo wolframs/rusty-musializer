@@ -1112,6 +1112,7 @@ mod tests {
                     start_seconds: start,
                     end_seconds: start + 1.0,
                     text: format!("cue at {start}"),
+                    origin: Default::default(),
                 })
                 .expect("the fixture cues are valid");
         }

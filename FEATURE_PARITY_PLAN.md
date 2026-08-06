@@ -100,6 +100,34 @@ inspected at original resolution. Every UI font report used a scale-matched
 native atlas with zero non-native requests. The scene and export paths remain in
 framebuffer pixels outside the shell camera.
 
+## LX1 — lyric cue provenance and a workable cue lane (operator request, 2026-08-06)
+
+Opened from four defects the operator hit on `You Can't Get Me.mp3`, all of them
+one problem seen from different sides: **after an assist run the lane cannot tell
+you what it knows.** Every block is the same amber whether a human placed it or
+an aligner guessed at it, lines the localizer failed to place do not appear at
+all, overlapping cues collapse into one rectangle, and the only surface that
+named the failures showed three rows and pointed at a file with no way to open
+it.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| LX1-a | `CueOrigin` on `LyricCue` — user applied / AI certain / AI ambiguous / potential — filtered out of `at_time` and `cue_shadow`, persisted as an optional `origin` field, promoted to *user applied* by every editing operation | `core::project::lyrics`, `core::project::io`, `core::project::analysis_bridge` | **done** |
+| LX1-b | Overlap row assignment and clipboard arithmetic as raylib-free policy | `core::ui::lyric_lane_stack`, `core::ui::lyric_clipboard` | **done** |
+| LX1-c | The zoom/`Zoom out` row moves below the cue lane; `open_panel` reports where it goes | `ui/shell.rs`, `ui/panels/lyrics.rs` | **done** |
+| LX1-d | Lane rendering: per-origin colours, immediate non-sticky tooltips, overlap fan-out, a 1.5x lane resizable to 2x, Ctrl+C/X/V | `ui/panels/lyrics.rs` | open |
+| LX1-e | One visual system across the scene lane, waveform and cue lane — matching borders, insets and gaps | `ui/shell.rs`, `ui/panels/scene_timeline.rs` | open |
+| LX1-f | Unresolved and abstained lines become `Potential` cues at their coarse proposal, so the gap at 0:41–1:18 is editable; review list scrolls and can reveal its artifact | `ui/panels/assist.rs` | open |
+
+**The decision worth recording.** `schema_version` does **not** move for LX1.
+`model.rs` accepts exactly one version, so bumping it would make this build
+refuse to open every project it has already written — which is the compatibility
+contract we actually have. `origin` is therefore an optional field with a
+documented default, the mechanism `io.rs`'s module comment reserves for exactly
+this, and the same one `caption_style.effects` used. A cue nobody has marked
+serializes byte-for-byte as it did before, which is why
+`differential_project_io.sh` is still 2550 values with a delta of 0.
+
 ## Start here next session (updated 2026-08-05)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,

@@ -81,7 +81,91 @@ impl std::error::Error for LyricsValidation {
     }
 }
 
-/// One timed line (`Lyric_Cue`, `lyrics.h:17-22`).
+/// Where a cue's timing came from, and how much it should be trusted (LX1).
+///
+/// Not from the oracle. The C has one kind of cue, so its editor could not tell
+/// a line the user placed by ear from one an aligner guessed at, and after an
+/// assist run every block in the lane was the same amber. That is the defect
+/// this enum exists for: the operator's complaint was not that the placements
+/// were wrong, it was that nothing on screen said *which* ones to check.
+///
+/// The order is deliberate — it runs from most to least trustworthy, so
+/// `PartialOrd` sorts a review list the way a user would read it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CueOrigin {
+    /// A human placed or confirmed this timing. The default, because everything
+    /// the editor creates and everything a pre-LX1 file contains is one: a cue
+    /// that reached a `.musi` before this field existed was reviewed by whoever
+    /// saved it, and calling that "unknown" would flag a whole finished project.
+    #[default]
+    UserApplied,
+    /// An aligner placed it and the cross-view check agreed.
+    InferredCertain,
+    /// An aligner placed it and something disagreed — the coarse and fine views
+    /// differ by more than the review tolerance, or the line is a repeated
+    /// phrase whose occurrence was resolved weakly. The text is right; the
+    /// second is the question.
+    InferredAmbiguous,
+    /// **Not a placement.** A line the localizer could not pin at all, parked at
+    /// whatever coarse window proposed it so the user has something to drag.
+    ///
+    /// A `Potential` cue is editing scaffolding, never content: [`LyricsDocument::at_time`]
+    /// refuses to hand one to a frame, so it cannot reach the preview or an
+    /// export until a human moves it — and moving it is what promotes it.
+    Potential,
+}
+
+impl CueOrigin {
+    /// The persisted token, and the one a report line prints.
+    ///
+    /// Short and lower-case because it is a file field first: the label below is
+    /// for the interface and may be rewritten freely, this may not.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            CueOrigin::UserApplied => "user",
+            CueOrigin::InferredCertain => "certain",
+            CueOrigin::InferredAmbiguous => "ambiguous",
+            CueOrigin::Potential => "potential",
+        }
+    }
+
+    /// The reverse of [`CueOrigin::token`]. `None` is a hard parse error in the
+    /// codec, which does not tolerate unknown input anywhere else either.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "user" => Some(CueOrigin::UserApplied),
+            "certain" => Some(CueOrigin::InferredCertain),
+            "ambiguous" => Some(CueOrigin::InferredAmbiguous),
+            "potential" => Some(CueOrigin::Potential),
+            _ => None,
+        }
+    }
+
+    /// What a tooltip and a legend call it — the operator's own words.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            CueOrigin::UserApplied => "User applied",
+            CueOrigin::InferredCertain => "AI inferred (certain)",
+            CueOrigin::InferredAmbiguous => "AI inferred (ambiguous)",
+            CueOrigin::Potential => "Potential cue (highly uncertain)",
+        }
+    }
+
+    /// Whether a frame may show this cue's text.
+    ///
+    /// One predicate rather than a `== Potential` at each call site, because
+    /// "does this reach the screen" is the question, and a future origin that
+    /// also should not reach it must not have to find every comparison.
+    #[must_use]
+    pub const fn is_displayable(self) -> bool {
+        !matches!(self, CueOrigin::Potential)
+    }
+}
+
+/// One timed line (`Lyric_Cue`, `lyrics.h:17-22`), plus LX1's origin.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LyricCue {
     /// `0` asks [`LyricsDocument::insert`] to allocate a stable id.
@@ -89,6 +173,9 @@ pub struct LyricCue {
     pub start_seconds: f64,
     pub end_seconds: f64,
     pub text: String,
+    /// How this timing came to be (LX1). Defaults to [`CueOrigin::UserApplied`],
+    /// which is what makes every constructor and every older file unchanged.
+    pub origin: CueOrigin,
 }
 
 /// The part of one cue's span that a later cue takes over (review 1.14).
@@ -374,6 +461,22 @@ impl LyricsDocument {
     /// `cue.id == 0` allocates a deterministic, never-reused stable id. An
     /// explicit nonzero id supports import and persistence round-trips, and
     /// advances `next_id` past itself so a later allocation cannot collide.
+    ///
+    /// # The origin rule (LX1)
+    ///
+    /// This is the only mutator that takes a [`CueOrigin`] from its caller,
+    /// because it is the only one an *importer* uses. Every other editing
+    /// operation on this document — [`Self::update`], [`Self::shift_many`],
+    /// [`Self::split`], [`Self::merge`] — promotes what it touches to
+    /// [`CueOrigin::UserApplied`], and that is the point rather than a
+    /// side effect: the colour code in the lane is only worth reading if
+    /// "still amber" reliably means "nobody has looked at this yet". A drag
+    /// that quietly left a cue marked *inferred* would make the whole signal
+    /// untrustworthy in the one direction that matters.
+    ///
+    /// Promotion lives here, on the model, and not at the call sites, because
+    /// there are six call sites and one of them will be added by somebody who
+    /// has not read this paragraph.
     pub fn insert(&mut self, cue: LyricCue) -> Result<u64, LyricsError> {
         if self.cues.len() >= CUE_CAPACITY {
             return Err(LyricsError::Capacity);
@@ -423,6 +526,9 @@ impl LyricsDocument {
             start_seconds,
             end_seconds,
             text: text.to_owned(),
+            // Promoted, per the rule on [`LyricsDocument::insert`]: a human just
+            // decided what this cue's timing is.
+            origin: CueOrigin::UserApplied,
         };
         self.validate_cue(&replacement)?;
         self.cues[index] = replacement;
@@ -522,6 +628,17 @@ impl LyricsDocument {
         for index in &selected {
             self.cues[*index].start_seconds += delta_seconds;
             self.cues[*index].end_seconds += delta_seconds;
+            // A drag is the gesture that turns a proposal into a placement, so
+            // it is also the gesture that has to say so. See
+            // [`LyricsDocument::insert`] for why promotion lives on the model's
+            // editing operations rather than at each call site.
+            //
+            // Guarded on a real delta: a drag the clamp refused moved nothing,
+            // and marking a whole selection reviewed because someone pushed it
+            // against the end of the track would be the colour code lying.
+            if delta_seconds != 0.0 {
+                self.cues[*index].origin = CueOrigin::UserApplied;
+            }
         }
         self.sort_cues();
         self.bump_revision();
@@ -574,11 +691,14 @@ impl LyricsDocument {
         validate_text(left_text)?;
         validate_text(right_text)?;
 
+        // Both halves are promoted: the user chose where the seam goes, which is
+        // a timing decision about each of them.
         self.cues[index] = LyricCue {
             id,
             start_seconds: original.start_seconds,
             end_seconds: split_seconds,
             text: left_text.to_owned(),
+            origin: CueOrigin::UserApplied,
         };
         self.sort_cues();
         let right = LyricCue {
@@ -586,6 +706,7 @@ impl LyricsDocument {
             start_seconds: split_seconds,
             end_seconds: original.end_seconds,
             text: right_text.to_owned(),
+            origin: CueOrigin::UserApplied,
         };
         match self.insert(right) {
             Ok(right_id) => Ok(right_id),
@@ -629,6 +750,9 @@ impl LyricsDocument {
         if tail.end_seconds > merged.end_seconds {
             merged.end_seconds = tail.end_seconds;
         }
+        // The survivor carries text and a span the user just composed, so its
+        // provenance is theirs whatever the two halves were.
+        merged.origin = CueOrigin::UserApplied;
         self.cues.remove(second);
         self.sort_cues();
         self.bump_revision();
@@ -695,6 +819,17 @@ impl LyricsDocument {
     /// `lyrics_at_time` (`lyrics.c:544-556`): the most recently started active
     /// cue, or `None` outside all cues. Overlaps are legal in this lane, which is
     /// why "most recently started" rather than "the one" is the rule.
+    ///
+    /// **This is the display resolver**, and the single place a cue becomes a
+    /// frame ([`crate::project::frame_lanes`] is its only non-test caller). So it
+    /// is also where LX1's proposals are filtered: a [`CueOrigin::Potential`] cue
+    /// is a parked guess, and letting one reach a caption would put a line the
+    /// aligner explicitly failed to place on screen — and, worse, into an export,
+    /// where it would look exactly like a placement that had been checked.
+    ///
+    /// Skipping rather than stopping: a proposal parked over a real cue must not
+    /// hide the real one, which is what `continue` buys over letting the scan
+    /// treat it as the active line.
     #[must_use]
     pub fn at_time(&self, time_seconds: f64) -> Option<&LyricCue> {
         if !time_seconds.is_finite() || time_seconds < 0.0 || self.validate().is_err() {
@@ -704,6 +839,9 @@ impl LyricsDocument {
         for cue in &self.cues {
             if cue.start_seconds > time_seconds {
                 break;
+            }
+            if !cue.origin.is_displayable() {
+                continue;
             }
             if time_seconds < cue.end_seconds {
                 active = Some(cue);
@@ -730,6 +868,13 @@ impl LyricsDocument {
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn cue_shadow(&self, index: usize) -> Option<CueShadow> {
         let cue = self.cues.get(index)?;
+        // A proposal is not on screen to begin with, so it can neither lose time
+        // nor take it. Reporting one as shadowed would hatch a block whose whole
+        // point is that it is *not* content yet, and reporting one as the
+        // shadower would accuse a real cue of being hidden by a guess (LX1).
+        if !cue.origin.is_displayable() {
+            return None;
+        }
         let (start, end) = (cue.start_seconds, cue.end_seconds);
 
         let mut hidden: Vec<(f64, f64)> = Vec::new();
@@ -740,6 +885,9 @@ impl LyricsDocument {
         for (later_index, later) in self.cues.iter().enumerate().skip(index + 1) {
             if later.start_seconds >= end {
                 break;
+            }
+            if !later.origin.is_displayable() {
+                continue;
             }
             let from = later.start_seconds.max(start);
             let to = later.end_seconds.min(end);
@@ -856,6 +1004,12 @@ impl LyricsDocument {
                 start_seconds: start_ms as f64 / 1000.0,
                 end_seconds: end_ms as f64 / 1000.0,
                 text: text.to_owned(),
+                // The bridge grammar has no origin column and gains none: it is
+                // the round trip through an *external editor*, so what comes
+                // back is by definition what a person decided. Widening the
+                // wire format would only let a third party assert provenance
+                // this application has no way to check.
+                origin: CueOrigin::default(),
             })?;
             cursor = &cursor[line_end + 1..];
         }
@@ -1014,7 +1168,99 @@ mod tests {
             start_seconds: start,
             end_seconds: end,
             text: text.to_owned(),
+            origin: CueOrigin::default(),
         }
+    }
+
+    /// LX1. A parked proposal must be invisible to everything downstream of the
+    /// editor, and must not be *made* visible by the thing that hides it either.
+    #[test]
+    fn a_potential_cue_never_reaches_a_frame_and_never_shadows_one() {
+        let mut covered = document();
+        let real = covered
+            .insert(cue(0, 10.0, 20.0, "the line that is placed"))
+            .unwrap();
+        let proposal = covered
+            .insert(LyricCue {
+                origin: CueOrigin::Potential,
+                ..cue(0, 12.0, 18.0, "the line nobody could pin")
+            })
+            .unwrap();
+
+        // The proposal sits *inside* the real cue and later in canonical order,
+        // so under the plain `at_time` rule — last one active wins — it would
+        // replace the real line for six seconds of the song, in the preview and
+        // in an export alike. That is the failure this filter exists for.
+        for time in [12.0, 15.0, 17.999] {
+            let shown = covered.at_time(time).expect("the real cue still shows");
+            assert_eq!(
+                shown.id, real,
+                "a proposal displaced a placed line at {time}"
+            );
+        }
+        // And outside the real cue's span a proposal shows nothing at all,
+        // rather than showing itself.
+        covered.delete(real).unwrap();
+        assert_eq!(covered.at_time(15.0), None);
+
+        // Neither direction of the shadow report mentions it: a proposal is not
+        // hidden content, and a placed line is not hidden *by* a guess.
+        let mut pair = document();
+        pair.insert(cue(0, 10.0, 20.0, "placed")).unwrap();
+        pair.insert(LyricCue {
+            origin: CueOrigin::Potential,
+            ..cue(0, 10.0, 20.0, "proposed")
+        })
+        .unwrap();
+        assert!(
+            pair.shadowed_cues().is_empty(),
+            "a proposal exactly covering a cue must not be reported as hiding it"
+        );
+        let _ = proposal;
+    }
+
+    /// LX1. The colour code is only worth reading if amber reliably means
+    /// "nobody has looked at this yet", so every editing operation has to clear
+    /// it. A gap here is silent: the lane would keep drawing a reviewed cue as
+    /// unreviewed forever.
+    #[test]
+    fn every_editing_operation_promotes_a_cue_to_user_applied() {
+        let inferred = |start: f64, end: f64, text: &str| LyricCue {
+            origin: CueOrigin::InferredAmbiguous,
+            ..cue(0, start, end, text)
+        };
+
+        // update
+        let mut updated = document();
+        let id = updated.insert(inferred(1.0, 2.0, "one")).unwrap();
+        updated.update(id, 1.5, 2.5, "one").unwrap();
+        assert_eq!(updated.find(id).unwrap().origin, CueOrigin::UserApplied);
+
+        // shift_many, and its refusal to promote a drag that moved nothing
+        let mut shifted = document();
+        let id = shifted.insert(inferred(1.0, 2.0, "one")).unwrap();
+        shifted.shift_many(&[id], 0.0).unwrap();
+        assert_eq!(
+            shifted.find(id).unwrap().origin,
+            CueOrigin::InferredAmbiguous,
+            "a zero-delta shift moved nothing and must not claim a review"
+        );
+        shifted.shift_many(&[id], 3.0).unwrap();
+        assert_eq!(shifted.find(id).unwrap().origin, CueOrigin::UserApplied);
+
+        // split: both halves
+        let mut halves = document();
+        let id = halves.insert(inferred(1.0, 5.0, "one two")).unwrap();
+        let right = halves.split(id, 3.0, "one", "two").unwrap();
+        assert_eq!(halves.find(id).unwrap().origin, CueOrigin::UserApplied);
+        assert_eq!(halves.find(right).unwrap().origin, CueOrigin::UserApplied);
+
+        // merge: the survivor
+        let mut joined = document();
+        let first = joined.insert(inferred(1.0, 2.0, "one")).unwrap();
+        let second = joined.insert(inferred(2.0, 3.0, "two")).unwrap();
+        joined.merge(first, second, " ").unwrap();
+        assert_eq!(joined.find(first).unwrap().origin, CueOrigin::UserApplied);
     }
 
     /// Review 1.14. Each case is checked against `at_time` itself rather than

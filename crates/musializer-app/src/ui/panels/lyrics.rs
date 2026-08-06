@@ -31,7 +31,7 @@ use std::path::PathBuf;
 
 use musializer_core::project::caption_effects::drive_value;
 use musializer_core::project::editor_draft::{LyricDraftState, LyricDraftValues};
-use musializer_core::project::lyrics::{self, LyricCue, LyricsDocument, LyricsError};
+use musializer_core::project::lyrics::{self, CueOrigin, LyricCue, LyricsDocument, LyricsError};
 use musializer_core::project::model::{
     caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, DriveTuning,
     EffectDrive,
@@ -63,17 +63,27 @@ use crate::workspace::{Track, Workspace};
 /// (`lyrics_editor_ui.c:1060-1066`).
 pub const LANE_HEIGHT: f32 = 22.0;
 /// 5 px, and the 5 is not a taste decision — see [`CHROME_ABOVE_PANEL`].
-const LANE_GAP: f32 = 5.0;
+pub const LANE_GAP: f32 = 5.0;
+
+/// The band the zoom readout, the nudge-key hint and the Zoom out button take,
+/// **below** the cue lane (LX1).
+///
+/// It used to sit between the waveform and the lane, which put a row of chrome
+/// through the middle of what is really one three-lane timeline — scene plan,
+/// waveform, lyric cues — and made the lyric lane read as a separate widget
+/// glued underneath. Operator request, 2026-08-06. The number is unchanged from
+/// what `timeline_strip` reserved above the lane, so the band's total chrome is
+/// the same to the pixel and the assertion below still holds.
+pub const ZOOM_ROW_HEIGHT: f32 = 28.0;
 
 /// Everything the timeline band spends above this panel: its own 27 px header,
-/// 10 px of padding, the 56 px strip, and the 28 px the zoom readout occupies
-/// below it.
+/// 10 px of padding and the 56 px strip.
 ///
 /// Derived from `Shell::timeline_strip`, not guessed. If that arithmetic
 /// changes, [`LyricEditor::timeline_height`] is where it shows up — as a panel
 /// too short for its form, which the tests at the bottom of this file assert
 /// against directly.
-const CHROME_ABOVE_PANEL: f32 = 121.0;
+const CHROME_ABOVE_PANEL: f32 = 93.0;
 /// The panel's own bottom margin inside the band.
 const PANEL_BOTTOM_PADDING: f32 = 10.0;
 
@@ -90,7 +100,7 @@ const PANEL_BOTTOM_PADDING: f32 = 10.0;
 /// assertion rather than a comment asking the next reader to add up four
 /// constants.
 const _: () = assert!(
-    CHROME_ABOVE_PANEL + PANEL_BOTTOM_PADDING + LANE_HEIGHT + LANE_GAP
+    CHROME_ABOVE_PANEL + PANEL_BOTTOM_PADDING + LANE_HEIGHT + LANE_GAP + ZOOM_ROW_HEIGHT
         == lyrics_editor_layout::LYRIC_EDITOR_TIMELINE_CHROME
 );
 
@@ -288,6 +298,9 @@ impl LyricsEdit {
                     start_seconds,
                     end_seconds,
                     text,
+                    // A cue the editor's own form created; the human typed the
+                    // text and chose the window (LX1).
+                    origin: CueOrigin::UserApplied,
                 })
                 .map(Some),
             LyricsEdit::Update {
@@ -970,6 +983,11 @@ impl LyricEditor {
 
 impl Shell {
     /// The lyrics editor, in the timeline strip's place.
+    ///
+    /// Returns the y the zoom row should draw at — the bottom of the cue lane
+    /// (LX1). `Shell::open_panel` passes it back to `timeline_strip`, so the
+    /// readout follows whichever lane actually ended up last instead of being
+    /// pinned above the panel by an assumption.
     pub(crate) fn lyrics_panel(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -977,12 +995,13 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
-    ) {
+    ) -> f32 {
         // Split borrow: the editor and the widget set are both fields of
         // `self`, and `draw_lyrics` needs them at once.
         let mut editor = std::mem::take(&mut self.lyrics);
-        self.draw_lyrics(d, input, &mut editor, content, strip, commands);
+        let zoom_row_y = self.draw_lyrics(d, input, &mut editor, content, strip, commands);
         self.lyrics = editor;
+        zoom_row_y
     }
 
     /// One frame of the editor.
@@ -998,7 +1017,11 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
-    ) {
+    ) -> f32 {
+        // Where the zoom row goes if this panel never gets as far as drawing a
+        // lane. Flush against the strip, which is where it sat before LX1 — an
+        // early return must not take the readout off screen with it.
+        let fallback_zoom_row_y = strip.y + strip.height;
         let font = input.fonts.ui();
         // Before anything is drawn or clicked: whatever the guards did or did not
         // do, the editor must be bound to the track it is about to edit
@@ -1014,8 +1037,10 @@ impl Shell {
         }
         // The panel starts below the strip, the rule `super::stub` records: the
         // panel and the strip share one band, and the height an open panel asks
-        // for is the space underneath.
-        let top = strip.y + strip.height + 28.0;
+        // for is the space underneath. Since LX1 it starts one [`LANE_GAP`]
+        // under the waveform rather than 28 px under it, because the zoom row
+        // that used to fill those 28 px now draws below the cue lane instead.
+        let top = strip.y + strip.height + LANE_GAP;
         let panel = UiRect::new(
             content.x + metric::UI_PANEL_PADDING,
             top,
@@ -1023,7 +1048,7 @@ impl Shell {
             (content.y + content.height - top - PANEL_BOTTOM_PADDING).max(0.0),
         );
         if panel.is_empty() {
-            return;
+            return fallback_zoom_row_y;
         }
 
         let Some(track) = input.workspace.current() else {
@@ -1039,7 +1064,7 @@ impl Shell {
                 metric::UI_FONT_LABEL,
                 color::ui_muted(),
             );
-            return;
+            return fallback_zoom_row_y;
         };
         editor.cue_count = track.lyrics.len();
         // A stale id makes a bulk shift reject the whole move — correctly, but
@@ -1047,15 +1072,21 @@ impl Shell {
         editor.lane_selection.prune(&track.lyrics);
 
         let lane = UiRect::new(panel.x, panel.y, panel.width, LANE_HEIGHT);
+        // The zoom row's band sits between the lane and the editor, and this
+        // function owns only the *gap*: `timeline_strip` draws into it, because
+        // the readout belongs to the timeline rather than to the lyrics panel
+        // and is still there when no panel is open at all (LX1).
+        let zoom_row_y = lane.y + lane.height;
+        let boundary_top = zoom_row_y + ZOOM_ROW_HEIGHT + LANE_GAP;
         let boundary = UiRect::new(
             panel.x,
-            panel.y + LANE_HEIGHT + LANE_GAP,
+            boundary_top,
             panel.width,
-            (panel.height - LANE_HEIGHT - LANE_GAP).max(0.0),
+            (panel.y + panel.height - boundary_top).max(0.0),
         );
         self.lyric_lane(d, input, editor, track, lane);
         if boundary.is_empty() {
-            return;
+            return zoom_row_y;
         }
 
         widgets::fill(d, boundary, color::ui_surface());
@@ -1078,7 +1109,7 @@ impl Shell {
                 metric::UI_FONT_CAPTION,
                 color::ui_warning(),
             );
-            return;
+            return zoom_row_y;
         }
 
         let padding = metric::UI_PANEL_PADDING;
@@ -1101,11 +1132,12 @@ impl Shell {
         // hiding it is what makes the controls fit at all (`:1162-1185`).
         if editor.style_pane {
             self.caption_pane(d, input, editor, track, boundary, list, commands);
-            return;
+            return zoom_row_y;
         }
 
         self.cue_list(d, input, editor, track, list);
         self.cue_form(d, input, editor, track, boundary, form);
+        zoom_row_y
     }
 
     // -----------------------------------------------------------------------
@@ -4477,6 +4509,7 @@ mod tests {
                     start_seconds: start,
                     end_seconds: start + 2.0,
                     text: format!("line {index}"),
+                    origin: Default::default(),
                 })
                 .expect("the fixture cues are valid");
         }
@@ -4605,6 +4638,7 @@ mod tests {
                 start_seconds: 1.0,
                 end_seconds: 3.0,
                 text: "new".to_string(),
+                origin: Default::default(),
             })
             .expect("a valid cue");
         assert_eq!(predicted, allocated);
@@ -4923,6 +4957,7 @@ mod tests {
                 start_seconds: 0.0,
                 end_seconds: 1.0,
                 text: "Καλημέρα κόσμε".to_string(),
+                origin: Default::default(),
             })
             .expect("the model accepts a Greek cue");
         let mut track = test_track("/tmp/greek.wav", 0);
@@ -4972,6 +5007,7 @@ mod tests {
                     start_seconds: start,
                     end_seconds: end,
                     text: "tight".to_string(),
+                    origin: Default::default(),
                 })
                 .expect("the model accepts every one of these");
         }
@@ -5027,6 +5063,7 @@ mod tests {
                 start_seconds: 40.0,
                 end_seconds: 44.0,
                 text: "swallowed tail".to_string(),
+                origin: Default::default(),
             })
             .expect("valid");
         document
@@ -5035,6 +5072,7 @@ mod tests {
                 start_seconds: 42.1,
                 end_seconds: 46.0,
                 text: "the one that wins".to_string(),
+                origin: Default::default(),
             })
             .expect("valid");
 
@@ -5057,6 +5095,7 @@ mod tests {
                     start_seconds: 10.0,
                     end_seconds: end,
                     text: "line".to_string(),
+                    origin: Default::default(),
                 })
                 .expect("valid");
         }

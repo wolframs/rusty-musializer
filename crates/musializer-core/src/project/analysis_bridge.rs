@@ -30,7 +30,7 @@
 //!   incompatible readings of the same track in one artifact.
 
 use crate::project::lyrics::{
-    base64_decode, Base64Error, LyricCue, LyricsDocument, LyricsError, TEXT_MAX_BYTES,
+    base64_decode, Base64Error, CueOrigin, LyricCue, LyricsDocument, LyricsError, TEXT_MAX_BYTES,
 };
 use crate::project::sha256;
 use crate::scene::SceneId;
@@ -376,6 +376,18 @@ pub fn parse(
                         start_seconds: start as f64 / 1000.0,
                         end_seconds: end as f64 / 1000.0,
                         text,
+                        // LX1. The bridge has carried this distinction since the
+                        // C — the `uncertain` marker in field 5 — and nothing
+                        // ever drew it: `LyricMetadata` recorded it beside the
+                        // document and the lane painted every block the same
+                        // amber. Now it survives into the cue itself, so a
+                        // saved project still knows which lines the aligner was
+                        // unsure about after the metadata is gone.
+                        origin: if fields[5] == "uncertain" {
+                            CueOrigin::InferredAmbiguous
+                        } else {
+                            CueOrigin::InferredCertain
+                        },
                     })
                     .map_err(|error| match error {
                         LyricsError::Capacity => AnalysisBridgeError::Capacity,

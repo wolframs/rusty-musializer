@@ -177,6 +177,7 @@ mod tests {
                 start_seconds: 2.0,
                 end_seconds: 4.0,
                 text: "Καλημέρα, мир".into(),
+                origin: Default::default(),
             })
             .unwrap();
         lyrics
