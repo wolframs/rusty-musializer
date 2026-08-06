@@ -1153,6 +1153,80 @@ mod tests {
     }
 
     #[test]
+    fn tuning_while_the_plan_drives_touches_one_segment_and_not_its_twin() {
+        // LX3-b. The operator reported that tuning "applies to ALL scene splits
+        // of that scene kind". It does not — while the plan is driving, an edit
+        // goes to the playing segment's own captured snapshot. What they were
+        // actually in was the *other* state: the plan switched off behind them
+        // by a scene click (LX3-a), where every edit lands in the track-wide
+        // table that the whole preview is then reading. This test pins the
+        // working half so a later change cannot quietly make the report true.
+        let mut track = track("/tmp/a.wav");
+        track
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .expect("first segment");
+        track
+            .record_scene_cue(SceneId::Spectrum, 6.0)
+            .expect("a second segment of the same scene kind");
+        track.scene_switches.enabled = true;
+        assert_eq!(track.scene_switches.len(), 2);
+
+        let index = 0usize;
+        let before = track.scene_switches.cues()[1].settings.values[index];
+
+        assert_eq!(track.advance_scene_plan(1.0), Some(SceneId::Spectrum));
+        assert!(track.cue_settings_active, "the first segment is driving");
+        let descriptor = &musializer_core::scene::settings::descriptors(SceneId::Spectrum)[index];
+        let edited = (descriptor.default_value + descriptor.maximum) * 0.5;
+        assert!(track
+            .playback_scene_settings
+            .set(SceneId::Spectrum, index, edited));
+        assert!(track.commit_active_cue_settings(SceneId::Spectrum));
+
+        assert_eq!(
+            track.scene_switches.cues()[0].settings.values[index],
+            edited,
+            "the segment that was playing took the edit"
+        );
+        assert_eq!(
+            track.scene_switches.cues()[1].settings.values[index],
+            before,
+            "its same-scene twin did not"
+        );
+    }
+
+    #[test]
+    fn retargeting_keeps_the_plan_driving_where_a_base_scene_choice_stops_it() {
+        // LX3-a, the contrast the whole fix turns on. `select_base_scene` is the
+        // frozen C's answer to a scene click (`plug.c:963-977`) and it switches
+        // the plan off; `retarget_scene_cue` is what an interactive click does
+        // instead once a plan is running, and the plan keeps driving.
+        let mut plan = track("/tmp/a.wav");
+        plan.record_scene_cue(SceneId::Spectrum, 0.0).unwrap();
+        plan.record_scene_cue(SceneId::Spectrum, 6.0).unwrap();
+        plan.scene_switches.enabled = true;
+        let second = plan.scene_switches.cues()[1].id;
+
+        let mut stopped = plan.clone();
+        stopped.select_base_scene(SceneId::Loom);
+        assert!(!stopped.scene_switches.enabled, "the C's side effect");
+        assert_eq!(stopped.scene_switches.len(), 2, "the cues are kept");
+
+        plan.retarget_scene_cue(second, SceneId::Loom).unwrap();
+        assert!(plan.scene_switches.enabled, "the plan still drives");
+        assert_eq!(plan.base_scene, SceneId::Spectrum, "the base is untouched");
+        assert_eq!(
+            plan.scene_switches.cues()[1].scene_index,
+            SceneId::Loom.index() as u32
+        );
+        assert_eq!(
+            plan.scene_switches.cues()[0].scene_index,
+            SceneId::Spectrum.index() as u32,
+            "and only the one segment moved"
+        );
+    }
+
+    #[test]
     fn scene_lane_edits_resolve_stable_ids_and_preserve_coverage() {
         let mut track = track("/tmp/a.wav");
         track

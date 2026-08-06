@@ -2798,6 +2798,10 @@ impl Shell {
         let widths = vec![tile_width; labels.len()];
         let font = input.fonts.ui();
         let font_size = widgets::row_font_size(font, &labels, &widths, tile_height);
+        let plan_is_driving = input
+            .workspace
+            .current()
+            .is_some_and(|track| track.scene_switches.enabled && !track.scene_switches.is_empty());
 
         for (index, id) in SceneId::ALL.into_iter().enumerate() {
             let column = index % columns;
@@ -2830,7 +2834,13 @@ impl Shell {
             // track, so the draft it leaves behind is still bound to the document
             // it came from and the cue list it edits is still on screen. Adding a
             // refusal here would be friction with no defect behind it.
-            if state.clicked && id != input.scene {
+            // The `id != input.scene` half is a no-op guard against reselecting
+            // what is already on screen — but it is wrong while a plan is
+            // running (LX3-a), where the click retargets a *segment*: the
+            // segment the user selected in the lane is very often not the one
+            // playing, and giving it the live scene is a legal edit the guard
+            // would swallow silently.
+            if state.clicked && (id != input.scene || plan_is_driving) {
                 commands.push(ShellCommand::SelectScene(id));
             }
         }

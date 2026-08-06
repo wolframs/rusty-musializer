@@ -749,6 +749,13 @@ make_frame_lane_variant box-shadow spectrum shadow
 # only authored difference is the effects block itself.
 make_frame_lane_variant fx-glow spectrum plate "" glow
 make_frame_lane_variant fx-soft-shadow spectrum shadow "" soft-shadow
+# The two features crossed: an authored glow (so the offscreen halo blur runs
+# every frame) over a scene that builds a `draw::SceneViewport` (Constellation).
+# Neither half alone can show the defect — the blur only corrupts rlgl's cached
+# framebuffer size, and only a scene viewport reads it — and the crossing was
+# missing because each feature had its own fixture. See the `gl framebuffer:`
+# assertion below.
+make_frame_lane_variant fx-glow-3d constellation plate "" glow
 # Two hand-derived companions for the soft shadow (UX0-C11 follow-up):
 # `fx-shadow-hard` is the soft-shadow fixture with *only* its blur zeroed, so
 # the delta against fx-soft-shadow isolates exactly what the blur drew — the
@@ -769,8 +776,41 @@ document = json.loads(legacy.read_text())
 del document["caption_style"]["effects"]
 legacy.write_text(json.dumps(document, indent=2) + "\n")
 EOF
-for name in shared-caption cadence loom full box-none box-shadow fx-glow fx-soft-shadow fx-shadow-hard fx-shadow-legacy; do
+for name in shared-caption cadence loom full box-none box-shadow fx-glow fx-glow-3d fx-soft-shadow fx-shadow-hard fx-shadow-legacy; do
     frame_lane_capture "$name" || SWEEP_FAILED=1
+done
+
+# The renderer's size invariant, stated rather than photographed.
+#
+# `BeginTextureMode` moves both the GL viewport and rlgl's cached framebuffer
+# size; `EndTextureMode` restores only the first, through `SetupViewport`
+# (`rcore.c:1109-1131`, `rcore.c:3537`). Nothing later in a frame resets the
+# second. So every offscreen pass — the caption halo's blur, an export target —
+# used to leave rlgl reporting the *buffer's* dimensions for the rest of the
+# session, and `draw::SceneViewport` then scaled a panel boundary by a ratio
+# like 0.15: a scene panel that drew nothing, or the entire interface squeezed
+# into the window's bottom-left corner, persisting frame after frame.
+#
+# Asserted on the report line rather than on pixels, because both symptoms are
+# *coherent* pictures — every element is exactly where the wrong arithmetic put
+# it — and because the run still exits 0 throughout. The number is zero when the
+# invariant holds and counts frames when it does not, so there is no threshold
+# to tune. Checked over every variant, since a scene viewport plus any offscreen
+# pass is enough and only `fx-glow-3d` crosses both on purpose.
+for name in shared-caption cadence loom full box-none box-shadow fx-glow fx-glow-3d fx-soft-shadow fx-shadow-hard fx-shadow-legacy; do
+    fb_line="$(sed -n 's/^gl framebuffer: *//p' "$FRAME_LANE_DIR/$name/preview.txt" | head -1)"
+    printf '%-18s gl framebuffer: %s\n' "$name" "${fb_line:-<absent>}"
+    case "$fb_line" in
+        "gl="*" render="*" mismatched-frames=0 of "*) : ;;
+        "")
+            echo "FAIL: $name reported no gl framebuffer line" >&2
+            SWEEP_FAILED=1
+            ;;
+        *)
+            echo "FAIL: $name ended frames with rlgl's framebuffer size out of sync: $fb_line" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
 done
 
 # Each effects variant differs from its baseline *only* in the authored
@@ -2504,6 +2544,15 @@ else
         if [ "$name" = "zoomed" ]; then
             probe="panel=none,time=5,play=0,zoom=4"
         fi
+        # LX3-a. The one gesture the operator's two reports were about: a scene
+        # click while an automatic plan is running. The frozen C answers it by
+        # making the scene the track's base and switching the plan off as a side
+        # effect, which is what turned the whole track into one scene and sent
+        # every later tuning edit into the shared per-scene table. Here it
+        # retargets the segment under the playhead and the plan keeps driving.
+        if [ "$name" = "retarget" ]; then
+            probe="panel=tune,time=5,play=0,scene-pick=pentagram"
+        fi
         set +e
         env -u WAYLAND_DISPLAY \
             DISPLAY="$DISPLAY_NUM" \
@@ -2517,10 +2566,11 @@ else
             >"$log" 2>&1
         local status=$?
         set -e
-        local state scene
+        local state scene segments
         state="$(sed -n 's/^auto scenes: *//p' "$log" | head -1)"
         scene="$(sed -n 's/^scene: *//p' "$log" | head -1)"
-        echo "$name: exit=$status state=${state:-<absent>} scene=${scene:-<absent>}"
+        segments="$(sed -n 's/^scene segments: *//p' "$log" | head -1)"
+        echo "$name: exit=$status state=${state:-<absent>} scene=${scene:-<absent>} segments=${segments:-<absent>}"
         if [ "$status" -ne 0 ] || [ ! -f "$shot" ]; then
             return 1
         fi
@@ -2529,6 +2579,7 @@ else
     auto_scene_capture disabled || SWEEP_FAILED=1
     auto_scene_capture enabled --auto-scenes || SWEEP_FAILED=1
     auto_scene_capture zoomed --auto-scenes || SWEEP_FAILED=1
+    auto_scene_capture retarget --auto-scenes || SWEEP_FAILED=1
 
     DISABLED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/disabled.txt" | head -1)"
     ENABLED_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
@@ -2549,6 +2600,53 @@ else
         echo "FAIL: the zoomed scene-lane capture lost its retained plan" >&2
         SWEEP_FAILED=1
     fi
+
+    # LX3-a, and the assertion is the *state*, not the scene. Both the old
+    # behaviour and the new one leave Pentagram on screen at t=5 — one because
+    # it became the base scene with the plan switched off, the other because the
+    # segment the playhead is inside now carries it. The frame is a plausible
+    # picture of either, which is why this gate reads three lines instead.
+    RETARGET_STATE="$(sed -n 's/^auto scenes: *//p' "$AUTO_SCENE_DIR/retarget.txt" | head -1)"
+    RETARGET_SCENE="$(sed -n 's/^scene: *//p' "$AUTO_SCENE_DIR/retarget.txt" | head -1)"
+    RETARGET_SEGMENTS="$(sed -n 's/^scene segments: *//p' "$AUTO_SCENE_DIR/retarget.txt" | head -1)"
+    ENABLED_SEGMENTS="$(sed -n 's/^scene segments: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
+    RETARGET_SCOPE="$(sed -n 's/^tune scope: *//p' "$AUTO_SCENE_DIR/retarget.txt" | head -1)"
+    echo "scene pick: state=$RETARGET_STATE scene=$RETARGET_SCENE segments=$RETARGET_SEGMENTS"
+    if [ "$ENABLED_SEGMENTS" != "spectrum, loom" ]; then
+        echo "FAIL: the untouched plan did not start as spectrum, loom" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$RETARGET_STATE" != "enabled (2 cues)" ]; then
+        echo "FAIL: a scene click switched the running plan off (state=$RETARGET_STATE)" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$RETARGET_SEGMENTS" != "spectrum, pentagram" ]; then
+        echo "FAIL: the scene click did not land on the playhead's segment alone (segments=$RETARGET_SEGMENTS)" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$RETARGET_SCENE" != "pentagram (Pentagram Orbits)" ]; then
+        echo "FAIL: the retargeted segment is not the one being previewed" >&2
+        SWEEP_FAILED=1
+    fi
+    # LX3-b, both branches of it. The seeded cues carry no snapshot, so the
+    # untouched plan's header has to say so — an edit there really does go to
+    # the shared per-scene table, which is the sentence that was missing. A
+    # retarget captures one on the way through, so the same header then names
+    # the segment. Prefix-matched on the retarget side because the segment
+    # boundary is the fixture's own midpoint and is not a constant here.
+    ENABLED_SCOPE="$(sed -n 's/^tune scope: *//p' "$AUTO_SCENE_DIR/enabled.txt" | head -1)"
+    echo "tune scope: enabled='$ENABLED_SCOPE' retarget='$RETARGET_SCOPE'"
+    if [ "$ENABLED_SCOPE" != "Editing: base scene - this segment captured no tuning" ]; then
+        echo "FAIL: the Tune scope line did not name the segment's uncaptured state (scope=$ENABLED_SCOPE)" >&2
+        SWEEP_FAILED=1
+    fi
+    case "$RETARGET_SCOPE" in
+        "Editing: segment 2 of 2 ("*) ;;
+        *)
+            echo "FAIL: the Tune scope line did not name the retargeted segment (scope=$RETARGET_SCOPE)" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
     if [ "$(sha256sum "$AUTO_SCENE_DIR/disabled.png" | cut -d' ' -f1)" \
         = "$(sha256sum "$AUTO_SCENE_DIR/enabled.png" | cut -d' ' -f1)" ]; then
         echo "FAIL: enabled and disabled Auto-scenes captures were identical" >&2

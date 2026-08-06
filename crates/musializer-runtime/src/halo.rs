@@ -28,6 +28,28 @@
 //! reconstructed `BeginTextureMode` when the caller was a render target, which
 //! reads only the id and the colour texture's dimensions (`rcore.c:1079-1108`).
 //!
+//! ## `EndTextureMode` is not the inverse of `BeginTextureMode`
+//!
+//! `BeginTextureMode` moves **three** size authorities to the target
+//! (`rcore.c:1079-1107`): the GL viewport, rlgl's cached
+//! `framebufferWidth`/`framebufferHeight` pair, and `CORE.Window.currentFbo`.
+//! `EndTextureMode` (`rcore.c:1109-1131`) restores only two of them — it calls
+//! `SetupViewport(CORE.Window.render.*)` (`rcore.c:3537`), which rewrites the
+//! viewport and the projection, and it resets `currentFbo` by hand, but it never
+//! touches rlgl's pair. Nothing later in a frame does either: `BeginDrawing`
+//! does not set it, and only a window resize does (`rcore_desktop_glfw.c:1762`).
+//!
+//! So a blur that ends with a bare `EndTextureMode` leaves rlgl reporting the
+//! *blur buffer's* dimensions for the rest of the session, and the readers of
+//! that pair — `draw::SceneViewport`, and this module's own capture — then scale
+//! a panel boundary by a ratio like 0.15. The observed damage was a scene panel
+//! that drew nothing (the narrowed rect rounded below one pixel) or an entire
+//! interface squeezed into the window's bottom-left corner (the restored
+//! viewport pinned to the small rect, at GL's bottom-left origin), persisting
+//! across every later frame. The restore below therefore puts the pair back
+//! explicitly; the render-target path needs no such thing, because the
+//! reconstructed `BeginTextureMode` sets all three authorities itself.
+//!
 //! ## Determinism
 //!
 //! The buffers are cleared and fully redrawn on every build, and every
@@ -231,15 +253,21 @@ impl HaloBlur {
         // SAFETY: restores the framebuffer captured above, unconditionally —
         // even a failed buffer allocation has already unbound the caller's
         // framebuffer, because `rlLoadFramebuffer` binds 0 as a side effect.
-        // `EndTextureMode` is the exact inverse when the caller was the default
-        // framebuffer. When the caller was a render target, `BeginTextureMode`
-        // reads only `id` and the colour texture's dimensions
-        // (`rcore.c:1079-1108`), so a reconstructed handle with those three
-        // fields restores the binding, viewport, projection and raylib's
-        // `currentFbo` bookkeeping (which scissor Y-flips depend on) exactly.
+        // `EndTextureMode` restores the binding, viewport, projection and
+        // `currentFbo` when the caller was the default framebuffer, but *not*
+        // rlgl's cached framebuffer size — see the module note above; leaving it
+        // at the blur buffer's dimensions corrupts every later frame's scene
+        // viewport, which is what the two size calls after it repair. When the
+        // caller was a render target, `BeginTextureMode` reads only `id` and the
+        // colour texture's dimensions (`rcore.c:1079-1108`), so a reconstructed
+        // handle with those three fields restores the binding, viewport,
+        // projection, the size pair and raylib's `currentFbo` bookkeeping (which
+        // scissor Y-flips depend on) exactly.
         unsafe {
             if previous_fbo == 0 {
                 raylib_sys::EndTextureMode();
+                raylib_sys::rlSetFramebufferWidth(previous_width);
+                raylib_sys::rlSetFramebufferHeight(previous_height);
             } else {
                 raylib_sys::BeginTextureMode(raylib_sys::RenderTexture2D {
                     id: previous_fbo,

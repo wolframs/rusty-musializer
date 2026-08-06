@@ -807,6 +807,12 @@ fn run(
                     .open_route_editor_probe(&key, scene, slot, committed.as_ref());
                 println!("{line}");
             }
+            // Last in the probe stage on purpose (LX3): the playhead it reads
+            // is the one `time=` just parked, so the segment a scene click
+            // lands on is the segment the capture will photograph.
+            if let Some(id) = probe.scene_pick {
+                app.select_scene_interactive(id, probe.seek_seconds.unwrap_or(0.0), 0.0);
+            }
         }
     }
 
@@ -1284,7 +1290,7 @@ fn run(
                     }
                 }
                 ShellCommand::SelectScene(id) => {
-                    app.select_scene(id, rl.get_time());
+                    app.select_scene_interactive(id, time_seconds, rl.get_time());
                 }
                 ShellCommand::SetAutoScenes(enabled) => {
                     app.set_auto_scenes(enabled, rl.get_time());
@@ -1509,6 +1515,10 @@ fn run(
         }
 
         report.frames += 1;
+        // Sampled here because the drawing pair has closed: inside one, a texture
+        // mode is allowed to have moved rlgl's framebuffer size, and out here it
+        // must have been put back.
+        report.framebuffer.observe();
 
         // Autosave, polled after the frame like the C's (`plug.c:7580-7583`).
         // Every track, not only the current one, because a background track can
@@ -1761,8 +1771,120 @@ impl App {
         }
     }
 
+    /// What a scene click means while an automatic plan is running (LX3-a).
+    ///
+    /// The frozen C has one answer for a scene selection: it becomes the
+    /// track's base scene, and the retained plan is switched off as a side
+    /// effect (`track_select_base_scene`, `plug.c:963-977`, reproduced in
+    /// [`Track::select_base_scene`]). With a plan authored that is a trap, and
+    /// the operator hit both halves of it in one session: clicking a scene to
+    /// change the segment they were looking at stopped the plan driving — so
+    /// the whole track then previewed one scene, and every later tuning edit
+    /// landed in the track-wide table that every segment of that scene kind
+    /// falls back to. Two reported bugs, one line of cause.
+    ///
+    /// So while the plan is enabled and non-empty, a scene selection retargets
+    /// **one segment** and leaves the plan running. The segment is the one
+    /// selected in the lane when there is one, otherwise the one under the
+    /// playhead, and the notice names it with its position and span — "which
+    /// one did that apply to" was the other half of the report.
+    ///
+    /// `--scene` on the command line is deliberately *not* routed here.
+    /// The CLI grammar is a documented contract (`docs/PHASE0_INVENTORY.md`)
+    /// and `--scene X` means "start on X"; it keeps calling
+    /// [`App::select_scene`] directly.
+    fn select_scene_interactive(
+        &mut self,
+        id: SceneId,
+        time_seconds: f64,
+        now_seconds: f64,
+    ) -> bool {
+        let Some(track) = self.workspace.current() else {
+            return self.select_scene(id, now_seconds);
+        };
+        if !track.scene_switches.enabled || track.scene_switches.is_empty() {
+            return self.select_scene(id, now_seconds);
+        }
+
+        let cues = track.scene_switches.cues();
+        let total = cues.len();
+        // An explicit lane selection beats the playhead: it is the more recent
+        // statement of intent, and it is the only way to edit a segment you are
+        // not currently listening to.
+        let selected = self.shell.scene_lane.selected_id;
+        let index = cues
+            .iter()
+            .position(|cue| cue.id == selected)
+            .or_else(|| {
+                cues.iter().position(|cue| {
+                    cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds
+                })
+            })
+            .unwrap_or(total - 1);
+        let cue = cues[index];
+
+        // Retargeting a segment to the scene it already uses would still
+        // recapture its snapshot from the track-wide table, silently throwing
+        // away tuning the user captured into it. Say nothing happened instead.
+        if cue.scene_index == id.index() as u32 {
+            self.shell.notify(
+                Severity::Info,
+                "Segment already uses that scene",
+                &format!(
+                    "Segment {} of {total} is {} from {} to {}.",
+                    index + 1,
+                    id.display_name(),
+                    ui::widgets::format_timestamp(cue.start_seconds),
+                    ui::widgets::format_timestamp(cue.end_seconds)
+                ),
+            );
+            return false;
+        }
+
+        let result = self
+            .workspace
+            .current_mut()
+            .expect("the track was present above")
+            .retarget_scene_cue(cue.id, id);
+        match result {
+            Err(error) => {
+                self.shell.notify(
+                    Severity::Warning,
+                    "Segment could not be retargeted",
+                    &error.to_string(),
+                );
+                false
+            }
+            Ok(()) => {
+                if let Some(track) = self.workspace.current_mut() {
+                    track.mark_dirty(now_seconds);
+                }
+                // `retarget_scene_cue` rewinds the plan cursor, so this rebinds
+                // the live scene when the retargeted segment is the one playing
+                // and leaves it alone when it is not.
+                self.apply_auto_scene_switch(time_seconds);
+                self.shell.notify(
+                    Severity::Success,
+                    "Segment scene changed",
+                    &format!(
+                        "{} now plays segment {} of {total} ({} to {}). Turn Auto off to change the track's base scene instead.",
+                        id.display_name(),
+                        index + 1,
+                        ui::widgets::format_timestamp(cue.start_seconds),
+                        ui::widgets::format_timestamp(cue.end_seconds)
+                    ),
+                );
+                true
+            }
+        }
+    }
+
     /// Binds a scene, seeded from the current track (`scene_seed_for_track`,
     /// `plug.c:611-614`; used at `:987` and `:1354`).
+    ///
+    /// The base-scene primitive. Interactive selections go through
+    /// [`App::select_scene_interactive`], which sends them to a segment instead
+    /// while an automatic plan is driving.
     fn select_scene(&mut self, id: SceneId, now_seconds: f64) -> bool {
         if self.scene.id() == id {
             return false;
@@ -1783,6 +1905,15 @@ impl App {
             let detail = if disabled_plan {
                 format!(
                     "{} is now the track's base scene. Auto scenes was turned off; its {kept_cues} cues are kept for when you re-enable it.",
+                    id.display_name()
+                )
+            } else if kept_cues > 0 {
+                // The plan was already off, so nothing was taken away — but the
+                // lane still shows segments, and a base-scene notice beside a
+                // full lane reads as though the two disagree. Naming the count
+                // says which one the preview is obeying (LX3-c).
+                format!(
+                    "{} is now the track's base scene. Automatic scenes is off, so its {kept_cues} segments are not driving the preview.",
                     id.display_name()
                 )
             } else {
@@ -2911,6 +3042,12 @@ struct Report {
     /// view to nothing on the way out, so reading it off the shell at print time
     /// reports `0.000x` for every run (LX2).
     timeline: String,
+    /// Whether each frame ended with rlgl's framebuffer size still equal to the
+    /// window's render size. A frame that ends out of sync draws the next scene
+    /// panel through the wrong scale, and both symptoms of that — an empty panel
+    /// and an interface in the bottom-left corner — photograph as coherent
+    /// frames, so only a count can report it.
+    framebuffer: musializer_runtime::draw::FramebufferAudit,
     reopened: Option<Reopen>,
 }
 
@@ -2945,6 +3082,7 @@ impl Default for Report {
             frame_lanes: FrameLaneStatus::default(),
             logical_window: (0.0, 0.0),
             timeline: String::new(),
+            framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
             reopened: None,
         }
     }
@@ -3117,6 +3255,29 @@ impl Report {
                 track.scene_switches.len()
             ),
         }
+        // Which scene each segment carries, in plan order (LX3). `auto scenes:`
+        // above counts them and `scene:` names the one bound right now, so a
+        // retarget of a segment the playhead is *not* inside changed nothing
+        // any line reported — and a scene click while a plan runs now retargets
+        // exactly that kind of segment.
+        if let Some(track) = app.workspace.current() {
+            let segments: Vec<&str> = track
+                .scene_switches
+                .cues()
+                .iter()
+                .map(|cue| {
+                    SceneId::from_index(cue.scene_index as usize).map_or("?", SceneId::stable_name)
+                })
+                .collect();
+            println!(
+                "scene segments:  {}",
+                if segments.is_empty() {
+                    "none".to_owned()
+                } else {
+                    segments.join(", ")
+                }
+            );
+        }
         println!(
             "frame lanes:     lyric={} semantic={} source={} merged-events={}",
             self.frame_lanes
@@ -3184,6 +3345,12 @@ impl Report {
         // capture could not tell a lane that accepted the notch from one that
         // ignored it — both draw a perfectly plausible timeline.
         println!("timeline:        {}", self.timeline);
+        // The size invariant `EndTextureMode` does not restore. A frame that ends
+        // with rlgl's pair still pointing at a caption blur buffer or an export
+        // target scales the next scene panel by that ratio, and the result is a
+        // plausible picture either way — an empty panel, or the whole interface
+        // in the bottom-left corner. Only a count can say it happened.
+        println!("gl framebuffer:  {}", self.framebuffer);
         // Which save route was on screen, and whether the tracks panel was
         // collapsed — the state review 1.12 found unrecoverable is only provable
         // from a capture through this line.
@@ -3200,7 +3367,13 @@ impl Report {
                 app.workspace
                     .current()
                     .and_then(workspace::Track::active_cue)
-                    .map(|(index, cue)| (index, cue.start_seconds))
+                    .map(|(index, cue)| (index, cue.start_seconds)),
+                app.workspace
+                    .current()
+                    .map_or(0, |track| track.scene_switches.len()),
+                app.workspace
+                    .current()
+                    .is_some_and(|track| track.scene_switches.enabled),
             )
         );
         // Evidence, not existence: the Assist panel draws the same box whether

@@ -307,6 +307,88 @@ disagreements.
 listed ours. That is a documentation gap for whoever writes a capture script
 next, not a behaviour gap.
 
+## LX3 — the scene plan owns the scene while it is on (operator bugs, 2026-08-06)
+
+Three reports from splitting scenes on a real track. Two of them are **one
+cause**:
+
+> *"Applying scene tuning settings to a scene selected after a split applies the
+> tuning settings to ALL SCENE SPLITS OF THAT SCENE KIND … (also I'm not sure
+> which one gets the tuning applied to)"*
+>
+> *"I put a scene split at the very start of the track, and had other scene
+> splits already in, but every time I selected a new scene, it still told me
+> '{scene} was selected as base scene'"*
+
+`Track::select_base_scene` sets `scene_switches.enabled = false`
+(`workspace.rs`, from `track_select_base_scene`, `plug.c:963-977`). So every
+scene click switched the running plan off. The preview then showed one scene for
+the whole track, and — with no cue driving — `App::settings_mut` fell through to
+the track-wide `scene_settings`, which is per *scene kind*. That is exactly what
+"applies to all splits of that kind" looks like from the outside, and the
+base-scene notice was the same bug announcing itself.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| LX3-a | An interactive scene selection retargets one segment and leaves the plan driving; `--scene` still sets the base scene | `main.rs`, `ui/shell.rs` | **done** |
+| LX3-b | The Tune header names the blast radius: a driving segment, a paused plan, or a segment with no captured tuning | `ui/panels/tune.rs` | **done** |
+| LX3-c | `--ui-probe scene-pick=`, a `scene segments:` report line, and the `retarget` capture | `cli.rs`, `main.rs`, `tools/headless_check.sh` | **done** |
+| LX3-d | `EndTextureMode` leaves rlgl's framebuffer size at the halo blur buffer's, so `SceneViewport` narrows to a tiny rect | `runtime/halo.rs`, `runtime/draw.rs` | **done** |
+
+**Which segment a click lands on, and why not the selected one for tuning.** The
+retarget prefers the segment selected in the lane and falls back to the one under
+the playhead, because a lane selection is the more recent statement of intent and
+is the only way to edit a segment you are not listening to. Tuning deliberately
+does *not* follow the lane selection: a slider you cannot see the effect of is
+worse than one bound to the wrong segment, so tuning stays on the segment that is
+rendering and the header says which that is.
+
+**A retarget to the scene a segment already uses is refused, not performed.**
+`retarget_scene_cue` recaptures the snapshot from the track-wide table, so
+"changing" a Pentagram segment to Pentagram would silently throw away tuning the
+user had captured into it.
+
+**The scene browser's `id != input.scene` guard had to go, conditionally.** It is
+a correct no-op guard for a base-scene choice and wrong for a retarget: the
+segment selected in the lane is very often not the one playing, and giving it the
+live scene is a legal edit the guard swallowed in silence.
+
+**LX3-d is a raylib asymmetry, not our arithmetic.** `BeginTextureMode` sets
+`rlSetFramebufferWidth/Height` (`rcore.c:1079-1107`); `EndTextureMode` restores
+the viewport and `CORE.Window.currentFbo` through `SetupViewport`
+(`rcore.c:1109-1131`, `:3537`) and **never** restores the rlgl pair. So after any
+preview-path caption glow, `rlGetFramebufferWidth()` reports the blur buffer's
+size for the rest of the session. The only readers here are `HaloBlur` and
+`draw::SceneViewport`, and the latter takes it as the full framebuffer: it then
+either produces a degenerate rect and the scene draws nothing — "the scene panel
+only shows a subtle glow" — or narrows, and on drop pins
+`rlViewport(0, 0, small, small)` at GL's bottom-left origin, which is the
+operator's "UI renders extremely small in the bottom left". One cause, both
+symptoms, and it needs a caption glow plus one of the four scenes that use a
+viewport (Orbital Lattice, Song Atlas, Spectral Terrarium, Constellation). It was
+measured at **188x50 against a 1280x720 window** — a scale factor of 0.15.
+
+**Every one of the four gates here fails on a frame that is a plausible picture
+of the passing one, which is why all four read report lines rather than pixels:**
+
+| check | perturbation | what the control printed |
+| --- | --- | --- |
+| a scene click leaves the plan driving | `SelectScene` routed back to `select_scene` | `auto scenes: disabled (2 cues)`, `scene segments: spectrum, loom` — and `scene: pentagram (Pentagram Orbits)` either way, identically |
+| the click lands on one segment | (the same control) | the plan never changed |
+| the Tune header names the scope | (the same control) | `Editing: base scene - 2 segments are paused`, which is the exact state the operator was tuning in |
+| the GL viewport survives a caption glow | the `halo.rs` restore reverted | `gl=188x50 render=1280x720 mismatched-frames=12 of 12`, exit status 0 throughout |
+
+The last row carries a warning worth keeping: with `SceneViewport` hardened, the
+*picture* is right even while `halo.rs` is broken, so a pixel-comparison gate
+would have gone permanently green over a live defect. The report line is the only
+assertion that still fires.
+
+**Not covered.** The `gl framebuffer:` audit samples in the main loop, so an
+export run reports `never sampled` — the export path renders zero frames through
+it. `HaloBlur::render`'s render-target branch was already correct (its
+reconstructed `BeginTextureMode` sets the pair), which is why exports never
+showed this.
+
 ## Start here next session (updated 2026-08-05)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,

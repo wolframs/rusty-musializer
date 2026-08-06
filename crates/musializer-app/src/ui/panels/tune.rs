@@ -319,7 +319,14 @@ impl Shell {
         // from the playhead, so the label cannot drift from what a Reset or a
         // slider edit actually touches.
         let active_cue = input.workspace.current().and_then(Track::active_cue);
-        let scope = tune_scope_label(active_cue.map(|(index, cue)| (index, cue.start_seconds)));
+        let (segments, plan_enabled) = input.workspace.current().map_or((0, false), |track| {
+            (track.scene_switches.len(), track.scene_switches.enabled)
+        });
+        let scope = tune_scope_label(
+            active_cue.map(|(index, cue)| (index, cue.start_seconds)),
+            segments,
+            plan_enabled,
+        );
         widgets::draw_text(
             d,
             input.fonts.ui(),
@@ -1171,17 +1178,34 @@ fn ascii_fallback(loaded: bool, text: &str) -> String {
 /// happens to show is not the same claim as a label a test pins byte for byte —
 /// this repository's own rule for a value the oracle would have pinned, applied
 /// to a value that has no oracle at all.
-pub(crate) fn tune_scope_label(cue: Option<(usize, f64)>) -> String {
+pub(crate) fn tune_scope_label(
+    cue: Option<(usize, f64)>,
+    segments: usize,
+    plan_enabled: bool,
+) -> String {
     match cue {
-        None => "Editing: base scene".to_string(),
-        // 1-based in the label: "cue 1" for the first segment reads as an
+        // 1-based in the label: "segment 1" for the first one reads as an
         // ordinal position, which is what a user counting segments on the
         // timeline would call it, not the plan's internal zero-based index.
+        // "segment" rather than the older "cue", so the word matches the scene
+        // lane, its notices and the operator's own "scene split" (LX3-b).
         Some((position, start_seconds)) => format!(
-            "Editing: cue {} ({})",
+            "Editing: segment {} of {segments} ({})",
             position + 1,
             widgets::format_timestamp(start_seconds)
         ),
+        None if segments == 0 => "Editing: base scene".to_string(),
+        // A plan on screen and a base-scene edit is the state the operator
+        // could not read (LX3-b): the lane shows six blocks, the sliders move,
+        // and nothing said the blocks were not the thing being moved. Both
+        // branches name the count, because the count is what is on screen.
+        // The plan is driving, the playhead is inside a segment, and that
+        // segment has no snapshot of its own — so the edit really does go to
+        // the shared table every uncaptured segment of this scene falls back
+        // to. Naming it is also the hint: "Capture tuning" is the button that
+        // changes the answer.
+        None if plan_enabled => "Editing: base scene - this segment captured no tuning".to_string(),
+        None => format!("Editing: base scene - {segments} segments are paused"),
     }
 }
 
@@ -1310,26 +1334,49 @@ mod tests {
     }
 
     #[test]
-    fn tune_scope_label_names_the_base_scene_when_no_cue_is_active() {
-        assert_eq!(tune_scope_label(None), "Editing: base scene");
+    fn tune_scope_label_names_the_base_scene_when_there_is_no_plan_at_all() {
+        assert_eq!(tune_scope_label(None, 0, false), "Editing: base scene");
+        // `enabled` cannot be true over an empty plan — `set_auto_scenes`
+        // refuses it — but the label must not invent segments if it ever is.
+        assert_eq!(tune_scope_label(None, 0, true), "Editing: base scene");
     }
 
     #[test]
-    fn tune_scope_label_names_the_cue_and_reuses_the_apps_own_time_format() {
+    fn tune_scope_label_names_the_segment_and_reuses_the_apps_own_time_format() {
         // Position is 0-based coming out of `Track::active_cue`; the label
-        // reads 1-based, "cue 1" for the first segment. The time format is
+        // reads 1-based, "segment 1" for the first one. The time format is
         // `widgets::format_timestamp`'s, not a new one: MM:SS.mmm.
         assert_eq!(
-            tune_scope_label(Some((0, 42.0))),
-            format!("Editing: cue 1 ({})", widgets::format_timestamp(42.0))
+            tune_scope_label(Some((0, 42.0)), 6, true),
+            format!(
+                "Editing: segment 1 of 6 ({})",
+                widgets::format_timestamp(42.0)
+            )
         );
         assert_eq!(
-            tune_scope_label(Some((0, 42.0))),
-            "Editing: cue 1 (00:42.000)"
+            tune_scope_label(Some((0, 42.0)), 6, true),
+            "Editing: segment 1 of 6 (00:42.000)"
         );
         assert_eq!(
-            tune_scope_label(Some((2, 90.5))),
-            "Editing: cue 3 (01:30.500)"
+            tune_scope_label(Some((2, 90.5)), 6, true),
+            "Editing: segment 3 of 6 (01:30.500)"
+        );
+    }
+
+    #[test]
+    fn tune_scope_label_distinguishes_a_paused_plan_from_a_driving_one() {
+        // LX3-b. The operator's report was "I'm not sure which one gets the
+        // tuning applied to", and the state they were in is this one: six
+        // segments drawn in the lane, the plan switched off behind their back
+        // by a scene click, and a header that said "base scene" without saying
+        // that the six blocks on screen were not it.
+        assert_eq!(
+            tune_scope_label(None, 6, false),
+            "Editing: base scene - 6 segments are paused"
+        );
+        assert_eq!(
+            tune_scope_label(None, 6, true),
+            "Editing: base scene - this segment captured no tuning"
         );
     }
 

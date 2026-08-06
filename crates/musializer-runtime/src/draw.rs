@@ -225,14 +225,32 @@ impl SceneViewport {
         screen_width: i32,
         screen_height: i32,
     ) -> Option<Self> {
-        // SAFETY: pure rlgl getters over global renderer state, valid while a
-        // drawing context is active — which every constructor path requires.
-        let (saved_width, saved_height, active_framebuffer) = unsafe {
-            (
-                raylib_sys::rlGetFramebufferWidth(),
-                raylib_sys::rlGetFramebufferHeight(),
-                raylib_sys::rlGetActiveFramebuffer(),
-            )
+        // SAFETY: pure raylib/rlgl getters over global renderer state, valid
+        // while a drawing context is active — which every constructor path
+        // requires.
+        //
+        // The two authorities are read separately on purpose. Inside a render
+        // target, rlgl's cached pair is the truth and raylib's render size is
+        // the *window*, so the export path must read rlgl. On the default
+        // framebuffer the reverse holds: `EndTextureMode` restores the viewport
+        // through `SetupViewport` (`rcore.c:1109-1131`, `rcore.c:3537`) but
+        // never rlgl's pair, so any texture mode anywhere earlier in the frame —
+        // the caption halo's blur, an export frame's target — leaves it reading
+        // that target's dimensions, and scaling a panel boundary by that ratio
+        // is what put the whole interface in the window's bottom-left corner.
+        // Taking the default framebuffer's size from `GetRenderWidth`/`Height`,
+        // which is the value `SetupViewport` itself just wrote, makes that class
+        // of corruption unstateable here rather than merely fixed at each source.
+        let active_framebuffer = unsafe { raylib_sys::rlGetActiveFramebuffer() };
+        let (saved_width, saved_height) = if active_framebuffer == 0 {
+            unsafe { (raylib_sys::GetRenderWidth(), raylib_sys::GetRenderHeight()) }
+        } else {
+            unsafe {
+                (
+                    raylib_sys::rlGetFramebufferWidth(),
+                    raylib_sys::rlGetFramebufferHeight(),
+                )
+            }
         };
         if saved_width < 1 || saved_height < 1 {
             return None;
@@ -351,6 +369,73 @@ impl Drop for SceneViewport {
             raylib_sys::rlSetFramebufferHeight(self.saved_height);
             raylib_sys::rlViewport(0, 0, self.saved_width, self.saved_height);
         }
+    }
+}
+
+/// End-of-frame agreement between rlgl's cached framebuffer size and the
+/// window's render size, which is the invariant a stray texture mode breaks.
+///
+/// `BeginTextureMode` moves both (`rcore.c:1079-1107`); `EndTextureMode` restores
+/// only the render size, through `SetupViewport` (`rcore.c:1109-1131`,
+/// `rcore.c:3537`). Nothing else in a frame resets rlgl's pair, so once the two
+/// disagree outside a texture mode they stay disagreeing, and the next
+/// [`SceneViewport`] built on the default framebuffer scales a panel boundary by
+/// the ratio between them — a scene that draws nothing, then an interface
+/// squeezed into the window's bottom-left corner.
+///
+/// This exists because that damage is invisible to a test and *plausible* in a
+/// capture: every pixel is where the arithmetic put it, and the frame is
+/// internally coherent. A count of frames that ended out of sync is the claim a
+/// picture cannot carry, so it goes in the report line the headless gate reads.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FramebufferAudit {
+    sampled: u64,
+    mismatched: u64,
+    gl: (i32, i32),
+    render: (i32, i32),
+}
+
+impl FramebufferAudit {
+    /// Samples both authorities. Call once per frame, after the drawing pair has
+    /// closed — inside one, a texture mode may legitimately be active.
+    pub fn observe(&mut self) {
+        // SAFETY: four pure getters over global renderer state, valid for as long
+        // as the window exists. Nothing is written and no pointer crosses over.
+        let (gl, render) = unsafe {
+            (
+                (
+                    raylib_sys::rlGetFramebufferWidth(),
+                    raylib_sys::rlGetFramebufferHeight(),
+                ),
+                (raylib_sys::GetRenderWidth(), raylib_sys::GetRenderHeight()),
+            )
+        };
+        self.sampled += 1;
+        self.gl = gl;
+        self.render = render;
+        if gl != render {
+            self.mismatched += 1;
+        }
+    }
+
+    /// How many sampled frames ended with the two sizes disagreeing. Zero is the
+    /// only correct value.
+    #[must_use]
+    pub fn mismatched_frames(&self) -> u64 {
+        self.mismatched
+    }
+}
+
+impl std::fmt::Display for FramebufferAudit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.sampled == 0 {
+            return f.write_str("never sampled");
+        }
+        write!(
+            f,
+            "gl={}x{} render={}x{} mismatched-frames={} of {}",
+            self.gl.0, self.gl.1, self.render.0, self.render.1, self.mismatched, self.sampled
+        )
     }
 }
 

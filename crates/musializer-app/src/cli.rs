@@ -242,6 +242,21 @@ pub struct UiProbe {
     /// One frame, not every frame: the shell consumes it on the first frame it
     /// draws, so a 30-frame probe zooms by one notch rather than by thirty.
     pub wheel: Option<f32>,
+    /// `scene-pick=NAME`: click the scene browser's tile for `NAME`, once (LX3).
+    ///
+    /// **Invented, and it exists because the gate could not reach the one
+    /// gesture the operator's bug reports were about.** `--scene NAME` is the
+    /// command line's *startup* scene and deliberately still sets the base
+    /// scene; a scene *click* is a different operation once an automatic plan
+    /// is running, where it retargets one segment and leaves the plan driving.
+    /// Nothing headless could press that tile, so the difference between "the
+    /// plan survived the click" and "the click switched the plan off" — the
+    /// whole of LX3-a — was unphotographable.
+    ///
+    /// Delivered once, at the end of the probe stage, so it lands after
+    /// `time=` has parked the playhead and the segment it targets is the one a
+    /// capture will show.
+    pub scene_pick: Option<SceneId>,
     /// `audio-stall=MS`: block only the main/refill thread once during a probe.
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
@@ -913,6 +928,9 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
             probe.wheel = Some(notches);
         }
+        // Through `--scene`'s own resolver, aliases included, so there is one
+        // spelling of a scene on this command line rather than two.
+        "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
         "audio-stall" => {
             let milliseconds: u64 = value.parse().ok()?;
             if !(1..=5_000).contains(&milliseconds) {
@@ -1065,6 +1083,27 @@ mod tests {
         assert_eq!(parse_ui_probe("wheel=9"), None);
         assert_eq!(parse_ui_probe("wheel=nan"), None);
         assert_eq!(parse_ui_probe("wheel=up"), None);
+    }
+
+    #[test]
+    fn a_scene_pick_probe_resolves_through_the_same_names_as_the_scene_flag() {
+        assert_eq!(
+            parse_ui_probe("scene-pick=pentagram")
+                .expect("valid spec")
+                .scene_pick,
+            Some(SceneId::Pentagram)
+        );
+        // `--scene`'s aliases resolve here too, because it is `--scene`'s own
+        // resolver: two spellings of one scene on one command line would be a
+        // grammar to keep in step forever.
+        assert_eq!(
+            parse_ui_probe("scene-pick=pulse")
+                .expect("valid spec")
+                .scene_pick,
+            scene_from_cli_name("pulse")
+        );
+        assert_eq!(parse_ui_probe("scene-pick=nosuchscene"), None);
+        assert_eq!(parse_ui_probe("scene-pick="), None);
     }
 
     /// `hover=` is separated by `x`, not by a comma.
