@@ -65,6 +65,111 @@ impl Resolution {
             Self::P2160 => "2160p",
         }
     }
+
+    /// The number the rung is named after: the **short** edge (EX2).
+    ///
+    /// At 16:9 that is the height, which is what "1080p" has always meant here
+    /// and in the C. Naming it explicitly is what lets [`Aspect`] turn one rung
+    /// into a vertical or square geometry without a second table.
+    #[must_use]
+    pub fn short_edge(self) -> u32 {
+        self.dimensions().1
+    }
+
+    /// Which rung a geometry sits on, by its short edge, if any.
+    #[must_use]
+    pub fn of_short_edge(edge: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|rung| rung.short_edge() == edge)
+    }
+}
+
+/// Output aspect-ratio presets (EX2, operator request 2026-08-06).
+///
+/// **Not the oracle's.** The frozen C has four resolution buttons and all four
+/// are 16:9 (`render_export.c:31-32`); a vertical or square export is simply not
+/// expressible in its interface. Nothing else in the pipeline needed changing —
+/// [`RenderExportConfig::validate`] already accepts any even geometry from 16x16
+/// to 7680x4320, and `--resolution 1080x1920` rendered correctly before this
+/// enum existed. What was missing was a way to *ask* for it.
+///
+/// The four are the ones a person actually delivers to: 16:9 for everything with
+/// a landscape player, 9:16 for Reels/Shorts/TikTok, 1:1 for a feed post, and
+/// 4:5 for the taller Instagram portrait crop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Aspect {
+    Wide16x9,
+    Tall9x16,
+    Square1x1,
+    Portrait4x5,
+}
+
+impl Aspect {
+    pub const ALL: [Self; 4] = [
+        Self::Wide16x9,
+        Self::Tall9x16,
+        Self::Square1x1,
+        Self::Portrait4x5,
+    ];
+
+    /// Width and height as a ratio, in that order.
+    #[must_use]
+    pub fn ratio(self) -> (u32, u32) {
+        match self {
+            Self::Wide16x9 => (16, 9),
+            Self::Tall9x16 => (9, 16),
+            Self::Square1x1 => (1, 1),
+            Self::Portrait4x5 => (4, 5),
+        }
+    }
+
+    /// The UI label.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Wide16x9 => "16:9",
+            Self::Tall9x16 => "9:16",
+            Self::Square1x1 => "1:1",
+            Self::Portrait4x5 => "4:5",
+        }
+    }
+
+    /// The geometry this aspect gives a [`Resolution`] rung.
+    ///
+    /// The rung names the **short** edge, which is the only reading that makes
+    /// "1080p" mean the same amount of picture in every shape: at 16:9 the short
+    /// edge is the height and the answer is the C's own 1920x1080, so every
+    /// existing preset is unchanged; at 9:16 it is the width and the answer is
+    /// 1080x1920, which is what every vertical platform calls 1080p.
+    ///
+    /// Every result is even on both axes, which
+    /// [`RenderExportConfig::validate`] requires for 4:2:0 chroma — check the
+    /// table rather than assuming, because a rung and a ratio that produced an
+    /// odd edge would be a preset button that refuses to export.
+    #[must_use]
+    pub fn dimensions(self, resolution: Resolution) -> (u32, u32) {
+        let short = resolution.short_edge();
+        let (width_ratio, height_ratio) = self.ratio();
+        if width_ratio >= height_ratio {
+            (short * width_ratio / height_ratio, short)
+        } else {
+            (short, short * height_ratio / width_ratio)
+        }
+    }
+
+    /// Which preset a geometry is, if any.
+    ///
+    /// Exact, like [`selected_resolution`](RenderExportConfig) in the panel:
+    /// a hand-written `--resolution 1234x568` belongs to no preset, and
+    /// highlighting the nearest one would tell the user their export is 16:9
+    /// when it is not.
+    #[must_use]
+    pub fn of(width: u32, height: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|aspect| {
+            Resolution::ALL
+                .into_iter()
+                .any(|rung| aspect.dimensions(rung) == (width, height))
+        })
+    }
 }
 
 /// Frame-rate presets (`render_export.h:16-21`).
@@ -161,8 +266,29 @@ impl Default for RenderExportConfig {
 
 impl RenderExportConfig {
     /// Applies a resolution preset (`render_export.c:28-40`).
+    ///
+    /// Keeps the current **aspect** if the geometry is on one of [`Aspect`]'s
+    /// presets, so changing 1080p to 2160p on a vertical export stays vertical
+    /// (EX2). A geometry that is on no preset — a hand-written `--resolution` —
+    /// falls back to the C's behaviour and becomes 16:9, because there is no
+    /// aspect to preserve and quietly inventing one from the ratio would land on
+    /// a size the user never chose.
     pub fn set_resolution(&mut self, resolution: Resolution) {
-        let (width, height) = resolution.dimensions();
+        let aspect = Aspect::of(self.width, self.height).unwrap_or(Aspect::Wide16x9);
+        let (width, height) = aspect.dimensions(resolution);
+        self.width = width;
+        self.height = height;
+    }
+
+    /// Applies an aspect preset, keeping the current rung (EX2).
+    ///
+    /// The rung is read from the short edge, so a geometry that is on no preset
+    /// at all still lands on the nearest rung's short edge rather than being
+    /// refused: the user pressed a shape button and a shape has to happen.
+    pub fn set_aspect(&mut self, aspect: Aspect) {
+        let short = self.width.min(self.height);
+        let rung = Resolution::of_short_edge(short).unwrap_or(Resolution::P1080);
+        let (width, height) = aspect.dimensions(rung);
         self.width = width;
         self.height = height;
     }
@@ -819,6 +945,118 @@ mod tests {
         assert_eq!(Quality::Balanced.name(), "Balanced");
         assert_eq!(Quality::Balanced.supersample_factor(), 1);
         assert_eq!(Quality::Master.supersample_factor(), 2);
+    }
+
+    /// Every rung x every aspect is a legal export, and 16:9 is byte-identical
+    /// to the C's own table.
+    ///
+    /// The evenness check is the load-bearing one: `validate` refuses an odd
+    /// edge because 4:2:0 halves both axes, so a rung-and-ratio pair that
+    /// produced one would be a preset button that cannot export. It is asserted
+    /// rather than eyeballed because 4:5 of 1440 is 1800 and 4:5 of 720 is 900 —
+    /// both fine, but nothing about the formula guarantees that in general.
+    #[test]
+    fn every_aspect_and_rung_is_a_legal_even_geometry() {
+        for rung in Resolution::ALL {
+            // 16:9 must reproduce the oracle's table exactly, or every existing
+            // preset silently moves.
+            assert_eq!(
+                Aspect::Wide16x9.dimensions(rung),
+                rung.dimensions(),
+                "{} at 16:9 drifted from the C's table",
+                rung.name()
+            );
+            for aspect in Aspect::ALL {
+                let (width, height) = aspect.dimensions(rung);
+                assert_eq!(width % 2, 0, "{} at {} is odd", rung.name(), aspect.name());
+                assert_eq!(height % 2, 0, "{} at {} is odd", rung.name(), aspect.name());
+                let config = RenderExportConfig {
+                    width,
+                    height,
+                    ..RenderExportConfig::default()
+                };
+                assert_eq!(
+                    config.validate(),
+                    Ok(()),
+                    "{} at {} does not validate",
+                    rung.name(),
+                    aspect.name()
+                );
+                assert_eq!(
+                    width.min(height),
+                    rung.short_edge(),
+                    "the rung names the short edge"
+                );
+            }
+        }
+    }
+
+    /// The geometries a person would name, pinned by hand.
+    #[test]
+    fn the_named_geometries_are_what_the_platforms_call_them() {
+        assert_eq!(Aspect::Wide16x9.dimensions(Resolution::P1080), (1920, 1080));
+        assert_eq!(Aspect::Tall9x16.dimensions(Resolution::P1080), (1080, 1920));
+        assert_eq!(
+            Aspect::Square1x1.dimensions(Resolution::P1080),
+            (1080, 1080)
+        );
+        assert_eq!(
+            Aspect::Portrait4x5.dimensions(Resolution::P1080),
+            (1080, 1350)
+        );
+        assert_eq!(Aspect::Tall9x16.dimensions(Resolution::P2160), (2160, 3840));
+        // 2160 at 4:5 is 2700 tall, comfortably inside the 4320 ceiling.
+        assert_eq!(
+            Aspect::Portrait4x5.dimensions(Resolution::P2160),
+            (2160, 2700)
+        );
+    }
+
+    /// Changing the rung keeps the shape, and changing the shape keeps the rung.
+    ///
+    /// This is the whole reason the two live on one config rather than as eight
+    /// independent buttons: pressing 2160p on a vertical export must not silently
+    /// turn it landscape.
+    #[test]
+    fn a_rung_and_an_aspect_are_independent_choices() {
+        let mut config = RenderExportConfig::default();
+        config.set_aspect(Aspect::Tall9x16);
+        assert_eq!((config.width, config.height), (1080, 1920));
+        config.set_resolution(Resolution::P2160);
+        assert_eq!(
+            (config.width, config.height),
+            (2160, 3840),
+            "the rung changed and the shape did not"
+        );
+        config.set_aspect(Aspect::Square1x1);
+        assert_eq!(
+            (config.width, config.height),
+            (2160, 2160),
+            "the shape changed and the rung did not"
+        );
+        config.set_aspect(Aspect::Wide16x9);
+        assert_eq!((config.width, config.height), (3840, 2160));
+    }
+
+    /// A geometry no preset produces belongs to no preset, both ways.
+    #[test]
+    fn a_hand_written_geometry_matches_no_aspect_and_falls_back_to_wide() {
+        assert_eq!(Aspect::of(1920, 1080), Some(Aspect::Wide16x9));
+        assert_eq!(Aspect::of(1080, 1920), Some(Aspect::Tall9x16));
+        assert_eq!(Aspect::of(1234, 568), None);
+        assert_eq!(Resolution::of_short_edge(1080), Some(Resolution::P1080));
+        assert_eq!(Resolution::of_short_edge(568), None);
+
+        // `--resolution 1234x568` then 1440p: no aspect to preserve, so the C's
+        // own behaviour — the 16:9 rung — rather than a ratio invented from a
+        // number the user typed for some other reason.
+        let mut odd = RenderExportConfig {
+            width: 1234,
+            height: 568,
+            ..RenderExportConfig::default()
+        };
+        odd.set_resolution(Resolution::P1440);
+        assert_eq!((odd.width, odd.height), (2560, 1440));
     }
 
     #[test]

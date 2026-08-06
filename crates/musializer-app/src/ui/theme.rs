@@ -26,6 +26,25 @@ pub mod rgba {
     pub const TRACK_BUTTON_HOVEROVER: u32 = 0xE7EA_F2FF;
     pub const WHITE: u32 = 0xFFFF_FFFF;
 
+    /// The margin around a preview framed to a non-panel-shaped export (EX2).
+    ///
+    /// Distinctly darker than [`BACKGROUND`], which is the scene's own clear, so
+    /// the letter- or pillar-box reads as "your video ends here" rather than as
+    /// a scene that failed to fill its panel. Not black either: at a tall aspect
+    /// the surround is most of the panel, and a pure-black field beside a
+    /// near-black scene would make the frame edge invisible, which is the one
+    /// thing this colour exists to draw.
+    pub const PREVIEW_SURROUND: u32 = 0x0A0A_0BFF;
+
+    /// The one-pixel rule that says where the exported frame ends (EX2).
+    ///
+    /// The surround alone is not enough and a capture proved it: Pentagram
+    /// Orbits pillarboxed at 9:16 is near-black scene against near-black
+    /// surround, the seam is invisible, and the picture then says nothing about
+    /// the framing it exists to show. Bright enough to read against both, dim
+    /// enough not to compete with the scene.
+    pub const PREVIEW_FRAME_EDGE: u32 = 0x4A4A_52FF;
+
     /// The groove the timed lanes sit in (LX1-e).
     ///
     /// The timeline band is three lanes over one time axis — scene plan,
@@ -200,6 +219,8 @@ pub mod color {
         ui_success = UI_SUCCESS;
         track_button_hoverover = TRACK_BUTTON_HOVEROVER;
         white = WHITE;
+        preview_surround = PREVIEW_SURROUND;
+        preview_frame_edge = PREVIEW_FRAME_EDGE;
         ui_lane_trough = UI_LANE_TROUGH;
         ui_overlay_surface = UI_OVERLAY_SURFACE;
         ui_overlay_ink = UI_OVERLAY_INK;

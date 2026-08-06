@@ -33,10 +33,6 @@ use raylib::text::RaylibFont;
 
 const PI: f32 = std::f32::consts::PI;
 
-/// The grid drawn when no image has been imported (`scene_ascii_field.c:260-261`).
-const LIVE_COLUMNS: usize = 80;
-const LIVE_ROWS: usize = 42;
-
 /// raylib's built-in font, borrowed rather than owned.
 ///
 /// `ascii_grid_font` (`scene_ascii_field.c:154-160`) deliberately uses
@@ -205,12 +201,30 @@ pub fn draw(
 
     let mut clipped = d.begin_scissor_mode(scissor_x, scissor_y, scissor_width, scissor_height);
     let imported = grid.filter(|grid| grid.is_populated());
-    let (columns, rows) = match imported {
-        Some(grid) => (grid.columns(), grid.rows()),
-        None => (LIVE_COLUMNS, LIVE_ROWS),
+    // `columns`/`rows` address the source grid and `draw_columns`/`draw_rows` the
+    // drawn one; they differ only for an imported image bigger than the drawn
+    // bound (`scene_ascii_field.c:260-264`).
+    //
+    // The two branches take their dimensions from different places on purpose. An
+    // imported picture keeps the grid it was converted at, because that grid
+    // carries the *image's* aspect and refitting it to the frame's would stretch
+    // the picture. Only the live spectrogram — which has no aspect of its own —
+    // is fitted to the frame.
+    let (columns, rows, draw_columns, draw_rows) = match imported {
+        Some(grid) => (
+            grid.columns(),
+            grid.rows(),
+            grid.columns().min(MAX_COLUMNS),
+            grid.rows().min(MAX_ROWS),
+        ),
+        None => {
+            let Some((columns, rows)) = ascii_art::live_grid(boundary.width, boundary.height)
+            else {
+                return;
+            };
+            (columns, rows, columns, rows)
+        }
     };
-    let draw_columns = columns.min(MAX_COLUMNS);
-    let draw_rows = rows.min(MAX_ROWS);
     let margin = (9.0 * pixel_scale).max(boundary.width.min(boundary.height) * 0.035);
     if boundary.width <= margin * 2.0 || boundary.height <= margin * 2.0 {
         return;
@@ -254,7 +268,10 @@ pub fn draw(
         let x_remainder = columns % draw_columns;
         for column in 0..draw_columns {
             // The history is a fixed 54x96 grid whatever the drawn grid's size, so
-            // the lookup spreads the drawn cells across all of it.
+            // the lookup spreads the drawn cells across all of it. It is a
+            // rescale, not an index — `row < draw_rows` gives `history_row < 54`
+            // for *any* `draw_rows` — which is why a portrait frame may draw more
+            // rows than the history holds and merely repeat sampled ones.
             let history_row = row * MAX_ROWS / draw_rows;
             let history_column = column * MAX_COLUMNS / draw_columns;
             let spectrum_density = state.density(history_row, history_column);

@@ -1121,6 +1121,17 @@ fn run(
             let _ = ensure_song_atlas_map(&audio, &mut app, music.as_ref());
         }
 
+        // The shape the export will actually be (EX2). Falls back to the default
+        // configuration's 16:9 with no track open, which is what the export
+        // panel would offer anyway, so the welcome-state preview is unchanged.
+        let preview_aspect = app.workspace.current().map_or_else(
+            || {
+                let default = RenderExportConfig::default();
+                default.width as f32 / default.height as f32
+            },
+            |track| track.render_config.width as f32 / track.render_config.height as f32,
+        );
+
         // Borrowed from the current track for exactly this frame, which is what
         // stops one track's terrain or glyph grid from being drawn under another.
         let assets =
@@ -1195,9 +1206,46 @@ fn run(
             // no scissor active, so the renderer owns exactly when the clip is
             // on — around the scene and the halo composite, never around the
             // blur build.
+            // The preview is framed to the *export's* aspect, not the panel's
+            // (EX2).
+            //
+            // Before aspect presets existed this was a distinction without a
+            // difference: every export was 16:9 and the panel was near enough.
+            // It stops being true the moment a user picks 9:16, and the failure
+            // is silent in the worst way — they place a caption against a wide
+            // panel, and the file it lands in is tall. Nothing else in the
+            // application could have told them; the export panel prints the
+            // geometry as text and the preview showed a different shape.
+            //
+            // The surround is filled first and in its own colour, so the letter-
+            // or pillar-box reads as a deliberate frame rather than as a scene
+            // that failed to fill its panel — the ASCII Field grid's old
+            // behaviour, which is exactly what an unexplained inset looks like.
             if !layout.preview.is_empty() {
-                let preview = ui::widgets::rectangle(ui_scale.physical_rect(layout.preview));
+                let framed = layout.preview.fit_aspect(preview_aspect);
+                report.preview_panel = (layout.preview.width, layout.preview.height);
+                report.preview_framed = (framed.width, framed.height);
+                let inset =
+                    framed.width < layout.preview.width || framed.height < layout.preview.height;
+                if inset {
+                    let surround = ui::widgets::rectangle(ui_scale.physical_rect(layout.preview));
+                    d.draw_rectangle_rec(surround, ui::theme::color::preview_surround());
+                }
+                let preview = ui::widgets::rectangle(ui_scale.physical_rect(framed));
                 renderer.draw(&mut d, &fonts, &app.scene, &frame, assets, preview, 1.0);
+                // The frame edge, drawn *after* the scene and only when there is
+                // one. A capture of Pentagram Orbits pillarboxed against the
+                // surround is the argument for it: both are near-black, the seam
+                // is invisible, and the user is looking at a picture that does
+                // not say where their video ends — which is the one thing the
+                // framing exists to tell them.
+                if inset {
+                    d.draw_rectangle_lines_ex(
+                        preview,
+                        ui_scale.value().max(1.0),
+                        ui::theme::color::preview_frame_edge(),
+                    );
+                }
             }
 
             let mut ui_draw = d.begin_mode2D(ui_scale.camera());
@@ -3129,6 +3177,15 @@ struct Report {
     frames_over_budget: u64,
     /// Peak occupancy of the audio bridge ring, as a fraction of its capacity.
     peak_ring_fill: f32,
+    /// The preview panel and the rect the scene was actually drawn into (EX2).
+    ///
+    /// Two rects rather than one, because the whole point is the difference: a
+    /// scene that fills its panel and a scene framed to a 16:9 export are the
+    /// same picture, and a capture cannot tell a deliberate pillarbox from a
+    /// scene that failed to fill the panel — which is precisely what ASCII
+    /// Field's fixed grid looked like before EX2.
+    preview_panel: (f32, f32),
+    preview_framed: (f32, f32),
     reopened: Option<Reopen>,
 }
 
@@ -3169,6 +3226,8 @@ impl Default for Report {
             worst_frame_index: 0,
             frames_over_budget: 0,
             peak_ring_fill: 0.0,
+            preview_panel: (0.0, 0.0),
+            preview_framed: (0.0, 0.0),
             reopened: None,
         }
     }
@@ -3484,6 +3543,24 @@ impl Report {
             },
         }
         println!("panel:           {}", app.shell.panel.label());
+        // The scene panel, and the rect inside it the scene was drawn into
+        // (EX2). Equal means the export is the panel's own shape; unequal names
+        // the framing a capture would otherwise show as an unexplained inset.
+        {
+            let (panel_width, panel_height) = self.preview_panel;
+            let (framed_width, framed_height) = self.preview_framed;
+            let framing = if framed_width < panel_width - 0.5 {
+                "pillarbox"
+            } else if framed_height < panel_height - 0.5 {
+                "letterbox"
+            } else {
+                "full"
+            };
+            println!(
+                "preview frame:   panel {panel_width:.0}x{panel_height:.0}, \
+                 framed {framed_width:.0}x{framed_height:.0} ({framing})"
+            );
+        }
         // The export geometry a click on the SIZE row is supposed to move
         // (EX1). Nothing printed it, so a capture of the export panel could not
         // tell a row that took the press from one that ignored it: the summary

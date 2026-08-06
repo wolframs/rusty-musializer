@@ -202,14 +202,38 @@ pub fn layout_utf8(
     max_width: f32,
     measure_text: &mut dyn FnMut(&str) -> f32,
 ) -> Result<CaptionLayout, CaptionLayoutError> {
+    layout_utf8_lines(text, max_width, MAX_LINES, measure_text)
+}
+
+/// [`layout_utf8`] with the line ceiling supplied by the caller (EX2).
+///
+/// The C has no such parameter, and did not need one: its four export presets
+/// are all 16:9, so `MAX_LINES = 3` against a 16:9 measure was the only case
+/// that could ever arise. A 9:16 frame gives the same caption a measure 1.78x
+/// narrower, and three lines of it then discards roughly 60 % of a normal lyric
+/// — the ellipsis is honest about it, but honesty is not the same as fitting.
+///
+/// `max_lines` is clamped to at least 1. The ellipsis behaviour is unchanged:
+/// the *last* permitted line ends in `U+2026` when content is lost, whatever
+/// that line's number is.
+///
+/// # Errors
+/// The same set as [`layout_utf8`].
+pub fn layout_utf8_lines(
+    text: &str,
+    max_width: f32,
+    max_lines: usize,
+    measure_text: &mut dyn FnMut(&str) -> f32,
+) -> Result<CaptionLayout, CaptionLayoutError> {
     if !max_width.is_finite() || max_width <= 0.0 {
         return Err(CaptionLayoutError::Width);
     }
+    let max_lines = max_lines.max(1);
     let normalized = normalize_text(text)?;
 
     let mut layout = CaptionLayout::default();
     let mut position = 0usize;
-    while position < normalized.len() && layout.lines.len() < MAX_LINES {
+    while position < normalized.len() && layout.lines.len() < max_lines {
         let remaining = &normalized[position..];
         let full_width = measure(remaining, measure_text)?;
         if full_width <= max_width {
@@ -218,7 +242,7 @@ pub fn layout_utf8(
             break;
         }
 
-        let last_line = layout.lines.len() + 1 == MAX_LINES;
+        let last_line = layout.lines.len() + 1 == max_lines;
         if last_line {
             // The ellipsis alone must fit, or there is no honest way to show that
             // content was dropped.

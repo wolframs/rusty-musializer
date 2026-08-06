@@ -235,6 +235,118 @@ pub fn grid_layout(
     })
 }
 
+/// The fewest cells the live grid will take on an axis.
+///
+/// Unreachable through aspect alone — see [`live_grid`], whose count is
+/// scale-invariant and bottoms out at 45 columns / 42 rows — so this is a floor
+/// against float arithmetic that has lost its resolution, not a layout policy.
+pub const LIVE_GRID_MIN_AXIS: usize = 8;
+
+/// The most cells the live grid will take on an axis.
+///
+/// The history the drawn grid samples is [`super::MAX_COLUMNS`] x
+/// [`super::MAX_ROWS`] (96x54), but the drawn grid does not *index* it: the
+/// scene rescales with `row * MAX_ROWS / draw_rows`, which stays in range for any
+/// `draw_rows`. So this bound is about per-frame glyph work and about not
+/// stretching 54 sampled rows further than they read, and both axes get the
+/// wider of the two history dimensions rather than their own — a portrait frame
+/// legitimately wants more rows than the history has, the same way a 16:9 frame
+/// already draws fewer columns (80) than the history holds (96).
+pub const LIVE_GRID_MAX_AXIS: usize = GRID_MAX_COLUMNS;
+
+/// The C's live column count (`scene_ascii_field.c:260`), now the *reference*
+/// count rather than a constant: the cell edge is chosen so a 16:9 frame still
+/// gets exactly this many columns.
+const LIVE_GRID_REFERENCE_COLUMNS: f32 = 80.0;
+
+/// The aspect the C's 80x42 was written for.
+const LIVE_GRID_REFERENCE_ASPECT: f32 = 16.0 / 9.0;
+
+/// The fraction of the frame's height the field covers.
+///
+/// At 16:9 the C's grid fits to width, so the cell edge is `width/80` and
+/// `height/cell` is `80 * 9/16 = 45` rows' worth of room — of which the C uses
+/// 42 (`scene_ascii_field.c:261`). Written as the fraction rather than as
+/// `0.93333` so the 16:9 case lands on exactly 42.0 before rounding.
+const LIVE_GRID_FILL: f32 = 42.0 / 45.0;
+
+/// Rounds one axis' cell count and holds it inside the live grid's bounds.
+///
+/// `+inf` is the widest frame f32 can state, so it clamps up rather than being
+/// treated as garbage; only a NaN (which the guards in [`live_grid`] already
+/// exclude) falls to the floor.
+fn live_grid_axis(cells: f32) -> usize {
+    if cells.is_nan() {
+        return LIVE_GRID_MIN_AXIS;
+    }
+    let rounded = cells.round();
+    if rounded <= LIVE_GRID_MIN_AXIS as f32 {
+        return LIVE_GRID_MIN_AXIS;
+    }
+    if rounded >= LIVE_GRID_MAX_AXIS as f32 {
+        return LIVE_GRID_MAX_AXIS;
+    }
+    rounded as usize
+}
+
+/// The live spectrogram's grid for a frame of this shape, replacing the C's fixed
+/// 80x42 pair (`scene_ascii_field.c:260-261`).
+///
+/// **A divergence, not a port.** The C only ever draws 16:9, and 80x42 encodes
+/// that: [`grid_layout`] min-fits square cells, so at 16:9 the grid fits to
+/// *width* — the cell edge is `width/80`, the field is the full width, and it
+/// covers `42/45` of the height. Both of those are properties of the aspect. Kept
+/// literal, a 1080x1920 export draws the same squat band across 28 % of the frame
+/// with two thirds of it empty, which is what makes ASCII Field the one scene a
+/// vertical export cannot use.
+///
+/// So the cell edge is derived from the **short** axis — which is what holds the
+/// visual density of the glyphs steady as the frame changes shape — and each axis
+/// then takes as many cells as fit:
+///
+/// ```text
+/// short   = min(width, height)
+/// cell    = short * (16/9) / 80        // == width/80 on a 16:9 frame
+/// columns = round(width / cell)
+/// rows    = round(height * (42/45) / cell)
+/// ```
+///
+/// The count is therefore scale-invariant: only the frame's aspect moves it, so a
+/// 320x180 preview panel and a 3840x2160 export both draw 80x42, exactly as they
+/// do today. Verified geometries, with the first as the regression case:
+///
+/// | frame | grid |
+/// | --- | --- |
+/// | 1920x1080 (16:9) | 80 x 42, the C's grid to the cell |
+/// | 1080x1080 (1:1) | 45 x 42 |
+/// | 1080x1920 (9:16) | 45 x 75 |
+/// | 2560x1080 (21:9) | 107 x 42, clamped to 96 x 42 |
+///
+/// Returns `None` for a frame that cannot carry a grid at all, rather than a
+/// garbage one; the caller draws nothing, as it already does for a rejected
+/// [`grid_layout`].
+#[must_use]
+pub fn live_grid(area_width: f32, area_height: f32) -> Option<(usize, usize)> {
+    if !area_width.is_finite()
+        || !area_height.is_finite()
+        || area_width <= 0.0
+        || area_height <= 0.0
+    {
+        return None;
+    }
+    let cell =
+        area_width.min(area_height) * LIVE_GRID_REFERENCE_ASPECT / LIVE_GRID_REFERENCE_COLUMNS;
+    // A frame small enough to underflow the cell edge to zero would divide by it
+    // below; refuse instead of returning whatever infinity produces.
+    if !cell.is_finite() || cell <= 0.0 {
+        return None;
+    }
+    Some((
+        live_grid_axis(area_width / cell),
+        live_grid_axis(area_height * LIVE_GRID_FILL / cell),
+    ))
+}
+
 /// `luminance_u8` (`ascii_art.c:109-113`): integer Rec. 709, coefficients summing
 /// to 256.
 fn luminance_u8(pixel: &[u8]) -> u8 {
@@ -802,6 +914,102 @@ mod tests {
             (legacy.field_width / legacy.field_height - 96.0 * 0.5 / 26.0).abs() < 0.0001,
             "a half-height grid keeps its display aspect"
         );
+    }
+
+    #[test]
+    fn a_sixteen_by_nine_frame_still_draws_the_c_s_eighty_by_forty_two_grid() {
+        // The regression case: every export this application has ever written was
+        // 16:9, and 80x42 is the grid in all of them. Exact equality, at four
+        // sizes, because the count is meant to be scale-invariant — a 320x180
+        // preview panel draws the same grid as a 4K render.
+        for (width, height) in [
+            (1920.0, 1080.0),
+            (1280.0, 720.0),
+            (3840.0, 2160.0),
+            (320.0, 180.0),
+        ] {
+            assert_eq!(
+                live_grid(width, height),
+                Some((80, 42)),
+                "{width}x{height} moved the C's grid"
+            );
+        }
+    }
+
+    #[test]
+    fn a_square_or_vertical_frame_keeps_the_cell_size_and_takes_more_cells() {
+        // The cell edge comes from the short axis, so all three of these draw the
+        // same 24 px cell a 1920x1080 frame does. 45 columns is 1080/24; 42 rows
+        // is the same 42/45 fill of the height that 16:9 gets, and 75 is that
+        // fill over a 1920 px height.
+        assert_eq!(live_grid(1080.0, 1080.0), Some((45, 42)));
+        assert_eq!(live_grid(1080.0, 1920.0), Some((45, 75)));
+        // 4:5 and 2:3, the other two shapes a vertical export is cut to.
+        assert_eq!(live_grid(1080.0, 1350.0), Some((45, 53)));
+        assert_eq!(live_grid(1080.0, 1620.0), Some((45, 63)));
+    }
+
+    #[test]
+    fn an_ultrawide_frame_clamps_its_columns_and_keeps_square_cells() {
+        // 2560/24 is 106.67, which rounds to 107 and exceeds the 96 the live grid
+        // allows an axis. Clamped, the cells can no longer be 24 px *and* reach
+        // both edges, and `grid_layout` resolves that by shrinking them to fit —
+        // a modest letterbox rather than cells stretched wider than they are
+        // tall, which would put a glyph sized from `cell_height` over its
+        // neighbours.
+        assert_eq!(live_grid(2560.0, 1080.0), Some((LIVE_GRID_MAX_AXIS, 42)));
+        // The clamp holds at aspects nothing sane would ask for, and only the
+        // long axis ever reaches it: the short axis is what sizes the cell, so it
+        // always lands on 45 columns or 42 rows.
+        assert_eq!(live_grid(100_000.0, 100.0), Some((LIVE_GRID_MAX_AXIS, 42)));
+        assert_eq!(live_grid(100.0, 100_000.0), Some((45, LIVE_GRID_MAX_AXIS)));
+    }
+
+    #[test]
+    fn every_grid_the_live_fit_returns_is_drawable_and_inside_its_bounds() {
+        // The counts index nothing directly, but they size the drawn cell loop and
+        // the scene's history lookup divides by them, so a zero is a division by
+        // zero and an unbounded count is unbounded work. Swept rather than spot
+        // checked, from a 1 px panel to a 4K frame at 41 aspects each.
+        let aspects = (1..=41).map(|step| 0.05 * step as f32);
+        for size in [1.0f32, 7.0, 64.0, 360.0, 1080.0, 2160.0] {
+            for aspect in aspects.clone() {
+                for (width, height) in [(size * aspect, size), (size, size * aspect)] {
+                    let Some((columns, rows)) = live_grid(width, height) else {
+                        continue;
+                    };
+                    assert!(
+                        (LIVE_GRID_MIN_AXIS..=LIVE_GRID_MAX_AXIS).contains(&columns)
+                            && (LIVE_GRID_MIN_AXIS..=LIVE_GRID_MAX_AXIS).contains(&rows),
+                        "{width}x{height} fitted {columns}x{rows}"
+                    );
+                    assert!(grid_layout(width, height, columns, rows, 1.0).is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_degenerate_frame_is_refused_rather_than_fitted() {
+        for (width, height) in [
+            (0.0f32, 1080.0f32),
+            (1920.0, 0.0),
+            (-1920.0, 1080.0),
+            (1920.0, -1080.0),
+            (f32::NAN, 1080.0),
+            (1920.0, f32::NAN),
+            (f32::INFINITY, 1080.0),
+            (1920.0, f32::NEG_INFINITY),
+            // Small enough that the cell edge underflows to zero, which would
+            // otherwise be a division by zero rather than a grid.
+            (1.0e-44, 1.0e-44),
+        ] {
+            assert_eq!(
+                live_grid(width, height),
+                None,
+                "{width}x{height} was fitted"
+            );
+        }
     }
 
     #[test]

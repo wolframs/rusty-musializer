@@ -71,7 +71,58 @@ fn caption_font_size(
     {
         return None;
     }
-    Some((20.0 * pixel_scale).max(boundary.height * style.size_scale as f32))
+    Some((20.0 * pixel_scale).max(short_edge(boundary) * style.size_scale as f32))
+}
+
+/// The frame's short edge, which is what every caption fraction is taken of
+/// (EX2).
+///
+/// The C uses `boundary.height` throughout (`plug.c:1219-1307`) and is right to,
+/// because its four export presets are all 16:9 and the height *is* the short
+/// edge in every one of them. So this is byte-identical for any landscape frame
+/// and only changes a portrait one — where using the height instead means 78 %
+/// larger type inside a 3.1x narrower measure, which at 1080x1920 threw away
+/// about 60 % of a normal lyric line against the three-line cap. Measured on a
+/// seeded 158-character cue: 16:9 rendered all of it, 9:16 stopped mid-word.
+///
+/// The short edge is the reading that makes a caption the same physical size in
+/// every shape, which is what "the same style" has to mean once a project can be
+/// exported at more than one.
+fn short_edge(boundary: Rectangle) -> f32 {
+    boundary.width.min(boundary.height)
+}
+
+/// The widest frame this application has a preset for, as width over height.
+/// Named because [`line_ceiling`] uses it as the reference the C's three-line
+/// cap was chosen against, not as a limit on anything.
+const REFERENCE_ASPECT: f32 = 16.0 / 9.0;
+
+/// How many lines a caption may take at this frame's shape (EX2).
+///
+/// [`caption_layout::MAX_LINES`] is three, chosen against a 16:9 measure — the
+/// only measure the C can produce. Keeping three at 9:16 does not keep the cap
+/// *meaning* the same thing, because the measure is 1.78x narrower there and the
+/// same sentence needs 1.78x the lines. So the ceiling preserves the **text
+/// area** instead of the line count: the reference is what a 16:9 frame with
+/// this same short edge would have offered.
+///
+/// The epsilon on the `ceil` is load-bearing rather than defensive. At exactly
+/// 16:9 the ratio is 1.0 and the product is `3.0` in real arithmetic, but in
+/// `f32` it lands a hair either side, and a hair above turns the C's three lines
+/// into four for every existing project. Subtracting a thousandth makes 16:9
+/// exactly three and costs nothing at any other shape.
+///
+/// Clamped below at [`caption_layout::MAX_LINES`] so an ultrawide frame — where
+/// the arithmetic asks for two — can never fit *less* than the C did, and above
+/// at eight, which is already a quarter of a 9:16 frame's height.
+fn line_ceiling(boundary: Rectangle) -> usize {
+    let width = boundary.width;
+    if !width.is_finite() || width <= 0.0 {
+        return caption_layout::MAX_LINES;
+    }
+    let reference = short_edge(boundary) * REFERENCE_ASPECT;
+    let wanted = (caption_layout::MAX_LINES as f32 * reference / width - 1.0e-3).ceil();
+    (wanted.max(0.0) as usize).clamp(caption_layout::MAX_LINES, 8)
 }
 
 fn compose(
@@ -90,8 +141,10 @@ fn compose(
     let maximum = (boundary.width * style.width_scale as f32)
         .min(boundary.width - 2.0 * (horizontal_padding + 12.0 * pixel_scale));
     let layout =
-        caption_layout::layout_utf8(text, maximum, &mut |line| measure(line, font_size, spacing))
-            .ok()?;
+        caption_layout::layout_utf8_lines(text, maximum, line_ceiling(boundary), &mut |line| {
+            measure(line, font_size, spacing)
+        })
+        .ok()?;
     let widest = layout
         .lines
         .iter()
@@ -102,11 +155,27 @@ fn compose(
     let box_width = (boundary.width - 24.0 * pixel_scale).min(widest + horizontal_padding * 2.0);
     let box_height = text_height + vertical_padding * 2.0;
     let (horizontal, vertical) = anchor_axes(style.anchor);
-    let margin = boundary.height * style.margin_scale as f32;
+    // The short edge, not the height (EX2). The C takes both margins from
+    // `boundary.height`, which is the short edge on every frame it can produce;
+    // at 9:16 the height is the *long* edge, so the horizontal margin came out
+    // 1.78x too large and pushed a left- or right-anchored plate off the canvas.
+    let margin = short_edge(boundary) * style.margin_scale as f32;
     let edge_margin = margin.max(12.0 * pixel_scale);
+    // Clamped into the frame afterwards, which is a separate fix and applies at
+    // every aspect: `box_width` is capped against the boundary but never against
+    // the margin, so an authored `margin_scale` near its 0.400 ceiling puts an
+    // edge-anchored plate partly outside the frame at 16:9 too — it is simply
+    // easier to hit at 9:16. A caption clipped by the scene scissor mid-word is
+    // indistinguishable from a rendering fault.
     let box_rect = Rectangle::new(
-        boundary.x + axis_offset(horizontal, boundary.width, box_width, edge_margin),
-        boundary.y + axis_offset(vertical, boundary.height, box_height, margin),
+        (boundary.x + axis_offset(horizontal, boundary.width, box_width, edge_margin)).clamp(
+            boundary.x,
+            boundary.x + (boundary.width - box_width).max(0.0),
+        ),
+        (boundary.y + axis_offset(vertical, boundary.height, box_height, margin)).clamp(
+            boundary.y,
+            boundary.y + (boundary.height - box_height).max(0.0),
+        ),
         box_width,
         box_height,
     );
@@ -423,6 +492,111 @@ mod tests {
             &mut |line, size, _| line.chars().count() as f32 * size * 0.5,
         )
         .expect("the synthetic caption fits")
+    }
+
+    /// 16:9 is unchanged, and every other shape gets the same physical type
+    /// (EX2).
+    ///
+    /// The equality against `boundary.height` for the landscape frames is the
+    /// regression assertion: the C uses the height everywhere and every existing
+    /// project was authored against it, so a portrait fix that moved a landscape
+    /// caption by a pixel would be a worse bug than the one it fixed.
+    #[test]
+    fn caption_type_is_the_same_size_in_every_shape_and_16x9_is_untouched() {
+        let style = CaptionStyle::default();
+        let scale = 1.0;
+        let size = |width: f32, height: f32| {
+            caption_font_size(
+                Rectangle::new(0.0, 0.0, width, height),
+                "a caption",
+                scale,
+                &style,
+            )
+            .expect("large enough to hold a caption")
+        };
+
+        // Landscape: the short edge *is* the height, so this is the C's own
+        // arithmetic, asserted as an exact equality.
+        for (width, height) in [(1920.0, 1080.0), (1280.0, 720.0), (2560.0, 1080.0)] {
+            assert_eq!(
+                size(width, height),
+                (20.0f32 * scale).max(height * style.size_scale as f32),
+                "{width}x{height} moved"
+            );
+        }
+
+        // A 1080-short-edge frame is the same type in all four preset shapes,
+        // which is what "the same style" has to mean once a project can be
+        // exported at more than one.
+        let wide = size(1920.0, 1080.0);
+        assert_eq!(size(1080.0, 1920.0), wide, "9:16");
+        assert_eq!(size(1080.0, 1080.0), wide, "1:1");
+        assert_eq!(size(1080.0, 1350.0), wide, "4:5");
+    }
+
+    /// The line ceiling preserves the text area rather than the line count.
+    ///
+    /// The 16:9 case is the float trap: `3 * (16/9) * 1080 / 1920` is exactly
+    /// three in real arithmetic and lands either side of it in `f32`, and a hair
+    /// above would silently give every existing project a fourth line.
+    #[test]
+    fn the_line_ceiling_is_three_at_16x9_and_grows_as_the_frame_narrows() {
+        let ceiling =
+            |width: f32, height: f32| line_ceiling(Rectangle::new(0.0, 0.0, width, height));
+        for (width, height) in [(1920.0, 1080.0), (1280.0, 720.0), (3840.0, 2160.0)] {
+            assert_eq!(
+                ceiling(width, height),
+                caption_layout::MAX_LINES,
+                "{width}x{height} is 16:9 and must be exactly the C's three"
+            );
+        }
+        // 1.78x narrower measure needs 1.78x the lines: 5.33, rounded up.
+        assert_eq!(ceiling(1080.0, 1920.0), 6, "9:16");
+        assert_eq!(ceiling(1080.0, 1080.0), 6, "1:1");
+        assert_eq!(ceiling(1080.0, 1350.0), 6, "4:5");
+        // Wider than 16:9 asks for two, and is floored at the C's three so no
+        // shape can ever fit *less* than the oracle did.
+        assert_eq!(ceiling(2560.0, 1080.0), caption_layout::MAX_LINES, "21:9");
+        // A degenerate boundary answers with the constant rather than a panic.
+        assert_eq!(ceiling(0.0, 1080.0), caption_layout::MAX_LINES);
+    }
+
+    /// An edge-anchored plate stays inside the frame at every margin the style
+    /// can carry (EX2).
+    ///
+    /// `MARGIN_MAXIMUM` is 0.400, and at that setting the box used to start
+    /// beyond the point where its own width still fits — clipped mid-word by the
+    /// scene scissor, which reads as a rendering fault rather than as a layout
+    /// choice. Reachable at 16:9 too; 9:16 only made it easy to hit.
+    #[test]
+    fn an_edge_anchored_caption_never_leaves_the_frame() {
+        for margin_scale in [0.0f64, 0.06, 0.2, 0.4] {
+            for anchor in [
+                CaptionAnchor::TopLeft,
+                CaptionAnchor::MiddleRight,
+                CaptionAnchor::BottomLeft,
+                CaptionAnchor::BottomCenter,
+            ] {
+                let style = CaptionStyle {
+                    anchor,
+                    margin_scale,
+                    ..CaptionStyle::default()
+                };
+                for (width, height) in [(1920.0, 1080.0), (1080.0, 1920.0), (1080.0, 1080.0)] {
+                    let boundary = Rectangle::new(0.0, 0.0, width, height);
+                    let composition =
+                        measured(boundary, "a moderately long caption line", 1.0, &style);
+                    let box_rect = composition.box_rect;
+                    assert!(
+                        box_rect.x >= boundary.x - 0.01
+                            && box_rect.x + box_rect.width <= boundary.x + boundary.width + 0.01
+                            && box_rect.y >= boundary.y - 0.01
+                            && box_rect.y + box_rect.height <= boundary.y + boundary.height + 0.01,
+                        "{anchor:?} at margin {margin_scale} in {width}x{height} put the plate at {box_rect:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

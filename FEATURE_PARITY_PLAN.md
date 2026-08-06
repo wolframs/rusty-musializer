@@ -590,6 +590,94 @@ At 4K `-preset slow` that is a visibly frozen window. It reads as "the export
 hung" and is a fair candidate for the operator's complaint; moving the write
 outside the pair is the fix.
 
+## EX2 — vertical and square exports (operator request, 2026-08-06)
+
+> *"I think we once talked about different export formats (e.g. for mobile, 1:1,
+> besides the standard 16:9)"*
+
+**The pipeline was already aspect-agnostic and nobody could tell.**
+`RenderExportConfig::validate` accepts any even geometry from 16x16 to
+7680x4320, and `--resolution 1080x1920` rendered a correct vertical MP4 before a
+line of this was written. What was missing was a way to *ask* for it — and, once
+asked, two scenes that composed for a landscape frame and did not say so.
+
+Thirty renders, ten scenes at 1920x1080 / 1080x1920 / 1080x1080, every frame
+looked at. Nothing letterboxed, nothing stretched, **no circle became an
+ellipse** — every radial primitive is either min-axis-derived or drawn square.
+Two surfaces were genuinely broken and the rest merely composed differently.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| EX2-a | `Aspect` — 16:9, 9:16, 1:1, 4:5 — and an ASPECT row beside QUALITY | `core/timing/render_export.rs`, `ui/panels/export.rs` | **done** |
+| EX2-b | The caption sizes and margins from the frame's **short** edge, and its line cap preserves text area rather than line count | `scenes/caption.rs`, `core/project/caption_layout.rs` | **done** |
+| EX2-c | ASCII Field's live grid is fitted to the frame instead of a fixed 80x42 | `core/scenes/ascii_field/ascii_art.rs`, `scenes/ascii_field.rs` | **done** |
+| EX2-d | The preview is framed to the export's aspect, with a visible edge, and says so in `preview frame:` | `main.rs`, `core/ui/workspace_layout.rs`, `ui/theme.rs` | **done** |
+
+**The rung names the short edge.** That is the one reading that makes "1080p"
+mean the same amount of picture in every shape: at 16:9 the short edge is the
+height and the answer is the C's own 1920x1080, so every existing preset is
+byte-identical; at 9:16 it is the width and the answer is 1080x1920, which is
+what every vertical platform calls 1080p. A rung and an aspect are independent —
+pressing 2160p on a vertical export stays vertical — and both are asserted.
+
+**The caption was the real bug, and it lost content rather than looking wrong.**
+Font size came from `boundary.height` and the wrap width from `boundary.width`
+(`plug.c:1219-1307` does the same, correctly, because its four presets are all
+16:9). At 9:16 that is 78 % larger type inside a 3.1x narrower measure, against
+a hard three-line cap: a seeded 158-character cue rendered in full at 16:9 and
+stopped mid-word at 9:16, losing roughly 60 %. Three changes, and each preserves
+landscape exactly:
+
+- every fraction is taken of `min(width, height)`, which *is* the height on any
+  landscape frame, so 16:9 is unchanged as an equality rather than as a claim;
+- the line ceiling preserves **text area** instead of line count — three at 16:9,
+  six at 9:16/1:1/4:5, floored at the C's three so no shape can ever fit less
+  than the oracle did. The epsilon on its `ceil` is load-bearing: `3 * (16/9) *
+  1080 / 1920` is exactly three in real arithmetic and lands either side of it in
+  `f32`, and a hair above would give every existing project a fourth line;
+- the plate is clamped inside the frame. That last one is **not** an aspect bug —
+  `box_width` was capped against the boundary but never against the margin, so an
+  authored `margin_scale` near its 0.400 ceiling put an edge-anchored plate partly
+  off-canvas at 16:9 too. 9:16 only made it easy to hit.
+
+**ASCII Field drew a 1004x527 band in a 1080x1920 frame — 28 % of the height.**
+Its live grid was a fixed 80x42 of square cells, min-fitted and centred. It now
+derives the cell edge from the short axis and takes as many as fit:
+`cell = min(w, h) * (16/9) / 80`, `columns = round(w / cell)`,
+`rows = round(h * (42/45) / cell)`. The `42/45` is the fill fraction the C's own
+grid produces at 16:9 — written as a fraction rather than as `0.93333`, which
+lands on `41.99985` and rounds to 42 only by luck. **The 1920x1080 MP4 is
+byte-identical before and after**, same md5, not "looks the same".
+
+Both axes clamp at 96 rather than rows at 54. The 54 ceiling looked mandatory —
+`spectrum_history` is a fixed `[[f32; 96]; 54]` — and is not: `history_row = row *
+MAX_ROWS / draw_rows` is a *rescale*, always below 54 for `row < draw_rows`, and
+`density()` is `get`/`get` returning 0.0 out of range. Checked at every indexing
+site. Clamping rows at 54 fills 63 % of a 9:16 frame against 87.5 % uncapped,
+which defeats the fill fraction the formula exists to preserve.
+
+**21:9 letterboxes on purpose.** Past 96 columns the cells can no longer be
+`cell` wide and fill the frame; widening them instead would put every glyph over
+its horizontal neighbour, and the scene's whole read is a monospaced terminal. A
+symmetric letterbox at an aspect nobody exports to reads as framing; overlapping
+glyphs read as a fault.
+
+**The preview is now framed to the export, which is a visible change at every
+aspect including 16:9.** With a bottom panel open the preview band is routinely
+3:1, and a 16:9 export inside it used to be composed for a 3:1 rect — a picture
+the export would never produce. It is now pillarboxed to 16:9, which costs
+preview area and buys the truth. The surround alone was not enough and a capture
+proved it: Pentagram Orbits at 9:16 is near-black scene against a near-black
+surround with an invisible seam, so a one-pixel rule draws the frame edge.
+
+**Measured and left alone.** The other eight scenes compose differently at 9:16
+without breaking: Pulse Field, Pentagram and Cadence's ambient state size from
+the min axis and leave dead bands; Loom's weave cells stretch; Spectrum's bands
+become needles; and the four 3D scenes crop horizontally because raylib's
+`BeginMode3D` preserves the vertical FOV (`rcore.c:1032`) — Orbital Lattice
+actually fills a tall frame better than a wide one. Only Song Atlas loses its
+subject, its terrain slab running off both sides. All shippable, none fixed.
+
 ## Start here next session (updated 2026-08-05)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,

@@ -40,7 +40,9 @@ use musializer_core::project::frame_lanes::SceneFrameTiming;
 use musializer_core::render::resolve::LinearResolver;
 use musializer_core::scene::routes::RouteSources;
 use musializer_core::scene::{SceneAudioFrame, SceneInstance};
-use musializer_core::timing::render_export::{FrameRate, Quality, RenderExportConfig, Resolution};
+use musializer_core::timing::render_export::{
+    Aspect, FrameRate, Quality, RenderExportConfig, Resolution,
+};
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::Faces;
@@ -92,9 +94,13 @@ fn dispatch(request: &ExportRequest, commands: &mut Vec<ShellCommand>) {
 /// configuration that no preset button represents, and highlighting the nearest
 /// one would tell the user their export is 1080p when it is not.
 fn selected_resolution(config: &RenderExportConfig) -> Option<Resolution> {
-    Resolution::ALL
-        .into_iter()
-        .find(|resolution| resolution.dimensions() == (config.width, config.height))
+    // Matched by the *short* edge and cross-checked against an aspect preset, so
+    // a vertical 1080x1920 highlights 1080p rather than nothing (EX2). The
+    // cross-check is what keeps `None` a real answer: `--resolution 1234x568`
+    // has a short edge of 568, which is on no rung, and even a geometry whose
+    // short edge does land on one is not a preset unless its shape is.
+    Aspect::of(config.width, config.height)?;
+    Resolution::of_short_edge(config.width.min(config.height))
 }
 
 /// Which frame-rate preset a configuration matches, if any (`plug.c:647-656`).
@@ -413,6 +419,49 @@ impl Shell {
                 dispatch(&ExportRequest::Configure(next), commands);
             }
             x += 106.0 + gap;
+        }
+
+        // ASPECT, to the right of QUALITY, mirroring FPS beside SIZE (EX2).
+        //
+        // On an existing row rather than a fourth one on purpose: the panel's
+        // height floor is *derived* from `body_layout`'s offsets all the way out
+        // to `EXPORT_MIN_BAND_HEIGHT` and the timeline band's own budget, so a
+        // new row would push the minimum window height up for every panel, not
+        // just this one. There is room here — the quality row ends well short of
+        // the box — and the SIZE|FPS pair above already establishes the reading.
+        widgets::draw_text(
+            &mut clip,
+            font,
+            "ASPECT",
+            x + 8.0,
+            y + 10.0,
+            13.0,
+            color::ui_muted(),
+        );
+        x += 66.0;
+        let selected_aspect = Aspect::of(config.width, config.height);
+        for (index, aspect) in Aspect::ALL.into_iter().enumerate() {
+            let button = UiRect::new(x, y, 62.0, metric::UI_BUTTON_HEIGHT);
+            if boundary.contains(button)
+                && self
+                    .widgets
+                    .text_button(
+                        &mut clip,
+                        font,
+                        widgets::widget_id(EXPORT_WIDGETS, 32 + index as u32),
+                        button,
+                        aspect.name(),
+                        selected_aspect == Some(aspect),
+                        ButtonStyle::Neutral,
+                        None,
+                    )
+                    .clicked
+            {
+                let mut next = config;
+                next.set_aspect(aspect);
+                dispatch(&ExportRequest::Configure(next), commands);
+            }
+            x += 62.0 + gap;
         }
 
         // The summary is the readout that makes the three rows above mean

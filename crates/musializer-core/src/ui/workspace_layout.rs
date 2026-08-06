@@ -123,6 +123,38 @@ impl UiRect {
         };
         UiRect::new(x, y, right - x, bottom - y)
     }
+
+    /// The largest rect of the given width-over-height ratio that fits inside
+    /// this one, centred (EX2).
+    ///
+    /// **Not the oracle's**, because the oracle has no aspect to fit to: its four
+    /// export presets are all 16:9 and the preview panel simply *was* the frame.
+    /// Once an export can be 9:16 the preview stops being a picture of the
+    /// output, and a user authoring a vertical video is placing captions against
+    /// a shape their file will not have. This is the arithmetic behind showing
+    /// them the real one.
+    ///
+    /// Returns `self` unchanged for a non-finite or non-positive ratio, so a
+    /// degenerate configuration draws the panel it always drew rather than
+    /// collapsing the preview to nothing.
+    #[must_use]
+    pub fn fit_aspect(&self, ratio: f32) -> UiRect {
+        if self.is_empty() || !ratio.is_finite() || ratio <= 0.0 {
+            return *self;
+        }
+        let by_width = self.width / ratio;
+        let (width, height) = if by_width <= self.height {
+            (self.width, by_width)
+        } else {
+            (self.height * ratio, self.height)
+        };
+        UiRect::new(
+            self.x + (self.width - width) * 0.5,
+            self.y + (self.height - height) * 0.5,
+            width,
+            height,
+        )
+    }
 }
 
 /// Action row geometry, shared with the drawing code so the two cannot drift
@@ -302,6 +334,62 @@ impl WorkspaceSidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The preview letterbox (EX2), pinned in both directions and at the
+    /// degenerate edges.
+    ///
+    /// The pillarbox case is the one that matters: a 9:16 export inside a
+    /// landscape preview panel is what a user authoring a vertical video sees,
+    /// and it is the case the panel used to get silently wrong by showing the
+    /// scene at the panel's own shape.
+    #[test]
+    fn a_preview_fits_the_export_aspect_inside_itself_and_stays_centred() {
+        let panel = UiRect::new(100.0, 50.0, 800.0, 400.0);
+
+        // Taller than the panel: pillarboxed, height fills, centred in x.
+        let vertical = panel.fit_aspect(9.0 / 16.0);
+        assert_eq!(vertical.height, 400.0);
+        near(vertical.width, 225.0, 0.01);
+        near(vertical.x, 100.0 + (800.0 - 225.0) * 0.5, 0.01);
+        assert_eq!(vertical.y, 50.0);
+
+        // 16:9 is *narrower* than this 2:1 panel, so it still pillarboxes: the
+        // height fills and the width comes down to 711. The panel being wider
+        // than 16:9 is the ordinary case in this workspace, not an exotic one —
+        // with a bottom panel open the preview band is routinely 3:1 — so this
+        // is the assertion that would catch a `fit_aspect` that only ever
+        // letterboxed.
+        let wide = panel.fit_aspect(16.0 / 9.0);
+        assert_eq!(wide.height, 400.0);
+        near(wide.width, 711.11, 0.01);
+        near(wide.x, 100.0 + (800.0 - 711.11) * 0.5, 0.01);
+
+        // Wider than the panel: letterboxed, width fills, centred in y.
+        let letterboxed = panel.fit_aspect(4.0);
+        assert_eq!(letterboxed.width, 800.0);
+        near(letterboxed.height, 200.0, 0.01);
+        near(letterboxed.y, 50.0 + (400.0 - 200.0) * 0.5, 0.01);
+        assert_eq!(letterboxed.x, 100.0);
+
+        // The exact-match case must be the identity, or a 16:9 export inside a
+        // 16:9 panel would gain a one-pixel border from rounding.
+        let exact = UiRect::new(0.0, 0.0, 1920.0, 1080.0).fit_aspect(1920.0 / 1080.0);
+        assert_eq!((exact.x, exact.y), (0.0, 0.0));
+        near(exact.width, 1920.0, 0.01);
+        near(exact.height, 1080.0, 0.01);
+
+        // A ratio that cannot be honoured leaves the panel alone rather than
+        // collapsing the preview to nothing.
+        for ratio in [0.0f32, -1.0, f32::NAN, f32::INFINITY] {
+            let unchanged = panel.fit_aspect(ratio);
+            assert_eq!(
+                (unchanged.x, unchanged.y, unchanged.width, unchanged.height),
+                (panel.x, panel.y, panel.width, panel.height),
+                "ratio {ratio} should be refused"
+            );
+        }
+        assert!(UiRect::new(0.0, 0.0, 0.0, 0.0).fit_aspect(1.0).is_empty());
+    }
 
     /// C's `EXPECT_NEAR`, which also fails on a non-finite actual
     /// (`tests/test_support.h:63-70`).

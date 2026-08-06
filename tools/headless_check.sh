@@ -579,6 +579,78 @@ if [ "$GAP_CONFIG" != "1920x1080 at 30 fps, High, supersample 2x" ]; then
     SWEEP_FAILED=1
 fi
 
+# The ASPECT row, and the preview framing that goes with it (EX2).
+#
+# The buttons are pressed rather than photographed, for the reason EX1 exists:
+# the row draws identically whether or not its presses land. And the preview is
+# checked through `preview frame:` rather than by pixel, because a scene framed
+# to a 9:16 export inside a wide panel and a scene that simply failed to fill
+# that panel are the same picture — which is exactly what ASCII Field's fixed
+# grid looked like before this tranche.
+echo "=== the export aspect row, and the framed preview ==="
+click_export 9x16  605x589 "1080x1920 at 30 fps, High, supersample 2x"
+click_export 1x1   675x589 "1080x1080 at 30 fps, High, supersample 2x"
+click_export 4x5   745x589 "1080x1350 at 30 fps, High, supersample 2x"
+# A rung change must keep the shape. This is the whole reason the two rows are
+# one configuration rather than eight independent buttons.
+capture "click-export-tall-2160p" 1280x720 \
+    --ui-probe "panel=export,click=605x589" >/dev/null 2>&1 || true
+TALL_THEN_2160="$(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --resolution 1080x1920 \
+        --probe-frames 30 --ui-probe "panel=export,click=368x542" 2>&1 \
+    | sed -n 's/^export config: *//p')"
+echo "vertical then 2160p: [$TALL_THEN_2160]"
+if [ "$TALL_THEN_2160" != "2160x3840 at 30 fps, High, supersample 2x" ]; then
+    echo "FAIL: pressing 2160p on a vertical export did not stay vertical" >&2
+    SWEEP_FAILED=1
+fi
+
+# The preview reports the rect the scene was drawn into, and its shape has to be
+# the *export's*, not the panel's. Checked as a ratio rather than as pinned
+# pixels so a layout change moves the panel without breaking this.
+check_preview_frame() {
+    # check_preview_frame NAME RESOLUTION EXPECTED-RATIO
+    local name="$1" geometry="$2" expected="$3"
+    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer --mute "$FIXTURE" --size 1600x1000 \
+            --resolution "$geometry" --probe-frames 20 --ui-probe "panel=none" \
+        >"$OUT_DIR/preview-frame-$name.txt" 2>&1
+    local line
+    line="$(sed -n 's/^preview frame: *//p' "$OUT_DIR/preview-frame-$name.txt")"
+    echo "preview at $geometry: ${line:-<absent>}"
+    if [ -z "$line" ]; then
+        echo "FAIL: no 'preview frame:' line for $geometry" >&2
+        SWEEP_FAILED=1
+        return
+    fi
+    # "panel WxH, framed WxH (kind)" -> the framed pair. Python rather than awk
+    # because the three-argument `match()` is a gawk extension and this machine's
+    # /usr/bin/awk is mawk, which fails with a syntax error rather than a wrong
+    # answer — but only at the point the check runs, which is late.
+    python3 - "$line" "$expected" "$geometry" <<'PYEOF' || SWEEP_FAILED=1
+import re, sys
+line, want, geometry = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+found = re.search(r"framed (\d+)x(\d+)", line)
+if not found:
+    print(f"FAIL: could not read the framed rect from: {line}", file=sys.stderr)
+    sys.exit(1)
+width, height = int(found.group(1)), int(found.group(2))
+ratio = width / height
+if not (want * 0.99 <= ratio <= want * 1.01):
+    print(
+        f"FAIL: {geometry} framed at {width}x{height} (ratio {ratio:.4f}), "
+        f"wanted {want:.4f}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+PYEOF
+}
+check_preview_frame wide 1920x1080 1.7778
+check_preview_frame tall 1080x1920 0.5625
+check_preview_frame square 1080x1080 1.0
+
 echo "=== the lyrics editor, over a project that actually has cues ==="
 # The panel loop above photographs the editor over the bare sweep, which has no
 # lyrics: an empty cue list is a real state and worth a frame, but it cannot show
