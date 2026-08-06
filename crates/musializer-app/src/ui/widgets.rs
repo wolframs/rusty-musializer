@@ -109,6 +109,20 @@ pub struct Pointer {
     pub released: bool,
 }
 
+/// A synthesized left-button state for `--ui-probe click=` (EX1).
+///
+/// Only the three edges, never the position: the pointer is parked with
+/// `SetMousePosition` like `hover=` does, so a probed press lands wherever the
+/// real hit test says it lands. Injecting a coordinate here as well would let a
+/// probe "click" a control the physical pointer could never reach, which is the
+/// one thing the check has to be unable to do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PointerProbe {
+    pub down: bool,
+    pub pressed: bool,
+    pub released: bool,
+}
+
 impl Pointer {
     #[must_use]
     pub fn read(d: &RaylibDrawHandle<'_>, ui_scale: UiScale) -> Self {
@@ -165,6 +179,19 @@ pub struct Widgets {
     /// deterministically is a tooltip no capture reviews.
     pub tooltip_delay: f64,
     ui_scale: UiScale,
+    /// `--ui-probe click=`'s synthesized button state, or `None` for the real
+    /// device. Set by the composition root before the shell draws and cleared by
+    /// it when the press has been delivered; nothing inside the shell reads or
+    /// writes it, so no control can behave differently because a probe is on.
+    pointer_probe: Option<PointerProbe>,
+    /// The last id to claim a press, kept after the claim is released so the
+    /// probe's report line can name *what* took the click.
+    ///
+    /// This is the whole diagnostic value of the click probe. "The button did
+    /// not fire" has two very different causes — the press never reached the
+    /// control, or a control on top of it took the press — and a capture cannot
+    /// tell them apart, because both leave the same picture on screen.
+    last_claimed_id: u64,
 }
 
 impl Widgets {
@@ -182,6 +209,36 @@ impl Widgets {
         self.interacted = false;
         self.pending_tooltip = None;
         self.ui_scale = ui_scale;
+    }
+
+    /// Installs (or clears) `--ui-probe click=`'s synthesized button state.
+    ///
+    /// Deliberately *not* reset by [`Self::begin_frame`]: the caller sets it for
+    /// exactly the frames the press occupies, and a reset here would make the
+    /// order of two calls in the composition root load-bearing.
+    pub fn set_pointer_probe(&mut self, probe: Option<PointerProbe>) {
+        self.pointer_probe = probe;
+    }
+
+    /// The last widget id to claim a press, or `0` if none ever has.
+    #[must_use]
+    pub fn last_claimed_id(&self) -> u64 {
+        self.last_claimed_id
+    }
+
+    /// This frame's pointer, with the click probe applied if one is installed.
+    ///
+    /// One seam, so a probe cannot reach half the widgets: every control in the
+    /// shell goes through [`Self::button`] or [`Self::slider`], and both read
+    /// here.
+    fn pointer(&self, d: &RaylibDrawHandle<'_>) -> Pointer {
+        let mut pointer = Pointer::read(d, self.ui_scale);
+        if let Some(probe) = self.pointer_probe {
+            pointer.down = probe.down;
+            pointer.pressed = probe.pressed;
+            pointer.released = probe.released;
+        }
+        pointer
     }
 
     /// Frees a press claimed by a widget that has since stopped being drawn
@@ -272,7 +329,7 @@ impl Widgets {
     /// `id` must be unique and stable across frames for the widget it names; a
     /// colliding id lets one widget release another's press.
     pub fn button(&mut self, d: &RaylibDrawHandle<'_>, id: u64, boundary: UiRect) -> ButtonState {
-        self.button_at(id, boundary, Pointer::read(d, self.ui_scale))
+        self.button_at(id, boundary, self.pointer(d))
     }
 
     /// [`Widgets::button`] without raylib.
@@ -295,6 +352,7 @@ impl Widgets {
         if self.active_button_id == 0 {
             if hovered && pointer.pressed {
                 self.active_button_id = id;
+                self.last_claimed_id = id;
             }
         } else if self.active_button_id == id && pointer.released {
             self.active_button_id = 0;
@@ -566,7 +624,7 @@ impl Widgets {
         if boundary.is_empty() {
             return None;
         }
-        let pointer = Pointer::read(d, self.ui_scale);
+        let pointer = self.pointer(d);
         let track = UiRect::new(
             boundary.x,
             boundary.y + boundary.height * 0.5 - 3.0,
@@ -1501,6 +1559,23 @@ pub const fn widget_id(namespace: u32, index: u32) -> u64 {
 
 /// Widget id namespaces. Distinct per panel, so no two panels can name the same
 /// widget — a collision would let one release another's press.
+///
+/// # This is the only place a namespace may be minted
+///
+/// It was not, and that cost the export panel's resolution row (EX1). The manual
+/// event row declared `EVENT_ROW_NAMESPACE: u32 = 7` as a bare literal in its own
+/// file, which is [`EXPORT`]; the row draws first, so `+ Feel`, `+ Scene` and
+/// `+ Custom` claimed the press for ids 0, 1 and 2 and cashed the release before
+/// the export panel's 720p, 1080p and 1440p buttons — three of four — were even
+/// drawn. 2160p is index 3, has no counterpart in the row, and worked, which is
+/// why the symptom read as "some sizes", not "the panel is dead". Its preset
+/// picker had picked `8`, which is [`SEEK`], the same way.
+///
+/// Every namespace in the application is listed below, including the ones whose
+/// indices are named in a panel's own file, so [`tests`] can enumerate the whole
+/// table. A panel-private constant is invisible to a collision test that
+/// enumerates a hand-written list — and there were three such tests, each
+/// checking a different stale subset, all green.
 pub mod id {
     pub const TOOLBAR: u32 = 1;
     pub const SCENE_BROWSER: u32 = 2;
@@ -1522,11 +1597,62 @@ pub mod id {
     /// The transport row's right-hand cluster: readout toggle, mute, volume,
     /// fullscreen. Separate for the same reason as SEEK.
     pub const UTILITY: u32 = 9;
+    /// The manual event row's three add buttons and its Clear
+    /// (`panels::events`). Was `7` — [`EXPORT`] — until EX1.
+    pub const EVENT_ROW: u32 = 10;
+    /// The manual event row's preset picker (`panels::events`). Was `8` —
+    /// [`SEEK`] — until EX1, so its first four controls were starved by the
+    /// transport row's fine-seek group and scrub bar, which draw before it.
+    pub const EVENT_PRESET: u32 = 11;
+    /// The lyrics panel's four groups (`panels::lyrics::ns`). Their indices are
+    /// named there; the namespaces are allocated here.
+    pub const LYRICS_ACTIONS: u32 = 16;
+    pub const LYRICS_FORM: u32 = 17;
+    pub const LYRICS_CAPTION: u32 = 18;
+    /// One per lyric cue row, keyed by cue id so a row keeps its id across a
+    /// scroll.
+    pub const LYRICS_ROWS: u32 = 19;
     /// One per notice card's close box, indexed by the notice's own id — the
     /// id rather than the list index, so eviction cannot misroute a claim.
     pub const NOTICE: u32 = 64;
     /// The collapsed tracks strip's Save button (review 1.12, UX0-A12).
     pub const TRACK_STRIP: u32 = 65;
+    /// The Assist panel (`panels::assist`).
+    pub const ASSIST: u32 = 74;
+    /// The Assist settings dialog (`ui::assist_settings`), which is modal but
+    /// gets a namespace of its own for the same reason [`WELCOME`] does.
+    pub const ASSIST_DIALOG: u32 = 128;
+
+    /// Every namespace above, for the collision test and for anyone adding one.
+    ///
+    /// Kept as an array rather than left to a hand-written list inside the test:
+    /// the list *was* hand-written, in three different files, and every one of
+    /// them was missing the namespace that actually collided.
+    #[allow(
+        dead_code,
+        reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
+    )]
+    pub const ALL: [(&str, u32); 19] = [
+        ("TOOLBAR", TOOLBAR),
+        ("SCENE_BROWSER", SCENE_BROWSER),
+        ("TRACKS", TRACKS),
+        ("INSPECTOR", INSPECTOR),
+        ("TIMELINE", TIMELINE),
+        ("WELCOME", WELCOME),
+        ("EXPORT", EXPORT),
+        ("SEEK", SEEK),
+        ("UTILITY", UTILITY),
+        ("EVENT_ROW", EVENT_ROW),
+        ("EVENT_PRESET", EVENT_PRESET),
+        ("LYRICS_ACTIONS", LYRICS_ACTIONS),
+        ("LYRICS_FORM", LYRICS_FORM),
+        ("LYRICS_CAPTION", LYRICS_CAPTION),
+        ("LYRICS_ROWS", LYRICS_ROWS),
+        ("NOTICE", NOTICE),
+        ("TRACK_STRIP", TRACK_STRIP),
+        ("ASSIST", ASSIST),
+        ("ASSIST_DIALOG", ASSIST_DIALOG),
+    ];
 }
 
 #[cfg(test)]
@@ -1626,26 +1752,71 @@ mod tests {
         assert_eq!(fade_alpha(EDGE * 4.0, EDGE, RAMP, OPAQUE), 0.0);
     }
 
+    /// Every namespace in the application, checked against every other one.
+    ///
+    /// The predecessor of this test enumerated six of them by hand and had done
+    /// so since before `EXPORT` and `SEEK` existed. It was green throughout the
+    /// life of EX1's defect, in which the manual event row's `7` aliased
+    /// `EXPORT` and its `8` aliased `SEEK` — because neither of the colliding
+    /// pairs was in the list. So the list is now [`id::ALL`], which lives beside
+    /// the constants rather than in a test, and adding a namespace without
+    /// adding it here fails the count assertion below rather than passing
+    /// quietly.
     #[test]
     fn widget_ids_never_collide_across_namespaces_or_indices() {
         let mut seen = std::collections::HashSet::new();
-        for namespace in [
-            id::TOOLBAR,
-            id::SCENE_BROWSER,
-            id::TRACKS,
-            id::INSPECTOR,
-            id::TIMELINE,
-            id::WELCOME,
-        ] {
-            for index in 0..64u32 {
+        for (name, namespace) in id::ALL {
+            for index in 0..4096u32 {
                 assert!(
                     seen.insert(widget_id(namespace, index)),
-                    "collision at {namespace}/{index}"
+                    "{name} ({namespace}) collides at index {index}"
                 );
             }
         }
         // Zero is the "nothing is claimed" sentinel and must be unreachable.
         assert_ne!(widget_id(0, 0), 0);
+    }
+
+    /// `id::ALL` has to *be* the table, not a subset of it.
+    ///
+    /// A duplicated value would be caught above; a *missing* entry would not,
+    /// and a missing entry is precisely the failure mode that let EX1 through.
+    /// Counting the distinct values is the cheapest check that notices a
+    /// namespace someone added to the module and forgot to list.
+    #[test]
+    fn every_allocated_namespace_is_listed_exactly_once() {
+        let values: std::collections::HashSet<u32> =
+            id::ALL.iter().map(|(_, value)| *value).collect();
+        assert_eq!(
+            values.len(),
+            id::ALL.len(),
+            "two namespaces share a value in id::ALL"
+        );
+        // Named individually so that adding a constant to `id` without adding
+        // it to `ALL` breaks here, with the name in the message.
+        for (name, value) in [
+            ("TOOLBAR", id::TOOLBAR),
+            ("SCENE_BROWSER", id::SCENE_BROWSER),
+            ("TRACKS", id::TRACKS),
+            ("INSPECTOR", id::INSPECTOR),
+            ("TIMELINE", id::TIMELINE),
+            ("WELCOME", id::WELCOME),
+            ("EXPORT", id::EXPORT),
+            ("SEEK", id::SEEK),
+            ("UTILITY", id::UTILITY),
+            ("EVENT_ROW", id::EVENT_ROW),
+            ("EVENT_PRESET", id::EVENT_PRESET),
+            ("LYRICS_ACTIONS", id::LYRICS_ACTIONS),
+            ("LYRICS_FORM", id::LYRICS_FORM),
+            ("LYRICS_CAPTION", id::LYRICS_CAPTION),
+            ("LYRICS_ROWS", id::LYRICS_ROWS),
+            ("NOTICE", id::NOTICE),
+            ("TRACK_STRIP", id::TRACK_STRIP),
+            ("ASSIST", id::ASSIST),
+            ("ASSIST_DIALOG", id::ASSIST_DIALOG),
+        ] {
+            assert!(values.contains(&value), "{name} is missing from id::ALL");
+        }
     }
 
     /// Two disjoint control boxes: the panel's, and the toolbar's.

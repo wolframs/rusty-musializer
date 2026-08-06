@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 
 use musializer_core::audio::AudioAnalyzerConfig;
 use musializer_core::project::frame_lanes::SceneFrameTiming;
+use musializer_core::render::resolve::LinearResolver;
 use musializer_core::scene::routes::RouteSources;
 use musializer_core::scene::{SceneAudioFrame, SceneInstance};
 use musializer_core::timing::render_export::{FrameRate, Quality, RenderExportConfig, Resolution};
@@ -713,6 +714,9 @@ pub(crate) struct ExportSession {
     /// Reused between frames: a 1080p frame is 8 MiB and reallocating it per
     /// frame would dominate the export.
     pixels: Vec<u8>,
+    /// The supersample resolve's sRGB tables, built once for the whole export
+    /// rather than per frame (EX3).
+    resolver: LinearResolver,
     /// Where the transport was when the export started, so the preview comes
     /// back to it (`plug.c:6918-6919`, restored at `:7276-7279`).
     restore_position: f32,
@@ -804,8 +808,8 @@ impl ExportSession {
             music.stop_stream();
         }
 
-        let target = match offline_render_target(rl, thread, &config) {
-            Some(target) => target,
+        let (target, achieved_factor) = match offline_render_target(rl, thread, &config) {
+            Some(pair) => pair,
             None => {
                 app.shell.notify(
                     Severity::Error,
@@ -816,6 +820,41 @@ impl ExportSession {
                 return None;
             }
         };
+        // What the pipeline is *actually* doing, printed once at the start
+        // (EX3). Not one line of it was reported before: a supersample that
+        // silently fell back produced a softer video with no message a user
+        // would see, and the resolve's colour space — the thing that made High
+        // and Master render thin bright detail worse than Balanced — was a
+        // property of a raylib call nobody had read.
+        println!(
+            "export pipeline: {}x{} out, {}x{} target ({}x asked, {achieved_factor}x got), \
+             {} resolve, quality {}",
+            config.width,
+            config.height,
+            target.width(),
+            target.height(),
+            config.supersample_factor,
+            if achieved_factor > 1 {
+                "linear-light box"
+            } else {
+                "none (copy)"
+            },
+            config.quality.name(),
+        );
+        if achieved_factor < config.supersample_factor {
+            app.shell.notify(
+                Severity::Warning,
+                "Supersampling was not available",
+                &format!(
+                    "{} asks for {}x, but a {}x{} target could not be allocated. \
+                     This export will render at the output resolution and will be softer.",
+                    config.quality.name(),
+                    config.supersample_factor,
+                    config.width * config.supersample_factor,
+                    config.height * config.supersample_factor,
+                ),
+            );
+        }
 
         let request = RenderRequest {
             destination,
@@ -867,6 +906,7 @@ impl ExportSession {
             job: Some(job),
             target,
             pixels,
+            resolver: LinearResolver::new(),
             restore_position,
             restore_playing,
             reported_frame_lanes: false,
@@ -1096,20 +1136,50 @@ impl ExportSession {
                 format!("{error}. The previous destination was preserved."),
             )
         })?;
-        if image.width != config.width as i32 || image.height != config.height as i32 {
-            image.resize(config.width as i32, config.height as i32);
-        }
-        // `get_image_data` is `LoadImageColors`, which for an already-RGBA
-        // framebuffer read is a straight copy. Flattening it here rather than
-        // reading `image.data` through a raw pointer keeps this file free of
-        // `unsafe`; the cost is one pass over the frame, against an encode.
-        let colors = image.get_image_data();
-        self.pixels.clear();
-        self.pixels.reserve(colors.len() * 4);
-        for pixel in colors.iter() {
-            self.pixels
-                .extend_from_slice(&[pixel.r, pixel.g, pixel.b, pixel.a]);
-        }
+        // Read before the pixel borrow: `image_pixels_rgba8` takes `&mut`, and
+        // the returned slice keeps that borrow alive for the resolve.
+        let (source_width, source_height) =
+            (image.width.max(0) as usize, image.height.max(0) as usize);
+        // The readback, the supersample resolve and the flatten to RGBA bytes,
+        // in one pass instead of four (EX3).
+        //
+        // This used to be `Image::resize` followed by `get_image_data` followed
+        // by a per-pixel rebuild of the byte vector. `Image::resize` is
+        // `ImageResize`, whose 8-bit fast path calls `stbir_resize_uint8_linear`
+        // (`rtextures.c:1770-1773`) — the variant that treats its input as
+        // *already linear*. Averaging sRGB code values as though they were light
+        // darkens every high-contrast edge, so High and Master were resolving
+        // thin bright detail worse than Balanced, which never resamples at all.
+        // `core::render::resolve` does the same average in linear light, and
+        // being pure arithmetic it is pinned by a number rather than by a
+        // capture. `get_image_data` also goes, being the third raylib-rs wrapper
+        // that forms a slice from `LoadImageColors` without a null check.
+        let source =
+            musializer_runtime::decode::image_pixels_rgba8(&mut image).map_err(|error| {
+                (
+                    "Export failed while reading a frame",
+                    format!("{error}. The previous destination was preserved."),
+                )
+            })?;
+        self.resolver
+            .resolve(
+                source,
+                source_width,
+                source_height,
+                config.width as usize,
+                config.height as usize,
+                &mut self.pixels,
+            )
+            .map_err(|error| {
+                (
+                    "Export failed while resolving a frame",
+                    format!(
+                        "{error}: a {source_width}x{source_height} target for a \
+                         {}x{} output. The previous destination was preserved.",
+                        config.width, config.height
+                    ),
+                )
+            })?;
         // The pixel buffer and the job are separate fields, so this needs the
         // two borrows split rather than `self.job_mut()` while `self.pixels` is
         // read.
@@ -1195,11 +1265,18 @@ impl ExportSession {
 /// rather than failing, because a 4K target at 2x is 8K and not every GPU will
 /// allocate it. `MUSIALIZER_RENDER_SUPERSAMPLE=0` disables it, which is the
 /// oracle's own escape hatch.
+///
+/// Returns the target **and the factor it actually got**, because the two can
+/// differ and the difference is invisible: the panel says "Master uses 2x
+/// spatial supersampling", the fallback said so only on stderr, and the
+/// resulting MP4 is a perfectly plausible softer video. That is the same shape
+/// as the three `None` fallbacks this repository shipped unreviewed for two
+/// bands — a picture that looks like content while the feature is off.
 fn offline_render_target(
     rl: &mut RaylibHandle,
     thread: &RaylibThread,
     config: &RenderExportConfig,
-) -> Option<RenderTexture2D> {
+) -> Option<(RenderTexture2D, u32)> {
     if config.validate().is_err() {
         return None;
     }
@@ -1214,7 +1291,7 @@ fn offline_render_target(
         if let Ok(target) =
             rl.load_render_texture(thread, config.width * factor, config.height * factor)
         {
-            return Some(target);
+            return Some((target, factor));
         }
         eprintln!(
             "RENDER: could not create a supersampled target; falling back to the output resolution"
@@ -1222,6 +1299,7 @@ fn offline_render_target(
     }
     rl.load_render_texture(thread, config.width, config.height)
         .ok()
+        .map(|target| (target, 1))
 }
 
 /// Puts the preview back the way the export found it (`start_preview_track` plus

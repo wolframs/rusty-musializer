@@ -389,6 +389,207 @@ it. `HaloBlur::render`'s render-target branch was already correct (its
 reconstructed `BeginTextureMode` sets the pair), which is why exports never
 showed this.
 
+## EX1 — the export panel's SIZE row could not be clicked (operator bug, 2026-08-06)
+
+> *"there's a bug with the export UI buttons: I can't pick different sizes"*
+
+**A widget-id collision, and the id table was the thing that was supposed to make
+it impossible.** `panels/events.rs` declared `EVENT_ROW_NAMESPACE: u32 = 7` and
+`PRESET_NAMESPACE: u32 = 8` as bare literals, with a comment saying a leaf agent
+does not edit `widgets.rs` and that they would be folded in at merge. They were
+not. `widgets::id::EXPORT` is `7` and `widgets::id::SEEK` is `8`.
+
+The manual event row draws before the export panel, so on the release frame
+`+ Feel`, `+ Scene` and `+ Custom` — ids 0, 1 and 2 — matched
+`active_button_id`, took the release, set `clicked = hovered` (false, the pointer
+was down in the export panel), and zeroed the claim. By the time the SIZE row was
+drawn there was nothing left to cash. **2160p is index 3, has no counterpart in
+that row, and worked**, which is why the symptom reached the operator as "I can't
+pick different sizes" rather than as a dead panel. The preset picker's `8`
+aliased the transport row's fine-seek group and scrub bar the same way.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| EX1-a | `--ui-probe click=XxY`, an `export config:` line and a `click probe:` line naming what claimed the press | `cli.rs`, `main.rs`, `ui/widgets.rs` | **done** |
+| EX1-b | One allocation table (`widgets::id::ALL`); every panel-private namespace becomes an alias of an entry in it | `ui/widgets.rs`, `ui/panels/{events,lyrics,assist}.rs`, `ui/assist_settings.rs` | **done** |
+| EX1-c | The gate presses five export controls and one gap between two of them | `tools/headless_check.sh` | **done** |
+
+**Hover could not have caught this, and had been checked.** `--ui-probe hover=`
+lit the 720p button correctly at 100 % and at 150 %, because the highlight comes
+from the same `contains_point` that was never wrong. Only a press separates "this
+control is under the pointer" from "this control receives the press". That is the
+whole reason `click=` exists, and it is the same argument that produced `hover=`
+and `wheel=` before it.
+
+**Three collision tests were green throughout.** `widgets.rs`, `events.rs` and
+`lyrics.rs` each had one, and each enumerated a hand-written list of namespaces —
+different lists, all stale, none containing the pair that actually collided.
+`widgets.rs`'s had six entries and predated `EXPORT` and `SEEK` existing. So the
+table is now `widgets::id::ALL`, beside the constants rather than inside a test,
+`events.rs` asserts *membership* in it rather than re-deriving disjointness, and
+a second test names every constant individually so that adding one to the module
+without adding it to `ALL` fails with the name in the message.
+
+**The negative control is a click into the 8 px gap between two buttons.**
+Without it every assertion in the new gate section is satisfied by a probe that
+silently pressed nothing, since the default configuration is what a no-op leaves
+behind. It asserts `claimed=nothing` and an unchanged `export config:`.
+
+**What `click=` cannot reach, deliberately.** The press is injected at `Widgets`'
+own pointer seam, not at the device — raylib exposes no way to synthesize a
+button and Xvfb has none. So it drives everything that goes through
+`Widgets::button`/`::slider`, which is every button in the shell, and does not
+drive the gestures that read raylib directly: the timeline scrub, the cue drags,
+the middle-button pan. Those own their own state machines and need their own
+probe. It also holds the press for three frames after three settling ones,
+because the claim rule takes a press on the press edge and cashes it on the
+release edge — a probe that did both in one frame would report every working
+control as broken.
+
+## EX3 — Master rendered thin bright detail *worse* than Balanced (operator report, 2026-08-06)
+
+> *"when I run exports on Master quality, I can't claim that the export quality
+> is particularly high … the black levels + detail isn't always 'Master' quality"*
+
+**The supersample downscale was averaging in gamma space.** High and Master render
+into a 2x target and then resolve. That resolve was `Image::resize`, whose 8-bit
+fast path calls **`stbir_resize_uint8_linear`** (`rtextures.c:1770-1773`). In stb's
+naming `_linear` means *the input is already linear light*; the variant that
+decodes sRGB first is `stbir_resize_uint8_srgb` (`stb_image_resize2.h:8009`). Our
+frames are sRGB-encoded. Averaging encoded code values as though they were light
+darkens every high-contrast edge, because the transfer function is convex.
+
+Measured on one white output pixel against the app's own `0x151515` clear at 2x,
+integrating linear light across the profile:
+
+| resolve | profile | integrated light |
+| --- | --- | --- |
+| none — what Balanced does at 1x | `255` | 0.9925 |
+| gamma-space Mitchell — what shipped | `22 51 205 51 22` | **0.6618** |
+| linear-light box — `core::render::resolve` | — | 0.9925 |
+
+So the tier that supersamples was losing **a third of the light in every thin
+bright feature** relative to the tier that does not. On a real Spectrum frame at
+1080p Master the glow edges move by up to **+77 code values** (an edge pixel goes
+`[80,103,93]` → `[124,175,157]`), 59 k pixels get brighter and 53 k get darker —
+the darker ones being Mitchell's ringing overshoot, which a box average does not
+produce.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| EX3-a | `core::render::resolve`: an integer-factor box average in linear light, with sRGB decode/encode tables | `core/render/resolve.rs` | **done** |
+| EX3-b | The export step resolves through it, in one pass instead of four | `ui/panels/export.rs` | **done** |
+| EX3-c | `decode::image_pixels_rgba8` — borrow the readback instead of `get_image_data`, which is the third unchecked `LoadImageColors` wrapper | `runtime/decode.rs` | **done** |
+| EX3-d | An `export pipeline:` report line and a tray warning when supersampling silently falls back | `ui/panels/export.rs` | **done** |
+
+**It is also faster.** The old path was four full-frame passes — `load_image`,
+`Image::resize`, `get_image_data`, and a per-pixel rebuild of the byte vector.
+The new one is a readback and a single resolve. 60 Master frames at 1080p:
+**19.8 s against 30.0 s**, same debug build, same machine.
+
+**A factor of 1 is a byte-for-byte copy, deliberately.** Balanced never
+supersamples and must be unchanged by this module existing; a round trip through
+the two tables would move a handful of codes for nothing. Pinned by a test.
+
+**Measured and rejected.** Each of these was a plausible fix that the numbers
+killed, and they are recorded so nobody re-derives them:
+
+| candidate | result |
+| --- | --- |
+| `-color_range pc` (the "crushed blacks" theory) | The current output is **already correct**: `ffprobe` reports `color_range=tv` with the full bt709 description, and full range measured *worse* (37.50 dB against 37.54) and bigger. It also flips `pix_fmt` to the deprecated `yuvj420p`. Left alone |
+| `yuv420p10le` | Worse, not better — 36.65 dB against 37.54. The source render target is RGBA8 (`rtextures.c:4250`), so 10 bits carry nothing. The gradient banding is created in the framebuffer, before FFmpeg sees it |
+| `yuv422p` | Buys nothing here: it subsamples horizontally only, and this application's thin features are predominantly vertical |
+| `-aq-mode 3` (dark-biased) | Sounded right for a near-black scene, measured **worse**: 37.39 against 37.54 |
+| `-crf 8` | +0.23 dB for **+41 % bytes**. A placebo |
+| `-tune animation` / `stillimage`, `-sws_dither ed` | +0.10 dB at best; `-sws_dither ed` is bit-identical |
+| `yuv444p` + `high444` | Genuinely 8 dB better and 3 % *smaller* — a 1 px cyan line decodes as `(97,227,225)` today. **Operator declined, 2026-08-06:** High 4:4:4 Predictive has no hardware decoder on any phone, TV or browser, and every tier stays universally playable |
+
+**Still open, and deliberately not done.** The gradient banding is real and is
+*not* the codec: a 0→40 ramp round-trips through `yuv444p` at 0.41 RMS, so the
+contours are in the frame handed to FFmpeg. `LoadRenderTexture` is RGBA8, the
+halo's ping-pong buffers are RGBA8, and every blend is gamma-space with no
+`GL_FRAMEBUFFER_SRGB` anywhere in `rlgl.h`. Fixing it means an RGBA16F export
+target through `rlLoadFramebuffer`/`rlFramebufferAttach`, which is a new `unsafe`
+island and needs the driver checked for `rlFramebufferComplete` first. Worth
+doing after EX2, and worthless before EX3-a, which is why it waited.
+
+**Gap named rather than closed:** `tools/headless_check.sh` exercises the export
+*panel* and never a single export *frame*'s pixels. Every finding above lives in
+a path no gate photographs. The `export pipeline:` line is the first thing that
+reports from inside it.
+
+## EX4 — "rendering sometimes introduces little hiccups" (operator report, 2026-08-06)
+
+**The exported file cannot be corrupted by a timing hitch**, and that was worth
+establishing rather than assuming: `scene_delta`, `scene_time`, the sample cursor
+and `draws_this_frame` all derive from `frame_index` (`render_job.rs:472-521`),
+the frame write is a blocking `write_all` so a full pipe backpressures the
+application rather than dropping a frame, and a transport failure sets
+`transport_ok = false` which refuses the publishing rename. The stderr-deadlock
+classic is also impossible here — `ffmpeg.rs:425` inherits stderr rather than
+piping it, so it cannot fill.
+
+**What the report could not see was a preview stall between 85 ms and 170 ms.**
+The scratch buffer is 4096 frames (~85 ms) and the ring is 8192 (~170 ms), and
+`main.rs` raises raylib's output stream buffer to 8192 as well. A stall inside
+that band desynchronizes the picture from the music while `output underruns:` and
+the ring's `dropped` counter **both stay at zero**. Nothing printed anything.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| EX4-a | `frame budget:` — the worst frame in the run, which frame it was, and how many stalled | `main.rs` | **done** |
+| EX4-b | `peak ring fill` on the `audio frames:` line | `main.rs` | **done** |
+| EX4-c | A gate section that forces a 120 ms stall and asserts the two new figures fire *while* the old ones stay clean | `tools/headless_check.sh` | **done** |
+
+**The threshold is 25 ms, not 16.7 ms.** `set_target_fps(60)` lands a healthy
+frame within a float hair of one period, so a `> 1/60` test reported **118 of 120
+frames over budget** and said nothing — which is what the first version did. One
+and a half periods is the point past which the *next* frame cannot be presented
+on time, so it is a dropped frame rather than jitter.
+
+Measured against `--ui-probe audio-stall=`, which is the existing bounded hook:
+
+| forced stall | `frame budget:` | `dropped` | `underruns` | `peak ring fill` |
+| --- | --- | --- | --- | --- |
+| none | worst 16.7 ms, 0 of 120 stalled | 0 | 0 | 18 % |
+| 60 ms | worst 69.3 ms, 1 stalled | 0 | 0 | 41 % |
+| 120 ms | worst 129.6 ms, 1 stalled | **0** | **0** | **82 %** |
+| 200 ms | worst 209.3 ms, 1 stalled | 5 | 0 | 100 % |
+
+The 120 ms row is the gate's, and it asserts `0 dropped` and `underruns=0` on
+purpose: if that run ever stops being indistinguishable from a healthy one on the
+old lines, the new ones have stopped being the only evidence.
+
+**Suspects the lines are now instrumented to convict, in order.** None is
+confirmed — they need the operator's own numbers from a real track:
+
+1. **Autosave on the main thread.** `save_project_to` runs synchronously in the
+   frame loop 1.5 s after any edit, and its path hashes the **entire bundled
+   source audio** with SHA-256 (`project_files.rs:280`) and then does two `fsync`s
+   (`publish.rs:284`, `:303`). A 50 MB WAV cold plus a contended filesystem is
+   comfortably past 170 ms. Fires once after an edit, then goes quiet — which
+   matches "sometimes… rare" better than anything else found.
+2. **Song Atlas's whole-track decode**, which *deliberately* pauses the stream on
+   the first frame that scene draws (`main.rs:2059-2107`). Not a hiccup, a
+   designed multi-second gap — but the interface says nothing while it happens.
+3. **The at-size caption atlas rebuild.** One codepoint not yet seen bumps
+   `Coverage::generation`, which invalidates every cached atlas (`font.rs:478-499`,
+   `:942-944`) and forces a 10–30 ms rasterize. Plain-ASCII lyrics never trigger
+   it; a typographic apostrophe does, once, in the frame it first appears.
+
+**Two resource paths silently change the exported pixels**, both found here and
+one of them fixed as EX3-d: the supersample fallback (now a tray warning and a
+report line) and a *cached* mid-export caption atlas failure (`font.rs:979-985`),
+which would make the second half of a single MP4 blurrier than the first. The
+second is recorded, not fixed.
+
+**Not done.** The export progress screen runs the blocking frame write inside its
+own `begin_drawing`/`EndDrawing` pair (`export.rs:926-957`), so while the encoder
+is backed up neither Escape nor Cancel is polled and the screen does not repaint.
+At 4K `-preset slow` that is a visibly frozen window. It reads as "the export
+hung" and is a fair candidate for the operator's complaint; moving the write
+outside the pair is the fix.
+
 ## Start here next session (updated 2026-08-05)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,

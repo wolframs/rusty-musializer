@@ -12,6 +12,7 @@
 pub mod assist;
 pub mod audio;
 pub mod project;
+pub mod render;
 pub mod scene;
 pub mod scenes;
 pub mod timing;

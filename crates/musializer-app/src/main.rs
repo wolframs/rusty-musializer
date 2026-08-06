@@ -545,6 +545,12 @@ fn run(
 
     // Where `--ui-probe hover=X,Y` parks the pointer, reasserted every frame.
     let mut hover_at: Option<(f32, f32)> = None;
+    // `--ui-probe click=XxY`: where to press, and how far through the press we
+    // are. The delay exists because the first frames of a run are still settling
+    // — the window may not have its requested geometry yet, and a press against a
+    // layout that is about to move would land somewhere nobody aimed.
+    let mut click_at: Option<(f32, f32)> = None;
+    let mut click_phase: u32 = 0;
     let mut audio_stall_ms: Option<u64> = None;
     let mut scene_clock_previous: Option<f64> = None;
 
@@ -705,6 +711,15 @@ fn run(
                 f64::INFINITY
             };
             hover_at = probe.hover;
+            // `click=` parks the pointer too, so a run that passed both would
+            // fight over `SetMousePosition`; the click wins, being the more
+            // specific request. It deliberately leaves `tooltip_delay` alone: a
+            // click capture is after what the press *did*, and a tip fired by
+            // the parked pointer would be drawn over the control it changed.
+            if let Some(point) = probe.click {
+                hover_at = Some(point);
+                click_at = Some(point);
+            }
             // Delivered by the shell on the first frame it draws, wherever
             // `hover=` parked the pointer.
             app.shell.probe_wheel = probe.wheel;
@@ -907,6 +922,40 @@ fn run(
         if let Some((x, y)) = hover_at {
             rl.set_mouse_position(Vector2::new(x, y));
         }
+        // `--ui-probe click=`: press, hold, release, on three consecutive frames
+        // after three settling ones (EX1).
+        //
+        // The settle matters. A window that is still taking its requested
+        // geometry lays the panels out somewhere else on frame 0, and a press
+        // against that layout lands on whatever control happened to be under the
+        // coordinate before the resize — which photographs as a click that did
+        // nothing, indistinguishable from the defect the probe exists to find.
+        //
+        // Three frames for the press itself, rather than one, because the claim
+        // rule takes a press on the press edge and only cashes it on the release
+        // edge, and a widget that saw both in one frame is exactly the case it
+        // drops (`Widgets::button_at`).
+        if click_at.is_some() {
+            app.shell.widgets.set_pointer_probe(match click_phase {
+                3 => Some(ui::widgets::PointerProbe {
+                    down: true,
+                    pressed: true,
+                    released: false,
+                }),
+                4 => Some(ui::widgets::PointerProbe {
+                    down: true,
+                    pressed: false,
+                    released: false,
+                }),
+                5 => Some(ui::widgets::PointerProbe {
+                    down: false,
+                    pressed: false,
+                    released: true,
+                }),
+                _ => None,
+            });
+            click_phase = click_phase.saturating_add(1);
+        }
         // Exactly once per frame: raylib's `WindowShouldClose` clears the GLFW
         // flag as it reads it (`rcore_desktop_glfw.c`), which is what lets the
         // C's `WindowShouldClose() && plug_confirm_close()` refuse a quit without
@@ -955,6 +1004,17 @@ fn run(
                 .notify(notice.severity, &notice.title, &notice.detail);
         }
 
+        // How full the bridge ring was *before* this frame drained it (EX4).
+        //
+        // `output underruns:` and the ring's `dropped` counter both stay at zero
+        // through the whole band between "the analyzer fell behind the audio" and
+        // "the ring overflowed" — roughly 85 ms to 170 ms here, since the scratch
+        // buffer is 4096 frames and the ring 8192. A stall inside that band
+        // desynchronizes the picture from the music and leaves no trace in any
+        // number the report prints. Peak occupancy is the one figure that does.
+        if let Some(ring) = audio_bridge::ring() {
+            report.observe_ring(ring.len(), ring.capacity());
+        }
         let drained = audio_bridge::drain_interleaved(&mut scratch);
         if drained > 0 {
             let consumed = analysis
@@ -964,6 +1024,12 @@ fn run(
         }
 
         let analyzer_delta = rl.get_frame_time();
+        // The frame the user actually felt. `frames rendered:` counts them and
+        // says nothing about how long any one of them took, so a 400 ms autosave
+        // fsync or a caption atlas rebuild mid-playback is invisible in every
+        // line this report prints — which is why "rendering sometimes hiccups"
+        // could only ever be reported by eye.
+        report.observe_frame_time(analyzer_delta);
         if analysis.analyzer.analyze(analyzer_delta) {
             report.analyzed_frames += 1;
         }
@@ -1070,6 +1136,7 @@ fn run(
 
         report.logical_window = ui_scale.logical_size(physical_window);
         report.timeline = app.shell.describe_timeline(duration_seconds);
+        report.click_at = click_at;
         let shell_input = ShellInput {
             window: report.logical_window,
             ui_scale,
@@ -3048,6 +3115,20 @@ struct Report {
     /// and an interface in the bottom-left corner — photograph as coherent
     /// frames, so only a count can report it.
     framebuffer: musializer_runtime::draw::FramebufferAudit,
+    /// Where `--ui-probe click=` aimed, kept so the report can say so after the
+    /// window is gone. `None` means no click was requested, which is the normal
+    /// case and prints nothing.
+    click_at: Option<(f32, f32)>,
+    /// The worst single frame, and how many missed the 60 Hz budget (EX4).
+    ///
+    /// Deliberately a worst rather than a mean: a mean over a whole run hides
+    /// exactly the event being looked for. The first frame is excluded because
+    /// it carries the window's own startup.
+    worst_frame_seconds: f32,
+    worst_frame_index: u64,
+    frames_over_budget: u64,
+    /// Peak occupancy of the audio bridge ring, as a fraction of its capacity.
+    peak_ring_fill: f32,
     reopened: Option<Reopen>,
 }
 
@@ -3083,6 +3164,11 @@ impl Default for Report {
             logical_window: (0.0, 0.0),
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
+            click_at: None,
+            worst_frame_seconds: 0.0,
+            worst_frame_index: 0,
+            frames_over_budget: 0,
+            peak_ring_fill: 0.0,
             reopened: None,
         }
     }
@@ -3092,7 +3178,47 @@ fn format_optional_ui_size(value: Option<f32>) -> String {
     value.map_or_else(|| "auto".to_string(), |value| format!("{value:.0}"))
 }
 
+/// How long a frame has to run before it counts as a stall (EX4).
+///
+/// **Not** the 60 Hz period. `set_target_fps(60)` makes a healthy frame land
+/// within a float hair of 16.7 ms, so a `> 1/60` test reports 118 of 120 frames
+/// as over budget and says nothing — which is what the first version of this
+/// line did. 25 ms is one and a half periods: past it the frame after this one
+/// cannot be presented on time, so it is a dropped frame rather than jitter.
+const FRAME_STALL_SECONDS: f32 = 1.0 / 40.0;
+
 impl Report {
+    /// One frame's wall-clock cost (EX4).
+    ///
+    /// The first two frames are skipped: frame 0 carries window creation and
+    /// frame 1 the first font atlas, and neither is a stutter the user can feel
+    /// during playback. Everything after that is fair game, including the ones
+    /// this project already knows are expensive — the at-size caption atlas
+    /// rebuild, the Song Atlas whole-track decode, an autosave's two `fsync`s.
+    fn observe_frame_time(&mut self, seconds: f32) {
+        if self.frames < 2 || !seconds.is_finite() {
+            return;
+        }
+        if seconds > FRAME_STALL_SECONDS {
+            self.frames_over_budget += 1;
+        }
+        if seconds > self.worst_frame_seconds {
+            self.worst_frame_seconds = seconds;
+            self.worst_frame_index = self.frames;
+        }
+    }
+
+    /// The bridge ring's occupancy this frame, before it is drained.
+    fn observe_ring(&mut self, used: usize, capacity: usize) {
+        if capacity == 0 {
+            return;
+        }
+        let fill = used as f32 / capacity as f32;
+        if fill > self.peak_ring_fill {
+            self.peak_ring_fill = fill;
+        }
+    }
+
     fn observe_peak_band(&mut self, band: usize) {
         self.peak_band_last = band;
         self.peak_band_low = self.peak_band_low.min(band);
@@ -3139,10 +3265,28 @@ impl Report {
             format_optional_ui_size(app.shell.ui_preferences.timeline_height),
         );
         println!("frames rendered: {}", self.frames);
+        // How long the *worst* frame took, and how many missed the budget (EX4).
+        //
+        // `frames rendered:` counts frames and says nothing about their cost, so
+        // every known stall in this application — the 10-30 ms at-size caption
+        // atlas rebuild when a lyric introduces a codepoint, the Song Atlas
+        // whole-track decode, an autosave that hashes the source audio and calls
+        // `fsync` twice on the main thread — was reportable only by eye. A worst
+        // rather than a mean, because a mean over a run is precisely what hides
+        // a single 400 ms event.
+        println!(
+            "frame budget:    worst {:.1}ms at frame {}, {} of {} stalled past {:.1}ms",
+            self.worst_frame_seconds * 1000.0,
+            self.worst_frame_index,
+            self.frames_over_budget,
+            self.frames,
+            FRAME_STALL_SECONDS * 1000.0,
+        );
         println!("analyzer runs:   {}", self.analyzed_frames);
         println!(
-            "audio frames:    {} consumed, {dropped} dropped",
-            self.consumed_frames
+            "audio frames:    {} consumed, {dropped} dropped, peak ring fill {:.0}%",
+            self.consumed_frames,
+            self.peak_ring_fill * 100.0
         );
         println!("output underruns: {}", audio_bridge::output_underruns());
         println!("bands:           {band_count}");
@@ -3340,6 +3484,37 @@ impl Report {
             },
         }
         println!("panel:           {}", app.shell.panel.label());
+        // The export geometry a click on the SIZE row is supposed to move
+        // (EX1). Nothing printed it, so a capture of the export panel could not
+        // tell a row that took the press from one that ignored it: the summary
+        // line inside the panel says the same thing either way, and only the
+        // highlight moves — which is one button's fill colour in a screenshot.
+        if let Some(track) = app.workspace.current() {
+            let config = track.render_config;
+            println!(
+                "export config:   {}x{} at {} fps, {}, supersample {}x",
+                config.width,
+                config.height,
+                config.fps,
+                config.quality.name(),
+                config.supersample_factor,
+            );
+        }
+        // What `--ui-probe click=` actually reached (EX1). `claimed` is the
+        // whole point: a press that never landed and a press some other control
+        // swallowed leave the same picture, and this is the only line that can
+        // tell them apart.
+        if let Some((x, y)) = self.click_at {
+            let claimed = app.shell.widgets.last_claimed_id();
+            println!(
+                "click probe:     at={x:.0}x{y:.0} claimed={}",
+                if claimed == 0 {
+                    "nothing".to_owned()
+                } else {
+                    format!("{:#x}", claimed)
+                }
+            );
+        }
         // LX2. The wheel now zooms from any of the three timed lanes, and the
         // only thing it changes is this shared view. Nothing reported it, so a
         // capture could not tell a lane that accepted the notch from one that

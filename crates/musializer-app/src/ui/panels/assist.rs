@@ -95,7 +95,7 @@ use crate::workspace::{Track, Workspace};
 /// The value is ASCII `J` rather than the next free small integer precisely so
 /// that two agents each picking "the next one" cannot collide before the merge —
 /// a colliding id lets one panel's button release another's press.
-const ASSIST_WIDGETS: u32 = b'J' as u32;
+const ASSIST_WIDGETS: u32 = widgets::id::ASSIST;
 
 /// Bounded before it is read, so an accidental pick — a whole album's worth of
 /// text, or a binary — is refused where the user can see it rather than deep

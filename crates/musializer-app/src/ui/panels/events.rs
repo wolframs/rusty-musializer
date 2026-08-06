@@ -46,12 +46,15 @@ use super::super::widgets::{self, ButtonStyle};
 
 /// Widget id namespaces for the two surfaces in this file.
 ///
-/// Local constants rather than entries in [`widgets::id`], because that module
-/// lives in `widgets.rs` and a leaf agent does not edit it. They continue the
-/// same sequence and are covered by the collision test below; moving them across
-/// at merge is a two-line change and nothing else has to follow.
-const EVENT_ROW_NAMESPACE: u32 = 7;
-const PRESET_NAMESPACE: u32 = 8;
+/// These were local literals — `7` and `8` — chosen to "continue the same
+/// sequence" while the fan-out was live, with a comment promising they would be
+/// moved into [`widgets::id`] at merge. They were not, and by then `7` was
+/// `EXPORT` and `8` was `SEEK`. Both surfaces draw *before* their twins, so this
+/// row silently ate the export panel's 720p/1080p/1440p buttons and the transport
+/// row silently ate four of the preset picker's (EX1). Aliases now, so the value
+/// lives once, in the table the collision test enumerates.
+const EVENT_ROW_NAMESPACE: u32 = widgets::id::EVENT_ROW;
+const PRESET_NAMESPACE: u32 = widgets::id::EVENT_PRESET;
 
 /// The oracle's control-row geometry (`plug.c:2822-2861`).
 ///
@@ -597,35 +600,19 @@ impl Shell {
 mod tests {
     use super::*;
 
+    /// This file's two namespaces are entries in the shared table, not literals.
+    ///
+    /// The predecessor of this test enumerated a hand-written six-name list that
+    /// happened to omit `EXPORT` and `SEEK` — the two this file had actually
+    /// collided with — and passed for as long as the defect existed. So it now
+    /// asserts *membership* rather than non-collision: the completeness of the
+    /// table is `widgets`' own test to keep, and there is one table.
     #[test]
-    fn the_two_local_namespaces_do_not_collide_with_the_shared_ones() {
-        // These live here only because `widgets.rs` belongs to the integration
-        // owner. A collision would let one surface release another's press, so it
-        // is asserted rather than assumed.
-        let shared = [
-            widgets::id::TOOLBAR,
-            widgets::id::SCENE_BROWSER,
-            widgets::id::TRACKS,
-            widgets::id::INSPECTOR,
-            widgets::id::TIMELINE,
-            widgets::id::WELCOME,
-        ];
-        assert!(!shared.contains(&EVENT_ROW_NAMESPACE));
-        assert!(!shared.contains(&PRESET_NAMESPACE));
+    fn the_two_namespaces_are_allocated_in_the_shared_table() {
+        let allocated: Vec<u32> = widgets::id::ALL.iter().map(|(_, value)| *value).collect();
+        assert!(allocated.contains(&EVENT_ROW_NAMESPACE));
+        assert!(allocated.contains(&PRESET_NAMESPACE));
         assert_ne!(EVENT_ROW_NAMESPACE, PRESET_NAMESPACE);
-
-        let mut seen = std::collections::HashSet::new();
-        for namespace in shared
-            .into_iter()
-            .chain([EVENT_ROW_NAMESPACE, PRESET_NAMESPACE])
-        {
-            for index in 0..128u32 {
-                assert!(
-                    seen.insert(widgets::widget_id(namespace, index)),
-                    "collision at {namespace}/{index}"
-                );
-            }
-        }
     }
 
     #[test]

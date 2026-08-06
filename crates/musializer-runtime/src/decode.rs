@@ -143,6 +143,32 @@ pub enum ImageError {
 pub fn image_rgba8(path: &Path) -> Result<DecodedImage, ImageError> {
     let path = path.to_str().ok_or(ImageError::Path)?;
     let mut image = Image::load_image(path).map_err(|_| ImageError::Decode)?;
+    let (width, height) = (
+        image.width().max(0) as usize,
+        image.height().max(0) as usize,
+    );
+    let pixels = image_pixels_rgba8(&mut image)?.to_vec();
+    Ok(DecodedImage {
+        pixels,
+        width,
+        height,
+    })
+}
+
+/// Borrows an already-loaded image's pixels as tightly packed RGBA8.
+///
+/// The same checks [`image_rgba8`] makes, without the copy: an export reads back
+/// a supersampled frame every frame, and at 4K Master that copy is 132 MB of
+/// allocation and memcpy per frame for data that is consumed once and immediately.
+/// The borrow is tied to the `&mut Image`, so raylib's allocation cannot be
+/// unloaded while the slice is alive.
+///
+/// # Errors
+/// [`ImageError::Decode`] for an invalid image or a null pixel pointer,
+/// [`ImageError::Empty`] for zero pixels, [`ImageError::Format`] when
+/// `ImageFormat` declined the conversion — which it does silently, by leaving
+/// the image alone.
+pub fn image_pixels_rgba8(image: &mut Image) -> Result<&[u8], ImageError> {
     if !image.is_image_valid() {
         return Err(ImageError::Decode);
     }
@@ -163,18 +189,13 @@ pub fn image_rgba8(path: &Path) -> Result<DecodedImage, ImageError> {
     if data.is_null() {
         return Err(ImageError::Decode);
     }
-    // SAFETY: `image` owns this allocation and outlives the copy — `Image`'s
-    // `Drop` is `UnloadImage`, and it is still in scope. The length is not
-    // guessed: `GetPixelDataSize` is the same function raylib itself sizes the
-    // buffer with in `ImageFormat`, and it was just checked against
-    // `width * height * 4`, so the slice cannot outrun the allocation. Nothing
-    // borrowed escapes; `to_vec` copies before the block ends.
-    let pixels = unsafe { std::slice::from_raw_parts(data, expected) }.to_vec();
-    Ok(DecodedImage {
-        pixels,
-        width,
-        height,
-    })
+    // SAFETY: the returned slice borrows from `image` for as long as the caller's
+    // `&mut` lives, so `Image`'s `Drop` — `UnloadImage` — cannot run while it is
+    // alive, and nothing else can obtain a second reference to the allocation.
+    // The length is not guessed: `GetPixelDataSize` is the same function raylib
+    // itself sizes the buffer with in `ImageFormat`, and it was just checked
+    // against `width * height * 4`, so the slice cannot outrun the allocation.
+    Ok(unsafe { std::slice::from_raw_parts(data, expected) })
 }
 
 #[cfg(test)]

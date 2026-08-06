@@ -334,20 +334,24 @@ const CAPTION_FORM_AVAILABLE: f32 =
 
 const _: () = assert!(CAPTION_FORM_HEIGHT <= CAPTION_FORM_AVAILABLE);
 
-/// Widget id namespaces for this panel.
+/// Widget id namespaces for this panel: aliases of the shared table's entries.
 ///
-/// Local constants rather than entries in [`widgets::id`], which is a shared file
-/// this fan-out does not edit. They sit outside the range that module uses
-/// (1..=6); the request to fold them in is in Agent I's report.
+/// These were local literals while the fan-out was live, sitting "outside the
+/// range that module uses" — a range that then grew. That is exactly how the
+/// manual event row's two literals ended up aliasing `EXPORT` and `SEEK` and
+/// eating their presses (EX1). These four never collided, but they were true by
+/// luck, and the module doc on [`widgets::id`] is now the rule.
 mod ns {
+    use super::widgets;
+
     /// The pane toggles and the document buttons.
-    pub const ACTIONS: u32 = 16;
+    pub const ACTIONS: u32 = widgets::id::LYRICS_ACTIONS;
     /// The editing form: the two time rows and Apply/Discard/Delete.
-    pub const FORM: u32 = 17;
+    pub const FORM: u32 = widgets::id::LYRICS_FORM;
     /// The caption pane's choices, anchor grid, swatches and face buttons.
-    pub const CAPTION: u32 = 18;
+    pub const CAPTION: u32 = widgets::id::LYRICS_CAPTION;
     /// One per cue, keyed by cue id, so a row keeps its id across a scroll.
-    pub const ROWS: u32 = 19;
+    pub const ROWS: u32 = widgets::id::LYRICS_ROWS;
 }
 
 /// Indices inside [`ns::FORM`].

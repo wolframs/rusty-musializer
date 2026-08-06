@@ -229,6 +229,29 @@ pub struct UiProbe {
     /// Parks rather than moves: the position is reasserted every frame, so the tip
     /// is in the shot regardless of how many frames the run lasts.
     pub hover: Option<(f32, f32)>,
+    /// `click=XxY`: park the pointer there and press it, once (EX1).
+    ///
+    /// **Invented, and it is the missing half of `hover=`.** `hover=` proved a
+    /// control lights up under the pointer; nothing could prove it *takes* the
+    /// press. That gap is exactly where the operator's "I can't pick different
+    /// sizes" lived: the export panel's resolution buttons highlight correctly at
+    /// every scale, so every check this repository had said the row was fine.
+    ///
+    /// Xvfb has no button any more than it has a pointer or a wheel, and raylib
+    /// exposes no way to synthesize one, so the press is injected at
+    /// [`Widgets`](crate::ui::widgets::Widgets)' own pointer seam rather than at
+    /// the device. That bounds what it can reach — controls that go through
+    /// `Widgets::button`/`::slider`, which is every button in the shell — and it
+    /// deliberately does **not** drive the gestures that read raylib directly
+    /// (timeline scrub, cue drags, the pan). Those own their own state machines
+    /// and would need their own probe.
+    ///
+    /// Delivered across three consecutive frames — press, hold, release — because
+    /// a claim is taken on the press edge and only ever cashed by the same widget
+    /// on the release edge. A one-frame press and release in the same frame is
+    /// precisely the case the claim rule drops, so a probe that did that would
+    /// report a working control as broken.
+    pub click: Option<(f32, f32)>,
     /// `wheel=NOTCHES`: deliver one wheel event, on one frame, wherever
     /// `hover=` parked the pointer (LX2).
     ///
@@ -918,6 +941,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
         "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
         "hover" => probe.hover = Some(parse_point(value)?),
+        "click" => probe.click = Some(parse_point(value)?),
         "wheel" => {
             let notches: f32 = value.parse().ok()?;
             // Bounded because the factor is `1.2^notches`: past a handful the
@@ -1120,6 +1144,22 @@ mod tests {
         assert_eq!(parse_ui_probe("hover=1121,449"), None);
         assert_eq!(parse_ui_probe("hover=nonsense"), None);
         assert_eq!(parse_ui_probe("hover=1x"), None);
+    }
+
+    /// `click=` reads through the same point parser as `hover=` (EX1).
+    ///
+    /// One parser rather than two, so the separator lesson above is learned once:
+    /// a `click=116,542` would otherwise fail exactly the way `hover=1121,449`
+    /// did, in a probe whose whole purpose is to tell "the control refused the
+    /// press" from "the press never happened".
+    #[test]
+    fn a_click_point_reads_through_the_same_parser_as_a_hover() {
+        let probe = parse_ui_probe("panel=export,click=116x542").expect("valid spec");
+        assert_eq!(probe.click, Some((116.0, 542.0)));
+        assert_eq!(probe.hover, None, "click= does not imply a hover= as well");
+        assert_eq!(parse_ui_probe("click=116,542"), None);
+        assert_eq!(parse_ui_probe("click=nonsense"), None);
+        assert_eq!(parse_ui_probe("click=1x"), None);
     }
 
     use super::*;

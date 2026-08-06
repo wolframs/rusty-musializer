@@ -2820,7 +2820,7 @@ fn find_tool(name: &str) -> Option<PathBuf> {
 /// panel's; it is still a distinct namespace because two controls *inside* the
 /// dialog colliding would let one release another's press, which is the same
 /// defect the shell's namespaces exist to prevent.
-const DIALOG_WIDGETS: u32 = 128;
+const DIALOG_WIDGETS: u32 = widgets::id::ASSIST_DIALOG;
 
 /// The shell-side blocker's namespace. Drawn into the **shell's** bank, which is
 /// how every other widget in the frame is prevented from claiming a press.

@@ -175,6 +175,73 @@ case "${NEGATIVE_UNDERRUNS:-missing}" in
         ;;
 esac
 
+# The stall band that leaves every other counter at zero (EX4).
+#
+# A stall between roughly 85 ms — the 4096-frame scratch buffer — and 170 ms —
+# the 8192-frame ring and the raised output stream buffer — desynchronizes the
+# picture from the music while `output underruns:` and the ring's `dropped`
+# count both stay at 0. That is the band the operator's "rendering sometimes
+# introduces little hiccups" lives in, and until now nothing in this report
+# could distinguish it from a clean run. `peak ring fill` is the figure that
+# can, and `frame budget:` names the frame it happened on.
+#
+# 120 ms is chosen to sit *inside* the band on purpose: the assertions below
+# require `dropped=0` and `underruns=0`, so this fails if the new lines ever
+# stop being the only ones that fire.
+echo "=== the silent stall band ==="
+STALL_REPORT="$OUT_DIR/frame-stall-negative-control.txt"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" \
+        --size 960x640 \
+        --probe-frames 120 \
+        --ui-probe "play=1,audio-stall=120" \
+    >"$STALL_REPORT" 2>&1
+STALL_STATUS=$?
+set -e
+if [ "$STALL_STATUS" -ne 0 ]; then
+    echo "FAIL: the frame-stall control exited $STALL_STATUS" >&2
+    cat "$STALL_REPORT"
+    exit "$STALL_STATUS"
+fi
+STALL_BUDGET="$(sed -n 's/^frame budget: *//p' "$STALL_REPORT")"
+STALL_AUDIO="$(sed -n 's/^audio frames: *//p' "$STALL_REPORT")"
+STALL_UNDERRUNS="$(sed -n 's/^output underruns: *//p' "$STALL_REPORT")"
+echo "stalled run:  $STALL_BUDGET"
+echo "stalled run:  $STALL_AUDIO"
+case "$STALL_BUDGET" in
+    *"0 of 120 stalled"*|'')
+        echo "FAIL: a forced 120 ms stall was not counted by 'frame budget:'" >&2
+        exit 1
+        ;;
+esac
+case "$STALL_AUDIO" in
+    *"peak ring fill 0%"*|*"peak ring fill 1"[0-9]"%"|'')
+        echo "FAIL: a forced 120 ms stall did not move 'peak ring fill'" >&2
+        exit 1
+        ;;
+esac
+# The half that makes the line worth having: at 120 ms the counters that already
+# existed are still clean, so this run is indistinguishable from a healthy one
+# without the two new figures.
+case "$STALL_AUDIO" in
+    *"0 dropped"*) : ;;
+    *) echo "FAIL: 120 ms was outside the silent band (frames were dropped)" >&2; exit 1 ;;
+esac
+if [ "${STALL_UNDERRUNS:-1}" != "0" ]; then
+    echo "FAIL: 120 ms was outside the silent band (underruns=$STALL_UNDERRUNS)" >&2
+    exit 1
+fi
+# And a clean run must read clean, or the two lines are noise rather than signal.
+CLEAN_BUDGET="$(sed -n 's/^frame budget: *//p' "$REPORT")"
+echo "clean run:    ${CLEAN_BUDGET:-<absent>}"
+case "${CLEAN_BUDGET:-absent}" in
+    *"0 of "*" stalled"*) : ;;
+    *) echo "FAIL: the ordinary run reported a stall: ${CLEAN_BUDGET:-<absent>}" >&2; exit 1 ;;
+esac
+
 echo "=== screenshot ==="
 ffprobe -v error -show_entries stream=width,height,pix_fmt \
     -of default=noprint_wrappers=1 "$SHOT"
@@ -447,6 +514,70 @@ for size in 1280x720 960x640; do
         SWEEP_FAILED=1
     fi
 done
+
+# The export panel's controls, pressed rather than looked at (EX1).
+#
+# Every check above this point asks whether the row was *drawn*, and the row was
+# always drawn. Three of its four SIZE buttons shipped unable to take a click for
+# as long as the panel has existed, because `panels/events.rs` had minted the
+# namespace `7` as a bare literal and `7` is `widgets::id::EXPORT`: the manual
+# event row draws first, so `+ Feel`, `+ Scene` and `+ Custom` claimed ids 0, 1
+# and 2 and cashed the release before 720p, 1080p and 1440p were drawn. 2160p is
+# index 3, has no counterpart in that row, and worked — which is why the symptom
+# reached the operator as "I can't pick different sizes" rather than as a dead
+# panel, and why a capture of any single state looked correct.
+#
+# `hover=` could not have caught it. The hover highlight is computed from the
+# same `contains_point` that was never the problem, and it lit up correctly at
+# both scales. Only a press separates "this control is under the pointer" from
+# "this control receives the press", so the check is the press.
+#
+# Coordinates are the button centres at 1280x720 from `panel-export-1280x720.png`
+# above, and each run asserts the *whole* configuration line, so a click that
+# lands on a neighbour fails rather than passing on a partial match.
+echo "=== the export panel takes a click ==="
+click_export() {
+    # click_export NAME POINT EXPECTED-CONFIG
+    capture "click-export-$1" 1280x720 --ui-probe "panel=export,click=$2" || SWEEP_FAILED=1
+    local got claimed
+    got="$(sed -n 's/^export config: *//p' "$OUT_DIR/click-export-$1.txt")"
+    claimed="$(sed -n 's/^click probe: *//p' "$OUT_DIR/click-export-$1.txt")"
+    echo "click $1 at $2: [$got] via $claimed"
+    if [ "$got" != "$3" ]; then
+        echo "FAIL: clicking $1 gave [$got], expected [$3]" >&2
+        SWEEP_FAILED=1
+    fi
+    case "$claimed" in
+        *"claimed=nothing"*)
+            echo "FAIL: the $1 click reached no control at all" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+}
+click_export 720p    116x542 "1280x720 at 30 fps, High, supersample 2x"
+click_export 1440p   284x542 "2560x1440 at 30 fps, High, supersample 2x"
+click_export 2160p   368x542 "3840x2160 at 30 fps, High, supersample 2x"
+click_export 24fps   498x542 "1920x1080 at 24 fps, High, supersample 2x"
+click_export master  377x589 "1920x1080 at 30 fps, Master, supersample 2x"
+# The control-free gap between two SIZE buttons, so the gate proves it can tell a
+# press that lands from one that does not. Without this row, a probe that
+# silently clicked nothing would satisfy every assertion above by leaving the
+# default configuration in place.
+capture "click-export-gap" 1280x720 --ui-probe "panel=export,click=158x542" || SWEEP_FAILED=1
+GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/click-export-gap.txt")"
+GAP_CONFIG="$(sed -n 's/^export config: *//p' "$OUT_DIR/click-export-gap.txt")"
+echo "click gap at 158x542: [$GAP_CONFIG] via $GAP_CLAIM"
+case "$GAP_CLAIM" in
+    *"claimed=nothing"*) : ;;
+    *)
+        echo "FAIL: a click in the gap between two buttons claimed $GAP_CLAIM" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+if [ "$GAP_CONFIG" != "1920x1080 at 30 fps, High, supersample 2x" ]; then
+    echo "FAIL: a click in the gap changed the export configuration to [$GAP_CONFIG]" >&2
+    SWEEP_FAILED=1
+fi
 
 echo "=== the lyrics editor, over a project that actually has cues ==="
 # The panel loop above photographs the editor over the bare sweep, which has no
