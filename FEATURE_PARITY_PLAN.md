@@ -230,6 +230,83 @@ break in every gap.
   unit tests stayed green throughout, which is the usual measurement: a
   property assertion cannot pin a pixel.
 
+## LX2 — the lane says what it can do (operator feedback, 2026-08-06)
+
+Three findings from using LX1 on a real track. The first arrived as a
+correction: *"I have a user defined cue here now, and apparently since I moved
+it and it became user defined, I cannot pull on its start/ending anymore"*,
+retracted a moment later — *"It's zoom level tied. When I zoom in a little, I
+could see the drag hover begin and ending"*. The retraction is the finding. The
+handles worked the whole time; they were unfindable, and unfindable is the same
+bug the resize grip had, in a different place.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| LX2-a | Both grab bands on any hovered block, at the hit test's own width, the pointed-at one solid, plus a `RESIZE_EW` cursor and `RESIZE_NS` over the lane's own edge | `ui/panels/lyrics.rs`, `ui/shell.rs` | **done** |
+| LX2-b | The cue's own words inside its block, through the authored face, fading out before the edge | `ui/panels/lyrics.rs`, `ui/widgets.rs` | **done** |
+| LX2-c | The wheel zooms from the scene-plan and lyric lanes, not only the PCM strip | `ui/shell.rs`, `ui/panels/lyrics.rs` | **done** |
+| LX2-d | Capture evidence for all three: `--ui-probe wheel=`, a `timeline:` report line, and four new measurements in `tools/lyric_lane_capture.sh` | `cli.rs`, `main.rs`, `tools/lyric_lane_capture.sh` | **done** |
+
+**A cursor was unavailable to every panel, and the comment saying so was the
+fix.** `Shell::splitters` runs after every panel and called `set_mouse_cursor`
+unconditionally, `None => MOUSE_CURSOR_DEFAULT`, so a shape asked for anywhere
+else was overwritten in the same frame. `Shell::request_cursor` now records one
+and `splitters` honours it when no splitter is active. The request is
+**last-wins**, which is deliberately the opposite of the widget bank's
+first-wins press rule: a press is consumed and must go to one claimant, while a
+cursor is a property of the topmost pixel and is not used up.
+
+**The wheel claim is first-wins, for the opposite reason.** One notch is
+reported to *every* caller in the frame, so two lanes accepting it would
+multiply the factor — one notch over an overlap would zoom 1.44x where it zooms
+1.2x everywhere else.
+
+**How faint is too faint was measured, not judged.** The first version drew the
+offered (not-yet-pointed-at) band at 14 % ink, which the capture reported as 16
+luminance steps under the block's own fill — under the 22 the check demands, and
+visibly nothing. It is 32 % now, which reads as 35. The point is that this was
+found by a measurement rather than by looking at a screenshot and feeling
+satisfied, which is how it got shipped at 2 px in the first place.
+
+**The rows are nested, not tiled, and the labels found it.** `row_geometry`
+gives every row a band that runs to the *bottom* of the lane and starts partway
+down the one above, so three centred labels land within a few pixels of each
+other and overlap — which the first version did, visibly. A label belongs in the
+strip nothing is drawn over, which is `next_row_offset - this_row_offset`. Doing
+that needed a datum `LyricStack` did not expose: `rows()` is the deepest pile in
+the *document*, so an isolated cue in a document that also holds a four-deep pile
+was being squeezed into a strip that covers nothing. `LyricStack::cluster_rows`
+answers locally, and the label only draws when its own strip is at least 16 px.
+The result is a property worth keeping: **drag the lane taller and stacked cues
+gain their labels** — at 50 px a three-deep cluster is colour and tooltip only,
+at 66 px all three read.
+
+**Four new measurements, and each one has a demonstrated negative control:**
+
+| check | perturbation | result |
+| --- | --- | --- |
+| the grab bands exist and darken under the pointer | offered band back to 14 % ink | `drew no grab band (2px / 2px)` |
+| block text is present and fades | `fade_width` forced to 0 | tail ink 62.7 against a head of 63.4, and the text reached the block edge |
+| the lane's wheel reaches the shared view | the lane's region test forced false | `two notches over the cue lane gave 1.000x, not 1.44x` |
+| the tooltip never covers the lane | (existing) — its "any near-black pixel" proxy now had to become a *run* of 40, because LX2-a legitimately puts near-black bands inside a hovered block | — |
+
+**`tools/timeline_lane_alignment.py` was reading the whole window row.** It
+searches for the playhead by accent colour across the full width, while its
+border search is correctly restricted to the lane. With the Tune inspector open,
+that inspector's accent sliders and live meters sit at the same heights as the
+scene lane and were counted as playhead columns — so the check failed on a frame
+whose lanes were perfectly aligned, and, because a meter moves with the audio,
+it failed only sometimes. Now restricted to the lane's own span; the control
+(rolling one lane 3 px sideways in a passing PNG) still reports all three
+disagreements.
+
+**Still uncovered.** `--ui-probe`'s invented keys — `hover`, `sidebar`,
+`inspector`, `timeline-height`, `audio-stall`, `route`, `picker`, `tune`,
+`assist`, and now `wheel` — are documented only in `cli.rs`'s own doc comments.
+`docs/PHASE0_INVENTORY.md` §3.6 tabulates the *oracle's* grammar and has never
+listed ours. That is a documentation gap for whoever writes a capture script
+next, not a behaviour gap.
+
 ## Start here next session (updated 2026-08-05)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,

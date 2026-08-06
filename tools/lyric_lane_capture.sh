@@ -72,7 +72,10 @@ duration = float(project["audio"]["duration_seconds"])
 # what makes `stack rows` greater than 1; the pair is the case the fan-out
 # deliberately leaves flat, so one capture shows both rules.
 cues = [
-    (0.30, 1.20, "user", "A line I placed myself"),
+    # Deliberately far longer than its own block, so the capture can measure the
+    # fade rather than only the presence of a label: at 1280 px this block is
+    # about 140 px wide and the line wants some 400.
+    (0.30, 1.20, "user", "A line I placed myself, and it runs on well past the end of its own block"),
     (1.60, 2.60, "certain", "The aligner is sure about this one"),
     (2.20, 3.60, "ambiguous", "Coarse and fine disagree here"),
     (2.40, 4.20, "potential", "Could not be placed at all"),
@@ -137,7 +140,7 @@ printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":
 # The hover point is *found*, not guessed: the lane's position depends on the
 # window, the UI scale and the cue count, and a hard-coded pair is how
 # `--ui-probe hover=` silently photographs the wrong thing.
-read -r LANE_TOP LANE_BOTTOM HOVER_X HOVER_Y <<<"$(python3 - "$OUT_DIR/lane-base-1280x720.png" <<'PY'
+read -r LANE_TOP LANE_BOTTOM HOVER_X HOVER_Y BLOCK_LEFT BLOCK_RIGHT <<<"$(python3 - "$OUT_DIR/lane-base-1280x720.png" <<'PY'
 import sys
 from PIL import Image
 
@@ -174,11 +177,47 @@ for x in range(lo, hi + 1):
         current = []
 if len(current) > len(best):
     best = current
-print(top, bottom, (best[0] + best[-1]) // 2, middle)
+print(top, bottom, (best[0] + best[-1]) // 2, middle, best[0], best[-1])
 PY
 )"
-echo "cue lane rows $LANE_TOP..$LANE_BOTTOM, hovering ${HOVER_X}x${HOVER_Y}"
+echo "cue lane rows $LANE_TOP..$LANE_BOTTOM, hovering ${HOVER_X}x${HOVER_Y}, block ${BLOCK_LEFT}..${BLOCK_RIGHT}"
 capture lane-tip-1280x720 1280x720 "panel=lyrics,hover=${HOVER_X}x${HOVER_Y}" || FAILED=1
+
+echo "=== the drag handles, hovered from the body and from the edge ==="
+# Two frames of the *same* block, because the two states are different claims.
+# Hovering the body has to show both handles at all -- that is the whole point
+# of the LX2 change, since the operator could only find them by zooming in until
+# a block was wide enough to stumble onto one. Hovering the edge has to show
+# that one darker, because an affordance that does not change when you are on it
+# cannot tell you that you are.
+#
+# Which block the body hover landed on is *measured*, not assumed: the lane
+# resolves an overlap to the last cue in document order, so which of four
+# stacked blocks is on top at a given x is a rule, not something to guess at.
+read -r HOVERED_LEFT HOVERED_RIGHT <<<"$(python3 - "$OUT_DIR" "$LANE_TOP" "$LANE_BOTTOM" <<'PY'
+import pathlib, sys
+from PIL import Image
+import numpy as np
+
+out = pathlib.Path(sys.argv[1])
+top, bottom = int(sys.argv[2]), int(sys.argv[3])
+plain = np.array(Image.open(out / "lane-base-1280x720.png").convert("RGB")).astype(int)
+tipped = np.array(Image.open(out / "lane-tip-1280x720.png").convert("RGB")).astype(int)
+band = np.abs(plain[top : bottom + 1] - tipped[top : bottom + 1]).sum(axis=2)
+columns = np.flatnonzero(band.max(axis=0) > 30)
+print(int(columns[0]), int(columns[-1]))
+PY
+)"
+echo "the body hover landed on the block spanning x=${HOVERED_LEFT}..${HOVERED_RIGHT}"
+capture lane-grab-1280x720 1280x720 "panel=lyrics,hover=$((HOVERED_LEFT + 2))x${HOVER_Y}" || FAILED=1
+
+echo "=== the wheel zooms from inside the cue lane ==="
+# `wheel=` exists for this one assertion. Three modules draw the three timed
+# lanes against three rectangles, so "the pointer is over the lyric lane" is a
+# region test that reads correctly in the source while being wrong about which
+# lane it names. The report line carries the resulting span, so a frame that
+# zoomed the wrong axis -- or none -- says so.
+capture lane-wheel-1280x720 1280x720 "panel=lyrics,hover=${HOVER_X}x${HOVER_Y},wheel=2" || FAILED=1
 
 echo "=== the report lines ==="
 for pair in \
@@ -197,6 +236,53 @@ for pair in \
         *) echo "FAIL: $name did not report '$want'" >&2; FAILED=1 ;;
     esac
 done
+
+echo "=== the wheel moved the shared view, and only when it was sent ==="
+# Read rather than pattern-matched, because the assertion is a *comparison*: the
+# unturned frames must show the whole track and the turned one must show 1.2^2
+# of it, anchored under the pointer. A `*1.44x*` glob would pass just as well on
+# a frame that zoomed for some other reason.
+python3 - "$OUT_DIR" <<'PY'
+import pathlib, re, sys
+
+out = pathlib.Path(sys.argv[1])
+
+
+def timeline(name):
+    line = ""
+    for text in (out / f"{name}.txt").read_text().splitlines():
+        if text.startswith("timeline:"):
+            line = text.split(":", 1)[1].strip()
+    match = re.match(r"([\d.]+)x\s+([\d.]+)\.\.([\d.]+)\s+of\s+([\d.]+)", line)
+    if not match:
+        print(f"FAIL: {name} printed no timeline line ({line!r})", file=sys.stderr)
+        sys.exit(1)
+    return (float(match.group(1)), float(match.group(2)), float(match.group(3)))
+
+
+failed = False
+for name in ("lane-base-1280x720", "lane-tip-1280x720"):
+    zoom, start, end = timeline(name)
+    print(f"{name}: {zoom:.3f}x {start:.3f}..{end:.3f}")
+    if abs(zoom - 1.0) > 1e-3:
+        print(f"FAIL: {name} was zoomed without a wheel event", file=sys.stderr)
+        failed = True
+
+zoom, start, end = timeline("lane-wheel-1280x720")
+print(f"lane-wheel-1280x720: {zoom:.3f}x {start:.3f}..{end:.3f}")
+# Two notches at the shell's 1.2 base. Exact, because the factor is applied once
+# and the probe is consumed on one frame -- a run that delivered it on every
+# frame would land on the view's own clamp instead, which is the failure this
+# number is here to catch.
+if abs(zoom - 1.44) > 1e-2:
+    print(f"FAIL: two notches over the cue lane gave {zoom:.3f}x, not 1.44x", file=sys.stderr)
+    failed = True
+if not start < end:
+    print("FAIL: the zoomed span is empty", file=sys.stderr)
+    failed = True
+sys.exit(1 if failed else 0)
+PY
+[ $? -ne 0 ] && FAILED=1
 
 echo "=== the sidebar keeps its tracks panel ==="
 for name in lane-base-1280x720 lane-max-1280x720 lane-base-960x640 lane-max-960x640 lane-max-1920x1080; do
@@ -263,12 +349,29 @@ print(f"changed rows {rows.min()}..{rows.max()}, cue lane rows {lane_top}..{lane
 
 # Inside the lane only the hovered block's own fill may change, and it changes
 # by the alpha step from 0.38 to 0.68 — a wash, not a plate. The tooltip is
-# white on near-black ink, so its rows contain pixels that went *very* dark.
+# white on near-black ink, so its rows carry a *wide* run of very dark pixels.
+#
+# A run rather than "any dark pixel", which is what this asked for until LX2
+# gave the hovered block near-black grab bars at both ends. Those are five
+# columns; a plate wide enough to cover a cue is dozens, and the distinction is
+# the one the check was always about.
+PLATE_COLUMNS = 40
+
+
+def widest_dark_run(row):
+    best = run = 0
+    for dark in row.sum(axis=1) < 120:
+        run = run + 1 if dark else 0
+        best = max(best, run)
+    return best
+
+
 inside = [y for y in rows if lane_top <= y <= lane_bottom]
 ink = [
     y
     for y in inside
-    if (tipped[y].sum(axis=1) < 120).any() and not (plain[y].sum(axis=1) < 120).any()
+    if widest_dark_run(tipped[y]) >= PLATE_COLUMNS
+    and widest_dark_run(plain[y]) < PLATE_COLUMNS
 ]
 if ink:
     print(f"FAIL: the tooltip plate covered lane rows {ink[:8]}", file=sys.stderr)
@@ -361,6 +464,139 @@ for name, expected in (("lane-max-1920x1080", True), ("lane-base-1280x720", Fals
         print(f"{name}: lane {top}..{bottom}, {state}")
 sys.exit(1 if failed else 0)
 GRIP
+[ $? -ne 0 ] && FAILED=1
+
+echo "=== the drag handles are on screen, and say which one has the pointer ==="
+# Measured, not eyeballed, because the whole defect being fixed was an
+# affordance that existed in the source and never in a frame: the old handle was
+# 2 px wide and drawn only once the pointer was already inside the 5 px zone, so
+# it could not be found by a pointer that never landed there.
+python3 - "$OUT_DIR" "$LANE_TOP" "$HOVERED_LEFT" "$HOVERED_RIGHT" <<'PY'
+import pathlib, sys
+from PIL import Image
+import numpy as np
+
+out = pathlib.Path(sys.argv[1])
+row = int(sys.argv[2]) + 6
+left, right = int(sys.argv[3]), int(sys.argv[4])
+
+
+def profile(name):
+    image = np.array(Image.open(out / f"{name}.png").convert("RGB")).astype(int)
+    return image[row].mean(axis=1)
+
+
+def run_from(lum, start, step, floor):
+    """How many columns from `start` are darker than the block's own interior."""
+    count = 0
+    while 0 <= start + count * step < lum.size and lum[start + count * step] <= floor:
+        count += 1
+    return count
+
+
+failed = False
+frames = {name: profile(name) for name in
+          ("lane-base-1280x720", "lane-tip-1280x720", "lane-grab-1280x720")}
+# The interior is the block's own fill, taken as a median so the cue's text does
+# not drag the reference down.
+# The base frame's own fill, printed for context.
+interior = float(np.median(frames["lane-base-1280x720"][left + 8 : left + 40]))
+floor = interior - 20
+
+for name, want_start, want_end in (
+    ("lane-base-1280x720", 2, 2),
+    ("lane-tip-1280x720", 4, 4),
+    ("lane-grab-1280x720", 4, 4),
+):
+    lum = frames[name]
+    # The base frame's reference is its own fill; the hover frames darken the
+    # whole block, so each measures against its own interior.
+    own = float(np.median(lum[left + 8 : left + 40]))
+    start = run_from(lum, left, 1, own - 22)
+    end = run_from(lum, right, -1, own - 22)
+    print(f"{name}: handle runs start={start}px end={end}px over a fill of {own:.0f}")
+    if name == "lane-base-1280x720":
+        if start > want_start or end > want_end:
+            print(f"FAIL: {name} drew a handle with no pointer on the block", file=sys.stderr)
+            failed = True
+    elif start < want_start or end < want_end:
+        print(f"FAIL: {name} drew no grab band ({start}px / {end}px)", file=sys.stderr)
+        failed = True
+
+# The live edge is darker than the same edge merely offered. Same block, same
+# columns, so this is a comparison and not a threshold.
+live = frames["lane-grab-1280x720"][left : left + 5].min()
+offered = frames["lane-tip-1280x720"][left : left + 5].min()
+print(f"the pointed-at edge reads {live:.0f} against {offered:.0f} when only offered")
+if live >= offered - 10:
+    print("FAIL: the handle under the pointer looks the same as one that is not",
+          file=sys.stderr)
+    failed = True
+sys.exit(1 if failed else 0)
+PY
+[ $? -ne 0 ] && FAILED=1
+
+echo "=== the cue's own words are in its block, and stop before the edge ==="
+# The fixture's first line is deliberately three times its block's width, so
+# this measures the fade rather than the mere presence of ink. A hard clip and a
+# fade both put text in the block; only one of them leaves the tail lighter than
+# the head, and only one leaves the last columns clean.
+python3 - "$OUT_DIR" "$LANE_TOP" "$LANE_BOTTOM" <<'PY'
+import pathlib, sys
+from PIL import Image
+import numpy as np
+
+out = pathlib.Path(sys.argv[1])
+top, bottom = int(sys.argv[2]), int(sys.argv[3])
+image = np.array(Image.open(out / "lane-base-1280x720.png").convert("RGB")).astype(int)
+band = image[top + 3 : bottom - 4].mean(axis=2)
+
+# The leftmost *block* in the lane: the first run of non-white columns wide
+# enough to be a cue rather than chrome. The lane's own left border and the
+# panel edge are a dozen columns between them and would otherwise be picked
+# first — which they were, and the check reported an empty block.
+painted = band.min(axis=0) < 250
+runs, run_start = [], None
+for x, on in enumerate(painted):
+    if on and run_start is None:
+        run_start = x
+    elif not on and run_start is not None:
+        runs.append((run_start, x - 1))
+        run_start = None
+if run_start is not None:
+    runs.append((run_start, painted.size - 1))
+blocks = [(lo, hi) for lo, hi in runs if hi - lo + 1 >= 40]
+if not blocks:
+    print(f"FAIL: the cue lane holds no block wider than 40px ({runs[:6]})", file=sys.stderr)
+    sys.exit(1)
+start, end = blocks[0]
+width = end - start + 1
+fill = float(np.median(band[:, start + 8 : end - 8]))
+# Ink is much darker than the fill it sits on; the block's own border is
+# excluded by starting inside it.
+darkness = np.array([fill - band[:, x].min() for x in range(start + 2, end - 1)])
+inked = np.flatnonzero(darkness > 45)
+print(f"block x={start}..{end} ({width}px), fill {fill:.0f}, {inked.size} inked columns")
+failed = False
+if inked.size < 25:
+    print(f"FAIL: only {inked.size} columns carry text", file=sys.stderr)
+    failed = True
+if inked.size and inked[-1] < darkness.size * 0.6:
+    print("FAIL: the text stopped early, so the fade was never exercised", file=sys.stderr)
+    failed = True
+# Nothing may touch the block's edge: that is the whole difference between a
+# fade and a clip, and the two right-hand columns are the grab handle's.
+if inked.size and inked[-1] >= darkness.size - 2:
+    print("FAIL: the text reaches the block's edge", file=sys.stderr)
+    failed = True
+head = darkness[:25].mean()
+tail = darkness[-8:].mean()
+print(f"ink darkness: head {head:.1f}, tail {tail:.1f}")
+if tail >= head * 0.5:
+    print("FAIL: the tail is as dark as the head, so nothing faded", file=sys.stderr)
+    failed = True
+sys.exit(1 if failed else 0)
+PY
 [ $? -ne 0 ] && FAILED=1
 
 if [ "$FAILED" -ne 0 ]; then

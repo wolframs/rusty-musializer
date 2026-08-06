@@ -229,6 +229,19 @@ pub struct UiProbe {
     /// Parks rather than moves: the position is reasserted every frame, so the tip
     /// is in the shot regardless of how many frames the run lasts.
     pub hover: Option<(f32, f32)>,
+    /// `wheel=NOTCHES`: deliver one wheel event, on one frame, wherever
+    /// `hover=` parked the pointer (LX2).
+    ///
+    /// **Invented for the same reason as `hover=`, and it is the other half of
+    /// it.** Xvfb has no wheel any more than it has a pointer, so "the wheel
+    /// zooms the timeline from the lane you are aiming in" was a binding no
+    /// capture could reach — and the lanes are drawn by three different modules
+    /// against three different rectangles, which is precisely where a region
+    /// test is wrong in a way that reads correctly in the source.
+    ///
+    /// One frame, not every frame: the shell consumes it on the first frame it
+    /// draws, so a 30-frame probe zooms by one notch rather than by thirty.
+    pub wheel: Option<f32>,
     /// `audio-stall=MS`: block only the main/refill thread once during a probe.
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
@@ -890,6 +903,16 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
         "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
         "hover" => probe.hover = Some(parse_point(value)?),
+        "wheel" => {
+            let notches: f32 = value.parse().ok()?;
+            // Bounded because the factor is `1.2^notches`: past a handful the
+            // view is pinned at its own clamp and the capture proves nothing
+            // about which lane accepted the event.
+            if !notches.is_finite() || notches == 0.0 || notches.abs() > 8.0 {
+                return None;
+            }
+            probe.wheel = Some(notches);
+        }
         "audio-stall" => {
             let milliseconds: u64 = value.parse().ok()?;
             if !(1..=5_000).contains(&milliseconds) {
@@ -1021,6 +1044,29 @@ Diagnostics:
 
 #[cfg(test)]
 mod tests {
+    /// A wheel probe is a signed notch count, and zero is refused.
+    ///
+    /// Zero is the refusal worth having: `wheel=0` reads as "send no wheel",
+    /// which is what leaving the key out already means — accepting it would let
+    /// a capture assert a zoom that the run never asked for and never got.
+    #[test]
+    fn a_wheel_probe_takes_a_signed_notch_count_and_refuses_a_no_op() {
+        assert_eq!(
+            parse_ui_probe("hover=100x200,wheel=1")
+                .expect("valid spec")
+                .wheel,
+            Some(1.0)
+        );
+        assert_eq!(
+            parse_ui_probe("wheel=-2.5").expect("valid spec").wheel,
+            Some(-2.5)
+        );
+        assert_eq!(parse_ui_probe("wheel=0"), None);
+        assert_eq!(parse_ui_probe("wheel=9"), None);
+        assert_eq!(parse_ui_probe("wheel=nan"), None);
+        assert_eq!(parse_ui_probe("wheel=up"), None);
+    }
+
     /// `hover=` is separated by `x`, not by a comma.
     ///
     /// The spec itself is comma-separated, so `hover=1121,449` splits into two

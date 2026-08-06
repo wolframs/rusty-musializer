@@ -227,9 +227,16 @@ pub struct Shell {
     /// A manual pan deliberately detaches the view from playback-follow until
     /// the user asks to Follow again.
     timeline_manual_view: bool,
-    /// Wheel zoom captured over the PCM lane and applied at the start of the
-    /// next frame, before any aligned lane draws.
+    /// Wheel zoom captured over any timed lane by [`Shell::request_timeline_zoom`]
+    /// and applied at the start of the next frame, before any aligned lane draws.
+    ///
+    /// At most one claim per frame, so two lanes cannot compound one notch.
     timeline_zoom_pending: Option<(f64, f64)>,
+    /// `--ui-probe wheel=NOTCHES`, waiting for the first frame to draw (LX2).
+    pub probe_wheel: Option<f32>,
+    /// The same value, held for exactly the frame that consumed it, so every
+    /// lane in that frame is offered the notch and the frame after is not.
+    probe_wheel_frame: Option<f32>,
     /// A drag in flight on the transport row's position bar (review 1.9,
     /// UX0-A09).
     ///
@@ -280,6 +287,20 @@ pub struct Shell {
     /// `main.rs`'s `SessionCredentials`. Set once, so the dialog can say
     /// "session only" without holding a second copy of a credential.
     pub session_credential_fingerprint: Option<String>,
+    /// A mouse cursor a panel asked for this frame, via [`Shell::request_cursor`].
+    ///
+    /// It exists because [`Shell::splitters`] sets the cursor unconditionally and
+    /// runs *after* every panel, so a panel calling `set_mouse_cursor` itself had
+    /// its choice overwritten one call later — silently, and only on the frames
+    /// where the pointer was over a panel affordance, which is every frame that
+    /// matters. Routing the request through one field makes the splitters the one
+    /// owner of the cursor rather than the accidental last writer.
+    ///
+    /// Reset to `None` in [`Shell::begin_frame`]. A cursor is a statement about
+    /// where the pointer is *now*, and the pointer moves between frames, so
+    /// anything sticky here would keep a resize arrow on screen after the hand
+    /// had left the handle.
+    pointer_cursor: Option<raylib::consts::MouseCursor>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -564,6 +585,8 @@ impl Shell {
             timeline_pan: None,
             timeline_manual_view: false,
             timeline_zoom_pending: None,
+            probe_wheel: None,
+            probe_wheel_frame: None,
             transport_scrub: None,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
@@ -576,6 +599,7 @@ impl Shell {
             last_split_press: None,
             assist_settings: super::assist_settings::AssistSettingsDialog::new(),
             session_credential_fingerprint: None,
+            pointer_cursor: None,
         }
     }
 
@@ -810,6 +834,80 @@ impl Shell {
         self.widgets.begin_frame(ui_scale);
         self.font_browser.begin_frame();
         self.scrub_release_preview_seconds = None;
+        // A cursor request is only ever true of the frame that made it.
+        self.pointer_cursor = None;
+        // `--ui-probe wheel=` is delivered on exactly one frame, and taking it
+        // here rather than at the read is what makes that true: the strip and
+        // the lyric lane both ask for the wheel, the strip asks first, and a
+        // `take` at the read would let it swallow a notch aimed at the lane.
+        // Every caller in this frame sees the same value, which is what the
+        // device does, and the frame after this one sees `None`.
+        self.probe_wheel_frame = self.probe_wheel.take();
+    }
+
+    /// The wheel this frame, honouring `--ui-probe wheel=`.
+    ///
+    /// A headless run has no wheel, exactly as it has no pointer, so "the wheel
+    /// zooms from the lane you are aiming in" was a binding no capture could
+    /// reach — and the three timed lanes are drawn by three modules against
+    /// three rectangles, which is where a region test is wrong in a way that
+    /// reads correctly in the source.
+    /// The span every timed lane is drawing, for the probe report (LX2).
+    ///
+    /// The zoom readout says this on screen, but only as typeset text a capture
+    /// cannot read back. The wheel's whole observable effect is this view, and
+    /// the three lanes now claiming it are drawn by three modules against three
+    /// rectangles — the case where a region test is wrong about which lane it
+    /// names looks exactly like the case where it is right, in a picture.
+    #[must_use]
+    pub fn describe_timeline(&self, duration_seconds: f64) -> String {
+        let zoom = if self.timeline.span_seconds > 0.0 {
+            duration_seconds / self.timeline.span_seconds
+        } else {
+            0.0
+        };
+        format!(
+            "{zoom:.3}x  {:.3}..{:.3}  of {duration_seconds:.3}{}",
+            self.timeline.start_seconds,
+            self.timeline.start_seconds + self.timeline.span_seconds,
+            if self.timeline_manual_view {
+                "  free-view"
+            } else {
+                ""
+            }
+        )
+    }
+
+    pub(crate) fn wheel_delta(&self, d: &RaylibDrawHandle<'_>) -> f32 {
+        self.probe_wheel_frame
+            .unwrap_or_else(|| d.get_mouse_wheel_move())
+    }
+
+    /// Asks for a mouse cursor over whatever the caller is drawing, honoured by
+    /// [`Self::splitters`] once every panel has had its turn.
+    ///
+    /// **Last request of the frame wins**, and the reasoning is worth writing
+    /// down because the obvious argument for the opposite rule does not hold
+    /// here. Panels are *not* drawn back-to-front: `draw` walks them in layout
+    /// order over disjoint regions of the workspace, so "first to claim the
+    /// pointer position" says nothing about which one owns the pixel — under a
+    /// pointer inside the sidebar, the timeline drawing later is not the timeline
+    /// drawing on top. Two requests in one frame therefore already mean two
+    /// surfaces overlap, and where surfaces overlap this shell is a plain
+    /// painter's algorithm: the last one drawn is the one the user is pointing
+    /// at. So the last request is the honest answer.
+    ///
+    /// Note this is the opposite of the widget bank's press rule, where the
+    /// *first* widget to see a press claims it (which is how the modal blocker
+    /// works — it is drawn first on purpose). The asymmetry is not an oversight:
+    /// a press is consumed and must go to exactly one claimant, while a cursor is
+    /// a property of the topmost pixel and has no notion of being used up.
+    ///
+    /// An active or hovered workspace splitter still outranks every request. Its
+    /// hit strip is drawn over everything, and once a drag is in flight the
+    /// cursor must not change just because the pointer crossed a panel.
+    pub(crate) fn request_cursor(&mut self, cursor: raylib::consts::MouseCursor) {
+        self.pointer_cursor = Some(cursor);
     }
 
     pub fn draw(
@@ -820,9 +918,6 @@ impl Shell {
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
         self.begin_frame(input.ui_scale);
-        if self.fullscreen {
-            d.set_mouse_cursor(raylib::consts::MouseCursor::MOUSE_CURSOR_DEFAULT);
-        }
 
         // The AI settings modal is application-modal *inside* the window
         // (tranche AP3). Blocking falls out of the oracle's own claim rule
@@ -888,6 +983,21 @@ impl Shell {
             if !modal {
                 widgets::draw_tooltip(d, input.fonts.ui(), &tooltip, input.window);
             }
+        }
+
+        // Fullscreen sheds the splitters along with the panels, so the one place
+        // that answers a cursor request is not running. This is the substitute,
+        // and it is at the *end* of the frame rather than the start on purpose:
+        // the toolbar is still drawn in fullscreen, so a request from it would be
+        // made after a cursor set up here and lost. Nothing in the fullscreen
+        // composition asks for a cursor today, which makes this a no-op that
+        // resolves to `MOUSE_CURSOR_DEFAULT` — the same thing it did before — but
+        // one that will not need finding again when something does.
+        if self.fullscreen {
+            d.set_mouse_cursor(
+                self.pointer_cursor
+                    .unwrap_or(raylib::consts::MouseCursor::MOUSE_CURSOR_DEFAULT),
+            );
         }
 
         self.notices.tick(f64::from(d.get_frame_time()));
@@ -1792,6 +1902,60 @@ impl Shell {
         self.timeline.pan(duration_seconds, delta_seconds);
     }
 
+    /// Captures one wheel notch over a timed lane as a zoom of the shared view.
+    ///
+    /// Every lane drawn against [`Self::timeline`] may call this — the waveform
+    /// strip, the scene-plan lane and the lyric cue lane — because all three are
+    /// views of the same time axis, and it was arbitrary that the wheel only
+    /// worked over one of them (operator request, 2026-08-06).
+    ///
+    /// The caller must have proven the pointer is inside its **own lane rect**
+    /// before calling, and must not widen that to the section or panel around it.
+    /// The capture is deliberately narrow: the lyrics panel is a scrolling list
+    /// sharing the band with its cue lane, and a wheel region that spilled past
+    /// the lane would take the list's scroll away from it.
+    ///
+    /// **First claim of the frame wins**, which is the opposite of
+    /// [`Self::request_cursor`]'s rule and for a reason that does not apply
+    /// there: a wheel notch is a single physical event, and `get_mouse_wheel_move`
+    /// reports the same value to every caller in the frame. Two lanes accepting
+    /// it would multiply the zoom factor by itself, so one notch over an overlap
+    /// would zoom twice as far as one notch anywhere else. Whose claim it is
+    /// barely matters — the lanes are disjoint, so an overlap means a hit test is
+    /// already wrong — but that it is exactly one claim does.
+    ///
+    /// `wheel` is `d.get_mouse_wheel_move()`; `pointer_x` and the lane bounds are
+    /// in the same logical space as [`TimelineView::seconds_at`].
+    pub(crate) fn request_timeline_zoom(
+        &mut self,
+        wheel: f32,
+        pointer_x: f32,
+        lane_x: f32,
+        lane_width: f32,
+        duration_seconds: f64,
+    ) {
+        // A gesture in flight owns the view: zooming under a scrub or a pan moves
+        // the axis the drag is measured against, and the content slides out from
+        // under the hand.
+        if wheel == 0.0
+            || duration_seconds <= 0.0
+            || self.timeline_gesture.is_some()
+            || self.timeline_zoom_pending.is_some()
+        {
+            return;
+        }
+        let anchor = self.timeline.seconds_at(
+            f64::from(pointer_x),
+            f64::from(lane_x),
+            f64::from(lane_width),
+            duration_seconds,
+        );
+        // 1.2 per notch, applied at the top of the next frame rather than here —
+        // see the comment on the take in `timeline_strip`, which is why the delay
+        // is deliberate and must stay.
+        self.timeline_zoom_pending = Some((1.2f64.powf(f64::from(wheel)), anchor));
+    }
+
     /// One frame of the position bar's drag, raylib-free.
     ///
     /// Returns the in-flight target while a drag is running, so the caller draws
@@ -2119,6 +2283,14 @@ impl Shell {
         use raylib::consts::{MouseButton, MouseCursor};
 
         if input.workspace.current().is_none() {
+            // No track means no boundaries to drag, but this is still the only
+            // call that answers a cursor request, so it has to answer before
+            // leaving. Previously nothing set the cursor at all on these frames,
+            // which left whatever the last frame chose on screen.
+            d.set_mouse_cursor(
+                self.pointer_cursor
+                    .unwrap_or(MouseCursor::MOUSE_CURSOR_DEFAULT),
+            );
             return;
         }
         const HIT: f32 = 8.0;
@@ -2199,11 +2371,18 @@ impl Shell {
             }
         }
 
+        // The splitters own the cursor for the frame, and they run last, which is
+        // why a panel cannot simply set it for itself (see [`Shell::request_cursor`]).
+        // An active or hovered splitter outranks any request: its hit strip is
+        // drawn over the panels, and a drag in flight must keep its own arrow even
+        // as the pointer travels across a panel that would like a different one.
         let active = self.split_drag.or(hovered);
         d.set_mouse_cursor(match active {
             Some(SplitKind::Timeline) => MouseCursor::MOUSE_CURSOR_RESIZE_NS,
             Some(SplitKind::Sidebar | SplitKind::Inspector) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
-            None => MouseCursor::MOUSE_CURSOR_DEFAULT,
+            None => self
+                .pointer_cursor
+                .unwrap_or(MouseCursor::MOUSE_CURSOR_DEFAULT),
         });
 
         for (kind, rect) in [
@@ -2810,10 +2989,12 @@ impl Shell {
         let padding = metric::UI_PANEL_PADDING;
         let mouse = input.ui_scale.mouse(d);
 
-        // A wheel event is captured only over the PCM lane (below), so it cannot
-        // steal scrolling from the lyric list. Applying the captured mutation
-        // here, one frame later, means scene, PCM and lyric lanes all consume the
-        // new view together instead of tearing for one frame.
+        // A wheel event is captured only inside a timed lane's own rect — the
+        // scene-plan lane and the PCM lane below, the cue lane in the lyrics
+        // panel — so it cannot steal scrolling from the lyric list that shares
+        // the band with them. Applying the captured mutation here, one frame
+        // later, means scene, PCM and lyric lanes all consume the new view
+        // together instead of tearing for one frame.
         if let Some((factor, anchor)) = self.timeline_zoom_pending.take() {
             self.timeline.zoom(duration, factor, anchor);
         }
@@ -2917,15 +3098,32 @@ impl Shell {
             && mouse.x <= strip.x + strip.width
             && mouse.y >= strip.y
             && mouse.y <= strip.y + strip.height;
-        let wheel = d.get_mouse_wheel_move();
-        if over_strip && wheel != 0.0 && self.timeline_gesture.is_none() {
-            let anchor = self.timeline.seconds_at(
-                f64::from(mouse.x),
-                f64::from(strip.x),
-                f64::from(strip.width),
-                duration,
-            );
-            self.timeline_zoom_pending = Some((1.2f64.powf(f64::from(wheel)), anchor));
+        let wheel = self.wheel_delta(d);
+        if over_strip {
+            self.request_timeline_zoom(wheel, mouse.x, strip.x, strip.width, duration);
+        }
+        // The scene-plan lane zooms on the same notch (operator request,
+        // 2026-08-06): it is a view of this axis too, and the wheel working over
+        // the waveform but not over the blocks above it was an accident of which
+        // lane was built first.
+        //
+        // The region is the lane's own rect and nothing more. Its x range is
+        // `strip`'s because `scene_plan_section` is handed the same
+        // `content.x + padding` and `content.width - padding * 2` the strip is
+        // built from — that shared pair is why the two lanes align at all — and
+        // its vertical bounds are the section's own constants, already resolved
+        // into `lanes_top` and `scene_lane_bottom` above. Staying strictly inside
+        // the lane keeps the wheel away from the controls row above it, which has
+        // buttons, and from the lyric list below, whose scroll it would otherwise
+        // steal.
+        if let Some(scene_bottom) = scene_lane_bottom {
+            let over_scene_lane = mouse.x >= strip.x
+                && mouse.x <= strip.x + strip.width
+                && mouse.y >= lanes_top
+                && mouse.y <= scene_bottom;
+            if over_scene_lane {
+                self.request_timeline_zoom(wheel, mouse.x, strip.x, strip.width, duration);
+            }
         }
         self.waveform_lane(d, input, strip, duration);
 
@@ -4341,6 +4539,96 @@ mod tests {
                 ShellCommand::TogglePlay
             ]
         );
+    }
+
+    #[test]
+    fn a_wheel_notch_anchors_the_zoom_under_the_pointer_in_whichever_lane_asked() {
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+        // Two lanes at different x offsets, both views of the same 120 s axis.
+        // The pointer sits a quarter of the way into each, so both must resolve
+        // the same 30 s anchor — that is what makes the wheel mean the same
+        // thing over the scene lane as over the waveform.
+        shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
+        let (waveform_factor, waveform_anchor) =
+            shell.timeline_zoom_pending.take().expect("waveform claim");
+        shell.request_timeline_zoom(1.0, 300.0, 200.0, 400.0, 120.0);
+        let (scene_factor, scene_anchor) = shell.timeline_zoom_pending.take().expect("scene claim");
+
+        assert!((waveform_anchor - 30.0).abs() < 1e-9);
+        assert!((scene_anchor - 30.0).abs() < 1e-9);
+        assert!((waveform_factor - 1.2).abs() < 1e-9);
+        assert!((scene_factor - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn one_wheel_notch_is_claimed_once_however_many_lanes_see_it() {
+        // `get_mouse_wheel_move` reports the same notch to every lane in the
+        // frame. If two of them accepted it the factors would multiply, so one
+        // notch over an overlap would zoom 1.44x where it zooms 1.2x anywhere
+        // else. The claim is therefore first-come and single.
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+
+        shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
+        shell.request_timeline_zoom(3.0, 210.0, 10.0, 400.0, 120.0);
+        let (factor, anchor) = shell.timeline_zoom_pending.expect("first claim survives");
+        assert!((factor - 1.2).abs() < 1e-9, "the second lane compounded it");
+        assert!(
+            (anchor - 30.0).abs() < 1e-9,
+            "the second lane re-anchored it"
+        );
+    }
+
+    #[test]
+    fn a_wheel_notch_is_refused_by_every_guard_that_should_refuse_it() {
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+
+        // No notch at all.
+        shell.request_timeline_zoom(0.0, 110.0, 10.0, 400.0, 120.0);
+        assert_eq!(shell.timeline_zoom_pending, None);
+
+        // No track: `seconds_at` has no axis to resolve against, and the pending
+        // pair would be applied against the next track's duration.
+        shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 0.0);
+        assert_eq!(shell.timeline_zoom_pending, None);
+
+        // A gesture in flight owns the view. Zooming under a scrub moves the axis
+        // the drag is measured against, and the content slides out from under the
+        // hand — including a pan, whose origin is a fixed pixel.
+        for gesture in [
+            TimelineGesture::Scrub,
+            TimelineGesture::Pan,
+            TimelineGesture::SceneBoundary,
+        ] {
+            shell.timeline_gesture = Some(gesture);
+            shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
+            assert_eq!(shell.timeline_zoom_pending, None, "{gesture:?} was ignored");
+        }
+        shell.timeline_gesture = None;
+    }
+
+    #[test]
+    fn a_cursor_request_is_last_wins_and_never_survives_the_frame() {
+        use raylib::consts::MouseCursor;
+
+        let mut shell = Shell::new();
+        assert_eq!(shell.pointer_cursor, None);
+
+        shell.request_cursor(MouseCursor::MOUSE_CURSOR_RESIZE_NS);
+        shell.request_cursor(MouseCursor::MOUSE_CURSOR_RESIZE_EW);
+        assert_eq!(
+            shell.pointer_cursor,
+            Some(MouseCursor::MOUSE_CURSOR_RESIZE_EW),
+            "the topmost surface's request lost to one drawn under it"
+        );
+
+        // The pointer moves between frames, so a request is only ever true of the
+        // frame that made it. Without this reset a resize arrow stays on screen
+        // after the hand has left the handle.
+        shell.begin_frame(UiScale::default());
+        assert_eq!(shell.pointer_cursor, None);
     }
 
     #[test]

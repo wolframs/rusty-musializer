@@ -38,7 +38,8 @@ use musializer_core::project::model::{
 };
 use musializer_core::ui::lyric_clipboard::LyricClipboard;
 use musializer_core::ui::lyric_lane_edit::{
-    self, LyricLaneClick, LyricLaneSelection, LyricLaneZone,
+    self, LyricLaneClick, LyricLaneSelection, LyricLaneZone, LYRIC_LANE_EDGE_GRAB_PIXELS,
+    LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS,
 };
 use musializer_core::ui::lyric_lane_stack::{row_geometry, shade_multiplier, LyricStack};
 use musializer_core::ui::lyrics_editor_layout::{self, LYRIC_EDITOR_ROW_HEIGHT};
@@ -47,6 +48,7 @@ use musializer_core::ui::text_edit::{TextEditError, TextRules};
 use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::{GlyphRepertoire, UiFonts};
+use raylib::consts::MouseCursor;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::super::mapping_editor;
@@ -120,6 +122,25 @@ const LANE_RESIZE_GRAB_PIXELS: f32 = 7.0;
 const LANE_BLOCK_TOP_INSET: f32 = 3.0;
 /// 5 px, and the 5 is not a taste decision — see [`CHROME_ABOVE_PANEL`].
 pub const LANE_GAP: f32 = 5.0;
+
+/// Shortest row a cue's own text may be typed into (LX2).
+///
+/// Below this the line has no room to sit off the block's border and reads as a
+/// smear rather than as words. A three-deep stack in a 50 px lane gives each row
+/// about 13 px, so the fan-out silently drops back to plain colour — which is
+/// correct: at that height the colour and the tooltip are the legible channels.
+const LANE_TEXT_MIN_ROW_PIXELS: f32 = 16.0;
+/// Narrowest block that gets text at all.
+///
+/// Under this, everything drawn would be inside the fade, so the block would
+/// carry a grey smudge that says nothing and hides its own fill.
+const LANE_TEXT_MIN_BLOCK_PIXELS: f32 = 26.0;
+/// How far back from the block's edge the text fades out.
+///
+/// The operator asked for a fade rather than a cut or an ellipsis: an ellipsis
+/// costs three characters of the little text a block can hold, and a hard cut
+/// mid-glyph reads as a rendering fault rather than as "there is more".
+const LANE_TEXT_FADE_PIXELS: f32 = 12.0;
 
 /// The band the zoom readout, the nudge-key hint and the Zoom out button take,
 /// **below** the cue lane (LX1).
@@ -1536,6 +1557,29 @@ impl Shell {
             self.lane_gesture(d, input.ui_scale, editor, track, lane);
         }
 
+        // The wheel zooms the shared view from this lane too (operator request,
+        // 2026-08-06). Three lanes draw the same time axis and it was arbitrary
+        // that only the PCM strip answered the wheel — the lane a user is aiming
+        // at a 2 s cue in is precisely the one they want to zoom from.
+        //
+        // `Shell::request_timeline_zoom` takes the first claim of the frame and
+        // applies it on the *next* one, so two lanes cannot compound one notch
+        // and all three consume the new view together. Strictly inside the lane
+        // rect, which is what keeps it from stealing the cue list's scroll.
+        //
+        // Declined mid-gesture: moving the axis under a drag would retime a cue
+        // by an amount the hand never asked for.
+        let pointer = input.ui_scale.mouse(d);
+        if !resizing && !editor.lane_drag.active && lane.contains_point(pointer.x, pointer.y) {
+            self.request_timeline_zoom(
+                self.wheel_delta(d),
+                pointer.x,
+                lane.x,
+                lane.width,
+                input.duration_seconds,
+            );
+        }
+
         widgets::fill(d, lane, color::ui_raised());
         d.draw_line_ex(
             Vector2::new(lane.x, lane.y),
@@ -1608,6 +1652,17 @@ impl Shell {
             };
             let slot = stack.slot(index);
             let (row_offset, row_height) = row_geometry(content_height, rows, slot.row);
+            // The part of this row nothing is drawn over, which is where a label
+            // belongs. Rows are nested rather than tiled — every row runs to the
+            // bottom of the band and the next one starts partway down it — so
+            // centring text in `row_height` puts three labels within a few
+            // pixels of each other and they collide. The next row's offset is
+            // exactly where this one stops being visible.
+            let label_height = if slot.row + 1 < stack.cluster_rows(index) {
+                row_geometry(content_height, rows, slot.row + 1).0 - row_offset
+            } else {
+                row_height
+            };
             // Clipped to the lane by the same geometry the hit test reads. A
             // boundary which scrolled off-screen is therefore never recreated
             // as a handle at the lane border.
@@ -1669,6 +1724,49 @@ impl Shell {
                     hatch(d, region, fade(color::ui_warning(), 0.85));
                 }
             }
+            // The cue's own words, inside the block (operator request,
+            // 2026-08-06). The lane is 2.25x the oracle's height now, and the
+            // space bought for the click target is also space a block can use to
+            // say what it is — which is the difference between a row of coloured
+            // rectangles and a lane you can read without hovering every cue.
+            //
+            // Typed through the **authored** face, not the chrome bank. This is
+            // a cue's text, and `Faces::ui()` is Latin-only — routing it there is
+            // exactly UX0-A05, where Greek cue rows drew as `?` for weeks.
+            //
+            // The left inset clears the start grab bar so a handle is never
+            // drawn over a letter, and falls back to a bare 3 px when the start
+            // scrolled off the side, because there is no handle there to clear.
+            let label = cue.text.trim();
+            let inset = if geometry.start_visible {
+                LYRIC_LANE_EDGE_GRAB_PIXELS as f32 + 2.0
+            } else {
+                3.0
+            };
+            let label_width = block.width - inset - 3.0;
+            if !label.is_empty()
+                && label_height >= LANE_TEXT_MIN_ROW_PIXELS
+                && block.width >= LANE_TEXT_MIN_BLOCK_PIXELS
+                && label_width > 0.0
+            {
+                let size = metric::UI_FONT_CAPTION.min(label_height - 6.0).max(9.0);
+                // Chosen against what the block *composites to*, not against its
+                // tint: the fill is translucent over the lane, and a stack row
+                // four shade steps down is a different background from row 0. A
+                // fixed ink colour would be the one that disappears there.
+                let ink = widgets::contrasting_ink(over(color::ui_raised(), tint, alpha));
+                widgets::draw_text_faded(
+                    d,
+                    &input.fonts.authored(),
+                    label,
+                    block.x + inset,
+                    block.y + (label_height - size) * 0.5,
+                    label_width,
+                    LANE_TEXT_FADE_PIXELS.min(label_width * 0.5),
+                    size,
+                    fade(ink, 0.92),
+                );
+            }
             // The cue the form is bound to gets a second, inset outline.
             // Selection and form target are different things now that a drag can
             // move several cues at once, and one colour cannot say both.
@@ -1684,21 +1782,71 @@ impl Shell {
                     color::ui_ink(),
                 );
             }
-            // Handles are shown only where a press would actually take them, so
-            // the affordance and the hit test cannot drift apart.
-            if let Some(hit) =
-                hover.filter(|hit| hit.id == cue.id && hit.zone != LyricLaneZone::Body)
-            {
-                let handle_x = if hit.zone == LyricLaneZone::StartEdge {
-                    block.x
-                } else {
-                    block.x + block.width - 2.0
-                };
-                widgets::fill(
-                    d,
-                    UiRect::new(handle_x, block.y, 2.0, block.height),
-                    color::ui_ink(),
-                );
+            // **Both** grab bars, on any hovered block wide enough to have them,
+            // at the width the hit test actually claims (operator feedback,
+            // 2026-08-06: *"the hover to drag begin and ending needs to be a bit
+            // more visible"*, after finding them only by zooming in until a cue
+            // was wide enough to stumble onto one).
+            //
+            // The old version drew a 2 px line and only once the pointer was
+            // already inside the 5 px zone, so finding a handle required
+            // standing on it first. That is the same "you have to be on it to
+            // learn it is there" defect the lane's own resize had, and it is
+            // worse here because a block is a target the user is already aiming
+            // at — the affordance has to be legible from the body of the block,
+            // not from the 5 px they are trying to find.
+            //
+            // The geometry is the hit test's own — `true_left`/`true_right`, and
+            // its two visibility flags — not the drawn block's, so a handle can
+            // never be painted where a press would not take it, and a boundary
+            // that scrolled off the side is offered by neither.
+            let offers_handles = hovered
+                && !editor.lane_drag.active
+                && geometry.true_width() >= LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS;
+            if offers_handles {
+                let grab = LYRIC_LANE_EDGE_GRAB_PIXELS as f32;
+                let held = hover.map(|hit| hit.zone);
+                for (present, edge, bar_x) in [
+                    (
+                        geometry.start_visible,
+                        LyricLaneZone::StartEdge,
+                        geometry.true_left as f32,
+                    ),
+                    (
+                        geometry.end_visible,
+                        LyricLaneZone::EndEdge,
+                        geometry.true_right as f32 - grab,
+                    ),
+                ] {
+                    if !present {
+                        continue;
+                    }
+                    let live = held == Some(edge);
+                    // The band, which is the honest picture of the grab zone,
+                    // and then the boundary column itself — so "this is the edge
+                    // you are about to move" is a hard line rather than the
+                    // middle of a soft one.
+                    widgets::fill(
+                        d,
+                        UiRect::new(bar_x, block.y + 1.0, grab, (block.height - 2.0).max(1.0)),
+                        fade(color::ui_ink(), if live { 0.60 } else { 0.32 }),
+                    );
+                    let rule_x = if edge == LyricLaneZone::StartEdge {
+                        bar_x
+                    } else {
+                        bar_x + grab - 2.0
+                    };
+                    widgets::fill(
+                        d,
+                        UiRect::new(rule_x, block.y, 2.0, block.height),
+                        fade(color::ui_ink(), if live { 1.0 } else { 0.55 }),
+                    );
+                    if live {
+                        // The conventional signal, and the one this lane could
+                        // not give until `Shell::request_cursor` existed.
+                        self.request_cursor(MouseCursor::MOUSE_CURSOR_RESIZE_EW);
+                    }
+                }
             }
             if hovered && !editor.lane_drag.active {
                 // Anchored to the **whole lane**, not to the block. That is the
@@ -1805,21 +1953,6 @@ impl Shell {
         );
     }
 
-    /// The lane's bottom-edge resize (LX1-d). Returns whether it owns the
-    /// pointer this frame, so the cue gesture can stand down.
-    ///
-    /// **No handle is drawn.** The operator was explicit — "don't add a visible
-    /// border line there, a desperate user will find the resize if they need
-    /// it" — so the only affordance is a two-pixel dimple that appears while the
-    /// strip is hovered and vanishes with the pointer. A cursor change would be
-    /// the conventional answer and is not available from here: `Shell::splitters`
-    /// runs after every panel and unconditionally sets the cursor back to
-    /// `MOUSE_CURSOR_DEFAULT`, so anything this file asks for is overwritten in
-    /// the same frame. The one-line change that would fix it is in the report.
-    ///
-    /// The strip is the lane's bottom [`LANE_RESIZE_GRAB_PIXELS`], which is
-    /// exactly the band no block is drawn in, so a resize press is never also a
-    /// press on a cue and the two gestures cannot both be started.
     /// The lane's resize handle, drawn **after** everything else in the lane.
     ///
     /// Always visible, not only under the pointer. The operator's original
@@ -1865,6 +1998,19 @@ impl Shell {
         }
     }
 
+    /// The lane's bottom-edge resize (LX1-d). Returns whether it owns the
+    /// pointer this frame, so the cue gesture can stand down.
+    ///
+    /// The strip is the lane's bottom [`LANE_RESIZE_GRAB_PIXELS`], which is
+    /// exactly the band no block is drawn in, so a resize press is never also a
+    /// press on a cue and the two gestures cannot both be started.
+    ///
+    /// The drawn affordance is [`Self::draw_lane_resize_grip`]'s, because
+    /// anything painted from here is covered by the lane's own fill on the next
+    /// line. What this adds is the cursor, which was unavailable until
+    /// `Shell::request_cursor` existed: `Shell::splitters` runs after every panel
+    /// and used to set the cursor unconditionally back to `MOUSE_CURSOR_DEFAULT`,
+    /// so a shape asked for here was overwritten in the same frame.
     fn lane_resize_gesture(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -1890,6 +2036,9 @@ impl Shell {
         // is why the original hover dimple was never visible in any frame, hover
         // or not, and why the operator reported the resize as simply not working.
         editor.lane_resize_hovered = hovered || editor.lane_resizing;
+        if editor.lane_resize_hovered {
+            self.request_cursor(MouseCursor::MOUSE_CURSOR_RESIZE_NS);
+        }
 
         if editor.lane_resizing {
             if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
@@ -5339,6 +5488,30 @@ fn hatch_spaced(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color, spacing
 }
 
 /// raylib's `ColorAlpha`, for a compile-time colour.
+/// What `tint` at `alpha` over an opaque `base` actually presents to the eye.
+///
+/// Needed because [`widgets::contrasting_ink`] judges an opaque colour, and every
+/// cue block is a translucent fill over the lane. Passing it the raw tint would
+/// answer for a colour that is never on screen — and the answer differs, since a
+/// block at 0.38 alpha over the near-white lane is pale whatever its tint is.
+fn over(base: Color, tint: Color, alpha: f32) -> Color {
+    let alpha = alpha.clamp(0.0, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a convex combination of two values in [0, 255]"
+    )]
+    let mix = |over: u8, under: u8| -> u8 {
+        (f32::from(over) * alpha + f32::from(under) * (1.0 - alpha)).round() as u8
+    };
+    Color::new(
+        mix(tint.r, base.r),
+        mix(tint.g, base.g),
+        mix(tint.b, base.b),
+        255,
+    )
+}
+
 fn fade(color: Color, alpha: f32) -> Color {
     Color::new(
         color.r,

@@ -705,6 +705,9 @@ fn run(
                 f64::INFINITY
             };
             hover_at = probe.hover;
+            // Delivered by the shell on the first frame it draws, wherever
+            // `hover=` parked the pointer.
+            app.shell.probe_wheel = probe.wheel;
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
@@ -1060,6 +1063,7 @@ fn run(
                 });
 
         report.logical_window = ui_scale.logical_size(physical_window);
+        report.timeline = app.shell.describe_timeline(duration_seconds);
         let shell_input = ShellInput {
             window: report.logical_window,
             ui_scale,
@@ -2902,6 +2906,11 @@ struct Report {
     /// the window has closed. The chrome line is what proves a save affordance
     /// was on screen in every panel configuration (review 1.12).
     logical_window: (f32, f32),
+    /// The last drawn frame's shared timeline span, kept for the same reason
+    /// and by the same trick as `logical_window` above: `close_audio` resets the
+    /// view to nothing on the way out, so reading it off the shell at print time
+    /// reports `0.000x` for every run (LX2).
+    timeline: String,
     reopened: Option<Reopen>,
 }
 
@@ -2935,6 +2944,7 @@ impl Default for Report {
             flux_seen: 0.0,
             frame_lanes: FrameLaneStatus::default(),
             logical_window: (0.0, 0.0),
+            timeline: String::new(),
             reopened: None,
         }
     }
@@ -3169,6 +3179,11 @@ impl Report {
             },
         }
         println!("panel:           {}", app.shell.panel.label());
+        // LX2. The wheel now zooms from any of the three timed lanes, and the
+        // only thing it changes is this shared view. Nothing reported it, so a
+        // capture could not tell a lane that accepted the notch from one that
+        // ignored it — both draw a perfectly plausible timeline.
+        println!("timeline:        {}", self.timeline);
         // Which save route was on screen, and whether the tracks panel was
         // collapsed — the state review 1.12 found unrecoverable is only provable
         // from a capture through this line.

@@ -149,7 +149,14 @@ def measure(path, lanes, ui_scale=100):
         columns = [x for x in range(search_lo, search_hi) if rule[y0:y1, x].all()]
         if not columns:
             return None, f"{name} has no vertical border at all"
-        counts = accent[y0:y1].sum(axis=0)
+        # Only inside the lane, which is the same restriction the border search
+        # above already has. Without it this reads the whole window row: with the
+        # Tune inspector open, its accent-coloured sliders and live meters sit at
+        # the same heights as the scene lane and were counted as playhead
+        # columns, so the check failed on a frame whose lanes were aligned --
+        # and, because a meter moves with the audio, it failed only sometimes.
+        counts = np.zeros(width, dtype=int)
+        counts[seam_start:seam_end] = accent[y0:y1, seam_start:seam_end].sum(axis=0)
         peak = counts.max()
         if peak < y1 - y0:
             return None, f"{name} has no playhead: strongest accent column covers {peak}/{y1 - y0} rows"

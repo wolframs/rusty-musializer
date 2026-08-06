@@ -935,6 +935,186 @@ pub fn draw_text_tabular<D: RaylibDraw>(
     }
 }
 
+/// Whatever can measure and draw a run of text: the chrome bank or an authored
+/// face.
+///
+/// [`UiFonts`] and [`AuthoredText`] already agree on these two signatures, but
+/// they are unrelated types, so a helper that wants to serve both needs a name
+/// for the overlap. The distinction is not cosmetic: the chrome bank is the
+/// Latin-only interface subset, and project-authored words — track names, lyric
+/// cues — must go through [`AuthoredText`] or a Greek or Cyrillic line draws as a
+/// row of `?` (UX0-A05).
+///
+/// Not object-safe, because `draw_text` is generic over the draw target for the
+/// same reason [`draw_text`] is — a scissor handle is a different type that
+/// merely implements the same trait. Callers take it as a type parameter.
+pub trait TextFace {
+    /// Width and height of `text` at `size`, through the face that will draw it.
+    fn measure_text(&self, text: &str, size: f32, spacing: f32) -> Vector2;
+
+    /// Draws `text` with `position` as its top-left corner.
+    fn draw_text<D: RaylibDraw>(
+        &self,
+        d: &mut D,
+        text: &str,
+        position: Vector2,
+        size: f32,
+        spacing: f32,
+        tint: Color,
+    );
+}
+
+impl TextFace for UiFonts {
+    fn measure_text(&self, text: &str, size: f32, spacing: f32) -> Vector2 {
+        // Named explicitly rather than through `self.`, which would resolve to
+        // the inherent method and read as accidental recursion.
+        UiFonts::measure_text(self, text, size, spacing)
+    }
+
+    fn draw_text<D: RaylibDraw>(
+        &self,
+        d: &mut D,
+        text: &str,
+        position: Vector2,
+        size: f32,
+        spacing: f32,
+        tint: Color,
+    ) {
+        UiFonts::draw_text(self, d, text, position, size, spacing, tint);
+    }
+}
+
+impl TextFace for AuthoredText<'_> {
+    fn measure_text(&self, text: &str, size: f32, spacing: f32) -> Vector2 {
+        AuthoredText::measure_text(self, text, size, spacing)
+    }
+
+    fn draw_text<D: RaylibDraw>(
+        &self,
+        d: &mut D,
+        text: &str,
+        position: Vector2,
+        size: f32,
+        spacing: f32,
+        tint: Color,
+    ) {
+        AuthoredText::draw_text(self, d, text, position, size, spacing, tint);
+    }
+}
+
+/// Draws text left-aligned from `x`, dissolving the tail into the box edge.
+///
+/// For a label that is longer than the room it has and must still show its
+/// beginning — a lyric cue block in the timeline, which is as wide as the cue is
+/// long and rarely as wide as its words. An ellipsis answers "there is more" with
+/// a glyph that costs three characters of the little space there was, and a hard
+/// clip reads as a rendering fault. Fading the tail says the same thing with no
+/// space at all. Nothing in the oracle does this; its only overflow policy is
+/// [`row_typography::truncate_label`]'s ellipsis, which stays the right answer for
+/// a button.
+///
+/// Generic over [`TextFace`] so a lyric cue can be drawn through the authored
+/// face while chrome keeps the native-size bank.
+///
+/// Returns the width actually drawn, so a caller can place something after the
+/// text, and `0.0` when nothing was drawn at all.
+///
+/// **A string that fits is not faded.** A ramp on fully visible text reads as a
+/// promise of more words, which is worse than no signal, so the fade only exists
+/// once the string is genuinely cut.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "draw_text plus the two widths that define the cut; a struct here would hide the position"
+)]
+pub fn draw_text_faded<D: RaylibDraw, F: TextFace>(
+    d: &mut D,
+    font: &F,
+    text: &str,
+    x: f32,
+    y: f32,
+    max_width: f32,
+    fade_width: f32,
+    font_size: f32,
+    tint: Color,
+) -> f32 {
+    if text.is_empty()
+        || !max_width.is_finite()
+        || max_width <= 0.0
+        || !font_size.is_finite()
+        || font_size <= 0.0
+    {
+        return 0.0;
+    }
+    // Zero letter spacing throughout, which is what [`measure`] assumes and what
+    // makes the accumulated advances add up to the width of the whole string.
+    let width_of = |run: &str| font.measure_text(run, font_size, 0.0).x;
+    let right_edge = x + max_width;
+    // No fade unless the string is genuinely cut off.
+    let cut = width_of(text) > max_width;
+    let fade_width = if fade_width.is_finite() {
+        fade_width.clamp(0.0, max_width)
+    } else {
+        0.0
+    };
+    let base_alpha = f32::from(tint.a);
+
+    let mut cursor = x;
+    let mut drawn_to = x;
+    for character in text.chars() {
+        // Stop at the edge rather than measuring the rest of the line: a long
+        // lyric in a narrow block would otherwise cost a measure call per
+        // character, every frame, for glyphs that cannot be seen.
+        if cursor >= right_edge {
+            break;
+        }
+        let mut bytes = [0u8; 4];
+        let glyph = character.encode_utf8(&mut bytes);
+        let advance = width_of(glyph);
+        let alpha = if cut {
+            fade_alpha(cursor + advance * 0.5, right_edge, fade_width, base_alpha)
+        } else {
+            base_alpha
+        };
+        let alpha = alpha.round().clamp(0.0, 255.0) as u8;
+        if alpha > 0 {
+            // The pen is carried unsnapped and both faces snap `position` to the
+            // physical pixel grid themselves. Snapping here as well would round
+            // the advance *into* the pen, so a long line would creep sideways by
+            // a fraction of a pixel per glyph instead of each glyph landing
+            // within half a pixel of where the whole string would have put it.
+            font.draw_text(
+                d,
+                glyph,
+                Vector2::new(cursor, y),
+                font_size,
+                0.0,
+                Color::new(tint.r, tint.g, tint.b, alpha),
+            );
+            drawn_to = cursor + advance;
+        }
+        cursor += advance;
+    }
+    drawn_to - x
+}
+
+/// The fade ramp: full alpha until `fade_width` from the edge, zero at it.
+///
+/// Evaluated at each glyph's horizontal centre rather than its left edge, so a
+/// glyph straddling the start of the ramp is already half faded instead of
+/// stepping down whole letters at a time.
+fn fade_alpha(glyph_center: f32, right_edge: f32, fade_width: f32, base_alpha: f32) -> f32 {
+    let remaining = right_edge - glyph_center;
+    if remaining <= 0.0 {
+        return 0.0;
+    }
+    // A zero-width ramp is a hard cut, and dividing by it would be a NaN alpha
+    // rather than the sharp edge the caller asked for.
+    if fade_width <= 0.0 || remaining >= fade_width {
+        return base_alpha;
+    }
+    base_alpha * remaining / fade_width
+}
+
 /// Text with letter spacing, for the few places the C asks for tracking.
 ///
 /// Only the welcome screen's masthead and format strip use it (`plug.c:7773`,
@@ -1396,6 +1576,54 @@ mod tests {
         // Non-numeric copy is still proportional rather than being forced into
         // cells, which is what keeps Space Grotesk looking like Space Grotesk.
         assert_eq!(tabular_width("1x", digit_cell, measure), 12.0);
+    }
+
+    /// A 100 px box whose last 20 px are the fade, drawn at full opacity.
+    const EDGE: f32 = 100.0;
+    const RAMP: f32 = 20.0;
+    const OPAQUE: f32 = 255.0;
+
+    #[test]
+    fn a_glyph_that_stops_short_of_the_ramp_keeps_the_callers_alpha() {
+        assert_eq!(fade_alpha(0.0, EDGE, RAMP, OPAQUE), OPAQUE);
+        assert_eq!(fade_alpha(50.0, EDGE, RAMP, OPAQUE), OPAQUE);
+        // The first pixel of the ramp is still fully opaque; the fade starts here
+        // rather than having already begun.
+        assert_eq!(fade_alpha(EDGE - RAMP, EDGE, RAMP, OPAQUE), OPAQUE);
+        // A dimmed caller keeps its own ceiling instead of being pushed to 255.
+        assert_eq!(fade_alpha(50.0, EDGE, RAMP, 120.0), 120.0);
+    }
+
+    #[test]
+    fn the_ramp_is_linear_and_reaches_zero_at_the_box_edge() {
+        assert_eq!(fade_alpha(EDGE, EDGE, RAMP, OPAQUE), 0.0);
+        assert_eq!(
+            fade_alpha(EDGE - RAMP * 0.5, EDGE, RAMP, OPAQUE),
+            OPAQUE * 0.5
+        );
+        assert_eq!(
+            fade_alpha(EDGE - RAMP * 0.25, EDGE, RAMP, OPAQUE),
+            OPAQUE * 0.25
+        );
+        assert_eq!(
+            fade_alpha(EDGE - RAMP * 0.75, EDGE, RAMP, OPAQUE),
+            OPAQUE * 0.75
+        );
+    }
+
+    #[test]
+    fn a_zero_width_fade_is_a_hard_cut() {
+        assert_eq!(fade_alpha(EDGE - 0.5, EDGE, 0.0, OPAQUE), OPAQUE);
+        assert_eq!(fade_alpha(EDGE, EDGE, 0.0, OPAQUE), 0.0);
+        assert_eq!(fade_alpha(EDGE + 0.5, EDGE, 0.0, OPAQUE), 0.0);
+    }
+
+    #[test]
+    fn a_glyph_centred_past_the_edge_is_invisible_rather_than_negative() {
+        // Multiplying the ramp out without this guard gives a negative alpha,
+        // which casts to a *bright* byte rather than to nothing.
+        assert_eq!(fade_alpha(EDGE + 5.0, EDGE, RAMP, OPAQUE), 0.0);
+        assert_eq!(fade_alpha(EDGE * 4.0, EDGE, RAMP, OPAQUE), 0.0);
     }
 
     #[test]

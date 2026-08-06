@@ -70,6 +70,15 @@ pub struct LyricStackSlot {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LyricStack {
     slots: Vec<LyricStackSlot>,
+    /// How many rows the cue at this index's own cluster used.
+    ///
+    /// Separate from [`Self::rows`], which is the deepest cluster in the whole
+    /// document, because a caller that wants to know what is drawn *over* a
+    /// given block needs the local answer: an isolated cue in a document that
+    /// also holds a four-deep pile is still a full-height block with nothing on
+    /// top of it, and treating it as row 0 of three is how a label ends up
+    /// squeezed into a strip nothing is covering.
+    cluster_rows: Vec<usize>,
     rows: usize,
 }
 
@@ -99,6 +108,7 @@ impl LyricStack {
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn from_spans(spans: &[(f64, f64)]) -> Self {
         let mut slots = vec![LyricStackSlot::default(); spans.len()];
+        let mut cluster_rows = vec![1usize; spans.len()];
         let mut rows = 1usize;
 
         let mut cluster_start = 0usize;
@@ -116,6 +126,9 @@ impl LyricStack {
                     &mut slots[cluster_start..index],
                 );
                 rows = rows.max(used);
+                for depth in &mut cluster_rows[cluster_start..index] {
+                    *depth = used;
+                }
                 cluster_start = index;
                 cluster_end_seconds = f64::NEG_INFINITY;
             } else if breaks {
@@ -128,7 +141,11 @@ impl LyricStack {
             }
         }
 
-        Self { slots, rows }
+        Self {
+            slots,
+            cluster_rows,
+            rows,
+        }
     }
 
     /// The slot for a canonical index. Out of range yields the default, which is
@@ -137,6 +154,17 @@ impl LyricStack {
     #[must_use]
     pub fn slot(&self, index: usize) -> LyricStackSlot {
         self.slots.get(index).copied().unwrap_or_default()
+    }
+
+    /// How many rows the cue at `index` shares its cluster with.
+    ///
+    /// `1` for a cue nothing overlaps, whatever the rest of the document does,
+    /// and `1` for an index out of range. Use this, not [`Self::rows`], to ask
+    /// "is anything drawn over this block" — [`Self::rows`] answers for the
+    /// deepest pile in the document and is what sizes the shared row geometry.
+    #[must_use]
+    pub fn cluster_rows(&self, index: usize) -> usize {
+        self.cluster_rows.get(index).copied().unwrap_or(1).max(1)
     }
 
     /// Most rows any one cluster needed. `1` when nothing fans out.
@@ -260,6 +288,50 @@ mod tests {
 
     fn stack(spans: &[(f64, f64)]) -> LyricStack {
         LyricStack::from_spans(spans)
+    }
+
+    /// A lone cue is not one row of three because something else piled up.
+    ///
+    /// The distinction is not academic: the panel asks this to decide whether
+    /// anything is drawn over a block, and answering with the document-wide
+    /// depth squeezed an isolated cue's label into a strip that was covering
+    /// nothing at all.
+    #[test]
+    fn cluster_depth_is_local_while_the_row_count_is_the_documents() {
+        let stack = stack(&[
+            (0.0, 1.0),
+            (2.0, 3.0),
+            // Three live at once: this cluster fans.
+            (5.0, 8.0),
+            (5.5, 8.5),
+            (6.0, 9.0),
+            (12.0, 13.0),
+        ]);
+        assert_eq!(stack.rows(), 3, "the document's deepest pile");
+        for isolated in [0, 1, 5] {
+            assert_eq!(
+                stack.cluster_rows(isolated),
+                1,
+                "cue {isolated} overlaps nothing"
+            );
+        }
+        for stacked in [2, 3, 4] {
+            assert_eq!(
+                stack.cluster_rows(stacked),
+                3,
+                "cue {stacked} is in the pile"
+            );
+        }
+        assert_eq!(stack.cluster_rows(99), 1, "an index out of range is flat");
+    }
+
+    /// A pair does not fan, so both cues keep the full height and a depth of 1.
+    #[test]
+    fn a_pair_below_the_fan_threshold_reports_one_row() {
+        let stack = stack(&[(0.0, 2.0), (1.0, 3.0)]);
+        assert_eq!(stack.rows(), 1);
+        assert_eq!(stack.cluster_rows(0), 1);
+        assert_eq!(stack.cluster_rows(1), 1);
     }
 
     #[test]
