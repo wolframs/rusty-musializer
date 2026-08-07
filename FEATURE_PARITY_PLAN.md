@@ -1406,7 +1406,21 @@ every drag, including one released at x=-400 — **outside the window** — whic
 the overshoot case the plan names and the common way to end a fast drag.
 
 New gate section: `tools/headless_check.sh:4174-4390`, one contiguous block,
-17 assertions over 11 captures.
+17 assertions over 11 captures. All 17 pass, and the whole `headless_check.sh`
+exits 0 with the section in it.
+
+**The `frame budget` assertion is load-sensitive, and it is worth writing down
+because it will mislead the next parallel wave.** It demands `0 of 240` frames
+past a 25.0 ms threshold and bails the *entire* sweep with `exit 1`
+(`headless_check.sh:242`), so every later section — including this one — is
+skipped when it trips. On one unchanged commit (`4d7f974`) it measured **18.9 ms
+/ 0 stalled** on an idle machine, **27.8 ms / 1** with two sibling agents running
+gates, and **44.2 ms / 73** under heavier load. None of that is a code change.
+A sibling independently measured the *base* commit failing it the same way. Two
+practical consequences: give every concurrent gate its own
+`MUSIALIZER_CAPTURE_DISPLAY` (a collision segfaults the app at `InitWindow` — this
+run lost a whole sweep to `exit=139` on the transport captures), and read a stall
+failure as a scheduling result until an idle re-run says otherwise.
 
 **Left for the operator to judge: whether the markers want a legend.** LX1 gave
 the cue lane "a legend and tooltips", and the symmetry argument says do the same
