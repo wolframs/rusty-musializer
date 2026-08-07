@@ -1027,7 +1027,7 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       asserted byte-identical afterwards, over-capacity, refused writes, and the
       age wording); 2 layout tests pinning the seats (7 rows at 960x640, 8 at
       720/1080, no overlap with the step number or the format strip); gate block
-      `tools/headless_check.sh:4175-4523` with captures of the empty, populated,
+      `tools/headless_check.sh:4175-4522` with captures of the empty, populated,
       corrupt and missing states plus five `--ui-probe click=` assertions and a
       gutter negative control.
 
@@ -1330,7 +1330,7 @@ the same defect class as a lane that never reaches a frame.
 Evidence: 3 unit tests in `ui::shell::tests` (a 16-row dispatch table asserted as
 *commands* rather than as the enum, a pairwise-distinctness negative control, and
 a check that the picker's filter and the classifier agree on exactly four
-formats); gate block `tools/headless_check.sh:4175-4523`, five drop captures
+formats); gate block `tools/headless_check.sh:4175-4522`, five drop captures
 asserting both the branch chosen and what that branch then did — project opens
 and lands in the recent list, image with no track stages 54x54, image with a
 track becomes the grid *and* selects ASCII Field, audio loads, `.txt` is
