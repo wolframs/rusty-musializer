@@ -1447,9 +1447,19 @@ fn resolve_and_write_png(
         config.height as i32,
         Color::BLANK,
     );
+    // **Bottom row first**, exactly as `Encoder::send_frame_flipped` writes to
+    // `rawvideo` (`ffmpeg.rs:448-455`, `ffmpeg_posix.c:338-370`):
+    // `LoadImageFromTexture`/`rlReadScreenPixels` hand back an OpenGL
+    // framebuffer whose first row is the *bottom* of the picture. Without this
+    // the still is a vertical mirror of the video frame — and a mirrored
+    // Spectrum, with its bars hanging from the top instead of standing on the
+    // baseline, is a completely plausible picture that renders identically on
+    // every run. Two md5-equal runs would have called it deterministic, and did:
+    // it was caught only by comparing the PNG against a frame of the MP4.
     for y in 0..config.height as i32 {
+        let source_row = config.height as usize - 1 - y as usize;
         for x in 0..config.width as i32 {
-            let offset = (y as usize * config.width as usize + x as usize) * 4;
+            let offset = (source_row * config.width as usize + x as usize) * 4;
             out.draw_pixel(
                 x,
                 y,
