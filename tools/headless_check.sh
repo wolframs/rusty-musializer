@@ -4360,6 +4360,35 @@ if [ "${RECENT_INK_EMPTY%%.*}" -le "${RECENT_INK%%.*}" ] 2>/dev/null; then
     ENTRY_FAILED=1
 fi
 
+# 2b. A row's full path is written down in exactly one place — its tooltip — and
+#     `Widgets::hint` only *queues* one. Whoever owns the frame has to paint it,
+#     and `draw_welcome` never did, because until the recent list this screen had
+#     no hinted controls at all. So every tip it requested was queued and dropped,
+#     with `hint` called correctly and the request perfectly well-formed. Nothing
+#     but looking for the paint finds that.
+#
+#     A tip on this light chrome is a *dark* box, so YMIN again, in the band
+#     between the step number and the first row. Negative control: the same crop
+#     of `recent-populated`, which parked no pointer, reads 113.
+entry_seed_store "$ENTRY_DIR/store-tip.json"
+entry_capture "recent-tooltip" "$ENTRY_DIR/store-tip.json" \
+    --ui-probe "hover=1087x242" || true
+RECENT_TIP="$(ffprobe -v error -f lavfi \
+    -i "movie=$ENTRY_DIR/recent-tooltip.png,crop=586:22:690:192,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+RECENT_TIP_NONE="$(ffprobe -v error -f lavfi \
+    -i "movie=$ENTRY_DIR/recent-populated.png,crop=586:22:690:192,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
+echo "recent tooltip: hovered YMIN=${RECENT_TIP:-?} unhovered YMIN=${RECENT_TIP_NONE:-?}"
+if [ "${RECENT_TIP%%.*}" -ge 60 ] 2>/dev/null; then
+    echo "FAIL: hovering a recent row painted no tooltip (the queue is never drained)" >&2
+    ENTRY_FAILED=1
+fi
+if [ "${RECENT_TIP_NONE%%.*}" -lt 60 ] 2>/dev/null; then
+    echo "FAIL: the unhovered frame is as dark as the hovered one, so the crop proves nothing" >&2
+    ENTRY_FAILED=1
+fi
+
 # 3. A store this application refuses to read. The requirement is two-sided: the
 #    screen says the history is unavailable, *and* the file is still there,
 #    byte for byte, for the user to repair.

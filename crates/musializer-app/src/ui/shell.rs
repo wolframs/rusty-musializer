@@ -1340,6 +1340,19 @@ impl Shell {
         // be able to show (`plug.c:7830`).
         self.notice_tray(d, font, UiRect::new(0.0, 0.0, w, h));
         self.notices.tick(f64::from(d.get_frame_time()));
+
+        // Last, as in [`Shell::draw`], and for the same reason: `hint` only
+        // *queues* a tip, and whoever owns the frame has to paint it.
+        //
+        // This screen had no such call until the recent list gave it its first
+        // hinted controls, so the full path of a row — the only place it is
+        // written down — was being queued and dropped every frame. Exactly the
+        // failure this repository keeps paying for: the tip was requested
+        // correctly, `hint` was called correctly, and nothing but looking for the
+        // paint would have found it.
+        if let Some(tooltip) = self.widgets.tooltip().cloned() {
+            widgets::draw_tooltip(d, font, &tooltip, input.window);
+        }
         commands
     }
 

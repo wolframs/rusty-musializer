@@ -1027,16 +1027,26 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       asserted byte-identical afterwards, over-capacity, refused writes, and the
       age wording); 2 layout tests pinning the seats (7 rows at 960x640, 8 at
       720/1080, no overlap with the step number or the format strip); gate block
-      `tools/headless_check.sh:4175-4522` with captures of the empty, populated,
+      `tools/headless_check.sh:4175-4551` with captures of the empty, populated,
       corrupt and missing states plus five `--ui-probe click=` assertions and a
       gutter negative control.
 
-      **The click probe earned its keep on the first run.** The row's open target
-      was the full row width and is drawn first, so it claimed every press aimed
-      at the forget cross and *opened the project* instead of forgetting it —
-      EX1's defect one namespace later. Hover highlighting was correct and the
-      cross was drawn in the right place; only an injected press could see it.
-      Fixed by making the two rects disjoint.
+      **Two defects found by the evidence rather than by review**, both of the
+      class this repository keeps paying for:
+
+      - The row's open target was the full row width and is drawn first, so it
+        claimed every press aimed at the forget cross and *opened the project*
+        instead of forgetting it — EX1's defect one namespace later. Hover
+        highlighting was correct and the cross was drawn in the right place; only
+        an injected press could see it. Fixed by making the two rects disjoint,
+        and pinned by the `claimed=0xc00000002` assertion.
+      - `draw_welcome` never painted the queued tooltip. `Widgets::hint` only
+        queues one and `Shell::draw` drains it, but the welcome screen had no
+        hinted control until this list, so every tip it requested was queued and
+        dropped — with `hint` called correctly and the request well-formed. A
+        row's full path is written down nowhere else. Found by asking where the
+        paint happens, not by a capture, and now pinned by a YMIN crop with the
+        unhovered frame as its negative control (20 against 113).
 - [ ] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
       with the same reversible audition semantics as C04 (3.7).
 - [ ] **UX0-C08 — project-level palette/look:** define a coherent track-level
@@ -1330,7 +1340,7 @@ the same defect class as a lane that never reaches a frame.
 Evidence: 3 unit tests in `ui::shell::tests` (a 16-row dispatch table asserted as
 *commands* rather than as the enum, a pairwise-distinctness negative control, and
 a check that the picker's filter and the classifier agree on exactly four
-formats); gate block `tools/headless_check.sh:4175-4522`, five drop captures
+formats); gate block `tools/headless_check.sh:4175-4551`, five drop captures
 asserting both the branch chosen and what that branch then did — project opens
 and lands in the recent list, image with no track stages 54x54, image with a
 track becomes the grid *and* selects ASCII Field, audio loads, `.txt` is
