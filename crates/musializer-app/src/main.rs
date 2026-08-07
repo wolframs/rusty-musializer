@@ -432,7 +432,10 @@ fn run(
                 app.select_scene(id, 0.0);
             }
             Action::AsciiImage(path) => {
-                match import_ascii_image(&mut app, &path) {
+                // 0.0 like the other command-line replays above: the window clock
+                // has not started, and `mark_command_line_state_clean` clears
+                // this dirtiness a moment later anyway.
+                match import_ascii_image(&mut app, &path, 0.0) {
                     // Not prefixed `ascii:` — that key belongs to the slice
                     // report, and a check grepping for it would otherwise match
                     // this line too and assert on the wrong one.
@@ -651,14 +654,24 @@ fn run(
                 "warning: could not save command-line project: {}",
                 destination.display()
             );
-        } else {
-            match save_project_to(&mut app, music.as_ref(), &destination, false) {
+        } else if let Some(index) = app.workspace.current_index() {
+            match save_project_to(&mut app, index, &destination, false) {
                 Ok(()) => println!("saved {}", destination.display()),
                 Err(error) => {
                     eprintln!("warning: could not save {}: {error}", destination.display());
                     options.error = true;
                 }
             }
+        } else {
+            // `--save-project` with nothing open. Reported rather than skipped:
+            // the exit status is a documented part of the CLI grammar, and this
+            // used to come back through `save_project_to`'s own "there is no
+            // track to save".
+            eprintln!(
+                "warning: could not save {}: there is no track to save",
+                destination.display()
+            );
+            options.error = true;
         }
     }
 
@@ -1368,13 +1381,24 @@ fn run(
             let now = rl.get_time();
             if let Some(track) = app.workspace.current_mut() {
                 let mut failed = None;
+                // C1: counted rather than assumed. This used to call `mark_dirty`
+                // unconditionally, so a batch whose *first* edit was refused —
+                // the loop breaks immediately — still dirtied the project and
+                // still started a 1.5 s autosave window, writing a `.musi` that
+                // was byte-identical to the one already on disk. Dirty has to
+                // mean "something changed", or the indicator this task adds would
+                // report Unsaved for work that never happened.
+                let mut applied = 0usize;
                 for edit in edits {
                     if let Err(error) = edit.apply(track) {
                         failed = Some(error);
                         break;
                     }
+                    applied += 1;
                 }
-                track.mark_dirty(now);
+                if applied > 0 {
+                    track.mark_dirty(now);
+                }
                 if let Some(error) = failed {
                     app.shell.notify(
                         Severity::Warning,
@@ -1609,11 +1633,14 @@ fn run(
                     }
                 }
                 ShellCommand::SaveProject => {
-                    save_project_command(&mut app, music.as_ref(), true);
+                    save_project_command(&mut app, true);
                 }
                 ShellCommand::SaveProjectAs => {
+                    let Some(index) = app.workspace.current_index() else {
+                        continue;
+                    };
                     if let Some(destination) = ask_for_project_path(&mut app) {
-                        match save_project_to(&mut app, music.as_ref(), &destination, false) {
+                        match save_project_to(&mut app, index, &destination, false) {
                             Ok(()) => app.shell.notify(
                                 Severity::Info,
                                 "Project saved",
@@ -1671,32 +1698,49 @@ fn run(
         report.framebuffer.observe();
 
         // Autosave, polled after the frame like the C's (`plug.c:7580-7583`).
-        // Every track, not only the current one, because a background track can
-        // be dirty from a project open. `editor_dirty` is `false` until Agents G
-        // and I have drafts to report.
+        //
+        // **Every due track, not only the current one (C4).** The loop always
+        // computed the full due list and then threw all but the current entry
+        // away, because the sample rate came off the bound stream — so a
+        // background track dirtied by a project open, an Assist run or a
+        // multi-track session simply never autosaved, with nothing on screen
+        // saying so. `Track::audio_sample_rate` removed that coupling.
         let now = rl.get_time();
-        let due: Vec<usize> = (0..app.workspace.len())
-            .filter(|&index| {
-                app.workspace
-                    .get(index)
-                    .is_some_and(|track| project::autosave_is_due(track, now, false))
-            })
-            .collect();
+        // The draft guard is per track, not global: a half-typed cue on track A
+        // must not stop track B's autosave, and must stop A's — writing a `.musi`
+        // mid-draft would persist a document the user has not committed to.
+        let due = project::autosave_due_tracks(&app.workspace, now, |index| {
+            app.shell
+                .editor_draft_blocks_autosave(&app.workspace, index)
+        });
         for index in due {
-            // Only the current track has a bound stream to read the sample rate
-            // from, which is the same reason `save_project_to` needs one.
-            if app.workspace.current_index() != Some(index) {
-                continue;
-            }
-            if let Some(path) = app
+            let Some(path) = app
                 .workspace
                 .get(index)
                 .and_then(|track| track.project_path.clone())
-            {
-                // A failure sets `project_autosave_failed`, which stops the retry
-                // until the next edit clears it — so this cannot become a loop
-                // that writes every frame.
-                let _ = save_project_to(&mut app, music.as_ref(), &path, true);
+            else {
+                continue;
+            };
+            // A failure latches `project_autosave_failed`, which stops the retry
+            // until the next edit clears it — so this cannot become a loop that
+            // writes every frame. One track's failure does not `break`: the
+            // others are independent files and there is no reason a full disk
+            // under one destination should silence a save to another.
+            if let Err(error) = save_project_to(&mut app, index, &path, true) {
+                // Autosave used to discard this with `let _ =`. A save the user
+                // never asked for is still a save they are relying on, and the
+                // whole point of the latch is that it will not try again — so
+                // silence here means the work stops being written and nothing
+                // ever says why (UX0-B01).
+                let name = app.workspace.get(index).map_or_else(
+                    || path.display().to_string(),
+                    |t| t.display_name().to_string(),
+                );
+                app.shell.notify(
+                    Severity::Error,
+                    "Autosave failed",
+                    &format!("{name}: {error}. Edit again to retry, or use Save As."),
+                );
             }
         }
 
@@ -2160,6 +2204,14 @@ fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
         );
         return;
     };
+    // C4: every track gets its audio format here, whether or not it is ever the
+    // current one. `bind_audio` also caches it from the opened stream, but only
+    // the *bound* track goes through that — a second track added with "Add audio"
+    // and left in the background would otherwise carry 0 Hz and refuse to save,
+    // which is the exact gap all-track autosave exists to close. This decode
+    // already runs for every track at load, so the numbers are free.
+    track.audio_sample_rate = decoded.sample_rate;
+    track.audio_channels = u16::try_from(decoded.channels).unwrap_or(2);
     let waveform = musializer_core::timing::track_timeline::Waveform::build(
         &decoded.samples,
         decoded.channels,
@@ -2266,7 +2318,11 @@ fn build_song_atlas_map(
 ///
 /// With no track open the grid lands in [`App::pending_ascii`] and is handed to the
 /// next track that opens, exactly as `p->ascii_cells` is (`plug.c:825-839`).
-fn import_ascii_image(app: &mut App, path: &Path) -> Result<(usize, usize), String> {
+fn import_ascii_image(
+    app: &mut App,
+    path: &Path,
+    now_seconds: f64,
+) -> Result<(usize, usize), String> {
     let canonical = project_files::canonicalize_existing_file(path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let sha256 = project_files::sha256_file_hex(&canonical)
@@ -2302,7 +2358,15 @@ fn import_ascii_image(app: &mut App, path: &Path) -> Result<(usize, usize), Stri
             track.ascii = Some(image);
             // An imported image is project content, so it dirties the project the
             // same way an edit does (`mark_project_dirty`, `plug.c:920`).
-            track.project_dirty = true;
+            //
+            // C1: this used to assign `project_dirty = true` directly, which is
+            // not the same thing and failed in two ways. It never moved
+            // `project_dirty_since`, so the 1.5 s settle was measured from a
+            // stale instant — usually 0.0, making the write due on the very next
+            // frame instead of after the import settled. And it never cleared
+            // `project_autosave_failed`, so an import after any failed save was
+            // never autosaved at all, silently.
+            track.mark_dirty(now_seconds);
         }
         None => app.pending_ascii = Some(image),
     }
@@ -2489,12 +2553,18 @@ fn bind_audio<'audio>(
 ) -> Result<(), String> {
     close_audio(music, app, scratch);
 
+    let file_sample_rate = opened.stream.sampleRate;
     if let Some(track) = app.workspace.current_mut() {
         track.scene_switches.reset();
         track.cue_settings_active = false;
+        // C4: cached the moment the stream is opened, so this track stays
+        // saveable after it stops being the current one. Reading it here rather
+        // than at save time is what decouples `.musi` writing from the audio
+        // device — see `save_project_to`.
+        track.audio_sample_rate = file_sample_rate;
+        track.audio_channels = opened.stream.channels as u16;
     }
 
-    let file_sample_rate = opened.stream.sampleRate;
     analysis.reconfigure(AudioAnalyzerConfig::preview(file_sample_rate))?;
     // SAFETY: the bridge is installed in `run` before this can be called, the
     // audio device is initialized (it is what produced `opened`), and the stream
@@ -3033,36 +3103,33 @@ fn open_project<'audio>(
     Ok(())
 }
 
-/// Saves the current track's project to `destination`.
+/// Saves one track's project to `destination`, by workspace slot.
 ///
-/// The sample rate and channel count come off the live stream because that is
-/// where the C reads them (`plug.c:4304-4306`) and the track model deliberately
-/// holds no audio handle. A track with no stream bound cannot be saved, which is
-/// the same restriction the C has by construction.
+/// **By slot, and with no `Music`, is the whole of C4.** The C reads the sample
+/// rate and channel count off the live stream (`plug.c:4304-4306`), and so did
+/// this — which meant a track had to be the *current* one to be saveable at all,
+/// and autosave silently skipped every background track that a project open had
+/// left dirty. `Track::audio_sample_rate` caches those two numbers at load, so
+/// the audio device is no longer in the save path.
 fn save_project_to(
     app: &mut App,
-    music: Option<&Music<'_>>,
+    index: usize,
     destination: &Path,
     reuse_published: bool,
 ) -> Result<(), String> {
-    let stream = music.ok_or("there is no track to save")?.stream;
     let track = app
         .workspace
-        .current_mut()
+        .get_mut(index)
         .ok_or("there is no track to save")?;
-    project::save_to_path(
-        track,
-        destination,
-        stream.sampleRate,
-        stream.channels as u16,
-        reuse_published,
-    )
-    .map_err(|error| error.to_string())
+    project::save_to_path(track, destination, reuse_published).map_err(|error| error.to_string())
 }
 
 /// The Save button (`save_project`, `plug.c:4641-4646`): saves in place when the
 /// track has a project path, and otherwise falls through to Save As.
-fn save_project_command(app: &mut App, music: Option<&Music<'_>>, ask_if_unnamed: bool) {
+fn save_project_command(app: &mut App, ask_if_unnamed: bool) {
+    let Some(index) = app.workspace.current_index() else {
+        return;
+    };
     let existing = app
         .workspace
         .current()
@@ -3078,7 +3145,7 @@ fn save_project_command(app: &mut App, music: Option<&Music<'_>>, ask_if_unnamed
     let Some(destination) = destination else {
         return;
     };
-    match save_project_to(app, music, &destination, false) {
+    match save_project_to(app, index, &destination, false) {
         Ok(()) => app.shell.notify(
             Severity::Info,
             "Project saved",
@@ -3612,6 +3679,15 @@ impl Report {
                 config.supersample_factor,
             );
         }
+        // Every track's save state, current one starred (UX0-B01, C1, C4).
+        //
+        // The badge is on screen, so why a line? Because the two states a user
+        // most needs to tell apart — Unsaved and Save failed — are a word and a
+        // hue in a 60 px box, and a capture cannot assert either. It is also the
+        // only way to see a *background* track's state at all: nothing draws the
+        // rows that are scrolled out, and all-track autosave is precisely a claim
+        // about tracks the user is not looking at.
+        println!("save state:      {}", app.workspace.describe_save_state());
         // What `--ui-probe click=` actually reached (EX1). `claimed` is the
         // whole point: a press that never landed and a press some other control
         // swallowed leave the same picture, and this is the only line that can

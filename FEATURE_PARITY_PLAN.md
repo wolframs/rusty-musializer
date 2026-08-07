@@ -1023,9 +1023,20 @@ close the UX0 item.
 
 ### UX0-B — workflow friction and trust
 
-- [ ] **UX0-B01 — continuous save state [C1/D8]:** show durable dirty state on
+- [x] **UX0-B01 — continuous save state [C1/D8]:** show durable dirty state on
       the track and Save affordance; distinguish saved, unsaved and save-failed
       state before quit is attempted (`review` 2, Saving and trust).
+      Done by PX1, 2026-08-07. `Track::save_state()` returns one of four
+      `SaveState`s and the TRACKS header draws its word, right-aligned,
+      colour-coded — muted for Saved and No file, warning for Unsaved, danger for
+      Save failed. A failure also draws its reason under the header and raises a
+      persistent notice naming the track and the recovery. Both Save buttons (the
+      panel's and the collapsed strip's) read `Save *` while there is work to
+      write, and the strip's tooltip names the state in words. Rows other than
+      the current one carry a state dot, because all-track autosave is a claim
+      about tracks the user is not looking at. Reported as `save state:` and
+      gated in `tools/headless_check.sh:4175-4338`, including an ink check that
+      the word reaches the header rather than only the report.
 - [ ] **UX0-B02 — lyric seek/stamp loop:** make cue selection seek-capable, add
       playhead stamping for start/end, auto-advance after Apply and preserve a
       usable play/tap loop while lyric text has focus (2, lyric timing loop).
@@ -1408,14 +1419,41 @@ copying the content-addressed bundle produced the green run.
 
 ### C1 — complete dirty marking
 
-- [ ] Audit every command that mutates data serialized into `.musi` and route it
+- [x] Audit every command that mutates data serialized into `.musi` and route it
       through one dirty-marking policy.
-- [ ] At minimum, mark dirty after setting changes, scene reset, base-scene
+- [x] At minimum, mark dirty after setting changes, scene reset, base-scene
       selection, cue-snapshot tuning, caption-style edits, lyric import, ASCII
       clear/import and scene-plan enable/disable.
-- [ ] Keep purely transient playback, selection, hover and panel state clean.
-- [ ] Test that each durable mutation starts/restarts the 1.5-second autosave
+- [x] Keep purely transient playback, selection, hover and panel state clean.
+- [x] Test that each durable mutation starts/restarts the 1.5-second autosave
       settle and participates in the quit guard.
+
+Done by PX1, 2026-08-07. The audit was run against `build_project`'s own field
+list (`project.rs:120-272`) rather than against the command enum, because that is
+what actually defines "serialized into `.musi`". Result: **the marking was
+already complete except for two defects**, both of which were assignments that
+looked like `mark_dirty` and were not.
+
+| Mutation path | Before | Now |
+| --- | --- | --- |
+| `SetSetting`, `ResetScene`, `SetRenderConfig`, `ApplyRoute`, `RemoveRoute`, `SelectScene`, `SetAutoScenes`, `ManualEvent`, `ScenePlan`, `Preset::Apply`, Assist apply, caption style | `mark_dirty` | unchanged |
+| ASCII image import (`main.rs:2270`) | `project_dirty = true` | `mark_dirty(now)` |
+| lyric-edit drain (`main.rs:1342`) | marked dirty even when every edit was refused | marks only when at least one applied |
+| `TogglePlay`, `Seek`, `SelectTrack`, `SetVolume`, `ToggleMute`, `SetFullscreen`, `SaveUiPreferences`, `ManualEvent::ArmClear`, `Preset::Select`/`SaveNew`/`Delete` | clean | unchanged (correct — transient, or the shared preset store rather than `.musi`) |
+
+The ASCII one is the instructive defect. `project_dirty = true` never moved
+`project_dirty_since`, so the settle was measured from a stale instant — usually
+`0.0`, making the write due on the *next frame* rather than after the import
+settled — and never cleared `project_autosave_failed`, so an import after any
+failed save was never autosaved at all, silently. That is the whole reason
+`mark_dirty` is a method: the three fields are one invariant.
+
+Evidence: `workspace.rs` tests `marking_dirty_clears_the_autosave_failure`,
+`the_next_edit_clears_the_failure_and_its_now_stale_reason` (settle restart
+pinned at `project_dirty_since == 9.0`), and `project.rs`
+`the_settle_window_holds_a_track_back_until_it_has_elapsed` (11.4 s not due,
+11.5 s due). End to end: `tools/headless_check.sh` `save-state-background`
+observes a `scene-pick` edit reaching disk as a changed `.musi` digest.
 
 ### C2 — lyric and route draft context guards
 
@@ -1425,6 +1463,12 @@ copying the content-addressed bundle produced the green run.
       the C workflow protects them.
 - [ ] Include the active lyric draft in `confirm_close` and in autosave's
       `editor_dirty` argument.
+      **Autosave half done by PX1, 2026-08-07** (as part of C4):
+      `Shell::editor_draft_blocks_autosave` answers per track and is what
+      `project::autosave_due_tracks` consults. Until then `main.rs` passed a
+      hard-coded `false` for `editor_dirty`, so the parameter had never once
+      suppressed a save. `confirm_close` already consults `lyric_draft_is_dirty`;
+      the rest of C2 (the blocking/resolution workflow) is untouched.
 - [ ] Never let Assist replace lyrics while a conflicting lyric draft is open.
 - [ ] Give every refusal an actionable notice; do not silently discard or switch.
 - [ ] Cover Apply, Discard and Cancel paths, not just the blocked path.
@@ -1441,12 +1485,64 @@ copying the content-addressed bundle produced the green run.
 
 ### C4 — autosave every track
 
-- [ ] Cache decoded sample rate and channel count on each `Track` so project
+- [x] Cache decoded sample rate and channel count on each `Track` so project
       serialization does not depend on the currently bound music stream.
-- [ ] Autosave every due track, not only the current one.
-- [ ] Refuse autosave while that track owns a dirty editor draft.
-- [ ] Test two dirty tracks, a background track loaded from a project, failure of
+- [x] Autosave every due track, not only the current one.
+- [x] Refuse autosave while that track owns a dirty editor draft.
+- [x] Test two dirty tracks, a background track loaded from a project, failure of
       one save without suppressing another, and recovery after a failed save.
+
+Done by PX1, 2026-08-07.
+
+**This is parity restoration, not a new feature and not a divergence.** The
+frozen C loops the whole workspace — `for (i = 0; i < p->tracks.count; ++i)
+poll_project_autosave(&p->tracks.items[i]);` (`plug.c:7581-7583`) — and
+`poll_project_autosave` (`plug.c:5065-5075`) takes a `Track *`, not the current
+one. The port had regressed against the oracle here because it read the sample
+rate off the bound stream, which only the current track has. Worth stating
+plainly: this was a place where the C was right and the rewrite was wrong.
+
+One deliberate refinement of the C's guard. The oracle checks
+`(track == current_track() && lyric_editor_has_unsaved_draft(track))`, so a lyric
+draft only ever suppresses the current track; here the question is asked of the
+draft's own owner slot (`Shell::editor_draft_blocks_autosave`). The effect is the
+same — the editor binds to one track at a time — but it does not depend on that
+track also being current, which is the assumption review 1.3 already found to be
+unsafe elsewhere in this file.
+
+`Track::audio_sample_rate`/`audio_channels` are filled by
+`load_timeline_waveform` (the whole-file decode every track already pays for at
+load) and again by `bind_audio` from the opened stream, and by `open_path` from
+the project's own `AudioAsset`. `project::save_to_path` no longer takes them as
+parameters and `save_project_to` no longer takes a `Music` at all — it takes a
+workspace **slot**. A track whose format is still `0` is refused with a named
+error rather than written as a `.musi` claiming 0 Hz.
+
+The selection moved out of the frame loop into `project::autosave_due_tracks`,
+so the all-track claim is a unit test rather than only a capture. The per-track
+draft guard is `Shell::editor_draft_blocks_autosave`; `autosave_is_due`'s
+`editor_dirty` parameter had existed since it was written and `main.rs` passed a
+hard-coded `false` into it, so no draft had ever suppressed anything.
+
+Autosave failures are no longer discarded (`let _ =`). They raise a persistent
+`Severity::Error` notice naming the track, the reason and the recovery, and they
+latch the reason onto the track for the Tracks panel to draw.
+
+Evidence: six tests in `project.rs` — two dirty tracks both due, the settle
+boundary at 11.4/11.5 s, a draft holding back *only* its own track, no project
+path never due, one track's latched failure not suppressing its sibling and
+clearing on the next edit, and the 0 Hz refusal.
+
+**End to end, with a recorded negative control.**
+`tools/headless_check.sh`'s `save-state-background` row edits a project with
+`--ui-probe scene-pick=cadence`, then uses `--probe-reopen` to make a *different*
+track current before the 1.5 s settle expires, and requires the background
+project's digest to change. Restoring the `continue` this task deleted makes that
+row report `unsaved, *no-file` with the `.musi` byte-identical, at 60, 70, 80 and
+100 frames; removing it gives `saved, *no-file` with the digest changed at all
+four. The frame count matters and is the reason the control was needed — at 150
+frames the write lands while the track is still current and the row passes either
+way, which is how the first version of this case proved nothing.
 
 ### C5 — adopt project-carried presets
 
@@ -2393,8 +2489,14 @@ perturbation was reverted before the green run.
       to this plan.
 - [ ] Ensure intentionally unavailable actions name their real prerequisite
       (`helper missing`, `FFmpeg missing`, `no track`) rather than saying "stub".
-- [ ] Show truthful Saved/Unsaved/Save failed/No project file state in the Tracks
+- [x] Show truthful Saved/Unsaved/Save failed/No project file state in the Tracks
       header, including lyric and route drafts.
+      Done by PX1, 2026-08-07 — see UX0-B01 above for the surface and C4 for the
+      draft guard. Drafts participate through `editor_draft_blocks_autosave`,
+      which holds a track at Unsaved for as long as it owns an uncommitted lyric
+      or route edit rather than writing a document the user has not committed to.
+      Note the deliberate limit: the header names the *save* state, and a draft's
+      own dirty marker is UX0-B07's surface, not this one.
 - [ ] Show Cadence's preview-only no-timed-lyrics guidance instead of leaving an
       empty scene that resembles a broken renderer.
 

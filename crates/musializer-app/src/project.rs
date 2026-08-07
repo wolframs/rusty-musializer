@@ -44,7 +44,7 @@ use musializer_core::timing::render_export::{Quality, RenderExportConfig};
 use musializer_runtime::process::publish;
 use musializer_runtime::project_files::{self, AssetCategory};
 
-use crate::workspace::{AsciiImage, Track};
+use crate::workspace::{AsciiImage, Track, Workspace};
 
 /// The version string written into every project's metadata
 /// (`plug.c:4294-4295`).
@@ -284,10 +284,20 @@ pub fn build_project(
 pub fn save_to_path(
     track: &mut Track,
     path: &Path,
-    sample_rate: u32,
-    channels: u16,
     reuse_published: bool,
 ) -> Result<(), ProjectError> {
+    // C4: the format comes off the track, not off a bound `Music` handle. That
+    // change is what lets autosave write a background track at all — see
+    // `Track::audio_sample_rate`.
+    let (sample_rate, channels) = (track.audio_sample_rate, track.audio_channels);
+    if sample_rate == 0 || channels == 0 {
+        // Refused rather than written: a `.musi` recording 0 Hz would reopen as a
+        // project whose audio asset disagrees with its own file, and the digest
+        // check would not catch it because the bytes are fine.
+        return Err(ProjectError::Build(
+            "the track's audio format is not known yet, so it cannot be saved".into(),
+        ));
+    }
     let path_text = path
         .to_str()
         .ok_or_else(|| ProjectError::Build("the project path is not valid UTF-8".into()))?;
@@ -363,9 +373,11 @@ pub fn save_to_path(
 
     publish::atomic_write(path, json.as_bytes()).map_err(|error| {
         // The C sets this here rather than at the call site, so a failed autosave
-        // stops retrying until the next edit clears it (`plug.c:4580`).
-        track.project_autosave_failed = true;
-        ProjectError::Write(error)
+        // stops retrying until the next edit clears it (`plug.c:4580`). The
+        // reason travels with the latch so the panel can name it (UX0-B01).
+        let failure = ProjectError::Write(error);
+        track.mark_save_failed(failure.to_string());
+        failure
     })?;
 
     track.file_path = audio.runtime;
@@ -382,6 +394,7 @@ pub fn save_to_path(
     track.project_metadata = Some(project.metadata);
     track.project_dirty = false;
     track.project_autosave_failed = false;
+    track.project_save_error = None;
     Ok(())
 }
 
@@ -415,6 +428,33 @@ pub fn autosave_is_due(track: &Track, now_seconds: f64, editor_dirty: bool) -> b
         && !track.project_autosave_failed
         && !editor_dirty
         && now_seconds - track.project_dirty_since >= 1.5
+}
+
+/// Which workspace slots autosave should write this frame (C4).
+///
+/// Extracted from `main.rs`'s frame loop so the all-track claim is a unit test
+/// rather than only a capture. The loop it replaced computed exactly this list
+/// and then discarded every entry that was not the current track, so "every due
+/// track" was one `continue` away from true and nothing failed when it was not —
+/// a background track simply stopped being written, silently, which is the
+/// failure mode this whole task exists to remove.
+///
+/// `editor_dirty` is asked per slot, not once: a draft belongs to the track it
+/// was typed against, and a global answer would let one open lyric form freeze
+/// autosave for every other track in the workspace.
+#[must_use]
+pub fn autosave_due_tracks(
+    workspace: &Workspace,
+    now_seconds: f64,
+    mut editor_dirty: impl FnMut(usize) -> bool,
+) -> Vec<usize> {
+    (0..workspace.len())
+        .filter(|&index| {
+            workspace
+                .get(index)
+                .is_some_and(|track| autosave_is_due(track, now_seconds, editor_dirty(index)))
+        })
+        .collect()
 }
 
 /// What opening a project produced, before it replaces anything.
@@ -565,10 +605,18 @@ pub fn open_path(
         });
     }
     track.analysis_lanes = project.analysis_lanes;
+    // C4: seeded from the file the project recorded, so a track opened into a
+    // background slot — one that never gets a bound stream — is still saveable.
+    // The loader overwrites both once the audio is actually decoded; until then
+    // the project's own numbers are the best available and were written by a
+    // build that had decoded it.
+    track.audio_sample_rate = project.audio.sample_rate;
+    track.audio_channels = project.audio.channels;
     track.project_path = Some(path.to_path_buf());
     track.project_metadata = Some(project.metadata);
     track.project_dirty = false;
     track.project_autosave_failed = false;
+    track.project_save_error = None;
 
     Ok(OpenedProject { track, warning })
 }
@@ -664,4 +712,117 @@ fn output_to_quality(quality: OutputQuality) -> Quality {
 
 fn file_stem(path: &Path) -> Option<&str> {
     path.file_stem().and_then(|stem| stem.to_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A track that is due for autosave in every respect except the one under
+    /// test.
+    fn saveable(name: &str, now: f64) -> Track {
+        let mut track = Track::new(PathBuf::from(name), 120.0, SceneId::Spectrum, 7)
+            .expect("120s is a valid duration");
+        track.audio_sample_rate = 48_000;
+        track.audio_channels = 2;
+        track.project_path = Some(PathBuf::from(format!("{name}.musi")));
+        track.mark_dirty(now);
+        track
+    }
+
+    /// C4's headline claim, and the one the old loop broke: a workspace where
+    /// **two** tracks are due yields both, not only the current one.
+    ///
+    /// The frame loop used to build exactly this list and then `continue` past
+    /// every entry that was not `current_index()`, because the sample rate came
+    /// off the bound stream. Nothing failed when it did that — the background
+    /// track just stopped being written.
+    #[test]
+    fn every_due_track_is_returned_not_only_the_current_one() {
+        let mut workspace = Workspace::new();
+        workspace.push(saveable("/tmp/a.wav", 0.0));
+        workspace.push(saveable("/tmp/b.wav", 0.0));
+        assert_eq!(workspace.current_index(), Some(0));
+
+        let due = autosave_due_tracks(&workspace, 2.0, |_| false);
+
+        assert_eq!(due, vec![0, 1], "the background track must autosave too");
+    }
+
+    #[test]
+    fn the_settle_window_holds_a_track_back_until_it_has_elapsed() {
+        let mut workspace = Workspace::new();
+        workspace.push(saveable("/tmp/a.wav", 10.0));
+
+        assert!(autosave_due_tracks(&workspace, 11.4, |_| false).is_empty());
+        assert_eq!(autosave_due_tracks(&workspace, 11.5, |_| false), vec![0]);
+    }
+
+    #[test]
+    fn a_dirty_draft_holds_back_its_own_track_and_no_other() {
+        // The over-correction this guards against is as bad as the gap: a global
+        // "some editor is dirty" answer would freeze every track's autosave
+        // because one of them has a half-typed cue.
+        let mut workspace = Workspace::new();
+        workspace.push(saveable("/tmp/a.wav", 0.0));
+        workspace.push(saveable("/tmp/b.wav", 0.0));
+
+        let due = autosave_due_tracks(&workspace, 2.0, |index| index == 0);
+
+        assert_eq!(due, vec![1]);
+    }
+
+    #[test]
+    fn a_track_with_no_project_path_is_never_due() {
+        // Autosave must not invent a destination.
+        let mut workspace = Workspace::new();
+        let mut track = saveable("/tmp/a.wav", 0.0);
+        track.project_path = None;
+        workspace.push(track);
+
+        assert!(autosave_due_tracks(&workspace, 99.0, |_| false).is_empty());
+    }
+
+    #[test]
+    fn a_latched_failure_stops_the_retry_without_stopping_the_other_track() {
+        // One failure must not become a write-every-frame loop, and must not
+        // silence a sibling whose destination is a different file entirely.
+        let mut workspace = Workspace::new();
+        workspace.push(saveable("/tmp/a.wav", 0.0));
+        workspace.push(saveable("/tmp/b.wav", 0.0));
+        workspace
+            .get_mut(0)
+            .expect("two tracks")
+            .mark_save_failed("no space left on device");
+
+        assert_eq!(autosave_due_tracks(&workspace, 2.0, |_| false), vec![1]);
+
+        // And the next edit on the failed track earns it a fresh attempt.
+        workspace.get_mut(0).expect("two tracks").mark_dirty(2.0);
+        assert_eq!(autosave_due_tracks(&workspace, 4.0, |_| false), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_track_whose_audio_format_is_unknown_is_refused_rather_than_written() {
+        // The cached format is what replaced the bound stream. Zero means the
+        // decode has not happened yet, and writing it would produce a `.musi`
+        // claiming 0 Hz whose bytes are otherwise perfectly valid — so nothing
+        // downstream would catch it.
+        let directory = std::env::temp_dir().join("musializer-c4-format-test");
+        let _ = std::fs::create_dir_all(&directory);
+        let audio = directory.join("silent.wav");
+        std::fs::write(&audio, b"not really a wav").expect("the fixture directory is writable");
+
+        let mut track = Track::new(audio, 120.0, SceneId::Spectrum, 7).expect("valid duration");
+        track.audio_sample_rate = 0;
+        track.audio_channels = 0;
+
+        let error = save_to_path(&mut track, &directory.join("x.musi"), false)
+            .expect_err("a 0 Hz track must not be written");
+        assert!(
+            error.to_string().contains("audio format"),
+            "the refusal must name the reason, got {error}"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }
