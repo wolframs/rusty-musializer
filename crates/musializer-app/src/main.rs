@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
 use musializer_core::project::event_timeline::ManualEventAction;
 use musializer_core::project::frame_lanes::{FrameLaneStatus, ProjectFrameLanes, SceneFrameTiming};
+use musializer_core::project::lyrics;
 use musializer_core::project::model::CaptionFace;
 use musializer_core::project::preset_store::{
     self, PresetAction, PresetLibrary, SharedPresetsView,
@@ -1438,6 +1439,10 @@ fn run(
         if !edits.is_empty() {
             let now = rl.get_time();
             if let Some(track) = app.workspace.current_mut() {
+                // One snapshot per drained batch, taken *before* anything is
+                // applied (UX0-B03). A batch is one user action — one frame's
+                // pushes — so a cut of five cues is one Ctrl+Z, not five.
+                app.shell.lyrics.record_history(&edits, &track.lyrics);
                 let mut failed = None;
                 // C1: counted rather than assumed. This used to call `mark_dirty`
                 // unconditionally, so a batch whose *first* edit was refused —
@@ -1463,6 +1468,34 @@ fn run(
                         "Lyric edit was refused",
                         &error.to_string(),
                     );
+                }
+            }
+        }
+
+        // Undo and redo, after the drain so a Ctrl+Z pressed in the same frame
+        // as an edit reverses that edit rather than the one before it.
+        if let Some(track) = app.workspace.current_mut() {
+            if let Some((step, outcome)) = app.shell.lyrics.run_history_step(&mut track.lyrics) {
+                let now = rl.get_time();
+                let verb = match step {
+                    ui::panels::lyrics::HistoryStep::Undo => "Undid",
+                    ui::panels::lyrics::HistoryStep::Redo => "Redid",
+                };
+                match outcome {
+                    Ok(label) => {
+                        track.mark_dirty(now);
+                        app.shell.notify(
+                            Severity::Success,
+                            &format!("{verb}: {label}"),
+                            "Ctrl+Z steps back, Ctrl+Shift+Z steps forward.",
+                        );
+                    }
+                    // Unreachable for a state this document was ever in, which
+                    // is exactly why it is reported rather than unwrapped.
+                    Err(detail) => {
+                        app.shell
+                            .notify(Severity::Warning, "That step could not be taken", &detail)
+                    }
                 }
             }
         }
@@ -1735,6 +1768,11 @@ fn run(
                             &format!("{error}. Pass --project on the command line instead."),
                         ),
                     }
+                }
+                ShellCommand::ExportLyrics => export_lyrics_command(&mut app),
+                ShellCommand::ImportLyrics => {
+                    let now = rl.get_time();
+                    import_lyrics_command(&mut app, now);
                 }
                 ShellCommand::SaveProject => {
                     save_project_command(&mut app, true);
@@ -3376,6 +3414,173 @@ fn save_project_to(
         .get_mut(index)
         .ok_or("there is no track to save")?;
     project::save_to_path(track, destination, reuse_published).map_err(|error| error.to_string())
+}
+
+/// Writes the current track's cue document to a `.lyrics.tsv` (D3).
+///
+/// `LyricsDocument::bridge_export` is the codec — the UI bridge the C uses for
+/// exactly this (`lyrics.c:603-648`), canonical and locale-independent by
+/// construction. No second codec is invented here, and none should be.
+///
+/// **Exporting must not dirty the project**, which is the one requirement worth
+/// naming: writing a copy of what is already in the `.musi` changes nothing
+/// about the `.musi`, and a Save prompt after an export would teach the user
+/// that exporting costs them something.
+fn export_lyrics_command(app: &mut App) {
+    let Some(track) = app.workspace.current() else {
+        return;
+    };
+    let body = match track.lyrics.bridge_export() {
+        Ok(body) => body,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Warning,
+                "These cues cannot be exported",
+                &format!("{error}."),
+            );
+            return;
+        }
+    };
+    // Seeded from the project's own name, so the two files sit together and the
+    // user is not asked to invent a name for a derived artifact.
+    let suggested = track.project_path.as_ref().map_or_else(
+        || PathBuf::from("lyrics.lyrics.tsv"),
+        |path| path.with_extension("lyrics.tsv"),
+    );
+    let dialog = dialogs::FileDialog::new("Export timed lyrics")
+        .with_default_path(suggested)
+        .with_filter(dialogs::filters::LYRIC_TEXT);
+    match dialog.save_file() {
+        // Cancellation is silent, as it is at every other dialog here.
+        Ok(None) => {}
+        Ok(Some(path)) => match std::fs::write(&path, body.as_bytes()) {
+            Ok(()) => app.shell.notify(
+                Severity::Success,
+                "Timed lyrics exported",
+                &format!(
+                    "{} cue(s) written. The project is unchanged.",
+                    app.workspace
+                        .current()
+                        .map_or(0, |track| track.lyrics.len())
+                ),
+            ),
+            Err(error) => app.shell.notify(
+                Severity::Error,
+                "The lyrics file could not be written",
+                &format!("{}: {error}", path.display()),
+            ),
+        },
+        Err(error) => app.shell.notify(
+            Severity::Warning,
+            "No file picker is available",
+            &format!("{error}. There is no command-line route to this yet."),
+        ),
+    }
+}
+
+/// Replaces the current track's cue document from a `.lyrics.tsv` (D3).
+///
+/// Transactional in three layers, because an import that half-lands is worse
+/// than one that refuses. `bridge_import` stages into a fresh document and
+/// publishes through `replace`, so a malformed file never touches anything;
+/// `normalize_duration` then re-bases the imported cues onto *this* track's
+/// decoded length and refuses outright if a cue begins past the end, because
+/// clamping those would produce zero-length cues rather than shorter ones; and
+/// only if both succeed is the result written, with the previous document
+/// already on the undo stack.
+fn import_lyrics_command(app: &mut App, now: f64) {
+    if app.workspace.current().is_none() {
+        return;
+    }
+    let dialog =
+        dialogs::FileDialog::new("Import timed lyrics").with_filter(dialogs::filters::LYRIC_TEXT);
+    let path = match dialog.pick_file() {
+        Ok(None) => return,
+        Ok(Some(path)) => path,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Warning,
+                "No file picker is available",
+                &format!("{error}. There is no command-line route to this yet."),
+            );
+            return;
+        }
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Error,
+                "That file could not be read",
+                &format!("{}: {error}", path.display()),
+            );
+            return;
+        }
+    };
+    let Some(track) = app.workspace.current_mut() else {
+        return;
+    };
+    let duration = track.lyrics.duration_seconds();
+
+    // The whole transaction is `import_bridge_document`, which is pure and
+    // tested: staged into a scratch document so malformed bytes touch nothing,
+    // then re-based off the *file's* duration onto this track's. Nothing is
+    // written here until it has all succeeded.
+    let normalized = match lyrics::import_bridge_document(&bytes, duration) {
+        Ok(document) => document,
+        Err(lyrics::BridgeImportRefusal::NoTrackLength(error)) => {
+            app.shell.notify(
+                Severity::Warning,
+                "This track has no length to import against",
+                &format!("{error}."),
+            );
+            return;
+        }
+        Err(lyrics::BridgeImportRefusal::Format(error)) => {
+            app.shell.notify(
+                Severity::Warning,
+                "That is not a timed-lyrics file",
+                &format!(
+                    "{error}. It must be a .lyrics.tsv written by Export, starting MUSIALIZER-LYRICS-BRIDGE."
+                ),
+            );
+            return;
+        }
+        Err(lyrics::BridgeImportRefusal::DoesNotFit {
+            failure,
+            source_duration_seconds,
+        }) => {
+            app.shell.notify(
+                Severity::Warning,
+                "Those cues do not fit this track",
+                &format!(
+                    "{failure}. The file was timed against a {source_duration_seconds:.1} s track and this one is {duration:.1} s."
+                ),
+            );
+            return;
+        }
+    };
+    let imported = normalized.len();
+    // The old document goes on the undo stack before it is replaced, so an
+    // import over hand-timed work is one Ctrl+Z away from being back.
+    app.shell
+        .lyrics
+        .record_history_label("Import lyrics", &track.lyrics);
+    if let Err(failure) = track.lyrics.replace(&normalized) {
+        app.shell.notify(
+            Severity::Warning,
+            "Those cues were refused",
+            &format!("{failure}."),
+        );
+        return;
+    }
+    track.mark_dirty(now);
+    app.shell.lyrics.enter_document_change();
+    app.shell.notify(
+        Severity::Success,
+        "Timed lyrics imported",
+        &format!("{imported} cue(s) replaced the previous document. Ctrl+Z puts it back."),
+    );
 }
 
 /// The Save button (`save_project`, `plug.c:4641-4646`): saves in place when the

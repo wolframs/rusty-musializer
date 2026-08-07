@@ -152,6 +152,17 @@ pub enum ShellCommand {
     SetFullscreen(bool),
     /// Persist workstation UI state outside the current `.musi` project.
     SaveUiPreferences(UiPreferences),
+    /// Write the current track's cue document to a `.lyrics.tsv` through a
+    /// native save dialog (`export_lyrics_document`, `lyrics_editor_ui.c:1084-1140`).
+    ///
+    /// A command for the same reason [`Self::OpenAudio`] is: the picker is modal
+    /// and blocks until answered, and doing that inside a begin/end drawing pair
+    /// would hold the frame open across it. The two lyrics variants were the
+    /// only thing missing — `LyricsDocument::bridge_export`/`bridge_import` have
+    /// been ported and tested since Agent B's band and had no caller (D3).
+    ExportLyrics,
+    /// Replace the current track's cue document from a `.lyrics.tsv`.
+    ImportLyrics,
 }
 
 impl ShellCommand {
@@ -232,6 +243,11 @@ impl ShellCommand {
             // The recent list is per-user config (`recent.json`), not `.musi`
             // state (UX0-C06).
             ShellCommand::ForgetRecentProject(_) => false,
+            // A TSV import replaces the timed-lyrics document transactionally
+            // and its handler marks dirty; an export only reads it, and D3's
+            // contract is explicit that exporting must not dirty the project.
+            ShellCommand::ImportLyrics => true,
+            ShellCommand::ExportLyrics => false,
         }
     }
 }
@@ -4254,7 +4270,14 @@ impl Shell {
     ) -> f32 {
         let below_strip = strip.y + strip.height;
         match self.panel {
-            UiPanel::None | UiPanel::Tune => below_strip,
+            // The cue lane outlives the editor (D4). Only in these two states:
+            // Export and Assist take the whole band for their own budgets, and
+            // adding a lane to those would push their bodies down rather than
+            // into slack. It draws in room the band already reserves, so no
+            // panel height moves — see `closed_lyric_lane`.
+            UiPanel::None | UiPanel::Tune => {
+                self.closed_lyric_lane(d, input, content, strip, commands)
+            }
             UiPanel::Export => {
                 self.export_panel(d, input, content, strip, commands);
                 below_strip

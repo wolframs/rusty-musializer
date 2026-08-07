@@ -788,6 +788,115 @@ become needles; and the four 3D scenes crop horizontally because raylib's
 actually fills a tall frame better than a wide one. Only Song Atlas loses its
 subject, its terrain slab running off both sides. All shippable, none fixed.
 
+## PX2 — the lyric timing loop gets its loop (2026-08-07)
+
+The review's verdict was that the editor's foundation was good and the *loop*
+was missing: "timing 60 lines is ~360 precise clicks across two panes". Six
+items closed together — UX0-B02, B03, B04, B05, UX0-C03, D3 and D4's cue-lane
+item — because they are one workflow and closing any one of them alone leaves it
+still unusable. The per-item evidence is in each checkbox above; what follows is
+the reasoning that spans them.
+
+| Item | Landed as |
+| --- | --- |
+| UX0-B02 | `select_and_seek`, one `Seek` per frame, drained in `lyrics_panel` |
+| UX0-B03 | `LyricHistory`, 64 snapshots, one per drained batch |
+| UX0-B04 | `cue_nudge_step_seconds`, `HoldRepeat`, `parse_cue_timestamp` |
+| UX0-B05 | `LyricsEdit::Split`/`Merge`, Ctrl+B / Ctrl+J, `split_text_at_fraction` |
+| UX0-C03 | `LyricTap` — arm, then one press per line |
+| D3 | `ExportLyrics`/`ImportLyrics`, `import_bridge_document` |
+| D4 (lane) | `closed_lyric_lane`, in slack the band already reserved |
+
+**Enter is the tap key, and the choice was made by elimination rather than
+taste.** `Shell::keyboard` reads the keyboard *before any panel draws*, and its
+globals are unconditional once no text field has focus: `T` opens the inspector,
+`M` mutes, `S` saves, `F` goes fullscreen, `H` toggles the readout, Space plays,
+Tab cycles the scene, the arrows seek. Neither side consumes a press, so a panel
+key shadowing one of those fires **both**. Enter was the only unbound key that is
+large, central and reachable without looking — which for a control pressed in
+time with music is not a nicety. Ctrl+Enter arms, and cannot collide with the
+form's own Ctrl+Enter because that one requires the cue field focused and an
+armed run requires it blurred.
+
+**That exclusion is also the fix for the defect the review named.** `begin_new`
+focuses the text field, a focused field stands down every transport key including
+Space, and so the natural add → type → play → tap loop broke exactly at the tap.
+Rather than carve an exception into the focus rule, tap mode and text entry are
+**mutually exclusive states**: arming blurs the field, clicking a field disarms
+the run. There is no key that means two things, so there is nothing to get wrong.
+The same rule made `is_typing` answer for the new typed-time fields too — a second
+text surface that did not answer it would have re-created UX0-A06 one field over,
+with `1:23` seeking the track and toggling the readout.
+
+**Snapshots, not inverse edits, and the note is in the code because it will look
+like an easy simplification later.** An inverse has to reproduce everything the
+forward edit touched, and these operations touch more than they name: `split`
+allocates an id from `next_id`, `merge` destroys one, and `update`/`retime`
+promote `CueOrigin` to `UserApplied` — provenance that is load-bearing rather than
+decorative, since `at_time` refuses to hand a `Potential` cue to a frame. An
+inverse log that gets any one wrong produces a document that is *valid* and
+quietly different, which is the failure no test written from the forward
+direction catches. A snapshot cannot be wrong about any of them, and the
+round-trip test is an equality rather than a list of properties someone thought
+of. `revision` deliberately does not round-trip: an undo *is* a change.
+
+**The tap cursor is a snapshot of ids taken at arming time, and this is the one
+piece of the design that is not obvious.** A stamp *moves* a cue and the document
+sorts by start time, so stamping line 1 at 0:50 while lines 2-6 still sit at their
+imported 1-3 s re-sorts it behind them. A cursor walking canonical order then
+hands out line 2 twice and never reaches line 1. Capturing the order at arming
+makes that unstateable rather than guarded against, and
+`a_run_survives_the_re_sort_its_own_stamps_cause` is the pin.
+
+**What the captures found that the tests did not.** Two defects surfaced from the
+first headless run, both invisible to unit tests and to a screenshot:
+
+- A tap bound the form from the document while its own retime was still pending,
+  so the draft was compared against the *pre-stamp* span and came out dirty. Every
+  tap therefore armed the "Finish the lyric edit first" guard and the next press
+  was refused — a tap run that stops after one tap. The report line said `draft
+  dirty` after a clean run of four; nothing else could have.
+- The undo probe checked `can_undo()` before the frame loop, when the taps it was
+  meant to reverse had not drained yet, so `lyric-tap=N,lyric-undo=1` refused
+  itself. The gate now asserts the `history u/r` pair instead of the exit status.
+
+**The control ladder's monotonicity sweep also earned its keep on first run**, by
+failing: it swept narrow-to-wide, which is not the direction the claim is about.
+The property is that as the panel *loses* room controls may only leave —
+`transport_bar`'s lesson, where greedy placement made mute vanish and then
+reappear as the window narrowed.
+
+**Divergences from the frozen C**, all additive; none changes a `.musi` file, a
+rendered frame, a settings bound or the CLI grammar:
+
+| The oracle | Here | Why |
+| --- | --- | --- |
+| A row click selects and never seeks (`lyrics_editor_ui.c:1255`) | It selects **and seeks to the cue's start** | Checking a line meant reading its timecode off the row and scrubbing to it by hand — 60 lines is 120 of those. The start rather than the middle, so pressing play immediately answers "is this on the beat" |
+| No stamping at all | `LyricTap`: arm, then one Enter per line, each press closing the line before it | The review's "~360 precise clicks across two panes". The pairing is review 1.14's rule applied as a gesture rather than as a default, which is what makes a run produce contiguous captions |
+| — | A tap offset, `[` / `]`, ±250 ms, session-only | A player who lands consistently early or late needs to say so. **Defaults to 0**: a silent −200 ms would be the tool lying about the data it recorded |
+| No undo anywhere | 64 document snapshots, one per user action | Delete was one unconfirmed click and a 3 px accidental lane drag committed a 64-cue `ShiftMany` with no way back. Binding Delete to a key is only defensible because this exists |
+| A fixed 0.1 s nudge, no repeat (`:219-250`) | The transport's Ctrl/Shift ladder at a tenth of its scale, hold-to-repeat, and labels that state the current step | A cue boundary is placed against a syllable and a playhead against a section, so the shape is shared and the numbers are not. A fixed "-0.1" label lies whenever Ctrl is down |
+| Times shown to the millisecond, typeable in tenths | The readout is a field; `parse_cue_timestamp` refuses rather than guessing | It has shown milliseconds since the C and never accepted them. `-1:30`, `1e3`, `+30` and `1:60` are all refused, because a silently-clamped typed time is a control that lies |
+| `lyrics_split`/`lyrics_merge` ported, tested, with no call site | Ctrl+B / Ctrl+J and two buttons; split divides the text at the space nearest the seam | Splitting a long imported line is the commonest subtitle edit there is; the only route was retyping both halves |
+| Export/Import offered unconditionally | Export is disabled for a document `bridge_export` would refuse | A dialog that ends in an error is worse than a button that says it cannot |
+| The cue lane exists only while the editor is open | It draws in every state except Export and Assist | Timing is judged against the waveform and the scene plan, which stay. It costs no band height — see D4 above |
+| — | `--ui-probe lyric-tap=N`, `lyric-undo=1`, and `tap …, last stamp …, history u/r, typing …` on the `lyrics:` line | Xvfb has no keyboard. An armed run and a disarmed one differ by one 11 px line of hint text, and a stamp that landed leaves exactly the frame a refused one does |
+
+**Left undone deliberately**, so the next session does not have to rediscover it:
+
+- **UX0-B06 is untouched** (large-document navigation). Up/Down now walk the list
+  and seek, which is a piece of it, but the scrollbar still claims no widget id
+  and there is no jump-to-playhead.
+- **The undo history is per-session and per-current-track**, cleared by
+  `enter_track`. Cue ids restart at 1 in every document, so one track's snapshot
+  would restore another track's cues wholesale. A per-slot map is the obvious
+  follow-up and was not built.
+- **The tap offset is session-only.** Persisting it means a field in
+  `UiPreferences`, which is another tranche's file this session.
+- **Cancel and overwrite confirmation for the TSV dialogs are not gate-covered.**
+  They are the dialog layer's own behaviour and the gate cannot reach them
+  without opening a modal Xvfb has no way to answer.
+
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 
 A separate operator-directed codex agent landed `dc694e3`: the public-facing
@@ -1037,16 +1146,63 @@ close the UX0 item.
       about tracks the user is not looking at. Reported as `save state:` and
       gated in `tools/headless_check.sh:4175-4338`, including an ink check that
       the word reaches the header rather than only the report.
-- [ ] **UX0-B02 — lyric seek/stamp loop:** make cue selection seek-capable, add
+- [x] **UX0-B02 — lyric seek/stamp loop:** make cue selection seek-capable, add
       playhead stamping for start/end, auto-advance after Apply and preserve a
       usable play/tap loop while lyric text has focus (2, lyric timing loop).
-- [ ] **UX0-B03 — lyric edit recovery:** add undo/inverse edits and safe deletion
+      *Done (PX2). A row click and Up/Down call `select_and_seek`, which parks
+      a `seek_request` the panel wrapper drains into one `ShellCommand::Seek`
+      per frame — drained in `lyrics_panel` rather than `draw_lyrics` because
+      the latter has five early returns and a key-requested seek was stranded
+      by four of them. Stamping is `LyricTap` (see C03). The focus half is
+      resolved by making tap mode and text entry **mutually exclusive states**
+      rather than two things fighting over the keyboard: arming blurs the
+      field, so no key means two things. Evidence:
+      `selecting_a_cue_asks_the_transport_to_go_there`,
+      `arming_a_tap_run_blurs_the_cue_field_so_no_key_means_two_things`, and
+      the gate's `timing-tap` capture.*
+- [x] **UX0-B03 — lyric edit recovery:** add undo/inverse edits and safe deletion
       for single and multi-cue timing changes, including accidental lane drags.
-- [ ] **UX0-B04 — precise lyric timing controls:** support an established
+      *Done (PX2). `core::project::lyrics::LyricHistory`, a 64-deep snapshot
+      stack, recorded once per drained batch in `main.rs` — so a 64-cue
+      `ShiftMany` from an accidental lane drag, or a five-cue Ctrl+X, is one
+      Ctrl+Z. **Snapshots rather than inverse edits, deliberately**: `split`
+      allocates an id, `merge` destroys one, and `update`/`retime` overwrite
+      the `CueOrigin` that `at_time` reads, so an inverse log that misses any
+      one of those yields a valid document quietly different from the user's.
+      Delete is now bound to the Delete key as well as the button, which is
+      only defensible because Ctrl+Z exists. Evidence: seven history tests
+      including a per-state round trip forwards and back over one of every
+      edit kind; two negative controls, both reverted byte-for-byte —
+      dropping `next_id` from `replace()` failed both round trips with
+      `next_id differs`, flattening snapshot origins failed both with `cues
+      differ`. Gate: `timing-undo` reports `history 0/1` with cue 4 back at
+      its seeded `00:01.000`.*
+- [x] **UX0-B04 — precise lyric timing controls:** support an established
       fine/normal/coarse nudge ladder, hold-repeat or equivalent efficient input,
       typed times and one consistent minimum cue gap in form and lane.
-- [ ] **UX0-B05 — expose lyric split/merge:** connect the already-ported model
+      *Done (PX2). `cue_nudge_step_seconds` mirrors the transport's ladder in
+      **shape** — Ctrl fine, Shift coarse, fine wins when both are held — at a
+      tenth of its scale (0.01/0.1/1.0), because a cue boundary is placed
+      against a syllable and a playhead against a section; sharing the shape
+      and not the numbers is what stops a user learning Ctrl twice. The button
+      labels state the step the modifiers currently mean rather than a fixed
+      "-0.1" that lies whenever Ctrl is down. Hold-repeat is `HoldRepeat`,
+      counted in **frames** so a headless probe can reproduce it. Typed times
+      go through `parse_cue_timestamp`, which refuses `-1:30`, `1e3`, `1:60`
+      and `+30` rather than guessing. The minimum-gap half was already closed
+      by review 1.1 (`clamp_form_start`/`clamp_form_end` both use
+      `LYRIC_MIN_CUE_SECONDS`); there is now a round-trip test pinning the
+      parser against `widgets::format_timestamp`, which is the only thing
+      making the cross-crate split safe.*
+- [x] **UX0-B05 — expose lyric split/merge:** connect the already-ported model
       operations to the editor with playhead-aware behavior and tests.
+      *Done (PX2). `LyricsEdit::Split`/`Merge`, reached by Ctrl+B and Ctrl+J
+      and by two buttons. Split refuses a playhead outside the cue (or within
+      20 ms of either end) rather than producing a sliver, and divides the
+      text at the space nearest the seam's position through the line —
+      `split_text_at_fraction`, which never returns an empty half because
+      `validate_text` refuses empty text and a refusal after the user has
+      committed is worse than a rough guess.*
 - [ ] **UX0-B06 — large lyric-document navigation:** add visible/interactive
       scrolling, keyboard navigation, jump-to-playhead and readable ellipsis for
       long rows at 100+ cues.
@@ -1185,8 +1341,33 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       (16:9/9:16/1:1/4:5, rung names the short edge, 16:9 byte-identical),
       thirty renders — ten scenes at three aspects — audited frame by frame,
       caption and ASCII Field fixed, preview framed to the export aspect.*
-- [ ] **UX0-C03 — lyric tap timing:** deliver the play-and-tap stamping workflow,
+- [x] **UX0-C03 — lyric tap timing:** deliver the play-and-tap stamping workflow,
       row seek and advancement described by B02 as a polished primary flow (3.3).
+      *Done (PX2). `core::ui::lyric_lane_edit::LyricTap`: arm a run from the
+      playhead, then one press per line. Each press **closes the line before it
+      and opens the next at the playhead**, which is review 1.14's rule applied
+      as a gesture rather than as a default, and is what makes a run of taps
+      produce contiguous captions instead of cues with whatever durations they
+      arrived with. The tap key is **Enter**, chosen by elimination: `T`, `M`,
+      `S`, `F`, `H`, Space, Tab and the arrows are all shell globals fired
+      unconditionally once no field has focus, and the shell reads the keyboard
+      before any panel draws — a panel key shadowing one would fire both.
+      Ctrl+Enter arms.
+      **The one non-obvious invariant:** the cue id order is snapshotted at
+      arming time and the cursor indexes that, because a stamp *moves* a cue and
+      the document sorts by start — stamping line 1 at 0:50 while lines 2-6 sit
+      at their imported 1-3 s re-sorts it behind them, and a cursor walking
+      canonical order hands out line 2 twice and never reaches line 1. Pinned by
+      `a_run_survives_the_re_sort_its_own_stamps_cause`.
+      A tap offset (`[` / `]`, ±250 ms, session-only) compensates a player who
+      lands consistently early or late; it defaults to 0 because a silent
+      −200 ms would be the tool lying about the data it recorded.
+      Evidence: ten `LyricTap` tests including a double-keypress refusal, a cue
+      deleted mid-run, and a sweep asserting every stamp is one the model would
+      accept; `--ui-probe lyric-tap=N`; gate captures `timing-idle`/`timing-tap`.
+      **Not done, and named rather than implied:** tapping never invents text —
+      it places the times of lines that already exist, and says so when the
+      document is empty.*
 - [x] **UX0-C04 — preset audition/A-B:** make preset exploration reversible with
       hold-to-audition or an explicit settings snapshot comparison (3.4).
       *Done (PX6) as an explicit snapshot A/B rather than hold-to-audition: a
@@ -1696,20 +1877,92 @@ on the capture display and block forever — a hang, not a test.
 
 ### D3 — timed-lyrics TSV import/export
 
-- [ ] Replace the disabled Lyrics Export/Import buttons with native save/open
+**Done (PX2).** `ShellCommand::ExportLyrics`/`ImportLyrics` carry both out of the
+drawing pair the way `OpenProject` already does, because a modal picker blocks
+until answered.
+
+- [x] Replace the disabled Lyrics Export/Import buttons with native save/open
       dialog commands.
-- [ ] Use `LyricsDocument::bridge_export` and `bridge_import`; do not invent a
+- [x] Use `LyricsDocument::bridge_export` and `bridge_import`; do not invent a
       second codec.
-- [ ] Import transactionally, validate against track duration, mark dirty and
+- [x] Import transactionally, validate against track duration, mark dirty and
       preserve the old document on failure.
-- [ ] Export must not dirty the project.
-- [ ] Test cancel, overwrite confirmation/backend failure, invalid TSV, valid
+      *`core::project::lyrics::import_bridge_document` owns the whole
+      transaction and is pure, which is the point: the interesting half of an
+      import is what it refuses, and every refusal used to be buried behind a
+      dialog no test can open. Two layers — `bridge_import` stages into a fresh
+      document so malformed bytes touch nothing, then `normalize_duration`
+      re-bases the file's **own** duration onto this track's. Adopting the
+      file's duration is the defect that guards against: it would silently
+      re-length the destination and put every cue past the real end out of
+      reach of the timeline. A cue crossing the tail clamps; a cue beginning
+      past the end refuses the whole import, because clamping that produces a
+      zero-length cue rather than a shorter one.*
+- [x] Export must not dirty the project.
+      *Writing a copy of what is already in the `.musi` changes nothing about
+      the `.musi`, and a Save prompt after an export would teach the user that
+      exporting costs them something. Export is also **offered only for a
+      document the codec can write** — `bridge_export` validates first and
+      refuses a zero duration, so a cue-less track gets a disabled button
+      rather than a dialog ending in an error. The C offers it
+      unconditionally.*
+- [x] Test cancel, overwrite confirmation/backend failure, invalid TSV, valid
       round trip and UTF-8 text.
+      *Five unit tests in `bridge_import_tests`: a valid round trip that is
+      byte-identical the second time and carries Greek and Cyrillic through
+      base64; **eight** malformed files each refused as a format error (empty,
+      plain text, truncated header, wrong version, no trailing newline, empty
+      text field, zero cue id, non-base64 text, embedded NUL); a file from
+      another track re-based / clamped / refused; a destination with no length;
+      and the empty document, which reads as a failure and is not.
+      In the gate: `lyrics-click-export` and `lyrics-click-import` press both
+      buttons with an **empty PATH**, which is what makes it both safe and
+      useful — `choose_backend` then finds neither kdialog nor zenity and
+      refuses before spawning anything, so the probe cannot hang on a modal
+      Xvfb has no way to answer, and the refusal **is** the backend-failure
+      branch. Both presses are asserted to claim distinct widget ids, a click
+      into the 7 px gap between them is asserted to claim nothing, and the
+      "No file picker is available" card is measured on screen.
+      **Not covered, and named rather than implied:** cancel and overwrite
+      confirmation are the dialog layer's own behaviour (`kdialog --getsavefilename`
+      returns empty on cancel and confirms overwrite itself); the gate cannot
+      reach them without opening a modal it cannot answer, and `dialogs.rs`
+      keeps its own tests for the backend choice.*
 
 ### D4 — timeline content and navigation
 
 - [ ] Draw the merged manual/semantic event markers over the waveform lane.
-- [ ] Draw the lyric cue lane even when the Lyrics editor is closed.
+- [x] Draw the lyric cue lane even when the Lyrics editor is closed.
+      *Done (PX2). `Shell::closed_lyric_lane`, wired into `open_panel`'s
+      `None`/`Tune` arms. Timing is judged against the waveform and the scene
+      plan, which stay on screen when the editor does not — so closing the
+      editor to see more preview used to take the cue blocks with it, and the
+      commonest question in this workflow ("does that line land on that
+      transient?") could only be asked in the layout that hides most of the
+      picture.
+      **It costs no band height**, which is the part worth defending. The
+      `None`/`Tune` band is `EVENT_ROW_HEIGHT + DEFAULT_TIMELINE_HEIGHT +
+      SCENE_SECTION_HEIGHT`, and the 180 spends 56 on the waveform strip and 28
+      on the zoom row; the lane draws in slack already reserved and already
+      empty, clamped to whatever is left, and draws nothing if that slack is
+      ever spent. Growing the band instead would move `workspace_layout`'s
+      sidebar guarantee at 720p — the arithmetic that already forced the manual
+      event row out of the lyrics band — and UX0-C17 records that class of
+      change as one that queues.
+      Export and Assist are excluded on purpose: they take the whole band for
+      their own budgets, so a lane there would push their bodies down rather
+      than into slack.
+      Fully interactive through the same `Shell::lyric_lane` the editor draws,
+      so there is no second implementation to diverge, and every gesture is
+      reversible now that Ctrl+Z exists.
+      Evidence: the gate's lane-alignment sweep for `panel-none-*`,
+      `panel-tune-*` and both 1440p captures moved 2 → 3, which is a
+      **strengthening** — the closed lane is drawn from a different call site
+      than the open one, and this is what proves it lands on the same time axis
+      as the waveform above it. Plus a pixel measurement of user-origin cue
+      blocks in the lane band, scoped to the bottom of the frame because the
+      event row's "+ Scene" button is outlined in the same green and an
+      unscoped count reports 148 of them on a frame with no cues at all.*
 - [ ] Add Shift-wheel pan and middle-drag pan with robust pointer-claim release.
 - [x] Make waveform scrubbing transactional: pause on press, track the target
       while dragging, seek once on release and restore the prior play state.

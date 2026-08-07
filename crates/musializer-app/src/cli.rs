@@ -175,6 +175,22 @@ pub struct UiProbe {
     pub playing: bool,
     /// Selects the nth lyric cue, 1-based. Needs `panel=assist`.
     pub lyric_selection: Option<u32>,
+    /// Arms a tap run at the seek position and presses the tap key this many
+    /// times (UX0-C03).
+    ///
+    /// **Invented**, and for the reason every probe key here is: Xvfb has no
+    /// keyboard, so without it the play-and-tap loop is unphotographable. An
+    /// armed run and a disarmed one differ by one 11 px line of hint text, and a
+    /// stamp that landed leaves exactly the picture a stamp that was refused
+    /// does — the difference is in the cue spans, which is what the `lyrics:`
+    /// report line carries.
+    pub lyric_taps: Option<u32>,
+    /// Presses Ctrl+Z once, after any `lyric-tap=` (UX0-B03).
+    ///
+    /// One step rather than a count: the assertion worth making is that the
+    /// document *came back*, and one step against a known batch proves the
+    /// recording, the restore and the label. Depth is unit-tested.
+    pub lyric_undo: bool,
     /// Timeline strip zoom; 1 is the whole track.
     pub timeline_zoom: Option<f64>,
     /// `style=caption`: show the caption typography pane. Needs `panel=lyrics`.
@@ -915,6 +931,17 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
             probe.lyric_selection = Some(selection);
         }
+        "lyric-tap" => {
+            // At least one: `lyric-tap=0` would arm a run, stamp nothing and
+            // leave a frame indistinguishable from one that never ran, which is
+            // the `wheel=0` mistake this grammar already refuses.
+            let taps: u32 = value.parse().ok()?;
+            if !(1..=64).contains(&taps) {
+                return None;
+            }
+            probe.lyric_taps = Some(taps);
+        }
+        "lyric-undo" => probe.lyric_undo = parse_probe_flag(value)?,
         "zoom" => {
             // 1.0..=100000.0 inclusive, finite (`musializer.c:188-197`).
             let zoom: f64 = value.parse().ok()?;
@@ -1148,7 +1175,18 @@ Diagnostics:
                           play=0|1. The transport is parked unless
                           play=1; audio-reactive scenes need play=1 but
                           then capture a frame that is not reproducible.
-                          Every panel except none needs a loaded track
+                          Every panel except none needs a loaded track,
+                          hover=XxY parks the pointer and zeroes the
+                          tooltip dwell; click=XxY presses there over
+                          three frames; wheel=NOTCHES turns the wheel
+                          once wherever hover= parked it,
+                          scene-pick=NAME presses that scene tile,
+                          picker=ink|plate|glow and tune=pulse|hue open
+                          the caption pane's disclosures,
+                          lyric-tap=N arms a tap run at time= and presses
+                          the tap key N times; lyric-undo=1 then presses
+                          Ctrl+Z once (needs panel=lyrics),
+                          audio-stall=MS stalls the audio callback
   --size WIDTHxHEIGHT     Preview window geometry
   --probe-frames N        Render N frames, print the report, and exit
   --probe-shot PATH       Write a PNG of the last rendered frame
@@ -1183,6 +1221,42 @@ mod tests {
         assert_eq!(parse_ui_probe("wheel=9"), None);
         assert_eq!(parse_ui_probe("wheel=nan"), None);
         assert_eq!(parse_ui_probe("wheel=up"), None);
+    }
+
+    /// The tap probe refuses a no-op for the same reason `wheel=0` does
+    /// (UX0-C03).
+    ///
+    /// `lyric-tap=0` would arm a run, stamp nothing, and leave a frame that is
+    /// indistinguishable from one where the whole feature failed — which is
+    /// exactly the picture a probe exists to rule out.
+    #[test]
+    fn a_lyric_tap_probe_takes_a_count_and_refuses_a_no_op() {
+        assert_eq!(
+            parse_ui_probe("panel=lyrics,lyric-tap=4")
+                .expect("valid spec")
+                .lyric_taps,
+            Some(4)
+        );
+        assert_eq!(parse_ui_probe("lyric-tap=0"), None);
+        assert_eq!(parse_ui_probe("lyric-tap=65"), None);
+        assert_eq!(parse_ui_probe("lyric-tap=-1"), None);
+        assert_eq!(parse_ui_probe("lyric-tap=all"), None);
+    }
+
+    #[test]
+    fn a_lyric_undo_probe_is_a_flag_like_every_other_flag_in_this_grammar() {
+        assert!(
+            parse_ui_probe("panel=lyrics,lyric-tap=2,lyric-undo=1")
+                .expect("valid spec")
+                .lyric_undo
+        );
+        assert!(
+            !parse_ui_probe("lyric-undo=0")
+                .expect("valid spec")
+                .lyric_undo
+        );
+        assert_eq!(parse_ui_probe("lyric-undo=yes"), None);
+        assert_eq!(parse_ui_probe("lyric-undo"), None);
     }
 
     #[test]
