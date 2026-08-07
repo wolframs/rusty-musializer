@@ -678,6 +678,42 @@ become needles; and the four 3D scenes crop horizontally because raylib's
 actually fills a tall frame better than a wide one. Only Song Atlas loses its
 subject, its terrain slab running off both sides. All shippable, none fixed.
 
+## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
+
+A separate operator-directed codex agent landed `dc694e3`: the public-facing
+README rebuild, the self-repairing `docs/CODE_MAP.md` + `tools/code_map.py`
+generator, and a parallelized `tools/verify.sh` (bounded four-job pool, 3.17x
+warm speedup, Xvfb/audio gate kept serial). Its three audits named these
+follow-ups; recorded here so they queue rather than evaporate. None are
+user-observable features; most are shared-infrastructure work that PX-wave
+surfaces would otherwise reinvent separately.
+
+- [ ] **DX1 — one enabled/disabled widget API** that always retains ids,
+      tooltips, focus and press-consumption semantics.
+- [ ] **DX2 — consolidate wrapping/ellipsis policy** behind a
+      measurement-closure API.
+- [ ] **DX3 — shared row/pixel scrolling policies** before Tune overflow (D6)
+      and large lyric navigation (UX0-B06) each grow their own.
+- [ ] **DX4 — separate text-field input from rendering** so ordinary, modal,
+      path and eventually secret fields share keyboard behaviour safely.
+- [ ] **DX5 — centralize XDG/user-directory resolution** and bounded
+      optional-file reads.
+- [ ] **DX6 — collision-safe RAII test scratch directories** before allowing
+      simultaneous whole-repository verification runs.
+- [ ] **DX7 — purge stale agent-era ownership/handoff language** (88 Rust files)
+      and enable strict rustdoc (currently 17 broken-link warnings). Overlaps
+      F2; close them together.
+- [ ] **DX8 — the "authoritative" support manifest is wrong:** it omits current
+      runtime dependencies including `lyric_anchor_block.py`,
+      `anchor_block_align.py`, `runtime_inventory.py`, `provider_catalog.py`,
+      `codex_model_discovery.py` and `atomic_cache.py`. This is an E1 defect
+      and an E2/E4 blocker — an extracted distribution built from that manifest
+      does not run Assist. Fix the manifest and add a check that fails when a
+      helper imports a file the manifest misses.
+- [ ] **DX9 — next verification speed tranche:** content-addressed cached C
+      harness executables, prebuilt Rust differential examples, and Python unit
+      tests split from support integration smoke.
+
 ## Start here next session (updated 2026-08-07)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed, and so are the operator
