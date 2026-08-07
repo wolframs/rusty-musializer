@@ -1204,9 +1204,60 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       `tune-revert`, `tune-revert-deep`, `tune-ab-a`, `tune-ab-b`, `tune-keep`.*
 - [ ] **UX0-C05 — scene thumbnails:** generate/cache deterministic preview stills
       so scene choice is visual rather than ten text-only names (3.5).
-- [ ] **UX0-C06 — recent projects:** use the welcome screen's spare region for a
+- [x] **UX0-C06 — recent projects:** use the welcome screen's spare region for a
       durable, failure-tolerant recent-file list and direct reopen flow (3.6).
 - [x] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
+      Done (PX4). The column lives right of the welcome screen's 72 % rule — the
+      only region the C leaves empty — and draws name, relative age and parent
+      folder per row, with the full path as a tooltip.
+
+      **A second per-user file, `recent.json`, not a field in `ui.json`,** and
+      that is the failure-tolerance requirement rather than tidiness: both stores
+      are refused wholesale when they do not parse, so folding them together
+      would make one truncated write cost the operator their splits *and* their
+      history. The write cadences are also unrelated, and `UiPreferences` is
+      `Copy` and travels by value inside `ShellCommand::SaveUiPreferences`.
+      Same schema-string/size-bound/atomic-replace policy as its neighbour.
+
+      **Three states, not two.** No history, an *unreadable* history, and a
+      history whose files have moved are different facts; a blank column would be
+      indistinguishable from a broken one. A missing entry draws amber, says
+      "File is missing", refuses to open, and keeps its forget cross — offering
+      removal rather than erroring on every click forever.
+
+      **`--project` on the command line records an entry only in a session run**
+      (`is_session_run`: no `--probe-frames`, `--render` or `--save-project`).
+      Without that guard `tools/verify.sh` would append a dozen scratch fixtures
+      to the operator's real `~/.config/musializer/recent.json` as a side effect
+      of being run. Interactive recording is deliberately *not* guarded, because
+      that is what the gate has to be able to prove.
+
+      Evidence: 11 model tests in `ui::preferences::recent::tests` (ordering,
+      move-to-front, cap, missing-probe, round trip, five corrupt-file cases each
+      asserted byte-identical afterwards, over-capacity, refused writes, and the
+      age wording); 2 layout tests pinning the seats (7 rows at 960x640, 8 at
+      720/1080, no overlap with the step number or the format strip); gate block
+      `tools/headless_check.sh:4175-4551` with captures of the empty, populated,
+      corrupt and missing states plus five `--ui-probe click=` assertions and a
+      gutter negative control.
+
+      **Two defects found by the evidence rather than by review**, both of the
+      class this repository keeps paying for:
+
+      - The row's open target was the full row width and is drawn first, so it
+        claimed every press aimed at the forget cross and *opened the project*
+        instead of forgetting it — EX1's defect one namespace later. Hover
+        highlighting was correct and the cross was drawn in the right place; only
+        an injected press could see it. Fixed by making the two rects disjoint,
+        and pinned by the `claimed=0xc00000002` assertion.
+      - `draw_welcome` never painted the queued tooltip. `Widgets::hint` only
+        queues one and `Shell::draw` drains it, but the welcome screen had no
+        hinted control until this list, so every tip it requested was queued and
+        dropped — with `hint` called correctly and the request well-formed. A
+        row's full path is written down nowhere else. Found by asking where the
+        paint happens, not by a capture, and now pinned by a YMIN crop with the
+        unhovered frame as its negative control (20 against 113).
+- [ ] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
       with the same reversible audition semantics as C04 (3.7).
       *Done (PX6). Randomness is **injected**, not ambient: `tune_explore` takes a
       `RandomSource` and the panel seeds a `SplitMix64` from a press counter, so a
@@ -1562,22 +1613,86 @@ merges them into `app.shared_presets`, which is the library Tune reads.
 
 ### D1 — typed file-drop dispatch
 
-- [ ] Dispatch dropped `.musi` files through project open.
-- [ ] Dispatch PNG/JPEG/BMP through ASCII import and select ASCII Field.
-- [ ] Continue dispatching supported audio formats through track load.
-- [ ] Preserve the C behavior that an image dropped before audio is staged for the
+- [x] Dispatch dropped `.musi` files through project open.
+- [x] Dispatch PNG/JPEG/BMP through ASCII import and select ASCII Field.
+- [x] Continue dispatching supported audio formats through track load.
+- [x] Preserve the C behavior that an image dropped before audio is staged for the
       next track.
-- [ ] Report unsupported/corrupt input by its attempted type.
-- [ ] Add non-interactive probes or direct command tests for all three branches.
+- [x] Report unsupported/corrupt input by its attempted type.
+- [x] Add non-interactive probes or direct command tests for all three branches.
+
+Done (PX4, `e53de93`). `ui::shell::classify_drop` is the one decision point and
+`drop_command` turns it into one of three commands; `dropped_files` runs every
+path — dropped or probed — through both.
+
+**The else branch is audio, which is the oracle's (`plug.c:7559`), not a
+whitelist.** A `.txt` is *attempted* as audio and refused by the decoder with a
+notice that names audio, which is what "reported by its attempted type" asks for.
+A fourth "unsupported" arm would mean this application, rather than raylib,
+deciding what raylib can open — and it would start silently refusing files that
+work.
+
+**Divergence from the oracle: the match is case-insensitive.** `IsFileExtension`
+is not, so in the C a `.PNG` off a camera or a Windows share goes to the audio
+decoder and reports as a corrupt song. That is a defect rather than a contract,
+and nothing in a `.musi`, an MP4 or a documented command line can observe the
+difference.
+
+Invented for the checks: **`--ui-probe drop=PATH`**, one synthesized drop on the
+first frame that draws, through the same classifier the device path uses. Xvfb has
+no drag-and-drop, so the whole of D1 was a three-arm branch nothing in this
+repository could enter — the exact shape of EX1's SIZE row. Paired with a
+`drop probe:` report line that records what the shell *dispatched*, not what a
+reporter recomputed, so it cannot read green while the branch is dead.
+
+The `ascii:` report line now names a **staged** grid instead of printing "no
+track", because "no track" cannot be told from the drop having been discarded —
+the same defect class as a lane that never reaches a frame.
+
+Evidence: 3 unit tests in `ui::shell::tests` (a 16-row dispatch table asserted as
+*commands* rather than as the enum, a pairwise-distinctness negative control, and
+a check that the picker's filter and the classifier agree on exactly four
+formats); gate block `tools/headless_check.sh:4175-4551`, five drop captures
+asserting both the branch chosen and what that branch then did — project opens
+and lands in the recent list, image with no track stages 54x54, image with a
+track becomes the grid *and* selects ASCII Field, audio loads, `.txt` is
+attempted as audio and refused with 0 tracks open.
 
 ### D2 — ASCII image import and clear UI
 
-- [ ] Add "Import image -> ASCII" to the scene browser with PNG/JPEG/BMP filters.
-- [ ] Show "Clear image" only when the active track owns an image-backed grid.
-- [ ] Import transactionally, select ASCII Field on success and mark the project
+- [x] Add "Import image -> ASCII" to the scene browser with PNG/JPEG/BMP filters.
+- [x] Show "Clear image" only when the active track owns an image-backed grid.
+- [x] Import transactionally, select ASCII Field on success and mark the project
       dirty; a failed decode must preserve the previous grid.
-- [ ] Clear path, digest, cells and dimensions together and mark dirty.
-- [ ] Capture empty, populated, cleared and staged-with-no-track states.
+- [x] Clear path, digest, cells and dimensions together and mark dirty.
+- [x] Capture empty, populated, cleared and staged-with-no-track states.
+
+Done (PX4, `e53de93`). `Shell::ascii_image_footer` draws below the scene tiles;
+`dialogs::filters::ASCII_IMAGE` is the picker filter and a unit test pins it to
+the same four extensions `classify_drop` imports, so an image cannot import from
+the button and fail from a drop.
+
+**The footer reserves both button heights whether or not Clear is drawn.** Sizing
+the tile grid from the reservation means importing an image cannot make ten scene
+tiles jump a row and clearing it cannot make them jump back — a footer that
+reserved only what it drew would resize its neighbour as a side effect of an
+unrelated action.
+
+Transactionality is inherited rather than re-implemented: `import_ascii_image`
+already canonicalizes, hashes, then decodes, so a failed decode never moves
+state. Scene selection is on the success path only — the oracle's `&&`
+(`plug.c:7552`) — because switching to an empty ASCII Field is a bad reward for a
+typo. Clearing drops one `Option`, so path, digest, cells and dimensions cannot
+part ways; "together" is structural rather than a discipline four assignments
+have to keep.
+
+Evidence: four captures in the gate block, and each state proved by a press
+rather than by a picture. Empty asserts that Clear's *seat* claims nothing — a
+capture cannot distinguish "absent" from "drawn in the background colour".
+Cleared asserts `claimed=0xd00000002` and `ascii: none (procedural mode)`. Import
+asserts `claimed=0xd00000001` under a `PATH` carrying neither `kdialog` nor
+`zenity`: Xvfb *is* a reachable display, so an unguarded picker would draw a modal
+on the capture display and block forever — a hang, not a test.
 
 ### D3 — timed-lyrics TSV import/export
 

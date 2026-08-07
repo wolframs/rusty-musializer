@@ -129,6 +129,16 @@ pub mod filters {
         label: "MP4 video",
         patterns: &["*.mp4"],
     };
+    /// The formats ASCII Field's image import accepts (`plug.c:6362-6366`).
+    ///
+    /// Exactly the four the drop path classifies as images
+    /// (`ui::shell::classify_drop`), and that is the contract rather than a
+    /// coincidence: a picker that offers a fifth would produce a file the drop
+    /// path sends to the audio decoder.
+    pub const ASCII_IMAGE: FileFilter = FileFilter {
+        label: "images",
+        patterns: &["*.png", "*.jpg", "*.jpeg", "*.bmp"],
+    };
 }
 
 /// A dialog request. Built by the caller, run by whatever backend exists.

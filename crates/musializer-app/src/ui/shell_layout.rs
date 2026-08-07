@@ -26,6 +26,7 @@
 
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect, WorkspaceSidebar};
 
+use super::preferences::recent;
 use super::theme::metric;
 
 /// Timeline height with no panel open (`plug.c:7669`).
@@ -377,12 +378,35 @@ pub struct WelcomeFrame {
     pub steps_rule: UiRect,
     /// The supported-format strip along the bottom.
     pub formats: UiRect,
+    /// `RECENT` and the rule under it, in the right-hand column (UX0-C06).
+    pub recent_header: UiRect,
+    /// Row seats for the recent list, top to bottom. Always [`recent::CAPACITY`]
+    /// of them; [`Self::recent_visible`] says how many the window can hold, so a
+    /// caller never has to re-derive the arithmetic to know where to stop.
+    pub recent_rows: [UiRect; recent::CAPACITY],
+    /// How many of [`Self::recent_rows`] fit above the format strip.
+    pub recent_visible: usize,
 }
 
 impl WelcomeFrame {
     /// Button size at `plug.c:7789`, and the 10 px gap at `:7802`.
     const BUTTON: (f32, f32) = (176.0, 44.0);
     const BUTTON_GAP: f32 = 10.0;
+
+    /// The recent column's own metrics (UX0-C06).
+    ///
+    /// A row is two lines — the project's name, then its age and folder — so 44
+    /// is `15 + 4 + 12` of text inside 6 px of padding, and the 6 px gap is what
+    /// keeps two rows from reading as one block of four lines.
+    const RECENT_ROW: f32 = 44.0;
+    const RECENT_GAP: f32 = 6.0;
+    /// Distance from the column rule to the list's text.
+    const RECENT_GUTTER: f32 = 24.0;
+    /// Below this the column is not a list, it is a truncation. At the minimum
+    /// supported window (960) the column is 212 px, so this is headroom rather
+    /// than a limit anything reaches — but a caller that shrinks
+    /// `column_rule_x` should get an empty seat rather than overlapping text.
+    const RECENT_MINIMUM_WIDTH: f32 = 150.0;
 
     #[must_use]
     pub fn layout(window_width: f32, window_height: f32) -> Self {
@@ -413,11 +437,48 @@ impl WelcomeFrame {
             )
         });
 
+        // The recent column: everything right of the 72 % rule and below the
+        // oversized step number, which is the only region on this screen the C
+        // leaves empty. Bounded above by the number's own baseline box and below
+        // by the format strip, so it can never print through either.
+        let column_rule_x = w * 0.72;
+        let step_number = UiRect::new(w - 150.0, 82.0, 150.0, 84.0);
+        let formats = UiRect::new(32.0, h - 48.0, w - 64.0, 14.0);
+        let recent_x = column_rule_x + Self::RECENT_GUTTER;
+        let recent_width = (w - 32.0 - recent_x).max(0.0);
+        let recent_header = UiRect::new(
+            recent_x,
+            step_number.y + step_number.height + 28.0,
+            recent_width,
+            14.0,
+        );
+        let rows_top = recent_header.y + 26.0;
+        let rows_bottom = formats.y - 16.0;
+        let stride = Self::RECENT_ROW + Self::RECENT_GAP;
+        let recent_visible = if recent_width < Self::RECENT_MINIMUM_WIDTH {
+            0
+        } else {
+            // `+ RECENT_GAP` because the last row needs no gap after it, and
+            // without that the column loses a whole row to a 6 px remainder.
+            (((rows_bottom - rows_top + Self::RECENT_GAP) / stride)
+                .floor()
+                .max(0.0) as usize)
+                .min(recent::CAPACITY)
+        };
+        let recent_rows = std::array::from_fn(|index| {
+            UiRect::new(
+                recent_x,
+                rows_top + index as f32 * stride,
+                recent_width,
+                Self::RECENT_ROW,
+            )
+        });
+
         Self {
             header_rule_y: 72.0,
-            column_rule_x: w * 0.72,
+            column_rule_x,
             masthead: UiRect::new(32.0, 30.0, w - 64.0, 24.0),
-            step_number: UiRect::new(w - 150.0, 82.0, 150.0, 84.0),
+            step_number,
             body: UiRect::new(left, top, (w * 0.72 - left).max(0.0), 112.0 + 17.0),
             open_audio,
             open_project,
@@ -429,7 +490,10 @@ impl WelcomeFrame {
             ),
             steps,
             steps_rule: UiRect::new(left, steps_y - 16.0, (w * 0.66 - left).max(0.0), 1.0),
-            formats: UiRect::new(32.0, h - 48.0, w - 64.0, 14.0),
+            formats,
+            recent_header,
+            recent_rows,
+            recent_visible,
         }
     }
 
@@ -747,6 +811,68 @@ mod tests {
             );
             assert!(frame.fits(h), "{w}x{h}: the screen does not fit");
         }
+    }
+
+    #[test]
+    fn the_recent_column_seats_whole_rows_inside_the_spare_region() {
+        // UX0-C06. Pinned numbers rather than "it is somewhere on the right",
+        // because a range assertion is satisfied by a wrong formula — the lesson
+        // the `layout` differential harness exists to record. These are what the
+        // arithmetic above produces at the three windows the gate photographs.
+        for (w, h, expected_rows) in [
+            (960.0f32, 640.0f32, 7usize),
+            (1280.0, 720.0, 8),
+            (1920.0, 1080.0, 8),
+        ] {
+            let frame = WelcomeFrame::layout(w, h);
+            assert_eq!(
+                frame.recent_visible, expected_rows,
+                "{w}x{h}: wrong number of recent seats"
+            );
+            let window = UiRect::new(0.0, 0.0, w, h);
+            for (index, row) in frame.recent_rows[..frame.recent_visible].iter().enumerate() {
+                assert!(window.contains(*row), "{w}x{h}: row {index} is off screen");
+                // The two things this column must never do: print through the
+                // oversized step number above it, or through the format strip
+                // below it. Both are drawn unconditionally, so an overlap is not
+                // a near miss, it is two strings in the same pixels.
+                assert!(
+                    !row.overlaps(frame.step_number),
+                    "{w}x{h}: row {index} runs into the step number"
+                );
+                assert!(
+                    !row.overlaps(frame.formats),
+                    "{w}x{h}: row {index} runs into the format strip"
+                );
+                assert!(
+                    row.x > frame.column_rule_x,
+                    "{w}x{h}: row {index} crosses the column rule"
+                );
+            }
+            assert!(!frame.recent_header.overlaps(frame.step_number));
+            assert!(!frame.recent_header.overlaps(frame.recent_rows[0]));
+            // The list is one column, so consecutive seats may touch but never
+            // overlap — the property that keeps a click landing on one row.
+            for pair in frame.recent_rows[..frame.recent_visible].windows(2) {
+                assert!(!pair[0].overlaps(pair[1]));
+                assert!(pair[1].y > pair[0].y);
+            }
+        }
+    }
+
+    #[test]
+    fn a_column_too_narrow_to_be_a_list_seats_none_rather_than_a_truncated_one() {
+        // Unreachable through the window minimum — 960 gives 212 px — but the
+        // seat count has to be honest for a caller that narrows the rule, because
+        // the alternative is a name and a folder printing through each other and
+        // still photographing as text.
+        let frame = WelcomeFrame::layout(400.0, 720.0);
+        assert_eq!(frame.recent_visible, 0);
+        let short = WelcomeFrame::layout(1280.0, 320.0);
+        assert_eq!(
+            short.recent_visible, 0,
+            "a window with no room between the number and the strip seats nothing"
+        );
     }
 
     #[test]

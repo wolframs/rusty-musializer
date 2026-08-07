@@ -306,6 +306,20 @@ pub struct UiProbe {
     /// and the descriptor, so a capture can assert that typing `99` into a
     /// 0.40..2.00 slider writes 2.00 rather than being silently rejected.
     pub tune_type: Option<String>,
+    /// `drop=PATH`: synthesize a file drop of `PATH`, once (D1).
+    ///
+    /// **Invented, for the reason `hover=`, `wheel=` and `scene-pick=` were.**
+    /// Xvfb has no drag-and-drop, so the typed dispatch in
+    /// `ui::shell::dropped_files` — a three-arm branch on an extension — was
+    /// unreachable from any check this repository has. That is the exact shape
+    /// the export panel's SIZE row had: a dispatch that reads correctly in the
+    /// source while sending everything to one arm, with every gate green.
+    ///
+    /// Delivered on the first frame that draws and consumed there, so a 30-frame
+    /// probe drops one file rather than thirty. It goes through the same
+    /// classifier the device path does — not around it — so what the probe
+    /// proves is what a real drop would do.
+    pub drop_file: Option<PathBuf>,
     /// `audio-stall=MS`: block only the main/refill thread once during a probe.
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
@@ -961,6 +975,11 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             probe.route_editor = Some(key);
         }
         "lyrics-file" => probe.lyrics_reference_path = Some(PathBuf::from(value)),
+        // Deliberately not checked for existence here: "a dropped file that is
+        // not there" is one of the branches this probe has to be able to reach,
+        // and refusing it on the command line would make the failure path
+        // unphotographable in exactly the way the probe exists to fix.
+        "drop" => probe.drop_file = Some(PathBuf::from(value)),
         "time" => probe.seek_seconds = Some(parse_seconds(value)?),
         "size" => probe.size = Some(parse_resolution(value)?),
         "sidebar" => probe.sidebar_width = Some(parse_split_position(value)?),
@@ -1122,6 +1141,10 @@ Diagnostics:
                           consent panel; fonts=PATH loads a family list
                           from disk instead, so a capture never opens a
                           network connection (needs panel=lyrics),
+                          drop=PATH synthesizes one file drop of PATH,
+                          through the same typed dispatch a real drop
+                          takes (.musi opens, PNG/JPEG/BMP imports as
+                          ASCII, anything else is tried as audio),
                           play=0|1. The transport is parked unless
                           play=1; audio-reactive scenes need play=1 but
                           then capture a frame that is not reproducible.
@@ -1538,7 +1561,7 @@ mod tests {
         let probe = parse_ui_probe(
             "panel=assist,assist=confirm,lyric=3,play=1,fullscreen=0,\
              time=12.5,zoom=4,size=960x640,sidebar=400,inspector=440,\
-             timeline-height=330,lyrics-file=/tmp/a.txt",
+             timeline-height=330,lyrics-file=/tmp/a.txt,drop=/tmp/b.musi",
         )
         .unwrap();
         assert_eq!(probe.panel, UiPanel::Assist);
@@ -1556,6 +1579,7 @@ mod tests {
             probe.lyrics_reference_path,
             Some(PathBuf::from("/tmp/a.txt"))
         );
+        assert_eq!(probe.drop_file, Some(PathBuf::from("/tmp/b.musi")));
 
         let probe = parse_ui_probe("panel=lyrics,style=caption,fonts=consent").unwrap();
         assert!(probe.caption_style_pane);
