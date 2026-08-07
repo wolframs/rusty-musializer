@@ -885,8 +885,14 @@ impl Shell {
                 x + 12.0,
                 row.y + 11.0,
                 14.0,
+                // Accent while a clip is live, muted otherwise. The only other
+                // sign the export has stopped covering the whole track is
+                // "Full track" losing its highlight, and a capture showed that
+                // reading as ink-on-white against muted-on-white — a
+                // distinction nobody notices at a glance, on the one line that
+                // says how much of their track is about to be rendered.
                 if self.export_clip.is_enabled() {
-                    color::ui_ink()
+                    color::accent()
                 } else {
                     color::ui_muted()
                 },
@@ -1231,7 +1237,11 @@ pub(crate) fn export_still(
         let (screen_width, screen_height) = (rl.get_screen_width(), rl.get_screen_height());
         let font = fonts.ui();
         let label = "Rendering still frame";
-        let width = widgets::measure(font, label, 30.0);
+        // 34, the export progress screen's own title size, and a *native* one:
+        // `UI_FONT_SIZES` has no 30, so a 30 px label quantizes down to 28 and
+        // the gate counts it as a bypass of size quantization — which it is,
+        // and which is exactly how it was caught.
+        let width = widgets::measure(font, label, 34.0);
         let mut d = rl.begin_drawing(thread);
         d.clear_background(color::background());
         widgets::draw_text(
@@ -1240,7 +1250,7 @@ pub(crate) fn export_still(
             label,
             (screen_width as f32 - width) / 2.0,
             screen_height as f32 / 2.0 - 20.0,
-            30.0,
+            34.0,
             color::white(),
         );
     }
