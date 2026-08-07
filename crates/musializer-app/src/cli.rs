@@ -280,6 +280,32 @@ pub struct UiProbe {
     /// `time=` has parked the playhead and the segment it targets is the one a
     /// capture will show.
     pub scene_pick: Option<SceneId>,
+    /// `tune-seed=N`: replace the Tune panel's Surprise/Nudge seed (PX6).
+    ///
+    /// **Invented, and it is what makes a random feature photographable at
+    /// all.** The panel seeds from a press counter rather than a clock for
+    /// exactly this reason, but the counter still starts wherever the session
+    /// left it. Pinning the seed makes a Surprise capture reproducible, so the
+    /// gate can assert the *values* it produced rather than only that something
+    /// moved.
+    pub tune_seed: Option<u64>,
+    /// `tune-explore=A+B+...`: run Tune exploration actions before the first
+    /// frame (PX6). One of `nudge`, `surprise`, `compare`, `revert`, `keep`.
+    ///
+    /// **Invented because the claim is about a *sequence*.** `click=` presses
+    /// one control per run, and "Surprise then Revert restores the exact
+    /// tuning" cannot be stated in one press. The two are complementary and the
+    /// gate uses both: `click=` proves the button takes the press, this proves
+    /// what the press means.
+    pub tune_explore: Option<String>,
+    /// `tune-type=KEY:VALUE`: commit a typed value through the Tune panel's own
+    /// parse/clamp path (PX6).
+    ///
+    /// **Invented because Xvfb has no keyboard any more than it has a wheel.**
+    /// The value goes through [`musializer_core::ui::tune_explore::parse_typed`]
+    /// and the descriptor, so a capture can assert that typing `99` into a
+    /// 0.40..2.00 slider writes 2.00 rather than being silently rejected.
+    pub tune_type: Option<String>,
     /// `audio-stall=MS`: block only the main/refill thread once during a probe.
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
@@ -955,6 +981,33 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
+        "tune-seed" => probe.tune_seed = Some(value.parse().ok()?),
+        "tune-explore" => {
+            // Validated here rather than in the panel, so a typo fails the
+            // command line instead of quietly photographing an unexplored scene.
+            for action in value.split('+') {
+                if !matches!(action, "nudge" | "surprise" | "compare" | "revert" | "keep") {
+                    return None;
+                }
+            }
+            probe.tune_explore = Some(value.to_string());
+        }
+        "tune-type" => {
+            // `KEY:VALUE`, colon-separated because the spec is already split on
+            // `,` and `=`. The key is resolved against the descriptor tables now
+            // for the same reason `route=` is.
+            let (key, typed) = value.split_once(':')?;
+            let key = if key.starts_with("settings.") {
+                key.to_string()
+            } else {
+                format!("settings.{key}")
+            };
+            settings::descriptor_by_key(&key)?;
+            if typed.is_empty() {
+                return None;
+            }
+            probe.tune_type = Some(format!("{key}:{typed}"));
+        }
         "audio-stall" => {
             let milliseconds: u64 = value.parse().ok()?;
             if !(1..=5_000).contains(&milliseconds) {

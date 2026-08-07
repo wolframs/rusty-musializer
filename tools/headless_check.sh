@@ -4196,6 +4196,287 @@ if printf '%s\n' "$FONT_REPORTS" | rg -v -q 'ui=Space Grotesk \(17 native sizes\
     SWEEP_FAILED=1
 fi
 
+# ==============================================================================
+# Tune exploration: typed values, audition/A-B, and Surprise (PX6)
+#
+# UX0-B08, UX0-B09, UX0-C04 and UX0-C07. Four claims, and each fails in a way the
+# others do not catch:
+#
+#   1. a value chip *takes* a press and opens a field  -> click= plus `tune entry:`
+#   2. a typed number is clamped by its descriptor      -> tune-type=
+#   3. the wheel steps one unit of the descriptor's own precision
+#   4. Surprise then Revert restores the **exact bits** -> tune-explore=, tune values:
+#
+# Why two probe families rather than one. `click=` presses one control per run,
+# which is the only way to prove a control is wired at all (EX1: three export SIZE
+# buttons were dead for as long as the panel existed, with every other gate green).
+# It cannot state a claim about a *sequence*, and every claim UX0-C04 makes is one:
+# explore, compare, come back. `tune-explore=` runs the sequence. The two are
+# cross-checked below — the same seed through the button and through the sequence
+# probe must produce byte-identical `tune values:` — so neither can drift into
+# testing a path the other does not reach.
+#
+# `tune values:` prints each f32 with Rust's shortest round-tripping form rather
+# than the readout's two places, because "Revert restored it exactly" and "Revert
+# restored it to two decimal places" are different claims and only the first one
+# is worth making.
+echo "=== Tune exploration: typed values, audition and Surprise ==="
+TUNE_FAILED=0
+
+tune_values() { sed -n 's/^tune values: *//p' "$OUT_DIR/$1.txt"; }
+tune_entry()  { sed -n 's/^tune entry: *//p'  "$OUT_DIR/$1.txt"; }
+
+# The tuning every case below starts from, and the shape of the report line.
+capture "tune-base" 1280x720 --ui-probe "panel=tune" || TUNE_FAILED=1
+TUNE_BASE="$(tune_values tune-base)"
+echo "tune base: [$TUNE_BASE]"
+if [ "$TUNE_BASE" != "spectrum 1 1 1 3 55 1 0.5 0.3" ]; then
+    echo "FAIL: Spectrum's descriptor defaults are not what Tune reports: [$TUNE_BASE]" >&2
+    TUNE_FAILED=1
+fi
+if [ "$(tune_entry tune-base)" != "typing none  audition none" ]; then
+    echo "FAIL: a freshly opened Tune panel is already typing or auditioning" >&2
+    TUNE_FAILED=1
+fi
+
+# -- UX0-B09: the value chip takes a press and becomes a field -----------------
+#
+# The click coordinate is the Amplitude chip's centre at 1280x720, read off
+# panel-tune-1280x720.png. Asserting `tune entry:` as well as `click probe:` is
+# the point: a press cashed by the right widget id through a branch that forgot to
+# open the field photographs exactly like one that opened it.
+capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=1195x164" || TUNE_FAILED=1
+CHIP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-click.txt")"
+CHIP_ENTRY="$(tune_entry tune-chip-click)"
+echo "chip click: $CHIP_CLAIM -> [$CHIP_ENTRY]"
+if [ "$CHIP_ENTRY" != 'typing Amplitude="1.00"  audition none' ]; then
+    echo "FAIL: clicking the value chip did not open a field on Amplitude: [$CHIP_ENTRY]" >&2
+    TUNE_FAILED=1
+fi
+case "$CHIP_CLAIM" in
+    *"claimed=nothing"*)
+        echo "FAIL: the value chip click reached no control at all" >&2
+        TUNE_FAILED=1
+        ;;
+esac
+# The control-free gap between the label zone and the chip. Without this row a
+# probe that pressed nothing would satisfy every assertion above, since a no-op
+# leaves the panel exactly as it started.
+capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=1160x164" || TUNE_FAILED=1
+GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-gap.txt")"
+GAP_ENTRY="$(tune_entry tune-chip-gap)"
+echo "chip gap: $GAP_CLAIM -> [$GAP_ENTRY]"
+case "$GAP_CLAIM" in
+    *"claimed=nothing"*) : ;;
+    *)
+        echo "FAIL: a click in the gap beside the value chip claimed $GAP_CLAIM" >&2
+        TUNE_FAILED=1
+        ;;
+esac
+if [ "$GAP_ENTRY" != "typing none  audition none" ]; then
+    echo "FAIL: a click that claimed nothing still opened a field: [$GAP_ENTRY]" >&2
+    TUNE_FAILED=1
+fi
+
+# -- UX0-B09: a typed value is clamped by its descriptor, not dropped ----------
+#
+# `SceneSettings::set` *rejects* out-of-range values rather than clamping them
+# (`scene_settings.c:143-149`), so an unclamped 99 would vanish in silence — which
+# is what any text field over this store does unless it conforms first.
+tune_typed() {
+    # tune_typed NAME SPEC EXPECTED-LINE EXPECTED-VALUES
+    capture "tune-typed-$1" 1280x720 --ui-probe "panel=tune,tune-type=$2" || TUNE_FAILED=1
+    local got values
+    got="$(sed -n 's/^tune typed: *//p' "$OUT_DIR/tune-typed-$1.txt")"
+    values="$(tune_values "tune-typed-$1")"
+    echo "typed $1: [$got] -> [$values]"
+    if [ "$got" != "$3" ]; then
+        echo "FAIL: typing $2 reported [$got], expected [$3]" >&2
+        TUNE_FAILED=1
+    fi
+    if [ "$values" != "$4" ]; then
+        echo "FAIL: typing $2 left [$values], expected [$4]" >&2
+        TUNE_FAILED=1
+    fi
+}
+tune_typed high spectrum.amplitude:99 \
+    'settings.spectrum.amplitude "99" -> 2 clamped=1 rounded=0 written=1' \
+    "spectrum 2 1 1 3 55 1 0.5 0.3"
+tune_typed low spectrum.amplitude:-5 \
+    'settings.spectrum.amplitude "-5" -> 0.4 clamped=1 rounded=0 written=1' \
+    "spectrum 0.4 1 1 3 55 1 0.5 0.3"
+# Rounded onto the descriptor's own precision grid, so the readout above the
+# slider is the number in the store rather than a picture of it.
+tune_typed grid spectrum.amplitude:1.239 \
+    'settings.spectrum.amplitude "1.239" -> 1.24 clamped=0 rounded=1 written=1' \
+    "spectrum 1.24 1 1 3 55 1 0.5 0.3"
+# The refusal path, which is where a silent difference hides: "1.5x" must be
+# refused rather than parsed as 1.5.
+tune_typed junk spectrum.amplitude:1.5x \
+    'settings.spectrum.amplitude "1.5x" REFUSED NotANumber' \
+    "$TUNE_BASE"
+
+# -- UX0-B09: the wheel steps one unit of the descriptor's precision -----------
+#
+# `hover=` parks the pointer, `wheel=` delivers one notch on one frame (LX2). The
+# timed lanes read the same notch, so each run also asserts the timeline did NOT
+# zoom: two rectangles claiming one physical event is exactly the defect LX2-c's
+# first-claim-wins rule exists to prevent, in the other direction.
+tune_wheel() {
+    # tune_wheel NAME POINT NOTCHES EXPECTED-VALUES
+    capture "tune-wheel-$1" 1280x720 --ui-probe "panel=tune,hover=$2,wheel=$3" || TUNE_FAILED=1
+    local values zoom
+    values="$(tune_values "tune-wheel-$1")"
+    zoom="$(sed -n 's/^timeline: *//p' "$OUT_DIR/tune-wheel-$1.txt")"
+    echo "wheel $1 ($3 at $2): [$values] timeline [$zoom]"
+    if [ "$values" != "$4" ]; then
+        echo "FAIL: wheel $1 left [$values], expected [$4]" >&2
+        TUNE_FAILED=1
+    fi
+    case "$zoom" in
+        "1.000x"*) : ;;
+        *)
+            echo "FAIL: a wheel notch over a Tune row also zoomed the timeline: [$zoom]" >&2
+            TUNE_FAILED=1
+            ;;
+    esac
+}
+# Amplitude is a 0.40..2.00 slider at precision 2, so one notch is 0.01.
+tune_wheel up   900x180 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
+tune_wheel down 900x180 -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
+# The negative control, and it has to be inside the panel rather than outside it:
+# a wheel handler scoped to the inspector instead of to a row would pass every
+# assertion above and silently move whichever setting happened to be first.
+tune_wheel miss 1000x620 1 "$TUNE_BASE"
+
+# -- UX0-C07: Surprise stays inside every bound, and is reproducible -----------
+#
+# The seed is pinned, so the values below are an exact expectation rather than a
+# range check. Two different seeds must not agree, or the seed is being ignored
+# and the "reproducible" claim is vacuous.
+capture "tune-surprise" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise" || TUNE_FAILED=1
+TUNE_SURPRISE="$(tune_values tune-surprise)"
+echo "surprise (seed 4242): [$TUNE_SURPRISE]"
+if [ "$TUNE_SURPRISE" != "spectrum 0.68 1 1 4.28 105 1.77 0.74 0.9" ]; then
+    echo "FAIL: seed 4242 no longer produces the pinned tuning: [$TUNE_SURPRISE]" >&2
+    TUNE_FAILED=1
+fi
+capture "tune-surprise-alt" 1280x720 --ui-probe "panel=tune,tune-seed=99,tune-explore=surprise" || TUNE_FAILED=1
+if [ "$(tune_values tune-surprise-alt)" = "$TUNE_SURPRISE" ]; then
+    echo "FAIL: two different seeds produced the same tuning, so the seed is ignored" >&2
+    TUNE_FAILED=1
+fi
+if [ "$TUNE_SURPRISE" = "$TUNE_BASE" ]; then
+    echo "FAIL: Surprise changed nothing" >&2
+    TUNE_FAILED=1
+fi
+
+# The Surprise *button*, pressed. Same seed, so the values must be byte-identical
+# to the sequence probe's — which is what stops the two probe families from
+# drifting into testing different code.
+capture "tune-surprise-click" 1280x720 --ui-probe "panel=tune,tune-seed=4242,click=1150x139" || TUNE_FAILED=1
+CLICK_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-surprise-click.txt")"
+CLICK_VALUES="$(tune_values tune-surprise-click)"
+echo "surprise click: $CLICK_CLAIM -> [$CLICK_VALUES]"
+if [ "$CLICK_VALUES" != "$TUNE_SURPRISE" ]; then
+    echo "FAIL: the Surprise button and the Surprise probe disagree: [$CLICK_VALUES]" >&2
+    TUNE_FAILED=1
+fi
+case "$CLICK_CLAIM" in
+    *"claimed=nothing"*)
+        echo "FAIL: the Surprise click reached no control at all" >&2
+        TUNE_FAILED=1
+        ;;
+esac
+
+# Nudge is the small move, and it must be visibly smaller than Surprise: a Nudge
+# that re-rolled the scene would be two buttons doing one thing.
+capture "tune-nudge" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=nudge" || TUNE_FAILED=1
+TUNE_NUDGE="$(tune_values tune-nudge)"
+echo "nudge (seed 4242): [$TUNE_NUDGE]"
+if [ "$TUNE_NUDGE" = "$TUNE_BASE" ] || [ "$TUNE_NUDGE" = "$TUNE_SURPRISE" ]; then
+    echo "FAIL: Nudge did nothing, or did the same thing as Surprise: [$TUNE_NUDGE]" >&2
+    TUNE_FAILED=1
+fi
+
+# -- UX0-C04: Revert is bit-for-bit, and A/B swaps both ways -------------------
+#
+# The headline claim. The strings compared here round-trip, so string equality is
+# bit equality: this is "the same tuning", not "the same picture".
+capture "tune-revert" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise+revert" || TUNE_FAILED=1
+TUNE_REVERTED="$(tune_values tune-revert)"
+echo "surprise+revert: [$TUNE_REVERTED]"
+if [ "$TUNE_REVERTED" != "$TUNE_BASE" ]; then
+    echo "FAIL: Revert did not restore the exact tuning: [$TUNE_REVERTED] vs [$TUNE_BASE]" >&2
+    TUNE_FAILED=1
+fi
+if [ "$(tune_entry tune-revert)" != "typing none  audition none" ]; then
+    echo "FAIL: Revert left the audition open" >&2
+    TUNE_FAILED=1
+fi
+# Five Surprises then one Revert still reaches the tuning the user actually had.
+# A naive "remember the previous values" undo passes the single-step case above
+# and fails this one, which is the whole reason it is here.
+capture "tune-revert-deep" 1280x720 \
+    --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise+surprise+surprise+surprise+surprise+revert" \
+    || TUNE_FAILED=1
+if [ "$(tune_values tune-revert-deep)" != "$TUNE_BASE" ]; then
+    echo "FAIL: five Surprises and a Revert did not reach the original tuning" >&2
+    TUNE_FAILED=1
+fi
+# A/B shows the original, and a second A/B gives the experiment back intact.
+capture "tune-ab-a" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise+compare" || TUNE_FAILED=1
+AB_A="$(tune_values tune-ab-a)"
+AB_A_ENTRY="$(tune_entry tune-ab-a)"
+echo "A/B once: [$AB_A] [$AB_A_ENTRY]"
+if [ "$AB_A" != "$TUNE_BASE" ]; then
+    echo "FAIL: A/B did not put the original tuning back on screen: [$AB_A]" >&2
+    TUNE_FAILED=1
+fi
+case "$AB_A_ENTRY" in
+    *"Comparing: original"*) : ;;
+    *)
+        echo "FAIL: A/B did not say it is showing the original: [$AB_A_ENTRY]" >&2
+        TUNE_FAILED=1
+        ;;
+esac
+capture "tune-ab-b" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise+compare+compare" || TUNE_FAILED=1
+AB_B="$(tune_values tune-ab-b)"
+echo "A/B twice: [$AB_B]"
+if [ "$AB_B" != "$TUNE_SURPRISE" ]; then
+    echo "FAIL: A/B back did not return the experiment intact: [$AB_B]" >&2
+    TUNE_FAILED=1
+fi
+# Keep closes the session and leaves the explored tuning in place.
+capture "tune-keep" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise+keep" || TUNE_FAILED=1
+if [ "$(tune_values tune-keep)" != "$TUNE_SURPRISE" ] \
+    || [ "$(tune_entry tune-keep)" != "typing none  audition none" ]; then
+    echo "FAIL: Keep did not settle on the explored tuning and close the session" >&2
+    TUNE_FAILED=1
+fi
+
+# -- the audition bar and the modified markers, photographed -------------------
+#
+# The A/B state is a picture as well as a line: three buttons and a sentence
+# appear between the presets and the sliders, and every row Surprise moved gains a
+# `*`. Captured at the 960x640 minimum and on the twelve-control scene, because
+# that is where the block competes with the slider list for space — and where the
+# row loop used to draw its last row and its "+N more" notice underneath the
+# Reset button.
+capture "tune-audition-960x640" 960x640 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise" || TUNE_FAILED=1
+capture "tune-audition-atlas-960x640" 960x640 --scene atlas \
+    --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise" || TUNE_FAILED=1
+for shot in tune-audition-960x640 tune-audition-atlas-960x640 tune-chip-click tune-surprise; do
+    if [ ! -s "$OUT_DIR/$shot.png" ]; then
+        echo "FAIL: $shot produced no capture" >&2
+        TUNE_FAILED=1
+    fi
+done
+
+if [ "$TUNE_FAILED" -ne 0 ]; then
+    SWEEP_FAILED=1
+fi
+
 if [ "$SWEEP_FAILED" -ne 0 ]; then
     echo "FAIL: at least one scene or alias capture failed" >&2
     exit 1
