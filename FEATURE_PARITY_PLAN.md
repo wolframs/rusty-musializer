@@ -809,7 +809,17 @@ surfaces would otherwise reinvent separately.
 - [ ] **DX5 — centralize XDG/user-directory resolution** and bounded
       optional-file reads.
 - [ ] **DX6 — collision-safe RAII test scratch directories** before allowing
-      simultaneous whole-repository verification runs.
+      simultaneous whole-repository verification runs. **And displays:** the
+      PX wave proved the gap the hard way, 2026-08-07 — four concurrent
+      headless gates produced 11 `rlglInit` SIGSEGV coredumps (null GL pointer
+      at `InitWindow` when two runs collide on one Xvfb display number and one
+      tears the server down mid-init), each popping a DrKonqi notification on
+      the operator's desktop. `headless_check.sh` should allocate a free
+      display atomically (flock over a display-number pool, or derive from
+      PID and verify the socket) instead of trusting a fixed or hand-picked
+      number. The EX4 frame-stall gate is also load-sensitive under sibling
+      verify runs (0 stalls quiet vs 41 at load 14.6) — a wave's final
+      verify belongs on an idle machine until DX6 lands.
 - [ ] **DX7 — purge stale agent-era ownership/handoff language** (88 Rust files)
       and enable strict rustdoc (currently 17 broken-link warnings). Overlaps
       F2; close them together.
