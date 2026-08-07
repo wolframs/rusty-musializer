@@ -651,6 +651,230 @@ check_preview_frame wide 1920x1080 1.7778
 check_preview_frame tall 1080x1920 0.5625
 check_preview_frame square 1080x1080 1.0
 
+# ---------------------------------------------------------------------------
+# The clip window and the still frame (UX0-C01, UX0-C10). One contiguous block.
+#
+# Everything above this point exports whole tracks, because until now that was
+# the only thing this application could do: the frozen C calls
+# `render_export_window_frames` from a command-line entry point and from nowhere
+# else, so a clip existed in the transport and nowhere a user could reach it.
+#
+# Three things need proving, and they need different instruments:
+#
+#   1. the CLIP row's buttons take a press and move the selection — `click=`
+#      plus the new `export clip:` line, exactly as EX1 proved the SIZE row;
+#   2. the selection reaches the *file* — which needs the render button pressed,
+#      which needs a destination picker Xvfb does not have, which is what
+#      `--ui-probe save-to=` is for. Asserted with ffprobe on the produced MP4,
+#      because a report line saying "clip in 2.000 out 5.000" is satisfied by an
+#      export that then rendered all 240 frames anyway;
+#   3. the still is *the video frame*, not a screenshot near it. Two runs
+#      hashing the same proves determinism and nothing else — it is exactly what
+#      a vertically mirrored still does, which is the bug this section's PSNR
+#      cross-check found (22.7 dB, against 45.5 once fixed).
+#
+# The coordinates are the button centres at 1280x720 from
+# `panel-export-1280x720.png` above. The CLIP row is drawn *above* SIZE, and the
+# rows below it did not move: the band grows upward while the footer stays
+# pinned to the window's bottom edge, so every coordinate the sections above
+# aim by hand is unchanged. `export.rs` pins that as arithmetic.
+echo "=== the export clip window ==="
+click_clip() {
+    # click_clip NAME POINT TIME EXPECTED-CLIP
+    capture "click-clip-$1" 1280x720 \
+        --ui-probe "panel=export,time=$3,click=$2" || SWEEP_FAILED=1
+    local got claimed config
+    got="$(sed -n 's/^export clip: *//p' "$OUT_DIR/click-clip-$1.txt")"
+    claimed="$(sed -n 's/^click probe: *//p' "$OUT_DIR/click-clip-$1.txt")"
+    config="$(sed -n 's/^export config: *//p' "$OUT_DIR/click-clip-$1.txt")"
+    echo "clip $1 at $2 (t=$3): [$got] via $claimed"
+    if [ "$got" != "$4" ]; then
+        echo "FAIL: clip $1 gave [$got], expected [$4]" >&2
+        SWEEP_FAILED=1
+    fi
+    # A clip is not a geometry. If pressing In moved the resolution, two rows
+    # are sharing an id — the EX1 defect, one row further down.
+    if [ "$config" != "1920x1080 at 30 fps, High, supersample 2x" ]; then
+        echo "FAIL: clip $1 also changed the export geometry to [$config]" >&2
+        SWEEP_FAILED=1
+    fi
+}
+# One press is a renderable clip: In selects from the playhead to the end of the
+# track, because "post from the drop onward" should not cost two clicks.
+click_clip in  236x496 2.0 "clip in 2.000 out 8.000 (6.000 s, 180 frames)"
+# And Out alone selects from the start, which is the same rule mirrored.
+click_clip out 360x496 5.0 "clip in 0.000 out 5.000 (5.000 s, 150 frames)"
+# `--render-window` and the CLIP row are one state, so the flag shows up in the
+# panel; Full track clears it. Both are asserted, because "the seed worked" and
+# "the button worked" produce the same line if the seed silently did nothing.
+SEEDED_CLIP="$(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        --render-window 2 3 --probe-frames 20 --ui-probe "panel=export" 2>&1 \
+    | sed -n 's/^export clip: *//p')"
+echo "--render-window 2 3 seeds the panel: [$SEEDED_CLIP]"
+if [ "$SEEDED_CLIP" != "clip in 2.000 out 5.000 (3.000 s, 90 frames)" ]; then
+    echo "FAIL: --render-window did not reach the panel's CLIP row" >&2
+    SWEEP_FAILED=1
+fi
+CLEARED_CLIP="$(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        --render-window 2 3 --probe-frames 30 \
+        --ui-probe "panel=export,click=124x496" 2>&1 \
+    | sed -n 's/^export clip: *//p')"
+echo "Full track clears it: [$CLEARED_CLIP]"
+if [ "$CLEARED_CLIP" != "full track (240 frames)" ]; then
+    echo "FAIL: Full track did not clear a seeded clip window" >&2
+    SWEEP_FAILED=1
+fi
+# The negative control, in the 8 px gap between Full track and In. Without it a
+# probe that pressed nothing satisfies every assertion above, because a no-op
+# leaves the default — which for this row is the state two of the checks expect.
+capture "click-clip-gap" 1280x720 \
+    --ui-probe "panel=export,time=2.0,click=174x496" || SWEEP_FAILED=1
+CLIP_GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/click-clip-gap.txt")"
+CLIP_GAP="$(sed -n 's/^export clip: *//p' "$OUT_DIR/click-clip-gap.txt")"
+echo "click clip gap at 174x496: [$CLIP_GAP] via $CLIP_GAP_CLAIM"
+case "$CLIP_GAP_CLAIM" in
+    *"claimed=nothing"*) : ;;
+    *)
+        echo "FAIL: a click in the clip row's gap claimed $CLIP_GAP_CLAIM" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+if [ "$CLIP_GAP" != "full track (240 frames)" ]; then
+    echo "FAIL: a click in the clip row's gap selected [$CLIP_GAP]" >&2
+    SWEEP_FAILED=1
+fi
+
+# The clip reaching an actual file: the render button, pressed, with `save-to=`
+# standing in for the picker. This is the first time any gate in this repository
+# has produced an MP4 by pressing the control a user presses.
+echo "=== a clip export, from the button to the file ==="
+CLIP_MP4="$OUT_DIR/clip-export.mp4"
+rm -f "$CLIP_MP4"
+env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        --render-window 2 3 --probe-frames 40 \
+        --ui-probe "panel=export,click=1153x683,save-to=$CLIP_MP4" \
+    >"$OUT_DIR/clip-export.txt" 2>&1 || true
+if [ ! -f "$CLIP_MP4" ]; then
+    echo "FAIL: pressing 'Choose output and render' produced no file" >&2
+    SWEEP_FAILED=1
+else
+    CLIP_FRAMES="$(ffprobe -v error -select_streams v:0 -count_frames \
+        -show_entries stream=nb_read_frames -of csv=p=0 "$CLIP_MP4")"
+    CLIP_DURATION="$(ffprobe -v error -show_entries format=duration \
+        -of csv=p=0 "$CLIP_MP4")"
+    CLIP_FIRST_FRAME="$(sed -n 's/^export frame lanes: t=\([0-9.]*\).*/\1/p' \
+        "$OUT_DIR/clip-export.txt" | head -1)"
+    echo "clip export: $CLIP_FRAMES frames, ${CLIP_DURATION}s, first drawn frame t=$CLIP_FIRST_FRAME"
+    # 3 s at 30 fps is 90 frames, and the transport is exact rather than
+    # approximate — `window_frames` floors the start and ceils the end, so this
+    # is a pinned integer, not a range.
+    if [ "$CLIP_FRAMES" != "90" ]; then
+        echo "FAIL: the clip MP4 has $CLIP_FRAMES frames, expected 90" >&2
+        SWEEP_FAILED=1
+    fi
+    case "$CLIP_DURATION" in
+        3.0*) : ;;
+        *)
+            echo "FAIL: the clip MP4 runs ${CLIP_DURATION}s, expected 3.0" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    # The window is a *window*, not a shorter render from zero: the first frame
+    # drawn has to be the one at 2 s, which is what the fast-forward is for.
+    if [ "$CLIP_FIRST_FRAME" != "2.000" ]; then
+        echo "FAIL: the clip's first drawn frame was t=$CLIP_FIRST_FRAME, expected 2.000" >&2
+        SWEEP_FAILED=1
+    fi
+fi
+
+# The still frame (UX0-C10).
+echo "=== the still frame is the video frame ==="
+STILL_A="$OUT_DIR/still-a.png"
+STILL_B="$OUT_DIR/still-b.png"
+rm -f "$STILL_A" "$STILL_B"
+still_at() {
+    # still_at PATH TIME
+    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+            --probe-frames 30 \
+            --ui-probe "panel=export,time=$2,click=868x683,save-to=$1" \
+        >"$OUT_DIR/still-$(basename "$1" .png).txt" 2>&1 || true
+}
+still_at "$STILL_A" 4.0
+still_at "$STILL_B" 4.0
+STILL_LINE="$(sed -n 's/^export still: *//p' "$OUT_DIR/still-still-a.txt")"
+echo "still: ${STILL_LINE:-<absent>}"
+if [ ! -f "$STILL_A" ] || [ ! -f "$STILL_B" ]; then
+    echo "FAIL: pressing 'Save still' produced no PNG" >&2
+    SWEEP_FAILED=1
+else
+    # The index, not just the time: 4 s at 30 fps is frame 120, and
+    # `still_frame_index` floors exactly as the clip window's start does, so a
+    # still and a clip that begin at the same second publish the same frame.
+    case "$STILL_LINE" in
+        "t=4.000 frame 120 of 240 at 1920x1080 (2x target),"*) : ;;
+        *)
+            echo "FAIL: the still named [$STILL_LINE], expected frame 120 of 240 at 1920x1080" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    STILL_HASH_A="$(md5sum "$STILL_A" | cut -d' ' -f1)"
+    STILL_HASH_B="$(md5sum "$STILL_B" | cut -d' ' -f1)"
+    echo "still determinism: $STILL_HASH_A / $STILL_HASH_B"
+    if [ "$STILL_HASH_A" != "$STILL_HASH_B" ]; then
+        echo "FAIL: two stills of the same frame differ" >&2
+        SWEEP_FAILED=1
+    fi
+    # Determinism is not identity, and this is the check that says so. A still
+    # rendered upside down is deterministic, plausible, and wrong — which is
+    # what it was until this comparison existed. So the PNG is measured against
+    # a frame decoded out of an MP4 of the same moment, and against the frame
+    # half a second later as the control: 45.5 dB versus 21.5 dB, where the
+    # ceiling is h264 4:2:0 on saturated thin features rather than our error.
+    STILL_MP4="$OUT_DIR/still-window.mp4"
+    rm -f "$STILL_MP4"
+    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+            --render "$STILL_MP4" --render-window 4 1.0 \
+        >"$OUT_DIR/still-window.txt" 2>&1 || true
+    if [ ! -f "$STILL_MP4" ]; then
+        echo "FAIL: the still cross-check could not render its reference MP4" >&2
+        SWEEP_FAILED=1
+    else
+        ffmpeg -v error -i "$STILL_MP4" -vf "select=eq(n\,0)" -vframes 1 \
+            "$OUT_DIR/still-mp4-frame0.png" -y
+        ffmpeg -v error -i "$STILL_MP4" -vf "select=eq(n\,15)" -vframes 1 \
+            "$OUT_DIR/still-mp4-frame15.png" -y
+        psnr_against() {
+            ffmpeg -hide_banner -i "$STILL_A" -i "$1" -lavfi psnr -f null - 2>&1 \
+                | sed -n 's/.*average:\([0-9.]*\).*/\1/p' | head -1
+        }
+        STILL_MATCH="$(psnr_against "$OUT_DIR/still-mp4-frame0.png")"
+        STILL_CONTROL="$(psnr_against "$OUT_DIR/still-mp4-frame15.png")"
+        echo "still vs its own video frame: ${STILL_MATCH:-<none>} dB; vs the frame 0.5 s later: ${STILL_CONTROL:-<none>} dB"
+        python3 - "${STILL_MATCH:-0}" "${STILL_CONTROL:-0}" <<'PYEOF' || SWEEP_FAILED=1
+import sys
+match, control = float(sys.argv[1]), float(sys.argv[2])
+# 40 dB is far above what a *different* frame can reach and far below the 45.5
+# the matched pair measures; the gap between the two is the real assertion.
+if match < 40.0:
+    print(f"FAIL: the still is {match:.2f} dB from its own video frame; it is not that frame", file=sys.stderr)
+    sys.exit(1)
+if control > 30.0:
+    print(f"FAIL: the negative control reached {control:.2f} dB, so this comparison cannot tell two frames apart", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+    fi
+fi
+
 echo "=== the lyrics editor, over a project that actually has cues ==="
 # The panel loop above photographs the editor over the bare sweep, which has no
 # lyrics: an empty cue list is a real state and worth a frame, but it cannot show

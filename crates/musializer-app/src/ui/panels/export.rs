@@ -2107,6 +2107,10 @@ impl ExportSession {
 /// The second half of the "a still is the video frame" claim (UX0-C10):
 /// [`with_export_frame`] shares the state and this shares the draw, so the only
 /// thing the still does differently is where the pixels go afterwards.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the borrowed resources one export frame needs; a bundle struct would move the same list one line up, and both callers already hold them separately"
+)]
 fn draw_offline_frame(
     d: &mut RaylibDrawHandle<'_>,
     thread: &RaylibThread,
@@ -2293,6 +2297,110 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert!(matches!(commands[0], ShellCommand::StartRender));
         assert!(matches!(commands[1], ShellCommand::SetRenderConfig(_)));
+    }
+
+    /// The CLIP row's own ids, and every other index this panel mints, are
+    /// distinct (UX0-C01).
+    ///
+    /// `widgets::id::ALL` protects *namespaces*; nothing protects the indices
+    /// inside one, and this panel now allocates five groups by hand — 0, 8, 16,
+    /// 24 and 32 — with the clip row wedged in at 40. EX1 is the whole argument
+    /// for why an index collision is worth a test rather than a careful read:
+    /// two controls with one id draw correctly, highlight correctly, and one of
+    /// them silently never takes a press.
+    #[test]
+    fn the_panels_own_widget_indices_never_collide() {
+        let mut used: Vec<(u32, &str)> = Vec::new();
+        let mut claim = |index: u32, name: &'static str| {
+            if let Some((_, other)) = used.iter().find(|(taken, _)| *taken == index) {
+                panic!("export index {index} is claimed by both {other} and {name}");
+            }
+            used.push((index, name));
+        };
+        for index in 0..Resolution::ALL.len() as u32 {
+            claim(index, "SIZE");
+        }
+        for index in 0..FrameRate::ALL.len() as u32 {
+            claim(8 + index, "FPS");
+        }
+        for index in 0..Quality::ALL.len() as u32 {
+            claim(16 + index, "QUALITY");
+        }
+        claim(24, "render");
+        claim(25, "close");
+        claim(26, "cancel");
+        for index in 0..Aspect::ALL.len() as u32 {
+            claim(32 + index, "ASPECT");
+        }
+        claim(clip_ids::FULL_TRACK, "clip full track");
+        claim(clip_ids::SET_IN, "clip in");
+        claim(clip_ids::SET_OUT, "clip out");
+        claim(clip_ids::STILL, "save still");
+        // 4 sizes + 3 rates + 3 qualities + 3 footer + 4 aspects + 4 clip.
+        assert_eq!(used.len(), 21);
+    }
+
+    /// The CLIP row's readout says what the export will cover, in whichever
+    /// length the panel can afford.
+    #[test]
+    fn the_clip_readout_names_the_window_and_its_frames() {
+        let (duration, fps) = (8.0, 30u32);
+        let full = clip_readout(ClipSelection::full_track(), duration, fps);
+        assert_eq!(full.long, "whole track  |  00:08.000  |  240 frames");
+        assert_eq!(full.short, "whole track  |  240 frames");
+
+        let mut clip = ClipSelection::full_track();
+        clip.set_start(2.0, duration, fps);
+        clip.set_end(5.0, duration, fps);
+        let readout = clip_readout(clip, duration, fps);
+        assert_eq!(
+            readout.long,
+            "in 00:02.000  ->  out 00:05.000  |  3.0 s  |  90 frames"
+        );
+        assert_eq!(readout.short, "00:02.000 -> 00:05.000");
+        // The short form is what a narrow panel falls back to, so it must
+        // really be shorter — a "fallback" that does not fit is not one.
+        assert!(readout.short.len() < readout.long.len());
+
+        // No track: a sentence rather than a divide-by-zero or a lie.
+        let empty = clip_readout(ClipSelection::full_track(), 0.0, fps);
+        assert_eq!(empty.long, "whole track  |  00:00.000  |  0 frames");
+    }
+
+    /// **The invariant that let a third row be added without moving anything.**
+    ///
+    /// The export panel's boundary is pinned to the window's bottom edge and the
+    /// timeline band grows upward, so the *distance from the bottom* of the
+    /// content box is what fixes a control's screen position. Every gate
+    /// coordinate EX1 and EX2 aimed by hand — 542 for the SIZE row, 589 for
+    /// QUALITY — depends on this number being unchanged, and a press aimed one
+    /// row off does not fail: it presses a different control and asserts against
+    /// its result.
+    ///
+    /// 185 is the SIZE row's distance from the bottom of the minimum content
+    /// box before the CLIP row existed (`247 - 62`). Adding a row above it moved
+    /// both the row and the box by the same amount, which is why it still holds.
+    #[test]
+    fn adding_a_row_above_size_leaves_every_control_below_it_in_place() {
+        assert_eq!(
+            EXPORT_CONTENT_MIN_HEIGHT - body_layout::SECOND_ROW_Y,
+            185.0,
+            "the SIZE row moved relative to the panel's bottom edge; every \
+             click-probe coordinate in tools/headless_check.sh is now aimed \
+             one row off"
+        );
+        assert_eq!(
+            EXPORT_CONTENT_MIN_HEIGHT - body_layout::THIRD_ROW_Y,
+            139.0,
+            "the QUALITY/ASPECT row moved relative to the panel's bottom edge"
+        );
+        // And the CLIP row is genuinely a row above SIZE, not an overlap.
+        // A compile-time comparison, so it is a build failure rather than a
+        // test failure — the same shape as the band-chrome assertion LX1-c
+        // kept.
+        const _: () = assert!(
+            body_layout::FIRST_ROW_Y + metric::UI_BUTTON_HEIGHT <= body_layout::SECOND_ROW_Y
+        );
     }
 
     /// Review 1.4's core claim, pinned as arithmetic: at exactly

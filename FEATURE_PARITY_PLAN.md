@@ -678,6 +678,138 @@ become needles; and the four 3D scenes crop horizontally because raylib's
 actually fills a tall frame better than a wide one. Only Song Atlas loses its
 subject, its terrain slab running off both sides. All shippable, none fixed.
 
+## PX3 — a clip and a still: the two files a track becomes (UX0-C01, UX0-C10)
+
+> *"post the chorus as a teaser"* and *"I need a cover"* — the two exports this
+> application could not do, in a wave whose brief is the moment work becomes
+> shareable.
+
+**Both are post-legacy product extensions. The frozen C has neither.** It renders
+whole tracks to MP4 and nothing else. `render_export_window_frames` exists in the
+C transport and `plug.c` calls it only from `plug_configure_render_window`, a
+command-line entry point — so a clip was expressible on a command line and
+nowhere a user could see or edit it. A still frame is not expressible at all: to
+get a cover out of the frozen binary you export a video and pull a frame back
+through h264 4:2:0, which is measurably lossy on exactly the thin saturated
+features these scenes are made of.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| PX3-a | `ClipSelection` — the editable window, its clamping, and the frame count a readout can print | `core/timing/render_export.rs` | **done** |
+| PX3-b | The CLIP row: Full track, In <- playhead, Out <- playhead, and a readout naming the window | `ui/panels/export.rs` | **done** |
+| PX3-c | The clip reaches `RenderRequest::window`, and `--render-window` seeds the row | `main.rs` | **done** |
+| PX3-d | `Save still`: the frame at the playhead as a PNG, through the export renderer | `ui/panels/export.rs` | **done** |
+| PX3-e | `--ui-probe save-to=`, `export clip:`, `export still:`, and a gate section that presses all of it | `cli.rs`, `main.rs`, `tools/headless_check.sh` | **done** |
+
+**One press is a renderable clip.** `set_start` selects from the playhead *to the
+end of the track* and `set_end` from the start *to here*, so the common gesture —
+"from the drop onward" — costs one click, and the second click only closes it.
+Setting either end past the other re-reads as an open-ended selection rather than
+being refused: a refusal leaves the control looking broken at the moment the user
+is moving fastest, and both readings are single gestures somebody makes on
+purpose. `every_edited_selection_is_a_window_the_transport_accepts` sweeps the
+reachable states and proves each one is a window `window_frames` accepts, which
+is what keeps a clip export from failing at start with a notice nobody can act
+on.
+
+**The row is drawn first, above SIZE, and that is arithmetic rather than taste.**
+The timeline band grows upward from the window's bottom edge while the footer
+stays pinned to it, so a row added at the *top* leaves every control below it at
+the same screen coordinate — which is what kept EX1's and EX2's hand-aimed
+click-probe coordinates valid. A press aimed one row off does not fail; it
+presses a different control and asserts against its result.
+`adding_a_row_above_size_leaves_every_control_below_it_in_place` pins the
+distance from the panel's bottom edge (185 px to SIZE, 139 to QUALITY) so a later
+edit breaks a test instead of silently re-aiming the gate.
+
+**The third row cost 20 px of band, not 46, and a failing test is why.** Three
+control rows under the old full-width description line ask 424 px of timeline
+band; a 640 px window can only give 410, and `the_export_panel_yields_before_the_preview_does`
+failed with exactly that pair. That is not a test being fussy — it is review
+1.4's defect returning at the smallest supported size, a lit Export button over a
+"needs a taller timeline" notice. The description moved up beside the EXPORT
+title, where it costs no vertical space and shortens itself when the panel is
+narrow.
+
+**The still is the video frame, and proving that took a cross-check rather than a
+hash.** `with_export_frame` and `draw_offline_frame` are now shared by
+`ExportSession::step` and the still, so the analyzer feed, the beat phase, the
+automatic scene switch, the routed settings, the project lanes, the supersampled
+target and EX3's linear-light resolve are one implementation. The frame index is
+`still_frame_index`, the same floor `window_frames` uses for a window's start, and
+every frame from zero is prepared before it — for the reason `render_job.rs` gives
+for never seeking.
+
+**It shipped upside down, and two md5-equal runs called it correct.**
+`LoadImageFromTexture`/`rlReadScreenPixels` return an OpenGL framebuffer whose
+first row is the *bottom* of the picture, which is why
+`Encoder::send_frame_flipped` exists (`ffmpeg.rs:448-455`). The PNG writer copied
+the same buffer top-down. A mirrored Spectrum — bars hanging from the top instead
+of standing on a baseline — is a completely plausible picture, it rendered
+identically every run, and the determinism check hashed two of them and passed.
+Only comparing the PNG against a frame decoded out of an MP4 of the same moment
+caught it:
+
+| comparison | before the fix | after |
+| --- | --- | --- |
+| still at 4.0 s vs the MP4's frame at 4.0 s | 22.68 dB | **45.55 dB** |
+| the same still vs the MP4's frame at 4.5 s (control) | 21.48 dB | 21.53 dB |
+
+The control is the half of it that matters: without it, 45 dB proves nothing,
+because two adjacent frames of a slow scene would also score well. The ceiling is
+h264 4:2:0 on a saturated cyan feature, not our error — EX3 measured the same
+codec turning a 1 px cyan line into `(97,227,225)`.
+
+**Evidence.**
+
+| claim | how |
+| --- | --- |
+| Window arithmetic and validation | 8 new tests in `core::timing::render_export`, including a sweep over every reachable selection and a re-clamp against a shorter track |
+| The CLIP row takes a press | Gate: `click=` on In and Out with `time=` parking the playhead, each asserting the whole `export clip:` line **and** an unchanged `export config:` |
+| Nothing pressed nothing | Gate: a click in the 8 px gap between Full track and In — `claimed=nothing`, clip unchanged |
+| The clip reaches the file | Gate: the render button pressed with `save-to=`, then ffprobe — **90 frames, 3.000 s**, and `export frame lanes: t=2.000` proving it is a window rather than a short render from zero |
+| The still is deterministic | Gate: two runs, identical md5 |
+| The still is *that* frame | Gate: PSNR against the MP4's own frame, with the frame 0.5 s later as the negative control |
+| 16:9 full-track export is unchanged | `85d6dcc7b6fe71ba8ce4e010f1f781e4` from a build of `9db6684` and from this branch — same md5, not "looks the same" |
+| Panel ids do not collide | `the_panels_own_widget_indices_never_collide` claims all 21 indices this panel mints; `widgets::id::ALL` only protects namespaces, and EX1 was an index collision |
+
+**`--ui-probe save-to=PATH` is new, and it is `click=`'s missing half.** EX1's
+probe proves a control takes a press; it cannot prove the press produced a file,
+and the two controls this panel exists for both open a modal picker Xvfb does not
+have. `save-to=` substitutes for the *dialog*, not for the decision — every
+refusal after it still applies. It is what makes the clip section the first gate
+in this repository to produce an MP4 by pressing the button a user presses.
+
+**Divergences recorded.**
+
+| The oracle | Here | Why |
+| --- | --- | --- |
+| A render window exists in the transport and only `--render-window` can ask for one | A CLIP row on the export panel, with both ends set from the playhead and a readout of the window and its frame count | UX0-C01. The teaser is the shareable artifact of an AI-music workflow and the C could not make one without a command line |
+| `--render-window` is a command-line-only state | It seeds the panel's CLIP row, and the panel is what the render button reads | A panel that said "whole track" while the flag was in force would be lying about the file it is about to write |
+| A clip and a full render propose the same file name | `suggest_clip_path` adds `-clip-MMmSSsMMM-MMmSSsMMM` | Otherwise the teaser silently replaces the full render of the same track and scene |
+| No still export at all | `Save still`, through the export renderer, needing no encoder | UX0-C10. It is the one control in this panel that works without FFmpeg installed |
+
+**Not done, deliberately.**
+
+- **The clip is session-only and does not persist into `.musi`.** A clip is
+  something you are doing now, not a property of the project, and a reopened file
+  quietly rendering 30 s of a four-minute track is worse than re-selecting.
+  Whether it should become a durable per-track field is a **schema question for
+  the integration owner**; the state lives on `Shell` so promoting it later is a
+  field move, not a redesign.
+- **No in/out handles on the timeline.** The playhead buttons are the whole
+  gesture today. Dragging the window on the timeline strip is the affordance a
+  user would reach for next, and it belongs to the timeline's own gesture owner
+  (`shell.rs`), not to this panel.
+- **The still is not reused for scene thumbnails (UX0-C05) or cover output
+  (UX0-C09).** Those need a cache keyed by scene and a deterministic seeded
+  moment; the renderer half now exists and is the reusable piece.
+- **A long track's still blocks the frame loop.** Decoding and fast-forwarding to
+  the playhead is a second or two on an eight-second fixture in a debug build and
+  will be longer on a real track; the window draws "Rendering still frame" and
+  then holds. The export's own progress screen is the model if it becomes
+  annoying.
+
 ## Start here next session (updated 2026-08-05)
 
 The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,
@@ -984,8 +1116,13 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       `lyrics_editor_layout`'s harness-pinned panel heights — a deliberate
       layout change, so it queues rather than sneaks in.
 
-- [ ] **UX0-C01 — clip export:** expose render in/out or start/duration controls
+- [x] **UX0-C01 — clip export:** expose render in/out or start/duration controls
       and drive the existing windowed `RenderPlan` path (`review` 3.1).
+      *Done (PX3, `40a8f27`). A CLIP row above SIZE — `Full track`,
+      `In <- playhead`, `Out <- playhead` — over `ClipSelection` in
+      `core::timing::render_export`, plus an `export clip:` report line. See the
+      PX3 section below for the evidence, the divergence and the schema question
+      the integration owner has to answer.*
 - [ ] **UX0-C02 — vertical and square output:** add explicit width/height output
       formats without changing the C-ordered persisted resolution enum, then
       capture-audit every scene at tall and square aspect ratios (3.2).
@@ -1005,9 +1142,15 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
 - [ ] **UX0-C09 — cover-art/logo layer:** generalize project image assets into a
       track-level visual layer and define its scene-host/render/route semantics
       (3.9).
-- [ ] **UX0-C10 — still-frame export:** publish a user-selected supersampled
+- [x] **UX0-C10 — still-frame export:** publish a user-selected supersampled
       frame through the offline render path and reuse it where appropriate for
       thumbnails/cover output (3.10).
+      *Done (PX3, `40a8f27` + `6c84387`). `Save still` in the export footer
+      writes the frame at the playhead as a PNG through the same
+      `with_export_frame`/`draw_offline_frame`/`LinearResolver` path an encoded
+      frame takes, with an `export still:` report line naming the frame index.
+      Reuse for scene thumbnails (UX0-C05) and cover output (UX0-C09) is **not**
+      done — see the PX3 section.*
 
 ### UX0-D — verification blind spots
 
