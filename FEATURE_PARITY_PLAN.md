@@ -1931,7 +1931,11 @@ until answered.
 
 ### D4 — timeline content and navigation
 
-- [ ] Draw the merged manual/semantic event markers over the waveform lane.
+- [x] Draw the merged manual/semantic event markers over the waveform lane.
+      Colour by event type (the C's own axis), lane by head shape — filled disc
+      for manual, ring for semantic — with a tooltip naming both. Evidence:
+      `tools/timeline_event_markers.py` reads all six markers' colours *and*
+      lanes back off `d4-markers-whole.png`.
 - [x] Draw the lyric cue lane even when the Lyrics editor is closed.
       *Done (PX2). `Shell::closed_lyric_lane`, wired into `open_panel`'s
       `None`/`Tune` arms. Timing is judged against the waveform and the scene
@@ -1963,16 +1967,164 @@ until answered.
       blocks in the lane band, scoped to the bottom of the frame because the
       event row's "+ Scene" button is outlined in the same green and an
       unscoped count reports 148 of them on a frame with no cues at all.*
-- [ ] Add Shift-wheel pan and middle-drag pan with robust pointer-claim release.
+- [x] Add Shift-wheel pan and middle-drag pan with robust pointer-claim release.
+      Middle-drag existed; Shift-wheel is new, and both now have a headless
+      probe. `gesture=none` on the `timeline:` line is the release evidence.
 - [x] Make waveform scrubbing transactional: pause on press, track the target
       while dragging, seek once on release and restore the prior play state.
 - [x] On every transport discontinuity, clear queued pre-seek PCM and analyzer
       history as well as beat, scene-clock, scene-plan and cue-settings state.
-- [ ] Keep wheel zoom anchored at the pointer and every lane aligned through the
-      shared `TimelineView` conversion.
-- [ ] Give tick labels an opaque backing so waveform amplitude cannot erase their
+- [x] Keep wheel zoom anchored at the pointer and every lane aligned through the
+      shared `TimelineView` conversion. Landed with LX2-c; this tranche added the
+      capture that proves it (`d4-wheel-zoom`, 5.760x centred on the pointer) and
+      the Shift branch that must *not* re-anchor.
+- [x] Give tick labels an opaque backing so waveform amplitude cannot erase their
       contrast.
-- [ ] Capture event colors, lyric spans, zoom, pan and an off-screen boundary.
+- [x] Capture event colors, zoom, pan and an off-screen boundary.
+      Lyric spans stay with PX2, who owns the cue lane.
+
+Completion evidence (2026-08-07, PX5 — markers, pan and the tick plate):
+
+**The lane's provenance was not recoverable, and that is why the markers needed a
+core change rather than only a draw call.** The obvious way to colour a marker by
+lane is to test `SEMANTIC_ID_LANE_BIT` on the merged id. It is wrong twice over,
+and both halves are now pinned as tests. `qualify_semantic_id` adds
+`COLLISION_PROBE_STEP` when the XORed id is already taken, which lands anywhere in
+the 64-bit space and **clears the bit as often as not** — and that is not a corner
+case, it is one XOR collision away: a manual id of `BIT|9` and a semantic id of
+`9` collide on the first try. Meanwhile a manual id is carried through untouched,
+so a manual event authored with the high bit set is indistinguishable from a
+qualified semantic one. Type does not answer it either: **the manual event row's
+`+ Feel` button records `EventType::Semantic` into the manual lane**
+(`plug.c:2897`), so an amber marker may be either. `SceneEventMerge` now carries a
+parallel `lanes` list, permuted with the records by the same sort rather than
+sorted separately.
+
+That change is **additive by construction**: no id and no ordering moves, so
+`differential_event_merge.sh` is still 12 cases / 15 merged events / exact, run
+against the frozen C with **no harness edit at all**. Same for
+`differential_timeline_view.sh` and `differential_layout.sh` — this tranche
+changed no geometry and no conversion, so all three are anchors that stayed put.
+There is no deliberate divergence in this tranche and therefore no harness to
+update; the one divergence recorded is a **presentation** choice the C has no
+opinion on (head shape), and it is in the AGENTS.md table.
+
+**Two negative controls, each decisive, and each aimed at a different check:**
+
+| control | the gate | the unit tests |
+| --- | --- | --- |
+| the tick plate's one `draw_rectangle_rec` deleted | bleed **0 → 1444** waveform pixels; all seven labels go 0 → ~200, raised fraction halves 0.45 → 0.21 | **1368 green** |
+| the semantic head's punch-out circle deleted | two markers read back as `manual` where the fixture has `semantic` | **1368 green**, *and the `timeline:` line was byte-identical* |
+
+The second is the instructive one. `timeline:` counts markers per lane from the
+same list the heads are drawn from, so collapsing the lanes in the *draw* left
+`markers=manual:4 semantic:2` completely unchanged. Only reading the head shape
+back off the framebuffer catches it, which is why `tools/timeline_event_markers.py`
+exists rather than one more assertion on the report line.
+
+**The plate is white on white, which is exactly why nothing had caught it.** The
+lane's own background is `ui_raised`, so a missing plate is invisible wherever the
+audio is quiet and the label is unreadable wherever it is loud — the defect *comes
+and goes as the user scrolls*. `tools/timeline_tick_plate.py` therefore asserts an
+exact zero (no envelope pixel inside a label's halo) rather than a contrast
+threshold, and refuses to pass **vacuously**: at least one label must have the
+envelope within 12 rows, or a fixture of pure silence would satisfy it. Two things
+in that tool were wrong before they were right, both found by running it: an
+ink-colour match within 24 found *no labels at all*, because a 12 px glyph is
+mostly antialiased grey; and a box reconstructed from `plug.c`'s own `-3, -2, +6,
++4` offsets hung three rows below the real plate, because those offsets are around
+the text *origin* and a digit's ink starts lower.
+
+**The oracle's clip turned out to be load-bearing, and reading the measurement is
+what found it.** `plug.c:3050` opens a `BeginScissorMode` around the whole
+waveform block, which is easy to read as housekeeping. It is not: the marker cull
+below it admits a marker up to **8 px outside** the lane on purpose, so a marker
+whose line is just off-screen still shows the part of its head that belongs on
+screen — and a head is 5 px in every direction. Without the scissor that head
+paints onto the panel background outside the lane. The first version here had no
+scissor, and the evidence was already sitting in the capture: the 4x frame's
+right-edge marker measured **54 px of head against the usual 39**, because it was
+spilling over the border. The tooltip is deliberately raised *after* the scissor
+closes, since a tip clipped to the lane it explains would be cut off worst for the
+markers nearest the edges.
+
+**A `.musi` cannot carry an off-track event.** `validate_event_lanes` refuses any
+lane holding a timestamp past `audio.duration_seconds`, so the oracle's
+`plug.c:3089` bound is reachable only through live recording — the gate uses
+`--event cue:38:99:1` on an 8 s fixture, and asserts `off-track:1` with nothing
+drawn. That is recorded because the first fixture tried to seed one and the
+project silently failed to load.
+
+**Pan and zoom are told apart by the span, not by the picture.** Both move the
+view, so a capture cannot distinguish them. From one 4x view at one pointer
+position: a bare notch gives `5.760x 2.556..3.944` (span 2.000 → 1.388), a Shift
+notch gives `4.000x 1.650..3.650` (span held at exactly 2.000), and the reverse
+notch gives `2.850..4.850` — symmetric to the millisecond, and exactly
+`2 x 2.000 x 0.15`. Middle-drag is the same: `900→400` and `400→900` move the
+window ±0.794 s about the same origin. Both pans set `free-view`; both refusals
+over a whole-track view leave it off, because a Follow button lit over a view that
+never moved is a control claiming it did something.
+
+**`--ui-probe middle-drag=FROMxTO` and `wheel-shift=0|1` are new, and
+`--ui-probe wheel=` had no gate section at all before this.** The survey found
+that `timeline:` — added by LX2 specifically as the wheel's evidence — was
+asserted nowhere in `headless_check.sh`. `middle-drag=` exists because `click=`
+cannot reach the pan: the pan reads `MOUSE_BUTTON_MIDDLE` from raylib directly
+rather than through `Widgets`' pointer seam, since it claims nothing from the
+bank. It stages press / two moved frames / release after the same three settling
+frames `click=` waits for, and moves the *pointer* as well as the button — a
+probe that moved only the button would drive a pan of zero seconds and photograph
+as a broken gesture.
+
+**A stranded claim is invisible in a picture**, so the `timeline:` line now
+reports `gesture=`. The view sits where the hand left it whether or not the claim
+released; the symptom is the *next* interaction behaving strangely, which arrives
+as a bug report rather than a gate failure. The gate asserts `gesture=none` after
+every drag, including one released at x=-400 — **outside the window** — which is
+the overshoot case the plan names and the common way to end a fast drag.
+
+New gate section: `tools/headless_check.sh:4174-4390`, one contiguous block,
+17 assertions over 11 captures. All 17 pass, and the whole `headless_check.sh`
+exits 0 with the section in it.
+
+**The `frame budget` assertion is load-sensitive, and it is worth writing down
+because it will mislead the next parallel wave.** It demands `0 of 240` frames
+past a 25.0 ms threshold and bails the *entire* sweep with `exit 1`
+(`headless_check.sh:242`), so every later section — including this one — is
+skipped when it trips. On one unchanged commit (`4d7f974`) it measured **18.9 ms
+/ 0 stalled** on an idle machine, **27.8 ms / 1** with two sibling agents running
+gates, and **44.2 ms / 73** under heavier load. None of that is a code change.
+A sibling independently measured the *base* commit failing it the same way. Two
+practical consequences: give every concurrent gate its own
+`MUSIALIZER_CAPTURE_DISPLAY` (a collision segfaults the app at `InitWindow` — this
+run lost a whole sweep to `exit=139` on the transport captures), and read a stall
+failure as a scheduling result until an idle re-run says otherwise.
+
+**Left for the operator to judge: whether the markers want a legend.** LX1 gave
+the cue lane "a legend and tooltips", and the symmetry argument says do the same
+here. The reason it was not built: the four *type* colours already have a legend,
+and it is the manual event row sitting directly above the strip — `+ Feel`,
+`+ Cue` and `+ Custom` each carry the swatch of the colour they create, so the
+key is next to the thing it keys. What no legend states is the **head shape**,
+and that is in every marker's tooltip. A fifth strip of chrome in a band that is
+already three lanes plus a zoom row is a real cost, so this is a taste call rather
+than a gap — but it is a taste call, and it belongs to the operator.
+
+Not covered: the gate asserts the tooltip's *text and hit test* (`hover=[manual
+lyric  ·  00:00.750]` on the report line) but not that the tip **rendered**. The
+tooltip render path is shared with every other tooltip and is gated by the
+existing peak-luma check elsewhere in the sweep, so this is a deliberate boundary
+rather than an oversight — recorded because "the shell knew the text" and "the
+user saw it" are different claims.
+
+Out of scope and left alone: `ui/panels/lyrics.rs` and the lyric cue lane (PX2's),
+every other panel, all `mod.rs` files and the root manifests.
+
+Noticed and **not** fixed, because it is outside this tranche: the application
+**segfaults** rather than exiting with a message when GLFW cannot open the display
+(`WARNING: GLFW: Failed to initialize GLFW` then SIGSEGV). Every headless tool in
+`tools/` starts its own Xvfb first, so nothing here trips it, but a user running
+the binary over a broken `DISPLAY` gets a core dump instead of a sentence.
 
 Operator follow-up (2026-08-04), scoped to the existing D4 ownership:
 

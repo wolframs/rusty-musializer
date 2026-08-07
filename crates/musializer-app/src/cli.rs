@@ -281,6 +281,31 @@ pub struct UiProbe {
     /// One frame, not every frame: the shell consumes it on the first frame it
     /// draws, so a 30-frame probe zooms by one notch rather than by thirty.
     pub wheel: Option<f32>,
+    /// `wheel-shift=0|1`: hold Shift for the `wheel=` notch, making it a pan
+    /// across the timed lanes rather than a zoom (D4).
+    ///
+    /// **Invented for the same reason as `wheel=` itself.** Xvfb has no keyboard
+    /// modifier under a wheel any more than it has a wheel, so "Shift-wheel pans"
+    /// was a binding no capture could reach — and a pan and a zoom both move the
+    /// view, so a report line that only said the view changed could not tell them
+    /// apart. `timeline:` prints the span, which a pan leaves alone and a zoom
+    /// does not, and that is what separates them.
+    pub wheel_shift: bool,
+    /// `middle-drag=FROMxTO`: middle-press at `FROM`, drag to `TO`, release (D4).
+    ///
+    /// **Invented, and it is to the middle button what `click=` is to the left
+    /// one.** `click=` goes through `Widgets`' pointer seam, which the timeline's
+    /// pan does not use — the pan reads `MOUSE_BUTTON_MIDDLE` from raylib
+    /// directly, because it is not a widget and claims nothing from the bank. So
+    /// the whole middle-drag pan, including the release that must not strand the
+    /// claim, was unreachable from any capture.
+    ///
+    /// Both values are **x coordinates in the same logical space as `hover=`**,
+    /// which is where the y comes from, because a pan is a one-axis gesture and a
+    /// probe that could aim it off the lane vertically would just be a way to
+    /// write a test that presses nothing. Spelled `FROMxTO` for the same reason
+    /// `hover=` is `XxY`: the spec is comma-separated.
+    pub middle_drag: Option<(f32, f32)>,
     /// `scene-pick=NAME`: click the scene browser's tile for `NAME`, once (LX3).
     ///
     /// **Invented, and it exists because the gate could not reach the one
@@ -1024,6 +1049,11 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
             probe.wheel = Some(notches);
         }
+        // Shift is a *modifier* on the notch `wheel=` delivers, so it is a flag
+        // rather than a second count: two keys that both carried notches could
+        // ask for a zoom and a pan on the same frame, which no hand can do.
+        "wheel-shift" => probe.wheel_shift = parse_probe_flag(value)?,
+        "middle-drag" => probe.middle_drag = Some(parse_point(value)?),
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),

@@ -416,11 +416,27 @@ pub struct Shell {
     /// A manual pan deliberately detaches the view from playback-follow until
     /// the user asks to Follow again.
     timeline_manual_view: bool,
-    /// Wheel zoom captured over any timed lane by [`Shell::request_timeline_zoom`]
-    /// and applied at the start of the next frame, before any aligned lane draws.
+    /// The wheel gesture captured over any timed lane by
+    /// [`Shell::request_timeline_zoom`] and applied at the start of the next
+    /// frame, before any aligned lane draws.
     ///
     /// At most one claim per frame, so two lanes cannot compound one notch.
-    timeline_zoom_pending: Option<(f64, f64)>,
+    timeline_zoom_pending: Option<TimelineWheel>,
+    /// The merged manual/semantic event view the waveform lane draws markers
+    /// from, cached exactly as the C caches it (`combined_scene_events`,
+    /// `plug.c:1085-1113`): rebuilt only when the current track or either lane's
+    /// revision changes, because the merge validates and sorts both lanes and a
+    /// track may carry 2,048 events.
+    timeline_events: musializer_core::scene::events::SceneEventMerge,
+    /// What the markers drew last frame, for the `timeline:` report line.
+    pub(crate) timeline_event_markers: EventMarkerReport,
+    /// The cache key: `(current track index, manual revision, semantic revision)`.
+    ///
+    /// The track index is in the key for the reason the C puts
+    /// `p->scene_events_track` in its own: two tracks can hold lanes at the same
+    /// revisions, and without it a track swap would draw the previous track's
+    /// markers over this track's waveform.
+    timeline_events_key: Option<(usize, u64, u64)>,
     /// `--ui-probe wheel=NOTCHES`, waiting for the first frame to draw (LX2).
     pub probe_wheel: Option<f32>,
     /// `--ui-probe drop=PATH`, a synthesized file drop waiting for the first
@@ -457,6 +473,26 @@ pub struct Shell {
     /// An unreadable history and no history at all are different facts, and a
     /// blank region is indistinguishable from a broken one.
     pub recent_unavailable: bool,
+    /// One frame of `--ui-probe middle-drag=`, set by the composition root.
+    ///
+    /// `None` on every other frame, so the real device drives the pan whenever
+    /// the probe is not staging one — which is what keeps the injection from
+    /// being a second code path the ordinary build never runs.
+    pub probe_middle_drag_frame: Option<ProbeMiddleDrag>,
+    /// `--ui-probe wheel-shift=1`: hold Shift for the probe's wheel notch (D4).
+    ///
+    /// A flag rather than a second notch key, because Shift is a *modifier* on
+    /// the notch `wheel=` already delivers — two keys that both carried a count
+    /// would let a spec ask for a zoom and a pan on one frame, which no hand can
+    /// do.
+    pub probe_wheel_shift: bool,
+    /// Whether Shift was held when this frame's wheel was read, so a notch over
+    /// any timed lane pans rather than zooms.
+    ///
+    /// Latched in [`Self::begin_frame`] rather than read at each call site: the
+    /// waveform strip, the scene-plan lane and the lyric cue lane all consult
+    /// the same seam, and the third is drawn by a file this tranche does not own.
+    wheel_pan_modifier: bool,
     /// The same value, held for exactly the frame that consumed it, so every
     /// lane in that frame is offered the notch and the frame after is not.
     probe_wheel_frame: Option<f32>,
@@ -545,6 +581,88 @@ struct TimelinePan {
     origin_x: f32,
     origin_start_seconds: f64,
 }
+
+/// What one wheel notch over a timed lane asked the shared view to do.
+///
+/// Two variants rather than a factor and a delta both being `Option`, because a
+/// notch is exactly one gesture: it zooms, or — with Shift held — it pans, and
+/// never both. The old shape was a bare `Option<(f64, f64)>` whose two `f64`s
+/// were "factor" and "anchor"; adding pan to it would have meant a third number
+/// whose meaning depended on the other two, which is the `Option`-as-disguise
+/// shape this repository has already paid for once in `beat_tracker`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TimelineWheel {
+    /// Multiply the span by `factor`, holding `anchor_seconds` under the pointer.
+    Zoom { factor: f64, anchor_seconds: f64 },
+    /// Slide the window by `delta_seconds` without changing the span.
+    Pan { delta_seconds: f64 },
+}
+
+/// One staged frame of a probe middle-drag: where the pointer is and what the
+/// middle button is doing.
+///
+/// Carries the position as well as the button because a pan is measured from
+/// the press point to the current pointer, so a probe that moved only the button
+/// would drive a pan of zero and look exactly like a broken gesture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProbeMiddleDrag {
+    pub x: f32,
+    pub y: f32,
+    pub pressed: bool,
+    pub down: bool,
+}
+
+/// The C's marker head radius (`DrawCircleV(..., 5.0f, ...)`, `plug.c:3099`).
+const MARKER_HEAD_RADIUS: f32 = 5.0;
+
+/// How thick the semantic marker's ring is.
+///
+/// 2 px of a 5 px radius: thin enough that the two heads are obviously the same
+/// size and different shapes, thick enough to survive the 150 % scale where a
+/// 1 px ring would alias into a smudge.
+const MARKER_RING_THICKNESS: f32 = 2.0;
+
+/// What the event markers drew, for the probe report.
+///
+/// A count per lane rather than a total, because a total cannot tell the case
+/// this tranche exists to make visible — a track with only semantic markers and
+/// a track with only manual ones produce the same total and the same picture at
+/// a glance.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct EventMarkerReport {
+    pub manual: usize,
+    pub semantic: usize,
+    /// Events whose timestamp lies outside `[0, duration]`.
+    pub off_track: usize,
+    /// Events inside the track but outside the visible window.
+    pub off_screen: usize,
+    /// The tooltip text of the marker under the pointer, if any.
+    pub hovered: Option<String>,
+}
+
+/// Whether either Shift key is down, which turns a wheel notch over a timed lane
+/// into a pan (D4).
+///
+/// Both keys, because a modifier bound to only one of them is a control that
+/// works for right-handed mice and not left-handed ones.
+fn shift_held(d: &RaylibDrawHandle<'_>) -> bool {
+    use raylib::consts::KeyboardKey::{KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT};
+    d.is_key_down(KEY_LEFT_SHIFT) || d.is_key_down(KEY_RIGHT_SHIFT)
+}
+
+/// How far one Shift-wheel notch slides the window, as a fraction of the visible
+/// span.
+///
+/// A fraction rather than a number of seconds, so the gesture keeps the same
+/// *feel* at every zoom: at whole-track it is a coarse jump and at 40x it is a
+/// fine nudge, which is what a user zoomed in to inspect one beat actually wants.
+/// A fixed second count would be unusably coarse at high zoom and unusably slow
+/// at low zoom — the same argument the 1.2x-per-notch zoom factor makes
+/// multiplicatively.
+///
+/// 0.15 leaves 85 % of the previous window on screen, so the eye can carry a
+/// feature across the step rather than re-finding it.
+pub(crate) const TIMELINE_WHEEL_PAN_FRACTION: f64 = 0.15;
 
 /// The one coupling `Shell::timeline_group_chrome` cannot check at runtime.
 ///
@@ -823,7 +941,13 @@ impl Shell {
             timeline_pan: None,
             timeline_manual_view: false,
             timeline_zoom_pending: None,
+            timeline_events: musializer_core::scene::events::SceneEventMerge::new(),
+            timeline_events_key: None,
+            timeline_event_markers: EventMarkerReport::default(),
             probe_wheel: None,
+            probe_wheel_shift: false,
+            probe_middle_drag_frame: None,
+            wheel_pan_modifier: false,
             probe_wheel_frame: None,
             probe_drop: None,
             probe_drop_dispatch: None,
@@ -1098,9 +1222,15 @@ impl Shell {
     /// [`Shell::draw`] and [`Shell::draw_welcome`] need it, and per-frame state
     /// that only one of them resets is how a stale flag survives (UX0-A02,
     /// UX0-A06).
-    fn begin_frame(&mut self, ui_scale: UiScale) {
+    fn begin_frame(&mut self, ui_scale: UiScale, wheel_pan_modifier: bool) {
         self.widgets.begin_frame(ui_scale);
         self.font_browser.begin_frame();
+        // Read once per frame, for the same reason `probe_wheel_frame` is taken
+        // once per frame: three lanes ask for the wheel and all three must agree
+        // about what the notch meant. Reading the key at each call site would
+        // also make it unreachable from the lyric cue lane, whose file this
+        // tranche does not own.
+        self.wheel_pan_modifier = wheel_pan_modifier || self.probe_wheel_shift;
         self.scrub_release_preview_seconds = None;
         // A cursor request is only ever true of the frame that made it.
         self.pointer_cursor = None;
@@ -1134,15 +1264,46 @@ impl Shell {
         } else {
             0.0
         };
+        let markers = &self.timeline_event_markers;
         format!(
-            "{zoom:.3}x  {:.3}..{:.3}  of {duration_seconds:.3}{}",
+            "{zoom:.3}x  {:.3}..{:.3}  of {duration_seconds:.3}{}  \
+             gesture={}  \
+             markers=manual:{} semantic:{} off-screen:{} off-track:{}{}",
             self.timeline.start_seconds,
             self.timeline.start_seconds + self.timeline.span_seconds,
             if self.timeline_manual_view {
                 "  free-view"
             } else {
                 ""
-            }
+            },
+            // A stranded pointer claim is the failure mode a drag probe exists to
+            // catch, and it is *invisible* in a picture: the view stays exactly
+            // where the hand left it either way, and the next click is what
+            // behaves strangely. So the release has to be reported rather than
+            // photographed.
+            match self.timeline_gesture {
+                None => "none",
+                Some(TimelineGesture::Scrub) => "scrub",
+                Some(TimelineGesture::Pan) => "pan",
+                Some(TimelineGesture::SceneBoundary) => "scene-boundary",
+            },
+            // Per lane, not a total. A total cannot distinguish a track whose
+            // markers are all model-derived from one whose markers are all
+            // hand-placed, and telling those apart is the whole point of drawing
+            // them differently — so a gate asserting a total would pass on a
+            // build that had silently collapsed the two lanes into one.
+            markers.manual,
+            markers.semantic,
+            // Counted rather than merely skipped, because "the marker is not on
+            // screen" and "the marker was never built" produce the same empty
+            // lane. This is the off-screen boundary case in a form a capture can
+            // read back.
+            markers.off_screen,
+            markers.off_track,
+            markers
+                .hovered
+                .as_ref()
+                .map_or(String::new(), |text| format!("  hover=[{text}]"))
         )
     }
 
@@ -1185,7 +1346,7 @@ impl Shell {
         input: &ShellInput<'_>,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
-        self.begin_frame(input.ui_scale);
+        self.begin_frame(input.ui_scale, shift_held(d));
 
         // The AI settings modal is application-modal *inside* the window
         // (tranche AP3). Blocking falls out of the oracle's own claim rule
@@ -1289,7 +1450,9 @@ impl Shell {
         input: &ShellInput<'_>,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
-        self.begin_frame(input.ui_scale);
+        // The welcome screen has no timed lane, so the modifier can never be
+        // consulted; passing the real key state anyway keeps one rule.
+        self.begin_frame(input.ui_scale, shift_held(d));
         self.dropped_files(d, &mut commands);
 
         let (w, h) = input.window;
@@ -2403,20 +2566,32 @@ impl Shell {
     ) {
         use raylib::consts::MouseButton::MOUSE_BUTTON_MIDDLE;
 
-        let mouse = input.ui_scale.mouse(d);
+        let device = input.ui_scale.mouse(d);
+        // `--ui-probe middle-drag=` substitutes the whole pointer for this
+        // gesture, not just the button: a pan is measured from where the press
+        // landed to where the pointer is now, so injecting a button while
+        // `GetMousePosition` stayed at one place would drive a pan of exactly
+        // zero seconds and photograph as the gesture being broken.
+        let (pointer_x, pressed, down) = match self.probe_middle_drag_frame {
+            Some(phase) => (phase.x, phase.pressed, phase.down),
+            None => (
+                device.x,
+                d.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE),
+                d.is_mouse_button_down(MOUSE_BUTTON_MIDDLE),
+            ),
+        };
+        let pointer_y = self
+            .probe_middle_drag_frame
+            .map_or(device.y, |phase| phase.y);
+
         if self.timeline_gesture.is_none()
             && !self.timeline.is_whole(input.duration_seconds)
-            && lane.contains_point(mouse.x, mouse.y)
-            && d.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE)
+            && lane.contains_point(pointer_x, pointer_y)
+            && pressed
         {
-            self.begin_timeline_pan(mouse.x);
+            self.begin_timeline_pan(pointer_x);
         }
-        self.update_timeline_pan(
-            mouse.x,
-            lane,
-            input.duration_seconds,
-            d.is_mouse_button_down(MOUSE_BUTTON_MIDDLE),
-        );
+        self.update_timeline_pan(pointer_x, lane, input.duration_seconds, down);
     }
 
     fn begin_timeline_pan(&mut self, origin_x: f32) {
@@ -2477,6 +2652,14 @@ impl Shell {
     ///
     /// `wheel` is `d.get_mouse_wheel_move()`; `pointer_x` and the lane bounds are
     /// in the same logical space as [`TimelineView::seconds_at`].
+    ///
+    /// **With Shift held the same notch pans instead of zooming** (D4). The name
+    /// is kept because the lyric cue lane calls this too and that file has a
+    /// different owner; the seam is "one wheel notch over a timed lane", and
+    /// routing the modifier here rather than at each call site is what makes all
+    /// three lanes gain the gesture at once — the same argument LX2-c made for
+    /// zoom. Shift is read from the shell rather than passed in for the same
+    /// reason.
     pub(crate) fn request_timeline_zoom(
         &mut self,
         wheel: f32,
@@ -2495,6 +2678,27 @@ impl Shell {
         {
             return;
         }
+        if self.wheel_pan_modifier {
+            // Panning a whole-track view is a no-op that would still consume the
+            // notch and set `timeline_manual_view`, leaving the Follow button lit
+            // over a view that never moved — a control that says it did something
+            // it did not.
+            if self.timeline.is_whole(duration_seconds) {
+                return;
+            }
+            // Wheel up is *earlier*, matching a vertical scroll: rolling away
+            // from the hand moves the window back through the track, the same
+            // direction the content moves under a list.
+            let delta_seconds =
+                -f64::from(wheel) * self.timeline.span_seconds * TIMELINE_WHEEL_PAN_FRACTION;
+            self.timeline_zoom_pending = Some(TimelineWheel::Pan { delta_seconds });
+            // A wheel pan detaches follow exactly as a middle-drag pan does. It
+            // is the same gesture by a different input, and having one of them
+            // fight playback-follow while the other did not would be the sort of
+            // difference that reads as a bug.
+            self.timeline_manual_view = true;
+            return;
+        }
         let anchor = self.timeline.seconds_at(
             f64::from(pointer_x),
             f64::from(lane_x),
@@ -2504,7 +2708,10 @@ impl Shell {
         // 1.2 per notch, applied at the top of the next frame rather than here —
         // see the comment on the take in `timeline_strip`, which is why the delay
         // is deliberate and must stay.
-        self.timeline_zoom_pending = Some((1.2f64.powf(f64::from(wheel)), anchor));
+        self.timeline_zoom_pending = Some(TimelineWheel::Zoom {
+            factor: 1.2f64.powf(f64::from(wheel)),
+            anchor_seconds: anchor,
+        });
     }
 
     /// One frame of the position bar's drag, raylib-free.
@@ -3759,6 +3966,215 @@ impl Shell {
         }
     }
 
+    /// Rebuilds the merged event view only when it can have changed.
+    ///
+    /// Port of `combined_scene_events` (`plug.c:1085-1113`), including *why* it
+    /// is cached: [`SceneEventMerge::build`] validates both lanes in full, copies
+    /// them, qualifies every semantic id against the partial result and sorts —
+    /// and a track may carry 2,048 events. Doing that inside the draw pass every
+    /// frame is work the revision counters exist to avoid.
+    ///
+    /// The key carries the track index as well as the two revisions, which is the
+    /// C's `p->scene_events_track`: two tracks can sit at the same revisions, and
+    /// without it swapping tracks would draw the previous track's markers.
+    fn refresh_timeline_events(&mut self, input: &ShellInput<'_>) {
+        let key = input
+            .workspace
+            .current_index()
+            .zip(input.workspace.current())
+            .map(|(index, track)| {
+                (
+                    index,
+                    track.manual_events.revision(),
+                    track.semantic_events.revision(),
+                )
+            });
+        if key == self.timeline_events_key {
+            return;
+        }
+        self.timeline_events_key = key;
+        let Some(track) = input.workspace.current() else {
+            self.timeline_events.clear();
+            return;
+        };
+        if self
+            .timeline_events
+            .build(track.manual_events.events(), track.semantic_events.events())
+            .is_err()
+        {
+            // The C logs and empties (`plug.c:1104-1108`). Drawing a stale merge
+            // would be worse than drawing none: the markers would claim times
+            // that are no longer in the project.
+            self.timeline_events.clear();
+        }
+    }
+
+    /// The merged manual/semantic event markers, over the waveform lane (D4).
+    ///
+    /// Port of `plug.c:3086-3100`, drawn in the same place in the same order —
+    /// after the waveform and the ticks, before the playhead — so a marker is
+    /// never hidden by a gridline and never hides the playhead.
+    ///
+    /// **Two axes, and the oracle only draws one.** The C colours a marker by
+    /// event *type* (`event_type_color`, `plug.c:1521-1530`) and says nothing
+    /// about which lane it came from. That was survivable there and is not here,
+    /// because the two axes genuinely cross: the manual event row's `+ Feel`
+    /// button records [`EventType::Semantic`] into the **manual** lane
+    /// (`plug.c:2897`), so an amber marker may be either. And after an Assist run
+    /// the question a user actually has is *"did I put that there, or did the
+    /// model?"* — the same question `CueOrigin` answers in the cue lane (LX1).
+    ///
+    /// So type keeps the colour, exactly as the C has it, and the lane is carried
+    /// by the head: **a manual marker has a filled disc, a semantic one a hollow
+    /// ring**, with the semantic line at lower alpha. Shape rather than a second
+    /// colour, because a second colour would have to fight the four type colours
+    /// for the same channel and would make a lyric marker and a cue marker
+    /// indistinguishable — which is the information the C chose to show.
+    /// [`SceneEventMerge::lanes`] is where the lane comes from; it cannot be
+    /// recovered from a merged record, which is why that exists.
+    ///
+    /// Every marker carries a tooltip naming its lane, its type and its time,
+    /// because a shape distinction that is never written down anywhere is a
+    /// legend the user has to guess.
+    fn event_markers(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        strip: UiRect,
+        duration: f64,
+    ) -> EventMarkerReport {
+        use musializer_core::scene::events::{EventLane, UNKNOWN_EVENT_RGBA};
+        use raylib::prelude::Color;
+
+        let mut report = EventMarkerReport::default();
+        let mouse = input.ui_scale.mouse(d);
+        // Collected before drawing so the tooltip for the marker under the
+        // pointer can be raised *after* every marker is painted, and outside the
+        // scissor below — a tip clipped to the lane it explains would be cut in
+        // half. Drawing a tip inside the loop would also let a later marker's
+        // line paint over it.
+        let mut hovered: Option<(UiRect, String, usize)> = None;
+
+        // The clip the oracle opens around this whole block (`plug.c:3050`), and
+        // it is load-bearing rather than tidy: the cull below admits a marker up
+        // to 8 px outside the lane, deliberately, so a marker whose *line* is
+        // just off-screen still shows the part of its head that belongs on
+        // screen. Without the scissor that head — 5 px in every direction —
+        // paints onto the panel background outside the lane instead. It is not
+        // hypothetical: the 4x capture in the gate has an event exactly on the
+        // right edge whose head measured 54 px against the usual 39, because it
+        // was spilling over the border.
+        let mut clip = widgets::begin_scissor(d, strip, input.ui_scale);
+
+        for (index, (event, lane)) in self.timeline_events.iter_with_lane().enumerate() {
+            // The C's own bounds: outside the track is not drawn at all, and a
+            // marker more than 8 px past either end of the lane is skipped rather
+            // than clamped to the edge (`plug.c:3089-3093`). Clamping would pile
+            // every off-screen event onto the two edge columns and read as a
+            // dense cluster that is not there — which is the off-screen boundary
+            // case the scene lane already had to learn.
+            if event.timestamp_seconds < 0.0 || event.timestamp_seconds > duration {
+                report.off_track += 1;
+                continue;
+            }
+            let x = self.timeline.x_at(
+                event.timestamp_seconds,
+                f64::from(strip.x),
+                f64::from(strip.width),
+            ) as f32;
+            if x < strip.x - 8.0 || x > strip.x + strip.width + 8.0 {
+                report.off_screen += 1;
+                continue;
+            }
+
+            let rgba = event.kind().map_or(UNKNOWN_EVENT_RGBA, |kind| kind.rgba());
+            let colour = Color::get_color(rgba);
+            let line_alpha = match lane {
+                // The C's 0.75 (`plug.c:3096`), kept for the manual lane so a
+                // hand-placed marker looks exactly as it did.
+                EventLane::Manual => 0.75,
+                // Lower, because a derived marker should not out-shout one the
+                // user placed. It is still well above the waveform it sits on.
+                EventLane::Semantic => 0.45,
+            };
+            clip.draw_line_ex(
+                Vector2::new(x, strip.y),
+                Vector2::new(x, strip.y + strip.height),
+                3.0,
+                widgets::alpha(colour, line_alpha),
+            );
+            match lane {
+                EventLane::Manual => {
+                    clip.draw_circle_v(Vector2::new(x, strip.y), MARKER_HEAD_RADIUS, colour);
+                    report.manual += 1;
+                }
+                EventLane::Semantic => {
+                    // A ring, drawn as a filled disc in the lane's own surface
+                    // punched out of a filled disc in the type colour. Two
+                    // circles rather than `draw_circle_lines`, whose 1 px stroke
+                    // vanishes against a busy envelope at the exact size where
+                    // the distinction has to be readable.
+                    clip.draw_circle_v(Vector2::new(x, strip.y), MARKER_HEAD_RADIUS, colour);
+                    clip.draw_circle_v(
+                        Vector2::new(x, strip.y),
+                        MARKER_HEAD_RADIUS - MARKER_RING_THICKNESS,
+                        color::ui_raised(),
+                    );
+                    report.semantic += 1;
+                }
+            }
+
+            // The hit box is the head and a couple of pixels either side of the
+            // line, not the whole lane column: the lane is also the scrub target
+            // and the pan surface, and a tooltip that appeared over a third of
+            // the strip would be in the way of both.
+            let hit = UiRect::new(
+                x - MARKER_HEAD_RADIUS,
+                strip.y,
+                MARKER_HEAD_RADIUS * 2.0,
+                strip.height,
+            );
+            if hovered.is_none() && hit.contains_point(mouse.x, mouse.y) {
+                let kind = event.kind().map_or("unknown", |kind| match kind {
+                    musializer_core::scene::events::EventType::Lyric => "lyric",
+                    musializer_core::scene::events::EventType::Semantic => "feel",
+                    musializer_core::scene::events::EventType::Cue => "cue",
+                    musializer_core::scene::events::EventType::Custom => "custom",
+                });
+                hovered = Some((
+                    hit,
+                    format!(
+                        "{} {kind}  \u{00b7}  {}",
+                        lane.label(),
+                        widgets::format_timestamp(event.timestamp_seconds)
+                    ),
+                    index,
+                ));
+            }
+        }
+
+        // Closed before the tooltip: a tip clipped to the lane it explains would
+        // be cut off at the lane's own edge, which is worst for exactly the
+        // markers nearest the edges.
+        drop(clip);
+
+        if let Some((anchor, text, index)) = hovered {
+            report.hovered = Some(text.clone());
+            self.widgets.hint(
+                d,
+                widgets::ButtonState {
+                    hovered: true,
+                    clicked: false,
+                    pressed: false,
+                },
+                widgets::widget_id(widgets::id::TIMELINE_EVENTS, index as u32),
+                anchor,
+                &text,
+            );
+        }
+        report
+    }
+
     /// The timeline strip: waveform lane, ticks, playhead, scrubber.
     ///
     /// Every seconds↔pixel conversion goes through [`TimelineView`] so the ticks,
@@ -3773,9 +4189,14 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         let band = frame.timeline;
+        // Reset before any early return, so a frame that drew no strip reports no
+        // markers rather than last frame's. A stale count is exactly the kind of
+        // evidence that reads as working while the surface is blank.
+        self.timeline_event_markers = EventMarkerReport::default();
         if band.is_empty() {
             return;
         }
+        self.refresh_timeline_events(input);
         let content = widgets::panel(d, input.fonts.ui(), band, "TIMELINE");
         // The timecode's fallback home, when the toolbar's band could not seat it
         // beside the transport buttons (`timeline_layout.h:42-44`). Right-aligned
@@ -3810,8 +4231,15 @@ impl Shell {
         // the band with them. Applying the captured mutation here, one frame
         // later, means scene, PCM and lyric lanes all consume the new view
         // together instead of tearing for one frame.
-        if let Some((factor, anchor)) = self.timeline_zoom_pending.take() {
-            self.timeline.zoom(duration, factor, anchor);
+        match self.timeline_zoom_pending.take() {
+            Some(TimelineWheel::Zoom {
+                factor,
+                anchor_seconds,
+            }) => self.timeline.zoom(duration, factor, anchor_seconds),
+            Some(TimelineWheel::Pan { delta_seconds }) => {
+                self.timeline.pan(duration, delta_seconds);
+            }
+            None => {}
         }
 
         // Follow before *any* timed lane draws. The old order mutated the view
@@ -4021,20 +4449,70 @@ impl Shell {
                     // in raylib's 10 px bitmap font. A tick label nobody can read
                     // is a tick label that is not there.
                     if tick > 0.0 && strip.height >= 48.0 {
-                        widgets::draw_text(
-                            d,
-                            input.fonts.ui(),
-                            &widgets::format_timestamp(tick),
-                            x + 4.0,
-                            strip.y + 4.0,
-                            metric::UI_FONT_CAPTION,
-                            color::ui_muted(),
+                        let label = widgets::format_timestamp(tick);
+                        let font = input.fonts.ui();
+                        let label_width = widgets::measure(font, &label, metric::UI_FONT_CAPTION);
+                        let label_x = x + 4.0;
+                        let label_y = strip.y + 4.0;
+                        // An opaque plate under the label, which is the oracle's
+                        // own fix and its own geometry (`plug.c:3065-3080`:
+                        // `-3, -2, +6, +4` around the text box, in
+                        // `COLOR_UI_RAISED`). The port drew the label and dropped
+                        // the plate.
+                        //
+                        // The C's comment is the argument and it is a measurement
+                        // rather than a preference: the waveform behind these
+                        // labels is not a constant background, it runs from the
+                        // raised surface in a silent passage to dense accent blue
+                        // at full amplitude, where muted ink measures about
+                        // 1.16:1. A plate makes the pairing fixed, so the label is
+                        // legible over the loudest bar in the track instead of
+                        // only over the quiet ones — and *which* bars are loud is
+                        // a property of the audio, so without it the defect
+                        // appears and disappears as the user scrolls.
+                        let plate = UiRect::new(
+                            label_x - 3.0,
+                            label_y - 2.0,
+                            label_width + 6.0,
+                            metric::UI_FONT_CAPTION + 4.0,
                         );
+                        // Skipped rather than clipped when it would cross the
+                        // lane's inner edge. The C lets a late label run off the
+                        // strip; here the plate would also paint over the lane's
+                        // right border column, and
+                        // `tools/timeline_lane_alignment.py` reads exactly that
+                        // column to prove the three lanes share one axis — so an
+                        // unclipped plate would break the check that guards the
+                        // rest of this band. Dropping the label is the same
+                        // decision the tick bounds above already make.
+                        if plate.x + plate.width <= strip.x + strip.width - metric::LANE_BORDER {
+                            d.draw_rectangle_rec(widgets::rectangle(plate), color::ui_raised());
+                            widgets::draw_text(
+                                d,
+                                font,
+                                &label,
+                                label_x,
+                                label_y,
+                                metric::UI_FONT_CAPTION,
+                                // Full ink, not muted: the plate is what the C
+                                // pairs `COLOR_UI_INK` against (`plug.c:3081`),
+                                // and a fixed opaque backing is precisely the
+                                // condition under which the stronger ink is the
+                                // right choice rather than a shouty one.
+                                color::ui_ink(),
+                            );
+                        }
                     }
                 }
                 tick += step;
             }
         }
+
+        // Markers after the ticks and before the playhead, which is the oracle's
+        // order (`plug.c:3086-3111`): a gridline must not cross a marker head,
+        // and the playhead must stay the topmost thing in the lane because it is
+        // the only one of the three the user is moving.
+        self.timeline_event_markers = self.event_markers(d, input, strip, duration);
 
         // The open panel draws **before** the zoom row now, because it is the
         // panel that says where that row goes (LX1). The readout, the nudge-key
@@ -5388,7 +5866,7 @@ mod tests {
             // a Tune value chip holding the keyboard forever (PX6).
             shell.panel = UiPanel::None;
             shell.inspector_open = false;
-            shell.begin_frame(UiScale::default());
+            shell.begin_frame(UiScale::default(), false);
 
             assert!(
                 !shell.text_entry_has_focus(),
@@ -5500,15 +5978,76 @@ mod tests {
         // the same 30 s anchor — that is what makes the wheel mean the same
         // thing over the scene lane as over the waveform.
         shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
-        let (waveform_factor, waveform_anchor) =
-            shell.timeline_zoom_pending.take().expect("waveform claim");
+        let waveform = shell.timeline_zoom_pending.take().expect("waveform claim");
         shell.request_timeline_zoom(1.0, 300.0, 200.0, 400.0, 120.0);
-        let (scene_factor, scene_anchor) = shell.timeline_zoom_pending.take().expect("scene claim");
+        let scene = shell.timeline_zoom_pending.take().expect("scene claim");
 
-        assert!((waveform_anchor - 30.0).abs() < 1e-9);
-        assert!((scene_anchor - 30.0).abs() < 1e-9);
-        assert!((waveform_factor - 1.2).abs() < 1e-9);
-        assert!((scene_factor - 1.2).abs() < 1e-9);
+        for (name, claim) in [("waveform", waveform), ("scene", scene)] {
+            let TimelineWheel::Zoom {
+                factor,
+                anchor_seconds,
+            } = claim
+            else {
+                panic!("{name} claimed a pan without Shift held");
+            };
+            assert!((anchor_seconds - 30.0).abs() < 1e-9, "{name} anchor");
+            assert!((factor - 1.2).abs() < 1e-9, "{name} factor");
+        }
+    }
+
+    /// Shift turns the notch into a pan (D4), and the property that matters is
+    /// that it moves the window **without changing the span**. A "pan" that also
+    /// zoomed would be indistinguishable from a zoom in any capture, because both
+    /// change what is on screen.
+    #[test]
+    fn a_shift_wheel_notch_pans_the_window_and_never_changes_the_span() {
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+        // Zoom in first: panning a whole-track view is refused, and rightly.
+        shell.timeline.zoom(120.0, 4.0, 60.0);
+        let span_before = shell.timeline.span_seconds;
+        let start_before = shell.timeline.start_seconds;
+
+        shell.wheel_pan_modifier = true;
+        shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
+        let TimelineWheel::Pan { delta_seconds } =
+            shell.timeline_zoom_pending.take().expect("a pan claim")
+        else {
+            panic!("Shift held and it still zoomed");
+        };
+        // Wheel up is earlier, matching a vertical scroll.
+        assert!(delta_seconds < 0.0, "wheel up must move the window back");
+        assert!(
+            (delta_seconds.abs() - span_before * TIMELINE_WHEEL_PAN_FRACTION).abs() < 1e-9,
+            "one notch is a fixed fraction of the visible span"
+        );
+
+        shell.timeline.pan(120.0, delta_seconds);
+        assert!(
+            (shell.timeline.span_seconds - span_before).abs() < 1e-9,
+            "a pan changed the zoom"
+        );
+        assert!(shell.timeline.start_seconds < start_before);
+        // And it detaches follow, exactly as a middle-drag pan does — the same
+        // gesture by a different input.
+        assert!(shell.timeline_manual_view);
+    }
+
+    /// A whole-track view has nowhere to pan to, and accepting the notch anyway
+    /// would light the Follow button over a view that never moved.
+    #[test]
+    fn a_shift_wheel_notch_over_a_whole_track_view_is_refused_outright() {
+        let mut shell = Shell::new();
+        shell.reset_timeline(120.0);
+        assert!(shell.timeline.is_whole(120.0));
+
+        shell.wheel_pan_modifier = true;
+        shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
+        assert_eq!(shell.timeline_zoom_pending, None);
+        assert!(
+            !shell.timeline_manual_view,
+            "a refused notch still suspended playback-follow"
+        );
     }
 
     #[test]
@@ -5522,10 +6061,16 @@ mod tests {
 
         shell.request_timeline_zoom(1.0, 110.0, 10.0, 400.0, 120.0);
         shell.request_timeline_zoom(3.0, 210.0, 10.0, 400.0, 120.0);
-        let (factor, anchor) = shell.timeline_zoom_pending.expect("first claim survives");
+        let TimelineWheel::Zoom {
+            factor,
+            anchor_seconds,
+        } = shell.timeline_zoom_pending.expect("first claim survives")
+        else {
+            panic!("a bare notch must zoom");
+        };
         assert!((factor - 1.2).abs() < 1e-9, "the second lane compounded it");
         assert!(
-            (anchor - 30.0).abs() < 1e-9,
+            (anchor_seconds - 30.0).abs() < 1e-9,
             "the second lane re-anchored it"
         );
     }
@@ -5577,7 +6122,7 @@ mod tests {
         // The pointer moves between frames, so a request is only ever true of the
         // frame that made it. Without this reset a resize arrow stays on screen
         // after the hand has left the handle.
-        shell.begin_frame(UiScale::default());
+        shell.begin_frame(UiScale::default(), false);
         assert_eq!(shell.pointer_cursor, None);
     }
 

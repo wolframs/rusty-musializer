@@ -605,6 +605,8 @@ fn run(
     // layout that is about to move would land somewhere nobody aimed.
     let mut click_at: Option<(f32, f32)> = None;
     let mut click_phase: u32 = 0;
+    let mut middle_drag_phase: u32 = 0;
+    let mut middle_drag: Option<(f32, f32)> = None;
     let mut audio_stall_ms: Option<u64> = None;
     let mut scene_clock_previous: Option<f64> = None;
 
@@ -790,6 +792,8 @@ fn run(
             // The same one-shot contract, and through the same classifier the
             // device path uses (D1).
             app.shell.probe_drop = probe.drop_file.clone();
+            app.shell.probe_wheel_shift = probe.wheel_shift;
+            middle_drag = probe.middle_drag;
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
@@ -1057,6 +1061,48 @@ fn run(
                 _ => None,
             });
             click_phase = click_phase.saturating_add(1);
+        }
+        // `--ui-probe middle-drag=FROMxTO`: press, two moved frames, release —
+        // after the same three settling frames `click=` waits for, and for the
+        // same reason.
+        //
+        // Two moved frames rather than one because the pan is recomputed from a
+        // *fixed* origin each frame, so a single moved frame would prove the
+        // arithmetic once and prove nothing about the gesture surviving a second.
+        // The release frame carries the destination coordinate too: a release
+        // that snapped the pointer back would pan the view back with it, and
+        // that is exactly the kind of last-frame mistake a probe should be able
+        // to catch.
+        if let Some((from_x, to_x)) = middle_drag {
+            let y = hover_at.map_or(0.0, |(_, y)| y);
+            app.shell.probe_middle_drag_frame = match middle_drag_phase {
+                3 => Some(ui::shell::ProbeMiddleDrag {
+                    x: from_x,
+                    y,
+                    pressed: true,
+                    down: true,
+                }),
+                4 => Some(ui::shell::ProbeMiddleDrag {
+                    x: (from_x + to_x) * 0.5,
+                    y,
+                    pressed: false,
+                    down: true,
+                }),
+                5 => Some(ui::shell::ProbeMiddleDrag {
+                    x: to_x,
+                    y,
+                    pressed: false,
+                    down: true,
+                }),
+                6 => Some(ui::shell::ProbeMiddleDrag {
+                    x: to_x,
+                    y,
+                    pressed: false,
+                    down: false,
+                }),
+                _ => None,
+            };
+            middle_drag_phase = middle_drag_phase.saturating_add(1);
         }
         // Exactly once per frame: raylib's `WindowShouldClose` clears the GLFW
         // flag as it reads it (`rcore_desktop_glfw.c`), which is what lets the
