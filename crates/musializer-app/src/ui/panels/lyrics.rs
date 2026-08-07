@@ -31,15 +31,17 @@ use std::path::PathBuf;
 
 use musializer_core::project::caption_effects::drive_value;
 use musializer_core::project::editor_draft::{LyricDraftState, LyricDraftValues};
-use musializer_core::project::lyrics::{self, CueOrigin, LyricCue, LyricsDocument, LyricsError};
+use musializer_core::project::lyrics::{
+    self, CueOrigin, LyricCue, LyricHistory, LyricsDocument, LyricsError,
+};
 use musializer_core::project::model::{
     caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, DriveTuning,
     EffectDrive,
 };
 use musializer_core::ui::lyric_clipboard::LyricClipboard;
 use musializer_core::ui::lyric_lane_edit::{
-    self, LyricLaneClick, LyricLaneSelection, LyricLaneZone, LYRIC_LANE_EDGE_GRAB_PIXELS,
-    LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS,
+    self, LyricLaneClick, LyricLaneSelection, LyricLaneZone, LyricTap, TapRefusal,
+    LYRIC_LANE_EDGE_GRAB_PIXELS, LYRIC_LANE_EDGE_MIN_BLOCK_PIXELS, LYRIC_MIN_CUE_SECONDS,
 };
 use musializer_core::ui::lyric_lane_stack::{row_geometry, shade_multiplier, LyricStack};
 use musializer_core::ui::lyrics_editor_layout::{self, LYRIC_EDITOR_ROW_HEIGHT};
@@ -531,11 +533,29 @@ pub enum LyricsEdit {
     Delete { id: u64 },
     /// A committed body drag in the lane (`lyrics_shift_many`, `:323`).
     ShiftMany { ids: Vec<u64>, delta_seconds: f64 },
-    /// A committed edge drag in the lane (`lyrics_retime`, `:337`).
+    /// A committed edge drag in the lane (`lyrics_retime`, `:337`), and every
+    /// stamp a tap run produces (UX0-C03).
     Retime {
         id: u64,
         start_seconds: f64,
         end_seconds: f64,
+    },
+    /// Break one cue in two at the playhead (`lyrics_split`, `lyrics.c:416-452`).
+    ///
+    /// Ported and tested since Agent B's band and unreachable from the interface
+    /// until UX0-B05: splitting a long imported line is the commonest subtitle
+    /// edit there is, and without it the only route was retyping both halves.
+    Split {
+        id: u64,
+        split_seconds: f64,
+        left_text: String,
+        right_text: String,
+    },
+    /// Join two canonically adjacent cues (`lyrics_merge`, `lyrics.c:454-487`).
+    Merge {
+        first_id: u64,
+        second_id: u64,
+        separator: String,
     },
     /// Any caption control (`draw_caption_style_form`'s `changed` flag, `:980`).
     ///
@@ -594,12 +614,91 @@ impl LyricsEdit {
                 .lyrics
                 .retime(id, start_seconds, end_seconds)
                 .map(|()| None),
+            LyricsEdit::Split {
+                id,
+                split_seconds,
+                left_text,
+                right_text,
+            } => track
+                .lyrics
+                .split(id, split_seconds, &left_text, &right_text)
+                .map(Some),
+            LyricsEdit::Merge {
+                first_id,
+                second_id,
+                separator,
+            } => track
+                .lyrics
+                .merge(first_id, second_id, &separator)
+                .map(|()| None),
             LyricsEdit::SetCaptionStyle(style) => {
                 track.caption_style = *style;
                 Ok(None)
             }
         }
     }
+
+    /// Whether this edit changes the cue document, and so belongs on the undo
+    /// stack (UX0-B03).
+    ///
+    /// `SetCaptionStyle` is the whole reason this predicate exists: it travels
+    /// down the same channel, it is the highest-frequency edit in the panel by
+    /// far — every frame of a slider drag is one — and it does not touch a cue.
+    /// Recording it would flood a 64-deep stack in under a second of dragging
+    /// and push every real cue edit out of reach.
+    #[must_use]
+    pub fn touches_cues(&self) -> bool {
+        !matches!(self, LyricsEdit::SetCaptionStyle(_))
+    }
+
+    /// The name this edit goes on the undo stack under, in the imperative the
+    /// notice reads back: "Undid: Move 3 cues".
+    #[must_use]
+    pub fn history_label(&self) -> String {
+        match self {
+            LyricsEdit::Insert { .. } => "Add cue".to_owned(),
+            LyricsEdit::Update { .. } => "Edit cue".to_owned(),
+            LyricsEdit::Delete { .. } => "Delete cue".to_owned(),
+            LyricsEdit::ShiftMany { ids, .. } => match ids.len() {
+                1 => "Move cue".to_owned(),
+                count => format!("Move {count} cues"),
+            },
+            LyricsEdit::Retime { .. } => "Retime cue".to_owned(),
+            LyricsEdit::Split { .. } => "Split cue".to_owned(),
+            LyricsEdit::Merge { .. } => "Merge cues".to_owned(),
+            LyricsEdit::SetCaptionStyle(_) => "Caption style".to_owned(),
+        }
+    }
+}
+
+/// The name one drained batch goes on the undo stack under.
+///
+/// A batch is one user action — one frame's worth of pushes — so it earns one
+/// snapshot and one label. A cut of five cues is five `Delete`s and one step,
+/// because five presses of Ctrl+Z to reverse one press of Ctrl+X is not undo.
+///
+/// Returns `None` when the batch touched no cue, which is the caption-style
+/// case and must not consume a stack slot.
+#[must_use]
+fn batch_history_label(edits: &[LyricsEdit]) -> Option<String> {
+    let mut cue_edits = edits.iter().filter(|edit| edit.touches_cues());
+    let first = cue_edits.next()?;
+    let remaining = cue_edits.count();
+    Some(match remaining {
+        0 => first.history_label(),
+        // A tap is exactly two retimes — the line it closes and the line it
+        // opens — and naming that pair "2 edits" would make a run of taps read
+        // as a wall of identical anonymous steps.
+        1 if matches!(first, LyricsEdit::Retime { .. }) => "Stamp cue".to_owned(),
+        count => format!("{} edits", count + 1),
+    })
+}
+
+/// Which way a pending history step goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryStep {
+    Undo,
+    Redo,
 }
 
 /// One deferred edit and the workspace slot it was authored against
@@ -810,6 +909,100 @@ pub struct LyricEditor {
     pending: Vec<PendingLyricEdit>,
     /// UX0-A05 evidence, written by [`Shell::cue_list`] every frame it draws.
     authored: AuthoredEvidence,
+
+    // -- the timing loop (UX0-B02/B03/B04/B05, UX0-C03) --------------------
+    /// Undo/redo for this track's cue document.
+    ///
+    /// Held here rather than on the [`Track`] so the whole feature stays inside
+    /// this panel's ownership, and cleared by [`Self::enter_track`] for the same
+    /// reason [`Self::owner_slot`] exists: cue ids restart at 1 in every
+    /// document, so one track's history restores another track's cues.
+    ///
+    /// The cost of that decision, stated rather than hidden: switching tracks
+    /// and switching back loses the history. A per-slot map would keep it, and
+    /// is the obvious follow-up if anyone misses it.
+    history: LyricHistory,
+    /// A history step the panel asked for and `main.rs` has not run yet.
+    ///
+    /// A request rather than a direct call for the same reason every edit here
+    /// is deferred: the panel draws inside a begin/end pair and does not hold
+    /// `&mut Track`.
+    history_request: Option<HistoryStep>,
+    /// The play-and-tap run, armed or not.
+    tap: LyricTap,
+    /// The instant a tap run last stamped, for the readout, so the status line
+    /// can show *where* the last press landed rather than only how many landed.
+    tap_last_seconds: Option<f64>,
+    /// A seek the panel wants the transport to make (UX0-B02).
+    ///
+    /// Selecting a cue moves the playhead to its start, which is the single
+    /// change that turns the cue list from a spreadsheet into a transport: the
+    /// C's row click selects and never seeks, so checking a line meant reading
+    /// its timecode and scrubbing to it by hand.
+    seek_request: Option<f64>,
+    /// Which time field is being typed into, and the buffer, or `None`
+    /// (UX0-B04).
+    ///
+    /// The readout has always shown milliseconds and never accepted them. This
+    /// is a `TextField` rather than a raw string so the caret, the selection and
+    /// the clipboard behave the way the cue field does.
+    time_edit: Option<TimeEdit>,
+    /// Hold-to-repeat state for whichever nudge button is down.
+    nudge_repeat: HoldRepeat,
+}
+
+/// A time readout being typed into (UX0-B04).
+struct TimeEdit {
+    /// `true` for START, `false` for END.
+    is_start: bool,
+    field: TextField,
+}
+
+/// Hold-to-repeat for the nudge buttons (UX0-B04).
+///
+/// Counted in **frames** rather than seconds, which is the one decision here
+/// worth defending. A wall clock would give a repeat rate that is the same on
+/// every machine, which is the usual argument — but this repository's evidence
+/// is a headless capture run at a fixed frame budget under Xvfb, where
+/// `GetTime` measures how long the software renderer took and nothing a user
+/// would recognise. A frame count makes "hold the button for 30 frames and the
+/// value moves 4 steps" a thing a probe can assert.
+///
+/// At the app's normal 60 Hz the numbers below are a 0.33 s delay and about 17
+/// steps a second, which is the ladder every spinner control uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HoldRepeat {
+    /// The widget currently held, or `0`.
+    id: u64,
+    frames: u32,
+}
+
+impl HoldRepeat {
+    /// Frames a button must be held before it starts repeating.
+    const DELAY_FRAMES: u32 = 20;
+    /// Frames between repeats once it has started.
+    const INTERVAL_FRAMES: u32 = 4;
+
+    /// Advances the state for one frame and reports whether `id` should fire an
+    /// extra step now.
+    ///
+    /// Never fires on the frame the press begins: that one belongs to
+    /// `clicked`, and firing both would move the value two steps for one tap.
+    fn tick(&mut self, id: u64, pressed: bool) -> bool {
+        if !pressed {
+            if self.id == id {
+                *self = Self::default();
+            }
+            return false;
+        }
+        if self.id != id {
+            *self = Self { id, frames: 0 };
+            return false;
+        }
+        self.frames += 1;
+        self.frames > Self::DELAY_FRAMES
+            && (self.frames - Self::DELAY_FRAMES) % Self::INTERVAL_FRAMES == 0
+    }
 }
 
 impl Default for LyricEditor {
@@ -831,7 +1024,7 @@ impl LyricEditor {
     /// into the editor's text state, and this is the only question it needs.
     #[must_use]
     pub fn is_typing(&self) -> bool {
-        self.text.is_focused()
+        self.text.is_focused() || self.time_edit.is_some()
     }
 
     #[must_use]
@@ -866,6 +1059,13 @@ impl LyricEditor {
             owner_slot: None,
             pending: Vec::new(),
             authored: AuthoredEvidence::default(),
+            history: LyricHistory::new(),
+            history_request: None,
+            tap: LyricTap::default(),
+            tap_last_seconds: None,
+            seek_request: None,
+            time_edit: None,
+            nudge_repeat: HoldRepeat::default(),
         }
     }
 
@@ -931,6 +1131,15 @@ impl LyricEditor {
         // ids it holds all resolve against the new one.
         self.lane_selection.clear();
         self.list_first = 0;
+        // Both of these hold cue ids from the document being left, and both
+        // would resolve — wrongly — against the one being entered. The history
+        // is the more serious of the two: restoring it would replace this
+        // track's whole document with another track's.
+        self.history.clear();
+        self.history_request = None;
+        self.tap.disarm();
+        self.tap_last_seconds = None;
+        self.seek_request = None;
         lost
     }
 
@@ -975,6 +1184,186 @@ impl LyricEditor {
         let _ = self
             .lane_selection
             .apply(document, id, LyricLaneClick::Replace);
+    }
+
+    // -----------------------------------------------------------------------
+    // The timing loop (UX0-B02/B03/B04/B05, UX0-C03)
+    // -----------------------------------------------------------------------
+
+    /// Binds the form to a cue **and asks the transport to go there** (UX0-B02).
+    ///
+    /// The C's row click selects and never seeks (`lyrics_editor_ui.c:1255`), so
+    /// checking a line meant reading its timecode off the row and scrubbing to it
+    /// by hand — 60 lines is 120 of those. Seeking to the cue's start rather than
+    /// its middle is deliberate: the start is the thing being judged, and landing
+    /// there means pressing play immediately answers "is this on the beat".
+    pub fn select_and_seek(&mut self, document: &LyricsDocument, id: u64) {
+        let Some(start) = document.find(id).map(|cue| cue.start_seconds) else {
+            return;
+        };
+        self.select_single(document, id);
+        self.seek_request = Some(start);
+    }
+
+    /// Steps the selection to the neighbouring cue in canonical order and seeks
+    /// there, for the Up/Down keys.
+    ///
+    /// With nothing selected it takes the cue under the playhead, so pressing
+    /// Down on a fresh panel starts where the user is listening rather than at
+    /// the top of a 200-line document.
+    pub fn step_selection(&mut self, document: &LyricsDocument, forward: bool, playhead: f64) {
+        if document.is_empty() {
+            return;
+        }
+        let current = document.index_of(self.selected_id).or_else(|| {
+            document
+                .cues()
+                .iter()
+                .position(|cue| cue.start_seconds <= playhead && playhead < cue.end_seconds)
+        });
+        let next = match (current, forward) {
+            (None, true) => 0,
+            (None, false) => document.len() - 1,
+            // Saturating at both ends rather than wrapping: a list that jumps
+            // from the last line to the first reads as a lost keypress.
+            (Some(index), true) => (index + 1).min(document.len() - 1),
+            (Some(index), false) => index.saturating_sub(1),
+        };
+        let id = document.cues()[next].id;
+        self.select_and_seek(document, id);
+    }
+
+    /// Takes the seek the panel asked for, if any.
+    pub fn take_seek_request(&mut self) -> Option<f64> {
+        self.seek_request.take()
+    }
+
+    /// Records one drained batch on the undo stack, before it is applied.
+    ///
+    /// `before` is the document as it stands with the batch still pending, which
+    /// is the state Ctrl+Z must return to.
+    pub fn record_history(&mut self, edits: &[LyricsEdit], before: &LyricsDocument) {
+        if let Some(label) = batch_history_label(edits) {
+            self.history.record(label, before);
+        }
+    }
+
+    /// Asks for an undo or a redo on the next drain.
+    pub fn request_history(&mut self, step: HistoryStep) {
+        self.history_request = Some(step);
+    }
+
+    /// Runs a requested history step against `document`.
+    ///
+    /// Returns `None` when nothing was requested or there was nothing to do in
+    /// that direction, so the caller can say so rather than leaving a keypress
+    /// unanswered.
+    pub fn run_history_step(
+        &mut self,
+        document: &mut LyricsDocument,
+    ) -> Option<(HistoryStep, Result<String, String>)> {
+        let step = self.history_request.take()?;
+        let outcome = match step {
+            HistoryStep::Undo => self.history.undo(document),
+            HistoryStep::Redo => self.history.redo(document),
+        }?;
+        // A restored document invalidates every cue id the panel is holding: an
+        // undone insert takes its cue with it, and a bound form would then edit
+        // an id that is not there.
+        self.lane_selection.prune(document);
+        if document.find(self.selected_id).is_none() {
+            self.clear_draft();
+        } else {
+            self.select(document, self.selected_id);
+        }
+        // A run armed over an order the undo just rewrote would stamp the wrong
+        // lines. Ending it is the honest answer, and the status line says so.
+        self.tap.disarm();
+        Some((step, outcome.map_err(|failure| failure.to_string())))
+    }
+
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    #[must_use]
+    pub fn tap_is_armed(&self) -> bool {
+        self.tap.is_armed()
+    }
+
+    /// Arms or disarms the tap run, reporting what happened for the notice.
+    ///
+    /// Arming blurs the cue field, and that exclusion is the whole answer to the
+    /// defect review 2 names: `begin_new` focuses the field, a focused field
+    /// stands down every global key including Space, and the natural
+    /// add-type-play-tap loop broke at the tap. Tap mode and text entry are
+    /// mutually exclusive states rather than two things fighting over the
+    /// keyboard, so there is no key that means two things at once.
+    pub fn toggle_tap(&mut self, document: &LyricsDocument, playhead: f64) -> bool {
+        if self.tap.is_armed() {
+            self.tap.disarm();
+            return false;
+        }
+        self.text.set_focused(false);
+        self.time_edit = None;
+        self.tap_last_seconds = None;
+        self.tap.arm(document, playhead)
+    }
+
+    /// One tap at the playhead. Enqueues the retimes it asks for.
+    pub fn tap(&mut self, document: &LyricsDocument, at_seconds: f64) -> Result<usize, TapRefusal> {
+        let stamp = self.tap.tap(document, at_seconds)?;
+        let opened = stamp.opened_id;
+        let stamped: Vec<_> = stamp.retimes.clone();
+        for (id, start_seconds, end_seconds) in stamped {
+            self.push(LyricsEdit::Retime {
+                id,
+                start_seconds,
+                end_seconds,
+            });
+        }
+        self.tap_last_seconds = Some(at_seconds + self.tap.offset_seconds());
+        // Bind the form to the line just placed, so the readout and the list
+        // follow the run without a click. Not `select_and_seek` — seeking to the
+        // cue you just stamped would stop the music the run is riding on.
+        if opened != 0 {
+            self.select_single(document, opened);
+        }
+        Ok(stamp.remaining)
+    }
+
+    pub fn adjust_tap_offset(&mut self, steps: i32) {
+        self.tap.adjust_offset(steps);
+    }
+
+    #[must_use]
+    pub fn tap_offset_seconds(&self) -> f64 {
+        self.tap.offset_seconds()
+    }
+
+    /// The tap run's status line, or `None` when no run is armed.
+    #[must_use]
+    fn tap_status(&self) -> Option<String> {
+        if !self.tap.is_armed() {
+            return None;
+        }
+        let offset_ms = (self.tap.offset_seconds() * 1000.0).round() as i64;
+        let target = match self.tap.target_id() {
+            Some(_) => format!("line {} of {}", self.tap.position(), self.tap.total()),
+            // The N+1st press, which places the last line's out point. Naming it
+            // is what stops a user thinking the run already ended.
+            None => "the last line's end".to_owned(),
+        };
+        Some(format!(
+            "TAP  Enter stamps {target}  |  {} placed  |  offset {offset_ms:+} ms ([ / ])  |  Esc ends",
+            self.tap.stamped()
+        ))
     }
 
     /// `lyric_editor_ui_begin_new` (`:120-131`).
@@ -1361,6 +1750,16 @@ impl Shell {
         // `self`, and `draw_lyrics` needs them at once.
         let mut editor = std::mem::take(&mut self.lyrics);
         let zoom_row_y = self.draw_lyrics(d, input, &mut editor, content, strip, commands);
+        // Drained here rather than inside `draw_lyrics` so that **every** return
+        // path is covered by exactly one drain (UX0-B02). `draw_lyrics` has five
+        // early returns — no track, an empty panel, a band too short for the
+        // form, the caption pane — and a seek asked for by a key before one of
+        // them would otherwise be stranded in the field forever. One drain also
+        // means one `Seek` per frame: two in a batch would be applied in list
+        // order and land on whichever was pushed second.
+        if let Some(seconds) = editor.take_seek_request() {
+            commands.push(ShellCommand::Seek(seconds));
+        }
         self.lyrics = editor;
         zoom_row_y
     }
@@ -2086,10 +2485,16 @@ impl Shell {
         if !lyric_clipboard_keys_allowed(
             editor.style_pane,
             editor.font_pane,
-            editor.text.is_focused(),
+            editor.text.is_focused() || editor.time_edit.is_some(),
         ) {
             return;
         }
+
+        // The timing loop's own bindings, ahead of the clipboard's, because the
+        // one key a tap run needs must never be reachable only through a
+        // modifier the other hand is already holding.
+        self.lyric_timing_keys(d, input, editor, track);
+
         if !(d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL)) {
             return;
         }
@@ -2165,6 +2570,253 @@ impl Shell {
             Severity::Success,
             "Cues pasted",
             &format!("{count} cue(s) at {}.", widgets::format_timestamp(at)),
+        );
+    }
+
+    /// The timing loop's keyboard (UX0-B02/B03/B04/B05, UX0-C03).
+    ///
+    /// **Every binding here is a key the shell does not already own**, and that
+    /// constraint chose most of them. The shell reads the keyboard before any
+    /// panel draws (`Shell::keyboard`), and its globals are unconditional once no
+    /// text field has focus: `T` opens the inspector, `M` mutes, `F` goes
+    /// fullscreen, `H` toggles the readout, `S` saves, `Space` plays, `Tab`
+    /// cycles the scene, and the arrows seek. A panel key that shadowed one of
+    /// those would fire *both*, because the panel runs second and neither side
+    /// consumes the press.
+    ///
+    /// So the tap key is **Enter**. It is the only unbound key that is large,
+    /// central and reachable without looking — which for a control the user
+    /// presses in time with music is not a nicety. `Ctrl+Enter` arms the run, and
+    /// cannot collide with the form's own `Ctrl+Enter` because that one requires
+    /// the cue field to have focus and an armed run requires it not to.
+    fn lyric_timing_keys(
+        &mut self,
+        d: &RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        editor: &mut LyricEditor,
+        track: &Track,
+    ) {
+        use raylib::consts::KeyboardKey as Key;
+
+        let control = d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL);
+        let shift = d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT);
+        let playhead = self.timeline_playhead_seconds(input.time_seconds);
+        let enter = d.is_key_pressed(Key::KEY_ENTER) || d.is_key_pressed(Key::KEY_KP_ENTER);
+
+        // -- the tap run -----------------------------------------------------
+        if enter && control {
+            self.toggle_tap_run(editor, track, playhead);
+            return;
+        }
+        if enter {
+            self.tap_once(editor, track, playhead);
+            return;
+        }
+        if editor.tap_is_armed() {
+            if d.is_key_pressed(Key::KEY_ESCAPE) {
+                editor.toggle_tap(&track.lyrics, playhead);
+                self.notify(
+                    Severity::Info,
+                    "Tap run ended",
+                    "Ctrl+Enter starts another one from the playhead.",
+                );
+                return;
+            }
+            // The calibration keys, live during a run so a user who hears
+            // themselves landing late can fix it without stopping.
+            let steps = i32::from(d.is_key_pressed(Key::KEY_RIGHT_BRACKET))
+                - i32::from(d.is_key_pressed(Key::KEY_LEFT_BRACKET));
+            if steps != 0 {
+                editor.adjust_tap_offset(steps);
+            }
+        }
+
+        // -- undo and redo ---------------------------------------------------
+        if control && d.is_key_pressed(Key::KEY_Z) {
+            editor.request_history(if shift {
+                HistoryStep::Redo
+            } else {
+                HistoryStep::Undo
+            });
+            return;
+        }
+        if control && d.is_key_pressed(Key::KEY_Y) {
+            editor.request_history(HistoryStep::Redo);
+            return;
+        }
+
+        // -- split and merge (UX0-B05) ---------------------------------------
+        if control && d.is_key_pressed(Key::KEY_B) {
+            self.split_selected(editor, track, playhead);
+            return;
+        }
+        if control && d.is_key_pressed(Key::KEY_J) {
+            self.merge_selected(editor, track);
+            return;
+        }
+
+        // -- safe deletion (UX0-B03) -----------------------------------------
+        //
+        // Bound at all only because undo exists: the review's objection to the
+        // Delete *button* was that it was one unconfirmed click with no way
+        // back, and a key is one unconfirmed keystroke. The answer is the same
+        // for both, and it is Ctrl+Z rather than a confirmation dialog — a
+        // reversible destructive action does not need to be slow.
+        if d.is_key_pressed(Key::KEY_DELETE) && editor.selected_id != 0 && !editor.draft_new {
+            let id = editor.selected_id;
+            editor.push(LyricsEdit::Delete { id });
+            editor.clear_draft();
+            self.notify(
+                Severity::Info,
+                "Cue deleted",
+                "Ctrl+Z puts it back, with its id and its provenance.",
+            );
+            return;
+        }
+
+        // -- selection and nudging -------------------------------------------
+        if d.is_key_pressed(Key::KEY_DOWN) || d.is_key_pressed(Key::KEY_UP) {
+            let forward = d.is_key_pressed(Key::KEY_DOWN);
+            editor.step_selection(&track.lyrics, forward, playhead);
+            return;
+        }
+        let nudge = i32::from(
+            d.is_key_pressed(Key::KEY_PERIOD) || d.is_key_pressed_repeat(Key::KEY_PERIOD),
+        ) - i32::from(
+            d.is_key_pressed(Key::KEY_COMMA) || d.is_key_pressed_repeat(Key::KEY_COMMA),
+        );
+        if nudge != 0 && !editor.lane_selection.is_empty() {
+            let step = lyric_lane_edit::cue_nudge_step_seconds(control, shift) * f64::from(nudge);
+            let delta = lyric_lane_edit::clamp_move(&track.lyrics, &editor.lane_selection, step);
+            if delta != 0.0 {
+                editor.push(LyricsEdit::ShiftMany {
+                    ids: editor.lane_selection.ids().to_vec(),
+                    delta_seconds: delta,
+                });
+            }
+        }
+    }
+
+    /// Arms or ends a tap run, and says which (UX0-C03).
+    fn toggle_tap_run(&mut self, editor: &mut LyricEditor, track: &Track, playhead: f64) {
+        if editor.tap_is_armed() {
+            editor.toggle_tap(&track.lyrics, playhead);
+            self.notify(
+                Severity::Info,
+                "Tap run ended",
+                "Ctrl+Enter starts another one from the playhead.",
+            );
+            return;
+        }
+        if !self.allow_context_change(editor, track) {
+            return;
+        }
+        if editor.toggle_tap(&track.lyrics, playhead) {
+            self.notify(
+                Severity::Success,
+                "Tap mode armed",
+                "Play, then press Enter on each line. Every press closes the line before it.",
+            );
+        } else {
+            // The one refusal a user meets by accident, so it names the way out
+            // rather than only the problem.
+            self.notify(
+                Severity::Warning,
+                "Nothing to stamp",
+                "Tapping places the times of lines that already exist. Add cues, or import a .lyrics.tsv.",
+            );
+        }
+    }
+
+    /// One tap press.
+    fn tap_once(&mut self, editor: &mut LyricEditor, track: &Track, playhead: f64) {
+        match editor.tap(&track.lyrics, playhead) {
+            Ok(0) => self.notify(
+                Severity::Success,
+                "Tap run finished",
+                "Every line has a start, and the last one has an end.",
+            ),
+            Ok(_) => {}
+            // Not armed is not a refusal worth a notice: Enter is a key people
+            // press for many reasons, and answering every one of them with a
+            // toast would make the panel nag.
+            Err(TapRefusal::NotArmed) => {}
+            Err(refusal) => self.notify(
+                Severity::Warning,
+                "That tap did not land",
+                &refusal.to_string(),
+            ),
+        }
+    }
+
+    /// Breaks the selected cue at the playhead (UX0-B05).
+    ///
+    /// The text is split at the word boundary nearest the seam's position within
+    /// the cue, which is a guess — but it is the guess a subtitle editor makes,
+    /// and it is right for the case this exists for: one imported line covering
+    /// two sung phrases. A wrong guess costs one edit in a field that is already
+    /// open; retyping both halves is what it replaces.
+    fn split_selected(&mut self, editor: &mut LyricEditor, track: &Track, playhead: f64) {
+        let Some(cue) = track.lyrics.find(editor.selected_id) else {
+            self.notify(
+                Severity::Warning,
+                "No cue to split",
+                "Select a line in the lane or the list first.",
+            );
+            return;
+        };
+        if playhead <= cue.start_seconds + LYRIC_MIN_CUE_SECONDS
+            || playhead >= cue.end_seconds - LYRIC_MIN_CUE_SECONDS
+        {
+            self.notify(
+                Severity::Warning,
+                "The playhead is not inside that cue",
+                "Move it into the line, at least 20 ms from either end, and split there.",
+            );
+            return;
+        }
+        let fraction = (playhead - cue.start_seconds) / (cue.end_seconds - cue.start_seconds);
+        let (left, right) = split_text_at_fraction(&cue.text, fraction);
+        editor.push(LyricsEdit::Split {
+            id: cue.id,
+            split_seconds: playhead,
+            left_text: left,
+            right_text: right,
+        });
+        self.notify(
+            Severity::Success,
+            "Cue split",
+            "The words were divided at the nearest space. Ctrl+Z undoes it.",
+        );
+    }
+
+    /// Joins the selected cue with the one after it (UX0-B05).
+    fn merge_selected(&mut self, editor: &mut LyricEditor, track: &Track) {
+        let Some(index) = track.lyrics.index_of(editor.selected_id) else {
+            self.notify(
+                Severity::Warning,
+                "No cue to merge",
+                "Select a line in the lane or the list first.",
+            );
+            return;
+        };
+        let Some(next) = track.lyrics.cues().get(index + 1) else {
+            self.notify(
+                Severity::Warning,
+                "Nothing to merge with",
+                "The selected line is the last one in the document.",
+            );
+            return;
+        };
+        editor.push(LyricsEdit::Merge {
+            first_id: track.lyrics.cues()[index].id,
+            second_id: next.id,
+            separator: " ".to_owned(),
+        });
+        self.notify(
+            Severity::Success,
+            "Cues merged",
+            "The two lines are one, spanning both. Ctrl+Z undoes it.",
         );
     }
 
@@ -2641,7 +3293,12 @@ impl Shell {
                 drop(clip);
             }
             if state.clicked && (selected || self.allow_context_change(editor, track)) {
-                editor.select_single(&track.lyrics, cue.id);
+                // Seeks as well as selects (UX0-B02). Clicking a row you are
+                // already on re-seeks to its start on purpose: after nudging a
+                // cue, "take me back to the top of this line so I can hear it"
+                // is the commonest thing anyone wants next, and re-clicking the
+                // row is the obvious way to ask.
+                editor.select_and_seek(&track.lyrics, cue.id);
             }
         }
 
@@ -2806,15 +3463,13 @@ impl Shell {
 
         let duration = track.lyrics.duration_seconds();
         let playhead = input.time_seconds;
-        let mut start = editor.draft_start;
-        let mut end = editor.draft_end;
         self.time_row(
             d,
             font,
             UiRect::new(form.x, form.y + 30.0, form.width, 30.0),
             "START",
-            &mut start,
-            end,
+            input.fonts.authored(),
+            editor,
             true,
             playhead,
             duration,
@@ -2825,15 +3480,13 @@ impl Shell {
             font,
             UiRect::new(form.x, form.y + 64.0, form.width, 30.0),
             "END",
-            &mut end,
-            start,
+            input.fonts.authored(),
+            editor,
             false,
             playhead,
             duration,
             form_id::END_TIME,
         );
-        editor.draft_start = start;
-        editor.draft_end = end;
 
         let field = UiRect::new(form.x, form.y + 101.0, form.width, 37.0);
         // The user's own words go through the caption atlas while being typed,
@@ -2960,28 +3613,93 @@ impl Shell {
             });
             editor.clear_draft();
         }
-        // The shortcut hint's row carries the overlap warning instead when there
-        // is one (review 1.14). There is no spare row in this form, and a line
-        // that will never reach the screen outranks a reminder about Ctrl+V.
-        // It describes the *stored* cue, not the draft: it is telling the user
-        // what the project does today.
+        // The timing controls take the room to the right of Delete rather than a
+        // row of their own: growing the form means moving
+        // `lyrics_editor_layout`'s harness-pinned panel heights, which UX0-C17
+        // already records as a deliberate change that queues rather than sneaks
+        // in. Every one of them has a key, so a narrow window sheds the button
+        // and keeps the capability.
+        let controls_x = remove.x + remove.width + metric::UI_CONTROL_GAP;
+        let rung = timing_ladder_for(form.x + form.width - controls_x);
+        for (index, control) in rung.iter().enumerate() {
+            let rect = UiRect::new(
+                controls_x + index as f32 * (TIMING_BUTTON_WIDTH + TIMING_BUTTON_GAP),
+                apply.y,
+                TIMING_BUTTON_WIDTH,
+                apply.height,
+            );
+            let (enabled, active) = match control {
+                TimingControl::Tap => (!track.lyrics.is_empty(), editor.tap_is_armed()),
+                TimingControl::Split | TimingControl::Merge => {
+                    (editor.selected_id != 0 && !editor.draft_new, false)
+                }
+                TimingControl::Undo => (editor.can_undo(), false),
+                TimingControl::Redo => (editor.can_redo(), false),
+            };
+            if !enabled {
+                // A control that cannot act says so where it is, rather than
+                // taking a press and doing nothing.
+                self.widgets
+                    .disabled_button(d, font, rect, control.label(), Some(13.0));
+                continue;
+            }
+            let id = widgets::widget_id(ns::ACTIONS, control.widget_index());
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                rect,
+                control.label(),
+                active,
+                ButtonStyle::Neutral,
+                Some(13.0),
+            );
+            // Icons cost discoverability and so do four-letter labels: the key
+            // is the only place the binding is written down, which is the same
+            // argument the transport row's tooltips already carry.
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                rect,
+                &format!("{} ({})", control.label(), control.key()),
+            );
+            if !state.clicked {
+                continue;
+            }
+            match control {
+                TimingControl::Tap => self.toggle_tap_run(editor, track, playhead),
+                TimingControl::Split => self.split_selected(editor, track, playhead),
+                TimingControl::Merge => self.merge_selected(editor, track),
+                TimingControl::Undo => editor.request_history(HistoryStep::Undo),
+                TimingControl::Redo => editor.request_history(HistoryStep::Redo),
+            }
+        }
+
+        // The hint row says one of three things, in this order of precedence: an
+        // armed tap run, an overlap that will keep the selected cue off screen
+        // (review 1.14), or the shortcut list. The run wins because it is a mode
+        // the user is *in* and the other two are facts they can come back to.
+        let tap_status = editor.tap_status();
         let notice = (!editor.draft_new)
             .then(|| shadow_notice(&track.lyrics, editor.selected_id))
             .flatten();
+        let (line, tint) = match (tap_status.as_deref(), notice.as_deref()) {
+            (Some(status), _) => (status, color::accent()),
+            (None, Some(warning)) => (warning, color::ui_warning()),
+            (None, None) => (
+                "Ctrl+Enter taps  |  Ctrl+Z undoes  |  Ctrl+B splits  |  Ctrl+J merges  |  Del removes",
+                color::ui_muted(),
+            ),
+        };
         widgets::draw_text(
             d,
             font,
-            notice
-                .as_deref()
-                .unwrap_or("Ctrl+Enter applies  |  Ctrl+V pastes  |  Ctrl+A selects all"),
+            line,
             form.x,
             apply.y + apply.height + 7.0,
             metric::UI_FONT_LABEL - 2.0,
-            if notice.is_some() {
-                color::ui_warning()
-            } else {
-                color::ui_muted()
-            },
+            tint,
         );
         // Ctrl+Enter, the oracle's shortcut (`:1420-1423`).
         if editor.text.is_focused()
@@ -3005,13 +3723,24 @@ impl Shell {
         font: &UiFonts,
         boundary: UiRect,
         label: &str,
-        value: &mut f64,
-        other: f64,
+        authored: musializer_runtime::font::AuthoredText<'_>,
+        editor: &mut LyricEditor,
         is_start: bool,
         playhead: f64,
         duration: f64,
         id_base: u32,
     ) {
+        use raylib::consts::KeyboardKey as Key;
+
+        // The row reads and writes the draft directly rather than through an
+        // out-parameter, so the END row sees the START row's clamped value in
+        // the same frame instead of a copy taken before it ran.
+        let (mut value, other) = if is_start {
+            (editor.draft_start, editor.draft_end)
+        } else {
+            (editor.draft_end, editor.draft_start)
+        };
+        let value = &mut value;
         widgets::draw_text(
             d,
             font,
@@ -3021,15 +3750,27 @@ impl Shell {
             metric::UI_FONT_LABEL,
             color::ui_muted(),
         );
-        widgets::draw_text(
-            d,
-            font,
-            &widgets::format_timestamp(*value),
-            boundary.x + 58.0,
-            boundary.y + 7.0,
-            18.0,
-            color::ui_ink(),
+        // The modifier ladder, read once so the readout, the labels and the
+        // arithmetic cannot disagree about what Ctrl means this frame.
+        let fine = d.is_key_down(Key::KEY_LEFT_CONTROL) || d.is_key_down(Key::KEY_RIGHT_CONTROL);
+        let coarse = d.is_key_down(Key::KEY_LEFT_SHIFT) || d.is_key_down(Key::KEY_RIGHT_SHIFT);
+        let step = lyric_lane_edit::cue_nudge_step_seconds(fine, coarse);
+
+        // The readout is a field, not a label (UX0-B04). It has shown
+        // milliseconds since the C and never accepted them, so a cue could be
+        // *seen* to a thousandth and only *moved* in tenths.
+        let readout = UiRect::new(
+            boundary.x + 54.0,
+            boundary.y + 2.0,
+            94.0,
+            boundary.height - 4.0,
         );
+        if let Some(typed) = self.time_readout(
+            d, font, authored, editor, readout, is_start, *value, id_base,
+        ) {
+            *value = typed;
+        }
+
         let gap = 4.0;
         let minus = UiRect::new(boundary.x + 154.0, boundary.y, 42.0, boundary.height);
         let plus = UiRect::new(
@@ -3039,32 +3780,52 @@ impl Shell {
             boundary.height,
         );
         let set = UiRect::new(plus.x + plus.width + gap, boundary.y, 78.0, boundary.height);
-        let labels: [&str; 3] = ["-0.1", "+0.1", "Set here"];
+        // The labels state the step the modifiers currently mean, rather than a
+        // fixed "-0.1" that is a lie whenever Ctrl is down. A button whose label
+        // does not match what it does is the "control that lies" failure this
+        // repository keeps finding, and here it costs one format call.
+        let minus_label = format!("-{step}");
+        let plus_label = format!("+{step}");
+        let labels: [&str; 3] = [&minus_label, &plus_label, "Set here"];
         let widths = [minus.width, plus.width, set.width];
         let size = widgets::row_font_size(font, &labels, &widths, boundary.height);
         for (index, (rect, label)) in [(minus, labels[0]), (plus, labels[1]), (set, labels[2])]
             .into_iter()
             .enumerate()
         {
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    widgets::widget_id(ns::FORM, id_base + index as u32),
-                    rect,
-                    label,
-                    false,
-                    ButtonStyle::Neutral,
-                    Some(size),
-                )
-                .clicked
-            {
+            let id = widgets::widget_id(ns::FORM, id_base + index as u32);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                rect,
+                label,
+                false,
+                ButtonStyle::Neutral,
+                Some(size),
+            );
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                rect,
                 match index {
-                    0 => *value -= 0.1,
-                    1 => *value += 0.1,
-                    _ => *value = playhead,
-                }
+                    0 | 1 => "Ctrl for 0.01 s, Shift for 1 s. Hold to repeat.",
+                    _ => "Move this end to the playhead",
+                },
+            );
+            // Hold-to-repeat on the two nudges (UX0-B04). Counted in frames
+            // rather than seconds on purpose: a headless probe runs a fixed
+            // frame budget with no wall clock worth trusting, so a frame count
+            // is the only repeat rule a capture can reproduce.
+            let repeating = index < 2 && editor.nudge_repeat.tick(id, state.pressed);
+            if !(state.clicked || repeating) {
+                continue;
+            }
+            match index {
+                0 => *value -= step,
+                1 => *value += step,
+                _ => *value = playhead,
             }
         }
         // Clamped after the buttons, as the oracle does, so a nudge past the
@@ -3075,9 +3836,104 @@ impl Shell {
         // for any cue shorter than the minimum gap, which the model loads
         // happily. See `clamp_form_start`.
         if is_start {
-            *value = lyric_lane_edit::clamp_form_start(*value, other);
+            editor.draft_start = lyric_lane_edit::clamp_form_start(*value, other);
         } else {
-            *value = lyric_lane_edit::clamp_form_end(*value, other, duration);
+            editor.draft_end = lyric_lane_edit::clamp_form_end(*value, other, duration);
+        }
+    }
+
+    /// The `MM:SS.mmm` readout, as a field a user can type into (UX0-B04).
+    ///
+    /// Returns a new value only when a typed time was **committed** — Enter or a
+    /// click away — never on every keystroke. Typing `0` on the way to `01:23`
+    /// would otherwise clamp the cue to the top of the track and take the rest of
+    /// the string with it.
+    ///
+    /// A refused string is *kept in the field*, not silently reverted. The user
+    /// can see what they typed and fix it; a field that empties itself when you
+    /// get a character wrong is the most annoying possible answer.
+    fn time_readout(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        authored: musializer_runtime::font::AuthoredText<'_>,
+        editor: &mut LyricEditor,
+        boundary: UiRect,
+        is_start: bool,
+        value: f64,
+        id_base: u32,
+    ) -> Option<f64> {
+        use raylib::consts::KeyboardKey as Key;
+
+        let id = widgets::widget_id(ns::FORM, id_base + 3);
+        let editing = editor
+            .time_edit
+            .as_ref()
+            .is_some_and(|edit| edit.is_start == is_start);
+        if !editing {
+            let state = self.widgets.button(d, id, boundary);
+            if state.hovered {
+                widgets::fill(d, boundary, color::track_button_hoverover());
+            }
+            widgets::draw_text(
+                d,
+                font,
+                &widgets::format_timestamp(value),
+                boundary.x + 4.0,
+                boundary.y + 3.0,
+                18.0,
+                color::ui_ink(),
+            );
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                boundary,
+                "Click to type an exact time, as MM:SS.mmm or in seconds",
+            );
+            if state.clicked {
+                let mut field = TextField::new(TextRules::ascii_query(16));
+                field.bind(&widgets::format_timestamp(value));
+                field.set_focused(true);
+                field.edit.select_all();
+                // A tap run and a text field cannot both own the keyboard, and
+                // the run is the one with a mode indicator, so it stands down.
+                editor.tap.disarm();
+                editor.time_edit = Some(TimeEdit { is_start, field });
+            }
+            return None;
+        }
+
+        let edit = editor.time_edit.as_mut()?;
+        // Drawn through the authored face because `TextField::draw_with_face`
+        // takes only that one. A timecode is ASCII digits, a colon and a full
+        // stop, so the chrome bank would serve it identically — this is an API
+        // shape rather than a UX0-A05 decision.
+        edit.field
+            .draw_with_face(d, authored, boundary, 17.0, "MM:SS.mmm", true);
+        let commit = d.is_key_pressed(Key::KEY_ENTER) || d.is_key_pressed(Key::KEY_KP_ENTER);
+        let cancel = d.is_key_pressed(Key::KEY_ESCAPE) || !edit.field.is_focused();
+        if !(commit || cancel) {
+            return None;
+        }
+        let typed = edit.field.edit.text().to_owned();
+        if cancel && !commit {
+            editor.time_edit = None;
+            return None;
+        }
+        match lyric_lane_edit::parse_cue_timestamp(&typed) {
+            Some(seconds) => {
+                editor.time_edit = None;
+                Some(seconds)
+            }
+            None => {
+                self.notify(
+                    Severity::Warning,
+                    "That is not a time",
+                    "Type it as MM:SS.mmm — 01:23.456 — or as plain seconds. Escape leaves it alone.",
+                );
+                None
+            }
         }
     }
 
@@ -5293,6 +6149,141 @@ fn caption_drag(
 ///
 /// Preview and commit read the same clamped numbers, so what the blocks show
 /// during a drag is what gets written.
+/// Divides a cue's words at the space nearest `fraction` through the line
+/// (UX0-B05).
+///
+/// Character *offsets* rather than time: a split at 40 % of a cue's duration
+/// almost never falls at 40 % of its text, but the words are what the user is
+/// reading when they choose the seam, and a proportional guess at a word
+/// boundary is the one every subtitle editor makes.
+///
+/// Never returns an empty half, because `lyrics::validate_text` refuses empty
+/// text and a split that produced one would be refused by the model after the
+/// user had already committed to it. A single word with no space in it therefore
+/// splits inside itself, at a character boundary, rather than failing.
+fn split_text_at_fraction(text: &str, fraction: f64) -> (String, String) {
+    let fraction = if fraction.is_finite() {
+        fraction.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let characters: Vec<char> = text.chars().collect();
+    if characters.len() < 2 {
+        // Nothing to divide. Both halves get the whole line, which is a visible,
+        // fixable outcome; an empty half is a refusal after the fact.
+        return (text.to_owned(), text.to_owned());
+    }
+    let wanted = ((characters.len() as f64) * fraction).round() as usize;
+    let wanted = wanted.clamp(1, characters.len() - 1);
+    // The space closest to the wanted offset, searched outward in both
+    // directions at once so neither end is preferred.
+    let seam = (0..characters.len())
+        .filter(|index| {
+            characters[*index].is_whitespace() && *index > 0 && *index + 1 < characters.len()
+        })
+        .min_by_key(|index| index.abs_diff(wanted))
+        .map_or(wanted, |index| index);
+    let left: String = characters[..seam].iter().collect();
+    let right: String = characters[seam..].iter().collect();
+    let (left, right) = (left.trim().to_owned(), right.trim().to_owned());
+    if left.is_empty() || right.is_empty() {
+        let left: String = characters[..wanted].iter().collect();
+        let right: String = characters[wanted..].iter().collect();
+        return (left, right);
+    }
+    (left, right)
+}
+
+/// Which timing controls fit beside Apply/Discard/Delete, at a given width.
+///
+/// A **ladder of whole configurations whose widths strictly decrease**, not a
+/// greedy fill, and the difference is the lesson `core::ui::transport_bar`
+/// already paid for: greedy placement made the transport's mute button vanish
+/// and then reappear as the window narrowed, because dropping the volume slider
+/// freed enough room for it. The property that makes a resize feel stable is
+/// monotonicity in width, and a ladder has it by construction rather than by a
+/// lucky ordering. `the_timing_control_ladder_never_brings_a_control_back` is
+/// the assertion.
+///
+/// Nothing here is the only route to its action — every one of these has a key,
+/// and the hint row names them — so shedding a control costs discoverability
+/// rather than capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimingControl {
+    Tap,
+    Split,
+    Merge,
+    Undo,
+    Redo,
+}
+
+impl TimingControl {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Tap => "Tap",
+            Self::Split => "Split",
+            Self::Merge => "Merge",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+        }
+    }
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Tap => "Ctrl+Enter",
+            Self::Split => "Ctrl+B",
+            Self::Merge => "Ctrl+J",
+            Self::Undo => "Ctrl+Z",
+            Self::Redo => "Ctrl+Shift+Z",
+        }
+    }
+
+    /// Index inside [`ns::ACTIONS`]. Indices 0 and 1 are the Style toggle and
+    /// Add cue, so these start at 2 — a namespace of their own is not needed
+    /// (`widgets::id`'s budget is 4096 indices per namespace) and not minting
+    /// one is the safer of the two options.
+    const fn widget_index(self) -> u32 {
+        match self {
+            Self::Tap => 2,
+            Self::Split => 3,
+            Self::Merge => 4,
+            Self::Undo => 5,
+            Self::Redo => 6,
+        }
+    }
+}
+
+const TIMING_BUTTON_WIDTH: f32 = 56.0;
+const TIMING_BUTTON_GAP: f32 = 6.0;
+
+/// The rungs, widest first. Every rung is a subset of the one above it, which is
+/// what makes the monotonicity assertion provable rather than empirical.
+#[rustfmt::skip]
+const TIMING_LADDER: [&[TimingControl]; 6] = [
+    &[TimingControl::Tap, TimingControl::Split, TimingControl::Merge, TimingControl::Undo, TimingControl::Redo],
+    &[TimingControl::Tap, TimingControl::Split, TimingControl::Merge, TimingControl::Undo],
+    &[TimingControl::Tap, TimingControl::Split, TimingControl::Undo],
+    &[TimingControl::Tap, TimingControl::Undo],
+    &[TimingControl::Tap],
+    &[],
+];
+
+/// Width one rung needs.
+fn timing_ladder_width(rung: &[TimingControl]) -> f32 {
+    if rung.is_empty() {
+        return 0.0;
+    }
+    rung.len() as f32 * TIMING_BUTTON_WIDTH + (rung.len() - 1) as f32 * TIMING_BUTTON_GAP
+}
+
+/// The widest rung that fits in `available` logical pixels.
+fn timing_ladder_for(available: f32) -> &'static [TimingControl] {
+    TIMING_LADDER
+        .into_iter()
+        .find(|rung| timing_ladder_width(rung) <= available)
+        .unwrap_or(&[])
+}
+
 fn lane_preview_span(editor: &LyricEditor, cue: &LyricCue) -> (f64, f64) {
     let (mut start, mut end) = (cue.start_seconds, cue.end_seconds);
     if !editor.lane_drag.moved {
