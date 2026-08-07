@@ -1158,13 +1158,18 @@ Three lessons, in the order they cost time:
       table, or add a report line carrying the lane and control rectangles so the
       gate computes the point it presses. Until then every coordinate in
       `headless_check.sh` is a latent version of the defect above.
-- [ ] **GX-2 — the 25 ms frame-stall assertion fails under unrelated machine
-      load** and has roughly 0.6 ms of headroom. It failed twice during this
-      session's verification while an unrelated process on the operator's machine
-      held load average 15 (worst 25.3 ms, then 33.2 ms); it passes on an idle
-      machine. Either measure against a load-normalised budget, report load with
-      the verdict, or make the check advisory outside CI. Until then, a stall
-      failure needs `uptime` checked before it is believed.
+- [ ] **GX-2 — the 25 ms frame-stall assertion measures the machine, not the
+      build.** It failed twice while an unrelated process on the operator's
+      machine held load average 15 — worst 25.3 ms, then 33.2 ms — and passed on
+      the same commit minutes later at load 2 with **worst 16.7 ms, 0 of 240
+      stalled**. So the headroom is 8.3 ms rather than the sub-millisecond margin
+      the failures suggested, and the whole of it is consumed by contention: a
+      failure here says the CPU was busy, not that the renderer regressed.
+      Report load alongside the verdict at minimum, so the next session does not
+      spend an hour bisecting a green build; better, normalise the budget or make
+      the assertion advisory off CI. Until then, check `uptime` before believing
+      a stall failure — the deliberately-stalled control run (129 ms) still
+      separates cleanly, so the check's *discriminating* power is intact.
 
 ## CX — the consultation rulings (2026-08-07)
 
