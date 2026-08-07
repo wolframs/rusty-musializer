@@ -1882,6 +1882,84 @@ impl Shell {
         zoom_row_y
     }
 
+    /// The cue lane alone, with the editor closed (D4).
+    ///
+    /// The lane is where lyric *timing* lives, and timing is judged against the
+    /// waveform and the scene plan — which stay on screen when the editor does
+    /// not. Closing the editor to see more preview used to take the cue blocks
+    /// with it, so the commonest question in this whole workflow ("does that
+    /// line land on that transient?") could only be asked in the one layout that
+    /// hides most of the picture.
+    ///
+    /// **It costs no band height.** The `None`/`Tune` band is
+    /// `EVENT_ROW_HEIGHT + DEFAULT_TIMELINE_HEIGHT + SCENE_SECTION_HEIGHT`, and
+    /// the 180 of that spends 56 on the waveform strip and 28 on the zoom row —
+    /// so the lane draws in slack that was already reserved and already empty.
+    /// That is deliberate rather than lucky: growing the band would move
+    /// `workspace_layout`'s sidebar guarantee at 720p, which is the arithmetic
+    /// that already forced the manual event row out of the lyrics band, and
+    /// UX0-C17 records that kind of change as one that queues rather than
+    /// sneaks in. If the slack is ever spent, this draws nothing and the zoom
+    /// row goes back where it was.
+    ///
+    /// Fully interactive, not a picture of the lane. It is the same
+    /// [`Self::lyric_lane`] the editor draws, so there is no second
+    /// implementation to diverge — and every gesture it offers is reversible now
+    /// that Ctrl+Z exists.
+    pub(crate) fn closed_lyric_lane(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        content: UiRect,
+        strip: UiRect,
+        commands: &mut Vec<ShellCommand>,
+    ) -> f32 {
+        let below_strip = strip.y + strip.height;
+        let Some(track) = input.workspace.current() else {
+            return below_strip;
+        };
+        // What is left after the zoom row, which still has to fit under
+        // whatever this draws.
+        let available = content.y + content.height - below_strip - LANE_GAP * 2.0 - ZOOM_ROW_HEIGHT;
+        if available < ORACLE_LANE_HEIGHT {
+            return below_strip;
+        }
+        let mut editor = std::mem::take(&mut self.lyrics);
+        // The same binding the panel does, and for the same reason: an edit this
+        // lane pushes is stamped with the editor's owner slot, and an unbound
+        // editor would stamp it `None` and have it refused at the drain.
+        editor.enter_track(input.workspace.current_index());
+        editor.cue_count = track.lyrics.len();
+        editor.lane_selection.prune(&track.lyrics);
+        // Capped at the slack rather than at the window, so this never grows the
+        // band. A user who dragged the lane to 66 px in the editor gets 66 here
+        // when it fits and less when it does not, instead of the panel below
+        // being pushed off the bottom.
+        editor.lane_height = self
+            .ui_preferences
+            .lyric_lane_height
+            .unwrap_or(LANE_HEIGHT)
+            .clamp(ORACLE_LANE_HEIGHT, available);
+        editor.lane_drawn = editor.lane_height;
+
+        let lane = UiRect::new(
+            strip.x,
+            below_strip + LANE_GAP,
+            strip.width,
+            editor.lane_drawn,
+        );
+        // The keys come with the lane. Ctrl+Z on a cue you can see and cannot
+        // reach any other way is the whole point, and `lyric_lane_keys` already
+        // refuses everything that needs the form.
+        self.lyric_lane_keys(d, input, &mut editor, track);
+        self.lyric_lane(d, input, &mut editor, track, lane, commands);
+        if let Some(seconds) = editor.take_seek_request() {
+            commands.push(ShellCommand::Seek(seconds));
+        }
+        self.lyrics = editor;
+        lane.y + lane.height
+    }
+
     /// One frame of the editor.
     ///
     /// Split from [`Self::lyrics_panel`] so every method below takes the editor

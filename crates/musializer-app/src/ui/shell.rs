@@ -3476,7 +3476,14 @@ impl Shell {
     ) -> f32 {
         let below_strip = strip.y + strip.height;
         match self.panel {
-            UiPanel::None | UiPanel::Tune => below_strip,
+            // The cue lane outlives the editor (D4). Only in these two states:
+            // Export and Assist take the whole band for their own budgets, and
+            // adding a lane to those would push their bodies down rather than
+            // into slack. It draws in room the band already reserves, so no
+            // panel height moves — see `closed_lyric_lane`.
+            UiPanel::None | UiPanel::Tune => {
+                self.closed_lyric_lane(d, input, content, strip, commands)
+            }
             UiPanel::Export => {
                 self.export_panel(d, input, content, strip, commands);
                 below_strip
