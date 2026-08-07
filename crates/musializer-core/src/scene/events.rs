@@ -267,16 +267,56 @@ fn qualify_semantic_id(existing: &[EventRecord], id: u64) -> u64 {
     qualified
 }
 
+/// Which authored lane a merged event came from.
+///
+/// **Not derivable from the merged record, which is the whole reason this
+/// exists.** The obvious shortcut — test [`SEMANTIC_ID_LANE_BIT`] on the id — is
+/// wrong twice over. `qualify_semantic_id` adds [`COLLISION_PROBE_STEP`] on a
+/// collision, which lands anywhere in the 64-bit space and clears the bit as
+/// often as not; and a *manual* id is carried through untouched, so a manual
+/// event authored with the high bit already set is indistinguishable from a
+/// qualified semantic one. Type does not answer it either: the manual event row's
+/// `+ Feel` button records [`EventType::Semantic`] into the **manual** lane
+/// (`plug.c:2897`, `ui/panels/events.rs`'s `MARKERS`), so the two axes genuinely
+/// cross.
+///
+/// Carried alongside the records rather than inside them so the merged view stays
+/// byte-identical to the oracle's: `differential_event_merge.sh` pins the ids and
+/// the ordering, and this adds a lane nobody has to serialize.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum EventLane {
+    /// Authored by hand — the manual event row, or a `.musi` file's manual lane.
+    Manual,
+    /// Derived by the model — the semantic lane, whose ids were qualified.
+    Semantic,
+}
+
+impl EventLane {
+    /// A short human name, for a legend or a tooltip.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            EventLane::Manual => "manual",
+            EventLane::Semantic => "semantic",
+        }
+    }
+}
+
 /// The merged, canonically ordered view of the manual and semantic lanes.
 #[derive(Clone, Debug, Default)]
 pub struct SceneEventMerge {
     events: Vec<EventRecord>,
+    /// Parallel to `events`: `lanes[i]` is the authored lane of `events[i]`.
+    lanes: Vec<EventLane>,
 }
 
 impl SceneEventMerge {
     #[must_use]
     pub fn new() -> Self {
-        Self { events: Vec::new() }
+        Self {
+            events: Vec::new(),
+            lanes: Vec::new(),
+        }
     }
 
     /// Builds one deterministic, canonically ordered view of both lanes.
@@ -314,14 +354,28 @@ impl SceneEventMerge {
         }
 
         self.events.clear();
+        self.lanes.clear();
         self.events.extend_from_slice(manual);
+        self.lanes.resize(manual.len(), EventLane::Manual);
         for event in semantic {
             let id = qualify_semantic_id(&self.events, event.id);
             self.events.push(EventRecord { id, ..*event });
+            self.lanes.push(EventLane::Semantic);
         }
+        // Sorted as a permutation rather than by sorting `events` directly, so
+        // `lanes` follows its record instead of silently going stale. The
+        // comparator and the stability are unchanged, so the resulting order is
+        // the same one `differential_event_merge.sh` pins.
+        //
         // `total_cmp` rather than `partial_cmp` because the sort must be total;
         // malformed timestamps were already rejected above.
-        self.events.sort_by(EventRecord::compare);
+        let mut order: Vec<usize> = (0..self.events.len()).collect();
+        order
+            .sort_by(|&left, &right| EventRecord::compare(&self.events[left], &self.events[right]));
+        let sorted_events: Vec<EventRecord> = order.iter().map(|&i| self.events[i]).collect();
+        let sorted_lanes: Vec<EventLane> = order.iter().map(|&i| self.lanes[i]).collect();
+        self.events = sorted_events;
+        self.lanes = sorted_lanes;
         Ok(())
     }
 
@@ -332,8 +386,24 @@ impl SceneEventMerge {
         }
     }
 
+    /// The authored lane of each merged event, parallel to [`Self::view`].
+    ///
+    /// Same length and same order as `view().events`, which is asserted below
+    /// rather than merely promised.
+    #[must_use]
+    pub fn lanes(&self) -> &[EventLane] {
+        debug_assert_eq!(self.lanes.len(), self.events.len());
+        &self.lanes
+    }
+
+    /// The merged events paired with the lane each came from.
+    pub fn iter_with_lane(&self) -> impl Iterator<Item = (&EventRecord, EventLane)> + '_ {
+        self.events.iter().zip(self.lanes.iter().copied())
+    }
+
     pub fn clear(&mut self) {
         self.events.clear();
+        self.lanes.clear();
     }
 }
 
@@ -435,6 +505,97 @@ mod tests {
         assert_eq!(view.events[0].id, 7, "the manual id is preserved");
         assert_eq!(view.events[1].id, 7 ^ SEMANTIC_ID_LANE_BIT);
         assert_ne!(view.events[0].id, view.events[1].id);
+    }
+
+    /// The lane travels with its record through the sort, which is the only thing
+    /// that makes a marker's colour honest: the merge interleaves both lanes by
+    /// timestamp, so `lanes[i]` and `events[i]` are re-paired on every build.
+    #[test]
+    fn the_lane_follows_its_record_through_the_merge_sort() {
+        // Interleaved on purpose: manual at 1 and 3, semantic at 2 and 4, so a
+        // lane list that was not permuted with the records would be visibly wrong.
+        let manual = [event(1.0, 1, EventType::Cue), event(3.0, 2, EventType::Cue)];
+        let semantic = [
+            event(2.0, 1, EventType::Semantic),
+            event(4.0, 2, EventType::Semantic),
+        ];
+        let mut merge = SceneEventMerge::new();
+        merge.build(&manual, &semantic).unwrap();
+
+        let observed: Vec<(f64, EventLane)> = merge
+            .iter_with_lane()
+            .map(|(event, lane)| (event.timestamp_seconds, lane))
+            .collect();
+        assert_eq!(
+            observed,
+            vec![
+                (1.0, EventLane::Manual),
+                (2.0, EventLane::Semantic),
+                (3.0, EventLane::Manual),
+                (4.0, EventLane::Semantic),
+            ]
+        );
+        assert_eq!(merge.lanes().len(), merge.view().len());
+    }
+
+    /// The shortcut this module exists to make unnecessary, pinned as a negative
+    /// so nobody reintroduces it. Both halves fail: a **manual** id may carry the
+    /// lane bit already, and a *qualified semantic* id may not carry it after a
+    /// collision probe.
+    #[test]
+    fn the_lane_bit_cannot_stand_in_for_the_lane() {
+        // A manual event authored with the high bit set. Nothing forbids it: the
+        // manual lane's ids are carried through untouched.
+        let manual = [event(1.0, SEMANTIC_ID_LANE_BIT | 9, EventType::Cue)];
+        // Its semantic partner qualifies to `SEMANTIC_ID_LANE_BIT | 9` too, which
+        // the manual event already occupies — so the collision probe fires and
+        // lands on a value with the lane bit **clear**. That is the second half of
+        // the point, and it arrived from running the test rather than from
+        // predicting it: the probe is not a rare path, it is one XOR collision away.
+        let semantic = [event(2.0, 9, EventType::Semantic)];
+        let mut merge = SceneEventMerge::new();
+        merge.build(&manual, &semantic).unwrap();
+
+        let pairs: Vec<(u64, EventLane)> = merge
+            .iter_with_lane()
+            .map(|(event, lane)| (event.id, lane))
+            .collect();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[0], (SEMANTIC_ID_LANE_BIT | 9, EventLane::Manual));
+        assert_eq!(pairs[1].1, EventLane::Semantic);
+        assert_eq!(
+            pairs[1].0,
+            (SEMANTIC_ID_LANE_BIT | 9).wrapping_add(COLLISION_PROBE_STEP),
+            "the probe stepped once past the manual id"
+        );
+        assert_eq!(
+            pairs[1].0 & SEMANTIC_ID_LANE_BIT,
+            0,
+            "and the step cleared the lane bit"
+        );
+        for (id, lane) in pairs {
+            let guessed = if id & SEMANTIC_ID_LANE_BIT != 0 {
+                EventLane::Semantic
+            } else {
+                EventLane::Manual
+            };
+            assert_ne!(guessed, lane, "the bit test is backwards for id {id:#x}");
+        }
+    }
+
+    /// Type does not answer it either. `+ Feel` records `EventType::Semantic`
+    /// into the **manual** lane (`plug.c:2897`), so the two axes cross and a
+    /// marker coloured only by type cannot say which lane it came from.
+    #[test]
+    fn a_manual_event_may_carry_the_semantic_type() {
+        let manual = [event(1.0, 1, EventType::Semantic)];
+        let semantic = [event(2.0, 1, EventType::Semantic)];
+        let mut merge = SceneEventMerge::new();
+        merge.build(&manual, &semantic).unwrap();
+        let lanes: Vec<EventLane> = merge.lanes().to_vec();
+        assert_eq!(lanes, vec![EventLane::Manual, EventLane::Semantic]);
+        // Same type, different lane.
+        assert_eq!(merge.view().events[0].kind(), merge.view().events[1].kind());
     }
 
     /// XOR is one-to-one; OR is not. An id that already has the lane bit set must
