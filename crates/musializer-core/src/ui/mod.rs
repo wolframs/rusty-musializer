@@ -27,4 +27,5 @@ pub mod timed_lane;
 pub mod timeline_layout;
 pub mod timeline_view;
 pub mod transport_bar;
+pub mod tune_explore;
 pub mod workspace_layout;
