@@ -4172,6 +4172,171 @@ if [ "$LANE_ALIGNMENT_FAILED" -ne 0 ]; then
     SWEEP_FAILED=1
 fi
 
+echo "=== save state: dirty marking, all-track autosave, the visible answer (C1/C4/UX0-B01) ==="
+# Three claims that a capture alone cannot separate, so each is asserted through
+# the `save state:` report line *and* an observable file on disk.
+#
+#   C1  a durable edit marks the project dirty and starts the 1.5 s settle
+#   C4  autosave writes every due track, not only the current one
+#   B01 the interface says Saved / Unsaved / Save failed / No project file,
+#       continuously, and a failure names why
+#
+# `save state:` is `[*]TOKEN[(reason)]` per track in workspace order, with `*` on
+# the current one. It is asserted rather than photographed because Unsaved and
+# Save failed differ by one word and one hue in a small box, and because a
+# *background* track's state is not drawn at all when its row is scrolled away —
+# which is precisely what all-track autosave is a claim about.
+SAVE_STATE_DIR="$OUT_DIR/save-state"
+# The read-only case below strips write permission from a directory, so a rerun
+# has to put it back before `rm -rf` can work.
+chmod -R u+w "$SAVE_STATE_DIR" 2>/dev/null || true
+rm -rf "$SAVE_STATE_DIR"
+mkdir -p "$SAVE_STATE_DIR"
+SAVE_STATE_FAILED=0
+
+save_state_run() {
+    # save_state_run NAME FRAMES [extra args...]
+    local name="$1" frames="$2"
+    shift 2
+    set +e
+    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        ./target/debug/musializer --mute \
+            --size 1600x1000 --probe-frames "$frames" \
+            --probe-shot "$OUT_DIR/$name.png" "$@" \
+        >"$OUT_DIR/$name.txt" 2>&1
+    set -e
+    sed -n 's/^save state: *//p' "$OUT_DIR/$name.txt"
+}
+
+expect_save_state() {
+    # expect_save_state NAME GOT EXPECTED-SUBSTRING
+    local name="$1" got="$2" want="$3"
+    printf '%-34s %s\n' "$name" "[${got:-<absent>}]"
+    case "$got" in
+        *"$want"*) ;;
+        *)
+            echo "FAIL: $name reported [${got:-<absent>}], wanted to contain [$want]" >&2
+            SAVE_STATE_FAILED=1
+            ;;
+    esac
+}
+
+# 1. A plain audio file has nowhere to be saved, and says so rather than saying
+#    "Unsaved" — which would imply a file exists that the work diverged from.
+cp "$FIXTURE" "$SAVE_STATE_DIR/source.wav"
+NO_FILE_STATE="$(save_state_run save-state-no-file 40 "$SAVE_STATE_DIR/source.wav")"
+expect_save_state "no project file" "$NO_FILE_STATE" "*no-file"
+
+# 2. A project that has just been written is Saved, and stays Saved with no edit.
+set +e
+env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$SAVE_STATE_DIR/source.wav" \
+        --save-project "$SAVE_STATE_DIR/show.musi" \
+    >"$OUT_DIR/save-state-write.txt" 2>&1
+set -e
+if [ ! -f "$SAVE_STATE_DIR/show.musi" ]; then
+    echo "FAIL: the save-state fixture project was not written" >&2
+    SAVE_STATE_FAILED=1
+fi
+SAVED_STATE="$(save_state_run save-state-saved 40 --project "$SAVE_STATE_DIR/show.musi")"
+expect_save_state "saved, no edit" "$SAVED_STATE" "*saved"
+
+# 3. C4, end to end. `scene-pick` is a durable edit (it retargets the base scene),
+#    and `--probe-reopen` then adds and selects a *different* track at frame N/2,
+#    so the edited project is in the background when its 1.5 s settle expires.
+#
+#    The frame count is the whole experiment. At 80 frames the swap lands before
+#    the settle elapses; the recorded negative control below is what fixes that
+#    number, because at 150 frames the write happens while the track is still
+#    current and the case proves nothing.
+#
+#    NEGATIVE CONTROL (2026-08-07, PX1): restoring the `continue` that skipped
+#    every non-current track — the code this replaced — makes this case report
+#    `unsaved, *no-file` with the `.musi` **unchanged**, at 60, 70, 80 and 100
+#    frames. Removing it again gives `saved, *no-file` with the digest changed at
+#    all four. So this row fails when the defect is present, which is the only
+#    thing that makes it evidence.
+BG_DIR="$SAVE_STATE_DIR/background"
+mkdir -p "$BG_DIR"
+cp "$SAVE_STATE_DIR/show.musi" "$BG_DIR/show.musi"
+cp -r "$SAVE_STATE_DIR/show.assets" "$BG_DIR/show.assets"
+BG_BEFORE="$(md5sum "$BG_DIR/show.musi" | cut -d' ' -f1)"
+BG_STATE="$(save_state_run save-state-background 80 \
+    --project "$BG_DIR/show.musi" --ui-probe scene-pick=cadence \
+    --probe-reopen "$SAVE_STATE_DIR/source.wav")"
+BG_AFTER="$(md5sum "$BG_DIR/show.musi" | cut -d' ' -f1)"
+expect_save_state "background track autosaved" "$BG_STATE" "saved, *no-file"
+if [ "$BG_BEFORE" = "$BG_AFTER" ]; then
+    echo "FAIL: a dirty background track was never written to disk" >&2
+    SAVE_STATE_FAILED=1
+else
+    echo "background .musi digest moved: ${BG_BEFORE:0:8} -> ${BG_AFTER:0:8}"
+fi
+
+# 4. A save that cannot succeed. The directory is stripped of write permission,
+#    so `atomic_write` cannot create its transaction file — and the point is that
+#    the interface says which, not that it goes quiet.
+RO_DIR="$SAVE_STATE_DIR/readonly"
+mkdir -p "$RO_DIR"
+cp "$SAVE_STATE_DIR/show.musi" "$RO_DIR/show.musi"
+cp -r "$SAVE_STATE_DIR/show.assets" "$RO_DIR/show.assets"
+RO_BEFORE="$(md5sum "$RO_DIR/show.musi" | cut -d' ' -f1)"
+chmod a-w "$RO_DIR"
+
+# 4a. The control for 4: the same read-only directory with **no** edit is still
+#     Saved. Without this row, "the directory is unwritable" and "the write was
+#     attempted and failed" produce the same verdict, and the case below would
+#     pass even if nothing had ever tried to save.
+RO_CLEAN_STATE="$(save_state_run save-state-readonly-clean 40 --project "$RO_DIR/show.musi")"
+expect_save_state "read-only, no edit" "$RO_CLEAN_STATE" "*saved"
+
+RO_STATE="$(save_state_run save-state-failed 240 \
+    --project "$RO_DIR/show.musi" --ui-probe scene-pick=pulse-field)"
+expect_save_state "read-only, edited" "$RO_STATE" "*failed("
+# The reason is the actionable half; a bare "Save failed" is the silent amber dot
+# this task exists to delete.
+expect_save_state "failure names the cause" "$RO_STATE" "Permission denied"
+chmod u+w "$RO_DIR"
+RO_AFTER="$(md5sum "$RO_DIR/show.musi" | cut -d' ' -f1)"
+if [ "$RO_BEFORE" != "$RO_AFTER" ]; then
+    echo "FAIL: a failed save modified the project file it could not replace" >&2
+    SAVE_STATE_FAILED=1
+fi
+
+# The badge has to be *drawn*, not merely computed. The TRACKS header carries the
+# word, so a capture with no ink in that strip means the state is reaching the
+# report and not the user — the exact split this repository keeps rediscovering.
+for shot in save-state-saved save-state-failed; do
+    if [ ! -f "$OUT_DIR/$shot.png" ]; then
+        echo "FAIL: no capture for $shot" >&2
+        SAVE_STATE_FAILED=1
+        continue
+    fi
+    python3 - "$OUT_DIR/$shot.png" "$shot" <<'PYEOF' || SAVE_STATE_FAILED=1
+import sys
+from PIL import Image
+
+path, name = sys.argv[1], sys.argv[2]
+# The right half of the TRACKS header row, where the state word is drawn. The
+# panel is the top-left of the sidebar and the header is ~26 px tall.
+badge = Image.open(path).convert("L").crop((180, 4, 372, 30))
+# `tobytes` rather than `getdata`: the latter is deprecated in Pillow 14 and
+# printed a warning into the middle of this gate's output.
+ink = sum(1 for pixel in badge.tobytes() if pixel < 160)
+print(f"{name}: {ink} ink pixels in the TRACKS header badge")
+if ink < 20:
+    print(f"FAIL: {name} drew no save-state word in the TRACKS header", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+done
+
+if [ "$SAVE_STATE_FAILED" -ne 0 ]; then
+    echo "FAIL: save state did not report truthfully" >&2
+    SWEEP_FAILED=1
+fi
+
 # Every successful application run prints this after its last frame, so this is
 # broader than the first Spectrum capture above: welcome, every scene, every
 # panel, preview and export all have to keep shell text on native atlases. The

@@ -119,6 +119,16 @@ pub struct Track {
     pub file_path: PathBuf,
     pub duration_seconds: f64,
     pub transport_seekable: bool,
+    /// The decoded audio's format, cached at load so serialization never has to
+    /// ask the audio device (C4).
+    ///
+    /// The C reads both off the live `Music` handle, and this port did too — which
+    /// is why autosave could only ever write the *current* track: a background
+    /// track has no bound stream, so `save_to_path` had no sample rate to record
+    /// and the poll loop skipped it. These two numbers are facts about the file,
+    /// not about the device playing it, so they belong here.
+    pub audio_sample_rate: u32,
+    pub audio_channels: u16,
     /// Hex SHA-256 of the audio file, or empty when the calculation was
     /// deferred. C treats a failure here as non-fatal and lets saving retry it
     /// (`plug.c:806-812`), and so does this.
@@ -203,9 +213,71 @@ pub struct Track {
     pub project_dirty: bool,
     pub project_autosave_failed: bool,
     pub project_dirty_since: f64,
+    /// Why the last save attempt failed, in the words the user should read.
+    ///
+    /// `project_autosave_failed` is a latch that stops autosave retrying; it says
+    /// *that* something went wrong and never *what*. A silent amber dot is not an
+    /// actionable failure report (UX0-B01), so the reason travels with the latch
+    /// and the Tracks panel prints it.
+    pub project_save_error: Option<String>,
     /// Provenance, not dependencies: the referenced files are not needed to
     /// reopen evaluated project data.
     pub analysis_lanes: Vec<AnalysisLaneReference>,
+}
+
+/// The four states a user needs to be able to tell apart at a glance
+/// (UX0-B01, `FEATURE_PARITY_PLAN.md` F1).
+///
+/// The C has none of this, and neither did this port until now: `project_dirty`
+/// was read by the quit modal and the probe report and nowhere else, so the
+/// answer to "is my work safe?" arrived only *after* the user had decided to
+/// quit. Computed by [`Track::save_state`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveState {
+    /// Edits exist, or do not, but there is nowhere to put them yet.
+    NoProjectFile,
+    /// On disk and up to date.
+    Saved,
+    /// Durable edits are waiting for the autosave settle or an explicit Save.
+    Unsaved,
+    /// The last write attempt failed; autosave is latched off until the next
+    /// edit. [`Track::project_save_error`] carries the reason.
+    Failed,
+}
+
+impl SaveState {
+    /// The word drawn beside the track name.
+    ///
+    /// Short enough for the badge the tracks panel reserves, because that is the
+    /// only place all four of these can appear at once.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            SaveState::NoProjectFile => "No file",
+            SaveState::Saved => "Saved",
+            SaveState::Unsaved => "Unsaved",
+            SaveState::Failed => "Save failed",
+        }
+    }
+
+    /// The stable token the probe report prints, so a headless gate can assert a
+    /// state that is otherwise only a colour in a capture.
+    #[must_use]
+    pub fn token(self) -> &'static str {
+        match self {
+            SaveState::NoProjectFile => "no-file",
+            SaveState::Saved => "saved",
+            SaveState::Unsaved => "unsaved",
+            SaveState::Failed => "failed",
+        }
+    }
+
+    /// Whether this state should pull the eye. Drives the badge colour and the
+    /// Save button's accent.
+    #[must_use]
+    pub fn needs_attention(self) -> bool {
+        matches!(self, SaveState::Unsaved | SaveState::Failed)
+    }
 }
 
 impl Track {
@@ -231,6 +303,11 @@ impl Track {
             file_path,
             duration_seconds,
             transport_seekable: false,
+            // Overwritten by the loader as soon as the file is decoded. Zero is
+            // the honest placeholder: `save_to_path` refuses it rather than
+            // writing a `.musi` that claims 0 Hz.
+            audio_sample_rate: 0,
+            audio_channels: 0,
             audio_sha256: String::new(),
             lyrics: LyricsDocument::new(duration_seconds)?,
             scene_switches: SceneSwitchTimeline::new(),
@@ -262,6 +339,7 @@ impl Track {
             project_dirty: false,
             project_autosave_failed: false,
             project_dirty_since: 0.0,
+            project_save_error: None,
             analysis_lanes: Vec::new(),
         })
     }
@@ -288,7 +366,23 @@ impl Track {
     pub fn mark_dirty(&mut self, now_seconds: f64) {
         self.project_dirty = true;
         self.project_autosave_failed = false;
+        // The reason goes with the latch it explains. Leaving it behind would
+        // keep "Save failed: permission denied" on screen after the edit that
+        // earned a fresh attempt, which is a stale accusation rather than a
+        // report.
+        self.project_save_error = None;
         self.project_dirty_since = now_seconds;
+    }
+
+    /// Records why a save attempt failed, and latches autosave off until the
+    /// next edit (`plug.c:4580`).
+    ///
+    /// One method rather than two assignments at each call site, because the pair
+    /// is the invariant: a latch with no reason is the silent amber dot UX0-B01
+    /// exists to delete.
+    pub fn mark_save_failed(&mut self, reason: impl Into<String>) {
+        self.project_autosave_failed = true;
+        self.project_save_error = Some(reason.into());
     }
 
     /// Recomputes `next_manual_event_id` from the timeline it must not collide
@@ -565,6 +659,35 @@ impl Track {
         self.project_dirty
     }
 
+    /// What this track's save state is, in one word the interface can draw
+    /// (UX0-B01, F1).
+    ///
+    /// The ordering is the whole content of this function, so it is written down
+    /// rather than left to the reader:
+    ///
+    /// 1. **A failure outranks everything.** A track can be dirty *and* have a
+    ///    failed write, and "Unsaved" would then be true but useless — it reads
+    ///    as "autosave will get to it", which is exactly what the latch has
+    ///    stopped from happening.
+    /// 2. **No project file outranks dirtiness**, because it is the actionable
+    ///    one. A track with edits and no destination is not waiting on autosave;
+    ///    it is waiting on the user to choose a file, and saying "Unsaved" would
+    ///    imply a file exists to be unsaved against.
+    /// 3. Otherwise dirty is Unsaved and clean is Saved.
+    #[must_use]
+    pub fn save_state(&self) -> SaveState {
+        if self.project_autosave_failed || self.project_save_error.is_some() {
+            return SaveState::Failed;
+        }
+        if self.project_path.is_none() {
+            return SaveState::NoProjectFile;
+        }
+        if self.project_dirty {
+            return SaveState::Unsaved;
+        }
+        SaveState::Saved
+    }
+
     /// Whether Song Atlas can be reached on this track at all
     /// (`track_uses_song_atlas`, `plug.c:738-748`).
     ///
@@ -821,6 +944,49 @@ impl Workspace {
     pub fn display_names(&self) -> impl Iterator<Item = &str> {
         self.tracks.iter().map(Track::display_name)
     }
+
+    /// Every track's save state, in list order — the probe report's `save state:`
+    /// line (UX0-B01).
+    ///
+    /// A capture can show a badge but cannot say which of four colours it is, and
+    /// the two states that matter most — Unsaved and Save failed — differ by hue
+    /// alone at a glance. So the gate asserts this string rather than a pixel.
+    ///
+    /// The current track is marked with `*` because "which row is this?" is the
+    /// first question a reader of this line has.
+    #[must_use]
+    pub fn describe_save_state(&self) -> String {
+        if self.tracks.is_empty() {
+            return "no tracks".to_string();
+        }
+        let mut out = String::new();
+        for (index, track) in self.tracks.iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            if self.current == Some(index) {
+                out.push('*');
+            }
+            out.push_str(track.save_state().token());
+            if let Some(reason) = &track.project_save_error {
+                // The reason is the actionable half. Truncated hard rather than
+                // wrapped: this is one line of a machine-read report, and an
+                // embedded newline would break the `sed` that reads it. 160 is
+                // long enough for the errno sentence plus the path it names,
+                // which is what makes the line diagnostic rather than decorative.
+                out.push('(');
+                out.push_str(
+                    &reason
+                        .replace('\n', " ")
+                        .chars()
+                        .take(160)
+                        .collect::<String>(),
+                );
+                out.push(')');
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -934,6 +1100,134 @@ mod tests {
             // still actionable and must not disappear with it.
             assert!(track.project_autosave_failed);
         }
+    }
+
+    // ---- UX0-B01 / F1: the four save states ----------------------------
+
+    #[test]
+    fn a_track_with_no_project_file_says_so_rather_than_saying_unsaved() {
+        // The distinction is the actionable half. "Unsaved" implies a file exists
+        // that the work has diverged from and that autosave will reconcile;
+        // neither is true here, and the user has to choose a destination before
+        // anything can be written at all.
+        let mut track = track("/tmp/a.wav");
+        assert_eq!(track.save_state(), SaveState::NoProjectFile);
+        track.mark_dirty(1.0);
+        assert_eq!(
+            track.save_state(),
+            SaveState::NoProjectFile,
+            "dirtying a track with nowhere to save it must not claim it is merely unsaved"
+        );
+    }
+
+    #[test]
+    fn a_saved_track_goes_unsaved_on_an_edit_and_back_on_a_write() {
+        let mut track = track("/tmp/a.wav");
+        track.project_path = Some(PathBuf::from("/tmp/a.musi"));
+        assert_eq!(track.save_state(), SaveState::Saved);
+        track.mark_dirty(2.0);
+        assert_eq!(track.save_state(), SaveState::Unsaved);
+        // What `project::save_to_path` does on success.
+        track.project_dirty = false;
+        assert_eq!(track.save_state(), SaveState::Saved);
+    }
+
+    #[test]
+    fn a_failure_outranks_dirtiness_because_autosave_has_stopped() {
+        // A track can be dirty *and* latched. Reporting "Unsaved" then reads as
+        // "autosave will get to it", which is the one thing that will not happen:
+        // the latch means nothing is retried until the next edit.
+        let mut track = track("/tmp/a.wav");
+        track.project_path = Some(PathBuf::from("/tmp/a.musi"));
+        track.mark_dirty(2.0);
+        track.mark_save_failed("permission denied");
+        assert_eq!(track.save_state(), SaveState::Failed);
+        assert!(track.project_dirty, "the work is still unwritten");
+        assert_eq!(
+            track.project_save_error.as_deref(),
+            Some("permission denied"),
+            "a failure with no reason is the silent amber dot this replaces"
+        );
+    }
+
+    #[test]
+    fn the_next_edit_clears_the_failure_and_its_now_stale_reason() {
+        let mut track = track("/tmp/a.wav");
+        track.project_path = Some(PathBuf::from("/tmp/a.musi"));
+        track.mark_save_failed("no space left on device");
+        assert_eq!(track.save_state(), SaveState::Failed);
+
+        track.mark_dirty(9.0);
+
+        assert_eq!(track.save_state(), SaveState::Unsaved);
+        assert_eq!(
+            track.project_save_error, None,
+            "keeping the sentence would leave a solved complaint on screen"
+        );
+        assert_eq!(track.project_dirty_since, 9.0);
+    }
+
+    #[test]
+    fn only_the_two_states_that_need_action_ask_for_attention() {
+        assert!(!SaveState::Saved.needs_attention());
+        assert!(!SaveState::NoProjectFile.needs_attention());
+        assert!(SaveState::Unsaved.needs_attention());
+        assert!(SaveState::Failed.needs_attention());
+    }
+
+    #[test]
+    fn every_save_state_has_a_distinct_word_and_a_distinct_token() {
+        // Two states that render as the same word are two states the interface
+        // cannot tell apart, and the gate greps the token — a duplicate there
+        // would make an assertion pass against the wrong state.
+        let all = [
+            SaveState::NoProjectFile,
+            SaveState::Saved,
+            SaveState::Unsaved,
+            SaveState::Failed,
+        ];
+        for (index, one) in all.iter().enumerate() {
+            for other in &all[index + 1..] {
+                assert_ne!(one.label(), other.label(), "{one:?} vs {other:?}");
+                assert_ne!(one.token(), other.token(), "{one:?} vs {other:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_report_line_stars_the_current_track_and_carries_the_reason() {
+        let mut workspace = Workspace::new();
+        assert_eq!(workspace.describe_save_state(), "no tracks");
+
+        workspace.push(track("/tmp/a.wav"));
+        workspace.push(track("/tmp/b.wav"));
+        // Slot 0 is current; give it a file and an edit, and fail slot 1.
+        let first = workspace.get_mut(0).expect("two tracks");
+        first.project_path = Some(PathBuf::from("/tmp/a.musi"));
+        first.mark_dirty(1.0);
+        let second = workspace.get_mut(1).expect("two tracks");
+        second.project_path = Some(PathBuf::from("/tmp/b.musi"));
+        second.mark_save_failed("read-only file system");
+
+        assert_eq!(
+            workspace.describe_save_state(),
+            "*unsaved, failed(read-only file system)"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_failure_reason_stays_on_one_report_line() {
+        // The gate reads this with `sed`, so an embedded newline would split the
+        // record and the assertion would silently match half of it.
+        let mut workspace = Workspace::new();
+        workspace.push(track("/tmp/a.wav"));
+        workspace
+            .get_mut(0)
+            .expect("one track")
+            .mark_save_failed("first line\nsecond line");
+        let line = workspace.describe_save_state();
+        assert!(!line.contains('\n'), "got {line:?}");
+        assert!(line.contains("first line second line"), "got {line:?}");
     }
 
     #[test]

@@ -35,7 +35,7 @@ use super::shell_layout::{LayoutOverrides, WelcomeFrame, WorkspaceFrame, DEFAULT
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
-use crate::workspace::Workspace;
+use crate::workspace::{SaveState, Workspace};
 
 /// What the shell asks the application to do.
 ///
@@ -125,6 +125,76 @@ pub enum ShellCommand {
     SetFullscreen(bool),
     /// Persist workstation UI state outside the current `.musi` project.
     SaveUiPreferences(UiPreferences),
+}
+
+impl ShellCommand {
+    /// Whether this command, when it succeeds, changes data that a `.musi` file
+    /// records — and therefore whether its handler owes the track a
+    /// `Track::mark_dirty` (C1).
+    ///
+    /// # Why this exists rather than a comment
+    ///
+    /// C1 asked for an *audit*, and an audit is a fact about one afternoon. The
+    /// next command added to this enum gets no audit, and the way that failure
+    /// presents is the worst one available: the edit works, the interface looks
+    /// right, and the work is silently never written. This match is exhaustive,
+    /// so adding a variant does not compile until somebody answers the question.
+    ///
+    /// It classifies the *command*, not the handler, so it cannot by itself prove
+    /// a handler calls `mark_dirty` — `mutates_project` is the checklist, and the
+    /// per-path tests are the check. What it does guarantee is that the checklist
+    /// can never silently fall out of date with the enum.
+    ///
+    /// The audit this encodes (2026-08-07) found the marking already correct for
+    /// every `true` arm below; the two C1 defects were on paths that do not go
+    /// through a `ShellCommand` at all — the ASCII import and the lyric-edit
+    /// drain — which is itself the argument for classifying those separately
+    /// rather than trusting a walk of this enum.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the C1 checklist itself. Only the classification test reads it, and its value is that the exhaustive match refuses to compile when a variant is added — which is a property of it existing, not of it being called"
+    )]
+    pub(crate) fn mutates_project(&self) -> bool {
+        match self {
+            // Scene binding, tuning, routes, events, plan and output settings are
+            // all fields of the serialized project.
+            ShellCommand::SelectScene(_)
+            | ShellCommand::SetSetting { .. }
+            | ShellCommand::ResetScene(_)
+            | ShellCommand::SetAutoScenes(_)
+            | ShellCommand::ApplyRoute { .. }
+            | ShellCommand::RemoveRoute { .. }
+            | ShellCommand::SetRenderConfig(_)
+            | ShellCommand::ManualEvent(_)
+            | ShellCommand::ScenePlan(_) => true,
+            // `Preset::Apply` writes the scene settings and so is durable; the
+            // other arms write the *shared* preset store, which is its own file
+            // and not `.musi` state. The command cannot be split finer here, so
+            // it counts as durable and `handle_preset` marks only on Apply.
+            ShellCommand::Preset(_) => true,
+            // Transport, selection, window and device state. None of it is
+            // written, and marking any of it dirty would make a project autosave
+            // itself for being *listened to* — which is how a "modified" flag
+            // stops meaning anything.
+            ShellCommand::TogglePlay
+            | ShellCommand::Seek(_)
+            | ShellCommand::SelectTrack(_)
+            | ShellCommand::SetVolume(_)
+            | ShellCommand::ToggleMute
+            | ShellCommand::SetFullscreen(_)
+            | ShellCommand::StartRender => false,
+            // These write files, or replace the track wholesale. A freshly opened
+            // or saved track is clean by definition, and `SaveUiPreferences`
+            // writes the per-user config rather than the project.
+            ShellCommand::LoadTrack(_)
+            | ShellCommand::OpenAudio
+            | ShellCommand::OpenProject
+            | ShellCommand::SaveProject
+            | ShellCommand::SaveProjectAs
+            | ShellCommand::SaveUiPreferences(_) => false,
+        }
+    }
 }
 
 /// What the shell needs to know to draw one frame.
@@ -660,6 +730,31 @@ impl Shell {
             detail,
             path: "",
         });
+    }
+
+    /// Whether the track in `slot` owns an uncommitted editor draft, and so must
+    /// not be autosaved yet (C4).
+    ///
+    /// **Per track rather than global, and that distinction is the requirement.**
+    /// `autosave_is_due` has always taken an `editor_dirty` flag, but `main.rs`
+    /// passed a hard-coded `false`, so a half-typed cue never suppressed anything.
+    /// Wiring the *global* "is any editor dirty" query in instead would have
+    /// over-corrected the other way: typing in track A's lyric form would freeze
+    /// autosave for every other open track, which is the same class of bug —
+    /// silently not writing work the user believes is being written.
+    ///
+    /// Both halves ask the same question of the same slot: a dirty lyric draft
+    /// whose owner is this track, or a route edit that is open on this track and
+    /// dirty.
+    #[must_use]
+    pub(crate) fn editor_draft_blocks_autosave(&self, workspace: &Workspace, slot: usize) -> bool {
+        let lyric = self.lyrics.draft_owner() == Some(slot)
+            && workspace
+                .get(slot)
+                .is_some_and(|owner| self.lyrics.has_unsaved_draft(&owner.lyrics));
+        let route =
+            self.route_editor_open_for_active_track(Some(slot)) && self.route_edit_is_dirty();
+        lyric || route
     }
 
     /// Which route to saving this frame's chrome puts on screen (review 1.12,
@@ -2414,6 +2509,13 @@ impl Shell {
             return;
         }
         let content = widgets::panel(d, input.fonts.ui(), frame.tracks, "TRACKS");
+        // The save state, right-aligned in the panel's own title row (UX0-B01,
+        // F1). In the header rather than on the row because the header is the one
+        // part of this panel that is never scrolled, never clipped and never
+        // absent while the panel exists — and because the row is a single button
+        // whose whole width is its label, so a badge drawn into it would sit on
+        // top of the track's name.
+        self.tracks_save_state(d, frame, input);
         let Some((top, height)) = frame.tracks_mode.action_row() else {
             return;
         };
@@ -2433,7 +2535,19 @@ impl Shell {
         // The oracle's four, in its order (`action_labels`, `plug.c:5165-5166`).
         // There is no "Close": the frozen C cannot close a single track, and a
         // button for it would be an invented feature rather than parity.
-        let labels: [&str; 4] = ["Open project", "Add audio", "Save", "Save As"];
+        //
+        // Save carries a `*` while the current track has work to write (UX0-B01).
+        // A marked *label* rather than an accent colour, because the widget bank
+        // has exactly two button styles — Neutral and Danger — and minting a
+        // third for this would be widget infrastructure rather than a panel
+        // change. The asterisk is also the convention every editor already uses
+        // for the same fact, so it needs no legend.
+        let save_marked = input
+            .workspace
+            .current()
+            .is_some_and(|track| track.save_state().needs_attention());
+        let save_label = if save_marked { "Save *" } else { "Save" };
+        let labels: [&str; 4] = ["Open project", "Add audio", save_label, "Save As"];
         let columns = if stacked { 2 } else { 4 };
         let cell_width = (row.width - (columns - 1) as f32 * 4.0) / columns as f32;
         let cell_height = if stacked {
@@ -2509,6 +2623,94 @@ impl Shell {
                 list_top,
                 metric::UI_FONT_CAPTION,
                 color::ui_muted(),
+            );
+        }
+    }
+
+    /// The current track's save state, drawn right-aligned in the TRACKS header
+    /// (UX0-B01, F1).
+    ///
+    /// # Why this exists at all
+    ///
+    /// `project_dirty` was maintained correctly for the whole life of this
+    /// application and read by exactly two things: the quit modal and the probe
+    /// report. So the answer to "is my work safe?" was available only *after* the
+    /// user had decided to quit — and a user who never quits, or who loses the
+    /// session to a crash, never got it. This is the continuously visible answer.
+    ///
+    /// # Why the reason is drawn and not just the word
+    ///
+    /// "Save failed" on its own is a silent amber dot with extra steps. The
+    /// failure is latched — autosave will not retry until the next edit — so a
+    /// user who cannot see *why* has no way to know whether to free disk space,
+    /// fix a permission, or pick a different destination. When there is room the
+    /// reason goes under the header; when there is not, the word still appears
+    /// and the notice tray carries the sentence.
+    fn tracks_save_state(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        frame: &WorkspaceFrame,
+        input: &ShellInput<'_>,
+    ) {
+        let Some(track) = input.workspace.current() else {
+            return;
+        };
+        let state = track.save_state();
+        let font = input.fonts.ui();
+        let label = state.label();
+        let width = widgets::measure(font, label, metric::UI_FONT_CAPTION);
+        let x = frame.tracks.x + frame.tracks.width - metric::UI_PANEL_PADDING - width;
+        // Never over the "TRACKS" title: at a narrow sidebar the two would
+        // overlap into an unreadable smear, and the title is the one that says
+        // which panel this is.
+        let title_end = frame.tracks.x
+            + metric::UI_PANEL_PADDING
+            + widgets::measure(font, "TRACKS", metric::UI_FONT_CAPTION)
+            + 8.0;
+        if x < title_end {
+            return;
+        }
+        let tint = match state {
+            SaveState::Failed => color::ui_danger(),
+            SaveState::Unsaved => color::ui_warning(),
+            // Saved and "No file" are both calm states, and neither should pull
+            // the eye off the work. The word carries the difference.
+            SaveState::Saved | SaveState::NoProjectFile => color::ui_muted(),
+        };
+        widgets::draw_text(
+            d,
+            font,
+            label,
+            x,
+            frame.tracks.y + 8.0,
+            metric::UI_FONT_CAPTION,
+            tint,
+        );
+
+        // The reason, when there is one and the panel is tall enough to hold a
+        // line under the header without eating the action row.
+        let Some(reason) = &track.project_save_error else {
+            return;
+        };
+        let Some((action_top, _)) = frame.tracks_mode.action_row() else {
+            return;
+        };
+        let reason_y = frame.tracks.y + widgets::PANEL_HEADER_HEIGHT + 2.0;
+        if reason_y + metric::UI_FONT_CAPTION > frame.tracks.y + action_top {
+            return;
+        }
+        let available = frame.tracks.width - metric::UI_PANEL_PADDING * 2.0;
+        for line in notice::wrap_detail(&save_error_summary(reason), available, 1, |text| {
+            widgets::measure(font, text, metric::UI_FONT_CAPTION)
+        }) {
+            widgets::draw_text(
+                d,
+                font,
+                &line,
+                frame.tracks.x + metric::UI_PANEL_PADDING,
+                reason_y,
+                metric::UI_FONT_CAPTION,
+                color::ui_danger(),
             );
         }
     }
@@ -2604,25 +2806,41 @@ impl Shell {
                 .disabled_button(d, font, save, "Save", Some(metric::UI_FONT_CAPTION));
             return;
         }
+        // The same `*` the full panel's Save carries (UX0-B01). This strip is the
+        // *only* save route in this configuration, so it is also the only place
+        // the state can appear — there is no header to put a word in.
+        let save_state = input
+            .workspace
+            .current()
+            .map_or(SaveState::NoProjectFile, |track| track.save_state());
         let state = self.widgets.text_button(
             d,
             font,
             id,
             save,
-            "Save",
+            if save_state.needs_attention() {
+                "Save *"
+            } else {
+                "Save"
+            },
             false,
             ButtonStyle::Neutral,
             Some(metric::UI_FONT_CAPTION),
         );
         // The tooltip is the only place the collapse is explained. A user who
         // notices the panel is gone has no other way to learn that it comes back
-        // when the bottom panel closes.
+        // when the bottom panel closes. It now also carries the save state in
+        // words, since the `*` says there is something to save but not what
+        // happened to the last attempt.
         self.widgets.hint(
             d,
             state,
             id,
             save,
-            "Save project [Ctrl+S] \u{00b7} the tracks panel returns when the bottom panel closes",
+            &format!(
+                "{} \u{00b7} Save project [Ctrl+S] \u{00b7} the tracks panel returns when the bottom panel closes",
+                save_state.label()
+            ),
         );
         if state.clicked {
             commands.push(ShellCommand::SaveProject);
@@ -2738,6 +2956,37 @@ impl Shell {
                 ButtonStyle::Neutral,
                 Some(metric::UI_FONT_LABEL),
             );
+            // A state dot at the row's right edge (UX0-B01). The header names the
+            // *current* track's state in words; this is the only thing that says
+            // anything about the others, and all-track autosave (C4) is exactly a
+            // claim about tracks the user is not looking at — so "track 3 still
+            // has unsaved work" has to be visible without selecting track 3.
+            //
+            // Drawn only for the two states that need attention. A dot on every
+            // row would be a column of decoration the eye stops reading, which is
+            // how the amber-dot-for-everything design fails.
+            if let Some(track) = input.workspace.get(index) {
+                let save = track.save_state();
+                if save.needs_attention() {
+                    let radius = 3.0;
+                    let centre_x = boundary.x + boundary.width - radius - 4.0;
+                    let centre_y = boundary.y + boundary.height * 0.5;
+                    // Inside the visible part only, for the same reason the press
+                    // is: a dot painted where the row is clipped away is a mark
+                    // floating in the panel's padding.
+                    if area.contains_point(centre_x, centre_y) {
+                        clip.draw_circle_v(
+                            Vector2::new(centre_x, centre_y),
+                            radius,
+                            if save == SaveState::Failed {
+                                color::ui_danger()
+                            } else {
+                                color::ui_warning()
+                            },
+                        );
+                    }
+                }
+            }
             // review 1.3 (UX0-A03). The click used to push the command with no
             // guard at all, so a half-typed cue on this track became an edit
             // against the next one. The oracle guards the same click
@@ -3667,6 +3916,31 @@ const TRACK_ROW_MINIMUM_VISIBLE: f32 = 0.6;
 /// The threshold yields to the area itself: a list region shorter than one row is
 /// a legitimate state, and refusing to draw anything there would replace a sliver
 /// with an empty panel.
+/// The part of a save failure worth the one line the TRACKS header can spare.
+///
+/// `ProjectError` composes its messages outermost-first — "The previous project
+/// file was preserved: could not create a transaction file: Permission denied
+/// (os error 13)." — which is the right order for a notice and the wrong one for
+/// a line that will be cut at about sixty characters. Truncating the head keeps
+/// the reassurance and throws away the cause, so the user is told a save failed,
+/// told their old file is safe, and never told *why*.
+///
+/// So the innermost clause wins here. Directly under a red "Save failed" it reads
+/// as the sentence it is, and the persistent notice still carries the whole
+/// thing — this is a summary, not the only copy.
+fn save_error_summary(reason: &str) -> String {
+    let trimmed = reason.trim().trim_end_matches('.');
+    // `rsplit` rather than `split`: the innermost cause is the last clause, and
+    // the errno text itself contains no ": " to be confused by.
+    trimmed
+        .rsplit(": ")
+        .next()
+        .filter(|clause| !clause.trim().is_empty())
+        .unwrap_or(trimmed)
+        .trim()
+        .to_string()
+}
+
 fn track_row_is_legible(top: f32, row_height: f32, area: UiRect) -> bool {
     if row_height <= 0.0 || area.is_empty() || !top.is_finite() {
         return false;
@@ -4727,6 +5001,75 @@ mod tests {
             workspace.push(track);
         }
         workspace
+    }
+
+    #[test]
+    fn a_save_failure_is_summarised_by_its_cause_not_its_reassurance() {
+        // The real message, in the order `ProjectError` composes it.
+        assert_eq!(
+            save_error_summary(
+                "The previous project file was preserved: could not create a transaction file: Permission denied (os error 13)."
+            ),
+            "Permission denied (os error 13)"
+        );
+        // A message with no nesting is already its own cause.
+        assert_eq!(save_error_summary("disk full"), "disk full");
+        // A trailing colon must not yield an empty line; the whole text is
+        // better than nothing at all.
+        assert_eq!(save_error_summary("could not write: "), "could not write:");
+        assert_eq!(save_error_summary(""), "");
+    }
+
+    /// The C1 checklist, pinned (see [`ShellCommand::mutates_project`]).
+    ///
+    /// The exhaustive match is what forces a *new* variant to be classified; this
+    /// is what stops an *existing* one being reclassified by accident. Both
+    /// directions are mistakes with the same shape — a durable command marked
+    /// transient loses work silently, and a transient one marked durable makes
+    /// pressing Play dirty the project — so each list is named in full rather
+    /// than counted.
+    #[test]
+    fn every_command_is_classified_durable_or_transient() {
+        use musializer_core::scene::SceneId;
+        use musializer_core::timing::render_export::RenderExportConfig;
+
+        let durable: Vec<ShellCommand> = vec![
+            ShellCommand::SelectScene(SceneId::Loom),
+            ShellCommand::SetSetting {
+                scene: SceneId::Loom,
+                index: 0,
+                value: 1.0,
+            },
+            ShellCommand::ResetScene(SceneId::Loom),
+            ShellCommand::SetAutoScenes(true),
+            ShellCommand::SetRenderConfig(RenderExportConfig::default()),
+        ];
+        for command in durable {
+            assert!(
+                command.mutates_project(),
+                "{command:?} writes into a .musi and must mark the track dirty"
+            );
+        }
+
+        let transient: Vec<ShellCommand> = vec![
+            ShellCommand::TogglePlay,
+            ShellCommand::Seek(12.0),
+            ShellCommand::SelectTrack(0),
+            ShellCommand::SetVolume(0.5),
+            ShellCommand::ToggleMute,
+            ShellCommand::SetFullscreen(true),
+            ShellCommand::StartRender,
+            ShellCommand::OpenAudio,
+            ShellCommand::OpenProject,
+            ShellCommand::SaveProject,
+            ShellCommand::SaveProjectAs,
+        ];
+        for command in transient {
+            assert!(
+                !command.mutates_project(),
+                "{command:?} must not dirty the project: listening to a track is not editing it"
+            );
+        }
     }
 
     /// The bug, at the layer that used to have no guard at all. The Tracks row
