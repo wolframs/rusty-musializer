@@ -1248,6 +1248,30 @@ impl LyricEditor {
         }
     }
 
+    /// Records a snapshot under a caller-chosen label.
+    ///
+    /// For the changes that do not travel as a [`LyricsEdit`] — today that is
+    /// the TSV import, which replaces the whole document at once (D3). It is
+    /// still one undo step, and it has to be one: an import over hand-timed work
+    /// is the single most expensive accident this panel can have.
+    pub fn record_history_label(&mut self, label: &str, before: &LyricsDocument) {
+        self.history.record(label, before);
+    }
+
+    /// Drops every cue id the editor is holding, after something replaced the
+    /// whole document underneath it.
+    ///
+    /// The draft, the lane selection and any armed run all address cues by id,
+    /// and an import allocates a fresh set — so all three would resolve against
+    /// cues that are not the ones they were bound to.
+    pub fn enter_document_change(&mut self) {
+        self.clear_draft();
+        self.lane_selection.clear();
+        self.tap.disarm();
+        self.time_edit = None;
+        self.list_first = 0;
+    }
+
     /// Asks for an undo or a redo on the next drain.
     pub fn request_history(&mut self, step: HistoryStep) {
         self.history_request = Some(step);
@@ -1628,6 +1652,41 @@ impl LyricEditor {
         if let Some(path) = probe.lyrics_reference_path.as_ref() {
             track.lyrics_reference_path = Some(PathBuf::from(path));
         }
+        // The timing loop's probe (UX0-C03). Xvfb has no keyboard any more than
+        // it has a wheel, so without this the whole feature is unphotographable:
+        // an armed run and a disarmed one differ by one 11 px line of hint text,
+        // and a stamp that landed looks exactly like a stamp that was refused.
+        //
+        // Deliberately drives the same entry points the keys do, rather than
+        // writing the cue spans directly — a probe that reproduced the
+        // arithmetic instead of exercising it would photograph a picture of the
+        // feature working while the feature was broken.
+        if let Some(taps) = probe.lyric_taps {
+            let playhead = probe.seek_seconds.unwrap_or(0.0);
+            if self.toggle_tap(&track.lyrics, playhead) {
+                for step in 0..taps {
+                    // Spread across the track so no two stamps land inside the
+                    // minimum gap, which would refuse and make the count a lie.
+                    let at = playhead + f64::from(step) * LYRIC_PROBE_TAP_SPACING_SECONDS;
+                    if self.tap(&track.lyrics, at).is_err() {
+                        honoured = false;
+                        break;
+                    }
+                }
+            } else {
+                honoured = false;
+            }
+        }
+        if probe.lyric_undo {
+            // Requested rather than run: the history executes in `main.rs`,
+            // against the same drain the interactive path uses, so the probe
+            // cannot accidentally test a second implementation.
+            if self.can_undo() {
+                self.request_history(HistoryStep::Undo);
+            } else {
+                honoured = false;
+            }
+        }
         honoured
     }
 
@@ -1683,7 +1742,7 @@ impl LyricEditor {
         format!(
             "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}, \
              face={} field={} missing={} picker={} tune={}, origins {}, stack rows {}, \
-             lane height {:.0}, clipboard {}, tip {}",
+             lane height {:.0}, clipboard {}, tip {}, {}",
             track.lyrics.len(),
             pane,
             selected,
@@ -1727,6 +1786,44 @@ impl LyricEditor {
             self.lane_drawn,
             self.clipboard.len(),
             if self.tooltip_visible { "on" } else { "off" },
+            self.describe_timing(),
+        )
+    }
+
+    /// The timing loop's own evidence (UX0-B02/B03/B04/B05, UX0-C03).
+    ///
+    /// Every field here separates two pictures a capture cannot tell apart. An
+    /// armed tap run and a disarmed one differ only by one line of hint text at
+    /// 11 px; a stamp that landed and a stamp that was refused both leave the
+    /// music playing and the panel looking identical; and an undo stack that is
+    /// recording and one that is silently dropping every batch produce exactly
+    /// the same frame until the moment someone presses Ctrl+Z and finds nothing
+    /// there. `history 0/0` on a frame that has just been edited is the failure
+    /// this line exists to make visible.
+    fn describe_timing(&self) -> String {
+        let tap = if self.tap.is_armed() {
+            format!(
+                "armed {}/{} stamped {} offset {:+.0}ms",
+                self.tap.position(),
+                self.tap.total(),
+                self.tap.stamped(),
+                self.tap_offset_seconds() * 1000.0
+            )
+        } else {
+            "off".to_owned()
+        };
+        format!(
+            "tap {tap}, last stamp {}, history {}/{}, typing {}",
+            self.tap_last_seconds
+                .map_or_else(|| "none".to_owned(), widgets::format_timestamp),
+            self.history.undo_depth(),
+            self.history.redo_depth(),
+            match &self.time_edit {
+                None if self.text.is_focused() => "cue-text",
+                None => "none",
+                Some(edit) if edit.is_start => "start-time",
+                Some(_) => "end-time",
+            }
         )
     }
 }
@@ -1930,7 +2027,7 @@ impl Shell {
         }
 
         self.cue_list(d, input, editor, track, list);
-        self.cue_form(d, input, editor, track, boundary, form);
+        self.cue_form(d, input, editor, track, boundary, form, commands);
         zoom_row_y
     }
 
@@ -2632,16 +2729,31 @@ impl Shell {
         }
 
         // -- undo and redo ---------------------------------------------------
-        if control && d.is_key_pressed(Key::KEY_Z) {
-            editor.request_history(if shift {
+        if control && (d.is_key_pressed(Key::KEY_Z) || d.is_key_pressed(Key::KEY_Y)) {
+            let step = if shift || d.is_key_pressed(Key::KEY_Y) {
                 HistoryStep::Redo
             } else {
                 HistoryStep::Undo
-            });
-            return;
-        }
-        if control && d.is_key_pressed(Key::KEY_Y) {
-            editor.request_history(HistoryStep::Redo);
+            };
+            let available = match step {
+                HistoryStep::Undo => editor.can_undo(),
+                HistoryStep::Redo => editor.can_redo(),
+            };
+            if available {
+                editor.request_history(step);
+            } else {
+                // A shortcut that silently does nothing is indistinguishable
+                // from one that is not bound, and this repository has a rule
+                // about that.
+                self.notify(
+                    Severity::Info,
+                    match step {
+                        HistoryStep::Undo => "Nothing to undo",
+                        HistoryStep::Redo => "Nothing to redo",
+                    },
+                    "The cue history starts when this track becomes current and holds 64 steps.",
+                );
+            }
             return;
         }
 
@@ -3336,6 +3448,10 @@ impl Shell {
     // -----------------------------------------------------------------------
 
     /// The right-hand form (`lyric_editor_ui_draw`'s form half, `:1274-1424`).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the oracle's own form shape, plus the command sink D3's two dialogs need"
+    )]
     fn cue_form(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -3344,6 +3460,7 @@ impl Shell {
         track: &Track,
         boundary: UiRect,
         form: UiRect,
+        commands: &mut Vec<ShellCommand>,
     ) {
         use raylib::consts::KeyboardKey as Key;
 
@@ -3405,16 +3522,62 @@ impl Shell {
         let widths = [export.width, import.width, add.width];
         let row_font = widgets::row_font_size(font, &labels, &widths, add.height);
         // Export and Import move a `.lyrics.tsv` through a native save/open
-        // dialog (`export_lyrics_document`, `:1084-1140`). A dialog is a
-        // `ShellCommand` in this rewrite and there is no variant for one yet, so
-        // these say so rather than doing nothing — the request is in Agent I's
-        // report. `LyricsDocument::bridge_export`/`bridge_import` are already
-        // ported and tested; what is missing is the two commands and their
-        // file plumbing.
-        self.widgets
-            .disabled_button(d, font, export, labels[0], Some(row_font));
-        self.widgets
-            .disabled_button(d, font, import, labels[1], Some(row_font));
+        // dialog (`export_lyrics_document`, `:1084-1140`), as of D3. Both are
+        // `ShellCommand`s because a modal picker blocks and this runs inside a
+        // begin/end drawing pair.
+        //
+        // Export is offered only for a document the bridge codec can actually
+        // write. `bridge_export` validates first and refuses a zero duration, so
+        // a track with no cues or no length gets a disabled button rather than a
+        // dialog that ends in an error — the C offers it unconditionally.
+        let exportable = !track.lyrics.is_empty() && track.lyrics.duration_seconds() > 0.0;
+        if exportable {
+            let id = widgets::widget_id(ns::ACTIONS, 7);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                export,
+                labels[0],
+                false,
+                ButtonStyle::Neutral,
+                Some(row_font),
+            );
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                export,
+                "Write these cues to a .lyrics.tsv. The project is not changed.",
+            );
+            if state.clicked {
+                commands.push(ShellCommand::ExportLyrics);
+            }
+        } else {
+            self.widgets
+                .disabled_button(d, font, export, labels[0], Some(row_font));
+        }
+        let import_id = widgets::widget_id(ns::ACTIONS, 8);
+        let import_state = self.widgets.text_button(
+            d,
+            font,
+            import_id,
+            import,
+            labels[1],
+            false,
+            ButtonStyle::Neutral,
+            Some(row_font),
+        );
+        self.widgets.hint(
+            d,
+            import_state,
+            import_id,
+            import,
+            "Replace every cue from a .lyrics.tsv. Ctrl+Z puts the old ones back.",
+        );
+        if import_state.clicked && self.allow_context_change(editor, track) {
+            commands.push(ShellCommand::ImportLyrics);
+        }
         if self
             .widgets
             .text_button(
@@ -3852,6 +4015,10 @@ impl Shell {
     /// A refused string is *kept in the field*, not silently reverted. The user
     /// can see what they typed and fix it; a field that empties itself when you
     /// get a character wrong is the most annoying possible answer.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one rectangle, two faces, the draft it writes and the id namespace it draws in"
+    )]
     fn time_readout(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -6253,6 +6420,14 @@ impl TimingControl {
     }
 }
 
+/// Seconds between the taps `--ui-probe lyric-tap=` synthesizes.
+///
+/// Comfortably past [`LYRIC_MIN_CUE_SECONDS`], so a probe's stamps never trip
+/// the double-keypress refusal and turn the requested count into a lie. Half a
+/// second is also roughly a real lyric's line rate, which keeps the resulting
+/// document plausible enough to photograph.
+const LYRIC_PROBE_TAP_SPACING_SECONDS: f64 = 0.5;
+
 const TIMING_BUTTON_WIDTH: f32 = 56.0;
 const TIMING_BUTTON_GAP: f32 = 6.0;
 
@@ -7220,14 +7395,339 @@ mod tests {
             form_id::START_TIME,
             form_id::START_TIME + 1,
             form_id::START_TIME + 2,
+            // +3 is the typed-time readout (UX0-B04). It is a *button* until it
+            // is clicked, so it claims a press like any other control and needs
+            // an id of its own.
+            form_id::START_TIME + 3,
             form_id::END_TIME,
             form_id::END_TIME + 1,
             form_id::END_TIME + 2,
+            form_id::END_TIME + 3,
         ];
         let control_count = ids.len();
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), control_count);
+    }
+
+    /// The other half of the same check, one namespace over.
+    ///
+    /// `ns::ACTIONS` held two controls for its whole life and now holds nine.
+    /// Enumerated individually rather than swept, because a collision test over
+    /// a hand-maintained *subset* is precisely what let `EXPORT` and `SEEK` eat
+    /// the export panel's SIZE row while three collision tests stayed green.
+    #[test]
+    fn every_lyrics_action_control_has_a_distinct_widget_id() {
+        let mut ids = vec![
+            0, // the Style pane toggle
+            1, // Add cue
+            TimingControl::Tap.widget_index(),
+            TimingControl::Split.widget_index(),
+            TimingControl::Merge.widget_index(),
+            TimingControl::Undo.widget_index(),
+            TimingControl::Redo.widget_index(),
+            7, // Export (D3)
+            8, // Import (D3)
+        ];
+        let count = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "two ACTIONS controls share an index");
+    }
+
+    #[test]
+    fn the_timing_control_ladder_never_brings_a_control_back() {
+        // The property that makes a resize feel stable is **monotonicity in
+        // width**, not a lucky shedding order: `core::ui::transport_bar` already
+        // paid for this, where greedy placement made mute vanish and then
+        // reappear as the window narrowed, because dropping the volume slider
+        // freed enough room for it.
+        //
+        // Swept at every logical pixel across the whole range the form can
+        // offer, so the assertion is over the function rather than over four
+        // window sizes someone picked.
+        // Swept from wide to narrow, which is the direction the claim is about:
+        // as the panel loses room, controls may only leave.
+        let mut previous: &[TimingControl] = TIMING_LADDER[0];
+        for pixels in (0..=600).rev() {
+            let rung = timing_ladder_for(pixels as f32);
+            assert!(
+                timing_ladder_width(rung) <= pixels as f32,
+                "the rung at {pixels} px does not fit in {pixels} px"
+            );
+            // Every rung must be a subset of the one chosen at a wider size. A
+            // control that reappears as the panel narrows is the defect.
+            assert!(
+                rung.iter().all(|control| previous.contains(control)),
+                "a control came back at {pixels} px: {rung:?} is not inside {previous:?}"
+            );
+            previous = rung;
+        }
+        // And the widest rung really is reachable, or the sweep above would be
+        // satisfied by a ladder that always returns nothing.
+        assert_eq!(timing_ladder_for(600.0), TIMING_LADDER[0]);
+        assert!(timing_ladder_for(0.0).is_empty());
+    }
+
+    #[test]
+    fn every_shed_timing_control_still_names_a_key() {
+        // Shedding a button costs discoverability, not capability — but only
+        // because each one has a binding, and only if the binding is written
+        // down. This is the same rule the transport row's tooltips carry.
+        for control in TIMING_LADDER[0] {
+            assert!(
+                control.key().starts_with("Ctrl"),
+                "{:?} has no keyboard route",
+                control
+            );
+            assert!(!control.label().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_split_never_produces_a_half_the_model_would_refuse() {
+        // `lyrics::validate_text` refuses empty text, so an empty half is a
+        // refusal *after* the user committed to the edit.
+        for text in [
+            "one two three four",
+            "a b",
+            "no-spaces-at-all-in-this-line",
+            "x",
+            "",
+            "  leading and trailing  ",
+            "Ελληνικά και ρωσικά",
+        ] {
+            for step in 0..=10 {
+                let (left, right) = split_text_at_fraction(text, f64::from(step) / 10.0);
+                if text.chars().count() >= 2 {
+                    assert!(!left.is_empty(), "{text:?} at {step} gave an empty left");
+                    assert!(!right.is_empty(), "{text:?} at {step} gave an empty right");
+                }
+            }
+        }
+        // A non-finite fraction is a bug upstream, not a panic here.
+        let (left, right) = split_text_at_fraction("one two", f64::NAN);
+        assert_eq!((left.as_str(), right.as_str()), ("one", "two"));
+    }
+
+    #[test]
+    fn a_split_prefers_the_word_boundary_nearest_the_seam() {
+        assert_eq!(
+            split_text_at_fraction("hold me closer tiny dancer", 0.5),
+            ("hold me closer".to_owned(), "tiny dancer".to_owned())
+        );
+        assert_eq!(
+            split_text_at_fraction("hold me closer tiny dancer", 0.05),
+            ("hold".to_owned(), "me closer tiny dancer".to_owned())
+        );
+        assert_eq!(
+            split_text_at_fraction("hold me closer tiny dancer", 0.95),
+            ("hold me closer tiny".to_owned(), "dancer".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_typed_time_round_trips_through_the_forms_own_readout() {
+        // The parser is in `core` and the formatter is in this crate, so nothing
+        // makes them agree except this. It is the assertion that stops the split
+        // drifting — a formatter change that this test does not fail is a
+        // formatter change that quietly breaks typing.
+        for seconds in [
+            0.0, 0.001, 0.999, 1.0, 59.999, 60.0, 83.456, 599.999, 3600.0,
+        ] {
+            let printed = widgets::format_timestamp(seconds);
+            let parsed = lyric_lane_edit::parse_cue_timestamp(&printed).unwrap_or_else(|| {
+                panic!("{printed:?} came out of the formatter and will not parse")
+            });
+            assert!(
+                (parsed - seconds).abs() < 1e-6,
+                "{seconds} printed as {printed} and read back as {parsed}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_user_action_earns_exactly_one_undo_step() {
+        // A cut of five cues is five `Delete`s in one frame. Five presses of
+        // Ctrl+Z to reverse one press of Ctrl+X is not undo.
+        let cut: Vec<_> = (1..=5).map(|id| LyricsEdit::Delete { id }).collect();
+        assert_eq!(batch_history_label(&cut).as_deref(), Some("5 edits"));
+        assert_eq!(
+            batch_history_label(&[LyricsEdit::ShiftMany {
+                ids: vec![1, 2, 3],
+                delta_seconds: 0.5
+            }])
+            .as_deref(),
+            Some("Move 3 cues")
+        );
+        // A tap is exactly two retimes — the line it closes and the line it
+        // opens — and a run of them must not read as a wall of "2 edits".
+        let tap = [
+            LyricsEdit::Retime {
+                id: 1,
+                start_seconds: 0.0,
+                end_seconds: 1.0,
+            },
+            LyricsEdit::Retime {
+                id: 2,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+            },
+        ];
+        assert_eq!(batch_history_label(&tap).as_deref(), Some("Stamp cue"));
+        // A caption-style batch must not consume a stack slot: it is the
+        // highest-frequency edit in the panel — every frame of a slider drag is
+        // one — and it does not touch a cue.
+        assert_eq!(
+            batch_history_label(&[LyricsEdit::SetCaptionStyle(Box::default())]),
+            None
+        );
+        // Mixed: the cue edit still earns the step, and names it.
+        let mixed = [
+            LyricsEdit::SetCaptionStyle(Box::default()),
+            LyricsEdit::Delete { id: 3 },
+        ];
+        assert_eq!(batch_history_label(&mixed).as_deref(), Some("Delete cue"));
+    }
+
+    #[test]
+    fn hold_repeat_fires_once_on_press_and_then_at_a_steady_rate() {
+        let mut repeat = HoldRepeat::default();
+        // The first frame belongs to `clicked`; firing here as well would move
+        // the value two steps for one tap.
+        assert!(!repeat.tick(7, true));
+        let mut fires = 0;
+        for _ in 0..HoldRepeat::DELAY_FRAMES {
+            if repeat.tick(7, true) {
+                fires += 1;
+            }
+        }
+        assert_eq!(fires, 0, "it repeated before the delay elapsed");
+        for _ in 0..HoldRepeat::INTERVAL_FRAMES * 4 {
+            if repeat.tick(7, true) {
+                fires += 1;
+            }
+        }
+        assert_eq!(fires, 4);
+        // Releasing resets, and moving to another button does not inherit the
+        // held frames.
+        assert!(!repeat.tick(7, false));
+        assert!(!repeat.tick(9, true));
+        assert_eq!(repeat, HoldRepeat { id: 9, frames: 0 });
+    }
+
+    #[test]
+    fn a_time_field_stands_the_global_shortcuts_down_as_firmly_as_the_cue_field() {
+        // The shell asks exactly one question — `is_typing` — before deciding
+        // whether Space plays and `M` mutes. A second text surface in this panel
+        // that did not answer it would re-create UX0-A06 one field over: typing
+        // `1:23` into a time readout would seek the track and toggle the readout.
+        let mut editor = LyricEditor::new();
+        assert!(!editor.is_typing());
+        editor.time_edit = Some(TimeEdit {
+            is_start: true,
+            field: TextField::new(TextRules::ascii_query(16)),
+        });
+        assert!(editor.is_typing(), "a typed time must silence the globals");
+        // And the panel-local lane shortcuts stand down too, or Ctrl+V would
+        // paste cues while the user meant to paste a timecode.
+        assert!(!lyric_clipboard_keys_allowed(false, false, true));
+    }
+
+    #[test]
+    fn arming_a_tap_run_blurs_the_cue_field_so_no_key_means_two_things() {
+        // The defect review 2 names: `begin_new` focuses the field, a focused
+        // field stands down every transport key including Space, and the natural
+        // add-type-play-tap loop broke at the tap. Tap mode and text entry are
+        // mutually exclusive *states*, which is what makes it unstateable rather
+        // than guarded against.
+        let mut document = LyricsDocument::new(60.0).unwrap();
+        for start in [1.0, 3.0, 5.0] {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 1.0,
+                    text: "a line".into(),
+                    origin: CueOrigin::UserApplied,
+                })
+                .unwrap();
+        }
+        let mut editor = LyricEditor::new();
+        editor.begin_new(&document, 0.0);
+        assert!(editor.is_typing(), "a new cue focuses the field");
+        assert!(editor.toggle_tap(&document, 0.0));
+        assert!(
+            !editor.is_typing(),
+            "arming a run must take the keyboard back from the field"
+        );
+        assert!(editor.tap_is_armed());
+    }
+
+    #[test]
+    fn selecting_a_cue_asks_the_transport_to_go_there() {
+        let mut document = LyricsDocument::new(60.0).unwrap();
+        for start in [1.0, 3.0, 5.0] {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 1.0,
+                    text: "a line".into(),
+                    origin: CueOrigin::UserApplied,
+                })
+                .unwrap();
+        }
+        let mut editor = LyricEditor::new();
+        assert_eq!(editor.take_seek_request(), None);
+        editor.select_and_seek(&document, 2);
+        assert_eq!(editor.take_seek_request(), Some(3.0));
+        // Drained, not read: a seek left behind would be emitted again next
+        // frame and pin the playhead to the selected cue forever.
+        assert_eq!(editor.take_seek_request(), None);
+
+        // Down and Up walk the list and seek with it, saturating rather than
+        // wrapping — a list that jumps from the last line to the first reads as
+        // a lost keypress.
+        editor.step_selection(&document, true, 0.0);
+        assert_eq!(editor.take_seek_request(), Some(5.0));
+        editor.step_selection(&document, true, 0.0);
+        assert_eq!(editor.take_seek_request(), Some(5.0));
+        editor.step_selection(&document, false, 0.0);
+        assert_eq!(editor.take_seek_request(), Some(3.0));
+
+        // With nothing bound it starts from the cue under the playhead rather
+        // than from the top of the document.
+        let mut fresh = LyricEditor::new();
+        fresh.step_selection(&document, true, 3.5);
+        assert_eq!(fresh.take_seek_request(), Some(5.0));
+    }
+
+    #[test]
+    fn entering_another_track_drops_the_history_that_would_restore_its_cues() {
+        // Cue ids restart at 1 in every document, so one track's snapshot
+        // restores another track's cues wholesale — a far worse version of the
+        // defect `owner_slot` exists for, because it replaces the document
+        // rather than one cue in it.
+        let mut document = LyricsDocument::new(60.0).unwrap();
+        document
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+                text: "a line".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        let mut editor = LyricEditor::new();
+        editor.enter_track(Some(0));
+        editor.record_history_label("Move", &document);
+        assert!(editor.can_undo());
+        assert!(editor.toggle_tap(&document, 0.0));
+
+        editor.enter_track(Some(1));
+        assert!(!editor.can_undo(), "a history survived a track switch");
+        assert!(!editor.tap_is_armed(), "a tap run survived a track switch");
     }
 
     #[test]

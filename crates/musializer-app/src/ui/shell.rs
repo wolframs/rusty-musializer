@@ -125,6 +125,17 @@ pub enum ShellCommand {
     SetFullscreen(bool),
     /// Persist workstation UI state outside the current `.musi` project.
     SaveUiPreferences(UiPreferences),
+    /// Write the current track's cue document to a `.lyrics.tsv` through a
+    /// native save dialog (`export_lyrics_document`, `lyrics_editor_ui.c:1084-1140`).
+    ///
+    /// A command for the same reason [`Self::OpenAudio`] is: the picker is modal
+    /// and blocks until answered, and doing that inside a begin/end drawing pair
+    /// would hold the frame open across it. The two lyrics variants were the
+    /// only thing missing — `LyricsDocument::bridge_export`/`bridge_import` have
+    /// been ported and tested since Agent B's band and had no caller (D3).
+    ExportLyrics,
+    /// Replace the current track's cue document from a `.lyrics.tsv`.
+    ImportLyrics,
 }
 
 /// What the shell needs to know to draw one frame.

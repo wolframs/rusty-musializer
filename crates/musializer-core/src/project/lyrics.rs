@@ -2010,7 +2010,9 @@ mod history_tests {
     /// snapshot before each, and returns the state after every step.
     fn drive(document: &mut LyricsDocument, history: &mut LyricHistory) -> Vec<LyricsDocument> {
         let mut states = vec![document.clone()];
-        let steps: [(&str, fn(&mut LyricsDocument)); 8] = [
+        /// One named model operation, so the sweep below reads as a table.
+        type Step = (&'static str, fn(&mut LyricsDocument));
+        let steps: [Step; 8] = [
             ("Move", |d| d.shift_many(&[1, 2], 0.25).unwrap()),
             ("Resize", |d| d.retime(3, 4.5, 7.0).unwrap()),
             ("Stamp", |d| d.retime(4, 20.0, 21.5).unwrap()),
