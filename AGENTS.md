@@ -16,6 +16,24 @@ UX0-B/UX0-C workflow-friction and product-opportunity backlog.
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
 
+## Who this is for (operator, 2026-08-07)
+
+This is a creative tool. Its user is someone who has learned to get the most
+out of AI music generation and is now looking for the next step: giving the
+music a video form that is **enticing**, through a tool that is **exciting to
+work with**. Build from that chair, not from the checkbox. Handling the work as
+numb instruction-following produces the wrong artifact here even when every
+item closes — the operator has watched agents do exactly that.
+
+Concretely: before calling a task done, run the feature the way this person
+would — music playing, entering from where they would enter — and ask what the
+moment of response feels like. A control should read as an invitation, a result
+should look like something worth posting, and an idle affordance should make
+the user want to try it. If the honest answer to "what does this feel like" is
+"nothing", the task is not done; say what is missing and either fix it or
+record it. The evidence rules elsewhere in this file are the floor for
+correctness, not a substitute for this judgment.
+
 ## Commands
 
 ```sh
