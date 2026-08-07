@@ -36,12 +36,13 @@
 use std::path::{Path, PathBuf};
 
 use musializer_core::audio::AudioAnalyzerConfig;
-use musializer_core::project::frame_lanes::SceneFrameTiming;
+use musializer_core::project::frame_lanes::{FrameLaneStatus, SceneFrameTiming};
 use musializer_core::render::resolve::LinearResolver;
 use musializer_core::scene::routes::RouteSources;
 use musializer_core::scene::{SceneAudioFrame, SceneInstance};
 use musializer_core::timing::render_export::{
-    Aspect, FrameRate, Quality, RenderExportConfig, Resolution,
+    self as render_export, Aspect, ClipSelection, FrameRate, Quality, RenderExportConfig,
+    Resolution,
 };
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
@@ -65,6 +66,62 @@ use crate::scene_host;
 /// aliases the central allocation so collisions remain testable in one place.
 const EXPORT_WIDGETS: u32 = widgets::id::EXPORT;
 
+/// Indices inside [`EXPORT_WIDGETS`], for the controls added after EX2.
+///
+/// The older rows still index inline — SIZE at 0, FPS at 8, QUALITY at 16,
+/// the footer at 24, ASPECT at 32 — and those spacings are what made room here.
+/// Named rather than inline because the CLIP row's three ids are read twice
+/// each (to draw and to answer the press) and a mistyped second copy would be a
+/// button that highlights and never fires.
+mod clip_ids {
+    pub(super) const FULL_TRACK: u32 = 40;
+    pub(super) const SET_IN: u32 = 41;
+    pub(super) const SET_OUT: u32 = 42;
+    /// The footer's still-frame button (UX0-C10).
+    pub(super) const STILL: u32 = 43;
+}
+
+/// The CLIP row's readout, in the two lengths the panel can afford.
+struct ClipReadout {
+    long: String,
+    short: String,
+}
+
+/// What the CLIP row says about the current selection.
+///
+/// Separated from the drawing so the wording is testable: this line is the only
+/// place the interface states what an export will actually cover, and "in
+/// 01:12.500 -> out 01:42.000" being wrong by a frame is invisible in a capture.
+fn clip_readout(clip: ClipSelection, duration_seconds: f64, fps: u32) -> ClipReadout {
+    let frames = clip
+        .frames(duration_seconds, fps)
+        .map_or(0, |frames| frames.end - frames.start);
+    match clip.window(duration_seconds, fps) {
+        None => ClipReadout {
+            long: format!(
+                "whole track  |  {}  |  {frames} frames",
+                widgets::format_timestamp(duration_seconds)
+            ),
+            short: format!("whole track  |  {frames} frames"),
+        },
+        Some((start, length)) => {
+            let long = format!(
+                "in {}  ->  out {}  |  {length:.1} s  |  {frames} frames",
+                widgets::format_timestamp(start),
+                widgets::format_timestamp(start + length),
+            );
+            ClipReadout {
+                long,
+                short: format!(
+                    "{} -> {}",
+                    widgets::format_timestamp(start),
+                    widgets::format_timestamp(start + length)
+                ),
+            }
+        }
+    }
+}
+
 /// What the export panel asked for this frame.
 ///
 /// Deliberately not a `ShellCommand`: those live in `shell.rs`. See the module
@@ -77,6 +134,12 @@ pub(crate) enum ExportRequest {
     /// Ask for a destination and start (`start_rendering_track`,
     /// `plug.c:7120-7138`).
     Start,
+    /// Publish the frame at the playhead as a PNG (UX0-C10).
+    ///
+    /// A command for the same reason [`Self::Start`] is one: it opens a modal
+    /// destination picker and then draws into a render target, neither of which
+    /// can happen inside the drawing pair this panel is called from.
+    Still,
 }
 
 /// The single seam between this panel and `main.rs`.
@@ -84,6 +147,7 @@ fn dispatch(request: &ExportRequest, commands: &mut Vec<ShellCommand>) {
     match request {
         ExportRequest::Configure(config) => commands.push(ShellCommand::SetRenderConfig(*config)),
         ExportRequest::Start => commands.push(ShellCommand::StartRender),
+        ExportRequest::Still => commands.push(ShellCommand::ExportStill),
     }
 }
 
@@ -126,9 +190,25 @@ fn quality_detail(quality: Quality) -> &'static str {
 /// hand-picked guess that could drift out of agreement with the layout it is
 /// supposed to describe.
 mod body_layout {
-    /// Y offset (from the boundary's top) of the SIZE/FPS control row.
-    pub(super) const FIRST_ROW_Y: f32 = 62.0;
-    /// Vertical distance from the SIZE/FPS row down to the QUALITY row.
+    /// Y offset (from the boundary's top) of the CLIP row (UX0-C01).
+    ///
+    /// **First, above SIZE, and that ordering is load-bearing twice.** It reads
+    /// in the order the questions are asked — *which part of the track*, then
+    /// what shape and how good — and, because the timeline band grows upward
+    /// from the window's bottom edge while the footer stays pinned to it, a row
+    /// added at the top leaves every control below it at the same screen
+    /// position it had before. That is what kept EX1's and EX2's click-probe
+    /// coordinates valid rather than silently aiming a press one row off.
+    ///
+    /// The 62 it replaced was the SIZE row's, under a full-width description
+    /// line. Three control rows plus that line ask 424 px of timeline band,
+    /// and a 640 px window can only give 410 — which would have put the export
+    /// panel back behind its own "needs a taller timeline" notice at the
+    /// smallest supported size, the exact defect review 1.4 exists about. The
+    /// description moved up beside the EXPORT title, which costs no vertical
+    /// space at all, and the row starts where it used to end.
+    pub(super) const FIRST_ROW_Y: f32 = 36.0;
+    /// Vertical distance from the CLIP row down to the SIZE/FPS row.
     pub(super) const ROW_ADVANCE: f32 = 46.0;
     /// Y offset (from the QUALITY row's own y) of the quality-detail line —
     /// the last thing this panel draws before the footer.
@@ -138,11 +218,13 @@ mod body_layout {
     /// How far above the boundary's bottom edge the footer row sits.
     pub(super) const FOOTER_BOTTOM_MARGIN: f32 = 44.0;
 
-    /// Y offset of the QUALITY row.
+    /// Y offset of the SIZE/FPS row.
     pub(super) const SECOND_ROW_Y: f32 = FIRST_ROW_Y + ROW_ADVANCE;
+    /// Y offset of the QUALITY/ASPECT row.
+    pub(super) const THIRD_ROW_Y: f32 = SECOND_ROW_Y + ROW_ADVANCE;
     /// Bottom of the quality-detail line — the lowest body text the footer
     /// must clear.
-    pub(super) const DETAIL_BOTTOM: f32 = SECOND_ROW_Y + DETAIL_OFFSET + DETAIL_FONT_SIZE;
+    pub(super) const DETAIL_BOTTOM: f32 = THIRD_ROW_Y + DETAIL_OFFSET + DETAIL_FONT_SIZE;
 }
 
 /// The least content-box (`boundary`) height at which [`Shell::export_panel`]
@@ -296,15 +378,36 @@ impl Shell {
             metric::UI_FONT_HEADER,
             color::accent(),
         );
-        widgets::draw_text(
-            &mut clip,
-            font,
-            "One deterministic scene path. The destination is replaced only after the encoder succeeds.",
-            boundary.x + padding,
-            boundary.y + 36.0,
-            metric::UI_FONT_VALUE,
-            color::ui_muted(),
-        );
+        // Beside the title rather than under it (UX0-C01). The CLIP row needs a
+        // row's worth of height and the band cannot afford one at 640 px, and
+        // this line is the cheapest 26 px in the panel: it is a standing
+        // statement about how exports behave, not something that changes.
+        // Shortened rather than clipped when the panel is narrow, for the same
+        // reason the clip readout is — a sentence cut off mid-word reads as a
+        // rendering fault.
+        {
+            let title_width = widgets::measure(font, "EXPORT", metric::UI_FONT_HEADER);
+            let note_x = boundary.x + padding + title_width + 16.0;
+            let available = (boundary.x + boundary.width - padding - note_x).max(0.0);
+            let long = "One deterministic scene path. The destination is replaced only after the encoder succeeds.";
+            let short = "The destination is replaced only after the encoder succeeds.";
+            let note = if widgets::measure(font, long, metric::UI_FONT_VALUE) <= available {
+                long
+            } else {
+                short
+            };
+            if widgets::measure(font, note, metric::UI_FONT_VALUE) <= available {
+                widgets::draw_text(
+                    &mut clip,
+                    font,
+                    note,
+                    note_x,
+                    boundary.y + padding + 4.0,
+                    metric::UI_FONT_VALUE,
+                    color::ui_muted(),
+                );
+            }
+        }
 
         // The panel reads the *track's* configuration, never a copy of its own:
         // `--resolution` on the command line and a click here have to be the
@@ -314,7 +417,26 @@ impl Shell {
             .current()
             .map_or_else(RenderExportConfig::default, |track| track.render_config);
 
-        let mut y = boundary.y + body_layout::FIRST_ROW_Y;
+        // CLIP, above everything else, because "which part of the track" is the
+        // first question a teaser export asks (UX0-C01). The row is drawn even
+        // with no track: the buttons refuse the press and the readout says why,
+        // rather than the row silently not existing.
+        let clip_row = UiRect::new(
+            boundary.x,
+            boundary.y + body_layout::FIRST_ROW_Y,
+            boundary.width,
+            metric::UI_BUTTON_HEIGHT,
+        );
+        self.clip_row(
+            &mut clip,
+            input,
+            boundary,
+            clip_row,
+            config,
+            input.duration_seconds,
+        );
+
+        let mut y = boundary.y + body_layout::SECOND_ROW_Y;
         widgets::draw_text(
             &mut clip,
             font,
@@ -478,11 +600,28 @@ impl Shell {
                 track.base_scene.display_name()
             }
         });
-        let approximate_frames = (input.duration_seconds * f64::from(config.fps))
-            .ceil()
-            .max(0.0);
+        // The frame estimate is the *clip's*, not the track's (UX0-C01): a
+        // summary that kept counting the whole track while a 30 s window was
+        // selected would be the panel's one sentence about what it is about to
+        // produce, and wrong.
+        let approximate_frames = self
+            .export_clip
+            .frames(input.duration_seconds, config.fps)
+            .map_or_else(
+                || {
+                    (input.duration_seconds * f64::from(config.fps))
+                        .ceil()
+                        .max(0.0) as u64
+                },
+                |frames| frames.end - frames.start,
+            );
+        let extent = if self.export_clip.is_enabled() {
+            "clip"
+        } else {
+            "whole track"
+        };
         let summary = format!(
-            "{}  |  {}x{} at {} fps  |  {}  |  est. {approximate_frames:.0} frames  |  {scene_label}",
+            "{}  |  {}x{} at {} fps  |  {}  |  {extent}, est. {approximate_frames} frames  |  {scene_label}",
             track_name,
             config.width,
             config.height,
@@ -518,6 +657,11 @@ impl Shell {
             metric::UI_BUTTON_HEIGHT,
         );
         let close = UiRect::new(render.x - 98.0 - gap, render.y, 98.0, render.height);
+        // The still, left of Close (UX0-C10). To the *left* of the two controls
+        // that were already there, so neither of them moves: EX1's click-probe
+        // coordinates aim at the footer's right edge and a shifted Close would
+        // have been a silently mis-aimed press rather than a failure.
+        let still = UiRect::new(close.x - 132.0 - gap, render.y, 132.0, render.height);
         let render_label = if encoder_present {
             "Choose output and render"
         } else {
@@ -557,6 +701,43 @@ impl Shell {
                 );
             }
         }
+        // A still needs no encoder — it is a PNG, written by raylib — so it is
+        // live in exactly the case the render button is not, which is worth
+        // saying: a user without FFmpeg can still get a cover out of this
+        // panel.
+        if boundary.contains(still) {
+            if input.workspace.current().is_some() {
+                let still_id = widgets::widget_id(EXPORT_WIDGETS, clip_ids::STILL);
+                let state = self.widgets.text_button(
+                    &mut clip,
+                    font,
+                    still_id,
+                    still,
+                    "Save still",
+                    false,
+                    ButtonStyle::Neutral,
+                    Some(footer_font),
+                );
+                self.widgets.hint(
+                    &clip,
+                    state,
+                    still_id,
+                    still,
+                    "Write the frame at the playhead as a PNG, through the export renderer",
+                );
+                if state.clicked {
+                    dispatch(&ExportRequest::Still, commands);
+                }
+            } else {
+                self.widgets.disabled_button(
+                    &mut clip,
+                    font,
+                    still,
+                    "Save still",
+                    Some(footer_font),
+                );
+            }
+        }
         if boundary.contains(close)
             && self
                 .widgets
@@ -573,6 +754,149 @@ impl Shell {
                 .clicked
         {
             self.panel = UiPanel::None;
+        }
+    }
+
+    /// The CLIP row: full track, the two playhead marks, and what they add up to
+    /// (UX0-C01).
+    ///
+    /// **Nothing in the frozen C draws this.** `render_export_window_frames`
+    /// exists there and `plug.c` calls it only from
+    /// `plug_configure_render_window` — a command-line entry point — so a clip
+    /// was expressible on a command line and nowhere a user could see it. The
+    /// row is the missing half.
+    ///
+    /// The two marks read from the playhead rather than from a text field on
+    /// purpose: the gesture a person actually performs is "play until it sounds
+    /// right, then press", and a field would ask them to read a number off the
+    /// transport and type it back in. It is also why one press is enough to get
+    /// a renderable clip — [`ClipSelection::set_start`] selects to the end of
+    /// the track — so "post from the drop onward" costs one click and the
+    /// destination dialog.
+    fn clip_row(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        boundary: UiRect,
+        row: UiRect,
+        config: RenderExportConfig,
+        duration_seconds: f64,
+    ) {
+        let font = input.fonts.ui();
+        let gap = metric::UI_CONTROL_GAP;
+        let padding = metric::UI_PANEL_PADDING;
+        widgets::draw_text(
+            d,
+            font,
+            "CLIP",
+            boundary.x + padding,
+            row.y + 10.0,
+            13.0,
+            color::ui_muted(),
+        );
+
+        let has_track = duration_seconds > 0.0;
+        let mut x = boundary.x + 68.0;
+        let buttons: [(u32, f32, &str, &str); 3] = [
+            (
+                clip_ids::FULL_TRACK,
+                92.0,
+                "Full track",
+                "Export the whole track",
+            ),
+            (
+                clip_ids::SET_IN,
+                116.0,
+                "In <- playhead",
+                "Start the export at the playhead (to the end, until you set an out point)",
+            ),
+            (
+                clip_ids::SET_OUT,
+                116.0,
+                "Out <- playhead",
+                "End the export at the playhead",
+            ),
+        ];
+        for (index, width, label, hint) in buttons {
+            let button = UiRect::new(x, row.y, width, row.height);
+            x += width + gap;
+            if !boundary.contains(button) {
+                continue;
+            }
+            let selected = match index {
+                clip_ids::FULL_TRACK => !self.export_clip.is_enabled(),
+                _ => false,
+            };
+            if !has_track {
+                // Named and refused rather than absent: a row of live-looking
+                // buttons over a workspace with no track is the "a control that
+                // silently does nothing" failure this repository already paid
+                // for once.
+                self.widgets.disabled_button(d, font, button, label, None);
+                continue;
+            }
+            let state = self.widgets.text_button(
+                d,
+                font,
+                widgets::widget_id(EXPORT_WIDGETS, index),
+                button,
+                label,
+                selected,
+                ButtonStyle::Neutral,
+                None,
+            );
+            self.widgets.hint(
+                d,
+                state,
+                widgets::widget_id(EXPORT_WIDGETS, index),
+                button,
+                hint,
+            );
+            if state.clicked {
+                match index {
+                    clip_ids::FULL_TRACK => self.export_clip.clear(),
+                    clip_ids::SET_IN => {
+                        self.export_clip
+                            .set_start(input.time_seconds, duration_seconds, config.fps)
+                    }
+                    _ => {
+                        self.export_clip
+                            .set_end(input.time_seconds, duration_seconds, config.fps);
+                    }
+                }
+            }
+        }
+
+        // The readout. Long form while it fits, short form otherwise, because
+        // the panel narrows with the window and a clipped readout that ends
+        // mid-number would be worse than one that never showed the seconds.
+        let readout = clip_readout(self.export_clip, duration_seconds, config.fps);
+        let available = (boundary.x + boundary.width - padding - x - 12.0).max(0.0);
+        let text = if widgets::measure(font, &readout.long, 14.0) <= available {
+            readout.long
+        } else {
+            readout.short
+        };
+        if widgets::measure(font, &text, 14.0) <= available {
+            widgets::draw_text(
+                d,
+                font,
+                &text,
+                x + 12.0,
+                row.y + 11.0,
+                14.0,
+                // Accent while a clip is live, muted otherwise. The only other
+                // sign the export has stopped covering the whole track is
+                // "Full track" losing its highlight, and a capture showed that
+                // reading as ink-on-white against muted-on-white — a
+                // distinction nobody notices at a glance, on the one line that
+                // says how much of their track is about to be rendered.
+                if self.export_clip.is_enabled() {
+                    color::accent()
+                } else {
+                    color::ui_muted()
+                },
+            );
         }
     }
 
@@ -713,7 +1037,10 @@ impl Shell {
 /// across it would freeze the window mid-paint.
 ///
 /// Returns `None` for cancellation, which is deliberately silent.
-pub(crate) fn ask_for_destination(app: &mut crate::App) -> Option<PathBuf> {
+pub(crate) fn ask_for_destination(
+    app: &mut crate::App,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
     use musializer_runtime::process::dialogs::{self, FileDialog};
 
     let track = app.workspace.current()?;
@@ -724,11 +1051,30 @@ pub(crate) fn ask_for_destination(app: &mut crate::App) -> Option<PathBuf> {
     } else {
         track.base_scene.stable_name()
     };
+    // A clip proposes its own name, so a teaser cannot silently replace the
+    // full render of the same track and scene (UX0-C01).
+    let clip = app
+        .shell
+        .export_clip
+        .window(track.duration_seconds, track.render_config.fps);
     let suggested = track
         .file_path
         .to_str()
-        .and_then(|path| track.render_config.suggest_path(path, scene_name).ok())
+        .and_then(|path| match clip {
+            Some((start, length)) => track
+                .render_config
+                .suggest_clip_path(path, scene_name, start, start + length)
+                .ok(),
+            None => track.render_config.suggest_path(path, scene_name).ok(),
+        })
         .unwrap_or_else(|| "./musializer-render.mp4".to_string());
+    // `--ui-probe save-to=` stands in for the picker, and only for it: Xvfb has
+    // no file dialog any more than it has a pointer, so without this the one
+    // control this panel exists for could be pressed in a capture and never
+    // reach a file (EX1's argument, one step further along).
+    if let Some(path) = probe_destination {
+        return Some(path.to_path_buf());
+    }
 
     let dialog = FileDialog::new("Export video")
         .with_filter(dialogs::filters::MP4_VIDEO)
@@ -744,6 +1090,468 @@ pub(crate) fn ask_for_destination(app: &mut crate::App) -> Option<PathBuf> {
             None
         }
     }
+}
+
+/// Publishes the frame at the playhead as a PNG (UX0-C10).
+///
+/// **Not the oracle's at all**: the frozen C can render a video and nothing
+/// else, so a user who wanted a cover or a thumbnail had to export an MP4 and
+/// take a frame out of it — through a lossy codec, at whatever moment the
+/// scrubber happened to land on.
+///
+/// What makes this a *still of the video* rather than a screenshot:
+///
+/// - the frame index is [`render_export::still_frame_index`], the same floor the
+///   clip window's start uses, so "still here" and "clip from here" publish the
+///   same frame;
+/// - every frame from zero is prepared through [`with_export_frame`] before it,
+///   for the reason `render_job.rs` gives for never seeking — the analyzer, the
+///   beat tracker, the scene state and the automatic plan are all path
+///   dependent, so a still taken by jumping would be a different picture;
+/// - it draws through [`draw_offline_frame`] into the same supersampled target
+///   an export uses, and resolves with the same [`LinearResolver`] (EX3).
+///
+/// It deliberately does **not** need FFmpeg: a PNG is written by raylib, so this
+/// is the one thing in the panel that works without an encoder installed.
+///
+/// Returns the published path, or `None` if the user cancelled or it failed —
+/// both of which are reported in the tray by name.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one export frame needs; see `ExportSession::begin`"
+)]
+pub(crate) fn export_still(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    time_seconds: f64,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
+    let Some(track) = app.workspace.current() else {
+        app.shell.notify(
+            Severity::Error,
+            "No still was written",
+            "There is no track to render a frame from.",
+        );
+        return None;
+    };
+    let config = track.render_config;
+    let source = track.file_path.clone();
+    let duration_seconds = track.duration_seconds;
+    let (scene, seed) = (track.base_scene, track.scene_seed);
+
+    let destination = ask_for_still_destination(app, time_seconds, probe_destination)?;
+
+    // Decoded here rather than streamed, exactly as `RenderJob::start` does: the
+    // analyzer must hear the file's own samples, not raylib's stereo mix.
+    let Some(source_text) = source.to_str() else {
+        app.shell.notify(
+            Severity::Error,
+            "No still was written",
+            "The source audio path is not valid text.",
+        );
+        return None;
+    };
+    let decoded = audio
+        .new_wave(source_text)
+        .ok()
+        .filter(raylib::core::audio::Wave::is_wave_valid)
+        .and_then(|wave| {
+            let format = (wave.sample_rate(), wave.channels(), wave.frame_count());
+            musializer_runtime::decode::wave_samples(&wave).map(|samples| (samples, format))
+        });
+    let Some((samples, (sample_rate, channels, frame_count))) = decoded else {
+        app.shell.notify(
+            Severity::Error,
+            "No still was written",
+            "The source audio decoder rejected the file, so the frame could not be prepared.",
+        );
+        return None;
+    };
+
+    let plan = render_export::total_frames(u64::from(frame_count), sample_rate, config.fps)
+        .and_then(|total| {
+            render_export::still_frame_index(time_seconds, config.fps, total)
+                .map(|index| (total, index))
+        });
+    let Ok((total_frames, frame_index)) = plan else {
+        app.shell.notify(
+            Severity::Error,
+            "No still was written",
+            "The playhead is not on a frame this track can produce.",
+        );
+        return None;
+    };
+
+    let restore_position = music.map_or(0.0, Music::get_time_played);
+    let restore_playing = music.is_some_and(Music::is_stream_playing);
+    if let Some(music) = music {
+        if !restore_playing {
+            music.resume_stream();
+        }
+        music.stop_stream();
+    }
+
+    let Some((mut target, achieved_factor)) = offline_render_target(rl, thread, &config) else {
+        app.shell.notify(
+            Severity::Error,
+            "No still was written",
+            "The offline surface could not be created. Try a lower resolution or Balanced quality.",
+        );
+        restore_preview(music, app, analysis, restore_position, restore_playing);
+        return None;
+    };
+
+    // The export's analyzer configuration, from the decoded wave's own channel
+    // count (`render_job.rs::analyzer_config`, `plug.c:7094`).
+    let analyzer_config = AudioAnalyzerConfig {
+        sample_rate,
+        channel_count: channels,
+        channel_mode: musializer_core::audio::ChannelMode::Select(0),
+    };
+    if let Err(error) = analysis.reconfigure(analyzer_config) {
+        app.shell.notify(
+            Severity::Error,
+            "No still was written",
+            &format!("The analyzer could not be configured: {error}"),
+        );
+        restore_preview(music, app, analysis, restore_position, restore_playing);
+        return None;
+    }
+    app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+    if let Some(track) = app.workspace.current_mut() {
+        track.scene_switches.reset();
+        track.cue_settings_active = false;
+    }
+    prepare_track_assets(audio, app);
+
+    // One frame of "this is happening", before a decode-and-fast-forward that
+    // can take a second on a long track. Without it the window holds whatever
+    // was on screen and the press reads as ignored.
+    {
+        let (screen_width, screen_height) = (rl.get_screen_width(), rl.get_screen_height());
+        let font = fonts.ui();
+        let label = "Rendering still frame";
+        // 34, the export progress screen's own title size, and a *native* one:
+        // `UI_FONT_SIZES` has no 30, so a 30 px label quantizes down to 28 and
+        // the gate counts it as a bypass of size quantization — which it is,
+        // and which is exactly how it was caught.
+        let width = widgets::measure(font, label, 34.0);
+        let mut d = rl.begin_drawing(thread);
+        d.clear_background(color::background());
+        widgets::draw_text(
+            &mut d,
+            font,
+            label,
+            (screen_width as f32 - width) / 2.0,
+            screen_height as f32 / 2.0 - 20.0,
+            34.0,
+            color::white(),
+        );
+    }
+
+    let mut pixels = vec![0u8; config.width as usize * config.height as usize * 4];
+    let mut resolver = LinearResolver::new();
+    let mut sample_cursor = 0u64;
+    let mut failure: Option<String> = None;
+    {
+        let mut d = rl.begin_drawing(thread);
+        for index in 0..=frame_index {
+            // `RenderJob::take_samples` (`plug.c:7987-8011`): frame zero hears
+            // nothing, and every frame after it hears exactly the samples
+            // between the two cursors.
+            let slice = if index == 0 {
+                &[][..]
+            } else {
+                match render_export::sample_cursor(
+                    index,
+                    sample_rate,
+                    config.fps,
+                    u64::from(frame_count),
+                ) {
+                    Ok(next) => {
+                        let channels = channels as usize;
+                        let from = sample_cursor as usize * channels;
+                        let to = (next as usize * channels).min(samples.len());
+                        sample_cursor = next;
+                        samples.get(from..to).unwrap_or(&[])
+                    }
+                    Err(error) => {
+                        failure = Some(format!("{error}"));
+                        break;
+                    }
+                }
+            };
+            let draws = index == frame_index;
+            let pixel_scale = config
+                .target_scale(target.width() as u32, target.height() as u32)
+                .unwrap_or(1.0);
+            with_export_frame(
+                app,
+                analysis,
+                index,
+                config.fps,
+                duration_seconds,
+                slice,
+                |app, frame, _status| {
+                    if draws {
+                        draw_offline_frame(
+                            &mut d,
+                            thread,
+                            &mut target,
+                            app,
+                            renderer,
+                            fonts,
+                            frame,
+                            pixel_scale,
+                        );
+                    } else {
+                        app.scene.update(frame);
+                    }
+                },
+            );
+        }
+    }
+
+    let published = failure.map_or_else(
+        || {
+            resolve_and_write_png(
+                &mut target,
+                &mut resolver,
+                &mut pixels,
+                &config,
+                &destination,
+            )
+        },
+        Err,
+    );
+    drop(target);
+    restore_preview(music, app, analysis, restore_position, restore_playing);
+
+    match published {
+        Ok(()) => {
+            // The line a capture can assert, and the only evidence that the
+            // still is the frame the video would have encoded: the index, not
+            // just the time (EX1's argument about `export config:`).
+            println!(
+                "export still:    t={time_seconds:.3} frame {frame_index} of {total_frames} at \
+                 {}x{} ({achieved_factor}x target), {}",
+                config.width,
+                config.height,
+                destination.display(),
+            );
+            app.shell.notify(
+                Severity::Success,
+                "Still frame saved",
+                &format!(
+                    "Frame {frame_index} at {:.3} s, rendered through the export path: {}",
+                    time_seconds,
+                    destination.display()
+                ),
+            );
+            Some(destination)
+        }
+        Err(detail) => {
+            app.shell.notify(
+                Severity::Error,
+                "The still frame could not be written",
+                &format!("{detail}. Nothing else was changed."),
+            );
+            None
+        }
+    }
+}
+
+/// Where a still goes, following the video's own convention (UX0-C10).
+fn ask_for_still_destination(
+    app: &mut crate::App,
+    time_seconds: f64,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
+    use musializer_runtime::process::dialogs::{FileDialog, FileFilter};
+
+    if let Some(path) = probe_destination {
+        return Some(path.to_path_buf());
+    }
+    let track = app.workspace.current()?;
+    let scene_name = if track.scene_switches.enabled {
+        "scene-plan"
+    } else {
+        track.base_scene.stable_name()
+    };
+    let suggested = track
+        .file_path
+        .to_str()
+        .and_then(|path| {
+            track
+                .render_config
+                .suggest_still_path(path, scene_name, time_seconds)
+                .ok()
+        })
+        .unwrap_or_else(|| "./musializer-still.png".to_string());
+
+    // The PNG filter is built here rather than added to `dialogs::filters`:
+    // that module is the oracle's call sites, and a still is not one of them.
+    let dialog = FileDialog::new("Export still frame")
+        .with_filter(FileFilter {
+            label: "PNG image",
+            patterns: &["*.png"],
+        })
+        .with_default_path(&suggested);
+    match dialog.save_file() {
+        Ok(path) => path,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Warning,
+                "No file picker is available",
+                &format!("{error}. The still was not written."),
+            );
+            None
+        }
+    }
+}
+
+/// Reads the offline target back, resolves it, and writes the PNG.
+///
+/// The readback and the resolve are the export's, verbatim (EX3): a still that
+/// averaged in gamma space would be exactly the third of the light the video
+/// export used to lose, in a file whose whole purpose is to be looked at.
+fn resolve_and_write_png(
+    target: &mut RenderTexture2D,
+    resolver: &mut LinearResolver,
+    pixels: &mut Vec<u8>,
+    config: &RenderExportConfig,
+    destination: &Path,
+) -> Result<(), String> {
+    let mut image = target
+        .load_image()
+        .map_err(|error| format!("the frame could not be read back: {error}"))?;
+    let (source_width, source_height) = (image.width.max(0) as usize, image.height.max(0) as usize);
+    let source = musializer_runtime::decode::image_pixels_rgba8(&mut image)
+        .map_err(|error| format!("the frame could not be read back: {error}"))?;
+    resolver
+        .resolve(
+            source,
+            source_width,
+            source_height,
+            config.width as usize,
+            config.height as usize,
+            pixels,
+        )
+        .map_err(|error| format!("the frame could not be resolved: {error}"))?;
+
+    let Some(path) = destination.to_str() else {
+        return Err("the destination path is not valid text".to_owned());
+    };
+    // `Image::gen_image_color` allocates through raylib's own allocator in
+    // `UNCOMPRESSED_R8G8B8A8`, which is what `ExportImage`'s PNG writer wants
+    // and what lets the resolved bytes be blitted in without an `unsafe` island
+    // of our own. `ImageDrawPixel` writes rather than blends, so this is a copy.
+    let mut out = raylib::texture::Image::gen_image_color(
+        config.width as i32,
+        config.height as i32,
+        Color::BLANK,
+    );
+    // **Bottom row first**, exactly as `Encoder::send_frame_flipped` writes to
+    // `rawvideo` (`ffmpeg.rs:448-455`, `ffmpeg_posix.c:338-370`):
+    // `LoadImageFromTexture`/`rlReadScreenPixels` hand back an OpenGL
+    // framebuffer whose first row is the *bottom* of the picture. Without this
+    // the still is a vertical mirror of the video frame — and a mirrored
+    // Spectrum, with its bars hanging from the top instead of standing on the
+    // baseline, is a completely plausible picture that renders identically on
+    // every run. Two md5-equal runs would have called it deterministic, and did:
+    // it was caught only by comparing the PNG against a frame of the MP4.
+    for y in 0..config.height as i32 {
+        let source_row = config.height as usize - 1 - y as usize;
+        for x in 0..config.width as i32 {
+            let offset = (source_row * config.width as usize + x as usize) * 4;
+            out.draw_pixel(
+                x,
+                y,
+                Color::new(
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                ),
+            );
+        }
+    }
+    // `ExportImage` returns nothing at all through raylib-rs, so the file itself
+    // is the only evidence it worked — checked rather than assumed, because a
+    // success notice over a file that was never written is exactly the "a
+    // fallback that looks like content" failure this repository has paid for.
+    out.export_image(path);
+    if !destination.is_file() {
+        return Err(format!(
+            "raylib refused to write {}; check the directory exists and is writable",
+            destination.display()
+        ));
+    }
+    Ok(())
+}
+
+/// One export frame's scene state, built the one way.
+///
+/// **This is what makes a still the same picture as the video frame beside it**
+/// (UX0-C10). The two callers are [`ExportSession::step`] and
+/// [`export_still`], and every decision that shapes a frame — which samples the
+/// analyzer has heard, the beat phase, the automatic scene switch, the routed
+/// settings, the project lanes — happens here once rather than in two places
+/// that could drift. The closure takes the assembled frame because
+/// [`SceneFrame`](musializer_core::scene::SceneFrame) borrows the lanes, the
+/// spectrum and the settings, none of which can be returned.
+///
+/// `frame_index` and `fps` are the only clock: delta and time come from
+/// [`render_export::frame_delta_seconds`] and
+/// [`render_export::frame_time_seconds`], which are `render_job.rs`'s own
+/// definitions moved somewhere a still can reach them.
+fn with_export_frame<R>(
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    frame_index: u64,
+    fps: u32,
+    duration_seconds: f64,
+    samples: &[f32],
+    draw: impl FnOnce(&mut crate::App, &musializer_core::scene::SceneFrame<'_>, FrameLaneStatus) -> R,
+) -> R {
+    if !samples.is_empty() {
+        analysis.analyzer.push_interleaved(samples);
+    }
+    let delta = render_export::frame_delta_seconds(frame_index, fps);
+    analysis.analyzer.analyze(delta);
+
+    let spectrum = analysis.analyzer.spectrum();
+    let mut audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
+    // The export's own clock, not the stream's — there is no stream. Routed
+    // parameters staying preview/export identical is a stated invariant, so a
+    // `beat_phase` route has to advance here exactly as it does in the preview,
+    // and both go through the one `track_beat`.
+    let time_seconds = render_export::frame_time_seconds(frame_index, fps);
+    audio_frame.track_beat(&mut analysis.beat, time_seconds);
+    app.apply_auto_scene_switch(time_seconds);
+    let sources = RouteSources::from_audio(&audio_frame, time_seconds);
+    let base = *app.settings();
+    let routed = app.routes().apply(app.scene.id(), &sources, &base);
+    let effective = routed.as_ref().unwrap_or(&base);
+    let frame_lanes = crate::project_frame_lanes(app.workspace.current(), time_seconds);
+    let lane_status = frame_lanes.status();
+    let frame = frame_lanes.scene_frame(
+        SceneFrameTiming {
+            time_seconds,
+            duration_seconds,
+            delta_seconds: delta,
+            frame_index,
+        },
+        audio_frame,
+        effective,
+    );
+    draw(app, &frame, lane_status)
 }
 
 /// One running export: the offline target, the job, and the transport state the
@@ -766,6 +1574,10 @@ pub(crate) struct ExportSession {
     /// The supersample resolve's sRGB tables, built once for the whole export
     /// rather than per frame (EX3).
     resolver: LinearResolver,
+    /// This frame's decoded samples, copied out of the job so the shared frame
+    /// path can borrow the session's target at the same time. Reused between
+    /// frames for the same reason [`Self::pixels`] is.
+    samples_scratch: Vec<f32>,
     /// Where the transport was when the export started, so the preview comes
     /// back to it (`plug.c:6918-6919`, restored at `:7276-7279`).
     restore_position: f32,
@@ -956,6 +1768,7 @@ impl ExportSession {
             target,
             pixels,
             resolver: LinearResolver::new(),
+            samples_scratch: Vec::new(),
             restore_position,
             restore_playing,
             reported_frame_lanes: false,
@@ -1072,112 +1885,102 @@ impl ExportSession {
         renderer: &mut scene_host::SceneRenderer,
         fonts: &Faces,
     ) -> Result<bool, (&'static str, String)> {
-        let samples = self.job_mut().take_samples().map_err(|error| {
-            (
-                "Export timeline failed",
-                format!("{error}. The previous destination was preserved."),
-            )
-        })?;
-        if !samples.is_empty() {
-            analysis.analyzer.push_interleaved(samples);
+        // Copied out of the job rather than borrowed across the frame build:
+        // `take_samples` borrows the session, and the shared frame path needs
+        // the session's own target back inside the closure. One `memcpy` of a
+        // frame's worth of audio (a few thousand floats) against a whole
+        // rendered frame is not a cost worth a second code path.
+        {
+            let ExportSession {
+                job,
+                samples_scratch,
+                ..
+            } = self;
+            let job = job
+                .as_mut()
+                .expect("a session is dropped on the tick its job is concluded");
+            let samples = job.take_samples().map_err(|error| {
+                (
+                    "Export timeline failed",
+                    format!("{error}. The previous destination was preserved."),
+                )
+            })?;
+            samples_scratch.clear();
+            samples_scratch.extend_from_slice(samples);
         }
-        let delta = self.job().scene_delta();
-        analysis.analyzer.analyze(delta);
-
-        let spectrum = analysis.analyzer.spectrum();
-        let mut audio_frame = SceneAudioFrame::from_spectrum(spectrum.smooth, spectrum.smear);
-        // The export's own clock, not the stream's — there is no stream. Routed
-        // parameters staying preview/export identical is a stated invariant, so a
-        // `beat_phase` route has to advance here exactly as it does in the preview,
-        // and both go through the one `track_beat`.
-        audio_frame.track_beat(&mut analysis.beat, self.job().scene_time());
-        let time_seconds = self.job().scene_time();
-        app.apply_auto_scene_switch(time_seconds);
-        let sources = RouteSources::from_audio(&audio_frame, time_seconds);
-        let base = *app.settings();
-        let routed = app.routes().apply(app.scene.id(), &sources, &base);
-        let effective = routed.as_ref().unwrap_or(&base);
+        let frame_index = self.job().frame_index();
+        let fps = self.job().config().fps;
+        // The job and the shared clock must agree, or a still taken at the same
+        // index would be a different frame. Cheap enough to check every frame in
+        // a debug build, and this is the one invariant that would otherwise be
+        // proven only by a paragraph.
+        debug_assert!(
+            (render_export::frame_delta_seconds(frame_index, fps) - self.job().scene_delta()).abs()
+                < f32::EPSILON
+                && (render_export::frame_time_seconds(frame_index, fps) - self.job().scene_time())
+                    .abs()
+                    < f64::EPSILON,
+            "the shared frame clock drifted from the job's"
+        );
         let duration_seconds = app
             .workspace
             .current()
             .map_or(0.0, |track| track.duration_seconds);
-        let frame_lanes = crate::project_frame_lanes(app.workspace.current(), time_seconds);
-        let lane_status = frame_lanes.status();
-        let frame = frame_lanes.scene_frame(
-            SceneFrameTiming {
-                time_seconds,
-                duration_seconds,
-                delta_seconds: delta,
-                frame_index: self.job().frame_index(),
-            },
-            audio_frame,
-            effective,
-        );
+        let draws = self.job().draws_this_frame();
+        let reported = self.reported_frame_lanes;
+        let pixel_scale = self
+            .job()
+            .config()
+            .target_scale(self.target.width() as u32, self.target.height() as u32)
+            .unwrap_or(1.0);
 
-        if self.job().draws_this_frame() && !self.reported_frame_lanes {
-            println!(
-                "export frame lanes: t={time_seconds:.3} lyric={} semantic={} source={} merged-events={}",
-                lane_status
-                    .lyric_id
-                    .map_or_else(|| "none".to_owned(), |id| id.to_string()),
-                if lane_status.semantic_available {
-                    "available"
-                } else {
-                    "unavailable"
-                },
-                lane_status.semantic_source_id,
-                lane_status.merged_event_count,
-            );
+        let ExportSession {
+            target,
+            samples_scratch,
+            ..
+        } = self;
+        let drew = with_export_frame(
+            app,
+            analysis,
+            frame_index,
+            fps,
+            duration_seconds,
+            samples_scratch,
+            |app, frame, lane_status| -> Result<bool, (&'static str, String)> {
+                if draws && !reported {
+                    println!(
+                        "export frame lanes: t={:.3} lyric={} semantic={} source={} merged-events={}",
+                        frame.time_seconds,
+                        lane_status
+                            .lyric_id
+                            .map_or_else(|| "none".to_owned(), |id| id.to_string()),
+                        if lane_status.semantic_available {
+                            "available"
+                        } else {
+                            "unavailable"
+                        },
+                        lane_status.semantic_source_id,
+                        lane_status.merged_event_count,
+                    );
+                }
+                if !draws {
+                    // Prepared, not drawn: this is what makes a windowed export
+                    // bit-identical to the same frames of a full one.
+                    app.scene.update(frame);
+                    return Ok(false);
+                }
+                draw_offline_frame(d, thread, target, app, renderer, fonts, frame, pixel_scale);
+                Ok(true)
+            },
+        )?;
+        if draws {
             self.reported_frame_lanes = true;
         }
-
-        if !self.job().draws_this_frame() {
-            // Prepared, not drawn: this is what makes a windowed export
-            // bit-identical to the same frames of a full one.
-            app.scene.update(&frame);
+        if !drew {
             self.job_mut().advance();
             return Ok(false);
         }
-
         let config = self.job().config();
-        let (target_width, target_height) = (self.target.width(), self.target.height());
-        let pixel_scale = config
-            .target_scale(target_width as u32, target_height as u32)
-            .unwrap_or(1.0);
-        {
-            let mut texture = d.begin_texture_mode(thread, &mut self.target);
-            texture.clear_background(color::background());
-            let boundary = widgets::rectangle(UiRect::new(
-                0.0,
-                0.0,
-                target_width as f32,
-                target_height as f32,
-            ));
-            app.scene.update(&frame);
-            // The same per-track assets the preview draws. Song Atlas's terrain is
-            // built once when the export starts rather than on demand here, because
-            // an export cannot pause to decode a whole track mid-timeline — see
-            // `prepare_track_assets`.
-            let assets =
-                app.workspace
-                    .current()
-                    .map_or_else(scene_host::TrackAssets::default, |track| {
-                        scene_host::TrackAssets {
-                            atlas_map: track.atlas_map(),
-                            ascii_grid: track.ascii_grid(),
-                            caption_style: Some(&track.caption_style),
-                        }
-                    });
-            renderer.draw(
-                &mut texture,
-                fonts,
-                &app.scene,
-                &frame,
-                assets,
-                boundary,
-                pixel_scale,
-            );
-        }
 
         let mut image = self.target.load_image().map_err(|error| {
             (
@@ -1306,6 +2109,61 @@ impl ExportSession {
         );
         true
     }
+}
+
+/// Draws one frame into the offline target, exactly as an encoded frame is
+/// drawn.
+///
+/// The second half of the "a still is the video frame" claim (UX0-C10):
+/// [`with_export_frame`] shares the state and this shares the draw, so the only
+/// thing the still does differently is where the pixels go afterwards.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the borrowed resources one export frame needs; a bundle struct would move the same list one line up, and both callers already hold them separately"
+)]
+fn draw_offline_frame(
+    d: &mut RaylibDrawHandle<'_>,
+    thread: &RaylibThread,
+    target: &mut RenderTexture2D,
+    app: &mut crate::App,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    frame: &musializer_core::scene::SceneFrame<'_>,
+    pixel_scale: f32,
+) {
+    let (target_width, target_height) = (target.width(), target.height());
+    let mut texture = d.begin_texture_mode(thread, target);
+    texture.clear_background(color::background());
+    let boundary = widgets::rectangle(UiRect::new(
+        0.0,
+        0.0,
+        target_width as f32,
+        target_height as f32,
+    ));
+    app.scene.update(frame);
+    // The same per-track assets the preview draws. Song Atlas's terrain is
+    // built once when the export starts rather than on demand here, because
+    // an export cannot pause to decode a whole track mid-timeline — see
+    // `prepare_track_assets`.
+    let assets = app
+        .workspace
+        .current()
+        .map_or_else(scene_host::TrackAssets::default, |track| {
+            scene_host::TrackAssets {
+                atlas_map: track.atlas_map(),
+                ascii_grid: track.ascii_grid(),
+                caption_style: Some(&track.caption_style),
+            }
+        });
+    renderer.draw(
+        &mut texture,
+        fonts,
+        &app.scene,
+        frame,
+        assets,
+        boundary,
+        pixel_scale,
+    );
 }
 
 /// The offline render target (`load_offline_render_target`, `plug.c:451-471`).
@@ -1449,6 +2307,110 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert!(matches!(commands[0], ShellCommand::StartRender));
         assert!(matches!(commands[1], ShellCommand::SetRenderConfig(_)));
+    }
+
+    /// The CLIP row's own ids, and every other index this panel mints, are
+    /// distinct (UX0-C01).
+    ///
+    /// `widgets::id::ALL` protects *namespaces*; nothing protects the indices
+    /// inside one, and this panel now allocates five groups by hand — 0, 8, 16,
+    /// 24 and 32 — with the clip row wedged in at 40. EX1 is the whole argument
+    /// for why an index collision is worth a test rather than a careful read:
+    /// two controls with one id draw correctly, highlight correctly, and one of
+    /// them silently never takes a press.
+    #[test]
+    fn the_panels_own_widget_indices_never_collide() {
+        let mut used: Vec<(u32, &str)> = Vec::new();
+        let mut claim = |index: u32, name: &'static str| {
+            if let Some((_, other)) = used.iter().find(|(taken, _)| *taken == index) {
+                panic!("export index {index} is claimed by both {other} and {name}");
+            }
+            used.push((index, name));
+        };
+        for index in 0..Resolution::ALL.len() as u32 {
+            claim(index, "SIZE");
+        }
+        for index in 0..FrameRate::ALL.len() as u32 {
+            claim(8 + index, "FPS");
+        }
+        for index in 0..Quality::ALL.len() as u32 {
+            claim(16 + index, "QUALITY");
+        }
+        claim(24, "render");
+        claim(25, "close");
+        claim(26, "cancel");
+        for index in 0..Aspect::ALL.len() as u32 {
+            claim(32 + index, "ASPECT");
+        }
+        claim(clip_ids::FULL_TRACK, "clip full track");
+        claim(clip_ids::SET_IN, "clip in");
+        claim(clip_ids::SET_OUT, "clip out");
+        claim(clip_ids::STILL, "save still");
+        // 4 sizes + 3 rates + 3 qualities + 3 footer + 4 aspects + 4 clip.
+        assert_eq!(used.len(), 21);
+    }
+
+    /// The CLIP row's readout says what the export will cover, in whichever
+    /// length the panel can afford.
+    #[test]
+    fn the_clip_readout_names_the_window_and_its_frames() {
+        let (duration, fps) = (8.0, 30u32);
+        let full = clip_readout(ClipSelection::full_track(), duration, fps);
+        assert_eq!(full.long, "whole track  |  00:08.000  |  240 frames");
+        assert_eq!(full.short, "whole track  |  240 frames");
+
+        let mut clip = ClipSelection::full_track();
+        clip.set_start(2.0, duration, fps);
+        clip.set_end(5.0, duration, fps);
+        let readout = clip_readout(clip, duration, fps);
+        assert_eq!(
+            readout.long,
+            "in 00:02.000  ->  out 00:05.000  |  3.0 s  |  90 frames"
+        );
+        assert_eq!(readout.short, "00:02.000 -> 00:05.000");
+        // The short form is what a narrow panel falls back to, so it must
+        // really be shorter — a "fallback" that does not fit is not one.
+        assert!(readout.short.len() < readout.long.len());
+
+        // No track: a sentence rather than a divide-by-zero or a lie.
+        let empty = clip_readout(ClipSelection::full_track(), 0.0, fps);
+        assert_eq!(empty.long, "whole track  |  00:00.000  |  0 frames");
+    }
+
+    /// **The invariant that let a third row be added without moving anything.**
+    ///
+    /// The export panel's boundary is pinned to the window's bottom edge and the
+    /// timeline band grows upward, so the *distance from the bottom* of the
+    /// content box is what fixes a control's screen position. Every gate
+    /// coordinate EX1 and EX2 aimed by hand — 542 for the SIZE row, 589 for
+    /// QUALITY — depends on this number being unchanged, and a press aimed one
+    /// row off does not fail: it presses a different control and asserts against
+    /// its result.
+    ///
+    /// 185 is the SIZE row's distance from the bottom of the minimum content
+    /// box before the CLIP row existed (`247 - 62`). Adding a row above it moved
+    /// both the row and the box by the same amount, which is why it still holds.
+    #[test]
+    fn adding_a_row_above_size_leaves_every_control_below_it_in_place() {
+        assert_eq!(
+            EXPORT_CONTENT_MIN_HEIGHT - body_layout::SECOND_ROW_Y,
+            185.0,
+            "the SIZE row moved relative to the panel's bottom edge; every \
+             click-probe coordinate in tools/headless_check.sh is now aimed \
+             one row off"
+        );
+        assert_eq!(
+            EXPORT_CONTENT_MIN_HEIGHT - body_layout::THIRD_ROW_Y,
+            139.0,
+            "the QUALITY/ASPECT row moved relative to the panel's bottom edge"
+        );
+        // And the CLIP row is genuinely a row above SIZE, not an overlap.
+        // A compile-time comparison, so it is a build failure rather than a
+        // test failure — the same shape as the band-chrome assertion LX1-c
+        // kept.
+        const _: () = assert!(
+            body_layout::FIRST_ROW_Y + metric::UI_BUTTON_HEIGHT <= body_layout::SECOND_ROW_Y
+        );
     }
 
     /// Review 1.4's core claim, pinned as arithmetic: at exactly

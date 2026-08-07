@@ -397,6 +397,84 @@ impl RenderExportConfig {
         audio_path: &str,
         scene_name: &str,
     ) -> Result<String, RenderExportError> {
+        let prefix = self.suggestion_prefix(audio_path, scene_name)?;
+        Ok(format!(
+            "{prefix}-musializer-{scene_name}-{}p{}.mp4",
+            self.height, self.fps
+        ))
+    }
+
+    /// The same suggestion for a **clip** export (UX0-C01).
+    ///
+    /// A separate name rather than a suffix on [`suggest_path`](Self::suggest_path),
+    /// for one reason a user would notice: a clip and a full render of the same
+    /// track and scene would otherwise propose the identical file name, and the
+    /// second one silently replaces the first. The bounds are written as whole
+    /// seconds, which is enough to tell two clips apart and short enough to read.
+    ///
+    /// # Errors
+    /// As [`suggest_path`](Self::suggest_path), plus
+    /// [`RenderExportError::Window`] for a non-finite or non-positive range.
+    pub fn suggest_clip_path(
+        &self,
+        audio_path: &str,
+        scene_name: &str,
+        start_seconds: f64,
+        end_seconds: f64,
+    ) -> Result<String, RenderExportError> {
+        if !start_seconds.is_finite()
+            || !end_seconds.is_finite()
+            || start_seconds < 0.0
+            || end_seconds <= start_seconds
+        {
+            return Err(RenderExportError::Window);
+        }
+        let prefix = self.suggestion_prefix(audio_path, scene_name)?;
+        Ok(format!(
+            "{prefix}-musializer-{scene_name}-{}p{}-clip-{}-{}.mp4",
+            self.height,
+            self.fps,
+            timestamp_token(start_seconds),
+            timestamp_token(end_seconds),
+        ))
+    }
+
+    /// The suggestion for a **still frame** (UX0-C10).
+    ///
+    /// Same shape as the video's, so the two land beside each other and sort
+    /// together, with the frame's own time in the name — a cover taken at the
+    /// drop and one taken at the first chorus are different pictures and must
+    /// not be the same file. The frame rate is deliberately absent: a still has
+    /// no frame rate a viewer can see, and including it would suggest the file
+    /// depends on a setting it does not.
+    ///
+    /// # Errors
+    /// As [`suggest_path`](Self::suggest_path), plus
+    /// [`RenderExportError::Window`] for a non-finite or negative time.
+    pub fn suggest_still_path(
+        &self,
+        audio_path: &str,
+        scene_name: &str,
+        time_seconds: f64,
+    ) -> Result<String, RenderExportError> {
+        if !time_seconds.is_finite() || time_seconds < 0.0 {
+            return Err(RenderExportError::Window);
+        }
+        let prefix = self.suggestion_prefix(audio_path, scene_name)?;
+        Ok(format!(
+            "{prefix}-musializer-{scene_name}-{}p-still-{}.png",
+            self.height,
+            timestamp_token(time_seconds),
+        ))
+    }
+
+    /// The shared half of the three suggestions: the source path with its own
+    /// extension removed, once every name has been proven safe.
+    fn suggestion_prefix<'a>(
+        &self,
+        audio_path: &'a str,
+        scene_name: &str,
+    ) -> Result<&'a str, RenderExportError> {
         if audio_path.is_empty() || !scene_name_is_safe(scene_name) {
             return Err(RenderExportError::Path);
         }
@@ -409,13 +487,302 @@ impl RenderExportConfig {
             Some(0) | None => audio_path.len(),
             Some(index) => name_start + index,
         };
-        Ok(format!(
-            "{}-musializer-{}-{}p{}.mp4",
-            &audio_path[..prefix_length],
-            scene_name,
-            self.height,
-            self.fps
-        ))
+        Ok(&audio_path[..prefix_length])
+    }
+}
+
+/// `MMmSSsMMM`, for a file name: no colon, no dot, and it sorts.
+///
+/// Milliseconds are kept because a still is a single frame and two frames 40 ms
+/// apart are different pictures; truncating to the second would collide.
+fn timestamp_token(seconds: f64) -> String {
+    let total_milliseconds = (seconds.max(0.0) * 1000.0).round() as u64;
+    let minutes = total_milliseconds / 60_000;
+    let remainder = total_milliseconds % 60_000;
+    format!(
+        "{minutes:02}m{:02}s{:03}",
+        remainder / 1000,
+        remainder % 1000
+    )
+}
+
+/// The seconds one video frame occupies at `fps`.
+///
+/// The smallest window the transport can express: [`window_frames`] gives a
+/// sub-frame duration one whole frame anyway, so a clip shorter than this is a
+/// clip of exactly one frame with a misleading readout.
+#[must_use]
+pub fn frame_seconds(fps: u32) -> f64 {
+    if fps == 0 {
+        return 0.0;
+    }
+    1.0 / f64::from(fps)
+}
+
+/// The scene clock a given export frame is drawn at
+/// (`render_job.rs::scene_time`, `plug.c:8019`).
+///
+/// Here rather than only on the job because the still export (UX0-C10) draws a
+/// frame without one, and a still drawn at a *different* time from the video
+/// frame with the same index would be the whole feature quietly failing.
+#[must_use]
+pub fn frame_time_seconds(frame_index: u64, fps: u32) -> f64 {
+    if fps == 0 {
+        return 0.0;
+    }
+    frame_index as f64 / f64::from(fps)
+}
+
+/// The scene delta a given export frame advances by
+/// (`render_job.rs::scene_delta`, `plug.c:8013-8014`).
+///
+/// Zero at frame zero and exactly `1/fps` after it — the property that makes an
+/// export reproducible, and the reason a still cannot use a wall-clock delta
+/// either.
+#[must_use]
+pub fn frame_delta_seconds(frame_index: u64, fps: u32) -> f32 {
+    if frame_index == 0 || fps == 0 {
+        return 0.0;
+    }
+    1.0 / fps as f32
+}
+
+/// The video frame a still publishes for a playhead time (UX0-C10).
+///
+/// **Not the oracle's**: the frozen C cannot export a frame at all. The rule is
+/// the transport's own, so the still is a *video frame* rather than a picture
+/// taken near one — it floors, exactly as [`window_frames`]'s start does, so the
+/// still and a clip export starting at the same second publish the same frame
+/// index, and it clamps to the last frame of the track rather than running past
+/// the audio.
+///
+/// # Errors
+/// [`RenderExportError::FrameRate`] for an `fps` outside `1..=240`;
+/// [`RenderExportError::Window`] for a zero `total_frames` or a non-finite or
+/// negative time.
+pub fn still_frame_index(
+    time_seconds: f64,
+    fps: u32,
+    total_frames: u64,
+) -> Result<u64, RenderExportError> {
+    if fps == 0 || fps > MAX_FPS {
+        return Err(RenderExportError::FrameRate);
+    }
+    if total_frames == 0 || !time_seconds.is_finite() || time_seconds < 0.0 {
+        return Err(RenderExportError::Window);
+    }
+    let position = time_seconds * f64::from(fps);
+    // `total_frames` comes from a decodable audio length, so the comparison
+    // stays inside f64's exact-integer range; the `+inf` case is excluded above.
+    if position >= total_frames as f64 {
+        return Ok(total_frames - 1);
+    }
+    Ok((position as u64).min(total_frames - 1))
+}
+
+/// A user-chosen render window, in seconds, on the current track (UX0-C01).
+///
+/// **Not the oracle's.** The frozen C renders whole tracks: `--render-window` is
+/// this rewrite's own command-line flag over `render_export_window_frames`, and
+/// nothing in the C's interface can ask for a clip. This type is the editable
+/// state behind the export panel's CLIP row, kept here rather than in the panel
+/// so the arithmetic that decides what an export covers is checkable without a
+/// window.
+///
+/// Two invariants make it safe to hand straight to the render plan:
+///
+/// - it is only ever `enabled` with `start < end`, both finite and inside the
+///   track, and at least one frame apart, because every mutator re-establishes
+///   that; and
+/// - [`window`](Self::window) re-clamps against the *current* duration anyway,
+///   because a track can be replaced under a retained selection.
+///
+/// Setting one end past the other is **not** refused: it re-reads as an
+/// open-ended selection — an IN past the OUT means "from here to the end", an
+/// OUT before the IN means "from the start to here". Both are single gestures a
+/// user makes on purpose, and a refusal would leave the control looking broken
+/// at exactly the moment they are moving fastest.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipSelection {
+    enabled: bool,
+    start_seconds: f64,
+    end_seconds: f64,
+}
+
+impl Default for ClipSelection {
+    fn default() -> Self {
+        Self::full_track()
+    }
+}
+
+impl ClipSelection {
+    /// No clip: the export covers the whole track.
+    #[must_use]
+    pub fn full_track() -> Self {
+        Self {
+            enabled: false,
+            start_seconds: 0.0,
+            end_seconds: 0.0,
+        }
+    }
+
+    /// The selection `--render-window START DURATION` describes.
+    ///
+    /// The command line and the panel are one state on purpose: an export
+    /// started from the panel after `--render-window` was passed must cover the
+    /// window the command line asked for, and a panel that showed "full track"
+    /// while the flag was in force would be lying about what it is about to
+    /// produce.
+    #[must_use]
+    pub fn from_window(window: Option<(f64, f64)>) -> Self {
+        match window {
+            Some((start, duration))
+                if start.is_finite() && duration.is_finite() && start >= 0.0 && duration > 0.0 =>
+            {
+                Self {
+                    enabled: true,
+                    start_seconds: start,
+                    end_seconds: start + duration,
+                }
+            }
+            _ => Self::full_track(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_enabled(self) -> bool {
+        self.enabled
+    }
+
+    /// The stored IN point. Meaningless while disabled, which is why every
+    /// reader goes through [`window`](Self::window) instead.
+    #[must_use]
+    pub fn start_seconds(self) -> f64 {
+        self.start_seconds
+    }
+
+    #[must_use]
+    pub fn end_seconds(self) -> f64 {
+        self.end_seconds
+    }
+
+    /// Back to the whole track.
+    pub fn clear(&mut self) {
+        *self = Self::full_track();
+    }
+
+    /// Moves the IN point to `seconds`, enabling the clip.
+    ///
+    /// A first touch selects from here **to the end of the track**, which is the
+    /// meaning that needs no second click: "post from the drop onward" is one
+    /// gesture. An IN at or past the current OUT re-opens the selection the same
+    /// way rather than refusing.
+    pub fn set_start(&mut self, seconds: f64, duration_seconds: f64, fps: u32) {
+        let Some((floor, ceiling, quantum)) = self.bounds(duration_seconds, fps) else {
+            return;
+        };
+        let start = seconds.clamp(floor, (ceiling - quantum).max(floor));
+        let open_ended = !self.enabled || self.end_seconds < start + quantum;
+        self.end_seconds = if open_ended {
+            ceiling
+        } else {
+            self.end_seconds.min(ceiling)
+        };
+        self.start_seconds = start;
+        self.enabled = true;
+    }
+
+    /// Moves the OUT point to `seconds`, enabling the clip.
+    ///
+    /// The mirror of [`set_start`](Self::set_start): a first touch, or an OUT at
+    /// or before the current IN, selects from the **start of the track** to
+    /// here.
+    pub fn set_end(&mut self, seconds: f64, duration_seconds: f64, fps: u32) {
+        let Some((floor, ceiling, quantum)) = self.bounds(duration_seconds, fps) else {
+            return;
+        };
+        let end = seconds.clamp((floor + quantum).min(ceiling), ceiling);
+        let open_ended = !self.enabled || self.start_seconds + quantum > end;
+        self.start_seconds = if open_ended {
+            floor
+        } else {
+            self.start_seconds
+        };
+        self.end_seconds = end;
+        self.enabled = true;
+    }
+
+    /// `(start_seconds, duration_seconds)` for a [`RenderRequest`-style] window,
+    /// or `None` for the whole track.
+    ///
+    /// Re-clamped against the live duration, because the track under a retained
+    /// selection can change: a clip that outlived its track would otherwise be
+    /// refused by `window_frames` at export start, which is a notice instead of
+    /// a render.
+    ///
+    /// [`RenderRequest`-style]: crate::timing::render_export
+    #[must_use]
+    pub fn window(self, duration_seconds: f64, fps: u32) -> Option<(f64, f64)> {
+        if !self.enabled {
+            return None;
+        }
+        let (floor, ceiling, quantum) = self.bounds(duration_seconds, fps)?;
+        let start = self
+            .start_seconds
+            .clamp(floor, (ceiling - quantum).max(floor));
+        let end = self.end_seconds.clamp(start + quantum, ceiling);
+        let length = end - start;
+        (length > 0.0).then_some((start, length))
+    }
+
+    /// The frames this selection covers of a track of `duration_seconds`.
+    ///
+    /// The total is derived from the duration rather than from the decoded
+    /// sample count, which is what a panel has: the two agree, because
+    /// `total_frames` is `ceil(frame_count * fps / sample_rate)` and the
+    /// duration *is* `frame_count / sample_rate`. It is a readout, and the
+    /// render itself re-resolves against the decoded audio.
+    #[must_use]
+    pub fn frames(self, duration_seconds: f64, fps: u32) -> Option<Range<u64>> {
+        let total = self.total_frames(duration_seconds, fps)?;
+        match self.window(duration_seconds, fps) {
+            None => Some(0..total),
+            Some((start, length)) => window_frames(total, fps, start, length).ok(),
+        }
+    }
+
+    /// The one-line state a report and a panel readout both need.
+    #[must_use]
+    pub fn describe(self, duration_seconds: f64, fps: u32) -> String {
+        let Some((start, length)) = self.window(duration_seconds, fps) else {
+            return match self.frames(duration_seconds, fps) {
+                Some(frames) => format!("full track ({} frames)", frames.end - frames.start),
+                None => "full track".to_owned(),
+            };
+        };
+        let frames = self
+            .frames(duration_seconds, fps)
+            .map_or(0, |frames| frames.end - frames.start);
+        format!(
+            "clip in {start:.3} out {:.3} ({length:.3} s, {frames} frames)",
+            start + length
+        )
+    }
+
+    /// `(floor, ceiling, one frame)` for a usable track, or `None` when there is
+    /// nothing to clip.
+    fn bounds(self, duration_seconds: f64, fps: u32) -> Option<(f64, f64, f64)> {
+        let quantum = frame_seconds(fps);
+        if !duration_seconds.is_finite() || duration_seconds <= 0.0 || quantum <= 0.0 {
+            return None;
+        }
+        Some((0.0, duration_seconds, quantum.min(duration_seconds)))
+    }
+
+    fn total_frames(self, duration_seconds: f64, fps: u32) -> Option<u64> {
+        let (_, ceiling, _) = self.bounds(duration_seconds, fps)?;
+        let total = (ceiling * f64::from(fps)).ceil();
+        (total.is_finite() && total >= 1.0).then_some(total as u64)
     }
 }
 
@@ -1308,6 +1675,263 @@ mod tests {
         );
         assert_eq!(transport_duration_text(1, 240).unwrap(), "0.004166667");
         assert_eq!(transport_duration_text(7, 60).unwrap(), "0.116666667");
+    }
+
+    /// A still is a *video frame*, chosen by the same floor the window's start
+    /// uses, so "export a still here" and "export a clip from here" publish the
+    /// same picture (UX0-C10).
+    #[test]
+    fn a_still_picks_the_frame_a_clip_starting_there_would_draw() {
+        let total = total_frames(2_646_000, 44_100, 30).unwrap(); // 60 s at 30 fps
+        assert_eq!(total, 1_800);
+        for time in [0.0, 0.033, 0.999, 12.345, 42.0, 59.999] {
+            let still = still_frame_index(time, 30, total).unwrap();
+            let clip = window_frames(total, 30, time, 1.0).unwrap();
+            assert_eq!(still, clip.start, "at {time}s");
+        }
+        // Exactly on a frame boundary is that frame, not the one before it.
+        assert_eq!(still_frame_index(1.0, 30, total), Ok(30));
+        assert_eq!(still_frame_index(0.0, 30, total), Ok(0));
+        // Past the end clamps to the last frame rather than running off the
+        // audio: a playhead parked at the very end must still take a picture.
+        assert_eq!(still_frame_index(60.0, 30, total), Ok(1_799));
+        assert_eq!(still_frame_index(1.0e9, 30, total), Ok(1_799));
+    }
+
+    #[test]
+    fn a_still_refuses_a_degenerate_transport() {
+        assert_eq!(
+            still_frame_index(1.0, 30, 0),
+            Err(RenderExportError::Window)
+        );
+        assert_eq!(
+            still_frame_index(-0.001, 30, 100),
+            Err(RenderExportError::Window)
+        );
+        assert_eq!(
+            still_frame_index(f64::NAN, 30, 100),
+            Err(RenderExportError::Window)
+        );
+        assert_eq!(
+            still_frame_index(f64::INFINITY, 30, 100),
+            Err(RenderExportError::Window)
+        );
+        assert_eq!(
+            still_frame_index(1.0, 0, 100),
+            Err(RenderExportError::FrameRate)
+        );
+        assert_eq!(
+            still_frame_index(1.0, MAX_FPS + 1, 100),
+            Err(RenderExportError::FrameRate)
+        );
+    }
+
+    /// The per-frame clock a still has to reproduce, since it draws one frame
+    /// without a [`RenderJob`](crate) to ask.
+    #[test]
+    fn frame_clock_matches_the_jobs_own_definitions() {
+        // `render_job.rs::scene_delta`: zero at frame zero, `1/fps` after it.
+        assert_eq!(frame_delta_seconds(0, 30), 0.0);
+        assert_eq!(frame_delta_seconds(1, 30), 1.0 / 30.0);
+        assert_eq!(frame_delta_seconds(9_999, 60), 1.0 / 60.0);
+        // `render_job.rs::scene_time`: index over fps, exactly.
+        assert_eq!(frame_time_seconds(0, 30), 0.0);
+        assert_eq!(frame_time_seconds(30, 30), 1.0);
+        assert_eq!(frame_time_seconds(45, 30), 1.5);
+        assert_eq!(frame_seconds(30), 1.0 / 30.0);
+        // A degenerate rate cannot divide by zero anywhere.
+        assert_eq!(frame_seconds(0), 0.0);
+        assert_eq!(frame_time_seconds(10, 0), 0.0);
+        assert_eq!(frame_delta_seconds(10, 0), 0.0);
+    }
+
+    /// The whole point of the CLIP row: two presses and the window is the one a
+    /// user meant, in either order (UX0-C01).
+    #[test]
+    fn setting_either_end_from_the_playhead_selects_what_a_user_meant() {
+        let (duration, fps) = (60.0, 30u32);
+
+        // "From the drop onward": one press, and the tail is the rest of the track.
+        let mut clip = ClipSelection::full_track();
+        assert_eq!(clip.window(duration, fps), None);
+        clip.set_start(12.0, duration, fps);
+        assert_eq!(clip.window(duration, fps), Some((12.0, 48.0)));
+        // Then the second press closes it.
+        clip.set_end(42.0, duration, fps);
+        assert_eq!(clip.window(duration, fps), Some((12.0, 30.0)));
+
+        // The other order: OUT first selects from the start of the track.
+        let mut reverse = ClipSelection::full_track();
+        reverse.set_end(42.0, duration, fps);
+        assert_eq!(reverse.window(duration, fps), Some((0.0, 42.0)));
+        reverse.set_start(12.0, duration, fps);
+        assert_eq!(reverse.window(duration, fps), Some((12.0, 30.0)));
+
+        // Clearing is the whole track again, not a zero-length clip.
+        reverse.clear();
+        assert!(!reverse.is_enabled());
+        assert_eq!(reverse.window(duration, fps), None);
+    }
+
+    /// Setting one end past the other re-opens the selection rather than
+    /// refusing — the control must never look broken mid-gesture.
+    #[test]
+    fn crossing_the_other_end_re_reads_as_an_open_ended_selection() {
+        let (duration, fps) = (60.0, 30u32);
+        let mut clip = ClipSelection::full_track();
+        clip.set_start(10.0, duration, fps);
+        clip.set_end(20.0, duration, fps);
+        assert_eq!(clip.window(duration, fps), Some((10.0, 10.0)));
+
+        // An IN past the OUT: "from here to the end".
+        clip.set_start(30.0, duration, fps);
+        assert_eq!(clip.window(duration, fps), Some((30.0, 30.0)));
+
+        // An OUT before the IN: "from the start to here".
+        clip.set_end(5.0, duration, fps);
+        assert_eq!(clip.window(duration, fps), Some((0.0, 5.0)));
+
+        // Exactly on the other end is a crossing too: a zero-length window is
+        // the one thing the transport cannot render.
+        let mut touching = ClipSelection::full_track();
+        touching.set_start(10.0, duration, fps);
+        touching.set_end(20.0, duration, fps);
+        touching.set_start(20.0, duration, fps);
+        assert_eq!(touching.window(duration, fps), Some((20.0, 40.0)));
+    }
+
+    /// Every reachable selection is a window `window_frames` accepts. This is
+    /// the property that keeps a clip export from failing at start with a
+    /// notice, which is the failure a user cannot act on.
+    #[test]
+    fn every_edited_selection_is_a_window_the_transport_accepts() {
+        let fps = 30u32;
+        for duration in [0.04f64, 1.0, 8.0, 60.0, 3_600.0] {
+            let total = (duration * f64::from(fps)).ceil() as u64;
+            for start in [-5.0, 0.0, 0.001, duration / 3.0, duration, duration + 10.0] {
+                for end in [-1.0, 0.0, duration / 2.0, duration, duration * 2.0] {
+                    let mut clip = ClipSelection::full_track();
+                    clip.set_start(start, duration, fps);
+                    clip.set_end(end, duration, fps);
+                    let window = clip
+                        .window(duration, fps)
+                        .expect("an enabled selection always yields a window");
+                    assert!(window.0 >= 0.0 && window.1 > 0.0, "{window:?}");
+                    let frames = window_frames(total, fps, window.0, window.1)
+                        .unwrap_or_else(|error| panic!("{window:?} of {duration}s: {error}"));
+                    assert!(frames.start < frames.end);
+                    assert!(frames.end <= total);
+                }
+            }
+        }
+    }
+
+    /// A track that changes under a retained selection must not produce a
+    /// window outside it — the panel keeps the clip when a shorter track becomes
+    /// current, and `window` is the only thing standing between that and an
+    /// export that refuses to start.
+    #[test]
+    fn a_selection_is_re_clamped_against_the_live_duration() {
+        let mut clip = ClipSelection::full_track();
+        clip.set_start(40.0, 60.0, 30);
+        clip.set_end(55.0, 60.0, 30);
+        assert_eq!(clip.window(60.0, 30), Some((40.0, 15.0)));
+        // The same selection against a 10 s track: one frame at the last
+        // position it can still occupy, rather than a refusal.
+        let (start, length) = clip.window(10.0, 30).expect("still renderable");
+        assert!((start + length) <= 10.0 + f64::EPSILON, "{start} {length}");
+        assert!(length > 0.0);
+        // No track at all is no window, not a panic.
+        assert_eq!(clip.window(0.0, 30), None);
+        assert_eq!(clip.window(f64::NAN, 30), None);
+        assert_eq!(clip.window(60.0, 0), None);
+    }
+
+    /// The command line and the panel are one state (UX0-C01).
+    #[test]
+    fn a_render_window_flag_becomes_the_panels_clip() {
+        let clip = ClipSelection::from_window(Some((5.0, 2.5)));
+        assert!(clip.is_enabled());
+        assert_eq!(clip.window(60.0, 30), Some((5.0, 2.5)));
+        assert_eq!(
+            ClipSelection::from_window(None),
+            ClipSelection::full_track()
+        );
+        // A flag the CLI would itself have refused cannot enable a clip here.
+        for window in [(0.0, 0.0), (-1.0, 5.0), (0.0, -5.0), (f64::NAN, 1.0)] {
+            assert!(
+                !ClipSelection::from_window(Some(window)).is_enabled(),
+                "{window:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clip_readout_counts_the_frames_it_will_render() {
+        let (duration, fps) = (8.0, 30u32);
+        let full = ClipSelection::full_track();
+        assert_eq!(full.frames(duration, fps), Some(0..240));
+        assert_eq!(full.describe(duration, fps), "full track (240 frames)");
+
+        let mut clip = ClipSelection::full_track();
+        clip.set_start(2.0, duration, fps);
+        clip.set_end(5.0, duration, fps);
+        assert_eq!(clip.frames(duration, fps), Some(60..150));
+        assert_eq!(
+            clip.describe(duration, fps),
+            "clip in 2.000 out 5.000 (3.000 s, 90 frames)"
+        );
+        // No track: a readout rather than a panic or a lie about frames.
+        assert_eq!(full.describe(0.0, fps), "full track");
+    }
+
+    /// A clip and a still must not propose the file name a full render does,
+    /// or the second export silently replaces the first.
+    #[test]
+    fn clip_and_still_suggestions_are_distinct_siblings() {
+        let config = RenderExportConfig::default();
+        let full = config.suggest_path("/music/song.mp3", "spectrum").unwrap();
+        let clip = config
+            .suggest_clip_path("/music/song.mp3", "spectrum", 72.5, 102.0)
+            .unwrap();
+        let still = config
+            .suggest_still_path("/music/song.mp3", "spectrum", 72.5)
+            .unwrap();
+        assert_eq!(full, "/music/song-musializer-spectrum-1080p30.mp4");
+        assert_eq!(
+            clip,
+            "/music/song-musializer-spectrum-1080p30-clip-01m12s500-01m42s000.mp4"
+        );
+        assert_eq!(
+            still,
+            "/music/song-musializer-spectrum-1080p-still-01m12s500.png"
+        );
+        assert_ne!(full, clip);
+        assert!(still.ends_with(".png"), "a still is not a video");
+
+        // The same refusals as the video suggestion, plus the range's own.
+        assert_eq!(
+            config.suggest_still_path("", "spectrum", 1.0),
+            Err(RenderExportError::Path)
+        );
+        assert_eq!(
+            config.suggest_clip_path("/a/b.wav", "bad name", 0.0, 1.0),
+            Err(RenderExportError::Path)
+        );
+        assert_eq!(
+            config.suggest_clip_path("/a/b.wav", "ok", 5.0, 5.0),
+            Err(RenderExportError::Window)
+        );
+        assert_eq!(
+            config.suggest_still_path("/a/b.wav", "ok", -1.0),
+            Err(RenderExportError::Window)
+        );
+        // The extension rule is the video suggestion's, because it is the same
+        // code: a dot in a directory cannot truncate the path.
+        assert_eq!(
+            config.suggest_still_path("/a.b/song", "x", 0.0).unwrap(),
+            "/a.b/song-musializer-x-1080p-still-00m00s000.png"
+        );
     }
 
     /// The user-visible failure text, pinned so a refactor of the enum cannot
