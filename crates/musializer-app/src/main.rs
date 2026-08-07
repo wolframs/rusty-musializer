@@ -822,6 +822,41 @@ fn run(
                     .open_route_editor_probe(&key, scene, slot, committed.as_ref());
                 println!("{line}");
             }
+            // PX6. After `time=` — the audition is keyed to the segment the
+            // playhead is in, so a seek must have happened first or the session
+            // would be opened against a target the first frame then retargets
+            // away from.
+            if probe.tune_seed.is_some()
+                || probe.tune_explore.is_some()
+                || probe.tune_type.is_some()
+            {
+                let slot = app.workspace.current_index().unwrap_or(0);
+                let scene = app.scene.id();
+                let cue = app
+                    .workspace
+                    .current()
+                    .and_then(workspace::Track::active_cue)
+                    .map(|(position, _)| position);
+                // `SceneSettings` is `Copy`, so the probe edits a copy and the
+                // result goes back through the same field `settings_mut` picks —
+                // which is what keeps a probe honest about cue targeting.
+                let mut settings = *app.settings();
+                let lines = ui::panels::tune::apply_tune_probe(
+                    &mut app.shell,
+                    &probe,
+                    scene,
+                    slot,
+                    cue,
+                    &mut settings,
+                );
+                *app.settings_mut() = settings;
+                if let Some(track) = app.workspace.current_mut() {
+                    track.commit_active_cue_settings(scene);
+                }
+                for line in lines {
+                    println!("{line}");
+                }
+            }
             // Last in the probe stage on purpose (LX3): the playhead it reads
             // is the one `time=` just parked, so the segment a scene click
             // lands on is the segment the capture will photograph.
@@ -3610,6 +3645,28 @@ impl Report {
             "chrome:          {}",
             app.shell
                 .describe_workspace(self.logical_window, &app.workspace)
+        );
+        // What the Tune panel's own controls are doing (PX6). Separate from the
+        // values line because "the field is open" and "the value changed" fail
+        // independently.
+        println!(
+            "tune entry:      {}",
+            ui::panels::tune::tune_state_line(
+                &app.shell,
+                app.scene.id(),
+                app.workspace.current_index().unwrap_or(0),
+                app.workspace
+                    .current()
+                    .and_then(workspace::Track::active_cue)
+                    .map(|(position, _)| position),
+            )
+        );
+        // The drawn scene's tuning, exactly (PX6). A capture cannot tell 1.37
+        // from 1.3700001, and "Revert restored it exactly" is precisely that
+        // distinction — so the numbers are printed in a form that round-trips.
+        println!(
+            "tune values:     {}",
+            ui::panels::tune::tune_values_line(app.scene.id(), app.settings())
         );
         // Whether Tune edits the base scene or a cue snapshot is invisible on a
         // capture without this line (review 1.7): the badge text is the evidence.

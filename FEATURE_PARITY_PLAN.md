@@ -389,6 +389,116 @@ it. `HaloBlur::render`'s render-target branch was already correct (its
 reconstructed `BeginTextureMode` sets the pair), which is why exports never
 showed this.
 
+## PX6 — Tune becomes a place to play (2026-08-07)
+
+UX0-B08, UX0-B09, UX0-C04 and UX0-C07 landed together because they are one
+thought: **Tune is where a user explores, and exploring is only safe if you can
+get back.** The C's inspector writes every slider straight into
+`scene_settings_set` with no history, so the way back from "let me see what that
+preset does" is to remember eight numbers. Every item below exists to remove that.
+
+| id | Work | Where | State |
+| --- | --- | --- | --- |
+| PX6-a | `core::ui::tune_explore`: snapshot/audition, bounded randomize, typed and stepped values — pure, with randomness injected | `crates/musializer-core/src/ui/tune_explore.rs` | **done** |
+| PX6-b | The route affordance is a word, its tip is dynamic, and a disabled action says why | `ui/panels/tune.rs` | **done** |
+| PX6-c | Typed value chips, wheel fine step, per-setting reset on the label | `ui/panels/tune.rs` | **done** |
+| PX6-d | Audition bar: Nudge / Surprise, then A/B / Revert / Keep | `ui/panels/tune.rs` | **done** |
+| PX6-e | `--ui-probe tune-seed=`, `tune-explore=`, `tune-type=`, plus `tune values:` and `tune entry:` | `cli.rs`, `main.rs`, `tools/headless_check.sh` | **done** |
+
+**Post-legacy extensions, recorded as such.** Audition, A/B, Surprise and Nudge
+have no counterpart in the frozen C and are not parity work. They change nothing
+a `.musi` file can express — an audition is session state and is never
+serialized — so no schema version moves.
+
+**The one change a file can see, and it is deliberate.** A slider drag now writes
+a value snapped to the descriptor's own `precision`, where the C only did that for
+`precision == 0`. So a two-place slider stores 1.23 instead of 1.2345, and a
+`.musi` written after a drag can differ in the low decimals from one the C would
+have written. It is deliberate because the readout *prints* two places: before
+this, the number on screen was a rounded picture of the number in the file, a
+typed 1.23 and a dragged "1.23" were different values, and an A/B claiming
+bit-exactness over values the user could not see the ends of would have been
+theatre. `differential_settings.sh` covers the descriptor table, not slider
+output, and stays green untouched.
+
+**Why an explicit A/B rather than hold-to-audition.** The plan text offered
+either. A held button cannot be compared against *while it is held* — you get one
+look, then it is over — and what a user actually wants is to flip back and forth
+with the track playing. So the snapshot is taken automatically by the first
+exploratory gesture (nobody has to remember to press "save first"), and the flip
+is a button that can be pressed as many times as it takes.
+
+**How Surprise is biased, and why each bias is there.** Uniform-over-the-range
+produces results nobody keeps, so four rules narrow it, each measured by a test
+rather than asserted in prose:
+
+| bias | value | why |
+| --- | --- | --- |
+| snap to the descriptor's precision | — | the readout must not lie about what was rolled |
+| keep clear of both ends | 5 % of the span | hard endpoints *are* the degenerate looks: zero density, zero glow, zero link weight, everything at maximum |
+| move only some sliders | 75 % | re-rolling all twelve of Song Atlas's controls gives a scene the user cannot recognise as the one they were tuning |
+| flip a toggle rarely | 25 % | `atlas.wireframe` and `atlas.hue_motion` are whole-scene character switches, not variations |
+
+Sliders draw **triangular about the descriptor default**, so the scene's designed
+character is the centre of mass and the tails are rare. The exception is the five
+`-180..180` angle controls (`pulse.hue`, `orbital.hue`, `atlas.color`,
+`atlas.orbit`, `pentagram.hue`), which draw **uniform**: hue is circular, there is
+no "designed centre" to pull toward, and pulling toward the default would make the
+one control a user most wants shuffled the one that barely moves. The carve-out is
+read off the bounds (`minimum < 0 < maximum`), not off a list of keys, so a new
+angle descriptor gets it without being enumerated — and it reads the descriptor
+contract rather than changing it. A test measures the effect: hue's mean magnitude
+is >50 degrees, where a triangular draw about 0 would give ~27.
+
+**Does Surprise produce keepable results?** Often, on the evidence of the seeded
+sweeps — it stays inside every bound over 200 seeds x 10 scenes, keeps its hands
+off a quarter of the controls so the scene stays itself, and never lands on an
+endpoint. What has *not* been done is a human sitting with a real track judging
+whether the pictures are good, and no automated check can stand in for that. It is
+tuned to be worth pressing; whether it is worth pressing twice is an operator
+call.
+
+**What the two probe families each prove, and why both.** `--ui-probe click=`
+presses one control per run and is the only thing that proves a control is wired
+at all — EX1's lesson, where three export SIZE buttons were dead with every other
+gate green. It cannot state a claim about a *sequence*, and every UX0-C04 claim is
+one: explore, compare, come back. `--ui-probe tune-explore=` runs the sequence.
+The gate cross-checks them: the same seed through the Surprise **button** and
+through the sequence probe must produce byte-identical `tune values:`, so neither
+family can drift into exercising code the other does not reach.
+
+**`tune values:` prints shortest-round-trip floats, not the readout's two
+places.** "Revert restored it exactly" and "Revert restored it to two decimals"
+are different claims, and only the first is worth making. Two different `f32` bit
+patterns cannot print the same string in that form, so string equality in the gate
+*is* bit equality. A unit test pins the distinction by constructing two values one
+ulp apart that `{:.2}` cannot tell apart.
+
+**A pre-existing layout defect, fixed on the way past.** The row loop measured
+each setting row against the panel's content rectangle alone, while "Reset scene"
+is pinned to the panel floor — so on a twelve-control scene at the 960x640
+minimum the last row and the "+N more (enlarge the window)" notice drew
+*underneath* the button. That was already true; adding 48 px of audition bar is
+what made it reachable at 720p as well, so the list now stops above the button.
+
+**Not covered, and left deliberately.**
+
+- **B09's "efficient navigation across all 104 bands"** is the route editor's
+  band stepper, not the descriptor list, and it wants a typed band number and a
+  jump-to-peak. Left out: it is a different control with a different failure mode,
+  and folding it in would have made this change span two features.
+- **Keyboard nudging** is the wheel only. Arrow keys over a hovered row would need
+  a focus notion the inspector does not have, and the arrows are already the
+  transport's fine seek — a binding conflict that deserves its own decision rather
+  than being resolved silently here.
+- **D6's scroll/toggle items** were not taken; nothing here blocked on them. The
+  list still truncates with a notice rather than scrolling.
+- **A capture of the *typed* keystrokes.** Xvfb has no keyboard, so `tune-type=`
+  exercises the parse/clamp/write path a keystroke would reach, not the keystrokes
+  themselves. The suppression of global shortcuts while typing is covered by
+  `shell.rs`'s `TextEntrySurface::ALL` sweep instead, which is the test that
+  already exists for exactly this class of bug (UX0-A06).
+
 ## EX1 — the export panel's SIZE row could not be clicked (operator bug, 2026-08-06)
 
 > *"there's a bug with the export UI buttons: I can't pick different sizes"*
@@ -921,12 +1031,36 @@ close the UX0 item.
       long rows at 100+ cues.
 - [ ] **UX0-B07 — visible lyric draft state [C2/D8]:** mark an edited draft and
       use consistent Apply/Cancel/Discard language in controls and refusals.
-- [ ] **UX0-B08 — understandable route affordance [D6]:** replace or explain the
+- [x] **UX0-B08 — understandable route affordance [D6]:** replace or explain the
       ambiguous `~` control, restore useful static/dynamic tooltips and make the
       reason for a disabled route action visible.
-- [ ] **UX0-B09 — precision Tune controls [D6]:** support typed values,
+      *Done (PX6): the tilde is a word — `Route` / `Routed` / `Editing` — so the
+      row is readable with the pointer parked elsewhere, which is what a tooltip
+      could never fix. The routed tip is dynamic and names the route it would
+      open (`Driven by Band 2 - Smooth - 0.40 -> 2.20 - click to edit`) instead
+      of repeating the static sentence. Apply and Remove, when disabled, now
+      carry a hit target of their own purely so `hint` can say **why** —
+      `disabled_button` returns no `ButtonState`, so a reason had nowhere to
+      hang. Capture `tune-base` / `panel-tune-*`.*
+- [x] **UX0-B09 — precision Tune controls [D6]:** support typed values,
       wheel/keyboard nudging, per-setting reset and efficient navigation across
       all 104 bands.
+      *Done (PX6) for the descriptor list; the 104-band navigation is the route
+      editor's band stepper and is **not** included — see the note below.
+      Typed values: every readout is a chip, a click opens a `TextField` bound to
+      the current number, Enter commits through
+      `tune_explore::parse_typed` and Escape reverts. Clamped and snapped to the
+      descriptor's own precision, because `SceneSettings::set` **rejects** rather
+      than clamps (`scene_settings.c:143-149`) and a raw typed 99 would otherwise
+      vanish with no message. Fine step: the wheel over a row moves one precision
+      unit, Shift ten — a ratio, so every control crosses the same fraction of
+      its range in the same number of notches. Per-setting reset: the label is
+      the button, and a leading `*` marks a setting moved from its default, which
+      also answers "what have I changed here" at a glance. Global shortcuts are
+      suppressed while typing through a new `TextEntrySurface::TuneValue`, swept
+      by `shell.rs`'s existing `ALL` test. Gate: `tune-chip-click` (plus a
+      claimed-nothing gap control), `tune-typed-{high,low,grid,junk}`,
+      `tune-wheel-{up,down,miss}`.*
 - [ ] **UX0-B10 — reviewable Assist reasoning:** carry section reasons, semantic
       summaries and semantic notes through the candidate boundary and render them
       before Apply (2, Assist).
@@ -1032,14 +1166,44 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       caption and ASCII Field fixed, preview framed to the export aspect.*
 - [ ] **UX0-C03 — lyric tap timing:** deliver the play-and-tap stamping workflow,
       row seek and advancement described by B02 as a polished primary flow (3.3).
-- [ ] **UX0-C04 — preset audition/A-B:** make preset exploration reversible with
+- [x] **UX0-C04 — preset audition/A-B:** make preset exploration reversible with
       hold-to-audition or an explicit settings snapshot comparison (3.4).
+      *Done (PX6) as an explicit snapshot A/B rather than hold-to-audition: a
+      held button cannot be compared against while it is held, and the thing a
+      user wants is to flip back and forth listening. `core::ui::tune_explore`'s
+      `ExploreState` captures a `SettingsSnapshot` before the first exploratory
+      action — a preset Apply, Surprise, Nudge or a per-setting reset — and puts
+      A/B, Revert and Keep on screen. Revert is **bit-for-bit**: a snapshot is 12
+      `f32`s copied back, the same operation loading a cue performs, so it is
+      exact rather than close. Exploring five times still reverts all the way to
+      where the user was, not to the previous experiment. The session is keyed to
+      `(track_slot, scene, cue)` and ends when the target moves, so a base-scene
+      snapshot can never be written into a segment it was not captured from
+      (LX3). Keep is refused while A is on screen and says why. Gate:
+      `tune-revert`, `tune-revert-deep`, `tune-ab-a`, `tune-ab-b`, `tune-keep`.*
 - [ ] **UX0-C05 — scene thumbnails:** generate/cache deterministic preview stills
       so scene choice is visual rather than ten text-only names (3.5).
 - [ ] **UX0-C06 — recent projects:** use the welcome screen's spare region for a
       durable, failure-tolerant recent-file list and direct reopen flow (3.6).
-- [ ] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
+- [x] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
       with the same reversible audition semantics as C04 (3.7).
+      *Done (PX6). Randomness is **injected**, not ambient: `tune_explore` takes a
+      `RandomSource` and the panel seeds a `SplitMix64` from a press counter, so a
+      capture can pin it with `--ui-probe tune-seed=` and assert the values rather
+      than "something moved". Four biases, all measured by tests rather than
+      argued for: results are snapped to the descriptor's precision so the readout
+      cannot lie; Surprise keeps 5 % clear of each end, where the degenerate looks
+      live (zero density, zero glow, everything at maximum); it moves 75 % of
+      sliders so the scene stays recognisable as itself; and it flips a toggle
+      only 25 % of the time, since `atlas.wireframe` is a whole-scene character
+      switch. Sliders draw triangular about the descriptor **default**, except the
+      five `-180..180` angle controls, which draw uniform — hue is circular and has
+      no designed centre to pull toward. Nudge is triangular about the current
+      value with a 12 % half-width and never flips a toggle. Every draw goes
+      through the audition, so Revert undoes it exactly. Bounds are swept over 200
+      seeds x 10 scenes x both strengths — all 81 descriptors, every value
+      `accepts`-valid and writable through `set`. Gate: `tune-surprise`,
+      `tune-surprise-alt`, `tune-surprise-click`, `tune-nudge`.*
 - [ ] **UX0-C08 — project-level palette/look:** define a coherent track-level
       color treatment mapped across scene descriptors and automatic changes
       without breaking routes or saved settings (3.8).
