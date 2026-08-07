@@ -551,6 +551,9 @@ fn run(
     // layout that is about to move would land somewhere nobody aimed.
     let mut click_at: Option<(f32, f32)> = None;
     let mut click_phase: u32 = 0;
+    // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
+    // headless run (UX0-C01, UX0-C10).
+    let mut probe_save_to: Option<std::path::PathBuf> = None;
     let mut audio_stall_ms: Option<u64> = None;
     let mut scene_clock_previous: Option<f64> = None;
 
@@ -720,6 +723,12 @@ fn run(
                 hover_at = Some(point);
                 click_at = Some(point);
             }
+            // `save-to=` stands in for the destination picker, and only for it
+            // (UX0-C01, UX0-C10). Without it the two controls this panel exists
+            // for — render and still — could be pressed in a capture and never
+            // reach a file, which is the same "a control nothing presses" hole
+            // one level further along.
+            probe_save_to = probe.save_to.clone();
             // Delivered by the shell on the first frame it draws, wherever
             // `hover=` parked the pointer.
             app.shell.probe_wheel = probe.wheel;
@@ -859,6 +868,13 @@ fn run(
         music.as_ref(),
     );
     let mut export: Option<ExportSession> = None;
+    // `--render-window` is the same state as the panel's CLIP row (UX0-C01).
+    // Seeded rather than kept apart, because a panel that said "whole track"
+    // while the flag was in force would be lying about what the next export
+    // covers — and because it is what lets the headless gate press the render
+    // button on a clip it did not have to set with three separate presses.
+    app.shell.export_clip =
+        musializer_core::timing::render_export::ClipSelection::from_window(options.render_window);
     // `--render` runs the export and exits (`musializer.c:650`), where an export
     // started from the panel returns to the workspace.
     let exit_after_render = options.render.is_some();
@@ -1476,7 +1492,21 @@ fn run(
                     }
                 }
                 ShellCommand::StartRender => {
-                    if let Some(destination) = ui::panels::export::ask_for_destination(&mut app) {
+                    // The panel's clip row, not `None` (UX0-C01). This is the
+                    // one line that turns "in and out are set" into "the file
+                    // covers that window", and the only thing between the CLIP
+                    // row and a render that quietly ignored it.
+                    let window = app.shell.export_clip.window(
+                        app.workspace
+                            .current()
+                            .map_or(0.0, |track| track.duration_seconds),
+                        app.workspace
+                            .current()
+                            .map_or(30, |track| track.render_config.fps),
+                    );
+                    if let Some(destination) =
+                        ui::panels::export::ask_for_destination(&mut app, probe_save_to.as_deref())
+                    {
                         export = ExportSession::begin(
                             &mut rl,
                             &thread,
@@ -1485,9 +1515,27 @@ fn run(
                             &mut app,
                             &mut analysis,
                             &destination,
-                            None,
+                            window,
                         );
                     }
+                }
+                ShellCommand::ExportStill => {
+                    // Synchronous, inside the command loop and outside the
+                    // drawing pair, for the same two reasons `StartRender` is:
+                    // it opens a modal picker and it draws into a render
+                    // target (UX0-C10).
+                    ui::panels::export::export_still(
+                        &mut rl,
+                        &thread,
+                        &audio,
+                        music.as_ref(),
+                        &mut app,
+                        &mut analysis,
+                        &mut renderer,
+                        &fonts,
+                        time_seconds,
+                        probe_save_to.as_deref(),
+                    );
                 }
                 ShellCommand::ManualEvent(action) => {
                     // The playhead this frame, not the timeline widget's view: a cue is
@@ -3575,6 +3623,20 @@ impl Report {
                 config.fps,
                 config.quality.name(),
                 config.supersample_factor,
+            );
+        }
+        // Which part of the track the next export covers (UX0-C01). A sibling
+        // line rather than more words on `export config:`, for two reasons: the
+        // geometry line is asserted verbatim by five gate sections that predate
+        // clips, and a clip is state the *panel* owns while the configuration is
+        // the track's. Printed whenever there is a track, so "the CLIP row took
+        // the press" and "it drew a highlight" are different observations.
+        if let Some(track) = app.workspace.current() {
+            println!(
+                "export clip:     {}",
+                app.shell
+                    .export_clip
+                    .describe(track.duration_seconds, track.render_config.fps)
             );
         }
         // What `--ui-probe click=` actually reached (EX1). `claimed` is the

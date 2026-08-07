@@ -280,6 +280,22 @@ pub struct UiProbe {
     /// `time=` has parked the playhead and the segment it targets is the one a
     /// capture will show.
     pub scene_pick: Option<SceneId>,
+    /// `save-to=PATH`: the destination a file picker would have returned
+    /// (UX0-C01, UX0-C10).
+    ///
+    /// **Invented, and it is `click=`'s missing half for the two controls this
+    /// application exists to reach.** The export panel's render button and its
+    /// still button both open a modal picker, and Xvfb has no picker any more
+    /// than it has a pointer — so a capture could press either one and prove
+    /// only that the press was claimed. With this, the press produces the file,
+    /// and the gate can assert an MP4's duration and frame count, or two runs of
+    /// a still hashing the same.
+    ///
+    /// It substitutes for the *dialog*, not for the decision: the path is used
+    /// exactly where the picker's answer would have been, and every refusal
+    /// after it — the `.mp4` extension rule, the alias checks, the geometry —
+    /// still applies.
+    pub save_to: Option<PathBuf>,
     /// `audio-stall=MS`: block only the main/refill thread once during a probe.
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
@@ -955,6 +971,10 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
+        // Not validated for extension here: the render path refuses anything
+        // but `.mp4` and the still path writes a PNG, and a probe that aimed
+        // the wrong one must fail *there*, where a real picker's answer would.
+        "save-to" => probe.save_to = Some(PathBuf::from(value)),
         "audio-stall" => {
             let milliseconds: u64 = value.parse().ok()?;
             if !(1..=5_000).contains(&milliseconds) {

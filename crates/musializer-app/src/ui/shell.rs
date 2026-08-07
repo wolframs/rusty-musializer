@@ -98,6 +98,14 @@ pub enum ShellCommand {
     /// progress screen, which the session draws and answers in the same tick, so
     /// it never has to travel through `main.rs`.
     StartRender,
+    /// Ask for a destination and publish the frame at the playhead as a PNG
+    /// (UX0-C10).
+    ///
+    /// A separate command rather than a flag on [`Self::StartRender`] because
+    /// the two produce different files through different backends — a still
+    /// needs no encoder — and a single command with a mode would make "did the
+    /// press start an export?" un-answerable from the seam's own type.
+    ExportStill,
     /// The manual event row's outcome (`plug.c:2834-2971`).
     ManualEvent(ManualEventAction),
     /// One durable edit from the always-visible scene-plan lane.
@@ -256,6 +264,20 @@ pub struct Shell {
     pub lyrics: super::panels::lyrics::LyricEditor,
     /// Selection and in-flight boundary preview for the scene-plan lane.
     pub scene_lane: super::panels::scene_timeline::SceneLaneEditor,
+    /// The export panel's clip window: which part of the track the next export
+    /// covers (UX0-C01).
+    ///
+    /// **Session-only, and deliberately not in the `.musi` file.** A clip is a
+    /// thing you are doing right now — "post the chorus" — not a property of the
+    /// project, and persisting it would mean a reopened project silently
+    /// rendering 30 seconds of a four-minute track. Whether it *should* become
+    /// a durable per-track field is a schema question, recorded in
+    /// `FEATURE_PARITY_PLAN.md` under UX0-C01 rather than decided here.
+    ///
+    /// On `Shell` for the same reason as every other field around it: it
+    /// outlives a frame. `--render-window` seeds it at startup so the panel and
+    /// the command line are one state.
+    pub export_clip: musializer_core::timing::render_export::ClipSelection,
     /// The font browser's catalogue, query, selection and consent, plus the
     /// importer it drives.
     ///
@@ -593,6 +615,7 @@ impl Shell {
             font_browser: super::panels::fonts::FontBrowser::new(),
             lyrics: super::panels::lyrics::LyricEditor::new(),
             scene_lane: super::panels::scene_timeline::SceneLaneEditor::default(),
+            export_clip: musializer_core::timing::render_export::ClipSelection::full_track(),
             ui_preferences,
             ui_scale_override: None,
             split_drag: None,
