@@ -1029,6 +1029,56 @@ rendered frame, a settings bound or the CLI grammar:
   They are the dialog layer's own behaviour and the gate cannot reach them
   without opening a modal Xvfb has no way to answer.
 
+## PX — wave debrief follow-ups (2026-08-07)
+
+Six agents (PX1–PX6) closed C1, C4, D1–D4's remainder, D3, UX0-B01–B05,
+UX0-C01, C03, C04, C06, C07 and C10 in one wave; the six merges are
+`03548b9`..`e63fee2` and each agent's honest "what is missing" survives here.
+Items marked **operator** are taste or scope calls, not defects.
+
+- [ ] **PXF-1 — "No file" should escalate with accumulated edits (PX1).** A
+      user who tuned for an hour with no project file sees calm grey,
+      indistinguishable at a glance from Saved. `needs_attention()` returning
+      false is right on frame one and wrong after real edits; escalate
+      `NoProjectFile` once durable edits accumulate. Also: fullscreen has no
+      save-state surface at all.
+- [ ] **PXF-2 — persist the tap offset (PX2).** `[`/`]` calibration resets
+      every launch, which for a calibration control is exactly wrong. Needs a
+      `UiPreferences` field.
+- [ ] **PXF-3 — a tap should flash its block in the lane (PX2).** The only
+      feedback is an 11 px counter the player is not looking at during
+      playback.
+- [ ] **PXF-4 — the clip is invisible on the timeline (PX3).** In/Out are set
+      against a waveform that shows nothing; drag handles on the strip belong
+      to the timeline gesture owner, not the export panel.
+- [ ] **PXF-5 — the still blocks the frame loop (PX3)** with a static
+      "Rendering still frame"; the export's own progress screen is the model.
+- [ ] **PXF-6 — scene thumbnails are the unlock three agents pointed at
+      (UX0-C05).** PX4's recent rows are text, not a shelf of work; PX3's
+      still-frame path is the natural renderer for them and for cover output.
+- [ ] **PXF-7 — resume position:** `Metadata` has no playhead field, so
+      reopening a recent project starts at 0:00 (PX4).
+- [ ] **PXF-8 — operator: do the event markers want a legend (PX5)?** Head
+      shapes (disc=manual, ring=semantic) are stated only by tooltips; type
+      colours are keyed by the event-row buttons above. At 1x whole-track the
+      disc/ring distinction sits at the threshold of perception and semantic
+      0.45-alpha lines read as a smudge on a dense envelope.
+- [ ] **PXF-9 — operator: does the clip window belong in `.musi` (PX3)?** It
+      is session-only on `Shell`; promoting it is a field move plus a schema
+      bump.
+- [ ] **PXF-10 — the app segfaults rather than exiting with a message when the
+      display has no GL (PX5, and 11 coredumps during the wave).** raylib's
+      `InitWindow` dereferences null; guard before init and say what happened.
+- [ ] **PXF-11 — nobody has *felt* the tap loop or judged Surprise's taste.**
+      Every agent ran headless and muted, honestly said so, and the two
+      controls that exist to feel good (tap stamping, Surprise) have proven
+      mechanics and unproven feel. First session with real audio decides
+      PXF-2's default and PX6's bias constants. **Operator.**
+- [ ] **PXF-12 — B09 remainder (PX6):** the route editor's 104-band stepper is
+      a different control with a different failure mode, deliberately not
+      taken; keyboard nudge conflicts with the transport's arrow keys and
+      needs a decision rather than a silent resolution.
+
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 
 A separate operator-directed codex agent landed `dc694e3`: the public-facing
@@ -1082,14 +1132,16 @@ rounds of 2026-08-06/07: LX1–LX3 (cue provenance, the lane's affordances, the
 plan surviving a scene pick) and EX1–EX4 (the click probe and the id-collision
 fix, aspect presets, the linear-light Master resolve, the stall instrumentation)
 — commits `8a5175c`..`9db6684`. UX0-A (all 14 confirmed defects) and UX0-D (all
-four blind spots) are fully closed. `tools/verify.sh` is 21 passed / 0 failed
-and the tree is clean. What is open, in the order a session should pick it up:
+four blind spots) are fully closed. The six-agent PX wave then closed C1, C4,
+D1, D2, D3, D4's remainder, UX0-B01–B05 and UX0-C01/C03/C04/C06/C07/C10 in one
+day (merges `03548b9`..`e63fee2`; debrief in the PX section above). What is
+open, in the order a session should pick it up:
 
 | # | Work | Where | Size |
 | --- | --- | --- | --- |
 | 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
-| 2 | **UX0-B (19 items) and UX0-C (9 remaining)** plus the C1–C5 durable-edit tranche — the product backlog; suited to a disjoint-ownership agent fan-out | this document | the bulk |
-| 3 | D1–D8 missing entry points and timeline affordances, then E2–E4 (prove the copied bundle runs), then F/G honesty and gates | this document | large |
+| 2 | **PXF-1..12** (wave debrief, five operator calls among them) and the remaining UX0-B (B06, B10–B19) and UX0-C (C05 thumbnails — the unlock three agents pointed at — plus C08, C09, C17) | PX + UX0 sections | medium |
+| 3 | C2/C3/C5 durable-edit remainder, D5–D8, then E2–E4 (prove the copied bundle runs), then F/G honesty and gates; DX1–DX9 dev-ex items, DX8 first | this document | large |
 | 4 | AP5-a/b/c/d, AP6-e — modality-loss invalidation, no-network-hang test, diagnostics bundle collector, clipboard canary, deferred discovery decisions | AP5, AP6 tranches | small each; c is a feature |
 
 Two standing facts a new session needs: the operator's OpenRouter key lives in
