@@ -4154,9 +4154,14 @@ lane_alignment() {
     fi
 }
 for size in 1280x720 960x640; do
-    # No panel and Tune leave the band at two lanes; Lyrics adds the cue lane.
-    lane_alignment "panel-none-$size" 2
-    lane_alignment "panel-tune-$size" 2
+    # Three lanes wherever the cue lane is drawn, which since D4 is every state
+    # except Export and Assist — those two take the whole band for their own
+    # budgets, so the lane would push their bodies down rather than into slack.
+    # This is a strengthening rather than a bookkeeping change: the closed lane
+    # is drawn from a different call site than the open one, and this is what
+    # proves it lands on the same time axis as the waveform above it.
+    lane_alignment "panel-none-$size" 3
+    lane_alignment "panel-tune-$size" 3
     lane_alignment "panel-export-$size" 2
     lane_alignment "panel-lyrics-$size" 3
     # The seeded project, which is the only frame with cue blocks in the lane.
@@ -4165,11 +4170,373 @@ done
 # The operator's own display. The shell picks 150 % on its own at 1440p, and a
 # 1 px logical border straddles two columns there — which is how the left-hand
 # tick bound was caught.
-lane_alignment "ui-scale-150-2560x1440" 2 150
-lane_alignment "ui-auto-2560x1440" 2 150
+lane_alignment "ui-scale-150-2560x1440" 3 150
+lane_alignment "ui-auto-2560x1440" 3 150
 if [ "$LANE_ALIGNMENT_FAILED" -ne 0 ]; then
     echo "FAIL: the timed lanes do not share one time axis" >&2
     SWEEP_FAILED=1
+fi
+
+echo "=== the lyric timing loop: tap, undo, the closed lane and the TSV buttons ==="
+# PX2 (UX0-B02/B03/B04/B05, UX0-C03, D3, D4). Everything in this block is a
+# state a picture cannot be graded on by itself:
+#
+#   * an armed tap run and a disarmed one differ by one 11 px line of hint text;
+#   * a stamp that landed leaves exactly the frame a stamp that was refused
+#     does, because the difference is in the cue spans;
+#   * an undo stack that is recording and one silently dropping every batch
+#     produce identical frames until someone presses Ctrl+Z and finds nothing.
+#
+# So the report line carries `tap ..., last stamp ..., history u/r, typing ...`
+# and this asserts on that, with the PNGs as the corroborating half.
+TIMING_DIR="$OUT_DIR/timing"
+rm -rf "$TIMING_DIR"
+mkdir -p "$TIMING_DIR"
+cp "$FIXTURE" "$TIMING_DIR/source.wav"
+TIMING_PROJECT="$TIMING_DIR/timing.musi"
+TIMING_PREFS="$TIMING_DIR/ui.json"
+printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$TIMING_PREFS"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    MUSIALIZER_UI_PREFERENCES="$TIMING_PREFS" \
+    ./target/debug/musializer --mute "$TIMING_DIR/source.wav" \
+        --save-project "$TIMING_PROJECT" \
+    >"$TIMING_DIR/save.txt" 2>&1
+TIMING_SAVE=$?
+set -e
+if [ "$TIMING_SAVE" -ne 0 ] || [ ! -f "$TIMING_PROJECT" ]; then
+    echo "FAIL: could not build the timing fixture project" >&2
+    SWEEP_FAILED=1
+else
+    # Six lines bunched into the first two seconds, which is how an aligner or a
+    # TSV import leaves a document before anyone has timed anything. A tap run
+    # has to *move* them, so their seeded positions are the thing the undo
+    # assertion below compares against.
+    python3 - "$TIMING_PROJECT" <<'PY'
+import json, pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+project = json.loads(path.read_text())
+duration = float(project["audio"]["duration_seconds"])
+records = []
+for index in range(6):
+    start = 0.10 + index * 0.30
+    end = start + 0.25
+    assert end <= duration, f"{end} past the {duration}s fixture"
+    records.append(
+        {
+            "id": index + 1,
+            "start_seconds": round(start, 3),
+            "end_seconds": round(end, 3),
+            "text": f"line number {index + 1} of the song",
+        }
+    )
+project["lyrics"] = {"next_id": len(records) + 1, "cues": records}
+path.write_text(json.dumps(project, indent=2) + "\n")
+print(f"seeded {len(records)} cues into {duration:.2f}s")
+PY
+
+    timing_capture() {
+        # timing_capture NAME SIZE PROBE [EXTRA_ENV...]
+        local name="$1" size="$2" probe="$3"
+        local log="$OUT_DIR/$name.txt"
+        set +e
+        env -u WAYLAND_DISPLAY \
+            DISPLAY="$DISPLAY_NUM" \
+            PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+            MUSIALIZER_UI_PREFERENCES="$TIMING_PREFS" \
+            ./target/debug/musializer --mute --project "$TIMING_PROJECT" \
+                --size "$size" \
+                --probe-frames 30 \
+                --probe-shot "$OUT_DIR/$name.png" \
+                --ui-probe "$probe" \
+            >"$log" 2>&1
+        local status=$?
+        set -e
+        printf '%-26s exit=%s ' "$name" "$status"
+        sed -n 's/^lyrics: *//p' "$log" | head -1
+        return $status
+    }
+
+    timing_report() {
+        sed -n 's/^lyrics: *//p' "$OUT_DIR/$1.txt" | head -1
+    }
+
+    timing_expect() {
+        # timing_expect NAME SUBSTRING...
+        local name="$1"; shift
+        local report
+        report="$(timing_report "$name")"
+        local want
+        for want in "$@"; do
+            case "$report" in
+                *"$want"*) ;;
+                *)
+                    echo "FAIL: $name did not report '$want' — $report" >&2
+                    SWEEP_FAILED=1
+                    ;;
+            esac
+        done
+    }
+
+    timing_refute() {
+        local name="$1"; shift
+        local report
+        report="$(timing_report "$name")"
+        local want
+        for want in "$@"; do
+            case "$report" in
+                *"$want"*)
+                    echo "FAIL: $name reported '$want' and should not have — $report" >&2
+                    SWEEP_FAILED=1
+                    ;;
+            esac
+        done
+    }
+
+    # The baseline. Nothing armed, nothing stamped, nothing on the stack — and
+    # this is the negative control for every assertion below, because a report
+    # line that said `stamped 4` unconditionally would satisfy them all.
+    timing_capture timing-idle 1280x720 "panel=lyrics" || SWEEP_FAILED=1
+    timing_expect timing-idle "tap off" "last stamp none" "history 0/0" "typing none"
+
+    # Four taps at 0.5 s intervals from 2.0 s. Each one closes the line before it
+    # and opens the next, so the run has to end armed on line 5 of 6 with the
+    # form bound to line 4 at exactly 2.0 + 3 * 0.5.
+    timing_capture timing-tap 1280x720 "panel=lyrics,time=2.0,lyric-tap=4" || SWEEP_FAILED=1
+    timing_expect timing-tap \
+        "tap armed 5/6 stamped 4 offset +0ms" \
+        "last stamp 00:03.500" \
+        "selected #4 at 00:03.500" \
+        "history 1/0"
+    # A tap must not leave a dirty draft. It did, until a capture said so: the
+    # form was bound from the document while the stamp's own retime was still
+    # pending, so every tap armed the "Finish the lyric edit first" guard and the
+    # *next* press was refused. A run of taps that dirties the draft is a run
+    # that stops after one.
+    timing_expect timing-tap "draft clean"
+
+    # One batch, one undo step: the four taps are eight retimes in two frames and
+    # Ctrl+Z has to take the whole thing back, not one line of it. Cue 4 returns
+    # to its seeded 0.10 + 3 * 0.30 = 1.00.
+    timing_capture timing-undo 1280x720 "panel=lyrics,time=2.0,lyric-tap=4,lyric-undo=1" \
+        || SWEEP_FAILED=1
+    timing_expect timing-undo "history 0/1" "selected #4 at 00:01.000" "tap off"
+    # And the redo half is real rather than a counter: the stack moved from 1/0
+    # to 0/1, so a step went one way and is available the other.
+    timing_refute timing-undo "history 1/0" "history 0/0"
+
+    # D4: the cue lane outlives the editor. Measured rather than asserted from
+    # the report, because "the lane is drawn" is exactly the claim a report line
+    # can make about a surface that never reached a pixel.
+    timing_capture lane-closed-none 1280x720 "panel=none,time=4.0" || SWEEP_FAILED=1
+    timing_capture lane-closed-tune 1280x720 "panel=tune,time=4.0" || SWEEP_FAILED=1
+    for name in lane-closed-none lane-closed-tune; do
+        # `panel-none-1280x720` and `panel-tune-1280x720` above are the same two
+        # states over the *cue-less* sweep fixture, and the alignment sweep now
+        # requires three aligned lanes in both — so the lane's geometry is
+        # already pinned. What this adds is that the blocks are in it.
+        USER_BLOCK_PIXELS="$(python3 - "$OUT_DIR/$name.png" <<'PY'
+import sys
+
+import numpy as np
+from PIL import Image
+
+# `origin_color(CueOrigin::UserApplied)`. Scoped to the bottom of the frame on
+# purpose: the event row's "+ Scene" button is outlined in the same green, and an
+# unscoped count reports 148 of them on a frame with no cues at all — which is
+# how this assertion would have passed while measuring a button.
+image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
+height = image.shape[0]
+mask = np.abs(image - np.array([0x1F, 0x7A, 0x4D])).sum(axis=2) < 12
+print(int(mask[int(height * 0.82) :].sum()))
+PY
+)"
+        echo "$name: user-origin cue-block pixels below the strip: $USER_BLOCK_PIXELS"
+        if [ "$USER_BLOCK_PIXELS" -lt 200 ]; then
+            echo "FAIL: $name drew no cue blocks with the editor closed" >&2
+            SWEEP_FAILED=1
+        fi
+    done
+    # The negative control for that measurement, over the cue-less sweep fixture:
+    # the same two states with nothing to draw must measure zero in the same band.
+    for name in panel-none-1280x720 panel-tune-1280x720; do
+        EMPTY_BLOCK_PIXELS="$(python3 - "$OUT_DIR/$name.png" <<'PY'
+import sys
+
+import numpy as np
+from PIL import Image
+
+image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
+height = image.shape[0]
+mask = np.abs(image - np.array([0x1F, 0x7A, 0x4D])).sum(axis=2) < 12
+print(int(mask[int(height * 0.82) :].sum()))
+PY
+)"
+        if [ "$EMPTY_BLOCK_PIXELS" -ne 0 ]; then
+            echo "FAIL: $name drew cue blocks for a track with no cues ($EMPTY_BLOCK_PIXELS px)" >&2
+            SWEEP_FAILED=1
+        fi
+    done
+
+    # D3: the Export and Import buttons take a press, and the failure is
+    # reported. EX1's lesson applies in full here — hovering proves a control
+    # lights up and nothing else, and these two were `disabled_button` calls for
+    # the whole life of the panel.
+    #
+    # Run with an **empty PATH**, which is what makes this safe as well as
+    # useful: `dialogs::choose_backend` then finds neither kdialog nor zenity and
+    # refuses before spawning anything, so the probe cannot hang on a modal
+    # picker Xvfb has no way to answer — and the refusal is the "backend
+    # unavailable" branch D3 asks to be tested.
+    TIMING_EMPTY_BIN="$TIMING_DIR/empty-bin"
+    mkdir -p "$TIMING_EMPTY_BIN"
+    # Located by measurement, never hard-coded: the row's three buttons are the
+    # only long horizontal runs of `UI_RULE` in the bottom-right of the form, and
+    # a guessed pair is how `--ui-probe hover=` silently photographs the wrong
+    # thing. Their widths come back as 77/77/92, which is the code's own
+    # `export`/`import`/`add` table.
+    read -r EXPORT_X IMPORT_X GAP_X BUTTON_Y <<<"$(python3 - "$OUT_DIR/timing-idle.png" <<'PY'
+import sys
+
+import numpy as np
+from PIL import Image
+
+image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
+height, width, _ = image.shape
+mask = np.abs(image - np.array([210, 210, 214])).sum(axis=2) < 12
+rows = []
+for y in range(height * 2 // 3, height):
+    runs, start = [], None
+    for x in range(width):
+        if mask[y, x]:
+            if start is None:
+                start = x
+        else:
+            if start is not None and x - start >= 60:
+                runs.append((start, x - 1))
+            start = None
+    if len(runs) >= 3 and runs[-1][0] > width * 0.55:
+        rows.append((y, runs[-3:]))
+assert len(rows) >= 2, "the Export/Import/Add row was not found"
+top, runs = rows[0]
+bottom = rows[-1][0]
+export, imports, _add = runs
+# The 7 px gap between Export and Import: a click there must claim nothing, or a
+# probe that pressed empty panel would satisfy every assertion below.
+print(
+    (export[0] + export[1]) // 2,
+    (imports[0] + imports[1]) // 2,
+    (export[1] + imports[0]) // 2,
+    (top + bottom) // 2,
+)
+PY
+)"
+    echo "the document row: export x=$EXPORT_X import x=$IMPORT_X gap x=$GAP_X at y=$BUTTON_Y"
+
+    timing_click() {
+        # timing_click NAME XxY
+        local name="$1" at="$2"
+        set +e
+        env -u WAYLAND_DISPLAY \
+            DISPLAY="$DISPLAY_NUM" \
+            PATH="$TIMING_EMPTY_BIN" \
+            PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+            MUSIALIZER_UI_PREFERENCES="$TIMING_PREFS" \
+            ./target/debug/musializer --mute --project "$TIMING_PROJECT" \
+                --size 1280x720 \
+                --probe-frames 30 \
+                --probe-shot "$OUT_DIR/$name.png" \
+                --ui-probe "panel=lyrics,click=$at" \
+            >"$OUT_DIR/$name.txt" 2>&1
+        local status=$?
+        set -e
+        printf '%-26s exit=%s ' "$name" "$status"
+        sed -n 's/^click probe: *//p' "$OUT_DIR/$name.txt" | head -1
+        return $status
+    }
+
+    timing_click lyrics-click-export "${EXPORT_X}x${BUTTON_Y}" || SWEEP_FAILED=1
+    timing_click lyrics-click-import "${IMPORT_X}x${BUTTON_Y}" || SWEEP_FAILED=1
+    timing_click lyrics-click-gap "${GAP_X}x${BUTTON_Y}" || SWEEP_FAILED=1
+
+    EXPORT_CLAIM="$(sed -n 's/^click probe: .*claimed=//p' "$OUT_DIR/lyrics-click-export.txt" | head -1)"
+    IMPORT_CLAIM="$(sed -n 's/^click probe: .*claimed=//p' "$OUT_DIR/lyrics-click-import.txt" | head -1)"
+    GAP_CLAIM="$(sed -n 's/^click probe: .*claimed=//p' "$OUT_DIR/lyrics-click-gap.txt" | head -1)"
+    if [ "$EXPORT_CLAIM" = "nothing" ] || [ "$IMPORT_CLAIM" = "nothing" ]; then
+        echo "FAIL: a document button did not take the press (export=$EXPORT_CLAIM import=$IMPORT_CLAIM)" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$EXPORT_CLAIM" = "$IMPORT_CLAIM" ]; then
+        echo "FAIL: Export and Import claim the same widget id ($EXPORT_CLAIM)" >&2
+        SWEEP_FAILED=1
+    fi
+    # Without this, a probe that pressed nothing satisfies both checks above,
+    # because a no-op leaves whatever the previous frame claimed.
+    if [ "$GAP_CLAIM" != "nothing" ]; then
+        echo "FAIL: a click into the gap between Export and Import claimed $GAP_CLAIM" >&2
+        SWEEP_FAILED=1
+    fi
+
+    # Both presses have to reach `main.rs` and come back with the refusal on
+    # screen. Measured as the tallest contiguous vertical run of the warning
+    # severity colour, which separates a notice card's 75 px stripe from the
+    # event row's amber "+ Feel" outline — that button is the same colour and an
+    # unscoped pixel count says 153 of them on a frame with no notice at all.
+    for name in lyrics-click-export lyrics-click-import; do
+        WARNING_RUN="$(python3 - "$OUT_DIR/$name.png" <<'PY'
+import sys
+
+import numpy as np
+from PIL import Image
+
+image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
+mask = np.abs(image - np.array([242, 180, 65])).sum(axis=2) < 12
+tallest = 0
+for x in np.unique(np.nonzero(mask)[1]):
+    column = np.nonzero(mask[:, x])[0]
+    run = longest = 1 if len(column) else 0
+    for index in range(1, len(column)):
+        run = run + 1 if column[index] == column[index - 1] + 1 else 1
+        longest = max(longest, run)
+    tallest = max(tallest, longest)
+print(int(tallest))
+PY
+)"
+        echo "$name: tallest warning stripe $WARNING_RUN px"
+        if [ "$WARNING_RUN" -lt 60 ]; then
+            echo "FAIL: $name did not report the missing file picker on screen" >&2
+            SWEEP_FAILED=1
+        fi
+    done
+    # The control for *that* threshold: the untouched panel carries the amber
+    # button outline and no warning card, and must measure under it.
+    IDLE_WARNING_RUN="$(python3 - "$OUT_DIR/timing-idle.png" <<'PY'
+import sys
+
+import numpy as np
+from PIL import Image
+
+image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
+mask = np.abs(image - np.array([242, 180, 65])).sum(axis=2) < 12
+tallest = 0
+for x in np.unique(np.nonzero(mask)[1]):
+    column = np.nonzero(mask[:, x])[0]
+    run = longest = 1 if len(column) else 0
+    for index in range(1, len(column)):
+        run = run + 1 if column[index] == column[index - 1] + 1 else 1
+        longest = max(longest, run)
+    tallest = max(tallest, longest)
+print(int(tallest))
+PY
+)"
+    echo "timing-idle: tallest warning stripe $IDLE_WARNING_RUN px (must stay under 60)"
+    if [ "$IDLE_WARNING_RUN" -ge 60 ]; then
+        echo "FAIL: the idle lyrics panel already shows a warning notice" >&2
+        SWEEP_FAILED=1
+    fi
 fi
 
 # Every successful application run prints this after its last frame, so this is
