@@ -1358,6 +1358,22 @@ impl LyricEditor {
         // cue you just stamped would stop the music the run is riding on.
         if opened != 0 {
             self.select_single(document, opened);
+            // Bound to what the cue is *about to be*, not what it still is. The
+            // retime is pending for another frame, so binding from the document
+            // would leave the draft holding the pre-stamp span — and a draft
+            // that differs from the stored cue is a dirty one, so every tap
+            // would arm the "Finish the lyric edit first" guard and the next
+            // press would be refused. Caught by the first headless capture: the
+            // report line read `draft dirty` after a clean run of four taps.
+            if let Some((_, start, end)) = stamp
+                .retimes
+                .iter()
+                .find(|(id, _, _)| *id == opened)
+                .copied()
+            {
+                self.draft_start = start;
+                self.draft_end = end;
+            }
         }
         Ok(stamp.remaining)
     }
@@ -1681,11 +1697,16 @@ impl LyricEditor {
             // Requested rather than run: the history executes in `main.rs`,
             // against the same drain the interactive path uses, so the probe
             // cannot accidentally test a second implementation.
-            if self.can_undo() {
-                self.request_history(HistoryStep::Undo);
-            } else {
-                honoured = false;
-            }
+            //
+            // Deliberately **not** gated on `can_undo()`. This runs before the
+            // frame loop, so the taps above are still pending and the stack is
+            // still empty — checking here would refuse every combined
+            // `lyric-tap=N,lyric-undo=1` run, which is the only combination
+            // worth photographing. `main.rs` drains, records and applies first,
+            // and the step lands in the same frame. What actually happened is
+            // in the `lyrics:` report line's `history u/r` pair, which is where
+            // the gate asserts it.
+            self.request_history(HistoryStep::Undo);
         }
         honoured
     }

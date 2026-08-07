@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use musializer_core::audio::{AudioAnalyzer, AudioAnalyzerConfig};
 use musializer_core::project::event_timeline::ManualEventAction;
 use musializer_core::project::frame_lanes::{FrameLaneStatus, ProjectFrameLanes, SceneFrameTiming};
+use musializer_core::project::lyrics;
 use musializer_core::project::model::CaptionFace;
 use musializer_core::project::preset_store::{
     self, PresetAction, PresetLibrary, SharedPresetsView,
@@ -3168,11 +3169,13 @@ fn import_lyrics_command(app: &mut App, now: f64) {
     };
     let duration = track.lyrics.duration_seconds();
 
-    // Staged against a scratch document rather than the track's, so every
-    // refusal below leaves the real one untouched.
-    let mut staged = match musializer_core::project::lyrics::LyricsDocument::new(duration) {
-        Ok(staged) => staged,
-        Err(error) => {
+    // The whole transaction is `import_bridge_document`, which is pure and
+    // tested: staged into a scratch document so malformed bytes touch nothing,
+    // then re-based off the *file's* duration onto this track's. Nothing is
+    // written here until it has all succeeded.
+    let normalized = match lyrics::import_bridge_document(&bytes, duration) {
+        Ok(document) => document,
+        Err(lyrics::BridgeImportRefusal::NoTrackLength(error)) => {
             app.shell.notify(
                 Severity::Warning,
                 "This track has no length to import against",
@@ -3180,35 +3183,30 @@ fn import_lyrics_command(app: &mut App, now: f64) {
             );
             return;
         }
+        Err(lyrics::BridgeImportRefusal::Format(error)) => {
+            app.shell.notify(
+                Severity::Warning,
+                "That is not a timed-lyrics file",
+                &format!(
+                    "{error}. It must be a .lyrics.tsv written by Export, starting MUSIALIZER-LYRICS-BRIDGE."
+                ),
+            );
+            return;
+        }
+        Err(lyrics::BridgeImportRefusal::DoesNotFit {
+            failure,
+            source_duration_seconds,
+        }) => {
+            app.shell.notify(
+                Severity::Warning,
+                "Those cues do not fit this track",
+                &format!(
+                    "{failure}. The file was timed against a {source_duration_seconds:.1} s track and this one is {duration:.1} s."
+                ),
+            );
+            return;
+        }
     };
-    if let Err(error) = staged.bridge_import(&bytes) {
-        app.shell.notify(
-            Severity::Warning,
-            "That is not a timed-lyrics file",
-            &format!(
-                "{error}. It must be a .lyrics.tsv written by Export, starting MUSIALIZER-LYRICS-BRIDGE."
-            ),
-        );
-        return;
-    }
-    // The file carries its *own* duration, which is the track it was exported
-    // from. Re-basing onto this one is what makes an import between two mixes of
-    // the same song work, and what makes an import from a different song refuse.
-    let mut normalized = match musializer_core::project::lyrics::LyricsDocument::new(duration) {
-        Ok(document) => document,
-        Err(_) => return,
-    };
-    if let Err(failure) = normalized.normalize_duration(&staged, duration) {
-        app.shell.notify(
-            Severity::Warning,
-            "Those cues do not fit this track",
-            &format!(
-                "{failure}. The file was timed against a {:.1} s track and this one is {duration:.1} s.",
-                staged.duration_seconds()
-            ),
-        );
-        return;
-    }
     let imported = normalized.len();
     // The old document goes on the undo stack before it is replaced, so an
     // import over hand-timed work is one Ctrl+Z away from being back.

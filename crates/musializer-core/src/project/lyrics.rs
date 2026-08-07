@@ -1155,6 +1155,79 @@ pub(crate) fn base64_decode(input: &[u8], max_bytes: usize) -> Result<Vec<u8>, B
 }
 
 // ---------------------------------------------------------------------------
+// The TSV import transaction (D3)
+// ---------------------------------------------------------------------------
+
+/// Why an imported `.lyrics.tsv` was not accepted.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BridgeImportRefusal {
+    /// The destination track has no usable length to import against.
+    NoTrackLength(LyricsError),
+    /// The bytes are not a bridge document.
+    Format(LyricsError),
+    /// The cues are a bridge document, but they do not fit this track.
+    DoesNotFit {
+        failure: LyricsValidation,
+        /// The length the file was written against, for the message.
+        source_duration_seconds: f64,
+    },
+}
+
+impl fmt::Display for BridgeImportRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoTrackLength(error) => write!(f, "{error}"),
+            Self::Format(error) => write!(f, "{error}"),
+            Self::DoesNotFit { failure, .. } => write!(f, "{failure}"),
+        }
+    }
+}
+
+impl core::error::Error for BridgeImportRefusal {}
+
+/// Reads a `.lyrics.tsv` and re-bases it onto a track of `duration_seconds` (D3).
+///
+/// Pure, and separated from the file and dialog plumbing for the reason
+/// everything in this crate is: the interesting half of an import is what it
+/// *refuses*, and a refusal path is where a difference hides. A test can hand
+/// this a truncated file, a file from a different song, and one with a cue that
+/// starts past the end, without a window or a picker.
+///
+/// Transactional in two layers rather than one. [`LyricsDocument::bridge_import`]
+/// already stages into a fresh document, so malformed bytes touch nothing — but
+/// a *well-formed* file carries the duration of the track it was exported from,
+/// and adopting that would silently re-length this track's document. So the
+/// staged cues go through [`LyricsDocument::normalize_duration`] onto the real
+/// length, which clamps a cue crossing the tail and refuses one that begins at
+/// or after the end. That refusal is deliberate: clamping those produces
+/// zero-length cues rather than shorter ones, which is a different edit from the
+/// one the user asked for.
+///
+/// Nothing is written to the caller's document; the accepted result comes back
+/// for the caller to publish through [`LyricsDocument::replace`] once it has put
+/// the old one on the undo stack.
+pub fn import_bridge_document(
+    bytes: &[u8],
+    duration_seconds: f64,
+) -> Result<LyricsDocument, BridgeImportRefusal> {
+    let mut staged =
+        LyricsDocument::new(duration_seconds).map_err(BridgeImportRefusal::NoTrackLength)?;
+    staged
+        .bridge_import(bytes)
+        .map_err(BridgeImportRefusal::Format)?;
+    let source_duration_seconds = staged.duration_seconds();
+    let mut normalized =
+        LyricsDocument::new(duration_seconds).map_err(BridgeImportRefusal::NoTrackLength)?;
+    normalized
+        .normalize_duration(&staged, duration_seconds)
+        .map_err(|failure| BridgeImportRefusal::DoesNotFit {
+            failure,
+            source_duration_seconds,
+        })?;
+    Ok(normalized)
+}
+
+// ---------------------------------------------------------------------------
 // Undo (UX0-B03)
 // ---------------------------------------------------------------------------
 
@@ -1956,6 +2029,146 @@ mod tests {
             LyricsError::Order.to_string(),
             "lyric cues are not canonically ordered"
         );
+    }
+}
+
+#[cfg(test)]
+mod bridge_import_tests {
+    use super::*;
+
+    fn exported(duration: f64, cues: &[(f64, f64, &str)]) -> String {
+        let mut document = LyricsDocument::new(duration).unwrap();
+        for (start, end, text) in cues {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: *start,
+                    end_seconds: *end,
+                    text: (*text).to_owned(),
+                    origin: CueOrigin::UserApplied,
+                })
+                .unwrap();
+        }
+        document.bridge_export().unwrap()
+    }
+
+    #[test]
+    fn a_valid_file_round_trips_including_text_no_ascii_codec_would_survive() {
+        // Base64 over UTF-8 is the whole reason the bridge is not a plain TSV,
+        // and a Greek line is the case UX0-A05 was about one layer up.
+        let body = exported(
+            60.0,
+            &[
+                (1.0, 2.0, "the first line"),
+                (2.0, 3.5, "Ελληνικά, кириллица, and a tab-free line"),
+                (10.0, 12.0, "one\"with\"quotes and a \\ backslash"),
+            ],
+        );
+        let imported = import_bridge_document(body.as_bytes(), 60.0).expect("a valid file");
+        assert_eq!(imported.len(), 3);
+        assert_eq!(
+            imported.cues()[1].text,
+            "Ελληνικά, кириллица, and a tab-free line"
+        );
+        assert!((imported.cues()[2].start_seconds - 10.0).abs() < 1e-9);
+        // Round-tripping again is byte-identical, which is what makes the codec
+        // safe to use as an interchange format at all.
+        assert_eq!(imported.bridge_export().unwrap(), body);
+    }
+
+    #[test]
+    fn an_invalid_file_is_refused_and_names_the_format() {
+        for (name, bytes) in [
+            ("empty", b"".as_slice()),
+            ("plain text", b"00:01.000\tthe first line\n".as_slice()),
+            (
+                "a truncated header",
+                b"MUSIALIZER-LYRICS-BRIDGE\t1\n".as_slice(),
+            ),
+            (
+                "the wrong version",
+                b"MUSIALIZER-LYRICS-BRIDGE\t2\t60000\n".as_slice(),
+            ),
+            (
+                "a row with no newline",
+                b"MUSIALIZER-LYRICS-BRIDGE\t1\t60000\n1\t1000\t2000\tYWJj".as_slice(),
+            ),
+            (
+                "a row with no text",
+                b"MUSIALIZER-LYRICS-BRIDGE\t1\t60000\n1\t1000\t2000\t\n".as_slice(),
+            ),
+            (
+                "a zero cue id",
+                b"MUSIALIZER-LYRICS-BRIDGE\t1\t60000\n0\t1000\t2000\tYWJj\n".as_slice(),
+            ),
+            (
+                "text that is not base64",
+                b"MUSIALIZER-LYRICS-BRIDGE\t1\t60000\n1\t1000\t2000\tnot base64!\n".as_slice(),
+            ),
+            (
+                "an embedded NUL",
+                b"MUSIALIZER-LYRICS-BRIDGE\t1\t60000\n1\t1000\t2000\tYWJj\n\0".as_slice(),
+            ),
+        ] {
+            let refusal = import_bridge_document(bytes, 60.0)
+                .expect_err(&format!("{name} should be refused"));
+            assert!(
+                matches!(refusal, BridgeImportRefusal::Format(_)),
+                "{name} was refused as {refusal:?} rather than a format error"
+            );
+            assert!(!refusal.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_file_from_another_track_is_re_based_or_refused_but_never_silently_adopted() {
+        // Adopting the *file's* duration is the defect this guards: it would
+        // silently re-length the destination, and every cue past the real end
+        // would then be unreachable from the timeline.
+        let body = exported(60.0, &[(1.0, 2.0, "early"), (50.0, 58.0, "late")]);
+
+        // A longer destination keeps every cue and takes its own length.
+        let longer = import_bridge_document(body.as_bytes(), 120.0).expect("fits");
+        assert!((longer.duration_seconds() - 120.0).abs() < 1e-9);
+        assert_eq!(longer.len(), 2);
+
+        // A destination that cuts across the last cue clamps it rather than
+        // dropping it.
+        let clipped = import_bridge_document(body.as_bytes(), 55.0).expect("clamps");
+        assert!((clipped.cues()[1].end_seconds - 55.0).abs() < 1e-9);
+
+        // A destination shorter than a cue's *start* refuses the whole import,
+        // because clamping that produces a zero-length cue rather than a
+        // shorter one — a different edit from the one asked for.
+        let refusal = import_bridge_document(body.as_bytes(), 30.0).expect_err("refused");
+        match refusal {
+            BridgeImportRefusal::DoesNotFit {
+                source_duration_seconds,
+                ..
+            } => assert!((source_duration_seconds - 60.0).abs() < 1e-9),
+            other => panic!("expected a fit refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_track_with_no_length_refuses_before_it_reads_a_byte() {
+        let body = exported(60.0, &[(1.0, 2.0, "a line")]);
+        for duration in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                import_bridge_document(body.as_bytes(), duration),
+                Err(BridgeImportRefusal::NoTrackLength(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn an_empty_document_exports_and_imports_as_a_header_and_nothing_else() {
+        // The one shape that reads as a failure and is not: a track whose lyrics
+        // were deliberately cleared.
+        let body = exported(60.0, &[]);
+        assert_eq!(body, "MUSIALIZER-LYRICS-BRIDGE\t1\t60000\n");
+        let imported = import_bridge_document(body.as_bytes(), 60.0).expect("valid");
+        assert!(imported.is_empty());
     }
 }
 
