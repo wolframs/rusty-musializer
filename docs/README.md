@@ -9,6 +9,9 @@ authoritative code and evidence without reconstructing the project from scratch.
 
 - [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md) maps crate boundaries, state
   ownership, the preview/export data flow, persistence, and verification layers.
+- [`CODE_MAP.md`](CODE_MAP.md) is the generated, linkable inventory of Cargo
+  targets, Rust modules, verification tools, tests, schemas, and hotspots. Run
+  `tools/code_map.py` after topology changes; the repository gate checks it.
 - [`ASSIST_PIPELINE.md`](ASSIST_PIPELINE.md) follows an Assist request from the UI
   through the Python evidence tools, validation, staging, and project application.
   It also records the lyrics timing design and its trust boundaries.
@@ -64,3 +67,5 @@ To keep this directory useful rather than merely large:
 4. Put live work only in `FEATURE_PARITY_PLAN.md`; do not grow a second backlog
    inside documentation.
 5. Add every new document to this index.
+6. Keep topology in `CODE_MAP.md` generated from source; repair it with
+   `tools/code_map.py` instead of hand-editing it.
