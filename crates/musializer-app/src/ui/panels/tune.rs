@@ -35,17 +35,24 @@
 //!    the same wording the C uses when a source is unavailable
 //!    (`plug.c:5673-5674`).
 
+use musializer_core::project::preset_store::PresetAction;
 use musializer_core::scene::routes::{AnalysisSource, ParameterMapping, RouteTable};
-use musializer_core::scene::settings::{self, SettingDescriptor};
+use musializer_core::scene::settings::{self, SceneSettings, SettingDescriptor, SettingsSnapshot};
 use musializer_core::scene::SceneId;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::route_editor_state::{self, RouteEditorState};
+use musializer_core::ui::text_edit::TextRules;
+use musializer_core::ui::tune_explore::{
+    self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
+};
 use musializer_core::ui::workspace_layout::UiRect;
-use raylib::prelude::RaylibDrawHandle;
+use musializer_runtime::font::AuthoredText;
+use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
 
 use super::super::mapping_editor::{self, AnchorPair};
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
+use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
 use crate::workspace::Track;
@@ -109,7 +116,57 @@ mod slot {
     pub const CURVE_PREVIOUS: u32 = 230;
     pub const CURVE_NEXT: u32 = 231;
     pub const ACTION: u32 = 240;
+
+    // -- exploration (UX0-B09, UX0-C04, UX0-C07) ------------------------------
+    //
+    // Indexed slots are `+ index` over at most [`MAX_CONTROLS`] = 12 rows, so
+    // each band is 50 wide and cannot reach the next. `ALL_SLOTS` below names
+    // every one of these for the collision test, because the lesson this
+    // repository paid for is that a *hand-picked subset* proves nothing.
+
+    /// The value chip, which opens typed entry. `+ index`.
+    pub const VALUE_CHIP: u32 = 250;
+    /// The label, which resets one setting to its default. `+ index`.
+    pub const LABEL_RESET: u32 = 300;
+    pub const NUDGE: u32 = 400;
+    pub const SURPRISE: u32 = 401;
+    pub const AB_COMPARE: u32 = 410;
+    pub const AB_REVERT: u32 = 411;
+    pub const AB_KEEP: u32 = 412;
+    /// The route editor's two disabled actions, which need a hit target of
+    /// their own to hover-test: `disabled_button` returns no state (B08).
+    pub const ACTION_DISABLED: u32 = 420;
+
+    /// Every constant above, named individually, plus the two bare literals the
+    /// row loop uses (`index` for the slider, `900` for Reset scene).
+    #[cfg(test)]
+    pub const ALL_SLOTS: [(&str, u32, u32); 19] = [
+        // (name, first slot, count)
+        ("SLIDER", 0, 12),
+        ("ROUTE_TOGGLE", ROUTE_TOGGLE, 12),
+        ("ROUTED_SUMMARY", ROUTED_SUMMARY, 12),
+        ("SOURCE", SOURCE, 6),
+        ("BAND_PREVIOUS", BAND_PREVIOUS, 1),
+        ("BAND_NEXT", BAND_NEXT, 1),
+        ("INPUT_LOW", INPUT_LOW, 1),
+        ("INPUT_HIGH", INPUT_HIGH, 1),
+        ("OUTPUT_LOW", OUTPUT_LOW, 1),
+        ("OUTPUT_HIGH", OUTPUT_HIGH, 1),
+        ("CURVE_PREVIOUS", CURVE_PREVIOUS, 1),
+        ("CURVE_NEXT", CURVE_NEXT, 1),
+        ("ACTION", ACTION, 5),
+        ("VALUE_CHIP", VALUE_CHIP, 12),
+        ("LABEL_RESET", LABEL_RESET, 12),
+        ("NUDGE", NUDGE, 1),
+        ("SURPRISE", SURPRISE, 1),
+        ("AB", AB_COMPARE, 3),
+        ("ACTION_DISABLED", ACTION_DISABLED, 2),
+    ];
 }
+
+/// The Reset-scene button's slot, named rather than left a literal at its use
+/// site so [`slot::ALL_SLOTS`]' overlap test can see it.
+const RESET_SCENE_SLOT: u32 = 900;
 
 // -- the draft's temporary home ----------------------------------------------
 
@@ -130,6 +187,18 @@ pub(crate) struct EditorHost {
     /// this file. It has nothing to do with the route editor; it is here
     /// because this is where the door is.
     reset_arm: ResetArm,
+    /// UX0-C04/C07: the open audition, if any. Same reasoning as `reset_arm` —
+    /// this is the one seam `Shell` already exposes into this file.
+    explore: ExploreState,
+    /// UX0-B09: the row whose value is being typed into, if any.
+    typing: Option<TypedEntry>,
+    /// Presses of Nudge/Surprise this session, mixed into the seed so two
+    /// presses in a row cannot draw the same tuning. Not a clock: a clock would
+    /// make a headless capture unreproducible, which is the whole reason
+    /// `--ui-probe tune-seed=` exists.
+    explore_presses: u64,
+    /// `--ui-probe tune-seed=`, replacing the counter for a capture run.
+    probe_seed: Option<u64>,
 }
 
 impl Default for EditorHost {
@@ -138,6 +207,40 @@ impl Default for EditorHost {
             state: RouteEditorState::new(),
             track_slot: 0,
             reset_arm: ResetArm::default(),
+            explore: ExploreState::new(),
+            typing: None,
+            explore_presses: 0,
+            probe_seed: None,
+        }
+    }
+}
+
+/// One row's open text field (UX0-B09).
+///
+/// Keyed by `(scene, index)` rather than by the row's screen position, because
+/// the list re-lays out whenever a route editor expands above it and a field
+/// bound to a rectangle would then be editing a different setting.
+struct TypedEntry {
+    scene: SceneId,
+    index: usize,
+    field: TextField,
+}
+
+impl TypedEntry {
+    /// The field starts holding the value it is replacing, selected-at-caret
+    /// rather than empty: a user who clicks a chip to see the exact number and
+    /// presses Escape must get their value back, and a blank box would make the
+    /// click destructive before they typed anything.
+    fn open(scene: SceneId, index: usize, value: f32, precision: u32) -> Self {
+        // 12 bytes is "-180.000" and change — more than any descriptor needs,
+        // and short enough that the field cannot outgrow the chip.
+        let mut field = TextField::new(TextRules::ascii_query(12));
+        field.bind(&format!("{:.*}", precision as usize, value));
+        field.set_focused(true);
+        Self {
+            scene,
+            index,
+            field,
         }
     }
 }
@@ -188,6 +291,99 @@ impl Shell {
 
     fn peek_editor<T>(&self, f: impl FnOnce(&EditorHost) -> T) -> T {
         f(&self.route_editor)
+    }
+}
+
+impl Shell {
+    /// Whether a Tune value is being typed into (UX0-B09).
+    ///
+    /// Read by [`Shell::text_entry_focused`] through `TextEntrySurface::TuneValue`.
+    /// **This is the whole reason typing `1` into a value chip does not toggle
+    /// the HUD and typing a `-` does not do whatever `-` does next** — the shell
+    /// reads the keyboard before any panel draws, so the guard has to be asked
+    /// there and it has to know about this field.
+    pub(crate) fn tune_value_typing(&self) -> bool {
+        self.peek_editor(|host| host.typing.is_some())
+    }
+
+    /// Puts a value chip in the state a user reaches by clicking it, for
+    /// `shell.rs`'s `TextEntrySurface::ALL` sweep.
+    ///
+    /// The sweep's `focus` helper is a `match`, so this method existing is what
+    /// the compiler demands before `TuneValue` can be added — which is the point
+    /// of that design and the reason UX0-A06's second surface was missed.
+    #[cfg(test)]
+    pub(crate) fn focus_tune_value_for_test(&mut self) {
+        self.inspector_open = true;
+        self.route_editor.typing = Some(TypedEntry::open(SceneId::Loom, 0, 1.0, 2));
+    }
+
+    /// What a Tune edit lands on this frame (`App::settings_mut`'s three cases,
+    /// as data). The audition is keyed against it so a revert can never write
+    /// A's values into a cue they were never captured from.
+    fn tune_target(&self, input: &ShellInput<'_>, track_slot: usize) -> TuneTarget {
+        TuneTarget {
+            track_slot,
+            scene: input.scene,
+            cue: input
+                .workspace
+                .current()
+                .and_then(Track::active_cue)
+                .map(|(position, _)| position),
+        }
+    }
+
+    /// Open — or extend — the audition covering whatever is about to change.
+    ///
+    /// Called *before* the commands that do the changing are pushed, so the
+    /// snapshot it captures is the tuning as it stands this frame.
+    fn begin_audition(
+        &mut self,
+        target: TuneTarget,
+        settings: &SceneSettings,
+        source: ExploreSource,
+    ) {
+        let opened = self.with_editor(|host| host.explore.begin(target, settings, source));
+        if !opened {
+            // `capture` refuses when a value is out of its descriptor's range.
+            // Say so rather than drawing a Revert button that cannot deliver.
+            self.notify(
+                Severity::Warning,
+                "No undo for this change",
+                "A setting is outside its allowed range, so the tuning before this change could not be saved.",
+            );
+        }
+    }
+
+    /// The seed for the next Nudge/Surprise.
+    ///
+    /// A counter mixed with the scene, not a clock — a capture run must be able
+    /// to press Surprise and get the same picture twice, and `--ui-probe
+    /// tune-seed=` replaces the counter outright for exactly that reason.
+    fn next_explore_seed(&mut self, scene: SceneId) -> u64 {
+        self.with_editor(|host| {
+            host.explore_presses = host.explore_presses.wrapping_add(1);
+            let base = host.probe_seed.unwrap_or(0x5EED_1E55_C0FF_EE01);
+            base ^ (host.explore_presses.wrapping_mul(0x9E37_79B9_7F4A_7C15))
+                ^ ((scene.index() as u64) << 48)
+        })
+    }
+}
+
+/// Turn a snapshot into the one-`SetSetting`-per-value the shell can emit.
+///
+/// **Not a bulk "apply these settings" command.** Going value by value through
+/// the same path a slider drag takes is what makes an audition inherit
+/// `App::settings_mut`'s targeting for free: with a cue driving, a revert lands
+/// in that cue's captured snapshot, and `commit_active_cue_settings` persists it,
+/// with no second copy of the LX3 targeting rules to keep in step.
+fn push_snapshot(scene: SceneId, snapshot: &SettingsSnapshot, commands: &mut Vec<ShellCommand>) {
+    for (index, _) in settings::descriptors(scene).iter().enumerate() {
+        commands.push(ShellCommand::SetSetting {
+            scene,
+            index,
+            value: snapshot.values[index],
+        });
     }
 }
 
@@ -274,6 +470,166 @@ impl Shell {
     }
 }
 
+/// `--ui-probe tune-seed=`, `tune-explore=` and `tune-type=` (PX6).
+///
+/// Applied by `main.rs` with the rest of the probe, before the first frame, and
+/// writing into the same `SceneSettings` a slider would. Returns the lines the
+/// run prints as evidence.
+///
+/// **Why this exists rather than more `click=` runs.** `click=` presses one
+/// control per run, which is the right test for "does this button take the
+/// press" and cannot state a claim about a *sequence* — and every claim
+/// UX0-C04 makes is about a sequence: explore, compare, come back. The gate uses
+/// both, and the two together are what separate "Revert redrew the panel" from
+/// "Revert restored the exact bits".
+pub(crate) fn apply_tune_probe(
+    shell: &mut Shell,
+    probe: &crate::cli::UiProbe,
+    scene: SceneId,
+    track_slot: usize,
+    cue: Option<usize>,
+    settings: &mut SceneSettings,
+) -> Vec<String> {
+    let target = TuneTarget {
+        track_slot,
+        scene,
+        cue,
+    };
+    let mut lines = Vec::new();
+    if let Some(seed) = probe.tune_seed {
+        shell.route_editor.probe_seed = Some(seed);
+    }
+
+    if let Some(spec) = probe.tune_type.as_deref() {
+        // `descriptor_by_key` already accepted the key in `cli.rs`, so an
+        // unknown one cannot reach here; a key from *another scene* still can,
+        // and is reported rather than silently ignored.
+        let (key, text) = spec.split_once(':').unwrap_or((spec, ""));
+        match settings::descriptor_by_key(key) {
+            Some((owner, index, descriptor)) if owner == scene => {
+                match tune_explore::parse_typed(descriptor, text) {
+                    Ok(typed) => {
+                        let written = settings.set(scene, index, typed.value);
+                        lines.push(format!(
+                            "tune typed:      {key} \"{text}\" -> {} clamped={} rounded={} written={}",
+                            typed.value,
+                            u8::from(typed.clamped),
+                            u8::from(typed.rounded),
+                            u8::from(written)
+                        ));
+                    }
+                    Err(error) => lines.push(format!(
+                        "tune typed:      {key} \"{text}\" REFUSED {error:?}"
+                    )),
+                }
+            }
+            _ => lines.push(format!("tune typed:      {key} not on the drawn scene")),
+        }
+    }
+
+    if let Some(spec) = probe.tune_explore.as_deref() {
+        for action in spec.split('+') {
+            let applied = match action {
+                "nudge" | "surprise" => {
+                    let strength = if action == "surprise" {
+                        Strength::Surprise
+                    } else {
+                        Strength::Nudge
+                    };
+                    let opened = shell.route_editor.explore.begin(
+                        target,
+                        settings,
+                        if action == "surprise" {
+                            ExploreSource::Surprise
+                        } else {
+                            ExploreSource::Nudge
+                        },
+                    );
+                    if !opened {
+                        lines.push(format!("tune explore:    {action} NO SNAPSHOT"));
+                        continue;
+                    }
+                    let seed = shell.next_explore_seed(scene);
+                    let mut rng = SplitMix64::new(seed);
+                    Some(tune_explore::explore(&mut rng, scene, settings, strength))
+                }
+                "compare" => shell.route_editor.explore.compare(target, settings),
+                "revert" => shell.route_editor.explore.revert(target),
+                "keep" => {
+                    shell.route_editor.explore.keep(target);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(snapshot) = applied {
+                for (index, _) in settings::descriptors(scene).iter().enumerate() {
+                    settings.set(scene, index, snapshot.values[index]);
+                }
+            }
+            let state = shell.route_editor.explore.session(target).map_or_else(
+                || "closed".to_string(),
+                |s| tune_explore::audition_label(&s),
+            );
+            lines.push(format!("tune explore:    {action} -> {state}"));
+        }
+    }
+    lines
+}
+
+/// Every value of the drawn scene, exactly (PX6).
+///
+/// Printed with `{}` rather than the descriptor's own precision **on purpose**:
+/// Rust's `Display` for `f32` emits the shortest decimal that round-trips, so
+/// two different bit patterns can never print the same string. That is what lets
+/// the headless gate assert a revert is bit-for-bit rather than
+/// "looks-the-same-to-two-places", which is the whole claim of UX0-C04.
+#[must_use]
+pub(crate) fn tune_values_line(scene: SceneId, settings: &SceneSettings) -> String {
+    let values: Vec<String> = settings::descriptors(scene)
+        .iter()
+        .enumerate()
+        .map(|(index, _)| settings.get(scene, index).to_string())
+        .collect();
+    format!("{} {}", scene.stable_name(), values.join(" "))
+}
+
+/// What the Tune panel's typed entry and audition are doing, for the report
+/// (PX6).
+///
+/// **`click probe:` is not enough on its own.** It proves the press was cashed
+/// by the widget id the chip minted, which is exactly the half EX1 says a hover
+/// cannot prove — and exactly *not* the half that says the press did what the
+/// control is for. A press routed to the right id through a branch that forgot
+/// to open the field photographs identically. This line is the other half.
+#[must_use]
+pub(crate) fn tune_state_line(
+    shell: &Shell,
+    scene: SceneId,
+    track_slot: usize,
+    cue: Option<usize>,
+) -> String {
+    let target = TuneTarget {
+        track_slot,
+        scene,
+        cue,
+    };
+    let typing = shell.peek_editor(|host| {
+        host.typing.as_ref().map(|entry| {
+            let label = settings::descriptor(entry.scene, entry.index)
+                .map_or("?", |descriptor| descriptor.label);
+            format!("{label}=\"{}\"", entry.field.edit.text())
+        })
+    });
+    let audition = shell
+        .peek_editor(|host| host.explore.session(target))
+        .map(|session| tune_explore::audition_label(&session));
+    format!(
+        "typing {}  audition {}",
+        typing.unwrap_or_else(|| "none".to_string()),
+        audition.unwrap_or_else(|| "none".to_string())
+    )
+}
+
 impl Shell {
     /// The tuning inspector: one slider per setting of the active scene.
     ///
@@ -318,6 +674,13 @@ impl Shell {
         // The identity and time come straight from `Track::active_cue`, not
         // from the playhead, so the label cannot drift from what a Reset or a
         // slider edit actually touches.
+        // The audition is scoped to what a slider would move, which is the same
+        // thing the scope line below names. A target that has moved since last
+        // frame ends the session rather than letting Revert write into a
+        // segment the snapshot never came from (LX3).
+        let target = self.tune_target(input, track_slot);
+        self.with_editor(|host| host.explore.retarget(target));
+
         let active_cue = input.workspace.current().and_then(Track::active_cue);
         let (segments, plan_enabled) = input.workspace.current().map_or((0, false), |track| {
             (track.scene_switches.len(), track.scene_switches.enabled)
@@ -359,7 +722,37 @@ impl Shell {
             // over and land on a scene the user has since edited a different way.
             self.with_editor(|host| host.reset_arm.disarm());
         }
+        // UX0-C04's headline case: *loading a preset* is the destructive
+        // exploration the plan names, and it arrives here as an action the
+        // application will perform after this frame. Capturing before it does is
+        // what makes "try that preset" reversible.
+        if presets
+            .iter()
+            .any(|action| matches!(action, PresetAction::Apply(_)))
+        {
+            self.begin_audition(target, input.settings, ExploreSource::Preset);
+        }
         commands.extend(presets.into_iter().map(ShellCommand::Preset));
+
+        // UX0-C04/C07. Between the presets and the sliders because that is where
+        // the actions it makes reversible are: a preset Apply and a Surprise are
+        // the same gesture, and a Revert anywhere else would have to be hunted
+        // for after the thing it undoes has already happened.
+        // The list — and the block above it — stop above "Reset scene", which is
+        // pinned to the panel floor. **The row loop used to measure against
+        // `content` alone**, so on a twelve-control scene at the 960x640 minimum
+        // the last row and the "+N more" notice drew *underneath* the Reset
+        // button. That was already true before this block existed; adding 48 px
+        // of audition bar is what made it reachable at 720p too, so it is fixed
+        // here rather than left as a thing the next capture rediscovers.
+        let list_bottom = content.y + content.height - metric::UI_BUTTON_HEIGHT - padding * 2.0;
+        y += self.explore_block(
+            d,
+            input,
+            UiRect::new(content.x, y, content.width, (list_bottom - y).max(0.0)),
+            target,
+            commands,
+        );
 
         let descriptors = settings::descriptors(input.scene);
         let row_height = 46.0f32;
@@ -374,7 +767,7 @@ impl Shell {
                 content.width - padding * 2.0,
                 if expanded > 0.0 { expanded } else { row_height },
             );
-            if !content.contains(row) {
+            if !content.contains(row) || row.y + row.height > list_bottom {
                 // Out of room. Say so rather than silently dropping the tail: a
                 // truncated list that does not admit it is a feature nobody can
                 // find.
@@ -394,10 +787,30 @@ impl Shell {
             let committed = committed_route(input, input.scene, index).cloned();
             let routed = committed.is_some();
 
-            // The `~` affordance, right-aligned on the label line
-            // (`plug.c:6169-6186`). Selected while the setting is routed or its
-            // editor is open, so the row says which of the two it is.
-            let toggle = UiRect::new(row.x + row.width - 26.0, row.y - 3.0, 26.0, 20.0);
+            // UX0-B08: the route affordance is a **word**, not `~`.
+            //
+            // The oracle draws a tilde (`plug.c:6169-6186`) and the review found
+            // exactly what a tilde tells a newcomer, which is nothing — it is not
+            // an abbreviation of anything, has no established meaning in an
+            // audio interface, and its tooltip was the only thing in the
+            // application that explained it. The button now says which of its
+            // three states it is in, so the row is readable with the pointer
+            // parked somewhere else entirely.
+            let route_label = if expanded > 0.0 {
+                "Editing"
+            } else if routed {
+                "Routed"
+            } else {
+                "Route"
+            };
+            let route_width = (widgets::measure(font, route_label, metric::UI_FONT_CAPTION) + 14.0)
+                .clamp(44.0, 74.0);
+            let toggle = UiRect::new(
+                row.x + row.width - route_width,
+                row.y - 3.0,
+                route_width,
+                20.0,
+            );
             let toggle_id =
                 widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTE_TOGGLE + index as u32);
             let toggle_state = self.widgets.text_button(
@@ -405,7 +818,7 @@ impl Shell {
                 font,
                 toggle_id,
                 toggle,
-                "~",
+                route_label,
                 routed || expanded > 0.0,
                 ButtonStyle::Neutral,
                 Some(metric::UI_FONT_CAPTION),
@@ -413,15 +826,27 @@ impl Shell {
             if toggle_state.clicked {
                 self.toggle_route_editor(input, index, committed.as_ref(), expanded > 0.0);
             }
+            // UX0-B08's second half: a *dynamic* tip. A routed row's tip names
+            // the route it would open rather than repeating the static sentence,
+            // because by then the user knows what routing is and wants to know
+            // what this one does.
             self.widgets.hint(
                 d,
                 toggle_state,
                 toggle_id,
                 toggle,
-                if routed {
-                    "Edit the route driving this setting"
-                } else {
-                    "Route this setting to an audio source instead of the slider"
+                &match (expanded > 0.0, committed.as_ref()) {
+                    (true, _) => "Close this route editor".to_string(),
+                    (false, Some(route)) => format!(
+                        "Driven by {} - click to edit",
+                        ascii_fallback(
+                            font.all_loaded(),
+                            &route_editor_state::summary(route, descriptor.precision)
+                        )
+                    ),
+                    (false, None) => {
+                        "Let the music move this setting instead of the slider".to_string()
+                    }
                 },
             );
 
@@ -435,19 +860,10 @@ impl Shell {
                 .routed
                 .map_or(value, |routed| routed.get(input.scene, index));
 
-            widgets::draw_text(
-                d,
-                input.fonts.ui(),
-                descriptor.label,
-                row.x,
-                row.y,
-                metric::UI_FONT_CAPTION,
-                if routed {
-                    color::accent()
-                } else {
-                    color::ui_muted()
-                },
-            );
+            // Only an unrouted, uncollapsed row gets the editable chip: a routed
+            // setting's number is produced by its route, and a text field over it
+            // would take a value the next frame overwrites.
+            let editable = !routed && expanded <= 0.0;
             let readout = format!(
                 "{:.*}{}",
                 descriptor.precision as usize,
@@ -455,19 +871,101 @@ impl Shell {
                 if routed { "  routed" } else { "" }
             );
             let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
-            widgets::draw_text(
+            let chip_width = if editable {
+                (readout_width + 14.0).clamp(46.0, 88.0)
+            } else {
+                readout_width
+            };
+            let chip = UiRect::new(toggle.x - 8.0 - chip_width, row.y - 3.0, chip_width, 20.0);
+
+            // UX0-B09: per-setting reset, on the label.
+            //
+            // A third button on a 46 px row that already carries a chip and a
+            // route control does not fit at the 960 px minimum, and an
+            // affordance that only appears on hover is the defect LX2-a was.
+            // The label is already drawn, already wide, and already names the
+            // thing being reset; a leading `*` marks it as moved from its
+            // default, which also makes "what have I changed on this scene"
+            // answerable at a glance rather than value by value.
+            let modified = value.to_bits() != descriptor.default_value.to_bits();
+            let label_zone = (chip.x - 6.0 - row.x).max(24.0);
+            let label_rect = UiRect::new(row.x, row.y - 3.0, label_zone, 20.0);
+            let label_id =
+                widgets::widget_id(widgets::id::INSPECTOR, slot::LABEL_RESET + index as u32);
+            // An unmodified label claims no press: there is nothing to reset, and
+            // a hit target over an inert control is a click the user cannot
+            // account for.
+            let label_state = if modified {
+                self.widgets.button(d, label_id, label_rect)
+            } else {
+                widgets::ButtonState::default()
+            };
+            if label_state.clicked {
+                self.begin_audition(target, input.settings, ExploreSource::Manual);
+                commands.push(ShellCommand::SetSetting {
+                    scene: input.scene,
+                    index,
+                    value: descriptor.default_value,
+                });
+                self.with_editor(|host| host.reset_arm.disarm());
+            }
+            if modified {
+                self.widgets.hint(
+                    d,
+                    label_state,
+                    label_id,
+                    label_rect,
+                    &format!(
+                        "{} - click to reset to {:.*}",
+                        descriptor.label, descriptor.precision as usize, descriptor.default_value
+                    ),
+                );
+            }
+            let label_text = if modified {
+                format!("* {}", descriptor.label)
+            } else {
+                descriptor.label.to_string()
+            };
+            widgets::draw_text_faded(
                 d,
                 input.fonts.ui(),
-                &readout,
-                row.x + row.width - readout_width - toggle.width - 8.0,
+                &label_text,
+                row.x,
                 row.y,
-                metric::UI_FONT_VALUE,
-                if routed {
+                label_zone,
+                12.0,
+                metric::UI_FONT_CAPTION,
+                if routed || label_state.hovered {
+                    // Hovered can only be true where the label is a live reset
+                    // button, so the accent is the affordance: the one word that
+                    // lights up under the pointer is the one that does something.
                     color::accent()
-                } else {
+                } else if modified {
                     color::ui_ink()
+                } else {
+                    color::ui_muted()
                 },
             );
+
+            if editable {
+                self.value_chip(
+                    d, input, chip, index, descriptor, effective, target, commands,
+                );
+            } else {
+                widgets::draw_text(
+                    d,
+                    input.fonts.ui(),
+                    &readout,
+                    chip.x,
+                    row.y,
+                    metric::UI_FONT_VALUE,
+                    if routed {
+                        color::accent()
+                    } else {
+                        color::ui_ink()
+                    },
+                );
+            }
 
             // An expanded row replaces the whole slider zone rather than sitting
             // beside it (`plug.c:5517-5528`), so nothing below runs for it.
@@ -490,20 +988,58 @@ impl Shell {
             } else {
                 0.0
             };
+            // UX0-B09's fine step. The wheel over the row moves one unit of the
+            // descriptor's own precision — 0.01 on a two-place slider, one degree
+            // on a hue — and Shift moves ten. A ratio rather than two hand-picked
+            // deltas, so every control takes the same number of notches to cross
+            // the same fraction of its range.
+            //
+            // Read from the row rectangle rather than from the slider's, because
+            // the value chip and the label are part of the same control as far as
+            // a user aiming a wheel is concerned, and the timed lanes' wheel
+            // (LX2-c) is a different rectangle entirely so neither can steal the
+            // other's notch.
+            let wheel = self.wheel_delta(d);
+            if wheel != 0.0 {
+                let pointer = input.ui_scale.mouse(d);
+                if row.contains_point(pointer.x, pointer.y) {
+                    let coarse = d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+                        || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+                    let steps = (wheel.round() as i32) * if coarse { 10 } else { 1 };
+                    let stepped = tune_explore::step(descriptor, value, steps);
+                    if stepped.to_bits() != value.to_bits() {
+                        commands.push(ShellCommand::SetSetting {
+                            scene: input.scene,
+                            index,
+                            value: stepped,
+                        });
+                        self.with_editor(|host| {
+                            host.reset_arm.disarm();
+                            host.explore.note_manual_edit(target);
+                        });
+                    }
+                }
+            }
+
             let track = UiRect::new(row.x, row.y + 22.0, row.width, 20.0);
             let id = widgets::widget_id(widgets::id::INSPECTOR, index as u32);
             if let Some(fraction) = self.widgets.slider(d, id, track, normalized) {
-                let mut proposed = descriptor.minimum + fraction * span;
-                // Precision 0 settings are integers in the C's readout, so the
-                // slider must produce integers too or the readout lies.
-                if descriptor.precision == 0 {
-                    proposed = proposed.round();
-                }
+                // Every value this panel writes goes onto the descriptor's own
+                // precision grid, so the readout above the slider is the number
+                // in the store rather than a rounded picture of it. The C only
+                // did this for `precision == 0` (`plug.c`'s integer readout),
+                // which left a two-place slider showing "1.23" for 1.2345.
+                let proposed =
+                    tune_explore::conform(descriptor, descriptor.minimum + fraction * span);
                 commands.push(ShellCommand::SetSetting {
                     scene: input.scene,
                     index,
                     value: proposed,
                 });
+                // A drag while an audition is open is the user refining the
+                // experiment; it becomes the new "B" without starting a session
+                // of its own.
+                self.with_editor(|host| host.explore.note_manual_edit(target));
                 // review 1.8: an edit made after arming Reset is exactly the
                 // "changed my mind" case the arm/confirm step exists to protect
                 // — the preset block's Delete disarms the same way on any other
@@ -528,7 +1064,7 @@ impl Shell {
             // than a plain toggle.
             let armed =
                 self.peek_editor(|host| host.reset_arm.is_armed_for(track_slot, input.scene));
-            let id = widgets::widget_id(widgets::id::INSPECTOR, 900);
+            let id = widgets::widget_id(widgets::id::INSPECTOR, RESET_SCENE_SLOT);
             if self
                 .widgets
                 .text_button(
@@ -561,7 +1097,410 @@ impl Shell {
         }
     }
 
-    /// Open, close, or refuse — the `~` button's three answers
+    /// One row's value, as a chip that can be typed into (UX0-B09).
+    ///
+    /// Click it and it becomes a text field holding the current number; Enter
+    /// commits it through the descriptor, Escape puts it back. Clamping and
+    /// rounding are [`tune_explore::parse_typed`]'s, so the value that lands is
+    /// one `SceneSettings::set` will accept — the store *rejects* rather than
+    /// clamps (`scene_settings.c:143-149`), so a raw typed 99 would otherwise
+    /// vanish with no explanation at all.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's worth of context: which setting, its descriptor, its value, and where the edit lands"
+    )]
+    fn value_chip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        chip: UiRect,
+        index: usize,
+        descriptor: &SettingDescriptor,
+        value: f32,
+        target: TuneTarget,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        let font = input.fonts.ui();
+        let typing_here = self.peek_editor(|host| {
+            host.typing
+                .as_ref()
+                .is_some_and(|entry| entry.scene == input.scene && entry.index == index)
+        });
+
+        if typing_here {
+            // Enter and Escape are read here rather than inside `TextField`,
+            // which has neither: the field reports Escape only by dropping focus
+            // and has no notion of a commit at all. Both are read *before* the
+            // field draws, so the field's own Escape handling cannot defocus the
+            // entry out from under the revert.
+            let commit = d.is_key_pressed(KeyboardKey::KEY_ENTER)
+                || d.is_key_pressed(KeyboardKey::KEY_KP_ENTER);
+            let cancel = d.is_key_pressed(KeyboardKey::KEY_ESCAPE);
+
+            widgets::fill(d, chip, color::ui_surface());
+            d.draw_rectangle_lines_ex(
+                Rectangle::new(chip.x, chip.y, chip.width, chip.height),
+                1.0,
+                color::accent(),
+            );
+            self.with_editor(|host| {
+                if let Some(entry) = host.typing.as_mut() {
+                    entry.field.draw_with_face(
+                        d,
+                        AuthoredText::from_ui(font),
+                        chip,
+                        metric::UI_FONT_VALUE,
+                        "",
+                        true,
+                    );
+                }
+            });
+
+            if cancel {
+                self.with_editor(|host| host.typing = None);
+                return;
+            }
+            // A click elsewhere defocuses the field (`TextField` sets focus from
+            // every left press). Treat that as a cancel rather than a commit: the
+            // user pressed something else, and silently writing a half-typed
+            // number on the way past is the surprise this whole panel is trying
+            // to remove.
+            let still_focused =
+                self.peek_editor(|host| host.typing.as_ref().is_some_and(|e| e.field.is_focused()));
+            if !still_focused && !commit {
+                self.with_editor(|host| host.typing = None);
+                return;
+            }
+            if !commit {
+                return;
+            }
+
+            let text = self.peek_editor(|host| {
+                host.typing
+                    .as_ref()
+                    .map(|entry| entry.field.edit.text().to_string())
+                    .unwrap_or_default()
+            });
+            self.with_editor(|host| host.typing = None);
+            match tune_explore::parse_typed(descriptor, &text) {
+                Ok(typed) => {
+                    if typed.value.to_bits() != value.to_bits() {
+                        commands.push(ShellCommand::SetSetting {
+                            scene: input.scene,
+                            index,
+                            value: typed.value,
+                        });
+                        self.with_editor(|host| {
+                            host.reset_arm.disarm();
+                            host.explore.note_manual_edit(target);
+                        });
+                    }
+                    // Say when the number written is not the number typed. A
+                    // silently clamped 99 reads as a broken text field.
+                    if typed.clamped {
+                        self.notify(
+                            Severity::Info,
+                            "Value clamped",
+                            &format!(
+                                "{} accepts {:.*} to {:.*}; it is now {:.*}.",
+                                descriptor.label,
+                                descriptor.precision as usize,
+                                descriptor.minimum,
+                                descriptor.precision as usize,
+                                descriptor.maximum,
+                                descriptor.precision as usize,
+                                typed.value
+                            ),
+                        );
+                    }
+                }
+                // An empty field is a cancel, not a mistake, and says nothing.
+                Err(TypedValueError::Empty) => {}
+                Err(TypedValueError::NotANumber) => self.notify(
+                    Severity::Warning,
+                    "Not a number",
+                    &format!("\"{text}\" is not a value {} can take.", descriptor.label),
+                ),
+            }
+            return;
+        }
+
+        // Not typing: the chip is a readout that says it can be typed into.
+        let id = widgets::widget_id(widgets::id::INSPECTOR, slot::VALUE_CHIP + index as u32);
+        let state = self.widgets.button(d, id, chip);
+        widgets::fill(
+            d,
+            chip,
+            if state.hovered {
+                color::ui_surface()
+            } else {
+                color::ui_raised()
+            },
+        );
+        d.draw_rectangle_lines_ex(
+            Rectangle::new(chip.x, chip.y, chip.width, chip.height),
+            1.0,
+            if state.hovered {
+                color::accent()
+            } else {
+                color::ui_rule()
+            },
+        );
+        let text = format!("{:.*}", descriptor.precision as usize, value);
+        let width = widgets::measure(font, &text, metric::UI_FONT_VALUE);
+        widgets::draw_text(
+            d,
+            font,
+            &text,
+            chip.x + (chip.width - width) * 0.5,
+            chip.y + (chip.height - metric::UI_FONT_VALUE) * 0.5,
+            metric::UI_FONT_VALUE,
+            color::ui_ink(),
+        );
+        if state.clicked {
+            let precision = descriptor.precision;
+            let scene = input.scene;
+            self.with_editor(|host| {
+                host.typing = Some(TypedEntry::open(scene, index, value, precision));
+            });
+        }
+        self.widgets.hint(
+            d,
+            state,
+            id,
+            chip,
+            &format!(
+                "Type a value ({:.*} to {:.*})  -  wheel steps by {}, Shift by ten",
+                descriptor.precision as usize,
+                descriptor.minimum,
+                descriptor.precision as usize,
+                descriptor.maximum,
+                format_args!(
+                    "{:.*}",
+                    descriptor.precision as usize,
+                    tune_explore::step_size(descriptor)
+                )
+            ),
+        );
+    }
+
+    /// Nudge / Surprise, and the audition bar that makes them safe
+    /// (UX0-C04, UX0-C07).
+    ///
+    /// Returns the height it consumed, `0.0` when it does not fit — the same
+    /// contract `preset_block` has, and for the same reason: at the 960x640
+    /// minimum the inspector is already truncating its slider list, and a block
+    /// that took its space unconditionally would push settings off the bottom to
+    /// make room for a button.
+    fn explore_block(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        area: UiRect,
+        target: TuneTarget,
+        commands: &mut Vec<ShellCommand>,
+    ) -> f32 {
+        const BUTTON_H: f32 = 24.0;
+        const SENTENCE_H: f32 = 18.0;
+        const GAP_AFTER: f32 = 6.0;
+        // One slider row's worth of settings must survive underneath, or the
+        // block has eaten the thing it exists to explore.
+        const ROOM_FOR_ONE_ROW: f32 = 46.0;
+
+        let font = input.fonts.ui();
+        let session = self.peek_editor(|host| host.explore.session(target));
+        let needed = BUTTON_H
+            + GAP_AFTER
+            + if session.is_some() {
+                SENTENCE_H + BUTTON_H + 4.0
+            } else {
+                0.0
+            };
+        if area.height < needed + ROOM_FOR_ONE_ROW {
+            return 0.0;
+        }
+
+        let mut y = area.y;
+        // Two buttons, equal halves. Surprise is on the right — it is the bolder
+        // of the pair, and the pair reads left to right as increasing daring.
+        let half = (area.width - GAP) * 0.5;
+        for (slot_index, label, strength, tip) in [
+            (
+                slot::NUDGE,
+                "Nudge",
+                Strength::Nudge,
+                "Move every setting a little, at random. Revert brings it back.",
+            ),
+            (
+                slot::SURPRISE,
+                "Surprise",
+                Strength::Surprise,
+                "Re-tune this scene at random, inside every setting's own range. Revert brings it back.",
+            ),
+        ] {
+            let boundary = UiRect::new(
+                area.x + f32::from(slot_index == slot::SURPRISE) * (half + GAP),
+                y,
+                half,
+                BUTTON_H,
+            );
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot_index);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                boundary,
+                label,
+                false,
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            if state.clicked {
+                self.begin_audition(
+                    target,
+                    input.settings,
+                    if strength == Strength::Surprise {
+                        ExploreSource::Surprise
+                    } else {
+                        ExploreSource::Nudge
+                    },
+                );
+                let seed = self.next_explore_seed(input.scene);
+                let mut rng = SplitMix64::new(seed);
+                let snapshot =
+                    tune_explore::explore(&mut rng, input.scene, input.settings, strength);
+                push_snapshot(input.scene, &snapshot, commands);
+                self.with_editor(|host| host.reset_arm.disarm());
+            }
+            self.widgets.hint(d, state, id, boundary, tip);
+        }
+        y += BUTTON_H;
+
+        if let Some(session) = session {
+            y += 4.0;
+            widgets::draw_text(
+                d,
+                font,
+                &tune_explore::audition_label(&session),
+                area.x,
+                y,
+                metric::UI_FONT_CAPTION,
+                color::accent(),
+            );
+            y += SENTENCE_H;
+
+            let third = (area.width - GAP * 2.0) / 3.0;
+            let boundary = |slot_index: usize| {
+                UiRect::new(
+                    area.x + slot_index as f32 * (third + GAP),
+                    y,
+                    third,
+                    BUTTON_H,
+                )
+            };
+            let showing_before = session.showing == Side::Before;
+            let labels = ["A/B", "Revert", "Keep"];
+            let font_size = widgets::row_font_size(font, &labels, &[third; 3], BUTTON_H);
+
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::AB_COMPARE);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                boundary(0),
+                labels[0],
+                showing_before,
+                ButtonStyle::Neutral,
+                Some(font_size),
+            );
+            if state.clicked {
+                let swap = self.with_editor(|host| host.explore.compare(target, input.settings));
+                if let Some(snapshot) = swap {
+                    push_snapshot(input.scene, &snapshot, commands);
+                }
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                boundary(0),
+                if showing_before {
+                    "Showing the tuning you started with - click to hear the new one"
+                } else {
+                    "Showing the new tuning - click to compare against the one you started with"
+                },
+            );
+
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::AB_REVERT);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                boundary(1),
+                labels[1],
+                false,
+                ButtonStyle::Danger,
+                Some(font_size),
+            );
+            if state.clicked {
+                if let Some(snapshot) = self.with_editor(|host| host.explore.revert(target)) {
+                    push_snapshot(input.scene, &snapshot, commands);
+                }
+                self.with_editor(|host| host.reset_arm.disarm());
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                boundary(1),
+                "Put every setting back exactly as it was before you started",
+            );
+
+            // Keep is refused while the original is on screen, because it would
+            // throw the experiment away — the opposite of what the word says.
+            // Disabled with a reason rather than hidden (UX0-B08's rule, applied
+            // to a control that is not a route).
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::AB_KEEP);
+            if showing_before {
+                self.widgets
+                    .disabled_button(d, font, boundary(2), labels[2], Some(font_size));
+                let hover = self.widgets.button(d, id, boundary(2));
+                self.widgets.hint(
+                    d,
+                    hover,
+                    id,
+                    boundary(2),
+                    "A/B back to the new tuning first - Keep here would discard it",
+                );
+            } else {
+                let state = self.widgets.text_button(
+                    d,
+                    font,
+                    id,
+                    boundary(2),
+                    labels[2],
+                    false,
+                    ButtonStyle::Neutral,
+                    Some(font_size),
+                );
+                if state.clicked {
+                    self.with_editor(|host| host.explore.keep(target));
+                }
+                self.widgets.hint(
+                    d,
+                    state,
+                    id,
+                    boundary(2),
+                    "Settle on this tuning and close the comparison",
+                );
+            }
+            y += BUTTON_H;
+        }
+
+        y - area.y + GAP_AFTER
+    }
+
+    /// Open, close, or refuse — the route button's three answers
     /// (`plug.c:6174-6186`).
     ///
     /// A *dirty* draft refuses rather than being replaced, and says why. That is
@@ -1051,8 +1990,24 @@ impl Shell {
                 self.with_editor(|host| host.state.close());
             }
         } else {
+            // UX0-B08: a disabled action says *why*. `disabled_button` returns no
+            // state, so the reason needs a hit target of its own — which also
+            // stops a click falling through to whatever is behind it.
             self.widgets
                 .disabled_button(d, font, boundary(2), apply_label, Some(font_size));
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION_DISABLED);
+            let hover = self.widgets.button(d, id, boundary(2));
+            self.widgets.hint(
+                d,
+                hover,
+                id,
+                boundary(2),
+                if !can_apply {
+                    "The quiet and loud levels are the same, so this route has nothing to map"
+                } else {
+                    "Already applied - change something above to apply it again"
+                },
+            );
         }
 
         if has_committed {
@@ -1079,6 +2034,15 @@ impl Shell {
         } else {
             self.widgets
                 .disabled_button(d, font, boundary(3), labels[3], Some(font_size));
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION_DISABLED + 1);
+            let hover = self.widgets.button(d, id, boundary(3));
+            self.widgets.hint(
+                d,
+                hover,
+                id,
+                boundary(3),
+                "Nothing to remove - this setting has no route yet. Apply one first.",
+            );
         }
 
         if self
@@ -1413,6 +2377,233 @@ mod tests {
 
         arm.disarm();
         assert!(!arm.is_armed_for(0, SceneId::Loom));
+    }
+
+    // -- exploration (PX6: UX0-B08, UX0-B09, UX0-C04, UX0-C07) ---------------
+
+    /// The widget-id lesson, applied *inside* a namespace.
+    ///
+    /// `widgets::id`'s own test proves no two namespaces collide. It cannot see
+    /// this file, where every control lives in `INSPECTOR` and several are
+    /// `base + index` over up to [`settings::MAX_CONTROLS`] rows — so the way to
+    /// break this panel is to mint a base that another band grows into, which is
+    /// exactly what `EXPORT`/`SEEK` did one level up. The table is beside the
+    /// constants and this sweeps all of it, rather than a hand-written subset.
+    #[test]
+    fn no_two_inspector_slot_bands_overlap() {
+        let mut taken: Vec<(u32, &str)> = Vec::new();
+        for (name, first, count) in slot::ALL_SLOTS {
+            for offset in 0..count {
+                let value = first + offset;
+                if let Some((_, other)) = taken.iter().find(|(slot, _)| *slot == value) {
+                    panic!("slot {value} is claimed by both {name} and {other}");
+                }
+                taken.push((value, name));
+            }
+        }
+        // And the one bare literal left: Reset scene.
+        assert!(
+            !taken.iter().any(|(slot, _)| *slot == RESET_SCENE_SLOT),
+            "the Reset scene slot {RESET_SCENE_SLOT} is inside an indexed band"
+        );
+        // Every scene's control count must fit the 12-wide indexed bands.
+        for scene in SceneId::ALL {
+            assert!(settings::count(scene) <= 12);
+        }
+    }
+
+    fn loom_target() -> TuneTarget {
+        TuneTarget {
+            track_slot: 0,
+            scene: SceneId::Loom,
+            cue: None,
+        }
+    }
+
+    fn probe(spec: &str) -> crate::cli::UiProbe {
+        crate::cli::parse_ui_probe_spec(spec).expect("a valid probe spec")
+    }
+
+    #[test]
+    fn the_probe_keys_parse_and_a_typo_fails_the_command_line() {
+        assert_eq!(probe("tune-seed=7").tune_seed, Some(7));
+        assert_eq!(
+            probe("tune-explore=surprise+revert")
+                .tune_explore
+                .as_deref(),
+            Some("surprise+revert")
+        );
+        // The key is resolved against the descriptor tables at parse time, and
+        // the `settings.` prefix is optional exactly as `route=`'s is.
+        assert_eq!(
+            probe("tune-type=loom.weight:1.42").tune_type.as_deref(),
+            Some("settings.loom.weight:1.42")
+        );
+        // A misspelled action or an unknown key must fail here rather than
+        // quietly photographing an unexplored scene.
+        assert!(crate::cli::parse_ui_probe_spec("tune-explore=suprise").is_err());
+        assert!(crate::cli::parse_ui_probe_spec("tune-type=loom.nope:1").is_err());
+        assert!(crate::cli::parse_ui_probe_spec("tune-type=loom.weight:").is_err());
+    }
+
+    /// UX0-C04's claim, end to end through the application's own probe path
+    /// rather than only through the core module: Surprise then Revert leaves
+    /// **the same bits**, not the same picture.
+    #[test]
+    fn surprise_then_revert_restores_the_exact_bits_through_the_probe() {
+        let mut shell = Shell::new();
+        let mut settings = SceneSettings::default();
+        settings.set(SceneId::Loom, index::loom::WEIGHT, 1.37);
+        settings.set(SceneId::Loom, index::loom::DENSITY, 0.83);
+        let before = tune_values_line(SceneId::Loom, &settings);
+
+        let spec = probe("tune-seed=4242,tune-explore=surprise");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        let explored = tune_values_line(SceneId::Loom, &settings);
+        assert_ne!(explored, before, "Surprise changed nothing to revert");
+
+        let spec = probe("tune-explore=revert");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert_eq!(tune_values_line(SceneId::Loom, &settings), before);
+        // And the report line is a round-tripping form, so equality of the two
+        // strings really is equality of the bits.
+        for (i, _) in settings::descriptors(SceneId::Loom).iter().enumerate() {
+            let text = settings.get(SceneId::Loom, i).to_string();
+            assert_eq!(
+                text.parse::<f32>().unwrap().to_bits(),
+                settings.get(SceneId::Loom, i).to_bits(),
+                "value {i} does not round-trip through its printed form"
+            );
+        }
+    }
+
+    #[test]
+    fn the_seed_is_what_makes_a_surprise_capture_reproducible() {
+        let run = |seed: &str| {
+            let mut shell = Shell::new();
+            let mut settings = SceneSettings::default();
+            let spec = probe(&format!("tune-seed={seed},tune-explore=surprise"));
+            apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+            tune_values_line(SceneId::Loom, &settings)
+        };
+        assert_eq!(run("11"), run("11"));
+        assert_ne!(run("11"), run("12"));
+    }
+
+    #[test]
+    fn a_b_puts_the_original_back_on_screen_and_then_returns_the_experiment() {
+        let mut shell = Shell::new();
+        let mut settings = SceneSettings::default();
+        settings.set(SceneId::Loom, index::loom::WEIGHT, 1.37);
+        let original = tune_values_line(SceneId::Loom, &settings);
+
+        let spec = probe("tune-seed=9,tune-explore=surprise");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        let explored = tune_values_line(SceneId::Loom, &settings);
+
+        let spec = probe("tune-explore=compare");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert_eq!(tune_values_line(SceneId::Loom, &settings), original);
+
+        let spec = probe("tune-explore=compare");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert_eq!(tune_values_line(SceneId::Loom, &settings), explored);
+    }
+
+    #[test]
+    fn keep_closes_the_session_so_revert_stops_being_offered() {
+        let mut shell = Shell::new();
+        let mut settings = SceneSettings::default();
+        let spec = probe("tune-seed=5,tune-explore=surprise+keep");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        let kept = tune_values_line(SceneId::Loom, &settings);
+        assert!(shell.route_editor.explore.session(loom_target()).is_none());
+
+        // A revert with no session must change nothing rather than reaching for
+        // whatever snapshot happens to be lying around.
+        let spec = probe("tune-explore=revert");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert_eq!(tune_values_line(SceneId::Loom, &settings), kept);
+    }
+
+    /// The LX3 rule, applied to the audition: a snapshot taken against the base
+    /// scene must never be written into a cue it was not captured from.
+    #[test]
+    fn an_audition_does_not_survive_the_target_moving() {
+        let mut shell = Shell::new();
+        let mut settings = SceneSettings::default();
+        let spec = probe("tune-seed=3,tune-explore=surprise");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert!(shell.route_editor.explore.session(loom_target()).is_some());
+
+        // The playhead moves into a segment: a different target entirely.
+        let moved = TuneTarget {
+            cue: Some(1),
+            ..loom_target()
+        };
+        assert!(shell.route_editor.explore.session(moved).is_none());
+        let explored = tune_values_line(SceneId::Loom, &settings);
+        let spec = probe("tune-explore=revert");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, Some(1), &mut settings);
+        assert_eq!(
+            tune_values_line(SceneId::Loom, &settings),
+            explored,
+            "a revert reached across into another segment"
+        );
+    }
+
+    #[test]
+    fn a_typed_value_is_clamped_by_the_descriptor_and_actually_written() {
+        let mut shell = Shell::new();
+        let mut settings = SceneSettings::default();
+        // 0.50..2.00 for Loom's thread density. `SceneSettings::set` *rejects*
+        // rather than clamps, so an unclamped 99 would be dropped in silence —
+        // which is what the panel used to do to any out-of-range number.
+        let spec = probe("tune-type=loom.density:99");
+        let lines = apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert_eq!(settings.get(SceneId::Loom, index::loom::DENSITY), 2.00);
+        assert!(
+            lines[0].contains("clamped=1") && lines[0].contains("written=1"),
+            "{}",
+            lines[0]
+        );
+
+        let spec = probe("tune-type=loom.density:1.239");
+        apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert_eq!(settings.get(SceneId::Loom, index::loom::DENSITY), 1.24);
+    }
+
+    #[test]
+    fn a_typed_key_from_another_scene_says_so_rather_than_writing_it() {
+        let mut shell = Shell::new();
+        let mut settings = SceneSettings::default();
+        let spec = probe("tune-type=spectrum.amplitude:1.5");
+        let lines = apply_tune_probe(&mut shell, &spec, SceneId::Loom, 0, None, &mut settings);
+        assert!(lines[0].contains("not on the drawn scene"), "{}", lines[0]);
+        assert_eq!(settings, SceneSettings::default());
+    }
+
+    #[test]
+    fn the_values_line_distinguishes_two_floats_a_readout_would_not() {
+        // The whole reason the line prints `{}` and not `{:.2}`: 1.37 and the
+        // float one ulp above it both *read* as "1.37".
+        let mut a = SceneSettings::default();
+        let mut b = SceneSettings::default();
+        a.set(SceneId::Loom, index::loom::WEIGHT, 1.37);
+        b.set(
+            SceneId::Loom,
+            index::loom::WEIGHT,
+            f32::from_bits(1.37f32.to_bits() + 1),
+        );
+        assert_ne!(
+            tune_values_line(SceneId::Loom, &a),
+            tune_values_line(SceneId::Loom, &b)
+        );
+        assert_eq!(
+            format!("{:.2}", a.get(SceneId::Loom, index::loom::WEIGHT)),
+            format!("{:.2}", b.get(SceneId::Loom, index::loom::WEIGHT)),
+            "the two values are indistinguishable at the readout's precision"
+        );
     }
 
     #[test]

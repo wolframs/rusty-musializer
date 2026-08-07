@@ -457,10 +457,12 @@ pub(crate) enum TextEntrySurface {
     LyricCue,
     /// The font browser's family filter.
     FontQuery,
+    /// A Tune inspector value chip being typed into (UX0-B09).
+    TuneValue,
 }
 
 impl TextEntrySurface {
-    pub(crate) const ALL: [Self; 2] = [Self::LyricCue, Self::FontQuery];
+    pub(crate) const ALL: [Self; 3] = [Self::LyricCue, Self::FontQuery, Self::TuneValue];
 }
 
 /// The keys one frame of the shell can act on, read out of raylib in one place.
@@ -2177,6 +2179,12 @@ impl Shell {
             // [`super::text_input::TextField`], and it is drawn from inside
             // another panel's body, so the browser reports its own visibility.
             TextEntrySurface::FontQuery => self.font_browser.query_has_focus(),
+            // Paired with the inspector being on screen for the same reason the
+            // other two are paired with their panes: a field left focused by a
+            // pane that has since closed must not silence every shortcut for the
+            // rest of the session. `T` closes the inspector without asking the
+            // panel first, which is exactly that case.
+            TextEntrySurface::TuneValue => self.inspector_open && self.tune_value_typing(),
         }
     }
 
@@ -4384,6 +4392,7 @@ mod tests {
                 shell.lyrics.begin_new(&document, 0.0);
             }
             TextEntrySurface::FontQuery => shell.font_browser.focus_query_for_test(),
+            TextEntrySurface::TuneValue => shell.focus_tune_value_for_test(),
         }
     }
 
@@ -4446,8 +4455,12 @@ mod tests {
 
             // Close the pane the way its own control does, without touching the
             // field: the lyrics panel is dismissed, the font browser stops
-            // drawing its filter.
+            // drawing its filter, and `T` closes the Tune inspector. The
+            // inspector is a separate flag from `panel`, so closing it needs its
+            // own line here — a guard that only paired with `panel` would leave
+            // a Tune value chip holding the keyboard forever (PX6).
             shell.panel = UiPanel::None;
+            shell.inspector_open = false;
             shell.begin_frame(UiScale::default());
 
             assert!(
