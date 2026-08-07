@@ -350,6 +350,8 @@ fn run(
         shared_presets: PresetLibrary::new(),
         preset_store_path: None,
         presets_editable: false,
+        recent_path: None,
+        recent_editable: false,
         preset_selection: 0,
         preset_delete_armed: false,
         shell: {
@@ -402,6 +404,36 @@ fn run(
             ),
         },
     }
+
+    // The welcome screen's recent-project list, read once (UX0-C06). Same policy
+    // as the preset store above and `ui.json` before it: unreadable is not fatal,
+    // the list stays empty, and writing is refused so the file survives. The
+    // *screen* says which of the two it is, because a blank column is
+    // indistinguishable from a broken one.
+    app.recent_path = ui::preferences::recent::default_path();
+    match app.recent_path.clone() {
+        None => app.shell.recent_unavailable = true,
+        Some(path) => match ui::preferences::recent::load(&path) {
+            Ok(list) => {
+                app.shell.recent = list.unwrap_or_default();
+                app.recent_editable = true;
+            }
+            Err(error) => {
+                app.shell.recent_unavailable = true;
+                app.shell.notify(
+                    Severity::Warning,
+                    "Recent projects could not be read",
+                    &format!(
+                        "{}: {error}. The list is disabled so the file is not overwritten.",
+                        path.display()
+                    ),
+                );
+            }
+        },
+    }
+    // Before the first frame, so a moved project is already marked rather than
+    // drawing as openable until something happens to re-probe it.
+    app.shell.recent.probe(|path| path.is_file());
 
     // Interleaved stereo scratch, drained from the ring each frame. It and the
     // stream owner must exist before argv replay because input actions open at
@@ -481,9 +513,27 @@ fn run(
                 ) {
                     eprintln!("warning: could not open {}: {error}", path.display());
                     options.error = true;
-                } else if !play {
-                    if let Some(open) = music.as_ref() {
-                        open.pause_stream();
+                } else {
+                    // A project opened from argv is as recent as one opened from
+                    // the picker — that is the desktop file association's own
+                    // path, and leaving it out would make double-clicking a
+                    // `.musi` invisible to the welcome screen.
+                    //
+                    // But only for a *session*. A run that exits after N frames or
+                    // after writing a file is a batch job, and this store lives in
+                    // the operator's configuration directory: without this guard
+                    // `tools/verify.sh` would write a dozen scratch projects into
+                    // the real `~/.config/musializer/recent.json` as a side effect
+                    // of being run. Interactive recording — a drop, a picker, a
+                    // click on the list — is deliberately *not* guarded, because
+                    // that is what the headless gate has to be able to prove.
+                    if is_session_run(&options) {
+                        remember_recent_project(&mut app, &path);
+                    }
+                    if !play {
+                        if let Some(open) = music.as_ref() {
+                            open.pause_stream();
+                        }
                     }
                 }
             }
@@ -723,6 +773,9 @@ fn run(
             // Delivered by the shell on the first frame it draws, wherever
             // `hover=` parked the pointer.
             app.shell.probe_wheel = probe.wheel;
+            // The same one-shot contract, and through the same classifier the
+            // device path uses (D1).
+            app.shell.probe_drop = probe.drop_file.clone();
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
@@ -1184,6 +1237,11 @@ fn run(
         // not even computed on that path — there is no preview to lay out around.
         let commands;
         if app.workspace.current().is_none() {
+            // The recent list's "3 days ago" is measured against this, refreshed
+            // per frame so a session left on the welcome screen does not keep
+            // saying "just now" about a project opened an hour earlier. Read here
+            // rather than in the shell, which owns no clock on purpose.
+            app.shell.recent_now_unix = ui::preferences::recent::now_unix();
             let mut d = rl.begin_drawing(&thread);
             d.clear_background(ui::theme::color::ui_surface());
             let mut ui_draw = d.begin_mode2D(ui_scale.camera());
@@ -1469,6 +1527,51 @@ fn run(
                         );
                     }
                 }
+                // D1's project branch. Distinct from `OpenProject`, which raises a
+                // picker first; the path is already known here.
+                ShellCommand::OpenDroppedProject(path) | ShellCommand::OpenRecentProject(path) => {
+                    match open_project(
+                        &audio,
+                        &path,
+                        &mut analysis,
+                        &mut music,
+                        &mut app,
+                        &mut scratch,
+                    ) {
+                        Ok(()) => remember_recent_project(&mut app, &path),
+                        Err(error) => {
+                            app.shell
+                                .notify(Severity::Error, "Project could not be opened", &error)
+                        }
+                    }
+                }
+                ShellCommand::ImportAsciiImage(path) => {
+                    import_ascii_image_command(&mut app, &path, time_seconds, rl.get_time());
+                }
+                ShellCommand::ImportAsciiImageDialog => {
+                    let dialog = FileDialog::new("Import image as ASCII")
+                        .with_filter(dialogs::filters::ASCII_IMAGE);
+                    match dialog.pick_file() {
+                        // Cancellation is deliberately silent, as everywhere else.
+                        Ok(None) => {}
+                        Ok(Some(path)) => {
+                            import_ascii_image_command(&mut app, &path, time_seconds, rl.get_time())
+                        }
+                        Err(error) => app.shell.notify(
+                            Severity::Warning,
+                            "No file picker is available",
+                            &format!("{error}. Pass --ascii-image on the command line instead."),
+                        ),
+                    }
+                }
+                ShellCommand::ClearAsciiImage => {
+                    clear_ascii_image(&mut app, rl.get_time());
+                }
+                ShellCommand::ForgetRecentProject(path) => {
+                    if app.shell.recent.remove(&path) {
+                        persist_recent_projects(&mut app);
+                    }
+                }
                 ShellCommand::SetRenderConfig(config) => {
                     if let Some(track) = app.workspace.current_mut() {
                         track.render_config = config;
@@ -1551,7 +1654,7 @@ fn run(
                         // Cancellation is deliberately silent.
                         Ok(None) => {}
                         Ok(Some(path)) => {
-                            if let Err(error) = open_project(
+                            match open_project(
                                 &audio,
                                 &path,
                                 &mut analysis,
@@ -1559,11 +1662,12 @@ fn run(
                                 &mut app,
                                 &mut scratch,
                             ) {
-                                app.shell.notify(
+                                Ok(()) => remember_recent_project(&mut app, &path),
+                                Err(error) => app.shell.notify(
                                     Severity::Error,
                                     "Project could not be opened",
                                     &error,
-                                );
+                                ),
                             }
                         }
                         Err(error) => app.shell.notify(
@@ -1579,11 +1683,17 @@ fn run(
                 ShellCommand::SaveProjectAs => {
                     if let Some(destination) = ask_for_project_path(&mut app) {
                         match save_project_to(&mut app, music.as_ref(), &destination, false) {
-                            Ok(()) => app.shell.notify(
-                                Severity::Info,
-                                "Project saved",
-                                "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
-                            ),
+                            Ok(()) => {
+                                // A project the user just named is the one they
+                                // will look for next launch, so Save As earns a
+                                // place in the list the same way an open does.
+                                remember_recent_project(&mut app, &destination);
+                                app.shell.notify(
+                                    Severity::Info,
+                                    "Project saved",
+                                    "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
+                                );
+                            }
                             Err(error) => app.shell.notify(
                                 Severity::Error,
                                 "Project could not be saved",
@@ -1839,6 +1949,14 @@ struct App {
     /// rather than overwriting a file that might still be recoverable
     /// (`shared_presets_editable`, `plug.c:4200-4209`).
     presets_editable: bool,
+    /// Where the welcome screen's recent-project list lives, or `None` when no
+    /// per-user configuration directory could be derived (UX0-C06).
+    recent_path: Option<PathBuf>,
+    /// False when that store was refused at startup. Writes are then refused for
+    /// the rest of the session, for the same reason [`Self::presets_editable`]
+    /// exists: a file the user might still repair is never overwritten by one
+    /// this process reconstructed from nothing.
+    recent_editable: bool,
     /// The selected preset within the active scene, and whether `Delete` is
     /// armed for it. Disarmed whenever either moves, which is `plug.c:5983-5987`
     /// — an armed Delete that survived paging would remove something the user
@@ -2998,6 +3116,141 @@ fn open_project<'audio>(
     Ok(())
 }
 
+/// Whether this invocation is a user session rather than a batch job (UX0-C06).
+///
+/// `--probe-frames` exits after a fixed frame count, `--render` after an export
+/// and `--save-project` after a write; none of the three is somebody sitting in
+/// front of the application, and none should leave a mark in the operator's
+/// per-user configuration. `--save-project` in particular is how this
+/// repository's own gate manufactures its `.musi` fixtures.
+fn is_session_run(options: &Cli) -> bool {
+    options.probe_frames.is_none() && options.render.is_none() && options.save_project.is_none()
+}
+
+/// Puts `path` at the top of the welcome screen's recent list and persists it
+/// (UX0-C06).
+///
+/// The name is the *track's* display name, which prefers the project's own title
+/// over its filename — so the list reads as the user's names for their work
+/// rather than as a directory listing. Called after the open or save has
+/// succeeded, never before: a list that remembered projects that failed to open
+/// would be a list of dead ends.
+fn remember_recent_project(app: &mut App, path: &Path) {
+    // The *project's* title, then the project file's own stem — not the track's
+    // display name, whose fallback is the audio filename. This list names
+    // projects, so a `.musi` called `night-drive` with an untitled bundled
+    // `source.wav` has to read as "night-drive", which is the name the user
+    // chose. `Track::display_name` answers the other question and answered this
+    // one wrongly, which a smoke run showed as an entry called "source".
+    let name = app
+        .workspace
+        .current()
+        .and_then(|track| track.project_metadata.as_ref())
+        .map(|metadata| metadata.title.clone())
+        .filter(|title| !title.trim().is_empty())
+        .or_else(|| {
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+        })
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "Untitled project".to_string());
+    // Absolute, so the same project opened as `./song.musi` and as a full path is
+    // one entry. `absolute` is purely lexical — it does not resolve symlinks or
+    // require the file to exist — which is what keeps it usable here.
+    let normalized = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    app.shell
+        .recent
+        .record(normalized, name, ui::preferences::recent::now_unix());
+    app.shell.recent.probe(|path| path.is_file());
+    persist_recent_projects(app);
+}
+
+/// Writes the recent list, once, and drops to session-only on the first failure.
+fn persist_recent_projects(app: &mut App) {
+    if !app.recent_editable {
+        return;
+    }
+    let Some(path) = app.recent_path.clone() else {
+        return;
+    };
+    if let Err(error) = ui::preferences::recent::save(&path, &app.shell.recent) {
+        app.recent_editable = false;
+        app.shell.notify(
+            Severity::Warning,
+            "Recent projects could not be saved",
+            &format!(
+                "{}: {error}. The list is session-only for the rest of this run.",
+                path.display()
+            ),
+        );
+    }
+}
+
+/// The D1/D2 image branch: import, select ASCII Field, mark dirty, and say which
+/// of the two things happened (`plug.c:7548-7559`).
+///
+/// The staged case is the one worth having a distinct message for. An image
+/// dropped before any audio exists is *kept* — it is handed to whichever track
+/// opens next (`plug.c:825-839`) — and with no track there is nothing on screen
+/// to show that it worked, so silence would read as the drop having been ignored.
+fn import_ascii_image_command(app: &mut App, path: &Path, time_seconds: f64, now: f64) {
+    match import_ascii_image(app, path) {
+        Ok((columns, rows)) => {
+            // Selected on success only, which is the oracle's `&&`
+            // (`plug.c:7552`): switching to an empty ASCII Field after a failed
+            // decode would replace the user's scene with a worse one as the
+            // reward for a typo.
+            app.select_scene_interactive(SceneId::AsciiField, time_seconds, now);
+            match app.workspace.current_mut() {
+                Some(track) => {
+                    track.mark_dirty(now);
+                    app.shell.notify(
+                        Severity::Info,
+                        "Image imported",
+                        &format!("ASCII Field is drawing a {columns}x{rows} glyph grid."),
+                    );
+                }
+                None => app.shell.notify(
+                    Severity::Info,
+                    "ASCII image staged",
+                    &format!(
+                        "A {columns}x{rows} glyph grid is waiting. Open an audio track when you are ready to preview it."
+                    ),
+                ),
+            }
+        }
+        Err(detail) => app.shell.notify(
+            Severity::Error,
+            "Image could not be imported",
+            &format!("{detail}. Use a valid PNG, JPEG, or BMP image."),
+        ),
+    }
+}
+
+/// The D2 clear: path, digest, cells and dimensions go together
+/// (`plug.c:6386-6393`).
+///
+/// "Together" is structural rather than a discipline four assignments have to
+/// keep: they are the four fields of one [`workspace::AsciiImage`], so dropping
+/// the `Option` is the only way to drop any of them.
+fn clear_ascii_image(app: &mut App, now: f64) {
+    let cleared = match app.workspace.current_mut() {
+        Some(track) if track.ascii.is_some() => {
+            track.ascii = None;
+            track.mark_dirty(now);
+            true
+        }
+        _ => false,
+    };
+    if cleared {
+        app.shell.notify(
+            Severity::Info,
+            "Image cleared",
+            "ASCII Field is back to its procedural spectrogram.",
+        );
+    }
+}
+
 /// Saves the current track's project to `destination`.
 ///
 /// The sample rate and channel count come off the live stream because that is
@@ -3044,11 +3297,14 @@ fn save_project_command(app: &mut App, music: Option<&Music<'_>>, ask_if_unnamed
         return;
     };
     match save_project_to(app, music, &destination, false) {
-        Ok(()) => app.shell.notify(
-            Severity::Info,
-            "Project saved",
-            "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
-        ),
+        Ok(()) => {
+            remember_recent_project(app, &destination);
+            app.shell.notify(
+                Severity::Info,
+                "Project saved",
+                "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
+            );
+        }
         Err(error) => app
             .shell
             .notify(Severity::Error, "Project could not be saved", &error),
@@ -3524,7 +3780,19 @@ impl Report {
             },
         }
         match app.workspace.current() {
-            None => println!("ascii:           no track"),
+            // The staged case had no line at all, and "no track" is exactly the
+            // state D1 has to prove something about: an image dropped before any
+            // audio is *kept* for the next track, and a report that says only
+            // "no track" cannot tell that from the drop having been discarded.
+            None => match &app.pending_ascii {
+                Some(image) => println!(
+                    "ascii:           staged {}x{} glyphs from {} (no track yet)",
+                    image.columns,
+                    image.rows,
+                    image.path.display()
+                ),
+                None => println!("ascii:           no track"),
+            },
             Some(track) => match (track.ascii_grid(), &track.ascii) {
                 (Some(grid), _) => println!(
                     "ascii:           {}x{} glyphs from {}",
@@ -3541,6 +3809,36 @@ impl Report {
                 ),
                 (None, None) => println!("ascii:           none (procedural mode)"),
             },
+        }
+        // The welcome screen's recent list (UX0-C06). `store=` distinguishes the
+        // two states an empty column can be in — a new user and a refused file —
+        // which is the whole reason the column draws different words for them.
+        println!(
+            "recent:          {} entries, {} missing, store={}",
+            app.shell.recent.len(),
+            app.shell
+                .recent
+                .entries()
+                .iter()
+                .filter(|entry| entry.missing)
+                .count(),
+            if app.shell.recent_unavailable {
+                "unavailable"
+            } else if app.recent_editable {
+                "writable"
+            } else {
+                "read-only"
+            }
+        );
+        // What `--ui-probe drop=` actually reached (D1). Recorded by the shell as
+        // it dispatched, so this cannot be green while the branch is dead.
+        match &app.shell.probe_drop_dispatch {
+            None => println!("drop probe:      not requested"),
+            Some((path, kind)) => println!(
+                "drop probe:      {} as {}",
+                path.display(),
+                kind.attempted_noun()
+            ),
         }
         println!("panel:           {}", app.shell.panel.label());
         // The scene panel, and the rect inside it the scene was drawn into

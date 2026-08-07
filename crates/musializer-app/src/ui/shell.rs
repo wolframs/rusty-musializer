@@ -11,7 +11,7 @@
 //! return [`ShellCommand`]s. It owns no audio handle, no analyzer and no track
 //! list. That is what keeps `main.rs` the only place resource ownership lives.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use musializer_core::project::event_timeline::ManualEventAction;
 use musializer_core::project::preset_store::{PresetAction, SharedPresetsView};
@@ -59,8 +59,35 @@ pub enum ShellCommand {
     /// scene plan. The composition root owns restoring the base scene when the
     /// plan is disabled; the Assist panel only emits this durable intent.
     SetAutoScenes(bool),
-    /// A file the user dropped on the window.
+    /// A file the user dropped on the window, or picked, that is being *tried*
+    /// as audio.
+    ///
+    /// "Tried as" rather than "is": [`classify_drop`] sends anything it does not
+    /// recognise here, which is the oracle's own else branch (`plug.c:7559-7562`).
+    /// The failure notice therefore has to name the type that was attempted, or a
+    /// dropped `.pdf` reports as a corrupt song.
     LoadTrack(PathBuf),
+    /// A dropped `.musi` (D1, `plug.c:7542-7547`).
+    ///
+    /// Distinct from [`Self::OpenProject`], which asks for a path; this one
+    /// already has one and must not raise a picker.
+    OpenDroppedProject(PathBuf),
+    /// A dropped or picked PNG/JPEG/BMP, to become ASCII Field's glyph grid
+    /// (D1/D2, `plug.c:7548-7559`).
+    ImportAsciiImage(PathBuf),
+    /// Ask for an image through a native picker, then import it (D2,
+    /// `plug.c:6358-6394`). A command for the same reason [`Self::OpenAudio`] is.
+    ImportAsciiImageDialog,
+    /// Drop the current track's image-backed grid (D2, `plug.c:6386-6393`).
+    ClearAsciiImage,
+    /// Reopen a project named by the welcome screen's recent list (UX0-C06).
+    OpenRecentProject(PathBuf),
+    /// Take an entry out of the recent list and persist the shorter list.
+    ///
+    /// The only way a user can act on an entry whose file has moved, which is why
+    /// it exists at all: the alternative is a row that errors every time it is
+    /// clicked and can never be got rid of.
+    ForgetRecentProject(PathBuf),
     /// Commit the route editor's draft onto the current track
     /// (`plug.c:5852`). Adding and replacing are the same command: the table
     /// keys by parameter, so a second route for one parameter is a replacement
@@ -125,6 +152,70 @@ pub enum ShellCommand {
     SetFullscreen(bool),
     /// Persist workstation UI state outside the current `.musi` project.
     SaveUiPreferences(UiPreferences),
+}
+
+/// What a dropped file is being taken for (D1).
+///
+/// A named answer rather than a `bool` pair, because the whole requirement is
+/// that a failure is *reported by its attempted type* — and a two-branch `if`
+/// leaves the third arm's wording to whoever writes the error, which is how
+/// "Audio could not be loaded" ended up on a dropped `.musi`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DropKind {
+    /// `.musi` (`plug.c:7542`).
+    Project,
+    /// PNG, JPEG or BMP (`plug.c:7548-7551`).
+    Image,
+    /// Everything else, which is the oracle's else branch rather than a
+    /// whitelist (`plug.c:7559`). A `.txt` is *attempted* as audio and refused by
+    /// the decoder, which is a better answer than a fourth "unsupported" arm: the
+    /// list of formats raylib can open is raylib's to know, not this function's,
+    /// and a whitelist here would start silently refusing files that work.
+    Audio,
+}
+
+impl DropKind {
+    /// The noun a failure notice uses. Kept beside the classification so the two
+    /// cannot drift.
+    #[must_use]
+    pub fn attempted_noun(self) -> &'static str {
+        match self {
+            DropKind::Project => "project",
+            DropKind::Image => "image",
+            DropKind::Audio => "audio file",
+        }
+    }
+}
+
+/// Which of the three branches a dropped path takes (D1, `plug.c:7542-7562`).
+///
+/// Case-insensitive, which the oracle's `IsFileExtension` is not. A deliberate
+/// divergence: a `.PNG` off a camera or a Windows share is unambiguously an
+/// image, and the C's behaviour there — hand it to the audio decoder and report
+/// a corrupt song — is a defect rather than a contract. Nothing in a `.musi`, an
+/// MP4 or a documented command line can observe the difference.
+#[must_use]
+pub fn classify_drop(path: &Path) -> DropKind {
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    match extension.as_str() {
+        "musi" => DropKind::Project,
+        "png" | "jpg" | "jpeg" | "bmp" => DropKind::Image,
+        _ => DropKind::Audio,
+    }
+}
+
+/// [`classify_drop`] as the command it produces.
+#[must_use]
+fn drop_command(path: &Path) -> ShellCommand {
+    let path = path.to_path_buf();
+    match classify_drop(&path) {
+        DropKind::Project => ShellCommand::OpenDroppedProject(path),
+        DropKind::Image => ShellCommand::ImportAsciiImage(path),
+        DropKind::Audio => ShellCommand::LoadTrack(path),
+    }
 }
 
 /// What the shell needs to know to draw one frame.
@@ -234,6 +325,40 @@ pub struct Shell {
     timeline_zoom_pending: Option<(f64, f64)>,
     /// `--ui-probe wheel=NOTCHES`, waiting for the first frame to draw (LX2).
     pub probe_wheel: Option<f32>,
+    /// `--ui-probe drop=PATH`, a synthesized file drop waiting for the first
+    /// frame to draw (D1).
+    ///
+    /// **Invented for the reason `hover=` and `wheel=` were.** Xvfb has no
+    /// drag-and-drop, so `dropped_files` — the whole of D1 — was a branch no
+    /// capture could enter, and the three arms are the kind of dispatch that
+    /// reads correctly in the source while sending everything to one of them.
+    /// Consumed once, whatever the frame count.
+    pub probe_drop: Option<PathBuf>,
+    /// What [`Shell::dropped_files`] made of that path, for the report line.
+    ///
+    /// The dispatch is recorded rather than recomputed by the reporter, because a
+    /// reporter that called [`classify_drop`] itself would print the same answer
+    /// whether or not the drop ever reached `dropped_files` — which is precisely
+    /// the "the gate is green and the control is dead" failure EX1 cost.
+    pub probe_drop_dispatch: Option<(PathBuf, DropKind)>,
+    /// The welcome screen's recent-project list (UX0-C06).
+    ///
+    /// Shell state rather than a [`ShellInput`] field, because it changes only
+    /// when a project is opened or forgotten — threading a borrow through every
+    /// frame to carry something that is almost always unchanged would make five
+    /// other panels' call sites pay for one screen's list.
+    pub recent: super::preferences::recent::RecentProjects,
+    /// Wall clock in Unix seconds, for the recent list's "3 days ago".
+    ///
+    /// Supplied by the composition root rather than read here, so the shell keeps
+    /// its no-side-effects property and a test can pin the age it renders.
+    pub recent_now_unix: Option<i64>,
+    /// The store was refused at startup, so the column says so instead of drawing
+    /// an empty list.
+    ///
+    /// An unreadable history and no history at all are different facts, and a
+    /// blank region is indistinguishable from a broken one.
+    pub recent_unavailable: bool,
     /// The same value, held for exactly the frame that consumed it, so every
     /// lane in that frame is offered the notch and the frame after is not.
     probe_wheel_frame: Option<f32>,
@@ -333,6 +458,19 @@ struct TimelinePan {
 /// bare panel, and neither shows up as a failure anywhere — so it fails here,
 /// at compile time, instead.
 const _: () = assert!(lyrics::LANE_GAP == metric::LANE_GAP);
+
+/// One button in the scene browser's ASCII image footer (D2).
+const ASCII_BUTTON_HEIGHT: f32 = 22.0;
+const ASCII_FOOTER_GAP: f32 = 4.0;
+/// The height the footer reserves, which is **both** buttons whether or not
+/// Clear is drawn.
+///
+/// Reserving the same height either way is the point: sizing the tile grid from
+/// the reservation means importing an image cannot make ten scene tiles jump a
+/// row, and clearing it cannot make them jump back. A footer that reserved only
+/// what it drew would resize the thing above it as a side effect of an unrelated
+/// action.
+const ASCII_FOOTER_HEIGHT: f32 = ASCII_BUTTON_HEIGHT * 2.0 + ASCII_FOOTER_GAP;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlayheadGeometry {
@@ -587,6 +725,11 @@ impl Shell {
             timeline_zoom_pending: None,
             probe_wheel: None,
             probe_wheel_frame: None,
+            probe_drop: None,
+            probe_drop_dispatch: None,
+            recent: super::preferences::recent::RecentProjects::default(),
+            recent_now_unix: None,
+            recent_unavailable: false,
             transport_scrub: None,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
@@ -1190,6 +1333,8 @@ impl Shell {
             color::ui_muted(),
         );
 
+        self.recent_column(d, input, &frame, &mut commands);
+
         // The tray covers the whole window here, not a preview rectangle: there is
         // no preview, and a load failure is exactly the message this screen has to
         // be able to show (`plug.c:7830`).
@@ -1198,17 +1343,285 @@ impl Shell {
         commands
     }
 
+    /// The welcome screen's recent-project list (UX0-C06).
+    ///
+    /// Invented; the oracle has no history at all. It lives in the region right of
+    /// the 72 % column rule because that is the only part of this screen the C
+    /// leaves empty, and because a returning user's first question — "where was I"
+    /// — deserves an answer beside the one for a first-time user rather than
+    /// instead of it.
+    ///
+    /// Three states are drawn rather than two. An empty list says so, and a list
+    /// that could not be *read* says that instead: those are different facts, and
+    /// a blank column would be indistinguishable from a broken one.
+    fn recent_column(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        frame: &WelcomeFrame,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if frame.recent_visible == 0 {
+            return;
+        }
+        let font = input.fonts.ui();
+        let header = frame.recent_header;
+        widgets::draw_text_tracked(
+            d,
+            font,
+            "RECENT",
+            header.x,
+            header.y,
+            metric::UI_FONT_CAPTION,
+            2.0,
+            color::ui_muted(),
+        );
+        let rule_y = header.y + header.height + 8.0;
+        d.draw_line_ex(
+            Vector2::new(header.x, rule_y),
+            Vector2::new(header.x + header.width, rule_y),
+            1.0,
+            color::ui_rule(),
+        );
+
+        if self.recent_unavailable {
+            // Named, not blank. This is the one state the store's whole
+            // failure-tolerance design exists for, and it must be visible on
+            // screen rather than only in a notice that scrolls away.
+            widgets::draw_text_faded(
+                d,
+                font,
+                "History unavailable.",
+                header.x,
+                frame.recent_rows[0].y,
+                header.width,
+                24.0,
+                metric::UI_FONT_LABEL,
+                color::ui_warning(),
+            );
+            widgets::draw_text_faded(
+                d,
+                font,
+                "recent.json could not be read, and",
+                header.x,
+                frame.recent_rows[0].y + 22.0,
+                header.width,
+                24.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            widgets::draw_text_faded(
+                d,
+                font,
+                "will not be overwritten.",
+                header.x,
+                frame.recent_rows[0].y + 38.0,
+                header.width,
+                24.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            return;
+        }
+
+        if self.recent.is_empty() {
+            widgets::draw_text_faded(
+                d,
+                font,
+                "Projects you save will",
+                header.x,
+                frame.recent_rows[0].y,
+                header.width,
+                24.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            widgets::draw_text_faded(
+                d,
+                font,
+                "appear here.",
+                header.x,
+                frame.recent_rows[0].y + 18.0,
+                header.width,
+                24.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            return;
+        }
+
+        // Collected first, so the borrow of `self.recent` is over before the
+        // widgets below take `&mut self`.
+        let rows: Vec<(PathBuf, String, bool, Option<String>)> = self
+            .recent
+            .entries()
+            .iter()
+            .take(frame.recent_visible)
+            .map(|entry| {
+                (
+                    entry.path.clone(),
+                    entry.name.clone(),
+                    entry.missing,
+                    super::preferences::recent::describe_age(
+                        entry.opened_unix,
+                        self.recent_now_unix,
+                    ),
+                )
+            })
+            .collect();
+
+        const FORGET_SIZE: f32 = 18.0;
+        for (index, (path, name, missing, age)) in rows.into_iter().enumerate() {
+            let row = frame.recent_rows[index];
+            let open_id = widgets::widget_id(widgets::id::WELCOME_RECENT, index as u32 * 2);
+            let forget_id = widgets::widget_id(widgets::id::WELCOME_RECENT, index as u32 * 2 + 1);
+            let forget = UiRect::new(
+                row.x + row.width - FORGET_SIZE - 2.0,
+                row.y + (row.height - FORGET_SIZE) * 0.5,
+                FORGET_SIZE,
+                FORGET_SIZE,
+            );
+            let text_width = (forget.x - row.x - 12.0).max(0.0);
+            // The row *minus* the forget box, and the two must not overlap.
+            //
+            // They did, and the click probe caught it on its first run: the open
+            // area was the whole row, it is drawn first, and so it claimed every
+            // press aimed at the cross — which then opened the project instead of
+            // forgetting it. That is EX1 exactly, one namespace later: the hover
+            // highlight was correct, the cross was drawn in the right place, and
+            // nothing but an injected press could tell that it was dead.
+            let open_area =
+                UiRect::new(row.x, row.y, (forget.x - row.x - 4.0).max(0.0), row.height);
+
+            // The whole row *left of the cross* is the target, not just the name.
+            // A 44 px row is the affordance the same way the 50 px cue lane is
+            // (LX1-d): a click target you have to aim at is one a returning user
+            // misses.
+            let state = self.widgets.button(d, open_id, open_area);
+            if state.hovered && !missing {
+                widgets::fill(d, row, widgets::alpha(color::accent(), 0.10));
+                widgets::fill(
+                    d,
+                    UiRect::new(row.x - 6.0, row.y, 2.0, row.height),
+                    color::accent(),
+                );
+            }
+            // A missing file's row is *not* clickable, and that is the difference
+            // between offering removal and erroring: pressing it would raise a
+            // notice the user can do nothing about, every time, forever.
+            if state.clicked && !missing {
+                commands.push(ShellCommand::OpenRecentProject(path.clone()));
+            }
+            self.widgets.hint(
+                d,
+                state,
+                open_id,
+                open_area,
+                &if missing {
+                    format!("Not found: {}", path.display())
+                } else {
+                    format!("Open {}", path.display())
+                },
+            );
+
+            widgets::draw_text_faded(
+                d,
+                font,
+                &name,
+                row.x,
+                row.y + 5.0,
+                text_width,
+                20.0,
+                metric::UI_FONT_LABEL,
+                if missing {
+                    color::ui_warning()
+                } else {
+                    color::ui_ink()
+                },
+            );
+            // Age and folder on one line: the folder is what disambiguates two
+            // projects with the same title, and the age is what a returning user
+            // actually scans for.
+            let folder = path
+                .parent()
+                .map(|parent| parent.display().to_string())
+                .unwrap_or_default();
+            let meta = match (missing, age) {
+                (true, _) => format!("File is missing - {folder}"),
+                (false, Some(age)) => format!("{age} - {folder}"),
+                (false, None) => folder,
+            };
+            widgets::draw_text_faded(
+                d,
+                font,
+                &meta,
+                row.x,
+                row.y + 24.0,
+                text_width,
+                20.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+
+            // Drawn on every row, never only on hover. An affordance you have to
+            // be standing on to find cannot be found by a pointer that never
+            // lands there — LX2-a, learned on the cue lane's own handles.
+            let forget_state = self.widgets.button(d, forget_id, forget);
+            let tint = if forget_state.hovered {
+                color::ui_ink()
+            } else if missing {
+                color::ui_warning()
+            } else {
+                color::ui_muted()
+            };
+            let inset = 5.0;
+            d.draw_line_ex(
+                Vector2::new(forget.x + inset, forget.y + inset),
+                Vector2::new(
+                    forget.x + forget.width - inset,
+                    forget.y + forget.height - inset,
+                ),
+                1.5,
+                tint,
+            );
+            d.draw_line_ex(
+                Vector2::new(forget.x + forget.width - inset, forget.y + inset),
+                Vector2::new(forget.x + inset, forget.y + forget.height - inset),
+                1.5,
+                tint,
+            );
+            self.widgets
+                .hint(d, forget_state, forget_id, forget, "Forget this project");
+            if forget_state.clicked {
+                commands.push(ShellCommand::ForgetRecentProject(path));
+            }
+        }
+    }
+
     /// Files dropped on the window, in either screen.
     ///
     /// The C handles this once for the whole application rather than per screen,
     /// and the welcome screen's own copy printing "or drop audio anywhere in this
     /// window" is a promise that has to hold on both.
+    /// Typed dispatch (D1, `plug.c:7536-7565`).
+    ///
+    /// Every path is classified before anything is loaded, so a dropped project
+    /// opens as a project and a dropped picture becomes glyphs instead of both
+    /// being handed to the audio decoder and reported as a corrupt song.
     fn dropped_files(&mut self, d: &RaylibDrawHandle<'_>, commands: &mut Vec<ShellCommand>) {
+        // `--ui-probe drop=PATH` first, and *instead of* the device: Xvfb has no
+        // drag-and-drop any more than it has a wheel, so this branch is the only
+        // way the three dispatch arms can be photographed. Taken rather than
+        // read, so a 30-frame probe drops once.
+        if let Some(path) = self.probe_drop.take() {
+            self.probe_drop_dispatch = Some((path.clone(), classify_drop(&path)));
+            commands.push(drop_command(&path));
+        }
         if !d.is_file_dropped() {
             return;
         }
         for path in d.load_dropped_files().paths() {
-            commands.push(ShellCommand::LoadTrack(PathBuf::from(path)));
+            commands.push(drop_command(Path::new(path)));
         }
     }
 
@@ -2781,7 +3194,12 @@ impl Shell {
         let padding = 8.0f32;
         let columns = 2usize;
         let rows = SceneId::ALL.len().div_ceil(columns);
-        let available_height = content.height - padding * 2.0 - 24.0;
+        // The ASCII footer's seat, reserved before the tiles are sized (D2). A
+        // panel that reserves height it never draws steals it from something
+        // else, and one that draws height it never reserved prints over its
+        // neighbour — `shell_layout`'s rule 1, applied inside a panel.
+        let footer_height = ASCII_FOOTER_HEIGHT + padding;
+        let available_height = content.height - padding * 2.0 - 24.0 - footer_height;
         if available_height <= 0.0 {
             return;
         }
@@ -2843,6 +3261,95 @@ impl Shell {
             if state.clicked && (id != input.scene || plan_is_driving) {
                 commands.push(ShellCommand::SelectScene(id));
             }
+        }
+
+        self.ascii_image_footer(d, input, content, padding, commands);
+    }
+
+    /// The scene browser's "Import image" / "Clear image" pair (D2,
+    /// `plug.c:6358-6394`).
+    ///
+    /// Clear is drawn **only when the current track owns an image-backed grid**,
+    /// which is the oracle's condition and the right one: ASCII Field always has
+    /// something to draw — its procedural spectrogram — so a Clear button with
+    /// nothing to clear would offer to undo a state the user is not in. Import is
+    /// always drawn, because it is the entry point.
+    fn ascii_image_footer(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        content: UiRect,
+        padding: f32,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        let width = content.width - padding * 2.0;
+        if width <= 0.0 {
+            return;
+        }
+        let font = input.fonts.ui();
+        let has_image = input
+            .workspace
+            .current()
+            .is_some_and(|track| track.ascii.is_some());
+        let top = content.y + content.height - ASCII_FOOTER_HEIGHT;
+        let x = content.x + padding;
+
+        // Two rows rather than two columns. The sidebar is 320 px at its widest
+        // and routinely 240, so a side-by-side pair would put "Import image →
+        // ASCII" into ~110 px and shrink it to an unreadable size — the label is
+        // what makes this control findable at all.
+        let import = UiRect::new(x, top, width, ASCII_BUTTON_HEIGHT);
+        let import_id = widgets::widget_id(widgets::id::SCENE_ASCII, 0);
+        let state = self.widgets.text_button(
+            d,
+            font,
+            import_id,
+            import,
+            "Import image",
+            false,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        self.widgets.hint(
+            d,
+            state,
+            import_id,
+            import,
+            "Convert a PNG, JPEG or BMP into ASCII Field's glyph grid",
+        );
+        if state.clicked {
+            commands.push(ShellCommand::ImportAsciiImageDialog);
+        }
+
+        let clear = UiRect::new(
+            x,
+            top + ASCII_BUTTON_HEIGHT + ASCII_FOOTER_GAP,
+            width,
+            ASCII_BUTTON_HEIGHT,
+        );
+        if !has_image {
+            return;
+        }
+        let clear_id = widgets::widget_id(widgets::id::SCENE_ASCII, 1);
+        let state = self.widgets.text_button(
+            d,
+            font,
+            clear_id,
+            clear,
+            "Clear image",
+            false,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        self.widgets.hint(
+            d,
+            state,
+            clear_id,
+            clear,
+            "Drop the imported image and go back to the procedural grid",
+        );
+        if state.clicked {
+            commands.push(ShellCommand::ClearAsciiImage);
         }
     }
 
@@ -4341,6 +4848,104 @@ mod tests {
         // loaded, because persistent notices do not expire.
         let shell = Shell::new();
         assert!(shell.notices.is_empty());
+    }
+
+    /// D1's whole contract, as a table.
+    ///
+    /// Written as the *command* rather than as [`DropKind`], because the kind is
+    /// only half the claim: the bug being prevented is a classifier that answers
+    /// correctly while `drop_command` sends two arms to the same place, and a
+    /// test that stopped at the enum could not see it.
+    #[test]
+    fn a_dropped_file_is_dispatched_by_what_it_is() {
+        use std::path::PathBuf;
+        let cases: [(&str, DropKind); 16] = [
+            // The project branch (`plug.c:7542`).
+            ("/tmp/song.musi", DropKind::Project),
+            ("/tmp/UPPER.MUSI", DropKind::Project),
+            ("relative.musi", DropKind::Project),
+            ("/tmp/dots.in.name.musi", DropKind::Project),
+            // The image branch (`plug.c:7548-7551`), all four extensions.
+            ("/tmp/cover.png", DropKind::Image),
+            ("/tmp/cover.jpg", DropKind::Image),
+            ("/tmp/cover.jpeg", DropKind::Image),
+            ("/tmp/cover.bmp", DropKind::Image),
+            ("/tmp/CAMERA.JPG", DropKind::Image),
+            // The else branch is audio, which is the oracle's (`plug.c:7559`) —
+            // including for the seven formats it can actually open, and for a
+            // file it cannot, which is *attempted* as audio and refused by the
+            // decoder with a message that names audio.
+            ("/tmp/song.wav", DropKind::Audio),
+            ("/tmp/song.flac", DropKind::Audio),
+            ("/tmp/song.MP3", DropKind::Audio),
+            ("/tmp/notes.txt", DropKind::Audio),
+            ("/tmp/archive.tar.gz", DropKind::Audio),
+            ("/tmp/no-extension", DropKind::Audio),
+            // A directory-looking path with a dot in a parent, so the extension
+            // is read off the last component rather than the string.
+            ("/tmp/v1.2/track", DropKind::Audio),
+        ];
+        for (path, expected) in cases {
+            let path = PathBuf::from(path);
+            assert_eq!(classify_drop(&path), expected, "{}", path.display());
+            let command = drop_command(&path);
+            let expected_command = match expected {
+                DropKind::Project => ShellCommand::OpenDroppedProject(path.clone()),
+                DropKind::Image => ShellCommand::ImportAsciiImage(path.clone()),
+                DropKind::Audio => ShellCommand::LoadTrack(path.clone()),
+            };
+            assert_eq!(command, expected_command, "{}", path.display());
+        }
+    }
+
+    /// The three arms must land on three *different* commands.
+    ///
+    /// The negative control for the table above: a `drop_command` whose match
+    /// collapsed two arms would still satisfy every row if the expectation were
+    /// derived from the same match, which is why this asserts the commands are
+    /// pairwise distinct instead.
+    #[test]
+    fn the_three_drop_arms_are_three_different_commands() {
+        use std::path::Path;
+        let project = drop_command(Path::new("/tmp/a.musi"));
+        let image = drop_command(Path::new("/tmp/a.png"));
+        let audio = drop_command(Path::new("/tmp/a.wav"));
+        assert_ne!(project, image);
+        assert_ne!(project, audio);
+        assert_ne!(image, audio);
+        // And each failure names a different type, which is the reporting half
+        // of D1: "unsupported/corrupt input is reported by its attempted type".
+        let nouns = [
+            DropKind::Project.attempted_noun(),
+            DropKind::Image.attempted_noun(),
+            DropKind::Audio.attempted_noun(),
+        ];
+        let distinct: std::collections::HashSet<&str> = nouns.into_iter().collect();
+        assert_eq!(distinct.len(), 3, "two branches report the same noun");
+    }
+
+    /// The image picker's filter and the drop classifier must agree (D2).
+    ///
+    /// A picker offering a fifth format would hand back a file the drop path
+    /// classifies as audio, so the same image would import from the button and
+    /// fail from a drop — a difference nothing else in this tree would catch.
+    #[test]
+    fn the_image_picker_offers_exactly_what_the_drop_path_imports() {
+        use std::path::PathBuf;
+        for pattern in musializer_runtime::process::dialogs::filters::ASCII_IMAGE.patterns {
+            let path = PathBuf::from(pattern.replace('*', "/tmp/sample"));
+            assert_eq!(
+                classify_drop(&path),
+                DropKind::Image,
+                "the picker offers {pattern}, which the drop path does not import"
+            );
+        }
+        assert_eq!(
+            musializer_runtime::process::dialogs::filters::ASCII_IMAGE
+                .patterns
+                .len(),
+            4
+        );
     }
 
     fn context() -> KeyboardContext {

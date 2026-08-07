@@ -1604,6 +1604,19 @@ pub mod id {
     /// [`SEEK`] — until EX1, so its first four controls were starved by the
     /// transport row's fine-seek group and scrub bar, which draw before it.
     pub const EVENT_PRESET: u32 = 11;
+    /// The welcome screen's recent-project rows (UX0-C06): two controls per row,
+    /// reopen at `index * 2` and forget at `index * 2 + 1`.
+    ///
+    /// Separate from [`WELCOME`] rather than more of its indices, for the reason
+    /// [`SEEK`] is separate from [`TOOLBAR`]: the row count follows the window
+    /// height and the stored list, so folding them in would renumber `Open audio`
+    /// and `Open project` whenever the list grew.
+    pub const WELCOME_RECENT: u32 = 12;
+    /// The scene browser's ASCII image footer (D2): Import and Clear.
+    ///
+    /// Not [`SCENE_BROWSER`] indices, because those are `SceneId::ALL`'s own
+    /// positions — an eleventh scene would silently inherit Import's id.
+    pub const SCENE_ASCII: u32 = 13;
     /// The lyrics panel's four groups (`panels::lyrics::ns`). Their indices are
     /// named there; the namespaces are allocated here.
     pub const LYRICS_ACTIONS: u32 = 16;
@@ -1632,7 +1645,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 19] = [
+    pub const ALL: [(&str, u32); 21] = [
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),
@@ -1644,6 +1657,8 @@ pub mod id {
         ("UTILITY", UTILITY),
         ("EVENT_ROW", EVENT_ROW),
         ("EVENT_PRESET", EVENT_PRESET),
+        ("WELCOME_RECENT", WELCOME_RECENT),
+        ("SCENE_ASCII", SCENE_ASCII),
         ("LYRICS_ACTIONS", LYRICS_ACTIONS),
         ("LYRICS_FORM", LYRICS_FORM),
         ("LYRICS_CAPTION", LYRICS_CAPTION),
@@ -1806,6 +1821,8 @@ mod tests {
             ("UTILITY", id::UTILITY),
             ("EVENT_ROW", id::EVENT_ROW),
             ("EVENT_PRESET", id::EVENT_PRESET),
+            ("WELCOME_RECENT", id::WELCOME_RECENT),
+            ("SCENE_ASCII", id::SCENE_ASCII),
             ("LYRICS_ACTIONS", id::LYRICS_ACTIONS),
             ("LYRICS_FORM", id::LYRICS_FORM),
             ("LYRICS_CAPTION", id::LYRICS_CAPTION),

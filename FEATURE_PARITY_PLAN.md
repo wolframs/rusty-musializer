@@ -995,8 +995,48 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
       hold-to-audition or an explicit settings snapshot comparison (3.4).
 - [ ] **UX0-C05 — scene thumbnails:** generate/cache deterministic preview stills
       so scene choice is visual rather than ten text-only names (3.5).
-- [ ] **UX0-C06 — recent projects:** use the welcome screen's spare region for a
+- [x] **UX0-C06 — recent projects:** use the welcome screen's spare region for a
       durable, failure-tolerant recent-file list and direct reopen flow (3.6).
+      Done (PX4). The column lives right of the welcome screen's 72 % rule — the
+      only region the C leaves empty — and draws name, relative age and parent
+      folder per row, with the full path as a tooltip.
+
+      **A second per-user file, `recent.json`, not a field in `ui.json`,** and
+      that is the failure-tolerance requirement rather than tidiness: both stores
+      are refused wholesale when they do not parse, so folding them together
+      would make one truncated write cost the operator their splits *and* their
+      history. The write cadences are also unrelated, and `UiPreferences` is
+      `Copy` and travels by value inside `ShellCommand::SaveUiPreferences`.
+      Same schema-string/size-bound/atomic-replace policy as its neighbour.
+
+      **Three states, not two.** No history, an *unreadable* history, and a
+      history whose files have moved are different facts; a blank column would be
+      indistinguishable from a broken one. A missing entry draws amber, says
+      "File is missing", refuses to open, and keeps its forget cross — offering
+      removal rather than erroring on every click forever.
+
+      **`--project` on the command line records an entry only in a session run**
+      (`is_session_run`: no `--probe-frames`, `--render` or `--save-project`).
+      Without that guard `tools/verify.sh` would append a dozen scratch fixtures
+      to the operator's real `~/.config/musializer/recent.json` as a side effect
+      of being run. Interactive recording is deliberately *not* guarded, because
+      that is what the gate has to be able to prove.
+
+      Evidence: 11 model tests in `ui::preferences::recent::tests` (ordering,
+      move-to-front, cap, missing-probe, round trip, five corrupt-file cases each
+      asserted byte-identical afterwards, over-capacity, refused writes, and the
+      age wording); 2 layout tests pinning the seats (7 rows at 960x640, 8 at
+      720/1080, no overlap with the step number or the format strip); gate block
+      `tools/headless_check.sh:4175-4523` with captures of the empty, populated,
+      corrupt and missing states plus five `--ui-probe click=` assertions and a
+      gutter negative control.
+
+      **The click probe earned its keep on the first run.** The row's open target
+      was the full row width and is drawn first, so it claimed every press aimed
+      at the forget cross and *opened the project* instead of forgetting it —
+      EX1's defect one namespace later. Hover highlighting was correct and the
+      cross was drawn in the right place; only an injected press could see it.
+      Fixed by making the two rects disjoint.
 - [ ] **UX0-C07 — Tune randomize/mutate:** add bounded Surprise/Nudge operations
       with the same reversible audition semantics as C04 (3.7).
 - [ ] **UX0-C08 — project-level palette/look:** define a coherent track-level
