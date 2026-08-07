@@ -4172,6 +4172,222 @@ if [ "$LANE_ALIGNMENT_FAILED" -ne 0 ]; then
     SWEEP_FAILED=1
 fi
 
+echo "=== the timeline says what it knows: markers, zoom, pan ==="
+# D4. Three things land here and they share one fixture, because they are one
+# question: can a user navigate a track by looking at the timeline?
+#
+#   1. The merged manual/semantic event markers. `SceneEventMerge` has reached
+#      `SceneFrame` since P0, and `EventType::rgba` was ported for "the timeline
+#      markers" by name — but the lane never drew one, for two whole bands. It is
+#      the fallback-that-looks-like-content defect again: a timeline with no
+#      markers and a timeline whose markers were never wired look identical.
+#
+#   2. Shift-wheel and middle-drag pan. Both change the view, and so does zoom,
+#      so a capture alone cannot tell the three apart. The discriminator is the
+#      **span**: a pan holds it and a zoom does not. That is why this section
+#      asserts numbers off `timeline:` rather than measuring pixels for the
+#      gesture half.
+#
+#   3. The tick labels' opaque backing. The C draws a COLOR_UI_RAISED plate under
+#      every timestamp (`plug.c:3065-3080`) and its comment says why: the
+#      waveform behind them runs from the raised surface to dense accent blue, so
+#      muted ink over a loud bar measures about 1.16:1. The port drew the label
+#      and dropped the plate, which makes the defect *depend on the audio* — the
+#      labels are legible over quiet passages and vanish over loud ones, so it
+#      appears and disappears as the user scrolls.
+#
+# The markers are read from pixels rather than trusted from the report, and the
+# reason is specific: `timeline:` counts markers per lane from the same list the
+# heads are drawn from, so a build that lost the lane distinction would report
+# the right counts *and* draw every head identically. Only reading the head shape
+# back off the framebuffer closes that. See tools/timeline_event_markers.py.
+TIMELINE_D4_FAILED=0
+D4_DIR="$OUT_DIR/timeline-d4"
+rm -rf "$D4_DIR"
+mkdir -p "$D4_DIR"
+cp "$FIXTURE" "$D4_DIR/source.wav"
+D4_PROJECT="$D4_DIR/events.musi"
+set +e
+env -u WAYLAND_DISPLAY \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    ./target/debug/musializer --mute "$D4_DIR/source.wav" \
+        --save-project "$D4_PROJECT" \
+    >"$D4_DIR/save.txt" 2>&1
+D4_SAVE=$?
+set -e
+if [ "$D4_SAVE" -ne 0 ] || [ ! -f "$D4_PROJECT" ]; then
+    echo "FAIL: could not build the D4 event fixture project" >&2
+    TIMELINE_D4_FAILED=1
+else
+    python3 tools/seed_event_fixture.py "$D4_PROJECT" 8
+
+    d4_capture() {
+        # d4_capture NAME PROBE [EXTRA ARGS...]
+        local name="$1" probe="$2"
+        shift 2
+        set +e
+        env -u WAYLAND_DISPLAY \
+            DISPLAY="$DISPLAY_NUM" \
+            PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+            ./target/debug/musializer --mute --project "$D4_PROJECT" \
+                --size 1280x720 \
+                --probe-frames 30 \
+                --probe-shot "$OUT_DIR/d4-$name.png" \
+                --ui-probe "$probe" "$@" \
+            >"$OUT_DIR/d4-$name.txt" 2>&1
+        local status=$?
+        set -e
+        if [ "$status" -ne 0 ]; then
+            echo "FAIL: d4-$name exited $status" >&2
+            TIMELINE_D4_FAILED=1
+        fi
+    }
+
+    d4_line() { rg --no-filename '^timeline:' "$OUT_DIR/d4-$1.txt" || true; }
+
+    d4_expect() {
+        # d4_expect NAME PATTERN WHY
+        local name="$1" pattern="$2" why="$3"
+        local line
+        line="$(d4_line "$name")"
+        if printf '%s' "$line" | rg -q -- "$pattern"; then
+            printf '  %-22s %s\n' "$name" "$why"
+        else
+            echo "FAIL: d4-$name: $why" >&2
+            echo "      wanted /$pattern/ in: $line" >&2
+            TIMELINE_D4_FAILED=1
+        fi
+    }
+
+    # --- the markers ------------------------------------------------------
+    # Whole track. All four type colours and both lanes are on screen at once,
+    # which is what makes a colour collapse or a lost lane visible in one frame.
+    d4_capture markers-whole "play=0,time=3"
+    d4_expect markers-whole \
+        'markers=manual:4 semantic:2 off-screen:0 off-track:0' \
+        "six markers, four manual and two semantic"
+
+    # The pixels. The expected list is in time order and its **last** entry is
+    # the case that matters most: `manual:semantic` is a semantic-*typed* event
+    # in the manual lane, which is what the `+ Feel` button records. It draws the
+    # same amber as the two real semantic markers and must still have a filled
+    # head, so a build that inferred the lane from the colour — or from the id's
+    # high bit, which the merge's collision probe clears — fails here and only
+    # here.
+    if ! python3 tools/timeline_event_markers.py "$OUT_DIR/d4-markers-whole.png" \
+        "manual:lyric,semantic:semantic,manual:cue,manual:custom,semantic:semantic,manual:semantic"
+    then
+        echo "FAIL: the event markers' colours or lanes are wrong" >&2
+        TIMELINE_D4_FAILED=1
+    fi
+
+    # Zoomed 4x onto 2.25..4.25: four of the six fall outside the window and must
+    # be **skipped**, not clamped to the edge. Clamping would pile them onto the
+    # two border columns and read as a cluster that is not in the track — which
+    # is a picture, not an error, so only the count says which happened.
+    d4_capture markers-zoom "play=0,time=3,zoom=4"
+    d4_expect markers-zoom \
+        'markers=manual:2 semantic:0 off-screen:4 off-track:0' \
+        "four markers off-screen at 4x, and skipped rather than clamped"
+
+    # Off the *track*, which is a different bound (`plug.c:3089`) and is only
+    # reachable live: `Project::validate_event_lanes` refuses a lane holding a
+    # timestamp past the audio duration, so a .musi cannot carry one. 38 s on an
+    # 8 s fixture.
+    d4_capture markers-offtrack "play=0,time=3" --event "cue:38:99:1"
+    d4_expect markers-offtrack \
+        'markers=manual:4 semantic:2 off-screen:0 off-track:1' \
+        "an event past the track end is counted and drawn nowhere"
+
+    # The tooltip is the only place the head shapes are written down, so it is
+    # load-bearing rather than decorative. Parked on the first marker's head.
+    d4_capture markers-hover "play=0,time=3,hover=127x470"
+    d4_expect markers-hover \
+        'hover=\[manual lyric  ' \
+        "a marker's tooltip names its lane and its type"
+
+    # --- zoom versus pan --------------------------------------------------
+    # Both notches are delivered at the same pointer position from the same 4x
+    # view, so the *only* difference is the modifier. A bare notch multiplies the
+    # span (2.000 -> 1.388); a Shift notch leaves it at exactly 2.000 and slides
+    # the window. Asserting the span is what makes "it panned" a claim rather
+    # than an impression.
+    d4_capture wheel-zoom "play=0,time=3,zoom=4,hover=640x470,wheel=2"
+    d4_expect wheel-zoom '5\.760x  2\.556\.\.3\.944' \
+        "a bare notch zooms, and the span changed"
+
+    d4_capture wheel-pan "play=0,time=3,zoom=4,hover=640x470,wheel=2,wheel-shift=1"
+    d4_expect wheel-pan '4\.000x  1\.650\.\.3\.650' \
+        "Shift-wheel up pans earlier and holds the span"
+    d4_expect wheel-pan 'free-view' \
+        "a wheel pan suspends playback-follow, as a drag pan does"
+
+    d4_capture wheel-pan-back "play=0,time=3,zoom=4,hover=640x470,wheel=-2,wheel-shift=1"
+    d4_expect wheel-pan-back '4\.000x  2\.850\.\.4\.850' \
+        "Shift-wheel down pans later by the same amount"
+
+    # A whole-track view has nowhere to pan. Accepting the notch anyway would
+    # light the Follow button over a view that never moved, so the refusal has to
+    # leave `free-view` off — which is the half a picture cannot show.
+    d4_capture wheel-pan-whole "play=0,time=3,hover=640x470,wheel=2,wheel-shift=1"
+    d4_expect wheel-pan-whole '1\.000x  0\.000\.\.8\.000  gesture=none  ' \
+        "a Shift notch over a whole-track view is refused and does not free the view"
+
+    # --- middle-drag pan, and the claim it must release --------------------
+    # `--ui-probe middle-drag=` exists because `click=` cannot reach this: the
+    # pan reads MOUSE_BUTTON_MIDDLE from raylib directly rather than through the
+    # widget bank's pointer seam, since it claims nothing from the bank.
+    #
+    # `gesture=none` after the release is the assertion that matters. A stranded
+    # claim is invisible in a picture — the view sits exactly where the hand left
+    # it either way — and only shows up as the *next* interaction behaving
+    # strangely, which is a bug report rather than a gate failure.
+    d4_capture drag-pan "play=0,time=3,zoom=4,hover=640x470,middle-drag=900x400"
+    d4_expect drag-pan '4\.000x  3\.044\.\.5\.044' \
+        "a leftward middle-drag moves the window later and holds the span"
+    d4_expect drag-pan 'free-view  gesture=none' \
+        "the drag suspended follow and released its claim"
+
+    d4_capture drag-pan-back "play=0,time=3,zoom=4,hover=640x470,middle-drag=400x900"
+    d4_expect drag-pan-back '4\.000x  1\.456\.\.3\.456  free-view  gesture=none' \
+        "and the reverse drag is symmetric, to the millisecond"
+
+    # Released *outside the window*, which is the case the plan calls out by
+    # name. The release must still be taken: a gesture that only ends when the
+    # pointer is over its own lane strands the claim exactly when a user's hand
+    # overshoots, which is the common way to end a fast drag.
+    d4_capture drag-offwindow "play=0,time=3,zoom=4,hover=640x470,middle-drag=900x-400"
+    d4_expect drag-offwindow 'free-view  gesture=none' \
+        "a drag released off-window does not strand the pointer claim"
+
+    d4_capture drag-pan-whole "play=0,time=3,hover=640x470,middle-drag=900x400"
+    d4_expect drag-pan-whole '1\.000x  0\.000\.\.8\.000  gesture=none' \
+        "a middle-drag over a whole-track view begins no gesture"
+
+    # --- the tick labels' plate -------------------------------------------
+    # Measured, not eyeballed. The plate is COLOR_UI_RAISED — opaque white — so a
+    # label drawn without one has the waveform's own colours immediately behind
+    # its glyphs. This reads the rectangle where a label sits and requires it to
+    # be dominated by the raised surface.
+    #
+    # Its negative control is the thing that was actually shipped: deleting the
+    # single `draw_rectangle_rec` call takes the bleed from **0 to 1444 pixels**
+    # on this fixture — every one of the seven labels goes from 0 to about 200,
+    # and the raised fraction behind the glyphs halves from ~0.45 to ~0.21 —
+    # while all **1368 unit tests stay green**. A plate is not a value any
+    # assertion in the tree pins, and it cannot be: it is white on white
+    # everywhere the audio is quiet.
+    if ! python3 tools/timeline_tick_plate.py "$OUT_DIR/d4-markers-whole.png"; then
+        echo "FAIL: the tick labels have no opaque backing" >&2
+        TIMELINE_D4_FAILED=1
+    fi
+fi
+if [ "$TIMELINE_D4_FAILED" -ne 0 ]; then
+    echo "FAIL: the timeline's markers, pan or tick labels regressed" >&2
+    SWEEP_FAILED=1
+fi
+
 # Every successful application run prints this after its last frame, so this is
 # broader than the first Spectrum capture above: welcome, every scene, every
 # panel, preview and export all have to keep shell text on native atlases. The
