@@ -1929,6 +1929,14 @@ impl Shell {
         // lane pushes is stamped with the editor's owner slot, and an unbound
         // editor would stamp it `None` and have it refused at the drain.
         editor.enter_track(input.workspace.current_index());
+        // Neither text surface is on screen here, so neither may keep the
+        // keyboard. This is the UX0-A02 stranded-state shape one field over: a
+        // time readout left mid-edit when the panel closed would make
+        // `lyric_lane_keys` stand down for the rest of the session, and the
+        // lane's own keys would silently stop working with nothing on screen
+        // to explain why.
+        editor.text.set_focused(false);
+        editor.time_edit = None;
         editor.cue_count = track.lyrics.len();
         editor.lane_selection.prune(&track.lyrics);
         // Capped at the slack rather than at the window, so this never grows the
@@ -7800,6 +7808,35 @@ mod tests {
         let mut fresh = LyricEditor::new();
         fresh.step_selection(&document, true, 3.5);
         assert_eq!(fresh.take_seek_request(), Some(5.0));
+    }
+
+    #[test]
+    fn a_closed_editor_cannot_strand_a_text_field_holding_the_keyboard() {
+        // UX0-A02's shape, one field over. Neither text surface is drawn with
+        // the editor closed, so neither may keep the keyboard — a time readout
+        // left mid-edit would make `lyric_lane_keys` stand down for the rest of
+        // the session, and the closed lane's keys would stop working with
+        // nothing on screen to explain it.
+        //
+        // Asserted through the predicate the guard actually reads rather than
+        // through a draw, because the draw needs a GPU and the guard does not.
+        let mut editor = LyricEditor::new();
+        editor.time_edit = Some(TimeEdit {
+            is_start: false,
+            field: TextField::new(TextRules::ascii_query(16)),
+        });
+        editor.text.set_focused(true);
+        assert!(editor.is_typing());
+
+        // What `closed_lyric_lane` does before it reaches the gesture code.
+        editor.text.set_focused(false);
+        editor.time_edit = None;
+        assert!(!editor.is_typing());
+        assert!(lyric_clipboard_keys_allowed(
+            false,
+            false,
+            editor.is_typing()
+        ));
     }
 
     #[test]
