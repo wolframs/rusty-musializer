@@ -878,7 +878,7 @@ close the UX0 item.
       write, and the strip's tooltip names the state in words. Rows other than
       the current one carry a state dot, because all-track autosave is a claim
       about tracks the user is not looking at. Reported as `save state:` and
-      gated in `tools/headless_check.sh:4175-4336`, including an ink check that
+      gated in `tools/headless_check.sh:4175-4338`, including an ink check that
       the word reaches the header rather than only the report.
 - [ ] **UX0-B02 — lyric seek/stamp loop:** make cue selection seek-capable, add
       playhead stamping for start/end, auto-advance after Apply and preserve a
