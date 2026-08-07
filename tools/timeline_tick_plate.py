@@ -68,6 +68,13 @@ WAVEFORM_BLUE_MARGIN = 40
 # hundreds; nothing else in the chrome carries a blue band that wide.
 MIN_WAVEFORM_ROW_PIXELS = 120
 
+# A run of dense rows counts as a candidate lane if it is at least this share of
+# the tallest run. Relative rather than absolute so a UI-scale change cannot
+# invalidate it; loose enough that the waveform lane still qualifies when the
+# preview above it is taller, tight enough to drop the ~8-row runs an event
+# marker's stem or a cue block leaves behind.
+LANE_RUN_SHARE = 0.4
+
 # Label ink. A 12 px glyph is antialiased, so most of its pixels are grey rather
 # than `UI_INK` itself — the first version of this tool matched the ink colour
 # within 24 and found *no labels at all* on a frame that plainly had six. What
@@ -116,6 +123,20 @@ def _waveform_lane(pixels, width, height):
     Located rather than passed in, because every hard-coded band height in this
     repository's checks has gone stale at least once, and a check that silently
     starts measuring the wrong rectangle passes forever.
+
+    **The lowest qualifying run, not the longest.** "Longest" was the first rule
+    and it is only true while the timeline band is taller than the preview: this
+    tool's `_is_waveform` test is "blue-dominant", and Spectrum's own bars are
+    blue-dominant too. On a default 1280x720 layout the preview's bars occupy 51
+    rows and the waveform lane 46, so the longest run *is the preview*, and the
+    tool then measured a rectangle with no tick labels in it and reported the
+    vacuity guard rather than the truth. The band is structurally the bottom-most
+    thing in the window, so its position says what its height cannot.
+
+    The length filter still earns its place: it drops the incidental 8-row runs a
+    marker stem or a cue block leaves below the preview. It is expressed relative
+    to the tallest run rather than as a pixel count, so it survives a scale change
+    the way a constant would not.
     """
     dense = [
         y
@@ -133,8 +154,10 @@ def _waveform_lane(pixels, width, height):
             run = []
         run.append(y)
     runs.append(run)
-    longest = max(runs, key=len)
-    return longest[0], longest[-1]
+    tallest = max(len(r) for r in runs)
+    substantial = [r for r in runs if len(r) >= tallest * LANE_RUN_SHARE]
+    lane = substantial[-1]
+    return lane[0], lane[-1]
 
 
 def _clusters(columns):

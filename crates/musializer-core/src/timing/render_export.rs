@@ -156,6 +156,21 @@ impl Aspect {
         }
     }
 
+    /// The aspect as a file-name token: no colon, and it sorts.
+    ///
+    /// 16:9 has one only for completeness — the suggestions leave it off, the
+    /// way "1080p" means 1920x1080 everywhere else. The marked case carries the
+    /// mark.
+    #[must_use]
+    pub fn file_token(self) -> &'static str {
+        match self {
+            Self::Wide16x9 => "16x9",
+            Self::Tall9x16 => "9x16",
+            Self::Square1x1 => "1x1",
+            Self::Portrait4x5 => "4x5",
+        }
+    }
+
     /// Which preset a geometry is, if any.
     ///
     /// Exact, like [`selected_resolution`](RenderExportConfig) in the panel:
@@ -399,8 +414,8 @@ impl RenderExportConfig {
     ) -> Result<String, RenderExportError> {
         let prefix = self.suggestion_prefix(audio_path, scene_name)?;
         Ok(format!(
-            "{prefix}-musializer-{scene_name}-{}p{}.mp4",
-            self.height, self.fps
+            "{prefix}-musializer-{scene_name}-{}.mp4",
+            self.video_token()
         ))
     }
 
@@ -431,9 +446,8 @@ impl RenderExportConfig {
         }
         let prefix = self.suggestion_prefix(audio_path, scene_name)?;
         Ok(format!(
-            "{prefix}-musializer-{scene_name}-{}p{}-clip-{}-{}.mp4",
-            self.height,
-            self.fps,
+            "{prefix}-musializer-{scene_name}-{}-clip-{}-{}.mp4",
+            self.video_token(),
             timestamp_token(start_seconds),
             timestamp_token(end_seconds),
         ))
@@ -462,10 +476,50 @@ impl RenderExportConfig {
         }
         let prefix = self.suggestion_prefix(audio_path, scene_name)?;
         Ok(format!(
-            "{prefix}-musializer-{scene_name}-{}p-still-{}.png",
-            self.height,
+            "{prefix}-musializer-{scene_name}-{}-still-{}.png",
+            self.still_token(),
             timestamp_token(time_seconds),
         ))
+    }
+
+    /// The geometry half of a video suggestion: rung, frame rate, and the
+    /// aspect when it is not the unmarked 16:9.
+    ///
+    /// **The rung is the short edge, which is the only reading EX2 left
+    /// consistent.** This printed `self.height`, so a 1080x1920 vertical export
+    /// — 1080p by the panel's own rung, by `Aspect::dimensions`, and by every
+    /// platform it is delivered to — proposed a file called `1920p30`. Worse,
+    /// `height` is not unique across the aspect table: 1920x1080 and 1080x1080
+    /// share it, so a 16:9 render and a square one of the same track and scene
+    /// proposed the *same name* and the second silently replaced the first —
+    /// exactly the collision `suggest_clip_path` exists to prevent, one axis
+    /// over.
+    ///
+    /// 16:9 keeps `1080p30` byte-for-byte, because "1080p" already means
+    /// 1920x1080 to everyone and marking the default would rename every file
+    /// the C-era grammar ever proposed. A geometry belonging to no preset
+    /// (`--resolution 1234x568`) prints its real dimensions instead of a rung
+    /// it does not sit on.
+    fn video_token(&self) -> String {
+        match Aspect::of(self.width, self.height) {
+            Some(Aspect::Wide16x9) => format!("{}p{}", self.width.min(self.height), self.fps),
+            Some(aspect) => format!(
+                "{}p{}-{}",
+                self.width.min(self.height),
+                self.fps,
+                aspect.file_token()
+            ),
+            None => format!("{}x{}-{}fps", self.width, self.height, self.fps),
+        }
+    }
+
+    /// The same for a still, which has no frame rate a viewer can see.
+    fn still_token(&self) -> String {
+        match Aspect::of(self.width, self.height) {
+            Some(Aspect::Wide16x9) => format!("{}p", self.width.min(self.height)),
+            Some(aspect) => format!("{}p-{}", self.width.min(self.height), aspect.file_token()),
+            None => format!("{}x{}", self.width, self.height),
+        }
     }
 
     /// The shared half of the three suggestions: the source path with its own
@@ -1542,6 +1596,55 @@ mod tests {
                 .suggest_path("/music/Autoregressive Kitty.mp3", "constellation")
                 .unwrap(),
             "/music/Autoregressive Kitty-musializer-constellation-1080p30.mp4"
+        );
+    }
+
+    /// Every aspect at one rung must propose a **different** name, and 16:9
+    /// must be the one that is unchanged.
+    ///
+    /// The regression this pins: the rung was printed as `self.height`, which
+    /// is 1920 for a vertical 1080p export (so the name lied) and 1080 for
+    /// *both* 16:9 and 1:1 (so the names collided and a square render silently
+    /// replaced a wide one).
+    #[test]
+    fn each_aspect_proposes_its_own_name_and_16x9_is_unchanged() {
+        let mut names = Vec::new();
+        for aspect in Aspect::ALL {
+            let mut config = RenderExportConfig::default();
+            config.set_aspect(aspect);
+            assert_eq!(
+                (config.width, config.height),
+                aspect.dimensions(Resolution::P1080),
+                "{} did not land on its own geometry",
+                aspect.name()
+            );
+            names.push(config.suggest_path("/m/song.mp3", "spectrum").unwrap());
+        }
+        assert_eq!(
+            names,
+            vec![
+                "/m/song-musializer-spectrum-1080p30.mp4".to_string(),
+                "/m/song-musializer-spectrum-1080p30-9x16.mp4".to_string(),
+                "/m/song-musializer-spectrum-1080p30-1x1.mp4".to_string(),
+                "/m/song-musializer-spectrum-1080p30-4x5.mp4".to_string(),
+            ]
+        );
+
+        // A hand-written geometry belongs to no rung, so it names itself.
+        let config = RenderExportConfig {
+            width: 1234,
+            height: 568,
+            ..RenderExportConfig::default()
+        };
+        assert_eq!(
+            config.suggest_path("/m/song.mp3", "spectrum").unwrap(),
+            "/m/song-musializer-spectrum-1234x568-30fps.mp4"
+        );
+        assert_eq!(
+            config
+                .suggest_still_path("/m/song.mp3", "spectrum", 1.0)
+                .unwrap(),
+            "/m/song-musializer-spectrum-1234x568-still-00m01s000.png"
         );
     }
 

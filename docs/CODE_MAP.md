@@ -14,7 +14,7 @@ regeneration with unchanged inputs is byte-for-byte stable.
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
 | [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 37 | 55,867 | 406 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 90 | 54,833 | 908 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 90 | 54,936 | 909 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 26 | 14,595 | 174 |
 | [`raylib-5-5-link`](../crates/raylib-5-5-link/Cargo.toml) | Builds and links raylib 5.5 from vendored source, for raylib-sys nobuild mode | `raylib_5_5_link` (lib), `build-script-build` (custom-build) | 2 | 126 | 0 |
 
@@ -164,7 +164,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/spectral_terrarium.rs`](../crates/musializer-core/src/scenes/spectral_terrarium.rs) | 701 | 7 | Spectral Terrarium: deterministic state and update. |
 | [`src/scenes/spectrum.rs`](../crates/musializer-core/src/scenes/spectrum.rs) | 62 | 2 | Spectrum: the registry half. There is no deterministic state. |
 | [`src/timing/mod.rs`](../crates/musializer-core/src/timing/mod.rs) | 9 | 0 | Deterministic time and frame arithmetic. |
-| [`src/timing/render_export.rs`](../crates/musializer-core/src/timing/render_export.rs) | 1,962 | 37 | The deterministic export transport: frame counts over decoded audio frames. |
+| [`src/timing/render_export.rs`](../crates/musializer-core/src/timing/render_export.rs) | 2,065 | 38 | The deterministic export transport: frame counts over decoded audio frames. |
 | [`src/timing/track_identity.rs`](../crates/musializer-core/src/timing/track_identity.rs) | 110 | 4 | The human identity of a track: whatever a user reads as its name. |
 | [`src/timing/track_timeline.rs`](../crates/musializer-core/src/timing/track_timeline.rs) | 452 | 13 | Track waveform envelopes and exact transport arithmetic. |
 | [`src/ui/assist_ui_state.rs`](../crates/musializer-core/src/ui/assist_ui_state.rs) | 1,640 | 22 | Assist panel state including the confirmation step's lyric-sheet row. |
@@ -247,8 +247,8 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-core/src/project/model.rs`](../crates/musializer-core/src/project/model.rs) | 2,299 | 28 |
 | [`crates/musializer-runtime/src/process/font_import.rs`](../crates/musializer-runtime/src/process/font_import.rs) | 2,180 | 33 |
 | [`crates/musializer-app/src/ui/widgets.rs`](../crates/musializer-app/src/ui/widgets.rs) | 2,076 | 18 |
+| [`crates/musializer-core/src/timing/render_export.rs`](../crates/musializer-core/src/timing/render_export.rs) | 2,065 | 38 |
 | [`crates/musializer-core/src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,041 | 39 |
-| [`crates/musializer-core/src/timing/render_export.rs`](../crates/musializer-core/src/timing/render_export.rs) | 1,962 | 37 |
 
 ## Non-Rust boundaries
 

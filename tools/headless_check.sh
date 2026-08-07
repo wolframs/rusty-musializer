@@ -37,6 +37,32 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 mkdir -p "$OUT_DIR"
+
+# The gate must not read — or write — the operator's real per-user state.
+#
+# **This was not a precaution; it was a live defect.** `ui.json` carries
+# `sidebar_width`, `inspector_width`, `timeline_height` and `lyric_lane_height`,
+# and `preferences.rs` resolves it through `XDG_CONFIG_HOME` with a `$HOME`
+# fallback — so every capture below was laid out against whatever splitter
+# positions this machine's owner last dragged. Three sections then hard-coded
+# pointer coordinates derived from that layout (`--ui-probe hover=`, `click=`,
+# `middle-drag=`), which made them pass on one machine in one preference state
+# and nowhere else. They were calibrated against a `timeline_height` roughly
+# 140 px taller than the default, so the D4 marker row sat at y=470 for their
+# author and at y=610 for a clean config; the day the operator opened the
+# application and moved a splitter, twenty assertions started failing and every
+# one of them read as a feature regression.
+#
+# A gate whose result depends on a file outside the repository is not evidence.
+# Point all three XDG roots at scratch directories under `$OUT_DIR`, wiped every
+# run, so the layout under test is the one a new user gets.
+XDG_ROOT="$REPO_ROOT/$OUT_DIR/xdg"
+rm -rf "$XDG_ROOT"
+mkdir -p "$XDG_ROOT/config" "$XDG_ROOT/state" "$XDG_ROOT/data"
+export XDG_CONFIG_HOME="$XDG_ROOT/config"
+export XDG_STATE_HOME="$XDG_ROOT/state"
+export XDG_DATA_HOME="$XDG_ROOT/data"
+
 FIXTURE="$OUT_DIR/fixture-sweep.wav"
 SHOT="$OUT_DIR/spectrum.png"
 REPORT="$OUT_DIR/report.txt"
@@ -4907,8 +4933,8 @@ echo "--- D2: the ASCII image import and clear controls ---"
 # getting nothing — a picture cannot distinguish "absent" from "drawn in the
 # background colour", and this is the assertion that can.
 entry_capture "ascii-empty" "$ENTRY_DIR/store-ignored.json" \
-    "$ENTRY_DIR/source.wav" --ui-probe "click=150x271" || true
-entry_expect "ascii-empty" "click probe" "at=150x271 claimed=nothing"
+    "$ENTRY_DIR/source.wav" --ui-probe "click=150x400" || true
+entry_expect "ascii-empty" "click probe" "at=150x400 claimed=nothing"
 entry_expect "ascii-empty" "ascii" "none (procedural mode)"
 
 # Populated, through the command line rather than a picker, so the state is
@@ -4921,16 +4947,16 @@ entry_expect_contains "ascii-populated" "ascii" "54x54 glyphs from"
 # Path, digest, cells and dimensions are one `Option`, so they cannot part ways.
 entry_capture "ascii-cleared" "$ENTRY_DIR/store-ignored.json" \
     "$ENTRY_DIR/source.wav" --ascii-image "$ENTRY_DIR/picture.png" \
-    --ui-probe "click=150x271" || true
-entry_expect "ascii-cleared" "click probe" "at=150x271 claimed=0xd00000002"
+    --ui-probe "click=150x400" || true
+entry_expect "ascii-cleared" "click probe" "at=150x400 claimed=0xd00000002"
 entry_expect "ascii-cleared" "ascii" "none (procedural mode)"
 
 # Import takes the press and reaches the picker. Run with no backend on PATH, so
 # the refusal is deterministic and no modal is drawn on the capture display.
 ENTRY_PATH_OVERRIDE="$ENTRY_NO_DIALOG_PATH" \
     entry_capture "ascii-import-click" "$ENTRY_DIR/store-ignored.json" \
-        "$ENTRY_DIR/source.wav" --ui-probe "click=150x246" || true
-entry_expect "ascii-import-click" "click probe" "at=150x246 claimed=0xd00000001"
+        "$ENTRY_DIR/source.wav" --ui-probe "click=150x375" || true
+entry_expect "ascii-import-click" "click probe" "at=150x375 claimed=0xd00000001"
 
 # Staged with no track: the fourth state D2 asks for, and the one where the
 # scene browser is not even on screen. The frame is the evidence that the
@@ -5436,7 +5462,7 @@ else
 
     # The tooltip is the only place the head shapes are written down, so it is
     # load-bearing rather than decorative. Parked on the first marker's head.
-    d4_capture markers-hover "play=0,time=3,hover=127x470"
+    d4_capture markers-hover "play=0,time=3,hover=127x610"
     d4_expect markers-hover \
         'hover=\[manual lyric  ' \
         "a marker's tooltip names its lane and its type"
@@ -5447,24 +5473,24 @@ else
     # span (2.000 -> 1.388); a Shift notch leaves it at exactly 2.000 and slides
     # the window. Asserting the span is what makes "it panned" a claim rather
     # than an impression.
-    d4_capture wheel-zoom "play=0,time=3,zoom=4,hover=640x470,wheel=2"
+    d4_capture wheel-zoom "play=0,time=3,zoom=4,hover=640x610,wheel=2"
     d4_expect wheel-zoom '5\.760x  2\.556\.\.3\.944' \
         "a bare notch zooms, and the span changed"
 
-    d4_capture wheel-pan "play=0,time=3,zoom=4,hover=640x470,wheel=2,wheel-shift=1"
+    d4_capture wheel-pan "play=0,time=3,zoom=4,hover=640x610,wheel=2,wheel-shift=1"
     d4_expect wheel-pan '4\.000x  1\.650\.\.3\.650' \
         "Shift-wheel up pans earlier and holds the span"
     d4_expect wheel-pan 'free-view' \
         "a wheel pan suspends playback-follow, as a drag pan does"
 
-    d4_capture wheel-pan-back "play=0,time=3,zoom=4,hover=640x470,wheel=-2,wheel-shift=1"
+    d4_capture wheel-pan-back "play=0,time=3,zoom=4,hover=640x610,wheel=-2,wheel-shift=1"
     d4_expect wheel-pan-back '4\.000x  2\.850\.\.4\.850' \
         "Shift-wheel down pans later by the same amount"
 
     # A whole-track view has nowhere to pan. Accepting the notch anyway would
     # light the Follow button over a view that never moved, so the refusal has to
     # leave `free-view` off — which is the half a picture cannot show.
-    d4_capture wheel-pan-whole "play=0,time=3,hover=640x470,wheel=2,wheel-shift=1"
+    d4_capture wheel-pan-whole "play=0,time=3,hover=640x610,wheel=2,wheel-shift=1"
     d4_expect wheel-pan-whole '1\.000x  0\.000\.\.8\.000  of 8\.000  gesture=none  ' \
         "a Shift notch over a whole-track view is refused and does not free the view"
 
@@ -5477,13 +5503,13 @@ else
     # claim is invisible in a picture — the view sits exactly where the hand left
     # it either way — and only shows up as the *next* interaction behaving
     # strangely, which is a bug report rather than a gate failure.
-    d4_capture drag-pan "play=0,time=3,zoom=4,hover=640x470,middle-drag=900x400"
+    d4_capture drag-pan "play=0,time=3,zoom=4,hover=640x610,middle-drag=900x400"
     d4_expect drag-pan '4\.000x  3\.044\.\.5\.044' \
         "a leftward middle-drag moves the window later and holds the span"
     d4_expect drag-pan 'free-view  gesture=none' \
         "the drag suspended follow and released its claim"
 
-    d4_capture drag-pan-back "play=0,time=3,zoom=4,hover=640x470,middle-drag=400x900"
+    d4_capture drag-pan-back "play=0,time=3,zoom=4,hover=640x610,middle-drag=400x900"
     d4_expect drag-pan-back '4\.000x  1\.456\.\.3\.456  of 8\.000  free-view  gesture=none' \
         "and the reverse drag is symmetric, to the millisecond"
 
@@ -5491,11 +5517,11 @@ else
     # name. The release must still be taken: a gesture that only ends when the
     # pointer is over its own lane strands the claim exactly when a user's hand
     # overshoots, which is the common way to end a fast drag.
-    d4_capture drag-offwindow "play=0,time=3,zoom=4,hover=640x470,middle-drag=900x-400"
+    d4_capture drag-offwindow "play=0,time=3,zoom=4,hover=640x610,middle-drag=900x-400"
     d4_expect drag-offwindow 'free-view  gesture=none' \
         "a drag released off-window does not strand the pointer claim"
 
-    d4_capture drag-pan-whole "play=0,time=3,hover=640x470,middle-drag=900x400"
+    d4_capture drag-pan-whole "play=0,time=3,hover=640x610,middle-drag=900x400"
     d4_expect drag-pan-whole '1\.000x  0\.000\.\.8\.000  of 8\.000  gesture=none' \
         "a middle-drag over a whole-track view begins no gesture"
 
@@ -5692,8 +5718,8 @@ tune_wheel() {
     esac
 }
 # Amplitude is a 0.40..2.00 slider at precision 2, so one notch is 0.01.
-tune_wheel up   900x180 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
-tune_wheel down 900x180 -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
+tune_wheel up   1050x190 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
+tune_wheel down 1050x190 -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
 # The negative control, and it has to be inside the panel rather than outside it:
 # a wheel handler scoped to the inspector instead of to a row would pass every
 # assertion above and silently move whichever setting happened to be first.

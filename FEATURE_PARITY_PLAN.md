@@ -1034,7 +1034,15 @@ rendered frame, a settings bound or the CLI grammar:
 Six agents (PX1–PX6) closed C1, C4, D1–D4's remainder, D3, UX0-B01–B05,
 UX0-C01, C03, C04, C06, C07 and C10 in one wave; the six merges are
 `03548b9`..`e63fee2` and each agent's honest "what is missing" survives here.
-Items marked **operator** are taste or scope calls, not defects.
+
+**Five of these were filed as "operator" taste calls and that was wrong.** The
+operator's response, 2026-08-07: *"these are hardly personal-taste questions so
+much as questions whose answers should be given from an 'am I producing good
+software with good UX and good value?' perspective"*. They were put to
+`gpt-5.6-sol` through five headless `codex exec` consultations
+(`build/consult/`, gitignored) and every one came back decided. The rulings are
+in **CX** below; the items here now carry them. What actually needed a human was
+much smaller than the label claimed — see CX-4.
 
 - [ ] **PXF-1 — "No file" should escalate with accumulated edits (PX1).** A
       user who tuned for an hour with no project file sees calm grey,
@@ -1058,26 +1066,337 @@ Items marked **operator** are taste or scope calls, not defects.
       still-frame path is the natural renderer for them and for cover output.
 - [ ] **PXF-7 — resume position:** `Metadata` has no playhead field, so
       reopening a recent project starts at 0:00 (PX4).
-- [ ] **PXF-8 — operator: do the event markers want a legend (PX5)?** Head
-      shapes (disc=manual, ring=semantic) are stated only by tooltips; type
-      colours are keyed by the event-row buttons above. At 1x whole-track the
-      disc/ring distinction sits at the threshold of perception and semantic
-      0.45-alpha lines read as a smudge on a dense envelope.
-- [ ] **PXF-9 — operator: does the clip window belong in `.musi` (PX3)?** It
-      is session-only on `Shell`; promoting it is a field move plus a schema
-      bump.
+- [ ] **PXF-8 — the event markers do NOT want a legend (PX5).** Decided by
+      CX-1: a legend explains an encoding the eye still cannot resolve, and
+      spends band height to do it. Replace the encoding instead — authorship
+      becomes **top rail vs bottom rail**, not disc vs ring.
+- [ ] **PXF-9 — the clip window belongs in `.musi`, as one of a list (PX3).**
+      Decided by CX-2, with two prerequisites and a defect found on the way. See
+      CX-2; this is no longer a field move.
 - [ ] **PXF-10 — the app segfaults rather than exiting with a message when the
       display has no GL (PX5, and 11 coredumps during the wave).** raylib's
       `InitWindow` dereferences null; guard before init and say what happened.
-- [ ] **PXF-11 — nobody has *felt* the tap loop or judged Surprise's taste.**
-      Every agent ran headless and muted, honestly said so, and the two
-      controls that exist to feel good (tap stamping, Surprise) have proven
-      mechanics and unproven feel. First session with real audio decides
-      PXF-2's default and PX6's bias constants. **Operator.**
+- [ ] **PXF-11 — most of this was derivable and has now been derived.** The
+      claim that a listening session was needed held for **one** of the three
+      questions. CX-4 rules: the tap offset default is **-100 ms** with a
+      calibration gesture that replaces it (research-grounded, not taste); the
+      tap feedback treatment is **visual, with no stamp click** (a click masks
+      the onset the user is judging and is known to perturb synchronisation);
+      Surprise's constants are **three-of-five wrong** on argument alone. What
+      genuinely needs ears is narrow: whether the *revised* Surprise bias
+      produces keepable results. CX-4 defines that as a **nine-minute blind
+      seed comparison** with a pass condition, not an open-ended session.
 - [ ] **PXF-12 — B09 remainder (PX6):** the route editor's 104-band stepper is
       a different control with a different failure mode, deliberately not
       taken; keyboard nudge conflicts with the transport's arrow keys and
       needs a decision rather than a silent resolution.
+
+## GX — the gate was not hermetic, and the PX wave's green was not reproducible (2026-08-07)
+
+Found while re-running `tools/verify.sh` after the consultation, and it is the
+most important thing on this page. **Fixed**; recorded because the failure mode
+is subtle and will otherwise be reintroduced.
+
+`crates/musializer-app/src/ui/preferences.rs` resolves `ui.json` through
+`XDG_CONFIG_HOME` with a `$HOME/.config` fallback, and `tools/headless_check.sh`
+set neither. So every capture was laid out against **the operator's real
+splitter positions** — `sidebar_width`, `inspector_width`, `timeline_height`,
+`lyric_lane_height`. Three PX sections then hard-coded pointer coordinates read
+off that layout:
+
+| section | probe | was | is |
+| --- | --- | --- | --- |
+| D4 timeline (PX5) | `hover=`, `middle-drag=` | y=470 | y=610 |
+| first-run entry points (PX4) | `click=` Import / Clear | y=246 / y=271 | y=375 / y=400 |
+| Tune wheel (PX6) | `hover=` amplitude row | x=900 | x=1050 |
+
+Those coordinates **never** worked against a default configuration — verified by
+building PX5's own merge commit `683395a` in a worktree and probing it with an
+isolated config home, where the marker row is at 610 exactly as it is on master.
+The wave's `22 passed / 0 failed` was true only for the preference state on this
+machine at that hour. When the operator opened the application after the wave
+landed and moved a splitter, **twenty assertions began failing at once**, and
+every one of them read as a feature regression in a shipped feature.
+
+The fix is three exports at the top of `headless_check.sh` — `XDG_CONFIG_HOME`,
+`XDG_STATE_HOME`, `XDG_DATA_HOME` all pointed at scratch directories under
+`$OUT_DIR`, wiped every run — plus the re-calibration above, each value
+re-derived by probing and confirmed to reproduce the assertion's *existing*
+expected output. Not one expected value changed: the logic was right and only
+the coordinates were wrong, which is exactly why this was invisible.
+
+`tools/timeline_tick_plate.py` needed a real fix too. It locates the waveform
+lane by finding the **longest** run of blue-dominant rows, which is only the
+timeline while the timeline is taller than the preview — Spectrum's own bars are
+blue-dominant, and at the default 1280x720 layout they occupy 51 rows against the
+lane's 46, so the tool measured the preview and reported its vacuity guard. It
+now takes the **lowest** substantial run, because the band's position is
+structural where its height is not.
+
+Three lessons, in the order they cost time:
+
+- **A gate whose result depends on a file outside the repository is not
+  evidence.** It cannot fail on someone else's machine and it cannot fail twice
+  the same way on this one. Isolate every per-user root, not just the one a
+  section happened to need — `headless_check.sh` already isolated
+  `XDG_CONFIG_HOME` for the route-persistence section and `HOME` for the codex
+  discovery section, so the *idea* was present and applied locally instead of
+  globally.
+- **A hand-derived pixel coordinate is a hard-coded expectation about a layout
+  nobody pinned.** The repository's own rule — "a property assertion cannot pin a
+  value" — has a mirror image: a *value* assertion about geometry needs the
+  geometry pinned, or it pins the machine. The durable fix is to make the probe
+  name its target (`click=import-ascii`) or to report lane rectangles so the gate
+  can compute the point. Filed as **GX-1**.
+- **Locating a rectangle by "the biggest thing that looks like it" is a
+  heuristic, and heuristics need a negative control too.** The tick-plate tool's
+  comment correctly argues against hard-coded band heights and then chose a rule
+  that silently selects a different rectangle when the window changes shape.
+
+- [ ] **GX-1 — probes should name their target, not its pixel.** Either accept a
+      widget name in `--ui-probe click=`/`hover=` and resolve it through the id
+      table, or add a report line carrying the lane and control rectangles so the
+      gate computes the point it presses. Until then every coordinate in
+      `headless_check.sh` is a latent version of the defect above.
+- [ ] **GX-2 — the 25 ms frame-stall assertion fails under unrelated machine
+      load** and has roughly 0.6 ms of headroom. It failed twice during this
+      session's verification while an unrelated process on the operator's machine
+      held load average 15 (worst 25.3 ms, then 33.2 ms); it passes on an idle
+      machine. Either measure against a load-normalised budget, report load with
+      the verdict, or make the check advisory outside CI. Until then, a stall
+      failure needs `uptime` checked before it is believed.
+
+## CX — the consultation rulings (2026-08-07)
+
+Five design questions the PX wave left open were put to `gpt-5.6-sol` in
+parallel, read-only, each with the repository's own files named as required
+reading. The prompts are in `build/consult/q*.md` and the answers in
+`build/consult/final-a*.md`; both are gitignored, so the rulings that matter are
+transcribed here. **Every code claim in them was verified against the tree
+before being recorded** — one was a live defect nobody had noticed, and it is
+fixed below.
+
+### CX-0 — the defect the consultation found on the way past
+
+`suggest_path`/`suggest_clip_path`/`suggest_still_path` printed the export's
+`height` as the `p` rung. EX2 defines the rung as the **short** edge, so:
+
+| geometry | proposed | should be |
+| --- | --- | --- |
+| 1920x1080 (16:9) | `1080p30` | `1080p30` — unchanged |
+| 1080x1920 (9:16) | **`1920p30`** | `1080p30-9x16` |
+| 1080x1080 (1:1) | **`1080p30`** — collides with 16:9 | `1080p30-1x1` |
+| 1234x568 (no preset) | `568p30` | `1234x568-30fps` |
+
+The 1:1 row is the one that costs work: a square render and a wide render of the
+same track and scene proposed **the same file name**, so the second silently
+replaced the first — the exact collision `suggest_clip_path` was written to
+prevent, one axis over. Fixed with `Aspect::file_token` plus
+`video_token`/`still_token`; 16:9 stays byte-identical because "1080p" already
+means 1920x1080 to everyone, and the marked case carries the mark.
+
+### CX-1 — event markers: no legend, change the encoding (PXF-8)
+
+- **A legend is the wrong instrument.** It would teach a distinction the eye
+  still cannot make: the head is a 5 px disc with a 2 px ring, over a waveform.
+  LX1 is not a precedent — lyric provenance rides 50–66 px blocks and decides
+  whether a cue renders at all.
+- **Move authorship from shape to position: two edge-anchored rails.** Manual
+  events keep the top-anchored lollipop (filled disc, solid stem); proposals
+  become **bottom-anchored flags** (upward tab, dashed stem). Colour keeps
+  meaning type in both. Top-versus-bottom is perceivable *before* either shape
+  resolves, costs no band height, and settles the `+ Feel` ambiguity that forced
+  the second channel: an amber top marker is mine, an amber bottom marker is
+  proposed.
+- **Provisional means patterned, not faded.** The 0.45-alpha full-height stem is
+  what makes a set of proposals read as fog. Use a near-opaque flag with a 1 px
+  outline and a crisp dashed stem (~3 px on, 3 px off), short by default and
+  extended to a full-height high-contrast guide only on hover/selection. No
+  hollow centre — punched-out detail is the first thing aliasing destroys at
+  this size.
+- **Cluster by projected pixel separation, not by zoom factor.** At whole-track
+  density, collapse near proposals into one type-coloured capsule with a count.
+- **The invitation (D of the question): make proposals a review queue.** An
+  actionable summary in the existing event-row footprint — `AI proposals · 14 ·
+  Review` — entering a focused pass that dims manual markers, zooms to the first
+  cluster, auditions from just before each proposal and offers
+  Accept/Move/Dismiss/Next, with `5 of 14 reviewed` and full undo. Accept
+  promotes the event into the manual lane keeping its type. That turns the
+  marker from metadata into the entrance from analysis to authorship.
+- **Acceptance test:** with no hover and no help, a user names manual vs
+  proposed at a glance for randomly indicated marks, and 14–30 proposals do not
+  obscure the envelope. Calibrate the cluster threshold from captures at 720p,
+  100 % and 150 % UI scale, over one sparse and one dense waveform.
+
+### CX-2 — the clip window persists, as named export variants (PXF-9, PXF-4)
+
+- **Persist it.** An exact musical boundary is authored work. The transient act
+  is choosing a destination and pressing Export; "the teaser begins on this
+  beat" is as much part of the project as captions, scene timing and aspect.
+- **One window is the wrong shape — go straight to a bounded list (max 8) of
+  named *variants*, not ranges.** "Vertical teaser" means 01:12–01:42 **and**
+  9:16/1080p. If variants share one global output config, picking the square
+  loop after the vertical teaser quietly renders it vertically. Each variant
+  owns id, name, full-track-or-window, and width/height/fps/quality/format.
+  Output *paths* and render history stay out — those describe a publication
+  attempt, not the work.
+- **PXF-4 is a prerequisite, not a sibling.** A persisted invisible window is a
+  trap: reopen a project and silently render 20 seconds. Excluded regions dim,
+  In/Out get draggable handles owned by the timeline gesture layer (D4's owner,
+  not the export panel), and the active variant is named on the strip.
+- **A field move alone would ship defects.** Verified against the tree: (i)
+  `Shell::export_clip` (`shell.rs:542`) is app-global and survives a track
+  switch, so track A's clip already reaches track B; (ii) `main.rs:983` seeds it
+  unconditionally from `--render-window`, which would erase restored state, so
+  the flag must override one render rather than write the saved variant; (iii)
+  the model already carries `output.start_seconds`/`end_seconds`, so v2 must
+  *replace* that authority rather than add a second one; (iv) filename
+  suggestions needed CX-0 before variants could be told apart at all; (v)
+  replacing the audio must **report** a variant that no longer fits, never
+  silently clamp it.
+- **Shape:** `musializer.project/v2`, `project-v1.schema.json` left immutable,
+  `export_variants { next_id, active_id, items[0..8] }` with `window: null`
+  meaning full track. A v1 file migrates **in memory** — full-duration range
+  becomes one "Full track" variant, a genuine partial range becomes "Imported
+  clip" — and only the next save writes v2.
+
+### CX-3 — save state: escalate on accumulated risk, and back it with recovery (PXF-1)
+
+- **The escalation rule.** `No file` stays calm until the **first** of: three
+  durable edit *transactions* (one user gesture — a whole slider drag, an
+  editor Apply, an import — not every `ShellCommand` a drag emits); **five
+  minutes** of active use after the first durable edit; or immediately on a
+  **significance event** (lyrics created or imported, first scene-plan segment,
+  Assist applied, imagery imported, an export attempted after an edit). Then the
+  label becomes **`Unfiled work`** in amber — new words, not just a new colour,
+  because the state is not "no file", it is "work with nowhere to go".
+- **Why the hybrid:** "any edit" turns the first curious knob turn into
+  paperwork; a raw count overcounts sliders and undercounts a bulk import; time
+  alone leaves a whole imported lyric document calm for five minutes;
+  significance alone misses an hour assembled from small tuning decisions.
+- **Go past colour, but not to a fake default project.** The product to be is
+  the one that **recovers your work**, not the one that warned you. Smallest
+  honest version: after the first durable edit, write an app-owned recovery
+  snapshot on the existing 1.5 s settle into `$XDG_STATE_HOME/musializer/
+  recovery/`, keeping drafts *as drafts*, referencing audio by path + digest
+  (never re-copying or re-hashing a large file on the frame thread), two
+  generations, cleared only by a named save or explicit discard. On restart:
+  **Recover session** → **Save As to keep it**. Call it *recovery*, never
+  "autosaved project" — it has no user-chosen home. Do **not** silently create
+  permanent projects in a default folder; that trades loss for invisible files
+  and a recents shelf full of experiments.
+- **Fullscreen gets a 6 px attention-only dot**, top right: amber for unsaved or
+  escalated unfiled work, red for failure, **nothing** when saved or when
+  genuinely fresh. On first appearance it expands for ~2.5 s to
+  `Unfiled work · Ctrl+S`, then collapses. Transient-on-entry is not enough — a
+  user can enter fullscreen clean and then change scenes from the keyboard.
+- **The reframing:** `Untitled session — recoverable` → **Keep this cut…** →
+  `Saved` → `Working changes`. A first save then creates a recent-project card
+  with a still-frame thumbnail, which is where CX-5 picks it up.
+
+### CX-4 — tap feel and Surprise: derivable, mostly (PXF-2, PXF-3, PXF-11)
+
+- **Tap offset: default `-100 ms`** (place the cue 100 ms *before* the
+  keypress), **then calibrate.** The two literatures are not in conflict, they
+  describe different behaviours: tapping to a *predictable* beat leads it by
+  ~30–50 ms (negative mean asynchrony), while *reacting* to an unpredicted
+  auditory event measures ~150 ms. A Musializer user has the lyrics in front of
+  them and usually knows the song, so they sit nearer prediction — but vocal
+  entries are less regular than a metronome, and buffering, key sampling and the
+  occasional genuinely reactive tap all bias late. -100 ms is the least-bad
+  population fallback: early enough to kill the "caption chases the singer"
+  feel, not as early as pure reaction would justify.
+- **The real design is the calibration gesture, not the constant.** Play a
+  detected or generated beat through the normal audio path, take **eight** Enter
+  presses, discard the first two, persist
+  `offset = median(beat_time - keypress_time)`. Four taps are too noisy. This
+  captures user, keyboard *and* output latency together and may legitimately
+  come out either sign. Keep `[`/`]` as live 10 ms trim; persist per PXF-2.
+  Comparable tools (Amara, Aegisub, Subtitle Edit) all assume a rough pass plus
+  a correction pass rather than pretending live stamps are final.
+- **Tap feedback: visual, and no click.** On an accepted tap, flash the **whole
+  corrected cue block** — not the keypress position — bright fill plus 3 px
+  outline for 120 ms, then a 180 ms glow decay; draw a short impact mark at the
+  stamped time; and **ghost the next lyric line** near the transport, which aids
+  prediction as much as it acknowledges the press. Refusals get a distinct
+  150 ms red pulse at the same place — nobody reads a toast while keeping time.
+  **Do not click on every stamp:** it masks the musical onset being judged and
+  auditory feedback is known to alter synchronisation, so it is not neutral
+  acknowledgement. Clicks belong only to the calibration/count-in mode. All of
+  the visual half is headless-testable at fixed probe frames.
+- **Surprise: keep two of the five constants, replace three.**
+
+  | constant | ruling |
+  | --- | --- |
+  | precision snapping | **keep** — a displayed value must be the applied value |
+  | Nudge's 12 % reach, triangular about current | **keep** — a sound local mutation |
+  | `SURPRISE_INSET` 5 % of every range | **remove** — it excludes meaningful endpoints. Verified: `settings.pulse.petals` is `0..12` where **0 means auto**, and a 5 % inset makes 0 undrawable; on `-180..180` it carves a gratuitous 36° forbidden arc. Replace with per-descriptor endpoint-risk metadata |
+  | `SURPRISE_MOVE_CHANCE` 0.75 | **0.45** — nine changed controls out of twelve is not "the scene stays recognisable"; it only looks recognisable because it is still the same renderer |
+  | `SURPRISE_TOGGLE_CHANCE` 0.25 | **0.15** — with two toggles, 0.25 gives a 44 % chance that at least one whole-scene mode flips *every press*, which is not "occasionally" |
+
+  Also: `is_angle` infers "circular" from `minimum < 0 && maximum > 0`. That is
+  currently true of all five (verified: four hue controls plus
+  `settings.atlas.orbit`), but it is unsafe inference for any future symmetric
+  range that is not circular, and `atlas.orbit` is a camera composition control
+  rather than colour. Mark cyclic descriptors explicitly. And the right
+  user-facing knob is **one Adventure control** (default 50/100) that moves the
+  count and the distance together, over per-descriptor sensitivity underneath —
+  density, camera, glow and hue do not tolerate equal perturbation.
+- **What still needs ears — and it is fifteen minutes, not an afternoon.** The
+  offset design and the feedback treatment are derivable now and were derived.
+  Only Surprise's *keepability* needs a human: one sparse and one energetic
+  track, Song Atlas and Cadence, five current seeds and five proposed seeds per
+  scene compared blind, recording only keep / interesting-but-fixable / reject.
+  **Pass condition: ≥2 keeps and ≤1 reject per scene, and consecutive presses
+  visibly distinct.** Four more minutes validates the tap offset (calibrate,
+  stamp eight familiar lines, inspect the median residual); two more compares
+  80/120/200 ms flashes.
+
+### CX-5 — thumbnails are the unlock, but only the track-specific kind (PXF-6)
+
+- **Yes, with a condition.** Ten 24–52 px *text* tiles make choosing a visual
+  language a ten-step select/watch/backtrack loop; pictures make it perceptual
+  comparison. But the case against is real — tiny thumbnails can become coloured
+  noise, a silent or transitional playhead misrepresents a scene, stateful
+  scenes make correct generation much harder than screenshotting, and a **stale
+  preview is worse than text because it confidently lies**. So:
+  **track-specific thumbnails are an unlock; canned pictures are decoration.**
+- **Priority, explicitly: trust outranks delight.** Validate tap feel (cheap
+  uncertainty reduction) → close PXF-1/CX-3 → thumbnails → tap flash, markers,
+  clip persistence.
+- **Kind: a deterministic still of the current track at the current playhead**,
+  through the settings, routes, lyrics, semantic data, imagery, seed and aspect
+  that clicking that tile would actually produce, at ~256x144 with the name kept
+  overlaid. Rejected: looping animations (ten competing loops are noise), canned
+  stills (conceal reactivity, tuning, lyrics, imported imagery), live miniatures
+  (ten scene updates per display frame, forever, competing with the real
+  preview).
+- **The non-obvious cost:** several scenes accumulate deterministic history, so
+  an honest preview is *not* ten final draws. Prepare audio and analyzer state
+  once, replay ten candidate `SceneInstance`s through that shared frame
+  sequence, then draw each final state once.
+- **Generation policy.** Trigger on track open, first reveal of the browser,
+  pause, a seek stationary ~250 ms, or a relevant project edit — **never chase
+  the playhead during playback**; keep the last coherent set. Cancel obsolete
+  work by generation number. Key on track fingerprint + project revision + frame
+  index + scene id + seed + effective settings/routes/cue tuning + lane/asset
+  revision + aspect + renderer-cache version. Draw one or two tiles per app
+  frame under a time budget, hold results privately until **all ten** succeed,
+  then swap one atlas atomically. **No per-tile pop-in** — show ten uniform
+  placeholders and one panel-level `Preparing previews at 01:23`. Persist only
+  the latest complete atlas per track in a bounded XDG cache, never in `.musi`.
+- **Recent projects: use the playhead at last successful save**, which is both a
+  visual memory and where the user expects to resume — so **PXF-7 comes first**.
+  Loudest-moment picks spectacle over recognition; a fixed timestamp ignores
+  structure. Update the poster only after a successful save, so the shelf shows
+  durable work.
+- **Build a poster-frame *service*, not a thumbnail widget.** A deterministic
+  frame request (project revision, track, frame index, optional forced scene,
+  aspect, size, provenance) also yields chosen project posters, shareable
+  stills, cover-art aspect variants, a per-cue contact sheet or storyboard, and
+  preset comparison. Keep the recipe and provenance; the cached bitmap is not
+  the product. Closing PXF-5 (the still blocking the frame loop) falls out of
+  the same cancellable prepared-frame batch.
 
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 
@@ -1139,8 +1458,10 @@ open, in the order a session should pick it up:
 
 | # | Work | Where | Size |
 | --- | --- | --- | --- |
+| 0 | **The fifteen-minute listening session** — the only thing in the whole PXF debrief that a human genuinely has to do, now that CX has scoped it: validate the tap offset (4 min), compare 80/120/200 ms flashes (2 min), and blind-compare five current against five proposed Surprise seeds on two tracks (9 min), against CX-4's stated pass condition | CX-4 | 15 minutes, operator |
 | 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
-| 2 | **PXF-1..12** (wave debrief, five operator calls among them) and the remaining UX0-B (B06, B10–B19) and UX0-C (C05 thumbnails — the unlock three agents pointed at — plus C08, C09, C17) | PX + UX0 sections | medium |
+| 2 | **The CX rulings, in their own stated order:** CX-3 save trust (escalation + recovery snapshot), then CX-5 thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue, then CX-2 export variants (PXF-4 first, schema v2), then CX-4's revised Surprise constants. Trust outranks delight — that ordering is a ruling, not a preference | CX + PX sections | large; four or five agents |
+| 2b | The remaining UX0-B (B06, B10–B19) and UX0-C (C08, C09, C17); PXF-3, PXF-5, PXF-10, PXF-12 | UX0 sections | medium |
 | 3 | C2/C3/C5 durable-edit remainder, D5–D8, then E2–E4 (prove the copied bundle runs), then F/G honesty and gates; DX1–DX9 dev-ex items, DX8 first | this document | large |
 | 4 | AP5-a/b/c/d, AP6-e — modality-loss invalidation, no-network-hang test, diagnostics bundle collector, clipboard canary, deferred discovery decisions | AP5, AP6 tranches | small each; c is a feature |
 
