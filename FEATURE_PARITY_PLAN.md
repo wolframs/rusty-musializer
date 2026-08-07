@@ -678,21 +678,22 @@ become needles; and the four 3D scenes crop horizontally because raylib's
 actually fills a tall frame better than a wide one. Only Song Atlas loses its
 subject, its terrain slab running off both sides. All shippable, none fixed.
 
-## Start here next session (updated 2026-08-05)
+## Start here next session (updated 2026-08-07)
 
-The assist workstream (`d132a3e`..`ed7cb86`) is closed: lyric localization,
-provider contracts, persistence, discovery, the AI settings dialog, execution
-on resolved routes, and an audited evidence sweep. `tools/verify.sh` is 21
-passed / 0 failed and the tree is clean. What is open, in the order a session
-should pick it up:
+The assist workstream (`d132a3e`..`ed7cb86`) is closed, and so are the operator
+rounds of 2026-08-06/07: LX1–LX3 (cue provenance, the lane's affordances, the
+plan surviving a scene pick) and EX1–EX4 (the click probe and the id-collision
+fix, aspect presets, the linear-light Master resolve, the stall instrumentation)
+— commits `8a5175c`..`9db6684`. UX0-A (all 14 confirmed defects) and UX0-D (all
+four blind spots) are fully closed. `tools/verify.sh` is 21 passed / 0 failed
+and the tree is clean. What is open, in the order a session should pick it up:
 
 | # | Work | Where | Size |
 | --- | --- | --- | --- |
 | 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
-| 2 | AP5-a/b, AP6-e — modality-loss invalidation, no-network-hang test, and the deferred ffmpeg/whisper/venv discovery decisions | AP5, AP6 tranches | small each |
-| 3 | AP5-c/d — diagnostics bundle collector (never built, contracts §4 E7) and the clipboard canary path | AP5 tranche | c is a feature |
-| 4 | R9 remainder is **done**; nothing open in LT1 except what the benchmark may change | LT1-R | — |
-| 5 | **UX0** and the P0–P4 series below — the wider parity backlog, untouched by the assist work | this document | the bulk |
+| 2 | **UX0-B (19 items) and UX0-C (9 remaining)** plus the C1–C5 durable-edit tranche — the product backlog; suited to a disjoint-ownership agent fan-out | this document | the bulk |
+| 3 | D1–D8 missing entry points and timeline affordances, then E2–E4 (prove the copied bundle runs), then F/G honesty and gates | this document | large |
+| 4 | AP5-a/b/c/d, AP6-e — modality-loss invalidation, no-network-hang test, diagnostics bundle collector, clipboard canary, deferred discovery decisions | AP5, AP6 tranches | small each; c is a feature |
 
 Two standing facts a new session needs: the operator's OpenRouter key lives in
 `~/.config/musializer/credentials.json` (the repo `.env` is legacy CLI-only and
@@ -986,9 +987,13 @@ photograph a stray tooltip (the dwell is infinite unless a tip was asked for).
 
 - [ ] **UX0-C01 — clip export:** expose render in/out or start/duration controls
       and drive the existing windowed `RenderPlan` path (`review` 3.1).
-- [ ] **UX0-C02 — vertical and square output:** add explicit width/height output
+- [x] **UX0-C02 — vertical and square output:** add explicit width/height output
       formats without changing the C-ordered persisted resolution enum, then
       capture-audit every scene at tall and square aspect ratios (3.2).
+      *Done 2026-08-07 as EX2 (`9db6684`), see its section: ASPECT row
+      (16:9/9:16/1:1/4:5, rung names the short edge, 16:9 byte-identical),
+      thirty renders — ten scenes at three aspects — audited frame by frame,
+      caption and ASCII Field fixed, preview framed to the export aspect.*
 - [ ] **UX0-C03 — lyric tap timing:** deliver the play-and-tap stamping workflow,
       row seek and advancement described by B02 as a polished primary flow (3.3).
 - [ ] **UX0-C04 — preset audition/A-B:** make preset exploration reversible with

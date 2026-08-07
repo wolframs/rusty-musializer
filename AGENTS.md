@@ -8,8 +8,11 @@ and save, video exports through FFmpeg, every bottom panel is real, and
 against the frozen C, a headless capture gate, and the assist-era gates
 (secret canary scan among them). The sole live completion queue
 is `FEATURE_PARITY_PLAN.md`. It records the application-boundary gaps those gates
-do not cover, including project lanes not reaching `SceneFrame`, automatic scene
-plans not being driven, and the missing external support bundle.
+do not cover — currently the durable-edit guarantees (complete dirty marking,
+all-track autosave, draft guards), the missing C entry points (file drop, ASCII
+image import, lyrics TSV, timeline pan/markers), proving the copied support
+bundle actually runs (Assist end-to-end, Google Fonts, doctor/dist), and the
+UX0-B/UX0-C workflow-friction and product-opportunity backlog.
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
 
