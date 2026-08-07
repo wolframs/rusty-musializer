@@ -1291,22 +1291,86 @@ merges them into `app.shared_presets`, which is the library Tune reads.
 
 ### D1 — typed file-drop dispatch
 
-- [ ] Dispatch dropped `.musi` files through project open.
-- [ ] Dispatch PNG/JPEG/BMP through ASCII import and select ASCII Field.
-- [ ] Continue dispatching supported audio formats through track load.
-- [ ] Preserve the C behavior that an image dropped before audio is staged for the
+- [x] Dispatch dropped `.musi` files through project open.
+- [x] Dispatch PNG/JPEG/BMP through ASCII import and select ASCII Field.
+- [x] Continue dispatching supported audio formats through track load.
+- [x] Preserve the C behavior that an image dropped before audio is staged for the
       next track.
-- [ ] Report unsupported/corrupt input by its attempted type.
-- [ ] Add non-interactive probes or direct command tests for all three branches.
+- [x] Report unsupported/corrupt input by its attempted type.
+- [x] Add non-interactive probes or direct command tests for all three branches.
+
+Done (PX4, `e53de93`). `ui::shell::classify_drop` is the one decision point and
+`drop_command` turns it into one of three commands; `dropped_files` runs every
+path — dropped or probed — through both.
+
+**The else branch is audio, which is the oracle's (`plug.c:7559`), not a
+whitelist.** A `.txt` is *attempted* as audio and refused by the decoder with a
+notice that names audio, which is what "reported by its attempted type" asks for.
+A fourth "unsupported" arm would mean this application, rather than raylib,
+deciding what raylib can open — and it would start silently refusing files that
+work.
+
+**Divergence from the oracle: the match is case-insensitive.** `IsFileExtension`
+is not, so in the C a `.PNG` off a camera or a Windows share goes to the audio
+decoder and reports as a corrupt song. That is a defect rather than a contract,
+and nothing in a `.musi`, an MP4 or a documented command line can observe the
+difference.
+
+Invented for the checks: **`--ui-probe drop=PATH`**, one synthesized drop on the
+first frame that draws, through the same classifier the device path uses. Xvfb has
+no drag-and-drop, so the whole of D1 was a three-arm branch nothing in this
+repository could enter — the exact shape of EX1's SIZE row. Paired with a
+`drop probe:` report line that records what the shell *dispatched*, not what a
+reporter recomputed, so it cannot read green while the branch is dead.
+
+The `ascii:` report line now names a **staged** grid instead of printing "no
+track", because "no track" cannot be told from the drop having been discarded —
+the same defect class as a lane that never reaches a frame.
+
+Evidence: 3 unit tests in `ui::shell::tests` (a 16-row dispatch table asserted as
+*commands* rather than as the enum, a pairwise-distinctness negative control, and
+a check that the picker's filter and the classifier agree on exactly four
+formats); gate block `tools/headless_check.sh:4175-4523`, five drop captures
+asserting both the branch chosen and what that branch then did — project opens
+and lands in the recent list, image with no track stages 54x54, image with a
+track becomes the grid *and* selects ASCII Field, audio loads, `.txt` is
+attempted as audio and refused with 0 tracks open.
 
 ### D2 — ASCII image import and clear UI
 
-- [ ] Add "Import image -> ASCII" to the scene browser with PNG/JPEG/BMP filters.
-- [ ] Show "Clear image" only when the active track owns an image-backed grid.
-- [ ] Import transactionally, select ASCII Field on success and mark the project
+- [x] Add "Import image -> ASCII" to the scene browser with PNG/JPEG/BMP filters.
+- [x] Show "Clear image" only when the active track owns an image-backed grid.
+- [x] Import transactionally, select ASCII Field on success and mark the project
       dirty; a failed decode must preserve the previous grid.
-- [ ] Clear path, digest, cells and dimensions together and mark dirty.
-- [ ] Capture empty, populated, cleared and staged-with-no-track states.
+- [x] Clear path, digest, cells and dimensions together and mark dirty.
+- [x] Capture empty, populated, cleared and staged-with-no-track states.
+
+Done (PX4, `e53de93`). `Shell::ascii_image_footer` draws below the scene tiles;
+`dialogs::filters::ASCII_IMAGE` is the picker filter and a unit test pins it to
+the same four extensions `classify_drop` imports, so an image cannot import from
+the button and fail from a drop.
+
+**The footer reserves both button heights whether or not Clear is drawn.** Sizing
+the tile grid from the reservation means importing an image cannot make ten scene
+tiles jump a row and clearing it cannot make them jump back — a footer that
+reserved only what it drew would resize its neighbour as a side effect of an
+unrelated action.
+
+Transactionality is inherited rather than re-implemented: `import_ascii_image`
+already canonicalizes, hashes, then decodes, so a failed decode never moves
+state. Scene selection is on the success path only — the oracle's `&&`
+(`plug.c:7552`) — because switching to an empty ASCII Field is a bad reward for a
+typo. Clearing drops one `Option`, so path, digest, cells and dimensions cannot
+part ways; "together" is structural rather than a discipline four assignments
+have to keep.
+
+Evidence: four captures in the gate block, and each state proved by a press
+rather than by a picture. Empty asserts that Clear's *seat* claims nothing — a
+capture cannot distinguish "absent" from "drawn in the background colour".
+Cleared asserts `claimed=0xd00000002` and `ascii: none (procedural mode)`. Import
+asserts `claimed=0xd00000001` under a `PATH` carrying neither `kdialog` nor
+`zenity`: Xvfb *is* a reachable display, so an unguarded picker would draw a modal
+on the capture display and block forever — a hang, not a test.
 
 ### D3 — timed-lyrics TSV import/export
 
