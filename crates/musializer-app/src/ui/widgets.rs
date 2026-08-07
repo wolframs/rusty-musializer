@@ -1604,6 +1604,12 @@ pub mod id {
     /// [`SEEK`] — until EX1, so its first four controls were starved by the
     /// transport row's fine-seek group and scrub bar, which draw before it.
     pub const EVENT_PRESET: u32 = 11;
+    /// One per merged event marker over the waveform lane, indexed by the
+    /// marker's position in the merged view (D4). A namespace of its own rather
+    /// than more [`TIMELINE`] indices, because that namespace's indices are the
+    /// strip's own buttons and a marker count that changes with the project
+    /// would renumber them.
+    pub const TIMELINE_EVENTS: u32 = 12;
     /// The lyrics panel's four groups (`panels::lyrics::ns`). Their indices are
     /// named there; the namespaces are allocated here.
     pub const LYRICS_ACTIONS: u32 = 16;
@@ -1632,7 +1638,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 19] = [
+    pub const ALL: [(&str, u32); 20] = [
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),
@@ -1644,6 +1650,7 @@ pub mod id {
         ("UTILITY", UTILITY),
         ("EVENT_ROW", EVENT_ROW),
         ("EVENT_PRESET", EVENT_PRESET),
+        ("TIMELINE_EVENTS", TIMELINE_EVENTS),
         ("LYRICS_ACTIONS", LYRICS_ACTIONS),
         ("LYRICS_FORM", LYRICS_FORM),
         ("LYRICS_CAPTION", LYRICS_CAPTION),
@@ -1806,6 +1813,7 @@ mod tests {
             ("UTILITY", id::UTILITY),
             ("EVENT_ROW", id::EVENT_ROW),
             ("EVENT_PRESET", id::EVENT_PRESET),
+            ("TIMELINE_EVENTS", id::TIMELINE_EVENTS),
             ("LYRICS_ACTIONS", id::LYRICS_ACTIONS),
             ("LYRICS_FORM", id::LYRICS_FORM),
             ("LYRICS_CAPTION", id::LYRICS_CAPTION),
