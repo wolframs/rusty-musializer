@@ -3244,9 +3244,22 @@ impl Shell {
         let mut report = EventMarkerReport::default();
         let mouse = input.ui_scale.mouse(d);
         // Collected before drawing so the tooltip for the marker under the
-        // pointer can be raised *after* every marker is painted. Drawing a tip
-        // inside the loop would let a later marker's line paint over it.
+        // pointer can be raised *after* every marker is painted, and outside the
+        // scissor below — a tip clipped to the lane it explains would be cut in
+        // half. Drawing a tip inside the loop would also let a later marker's
+        // line paint over it.
         let mut hovered: Option<(UiRect, String, usize)> = None;
+
+        // The clip the oracle opens around this whole block (`plug.c:3050`), and
+        // it is load-bearing rather than tidy: the cull below admits a marker up
+        // to 8 px outside the lane, deliberately, so a marker whose *line* is
+        // just off-screen still shows the part of its head that belongs on
+        // screen. Without the scissor that head — 5 px in every direction —
+        // paints onto the panel background outside the lane instead. It is not
+        // hypothetical: the 4x capture in the gate has an event exactly on the
+        // right edge whose head measured 54 px against the usual 39, because it
+        // was spilling over the border.
+        let mut clip = widgets::begin_scissor(d, strip, input.ui_scale);
 
         for (index, (event, lane)) in self.timeline_events.iter_with_lane().enumerate() {
             // The C's own bounds: outside the track is not drawn at all, and a
@@ -3279,7 +3292,7 @@ impl Shell {
                 // user placed. It is still well above the waveform it sits on.
                 EventLane::Semantic => 0.45,
             };
-            d.draw_line_ex(
+            clip.draw_line_ex(
                 Vector2::new(x, strip.y),
                 Vector2::new(x, strip.y + strip.height),
                 3.0,
@@ -3287,7 +3300,7 @@ impl Shell {
             );
             match lane {
                 EventLane::Manual => {
-                    d.draw_circle_v(Vector2::new(x, strip.y), MARKER_HEAD_RADIUS, colour);
+                    clip.draw_circle_v(Vector2::new(x, strip.y), MARKER_HEAD_RADIUS, colour);
                     report.manual += 1;
                 }
                 EventLane::Semantic => {
@@ -3296,8 +3309,8 @@ impl Shell {
                     // circles rather than `draw_circle_lines`, whose 1 px stroke
                     // vanishes against a busy envelope at the exact size where
                     // the distinction has to be readable.
-                    d.draw_circle_v(Vector2::new(x, strip.y), MARKER_HEAD_RADIUS, colour);
-                    d.draw_circle_v(
+                    clip.draw_circle_v(Vector2::new(x, strip.y), MARKER_HEAD_RADIUS, colour);
+                    clip.draw_circle_v(
                         Vector2::new(x, strip.y),
                         MARKER_HEAD_RADIUS - MARKER_RING_THICKNESS,
                         color::ui_raised(),
@@ -3334,6 +3347,11 @@ impl Shell {
                 ));
             }
         }
+
+        // Closed before the tooltip: a tip clipped to the lane it explains would
+        // be cut off at the lane's own edge, which is worst for exactly the
+        // markers nearest the edges.
+        drop(clip);
 
         if let Some((anchor, text, index)) = hovered {
             report.hovered = Some(text.clone());

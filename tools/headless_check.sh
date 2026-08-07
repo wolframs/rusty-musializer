@@ -4331,7 +4331,7 @@ else
     # light the Follow button over a view that never moved, so the refusal has to
     # leave `free-view` off — which is the half a picture cannot show.
     d4_capture wheel-pan-whole "play=0,time=3,hover=640x470,wheel=2,wheel-shift=1"
-    d4_expect wheel-pan-whole '1\.000x  0\.000\.\.8\.000  gesture=none  ' \
+    d4_expect wheel-pan-whole '1\.000x  0\.000\.\.8\.000  of 8\.000  gesture=none  ' \
         "a Shift notch over a whole-track view is refused and does not free the view"
 
     # --- middle-drag pan, and the claim it must release --------------------
@@ -4350,7 +4350,7 @@ else
         "the drag suspended follow and released its claim"
 
     d4_capture drag-pan-back "play=0,time=3,zoom=4,hover=640x470,middle-drag=400x900"
-    d4_expect drag-pan-back '4\.000x  1\.456\.\.3\.456  free-view  gesture=none' \
+    d4_expect drag-pan-back '4\.000x  1\.456\.\.3\.456  of 8\.000  free-view  gesture=none' \
         "and the reverse drag is symmetric, to the millisecond"
 
     # Released *outside the window*, which is the case the plan calls out by
@@ -4362,7 +4362,7 @@ else
         "a drag released off-window does not strand the pointer claim"
 
     d4_capture drag-pan-whole "play=0,time=3,hover=640x470,middle-drag=900x400"
-    d4_expect drag-pan-whole '1\.000x  0\.000\.\.8\.000  gesture=none' \
+    d4_expect drag-pan-whole '1\.000x  0\.000\.\.8\.000  of 8\.000  gesture=none' \
         "a middle-drag over a whole-track view begins no gesture"
 
     # --- the tick labels' plate -------------------------------------------

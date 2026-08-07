@@ -1357,6 +1357,19 @@ mostly antialiased grey; and a box reconstructed from `plug.c`'s own `-3, -2, +6
 +4` offsets hung three rows below the real plate, because those offsets are around
 the text *origin* and a digit's ink starts lower.
 
+**The oracle's clip turned out to be load-bearing, and reading the measurement is
+what found it.** `plug.c:3050` opens a `BeginScissorMode` around the whole
+waveform block, which is easy to read as housekeeping. It is not: the marker cull
+below it admits a marker up to **8 px outside** the lane on purpose, so a marker
+whose line is just off-screen still shows the part of its head that belongs on
+screen — and a head is 5 px in every direction. Without the scissor that head
+paints onto the panel background outside the lane. The first version here had no
+scissor, and the evidence was already sitting in the capture: the 4x frame's
+right-edge marker measured **54 px of head against the usual 39**, because it was
+spilling over the border. The tooltip is deliberately raised *after* the scissor
+closes, since a tip clipped to the lane it explains would be cut off worst for the
+markers nearest the edges.
+
 **A `.musi` cannot carry an off-track event.** `validate_event_lanes` refuses any
 lane holding a timestamp past `audio.duration_seconds`, so the oracle's
 `plug.c:3089` bound is reachable only through live recording — the gate uses
@@ -1394,6 +1407,23 @@ the overshoot case the plan names and the common way to end a fast drag.
 
 New gate section: `tools/headless_check.sh:4174-4390`, one contiguous block,
 17 assertions over 11 captures.
+
+**Left for the operator to judge: whether the markers want a legend.** LX1 gave
+the cue lane "a legend and tooltips", and the symmetry argument says do the same
+here. The reason it was not built: the four *type* colours already have a legend,
+and it is the manual event row sitting directly above the strip — `+ Feel`,
+`+ Cue` and `+ Custom` each carry the swatch of the colour they create, so the
+key is next to the thing it keys. What no legend states is the **head shape**,
+and that is in every marker's tooltip. A fifth strip of chrome in a band that is
+already three lanes plus a zoom row is a real cost, so this is a taste call rather
+than a gap — but it is a taste call, and it belongs to the operator.
+
+Not covered: the gate asserts the tooltip's *text and hit test* (`hover=[manual
+lyric  ·  00:00.750]` on the report line) but not that the tip **rendered**. The
+tooltip render path is shared with every other tooltip and is gated by the
+existing peak-luma check elsewhere in the sweep, so this is a deliberate boundary
+rather than an oversight — recorded because "the shell knew the text" and "the
+user saw it" are different claims.
 
 Out of scope and left alone: `ui/panels/lyrics.rs` and the lyric cue lane (PX2's),
 every other panel, all `mod.rs` files and the root manifests.
