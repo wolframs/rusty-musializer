@@ -1154,6 +1154,166 @@ pub(crate) fn base64_decode(input: &[u8], max_bytes: usize) -> Result<Vec<u8>, B
     Ok(out)
 }
 
+// ---------------------------------------------------------------------------
+// Undo (UX0-B03)
+// ---------------------------------------------------------------------------
+
+/// How many undo steps one track's editor keeps.
+///
+/// Every entry is a whole document, so the ceiling is real memory: a full 1024
+/// cues of 511 bytes is about 600 KiB, and 64 of those is under 40 MiB in the
+/// worst case a `.musi` file can express — with a realistic 60-line lyric it is
+/// a few hundred kilobytes. That is the price of the design decision below, and
+/// it is worth stating rather than discovering.
+pub const LYRIC_HISTORY_DEPTH: usize = 64;
+
+/// A bounded undo/redo stack over whole lyric documents (UX0-B03).
+///
+/// ## Why snapshots rather than inverse edits
+///
+/// The obvious design is an inverse-edit log — store `Retime { id, old_span }`
+/// beside every `Retime` and replay it backwards. It is rejected here, and the
+/// reason is worth writing down because it will look like an easy simplification
+/// to a later session.
+///
+/// An inverse has to reproduce **everything** the forward edit touched, and the
+/// operations in this model touch more than they name. `split` allocates an id
+/// from `next_id` and promotes both halves' [`CueOrigin`]; `merge` destroys a
+/// cue, so its inverse has to resurrect an id that `insert` would not hand back;
+/// `update` and `retime` promote origin to [`CueOrigin::UserApplied`], so their
+/// inverse must restore a provenance the edit deliberately overwrote — and
+/// provenance is load-bearing here rather than decorative, since `at_time`
+/// refuses to display a `Potential` cue (LX1). An inverse log that gets any one
+/// of those wrong produces a document that is *valid* and quietly different from
+/// the one the user had, which is the failure mode no test written from the
+/// forward direction catches.
+///
+/// A snapshot cannot be wrong about any of them. It restores cues, `next_id` and
+/// the duration exactly, and the round-trip test below is an equality rather
+/// than a list of properties someone had to think of.
+///
+/// `revision` is the one field that deliberately does **not** round-trip:
+/// [`LyricsDocument::replace`] advances it, because it is a monotone change
+/// counter that everything downstream uses to notice the document moved. An undo
+/// *is* a change, and a caller that cached a frame against revision 7 must not
+/// be told it is still looking at revision 7.
+#[derive(Clone, Debug, Default)]
+pub struct LyricHistory {
+    /// States to go back to, oldest first. Each carries the name of the edit
+    /// that left it behind.
+    undo: Vec<(String, LyricsDocument)>,
+    redo: Vec<(String, LyricsDocument)>,
+}
+
+impl LyricHistory {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Remembers `before` as the state one `label` edit takes you back to.
+    ///
+    /// Called with the document as it stood *before* the edit lands, once per
+    /// user action rather than once per model operation — a cut of five cues is
+    /// five `delete`s and one undo step, because five presses of Ctrl+Z to
+    /// reverse one press of Ctrl+X is not undo, it is arithmetic.
+    pub fn record(&mut self, label: impl Into<String>, before: &LyricsDocument) {
+        // A new edit invalidates the branch that was ahead of it. Keeping the
+        // redo stack would let one press of Ctrl+Y jump the document to a state
+        // that never followed from what is on screen.
+        self.redo.clear();
+        self.undo.push((label.into(), before.clone()));
+        if self.undo.len() > LYRIC_HISTORY_DEPTH {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Forgets everything. Called when the editor binds to another track: cue
+    /// ids restart at 1 in every document, so one track's history restores
+    /// another's cues (the defect `LyricEditor::owner_slot` exists for, one
+    /// layer up).
+    pub fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    /// What the next Ctrl+Z will take back, for a control's label or tooltip.
+    #[must_use]
+    pub fn next_undo_label(&self) -> Option<&str> {
+        self.undo.last().map(|(label, _)| label.as_str())
+    }
+
+    #[must_use]
+    pub fn next_redo_label(&self) -> Option<&str> {
+        self.redo.last().map(|(label, _)| label.as_str())
+    }
+
+    #[must_use]
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
+
+    #[must_use]
+    pub fn redo_depth(&self) -> usize {
+        self.redo.len()
+    }
+
+    /// Steps `document` back one edit, returning that edit's label.
+    ///
+    /// `None` means there was nothing to undo. An `Err` means the stored state
+    /// failed validation on the way back in, which cannot happen for a state
+    /// this document was ever in — it is reported rather than unwrapped because
+    /// silently doing nothing is exactly the "control that lies" failure this
+    /// repository keeps finding.
+    pub fn undo(
+        &mut self,
+        document: &mut LyricsDocument,
+    ) -> Option<Result<String, LyricsValidation>> {
+        let (label, previous) = self.undo.pop()?;
+        let current = document.clone();
+        Some(match document.replace(&previous) {
+            Ok(()) => {
+                self.redo.push((label.clone(), current));
+                Ok(label)
+            }
+            Err(failure) => {
+                // Put it back, so a refused undo costs the user nothing.
+                self.undo.push((label, previous));
+                Err(failure)
+            }
+        })
+    }
+
+    /// Steps `document` forward again, returning the label of the edit redone.
+    pub fn redo(
+        &mut self,
+        document: &mut LyricsDocument,
+    ) -> Option<Result<String, LyricsValidation>> {
+        let (label, next) = self.redo.pop()?;
+        let current = document.clone();
+        Some(match document.replace(&next) {
+            Ok(()) => {
+                self.undo.push((label.clone(), current));
+                Ok(label)
+            }
+            Err(failure) => {
+                self.redo.push((label, next));
+                Err(failure)
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1796,5 +1956,218 @@ mod tests {
             LyricsError::Order.to_string(),
             "lyric cues are not canonically ordered"
         );
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    /// Four cues in four different provenances.
+    ///
+    /// The provenances are the point rather than colour: origin is the field an
+    /// inverse-edit log would most plausibly forget, it is invisible in a span
+    /// comparison, and `at_time` refuses to display a `Potential` cue — so
+    /// losing it across an undo turns a reviewable proposal into a caption on
+    /// screen (LX1).
+    fn seeded() -> LyricsDocument {
+        let mut document = LyricsDocument::new(60.0).unwrap();
+        for (index, (start, end, origin)) in [
+            (0.0, 1.0, CueOrigin::InferredCertain),
+            (2.0, 3.0, CueOrigin::InferredAmbiguous),
+            (4.0, 6.0, CueOrigin::Potential),
+            (8.0, 9.0, CueOrigin::UserApplied),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            document
+                .insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: end,
+                    text: format!("line {}", index + 1),
+                    origin,
+                })
+                .unwrap();
+        }
+        document
+    }
+
+    /// The comparison a round trip is graded on: the cue vector element for
+    /// element — ids, spans, text and origin — plus `next_id` and the duration.
+    #[track_caller]
+    fn same_content(left: &LyricsDocument, right: &LyricsDocument) {
+        assert_eq!(left.cues(), right.cues(), "cues differ");
+        assert_eq!(left.next_id(), right.next_id(), "next_id differs");
+        assert!(
+            (left.duration_seconds() - right.duration_seconds()).abs() < 1e-12,
+            "duration differs"
+        );
+    }
+
+    /// Applies one of every edit kind the editor can produce, recording a
+    /// snapshot before each, and returns the state after every step.
+    fn drive(document: &mut LyricsDocument, history: &mut LyricHistory) -> Vec<LyricsDocument> {
+        let mut states = vec![document.clone()];
+        let steps: [(&str, fn(&mut LyricsDocument)); 8] = [
+            ("Move", |d| d.shift_many(&[1, 2], 0.25).unwrap()),
+            ("Resize", |d| d.retime(3, 4.5, 7.0).unwrap()),
+            ("Stamp", |d| d.retime(4, 20.0, 21.5).unwrap()),
+            ("Edit text", |d| {
+                d.update(2, 2.25, 3.25, "rewritten").unwrap();
+            }),
+            ("Split", |d| {
+                d.split(3, 5.5, "left half", "right half").unwrap();
+            }),
+            ("Merge", |d| {
+                let (first, second) = (d.cues()[0].id, d.cues()[1].id);
+                d.merge(first, second, " ").unwrap();
+            }),
+            ("Insert", |d| {
+                d.insert(LyricCue {
+                    id: 0,
+                    start_seconds: 30.0,
+                    end_seconds: 31.0,
+                    text: "a new line".into(),
+                    origin: CueOrigin::UserApplied,
+                })
+                .unwrap();
+            }),
+            ("Delete", |d| {
+                let id = d.cues().last().unwrap().id;
+                d.delete(id).unwrap();
+            }),
+        ];
+        for (label, edit) in steps {
+            history.record(label, document);
+            edit(document);
+            states.push(document.clone());
+        }
+        states
+    }
+
+    #[test]
+    fn undoing_every_edit_kind_walks_the_document_back_state_for_state() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        let states = drive(&mut document, &mut history);
+        assert_eq!(history.undo_depth(), states.len() - 1);
+
+        // Every intermediate is checked, not only the destination: a stack that
+        // lands on the right document by passing through wrong states in
+        // between is still broken, and only a per-step comparison says so.
+        for expected in states.iter().rev().skip(1) {
+            let label = history
+                .undo(&mut document)
+                .expect("a step to undo")
+                .expect("a state this document was in is always valid");
+            assert!(!label.is_empty());
+            same_content(&document, expected);
+        }
+        assert!(!history.can_undo());
+        assert!(history.undo(&mut document).is_none());
+        same_content(&document, &seeded());
+    }
+
+    #[test]
+    fn redoing_walks_it_forward_through_exactly_the_same_states() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        let states = drive(&mut document, &mut history);
+        while history.can_undo() {
+            history.undo(&mut document).unwrap().unwrap();
+        }
+        for expected in states.iter().skip(1) {
+            history
+                .redo(&mut document)
+                .expect("a step to redo")
+                .expect("valid");
+            same_content(&document, expected);
+        }
+        assert!(!history.can_redo());
+        same_content(&document, states.last().unwrap());
+    }
+
+    #[test]
+    fn the_revision_advances_on_an_undo_because_an_undo_is_a_change() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        history.record("Move", &document);
+        document.shift_many(&[1], 1.0).unwrap();
+        let after_edit = document.revision();
+        history.undo(&mut document).unwrap().unwrap();
+        assert!(
+            document.revision() > after_edit,
+            "revision went {after_edit} -> {} across an undo",
+            document.revision()
+        );
+    }
+
+    #[test]
+    fn a_new_edit_after_an_undo_drops_the_branch_that_was_ahead() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        history.record("Move", &document);
+        document.shift_many(&[1], 1.0).unwrap();
+        history.undo(&mut document).unwrap().unwrap();
+        assert!(history.can_redo());
+
+        history.record("Delete", &document);
+        document.delete(1).unwrap();
+        assert!(
+            !history.can_redo(),
+            "redo must not survive a new edit, or one Ctrl+Y jumps the document to a state that never followed from what is on screen"
+        );
+    }
+
+    #[test]
+    fn the_stack_is_bounded_and_forgets_the_oldest_first() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        for step in 0..(LYRIC_HISTORY_DEPTH + 10) {
+            history.record(format!("step {step}"), &document);
+            let end = 9.0 + f64::from(u32::try_from(step).unwrap()) * 0.001;
+            document.retime(4, 8.0, end).unwrap();
+        }
+        assert_eq!(history.undo_depth(), LYRIC_HISTORY_DEPTH);
+        assert_eq!(
+            history.next_undo_label(),
+            Some(format!("step {}", LYRIC_HISTORY_DEPTH + 9).as_str())
+        );
+        // Walking to the floor never panics and never restores a state from
+        // outside the window.
+        while history.can_undo() {
+            history.undo(&mut document).unwrap().unwrap();
+        }
+        assert_eq!(document.len(), seeded().len());
+    }
+
+    #[test]
+    fn clearing_drops_both_directions_because_ids_restart_in_every_document() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        history.record("Move", &document);
+        document.shift_many(&[1], 1.0).unwrap();
+        history.undo(&mut document).unwrap().unwrap();
+        assert!(history.can_redo() && !history.can_undo());
+        history.clear();
+        assert!(!history.can_redo() && !history.can_undo());
+    }
+
+    #[test]
+    fn the_labels_name_what_each_direction_will_do() {
+        let mut document = seeded();
+        let mut history = LyricHistory::new();
+        history.record("Move 2 cues", &document);
+        document.shift_many(&[1, 2], 0.5).unwrap();
+        assert_eq!(history.next_undo_label(), Some("Move 2 cues"));
+        assert_eq!(history.next_redo_label(), None);
+        assert_eq!(
+            history.undo(&mut document).unwrap().unwrap(),
+            "Move 2 cues".to_owned()
+        );
+        assert_eq!(history.next_undo_label(), None);
+        assert_eq!(history.next_redo_label(), Some("Move 2 cues"));
     }
 }

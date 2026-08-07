@@ -562,6 +562,399 @@ pub fn clamp_form_end(value: f64, start_seconds: f64, duration_seconds: f64) -> 
         .min(duration_seconds)
 }
 
+// ---------------------------------------------------------------------------
+// The timing loop: nudge ladder, typed times, play-and-tap stamping
+// ---------------------------------------------------------------------------
+//
+// **Invented, not the oracle's** (UX0-B02/B04, UX0-C03). The frozen C has one
+// fixed 0.1 s nudge button pair per time row (`lyrics_editor_ui.c:219-250`), no
+// typed times and no stamping at all. Everything below is here rather than in
+// the panel for the usual reason: "did that tap land 20 ms after the previous
+// one, or 20 ms before it" is not a question a screenshot can answer, and the
+// tap loop is the one surface in this editor a user judges by feel.
+
+/// The cue-timing nudge step, in seconds, for the modifier keys held.
+///
+/// Deliberately the same *shape* as the transport's own ladder
+/// ([`crate::ui::transport_bar::seek_step_seconds`]) — Control is fine, Shift is
+/// coarse, and **fine wins when both are held** — at a tenth of its scale,
+/// because a cue boundary is placed against a syllable and a playhead is placed
+/// against a section. Sharing the shape rather than the numbers is the point: a
+/// user who learned Ctrl on the transport two rows above does not have to learn
+/// a second meaning for it here, and the smaller step stays the recoverable
+/// mistake at both scales.
+#[must_use]
+pub fn cue_nudge_step_seconds(fine: bool, coarse: bool) -> f64 {
+    match (fine, coarse) {
+        (true, _) => 0.01,
+        (false, true) => 1.0,
+        (false, false) => 0.1,
+    }
+}
+
+/// Reads a typed cue time back out of the form's own `MM:SS.mmm` readout.
+///
+/// The inverse of `musializer_app::ui::widgets::format_timestamp`
+/// (`ui_widgets.c:329-335`). The two live in different crates because the
+/// formatter is chrome and the parser is an edit — a mistyped parse writes a
+/// wrong number into a `.musi` file, so it belongs where it can be tested
+/// without a GPU. `lyrics.rs`'s `a_typed_time_round_trips_through_the_forms_own_readout`
+/// pins the pair against the real formatter so the split cannot drift.
+///
+/// Accepts what a user will actually type rather than only what the readout
+/// prints: `01:23.456`, `1:23.4`, `1:23`, `83.456` and `83` all mean the same
+/// instant. Refuses anything else — including a negative sign, an hour field and
+/// a seconds field of 60 or more — because a silently-clamped typed time is a
+/// control that lies about what it took.
+#[must_use]
+pub fn parse_cue_timestamp(text: &str) -> Option<f64> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > 32 {
+        return None;
+    }
+    // A bare `+`/`-` would otherwise reach the float parse below and make
+    // `-1:30` mean 90 seconds, or `1e3` mean a thousand.
+    if !text
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b':' || byte == b'.')
+    {
+        return None;
+    }
+    let (minutes, rest) = match text.split_once(':') {
+        None => (0.0, text),
+        Some((minutes, rest)) => {
+            if minutes.is_empty() || rest.contains(':') {
+                return None;
+            }
+            (minutes.parse::<u32>().ok().map(f64::from)?, rest)
+        }
+    };
+    if rest.is_empty() {
+        return None;
+    }
+    let seconds = rest.parse::<f64>().ok()?;
+    // `60.0` is a minute the user meant to type as `01:00`, and accepting it
+    // makes two different strings mean one instant in a field whose whole job is
+    // to be unambiguous. Only enforced where a minutes field was actually
+    // written: `83.456` is a legitimate way to type 1:23.456.
+    if !seconds.is_finite() || seconds < 0.0 || (text.contains(':') && seconds >= 60.0) {
+        return None;
+    }
+    let total = minutes * 60.0 + seconds;
+    total.is_finite().then_some(total)
+}
+
+/// Why a tap did not stamp anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TapRefusal {
+    /// Tap mode is not armed. Not an error the user needs told about.
+    NotArmed,
+    /// The document has no cues to place. Tapping stamps the times of lines that
+    /// already exist; it never invents text.
+    NoCues,
+    /// The run is over — every cue in the armed order has been stamped and
+    /// closed.
+    Finished,
+    /// The playhead has not moved [`LYRIC_MIN_CUE_SECONDS`] past the previous
+    /// stamp. Refused rather than clamped: two taps inside 20 ms is a double
+    /// keypress, and silently accepting one would leave a cue nobody can see and
+    /// nobody meant.
+    TooSoon,
+    /// The playhead is at or past the end of the track, so there is no room for
+    /// a cue at all.
+    PastEnd,
+}
+
+impl core::fmt::Display for TapRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::NotArmed => "Tap mode is not armed.",
+            Self::NoCues => "There are no cues to stamp. Add or import lines first.",
+            Self::Finished => "Every line in this run has been stamped.",
+            Self::TooSoon => "That tap landed less than 20 ms after the previous one.",
+            Self::PastEnd => "The playhead is at the end of the track.",
+        })
+    }
+}
+
+/// One accepted tap: the retimings it asks for, and where the run now stands.
+///
+/// A tap is up to **two** retimings, and that pairing is the whole feature
+/// rather than an optimisation. Stamping a line's start is also the answer to
+/// where the previous line ends (review 1.14), so the previous cue is closed at
+/// the same instant the next one opens — which is what makes a run of taps
+/// produce contiguous captions instead of a row of cues with whatever durations
+/// they happened to arrive with.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TapStamp {
+    /// `(id, start_seconds, end_seconds)`, in the order they must be applied.
+    pub retimes: Vec<(u64, f64, f64)>,
+    /// The cue whose start this tap placed, or `0` when the tap only closed the
+    /// final line.
+    pub opened_id: u64,
+    /// Lines still waiting for a start after this tap.
+    pub remaining: usize,
+    /// Whether this tap ended the run.
+    pub finished: bool,
+}
+
+/// Play-and-tap stamping (UX0-C03).
+///
+/// The instrument. Arm it, start playback, and press the tap key once per line:
+/// each press closes the line before and opens the next one at the playhead.
+///
+/// ## Why the order is captured at arming time
+///
+/// [`LyricTap::order`] is a snapshot of the cue ids taken when the run is armed,
+/// and the cursor is an index into it. It cannot be recomputed from the document
+/// on each tap, because a stamp *moves* a cue and the document sorts by start
+/// time: stamping line 1 at 0:10 while lines 2-4 still sit at their imported
+/// 0:01-0:03 re-sorts it behind them, and a cursor that walked canonical order
+/// would then hand out line 2 twice and never reach line 1 again. The snapshot
+/// makes that unstateable rather than guarded against.
+///
+/// Ids rather than indices for the same reason one layer down: an id survives
+/// the re-sort, and a cue deleted mid-run is skipped by
+/// [`LaneCues::find`] returning `None` rather than silently stamping its
+/// neighbour.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LyricTap {
+    armed: bool,
+    order: Vec<u64>,
+    cursor: usize,
+    offset_seconds: f64,
+    stamped: usize,
+    /// The cue the previous tap opened, and the instant it opened at, so the
+    /// next tap can close it without re-reading a document that may not have
+    /// been written yet. The panel defers its edits by a frame, so the document
+    /// a tap reads is one edit behind — trusting it here would close the
+    /// previous line at its *old* end.
+    open_id: u64,
+    open_start: f64,
+}
+
+/// Largest tap offset the control will take, either way, in seconds.
+///
+/// A quarter of a second each way covers the two things an offset is for — a
+/// user who taps consistently early or late, and the display/audio latency of
+/// the machine — without becoming a way to move a cue somewhere it does not
+/// belong. Past that, drag it.
+pub const LYRIC_TAP_OFFSET_LIMIT_SECONDS: f64 = 0.25;
+
+/// One offset step, in seconds. Ten milliseconds is roughly the smallest
+/// difference a listener can hear on a transient.
+pub const LYRIC_TAP_OFFSET_STEP_SECONDS: f64 = 0.01;
+
+impl LyricTap {
+    #[must_use]
+    pub fn is_armed(&self) -> bool {
+        self.armed
+    }
+
+    #[must_use]
+    pub fn offset_seconds(&self) -> f64 {
+        self.offset_seconds
+    }
+
+    /// Lines stamped so far in this run.
+    #[must_use]
+    pub fn stamped(&self) -> usize {
+        self.stamped
+    }
+
+    /// How many lines the armed run holds in total.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.order.len()
+    }
+
+    /// The cue the next tap will open, or `None` when the run is spent.
+    #[must_use]
+    pub fn target_id(&self) -> Option<u64> {
+        self.order.get(self.cursor).copied()
+    }
+
+    /// One-based position of the next line, for a readout.
+    #[must_use]
+    pub fn position(&self) -> usize {
+        (self.cursor + 1).min(self.order.len().max(1))
+    }
+
+    /// Arms a run over every cue in the document, starting at the first one that
+    /// begins at or after `from_seconds`.
+    ///
+    /// Starting from the playhead rather than from the top is what makes the
+    /// loop usable on a long track: a user fixing the second verse arms it
+    /// there, taps the eight lines they care about and stops, rather than
+    /// re-stamping forty lines to reach them.
+    ///
+    /// Returns `false` and stays disarmed when there is nothing to stamp.
+    pub fn arm(&mut self, document: &impl LaneCues, from_seconds: f64) -> bool {
+        // Every exit below is a *disarmed* one until the new run is built. A
+        // refused arm that left the previous run in place would keep an order of
+        // ids from another document loaded, and the next tap would stamp
+        // whichever cue here happened to share an id with one there.
+        self.disarm();
+        let count = document.cue_count();
+        if count == 0 {
+            return false;
+        }
+        let from = if from_seconds.is_finite() {
+            from_seconds
+        } else {
+            0.0
+        };
+        let mut order = Vec::with_capacity(count);
+        for index in 0..count {
+            if let Some(cue) = document.cue_at(index) {
+                order.push(cue.id);
+            }
+        }
+        // The first line whose *start* is not already behind the playhead. A
+        // line the playhead is sitting inside is still the one a user means to
+        // re-place, which is why this is `>=` against the start rather than a
+        // containment test.
+        let cursor = (0..count)
+            .find(|index| {
+                document
+                    .cue_at(*index)
+                    .is_some_and(|cue| cue.start_seconds >= from)
+            })
+            .unwrap_or(0);
+        if order.is_empty() {
+            return false;
+        }
+        self.armed = true;
+        self.order = order;
+        self.cursor = cursor;
+        self.stamped = 0;
+        self.open_id = 0;
+        self.open_start = 0.0;
+        true
+    }
+
+    /// Ends the run, keeping the offset the user dialled in.
+    ///
+    /// The offset survives on purpose: it is a property of this person tapping
+    /// on this machine, not of the run, and making them re-find it every time
+    /// they re-arm is how a calibration control becomes one nobody uses.
+    pub fn disarm(&mut self) {
+        self.armed = false;
+        self.order.clear();
+        self.cursor = 0;
+        self.stamped = 0;
+        self.open_id = 0;
+        self.open_start = 0.0;
+    }
+
+    /// Moves the offset by `steps` of [`LYRIC_TAP_OFFSET_STEP_SECONDS`],
+    /// saturating at [`LYRIC_TAP_OFFSET_LIMIT_SECONDS`].
+    pub fn adjust_offset(&mut self, steps: i32) {
+        let proposed = self.offset_seconds + f64::from(steps) * LYRIC_TAP_OFFSET_STEP_SECONDS;
+        self.offset_seconds = if proposed.is_finite() {
+            proposed.clamp(
+                -LYRIC_TAP_OFFSET_LIMIT_SECONDS,
+                LYRIC_TAP_OFFSET_LIMIT_SECONDS,
+            )
+        } else {
+            0.0
+        };
+    }
+
+    /// One tap at `at_seconds` on the transport clock.
+    ///
+    /// Pure: it decides what the tap *means* and hands back retimings for the
+    /// caller to enqueue, exactly as [`hit_test`] does for the pointer. Nothing
+    /// here writes to the document, so a refusal cannot leave half a stamp
+    /// behind.
+    ///
+    /// The stamped instant is `at_seconds + offset`, floored at 0 and at
+    /// [`LYRIC_MIN_CUE_SECONDS`] past the previous stamp. The cue keeps its own
+    /// duration as a provisional end, so an imported document's authored line
+    /// lengths survive until the next tap tightens them — a fixed default would
+    /// throw away real information on the very documents this loop exists for.
+    pub fn tap(
+        &mut self,
+        document: &impl LaneCues,
+        at_seconds: f64,
+    ) -> Result<TapStamp, TapRefusal> {
+        if !self.armed {
+            return Err(TapRefusal::NotArmed);
+        }
+        if self.order.is_empty() {
+            return Err(TapRefusal::NoCues);
+        }
+        let duration = document.duration_seconds();
+        if !at_seconds.is_finite() || !duration.is_finite() || duration <= 0.0 {
+            return Err(TapRefusal::PastEnd);
+        }
+        let at = (at_seconds + self.offset_seconds).max(0.0);
+        if at >= duration - LYRIC_MIN_CUE_SECONDS {
+            return Err(TapRefusal::PastEnd);
+        }
+        if self.open_id != 0 && at < self.open_start + LYRIC_MIN_CUE_SECONDS {
+            return Err(TapRefusal::TooSoon);
+        }
+
+        // Skip past ids the document no longer has: a cue deleted between arming
+        // and this tap must cost the run one line, not misroute the stamp onto
+        // whichever cue inherited its position.
+        while self.cursor < self.order.len() && document.find(self.order[self.cursor]).is_none() {
+            self.cursor += 1;
+        }
+
+        let closes = (self.open_id != 0)
+            .then(|| document.find(self.open_id))
+            .flatten()
+            .map(|_| (self.open_id, self.open_start, at));
+
+        let Some(&target) = self.order.get(self.cursor) else {
+            // The run is spent, so this tap is the out point of the last line —
+            // the N+1st press that closes a run of N. Without it the final
+            // caption would keep whatever end it arrived with, which is the one
+            // line a tap run would otherwise never fix.
+            let Some((id, start, end)) = closes else {
+                return Err(TapRefusal::Finished);
+            };
+            self.open_id = 0;
+            self.armed = false;
+            return Ok(TapStamp {
+                retimes: vec![(id, start, end)],
+                opened_id: 0,
+                remaining: 0,
+                finished: true,
+            });
+        };
+        let Some(cue) = document.find(target) else {
+            return Err(TapRefusal::Finished);
+        };
+
+        // The cue's own length, carried forward as a provisional end. Clamped
+        // into the track and floored at the minimum so the retime the caller
+        // enqueues is one the model will accept.
+        let held = (cue.end_seconds - cue.start_seconds).max(LYRIC_MIN_CUE_SECONDS);
+        let end = (at + held).min(duration).max(at + LYRIC_MIN_CUE_SECONDS);
+        let end = end.min(duration);
+
+        let mut retimes = Vec::with_capacity(2);
+        if let Some(close) = closes {
+            retimes.push(close);
+        }
+        retimes.push((target, at, end));
+
+        self.cursor += 1;
+        self.stamped += 1;
+        self.open_id = target;
+        self.open_start = at;
+        Ok(TapStamp {
+            retimes,
+            opened_id: target,
+            remaining: self.order.len().saturating_sub(self.cursor),
+            finished: false,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1133,5 +1526,351 @@ mod tests {
             .expect("a live id resolves");
         expect_near(backward, 20.0, 1e-9);
         expect_near(forward, TRACK - 21.0, 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // The timing loop (UX0-B02/B04, UX0-C03)
+    // -----------------------------------------------------------------------
+
+    impl TestDocument {
+        /// Applies what a [`TapStamp`] asked for, keeping canonical order — the
+        /// same thing `LyricsDocument::retime` does one crate layer up. The tap
+        /// tests need it because the defect they exist for only appears once a
+        /// stamp has actually moved a cue past its neighbours.
+        fn commit(&mut self, stamp: &TapStamp) {
+            for (id, start, end) in &stamp.retimes {
+                let cue = self
+                    .0
+                    .iter_mut()
+                    .find(|cue| cue.id == *id)
+                    .expect("a retime names a live cue");
+                cue.start_seconds = *start;
+                cue.end_seconds = *end;
+            }
+            self.0.sort_by(|left, right| {
+                left.start_seconds
+                    .partial_cmp(&right.start_seconds)
+                    .expect("finite starts")
+                    .then(left.id.cmp(&right.id))
+            });
+        }
+
+        fn remove(&mut self, id: u64) {
+            self.0.retain(|cue| cue.id != id);
+        }
+
+        fn span(&self, id: u64) -> (f64, f64) {
+            let cue = self.find(id).expect("a live cue");
+            (cue.start_seconds, cue.end_seconds)
+        }
+    }
+
+    /// Four lines imported at the top of the track, as an aligner or a TSV
+    /// import leaves them.
+    fn tap_fixture() -> TestDocument {
+        let mut document = TestDocument::new(TRACK);
+        document.insert(0.0, 1.0);
+        document.insert(1.0, 2.0);
+        document.insert(2.0, 3.0);
+        document.insert(3.0, 4.0);
+        document
+    }
+
+    #[test]
+    fn the_nudge_ladder_teaches_the_same_modifiers_as_the_transport() {
+        expect_near(cue_nudge_step_seconds(false, false), 0.1, 1e-12);
+        expect_near(cue_nudge_step_seconds(true, false), 0.01, 1e-12);
+        expect_near(cue_nudge_step_seconds(false, true), 1.0, 1e-12);
+        // Fine wins when both are held, exactly as `seek_step_seconds` decides
+        // it. The two ladders differ in scale and agree in shape, and this is
+        // the assertion that keeps them agreeing.
+        expect_near(cue_nudge_step_seconds(true, true), 0.01, 1e-12);
+        // Strictly increasing coarseness, so no two rungs can silently become
+        // the same step.
+        assert!(
+            cue_nudge_step_seconds(true, false) < cue_nudge_step_seconds(false, false)
+                && cue_nudge_step_seconds(false, false) < cue_nudge_step_seconds(false, true)
+        );
+    }
+
+    #[test]
+    fn a_typed_time_takes_every_shape_a_user_would_write_it_in() {
+        expect_near(
+            parse_cue_timestamp("01:23.456").expect("mm:ss.mmm"),
+            83.456,
+            1e-9,
+        );
+        expect_near(parse_cue_timestamp("1:23.4").expect("m:ss.m"), 83.4, 1e-9);
+        expect_near(parse_cue_timestamp("1:23").expect("m:ss"), 83.0, 1e-9);
+        expect_near(
+            parse_cue_timestamp("83.456").expect("bare seconds"),
+            83.456,
+            1e-9,
+        );
+        expect_near(
+            parse_cue_timestamp("83").expect("bare whole seconds"),
+            83.0,
+            1e-9,
+        );
+        expect_near(
+            parse_cue_timestamp("  0:00.000  ").expect("padded"),
+            0.0,
+            1e-9,
+        );
+        expect_near(
+            parse_cue_timestamp("10:00").expect("ten minutes"),
+            600.0,
+            1e-9,
+        );
+    }
+
+    #[test]
+    fn a_typed_time_refuses_rather_than_guessing() {
+        // Every one of these parses as *something* under a looser reading, and
+        // each would write a number the user did not type into a `.musi` file.
+        for text in [
+            "", "   ", "abc", "-1:30", // a negative cue time is not a thing
+            "+30",   // ditto, and `f64::parse` takes it
+            "1e3",   // `f64::parse` takes this as 1000 seconds
+            "1:2:3", // an hours field this readout never prints
+            ":30",   // no minutes
+            "1:",    // no seconds
+            "1:60",  // the minute the user meant to write as 2:00
+            "1:99.5", "NaN", "inf", "1,5",
+        ] {
+            assert!(
+                parse_cue_timestamp(text).is_none(),
+                "{text:?} should not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn arming_starts_at_the_playhead_rather_than_at_the_top_of_the_track() {
+        let document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+        assert_eq!(tap.target_id(), Some(1));
+        assert_eq!(tap.total(), 4);
+
+        // Armed from inside line 2: line 2 is still the one to re-place, because
+        // a user parked inside a line means that line.
+        assert!(tap.arm(&document, 1.5));
+        assert_eq!(tap.target_id(), Some(3));
+        assert!(tap.arm(&document, 1.0));
+        assert_eq!(tap.target_id(), Some(2));
+
+        // Past every cue, the run wraps to the top rather than arming an empty
+        // one: an armed run that can never stamp is a control that does nothing.
+        assert!(tap.arm(&document, 90.0));
+        assert_eq!(tap.target_id(), Some(1));
+
+        assert!(!tap.arm(&TestDocument::new(TRACK), 0.0));
+        assert!(!tap.is_armed());
+    }
+
+    #[test]
+    fn each_tap_closes_the_line_before_it_and_opens_the_next() {
+        let mut document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+
+        // The first tap has nothing to close, so it is one retime.
+        let first = tap.tap(&document, 10.0).expect("the first tap stamps");
+        assert_eq!(first.retimes.len(), 1);
+        assert_eq!(first.opened_id, 1);
+        assert_eq!(first.remaining, 3);
+        assert!(!first.finished);
+        // The cue kept its own 1.0 s length as a provisional end.
+        expect_near(first.retimes[0].1, 10.0, 1e-9);
+        expect_near(first.retimes[0].2, 11.0, 1e-9);
+        document.commit(&first);
+
+        // The second closes the first at exactly where the second begins, which
+        // is review 1.14's rule and the reason a run of taps produces contiguous
+        // captions.
+        let second = tap.tap(&document, 14.0).expect("the second tap stamps");
+        assert_eq!(second.retimes.len(), 2);
+        assert_eq!(second.retimes[0].0, 1);
+        expect_near(second.retimes[0].2, 14.0, 1e-9);
+        assert_eq!(second.retimes[1].0, 2);
+        expect_near(second.retimes[1].1, 14.0, 1e-9);
+        document.commit(&second);
+        expect_near(document.span(1).1, 14.0, 1e-9);
+        expect_near(document.span(2).0, 14.0, 1e-9);
+    }
+
+    #[test]
+    fn a_run_survives_the_re_sort_its_own_stamps_cause() {
+        // The defect the arming-time order snapshot exists for. Stamping line 1
+        // at 0:50 puts it *behind* lines 2-4, which still sit at 1-4 s. A cursor
+        // walking canonical order would hand out line 2 next, then line 3, then
+        // line 4, and never reach line 1 — or hand out line 2 twice.
+        let mut document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+
+        let mut opened = Vec::new();
+        for at in [50.0, 52.0, 54.0, 56.0] {
+            let stamp = tap.tap(&document, at).expect("a tap inside the track");
+            opened.push(stamp.opened_id);
+            document.commit(&stamp);
+        }
+        assert_eq!(opened, vec![1, 2, 3, 4], "every line stamped exactly once");
+        expect_near(document.span(1).0, 50.0, 1e-9);
+        expect_near(document.span(4).0, 56.0, 1e-9);
+
+        // The N+1st tap is the last line's out point, and it ends the run.
+        let close = tap.tap(&document, 58.0).expect("the closing tap");
+        assert!(close.finished);
+        assert_eq!(close.opened_id, 0);
+        assert_eq!(close.retimes, vec![(4, 56.0, 58.0)]);
+        assert!(!tap.is_armed());
+        document.commit(&close);
+        expect_near(document.span(4).1, 58.0, 1e-9);
+    }
+
+    #[test]
+    fn a_double_keypress_is_refused_rather_than_collapsing_a_cue() {
+        let mut document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+        let first = tap.tap(&document, 10.0).expect("the first tap");
+        document.commit(&first);
+
+        // Inside the minimum gap: a bounced key, not a line.
+        assert_eq!(
+            tap.tap(&document, 10.0 + LYRIC_MIN_CUE_SECONDS * 0.5),
+            Err(TapRefusal::TooSoon)
+        );
+        // And the refusal cost the run nothing — the same line is still next.
+        assert_eq!(tap.target_id(), Some(2));
+        assert!(tap.tap(&document, 10.0 + LYRIC_MIN_CUE_SECONDS).is_ok());
+    }
+
+    #[test]
+    fn the_offset_moves_the_stamp_and_saturates_rather_than_running_away() {
+        let document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+        tap.adjust_offset(-10);
+        expect_near(tap.offset_seconds(), -0.1, 1e-9);
+        let stamp = tap.tap(&document, 10.0).expect("an offset tap");
+        expect_near(stamp.retimes[0].1, 9.9, 1e-9);
+
+        // Saturating, both ways, and the limit is a real bound rather than a
+        // suggestion: an offset large enough to move a cue somewhere it does not
+        // belong is a drag, not a calibration.
+        tap.adjust_offset(10_000);
+        expect_near(tap.offset_seconds(), LYRIC_TAP_OFFSET_LIMIT_SECONDS, 1e-9);
+        tap.adjust_offset(-10_000);
+        expect_near(tap.offset_seconds(), -LYRIC_TAP_OFFSET_LIMIT_SECONDS, 1e-9);
+
+        // A negative offset can never stamp before the track starts.
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+        tap.adjust_offset(-25);
+        let stamp = tap.tap(&document, 0.05).expect("a tap near zero");
+        expect_near(stamp.retimes[0].1, 0.0, 1e-9);
+    }
+
+    #[test]
+    fn the_offset_outlives_the_run_but_the_cursor_does_not() {
+        let document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+        tap.adjust_offset(-8);
+        let _ = tap.tap(&document, 10.0).expect("one stamp");
+        assert_eq!(tap.stamped(), 1);
+        tap.disarm();
+        assert!(!tap.is_armed());
+        assert_eq!(tap.stamped(), 0);
+        assert_eq!(tap.target_id(), None);
+        // The calibration is a property of the person and the machine, not of
+        // the run.
+        expect_near(tap.offset_seconds(), -0.08, 1e-9);
+    }
+
+    #[test]
+    fn a_cue_deleted_mid_run_costs_one_line_rather_than_misrouting_the_stamp() {
+        let mut document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert!(tap.arm(&document, 0.0));
+        let first = tap.tap(&document, 10.0).expect("the first tap");
+        document.commit(&first);
+        // Line 2 goes away between taps. The next tap must reach line 3, not
+        // stamp whichever cue now occupies index 1.
+        document.remove(2);
+        let second = tap.tap(&document, 12.0).expect("the next live line");
+        assert_eq!(second.opened_id, 3);
+        // And the dead line is not closed, because there is nothing to close.
+        assert_eq!(second.retimes.len(), 2);
+        assert_eq!(second.retimes[0].0, 1);
+    }
+
+    #[test]
+    fn tapping_refuses_where_it_cannot_produce_a_cue_the_model_would_take() {
+        let document = tap_fixture();
+        let mut tap = LyricTap::default();
+        assert_eq!(tap.tap(&document, 1.0), Err(TapRefusal::NotArmed));
+
+        let empty = TestDocument::new(TRACK);
+        assert!(!tap.arm(&empty, 0.0));
+        assert_eq!(tap.tap(&empty, 1.0), Err(TapRefusal::NotArmed));
+
+        assert!(tap.arm(&document, 0.0));
+        // At the very end of the track there is no room for a cue at all, and a
+        // clamped stamp would be a zero-length one the model refuses.
+        assert_eq!(tap.tap(&document, TRACK), Err(TapRefusal::PastEnd));
+        assert_eq!(tap.tap(&document, f64::NAN), Err(TapRefusal::PastEnd));
+        assert_eq!(
+            tap.tap(&document, TRACK - LYRIC_MIN_CUE_SECONDS * 0.5),
+            Err(TapRefusal::PastEnd)
+        );
+        // A stamp just inside the end is fine, and its provisional end stops at
+        // the track length rather than running past it.
+        let stamp = tap.tap(&document, TRACK - 0.5).expect("a tap inside");
+        expect_near(stamp.retimes[0].2, TRACK, 1e-9);
+    }
+
+    #[test]
+    fn every_stamp_a_tap_produces_is_one_the_lane_would_accept() {
+        // The contract between this module and the model: a retime a tap hands
+        // back must never be one `LyricsDocument::retime` refuses. Swept rather
+        // than spot-checked, because the arithmetic has three clamps in it.
+        let mut document = tap_fixture();
+        let mut tap = LyricTap::default();
+        for offset_steps in [-25, -7, 0, 3, 25] {
+            assert!(tap.arm(&document, 0.0));
+            tap.disarm();
+            tap.adjust_offset(offset_steps - (tap.offset_seconds() * 100.0).round() as i32);
+            assert!(tap.arm(&document, 0.0));
+            for step in 0..6 {
+                let at = f64::from(step) * 0.5;
+                match tap.tap(&document, at) {
+                    Ok(stamp) => {
+                        for (_, start, end) in &stamp.retimes {
+                            assert!(start.is_finite() && end.is_finite());
+                            assert!(*start >= 0.0, "start {start} below zero");
+                            assert!(*end <= TRACK + 1e-9, "end {end} past the track");
+                            assert!(
+                                *end >= *start + LYRIC_MIN_CUE_SECONDS - 1e-9,
+                                "span {start}..{end} shorter than the minimum"
+                            );
+                        }
+                        document.commit(&stamp);
+                    }
+                    // `NotArmed` is reachable here and is not a fault: a run
+                    // that reaches its closing tap disarms itself.
+                    Err(
+                        TapRefusal::TooSoon
+                        | TapRefusal::PastEnd
+                        | TapRefusal::Finished
+                        | TapRefusal::NotArmed,
+                    ) => {}
+                    Err(other) => panic!("unexpected refusal {other:?}"),
+                }
+            }
+        }
     }
 }
