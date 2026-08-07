@@ -4114,14 +4114,15 @@ impl Shell {
 
     /// The `MM:SS.mmm` readout, as a field a user can type into (UX0-B04).
     ///
-    /// Returns a new value only when a typed time was **committed** — Enter or a
-    /// click away — never on every keystroke. Typing `0` on the way to `01:23`
-    /// would otherwise clamp the cue to the top of the track and take the rest of
-    /// the string with it.
+    /// Returns a new value only when a typed time was **committed**, never on
+    /// every keystroke. Typing `0` on the way to `01:23` would otherwise clamp
+    /// the cue to the top of the track and take the rest of the string with it.
     ///
-    /// A refused string is *kept in the field*, not silently reverted. The user
-    /// can see what they typed and fix it; a field that empties itself when you
-    /// get a character wrong is the most annoying possible answer.
+    /// Three ways out, and they are deliberately not the same: Enter commits or
+    /// complains, Escape abandons, and clicking away commits only if what is
+    /// there parses. A refused string typed at Enter is *kept in the field* so
+    /// the user can see it and fix it — a field that empties itself when you get
+    /// one character wrong is the most annoying possible answer.
     #[allow(
         clippy::too_many_arguments,
         reason = "one rectangle, two faces, the draft it writes and the id namespace it draws in"
@@ -4186,29 +4187,37 @@ impl Shell {
         edit.field
             .draw_with_face(d, authored, boundary, 17.0, "MM:SS.mmm", true);
         let commit = d.is_key_pressed(Key::KEY_ENTER) || d.is_key_pressed(Key::KEY_KP_ENTER);
-        let cancel = d.is_key_pressed(Key::KEY_ESCAPE) || !edit.field.is_focused();
-        if !(commit || cancel) {
+        let abandon = d.is_key_pressed(Key::KEY_ESCAPE);
+        // Clicking away is neither of those, and it is the case worth thinking
+        // about: discarding a finished `01:23.456` because the user reached for
+        // the lane instead of pressing Enter loses work silently, and applying a
+        // half-typed `01:2` would move the cue somewhere nobody asked for. So a
+        // blur commits **only if it parses**, and otherwise drops it without a
+        // notice — the user is already looking somewhere else, and a toast about
+        // a field they have left is nagging.
+        let blurred = !edit.field.is_focused();
+        if !(commit || abandon || blurred) {
             return None;
         }
         let typed = edit.field.edit.text().to_owned();
-        if cancel && !commit {
+        if abandon {
             editor.time_edit = None;
             return None;
         }
-        match lyric_lane_edit::parse_cue_timestamp(&typed) {
-            Some(seconds) => {
-                editor.time_edit = None;
-                Some(seconds)
-            }
-            None => {
-                self.notify(
-                    Severity::Warning,
-                    "That is not a time",
-                    "Type it as MM:SS.mmm — 01:23.456 — or as plain seconds. Escape leaves it alone.",
-                );
-                None
-            }
+        let parsed = lyric_lane_edit::parse_cue_timestamp(&typed);
+        if parsed.is_some() || blurred {
+            editor.time_edit = None;
+            return parsed;
         }
+        // Enter on something unparseable. The string stays in the field so the
+        // user can see what they typed and fix it: a field that empties itself
+        // when you get one character wrong is the most annoying possible answer.
+        self.notify(
+            Severity::Warning,
+            "That is not a time",
+            "Type it as MM:SS.mmm — 01:23.456 — or as plain seconds. Escape leaves it alone.",
+        );
+        None
     }
 
     // -----------------------------------------------------------------------
