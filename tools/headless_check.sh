@@ -5951,10 +5951,20 @@ tune_wheel miss 1000x620 1 "$TUNE_BASE"
 # The seed is pinned, so the values below are an exact expectation rather than a
 # range check. Two different seeds must not agree, or the seed is being ignored
 # and the "reproducible" claim is vacuous.
+#
+# Re-pinned DELIBERATELY 2026-08-08 for CX-4's constants (move chance
+# 0.75 -> 0.45, toggles 0.25 -> 0.15, per-end endpoint metadata instead of the
+# blanket 5 % inset, cyclic controls named instead of inferred). The previous
+# pin — "spectrum 0.68 1 1 4.28 105 1.77 0.74 0.9" — fails against the new
+# draw, which is this change's negative control: the pin noticed the sampler
+# moved, and the movement is recorded in FEATURE_PARITY_PLAN.md CX-4 rather
+# than absorbed. Under 0.45 this particular draw moves one control; that is a
+# property of the seed, not a regression — the distribution is pinned by
+# `surprise_leaves_most_of_the_scene_alone` in tune_explore.rs.
 capture "tune-surprise" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise" || TUNE_FAILED=1
 TUNE_SURPRISE="$(tune_values tune-surprise)"
 echo "surprise (seed 4242): [$TUNE_SURPRISE]"
-if [ "$TUNE_SURPRISE" != "spectrum 0.68 1 1 4.28 105 1.77 0.74 0.9" ]; then
+if [ "$TUNE_SURPRISE" != "spectrum 0.68 1 1 3 55 1 0.5 0.3" ]; then
     echo "FAIL: seed 4242 no longer produces the pinned tuning: [$TUNE_SURPRISE]" >&2
     TUNE_FAILED=1
 fi
@@ -6071,6 +6081,180 @@ for shot in tune-audition-960x640 tune-audition-atlas-960x640 tune-chip-click tu
 done
 
 if [ "$TUNE_FAILED" -ne 0 ]; then
+    SWEEP_FAILED=1
+fi
+
+# -- Feedback protocols: blind A/B, answers on disk (HX-5) ----------------------
+#
+# The protocol runner's whole claim is unphotographable by construction: the
+# screen must NEVER say which of an A/B item's two tunings is variant `a`,
+# while the answers file must record exactly which order the app played them.
+# So the check is a round trip, by item *id* and never by pixel (GX-1): load a
+# protocol whose first look is seeded, flip once, answer two items through the
+# probe, then read the JSONL back and assert the recorded variant order is the
+# one the probe line claimed — and that a relaunch resumes from the file with
+# nothing left to ask. The negative control is the digest: the same protocol
+# pointed at audio whose sha256 does not match must be refused with a nonzero
+# exit, because a protocol mis-asked against the wrong track is worse than one
+# that refuses to run.
+echo "=== Feedback protocol: blind A/B, answers on disk (HX-5) ==="
+PROTOCOL_FAILED=0
+PROTOCOL_DIR="$OUT_DIR/protocol"
+rm -rf "$PROTOCOL_DIR"
+mkdir -p "$PROTOCOL_DIR"
+PROTOCOL_SHA="$(sha256sum "$FIXTURE" | cut -d' ' -f1)"
+PROTOCOL_FILE="$PROTOCOL_DIR/gate.protocol.json"
+cat >"$PROTOCOL_FILE" <<PROTOCOL_JSON
+{
+  "schema": "musializer.protocol/v1",
+  "title": "headless gate round trip",
+  "audio": { "path": "$REPO_ROOT/$FIXTURE", "sha256": "$PROTOCOL_SHA" },
+  "items": [
+    {
+      "id": "ab-1",
+      "at_seconds": 3.0,
+      "window": { "pre": 1.0, "post": 2.0 },
+      "question": "Blind compare: which look would you keep?",
+      "kind": "choice",
+      "options": ["keep", "fixable", "reject"],
+      "apply": {
+        "scene": "spectrum",
+        "seed": 4242,
+        "snapshots": {
+          "a": [1.0, 1.0, 1.0, 3.0, 55.0, 1.0, 0.5, 0.3],
+          "b": [1.5, 2.0, 1.0, 3.0, 105.0, 1.0, 0.5, 0.3]
+        }
+      }
+    },
+    {
+      "id": "plain-1",
+      "at_seconds": 6.0,
+      "window": { "pre": 1.0, "post": 1.5 },
+      "question": "Anything off about this moment?",
+      "kind": "choice",
+      "options": ["no", "yes"]
+    }
+  ]
+}
+PROTOCOL_JSON
+
+# protocol_capture NAME [args...] — `capture` without the positional fixture:
+# the protocol names its own audio, and passing the fixture too would open a
+# second track and make "which track is the session on" part of the picture.
+protocol_capture() {
+    local name="$1"; shift
+    local out="$PROTOCOL_DIR/$name.png" log="$PROTOCOL_DIR/$name.txt"
+    set +e
+    timeout 120 env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        $MZ_GL ./target/debug/musializer --mute \
+            --size 1280x720 --probe-frames 30 --probe-shot "$out" "$@" \
+        >"$log" 2>&1
+    PROTOCOL_STATUS=$?
+    set -e
+    printf '%-24s exit=%-3s %s\n' "$name" "$PROTOCOL_STATUS" \
+        "$(sed -n 's/^protocol: *//p' "$log")"
+}
+
+protocol_line()  { sed -n 's/^protocol: *//p' "$PROTOCOL_DIR/$1.txt"; }
+protocol_probe_lines() { sed -n 's/^protocol probe: *//p' "$PROTOCOL_DIR/$1.txt"; }
+
+# Run 1: flip ab-1 to put both looks on record, then answer both items.
+protocol_capture "protocol-run" --protocol "$PROTOCOL_FILE" \
+    --ui-probe "protocol-flip=ab-1,protocol-answer=ab-1:2+plain-1:1"
+if [ "$PROTOCOL_STATUS" -ne 0 ]; then
+    echo "FAIL: the protocol run exited $PROTOCOL_STATUS" >&2
+    PROTOCOL_FAILED=1
+fi
+# The first look is seeded per item (id + seed), so the order is an exact
+# expectation, not a range: seed 4242 under id ab-1 opens on `b`.
+FLIP_CLAIM="$(protocol_probe_lines protocol-run | sed -n 's/^flip ab-1 order=//p')"
+echo "flip claimed: [$FLIP_CLAIM]"
+if [ "$FLIP_CLAIM" != "b,a" ]; then
+    echo "FAIL: the flip did not record the seeded order b,a: [$FLIP_CLAIM]" >&2
+    PROTOCOL_FAILED=1
+fi
+ANSWER_CLAIM="$(protocol_probe_lines protocol-run | sed -n 's/^answer ab-1 //p')"
+if [ "$ANSWER_CLAIM" != 'choice=2 "fixable" order=b,a auditions=2' ]; then
+    echo "FAIL: the ab-1 answer line is not what the session recorded: [$ANSWER_CLAIM]" >&2
+    PROTOCOL_FAILED=1
+fi
+if [ "$(protocol_line protocol-run)" != "gate.protocol.json items=2 answered=2 current=none look=- auditions=1 last=plain-1:-:1" ]; then
+    echo "FAIL: the protocol report line is wrong: [$(protocol_line protocol-run)]" >&2
+    PROTOCOL_FAILED=1
+fi
+# The flip's last look was `a` — the descriptor defaults — and the report's
+# tune values prove the snapshot actually reached the settings store.
+PROTOCOL_TUNE="$(sed -n 's/^tune values: *//p' "$PROTOCOL_DIR/protocol-run.txt")"
+if [ "$PROTOCOL_TUNE" != "spectrum 1 1 1 3 55 1 0.5 0.3" ]; then
+    echo "FAIL: the flipped-back snapshot did not reach the settings: [$PROTOCOL_TUNE]" >&2
+    PROTOCOL_FAILED=1
+fi
+
+# The answers file is the artifact: the variant order the app *played*,
+# readable back, matching the claim above. This is the unblinding surviving on
+# disk while never reaching the screen.
+ANSWERS_FILE="$PROTOCOL_DIR/gate.answers.jsonl"
+if [ ! -s "$ANSWERS_FILE" ]; then
+    echo "FAIL: no answers were appended at $ANSWERS_FILE" >&2
+    PROTOCOL_FAILED=1
+else
+    if [ "$(wc -l <"$ANSWERS_FILE")" != "2" ]; then
+        echo "FAIL: expected 2 answer lines, got $(wc -l <"$ANSWERS_FILE")" >&2
+        PROTOCOL_FAILED=1
+    fi
+    JSONL_ORDER="$(grep '"item_id":"ab-1"' "$ANSWERS_FILE" \
+        | sed -n 's/.*"variant_order":\[\([^]]*\)\].*/\1/p' | tr -d '"' )"
+    echo "jsonl order:  [$JSONL_ORDER]"
+    if [ "$JSONL_ORDER" != "$FLIP_CLAIM" ]; then
+        echo "FAIL: the JSONL order [$JSONL_ORDER] does not match the report's claim [$FLIP_CLAIM]" >&2
+        PROTOCOL_FAILED=1
+    fi
+    if ! grep -q '"item_id":"plain-1","choice":1,"answer":"no"' "$ANSWERS_FILE"; then
+        echo "FAIL: plain-1's answer line is missing or wrong" >&2
+        PROTOCOL_FAILED=1
+    fi
+fi
+
+# Run 2: the same protocol again. Quitting lost nothing, so the relaunch must
+# resume from the file with every item already answered and nothing applied.
+protocol_capture "protocol-resume" --protocol "$PROTOCOL_FILE"
+if [ "$PROTOCOL_STATUS" -ne 0 ]; then
+    echo "FAIL: the resume run exited $PROTOCOL_STATUS" >&2
+    PROTOCOL_FAILED=1
+fi
+if [ "$(protocol_line protocol-resume)" != "gate.protocol.json items=2 answered=2 current=none look=- auditions=0 last=none" ]; then
+    echo "FAIL: relaunching did not resume from the answers on disk: [$(protocol_line protocol-resume)]" >&2
+    PROTOCOL_FAILED=1
+fi
+
+# Negative control: the same protocol against audio whose digest does not
+# match must refuse to run at all, with a nonzero exit naming the mismatch.
+BAD_PROTOCOL="$PROTOCOL_DIR/bad-digest.protocol.json"
+sed "s/$PROTOCOL_SHA/0000000000000000000000000000000000000000000000000000000000000000/" \
+    "$PROTOCOL_FILE" >"$BAD_PROTOCOL"
+protocol_capture "protocol-bad-digest" --protocol "$BAD_PROTOCOL"
+if [ "$PROTOCOL_STATUS" -eq 0 ]; then
+    echo "FAIL: a digest mismatch did not fail the run" >&2
+    PROTOCOL_FAILED=1
+fi
+if ! grep -q "audio digest mismatch" "$PROTOCOL_DIR/protocol-bad-digest.txt"; then
+    echo "FAIL: the refusal did not name the digest mismatch" >&2
+    PROTOCOL_FAILED=1
+fi
+if [ -f "$PROTOCOL_DIR/bad-digest.answers.jsonl" ]; then
+    echo "FAIL: a refused protocol wrote an answers file" >&2
+    PROTOCOL_FAILED=1
+fi
+
+for shot in protocol-run protocol-resume; do
+    if [ ! -s "$PROTOCOL_DIR/$shot.png" ]; then
+        echo "FAIL: $shot produced no capture" >&2
+        PROTOCOL_FAILED=1
+    fi
+done
+
+if [ "$PROTOCOL_FAILED" -ne 0 ]; then
     SWEEP_FAILED=1
 fi
 

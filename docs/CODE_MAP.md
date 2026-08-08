@@ -13,8 +13,8 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 38 | 57,056 | 416 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 91 | 56,995 | 926 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 39 | 58,523 | 426 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 93 | 58,627 | 950 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 26 | 14,829 | 176 |
 | [`raylib-5-5-link`](../crates/raylib-5-5-link/Cargo.toml) | Builds and links raylib 5.5 from vendored source, for raylib-sys nobuild mode | `raylib_5_5_link` (lib), `build-script-build` (custom-build) | 2 | 126 | 0 |
 
@@ -33,6 +33,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | `ascii_art_dump` | `example` | [crates/musializer-core/examples/ascii_art_dump.rs](../crates/musializer-core/examples/ascii_art_dump.rs) |
 | `assist_ui_dump` | `example` | [crates/musializer-core/examples/assist_ui_dump.rs](../crates/musializer-core/examples/assist_ui_dump.rs) |
 | `beat_tracker_dump` | `example` | [crates/musializer-core/examples/beat_tracker_dump.rs](../crates/musializer-core/examples/beat_tracker_dump.rs) |
+| `cx4_surprise_protocol` | `example` | [crates/musializer-core/examples/cx4_surprise_protocol.rs](../crates/musializer-core/examples/cx4_surprise_protocol.rs) |
 | `event_merge_dump` | `example` | [crates/musializer-core/examples/event_merge_dump.rs](../crates/musializer-core/examples/event_merge_dump.rs) |
 | `layout_dump` | `example` | [crates/musializer-core/examples/layout_dump.rs](../crates/musializer-core/examples/layout_dump.rs) |
 | `preset_store_dump` | `example` | [crates/musializer-core/examples/preset_store_dump.rs](../crates/musializer-core/examples/preset_store_dump.rs) |
@@ -56,8 +57,8 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | Source | Lines | Tests | Module responsibility |
 | --- | ---: | ---: | --- |
 | [`src/bin/make_fixture_wav.rs`](../crates/musializer-app/src/bin/make_fixture_wav.rs) | 89 | 0 | Writes a synthetic WAV for headless checks. |
-| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 1,967 | 42 | The command line. |
-| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 4,498 | 1 | The Musializer binary: composition root. |
+| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,063 | 44 | The command line. |
+| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 4,981 | 1 | The Musializer binary: composition root. |
 | [`src/project.rs`](../crates/musializer-app/src/project.rs) | 828 | 6 | Saving a [`Track`] to a `.musi` and opening one back into a [`Track`]. |
 | [`src/scene_host.rs`](../crates/musializer-app/src/scene_host.rs) | 719 | 5 | Binding and drawing the ten scenes. |
 | [`src/scenes/ascii_field.rs`](../crates/musializer-app/src/scenes/ascii_field.rs) | 471 | 0 | ASCII Field: the drawing half. |
@@ -76,7 +77,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 8,357 | 53 | The **AI settings** dialog: one modal surface for assist routing, local runtimes, Codex, OpenRouter and the privacy/provenance summary. |
 | [`src/ui/icons.rs`](../crates/musializer-app/src/ui/icons.rs) | 176 | 2 | The transport row's control vocabulary: an icon, a text fallback, and the tooltip that names both. |
 | [`src/ui/mapping_editor.rs`](../crates/musializer-app/src/ui/mapping_editor.rs) | 275 | 2 | Shared mapping-editor componentry (UX0-C14). |
-| [`src/ui/mod.rs`](../crates/musializer-app/src/ui/mod.rs) | 28 | 0 | The workspace shell: drawing, input, and the palette. |
+| [`src/ui/mod.rs`](../crates/musializer-app/src/ui/mod.rs) | 29 | 0 | The workspace shell: drawing, input, and the palette. |
 | [`src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 5,825 | 55 | The Assist confirmation panel, and the job it supervises. |
 | [`src/ui/panels/events.rs`](../crates/musializer-app/src/ui/panels/events.rs) | 655 | 3 | The manual event row, and the shared preset controls. |
 | [`src/ui/panels/export.rs`](../crates/musializer-app/src/ui/panels/export.rs) | 2,500 | 8 | The export panel, the progress screen, and the session that drives them. |
@@ -86,8 +87,9 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 663 | 2 | The always-visible scene-plan lane and its compact editing controls. |
 | [`src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 2,620 | 22 | The tuning inspector, and the route editor row inside it. |
 | [`src/ui/preferences.rs`](../crates/musializer-app/src/ui/preferences.rs) | 765 | 16 | Per-user shell scale and split preferences. |
+| [`src/ui/protocol.rs`](../crates/musializer-app/src/ui/protocol.rs) | 687 | 7 | The in-app protocol runner (HX-2): markers, the question card, and the session state machine. |
 | [`src/ui/scale.rs`](../crates/musializer-app/src/ui/scale.rs) | 215 | 3 | Logical UI units and their mapping to the window framebuffer. |
-| [`src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,510 | 45 | The workspace shell: one frame of chrome around the scene preview. |
+| [`src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,710 | 46 | The workspace shell: one frame of chrome around the scene preview. |
 | [`src/ui/shell_layout.rs`](../crates/musializer-app/src/ui/shell_layout.rs) | 899 | 22 | Where the workspace's regions go. |
 | [`src/ui/text_input.rs`](../crates/musializer-app/src/ui/text_input.rs) | 403 | 0 | The single-line text field: pixels, keyboard, and the caret's blink. |
 | [`src/ui/theme.rs`](../crates/musializer-app/src/ui/theme.rs) | 393 | 6 | The workspace palette and metrics. |
@@ -103,6 +105,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`examples/ascii_art_dump.rs`](../crates/musializer-core/examples/ascii_art_dump.rs) | 516 | 0 | Dumps the Rust `ascii_art` module's output for a set of deterministic synthetic pixel buffers, in the same format as `tests/differential/ascii_art_oracle.c`. |
 | [`examples/assist_ui_dump.rs`](../crates/musializer-core/examples/assist_ui_dump.rs) | 210 | 0 | Dumps the Rust Assist panel policy in the same format as `tests/differential/assist_ui_oracle.c`, so a hand-transcribed module that carries the whole panel's copy, geometry and guard ladder can be checked against the frozen C mechanically rather than by eye. |
 | [`examples/beat_tracker_dump.rs`](../crates/musializer-core/examples/beat_tracker_dump.rs) | 418 | 0 | Differential harness, Rust side: dumps [`BeatTracker`] over the same grid of tick rates and onset patterns, and the same boundary cases, as `tests/differential/beat_tracker_oracle.c`. |
+| [`examples/cx4_surprise_protocol.rs`](../crates/musializer-core/examples/cx4_surprise_protocol.rs) | 397 | 0 | Emit the CX-4 Surprise keepability protocol (HX ∘ CX-4). |
 | [`examples/event_merge_dump.rs`](../crates/musializer-core/examples/event_merge_dump.rs) | 132 | 0 | Dumps the Rust merged event view for the same lane pairs as `tests/differential/event_merge_oracle.c`. |
 | [`examples/layout_dump.rs`](../crates/musializer-core/examples/layout_dump.rs) | 676 | 0 | Dumps the Rust workspace and timeline layout decisions over a dense sweep of window sizes, in the same format as `tests/differential/layout_oracle.c`. |
 | [`examples/preset_store_dump.rs`](../crates/musializer-core/examples/preset_store_dump.rs) | 275 | 0 | The Rust half of `tools/differential_preset_store.sh`. |
@@ -125,7 +128,8 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/audio/mod.rs`](../crates/musializer-core/src/audio/mod.rs) | 9 | 0 | Audio analysis and the realtime sample handoff's consumer half. |
 | [`src/audio/sample_ring.rs`](../crates/musializer-core/src/audio/sample_ring.rs) | 421 | 10 | A bounded single-producer/single-consumer queue for realtime audio frames. |
 | [`src/audio/song_atlas_map.rs`](../crates/musializer-core/src/audio/song_atlas_map.rs) | 1,008 | 14 | The Song Atlas terrain: a bounded whole-track spectral map. |
-| [`src/lib.rs`](../crates/musializer-core/src/lib.rs) | 19 | 0 | Pure, deterministic, headlessly testable Musializer code. |
+| [`src/feedback.rs`](../crates/musializer-core/src/feedback.rs) | 1,091 | 21 | Human-feedback protocols: the `*.protocol.json` schema and the append-only answers log (HX-1, HX-3). |
+| [`src/lib.rs`](../crates/musializer-core/src/lib.rs) | 20 | 0 | Pure, deterministic, headlessly testable Musializer code. |
 | [`src/project/analysis_bridge.rs`](../crates/musializer-core/src/project/analysis_bridge.rs) | 1,109 | 24 | The bounded reader for helper analysis output. |
 | [`src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,041 | 39 | Staged analysis results awaiting Apply or Discard. |
 | [`src/project/assets.rs`](../crates/musializer-core/src/project/assets.rs) | 667 | 13 | Content-addressed bundling for the `audio`, `images` and `fonts` categories. |
@@ -187,7 +191,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/timeline_layout.rs`](../crates/musializer-core/src/ui/timeline_layout.rs) | 377 | 7 | Timeline top-band placement: controls, the trailing clear button, timecode. |
 | [`src/ui/timeline_view.rs`](../crates/musializer-core/src/ui/timeline_view.rs) | 624 | 14 | Timeline view state over the layout. |
 | [`src/ui/transport_bar.rs`](../crates/musializer-core/src/ui/transport_bar.rs) | 611 | 12 | Where the transport row's control clusters go. |
-| [`src/ui/tune_explore.rs`](../crates/musializer-core/src/ui/tune_explore.rs) | 1,212 | 25 | Reversible tuning exploration: snapshot/audition, bounded randomize, and typed/stepped value entry. |
+| [`src/ui/tune_explore.rs`](../crates/musializer-core/src/ui/tune_explore.rs) | 1,355 | 28 | Reversible tuning exploration: snapshot/audition, bounded randomize, and typed/stepped value entry. |
 | [`src/ui/workspace_layout.rs`](../crates/musializer-core/src/ui/workspace_layout.rs) | 610 | 10 | Workspace panel tiling and sidebar budgets. |
 
 ### `musializer-runtime`
@@ -238,9 +242,9 @@ with the module documentation and searching for a narrow symbol before scrolling
 | --- | ---: | ---: |
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,496 | 55 |
 | [`crates/musializer-app/src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 8,357 | 53 |
-| [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,510 | 45 |
+| [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,710 | 46 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 5,825 | 55 |
-| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 4,498 | 1 |
+| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 4,981 | 1 |
 | [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,024 | 41 |
 | [`crates/musializer-app/src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 2,620 | 22 |
 | [`crates/musializer-app/src/ui/panels/export.rs`](../crates/musializer-app/src/ui/panels/export.rs) | 2,500 | 8 |
@@ -250,7 +254,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-runtime/src/process/font_import.rs`](../crates/musializer-runtime/src/process/font_import.rs) | 2,180 | 33 |
 | [`crates/musializer-app/src/ui/widgets.rs`](../crates/musializer-app/src/ui/widgets.rs) | 2,076 | 18 |
 | [`crates/musializer-core/src/timing/render_export.rs`](../crates/musializer-core/src/timing/render_export.rs) | 2,065 | 38 |
-| [`crates/musializer-core/src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,041 | 39 |
+| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,063 | 44 |
 
 ## Non-Rust boundaries
 
@@ -268,6 +272,7 @@ generated build output, fixtures, and media assets are intentionally excluded.
 | [`tools/capture_isolation_lint.py`](../tools/capture_isolation_lint.py) | Static checks on the capture scripts' process isolation. Two defects this repository has actually shipped, both invisible until something spawned a GUI child, and both of which put a file dialog on the operator's real desktop: 1. **`WAYLAND_DISPLAY` unset instead of set to an unresolvable name.** `wl_display_connect(NULL)` reads the variable and falls back to a hardcoded `"wayland-0"` when it is missing — which is exactly what the operator's socket is called. `env -u WAYLAND_DISPLAY` is therefore not weaker isolation than doing nothing; it is identical to doing nothing. This shipped at 46 call sites. 2. **An `env` option after an assignment.** `env FOO=bar -u BAZ cmd` runs `-u` as the command and exits 127. The capture then "fails to produce a frame" and reads like an application bug. Neither is caught by `bash -n`, by any test, or by a capture — a broken guard is only visible when a GUI child is spawned, and only a handful of captures do that. Usage: tools/capture_isolation_lint.py [FILE ...] |
 | [`tools/code_map.py`](../tools/code_map.py) | Generate the repository's deterministic, linkable code map. |
 | [`tools/codex_model_discovery.py`](../tools/codex_model_discovery.py) | Codex `model/list` catalog discovery (AP2-c). Investigation, recorded because it is not obvious from `codex --help`: the installed Codex CLI (`codex-cli 0.146.0`) has no scriptable "list models" subcommand anywhere in its top-level or `exec` help. The `model/list` method docs/ASSIST_PROVIDER_CONTRACTS.md and https://developers.openai.com/codex/app-server/ describe only exists on the `codex app-server` JSON-RPC surface: newline-delimited JSON-RPC 2.0 over stdio (confirmed against `codex app-server generate-json-schema`, whose `v2` schema bundle emits `ModelListParams`/`ModelListResponse`, and against a live `initialize` + `model/list` round trip during development of this module). There is no lighter-weight, connectionless way to ask an installed Codex what models it offers -- discovery here necessarily means spawning a short-lived app-server process. What this module does NOT do, by design: - It never calls `codex login`, `codex logout`, or anything that mutates Codex's own auth state. - It never opens `$CODEX_HOME/auth.json` or any file under `$CODEX_HOME` itself. Whatever the spawned `codex app-server` process reads to answer `model/list` is that process's own business, exactly as it would be for any other authenticated Codex invocation this project already shells out to (`external_analysis.run_codex_review`); this module adds no new file access of its own. `tests/test_provider_discovery.py` proves this dynamically: it points `$CODEX_HOME` at a directory holding a sentinel `auth.json`, patches `builtins.open`, runs a full discovery round trip against a stub `codex` process, and asserts nothing in this process ever opened that path. - It always terminates the process it spawns, on every exit path (success, protocol error, timeout, or exception), via try/finally. Per docs/ASSIST_PROVIDER_CONTRACTS.md section 5, rule 6 ("Codex discovery failure preserves `Codex default`. Never a guessed model id."): whenever discovery is unsupported (old Codex, no `model/list` method) or fails for any other reason (binary missing, no response in time, malformed JSON-RPC), the result is exactly `DEFAULT_LABEL` with an empty model list -- never a guess. |
+| [`tools/cx4_surprise_session.sh`](../tools/cx4_surprise_session.sh) | Emit the CX-4 Surprise keepability session as HX protocol files. |
 | [`tools/differential_analyzer.sh`](../tools/differential_analyzer.sh) | Differential test: the frozen C analyzer versus the Rust port, on identical synthetic PCM. |
 | [`tools/differential_ascii_art.sh`](../tools/differential_ascii_art.sh) | Differential test: the frozen C `ascii_art` versus the Rust port, on identical synthetic RGBA8 pixel buffers. |
 | [`tools/differential_assist_ui.sh`](../tools/differential_assist_ui.sh) | Differential test: the frozen C's Assist panel policy versus the Rust port. |

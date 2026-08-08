@@ -381,6 +381,17 @@ pub struct UiProbe {
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
     pub audio_stall_ms: Option<u64>,
+    /// `protocol-answer=ID:CHOICE[+ID:CHOICE...]`: answer protocol items by id
+    /// (HX-5).
+    ///
+    /// **Invented because Xvfb can neither hear the track nor press `2`**, and
+    /// by *id* rather than by pixel because GX-1 is what a pixel-addressed
+    /// probe costs: every coordinate in the gate is a latent hard-coded layout.
+    pub protocol_answer: Option<String>,
+    /// `protocol-flip=ID`: put the item's other look on record before the
+    /// answer, so the gate can compare the recorded variant order against the
+    /// JSONL (HX-5).
+    pub protocol_flip: Option<String>,
 }
 
 /// `assist=` in a `--ui-probe` spec (review 4.2).
@@ -484,6 +495,10 @@ pub struct Cli {
     pub encoder: Option<String>,
     pub save_project: Option<PathBuf>,
     pub analysis_bridge: Option<PathBuf>,
+    /// `--protocol PATH`: load a `*.protocol.json` feedback protocol and start
+    /// its listening session (HX-2). Additive; nothing else on the grammar
+    /// moves.
+    pub protocol: Option<PathBuf>,
     pub auto_scenes: bool,
     pub reload_once: bool,
     pub ui_probe: Option<UiProbe>,
@@ -711,6 +726,13 @@ where
                 None => cli.warn("Missing command-line analysis bridge path"),
             },
 
+            // HX-2, additive: a `*.protocol.json` listening session. The
+            // protocol names its own audio, so this flag alone starts one.
+            "--protocol" => match value_of(&argv, i) {
+                Some(path) => cli.protocol = Some(PathBuf::from(path)),
+                None => cli.warn("Missing command-line protocol path"),
+            },
+
             "--auto-scenes" => cli.auto_scenes = true,
             "--reload-once" => cli.reload_once = true,
 
@@ -796,6 +818,7 @@ fn takes_one_value(flag: &str) -> bool {
             | "--project"
             | "--save-project"
             | "--analysis-bridge"
+            | "--protocol"
             | "--ui-probe"
             | "--ui-scale"
             | "--probe-frames"
@@ -1118,6 +1141,30 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // but `.mp4` and the still path writes a PNG, and a probe that aimed
         // the wrong one must fail *there*, where a real picker's answer would.
         "save-to" => probe.save_to = Some(PathBuf::from(value)),
+        "protocol-answer" => {
+            // `ID:CHOICE` pairs joined by `+`, colon-separated like `tune-type`
+            // because the spec is already split on `,` and `=`. Items are named
+            // by id, never by pixel (GX-1): the item's marker can move with any
+            // layout change and the probe still lands. Ids cannot be resolved
+            // here — the protocol file loads later — so only the shape is
+            // checked, and the runner reports an unknown id by name.
+            for pair in value.split('+') {
+                let (id, choice) = pair.split_once(':')?;
+                let digit: u8 = choice.parse().ok()?;
+                if id.is_empty() || !(1..=4).contains(&digit) {
+                    return None;
+                }
+            }
+            probe.protocol_answer = Some(value.to_string());
+        }
+        // One flip before the answer, so a probe run can put both looks of an
+        // A/B item on record and the gate can check the recorded order.
+        "protocol-flip" => {
+            if value.is_empty() {
+                return None;
+            }
+            probe.protocol_flip = Some(value.to_string());
+        }
         "audio-stall" => {
             let milliseconds: u64 = value.parse().ok()?;
             if !(1..=5_000).contains(&milliseconds) {
@@ -1192,6 +1239,10 @@ Workspace:
                           beat_phase, band. Curves: step, linear,
                           smoothstep, ease_in, ease_out
   --analysis-bridge FILE  Import a verified analysis bridge
+  --protocol FILE         Run a *.protocol.json listening session: the file
+                          names its audio (path + sha256), questions land on
+                          keys 1-4, answers append beside it as
+                          *.answers.jsonl
   --auto-scenes           Enable imported scene suggestions
 
 Export:
@@ -1252,6 +1303,9 @@ Diagnostics:
                           lyric-tap=N arms a tap run at time= and presses
                           the tap key N times; lyric-undo=1 then presses
                           Ctrl+Z once (needs panel=lyrics),
+                          protocol-answer=ID:CHOICE[+ID:CHOICE] answers
+                          protocol items by id; protocol-flip=ID plays
+                          the item's other look first (need --protocol),
                           audio-stall=MS stalls the audio callback
   --size WIDTHxHEIGHT     Preview window geometry
   --probe-frames N        Render N frames, print the report, and exit
@@ -1287,6 +1341,48 @@ mod tests {
         assert_eq!(parse_ui_probe("wheel=9"), None);
         assert_eq!(parse_ui_probe("wheel=nan"), None);
         assert_eq!(parse_ui_probe("wheel=up"), None);
+    }
+
+    /// Protocol probes address items by id, never by pixel (HX-5, GX-1), and
+    /// the pair shape is checked at the command line so a typo fails there
+    /// rather than photographing an unanswered session.
+    #[test]
+    fn protocol_probes_take_id_choice_pairs_and_refuse_malformed_ones() {
+        let probe = parse_ui_probe("protocol-answer=atlas-p1:2+free-1:1,protocol-flip=atlas-p1")
+            .expect("valid spec");
+        assert_eq!(
+            probe.protocol_answer.as_deref(),
+            Some("atlas-p1:2+free-1:1")
+        );
+        assert_eq!(probe.protocol_flip.as_deref(), Some("atlas-p1"));
+
+        assert_eq!(parse_ui_probe("protocol-answer=atlas-p1"), None);
+        assert_eq!(parse_ui_probe("protocol-answer=:2"), None);
+        assert_eq!(parse_ui_probe("protocol-answer=atlas-p1:0"), None);
+        assert_eq!(parse_ui_probe("protocol-answer=atlas-p1:5"), None);
+        assert_eq!(parse_ui_probe("protocol-answer=a:1+b"), None);
+        assert_eq!(parse_ui_probe("protocol-flip="), None);
+    }
+
+    /// `--protocol` is additive: it takes one path, and its value can never be
+    /// re-scanned as a positional track.
+    #[test]
+    fn the_protocol_flag_takes_one_path() {
+        let Outcome::Parsed(cli) = parse(["--protocol", "cx4.protocol.json"]) else {
+            panic!("--protocol should run");
+        };
+        assert_eq!(
+            cli.protocol.as_deref(),
+            Some(std::path::Path::new("cx4.protocol.json"))
+        );
+        assert!(cli.actions.is_empty(), "the path leaked into the actions");
+        assert!(!cli.error);
+        assert!(takes_one_value("--protocol"));
+
+        let Outcome::Parsed(cli) = parse(["--protocol"]) else {
+            panic!("a missing value still runs, with a warning");
+        };
+        assert!(cli.error);
     }
 
     /// The tap probe refuses a no-op for the same reason `wheel=0` does

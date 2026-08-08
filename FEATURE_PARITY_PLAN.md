@@ -1359,6 +1359,24 @@ means 1920x1080 to everyone, and the marked case carries the mark.
   stamp eight familiar lines, inspect the median residual); two more compares
   80/120/200 ms flashes.
 
+**Status (2026-08-08): the Surprise ruling is landed; the listening session is
+a protocol file.** `SURPRISE_MOVE_CHANCE` 0.75 → 0.45, `SURPRISE_TOGGLE_CHANCE`
+0.25 → 0.15, the blanket 5 % inset replaced by per-end metadata
+(`DRAWABLE_LOW_KEYS`: `pulse.petals`, `phosphor.field`, `phosphor.ramp` — all
+"0 = auto", now drawable, with a test proving each low end is actually drawn),
+and cyclic controls are the explicit `CYCLIC_KEYS` list (the four C-era hues
+plus `phosphor.hue`) instead of `is_angle`'s bounds inference — so
+`atlas.orbit` now draws triangular about its default like the camera control it
+is, pinned by a measured orbit-vs-colour spread test. The gate's seed-4242 pin
+was re-pinned **deliberately**; the old pin fails against the new draw, which
+is the negative control, and the comment at the pin says so. The keepability
+session itself ships as `build/protocols/cx4-surprise-*.protocol.json` (HX),
+with the current-vs-revised mapping in a `.key.json` the operator should not
+open until after answering. **Not built:** the single Adventure knob over
+per-descriptor sensitivity (a UI design of its own), the -100 ms tap offset,
+calibration gesture and tap flash — those are PXF-2/PXF-3 work this wave did
+not claim.
+
 ### CX-5 — thumbnails are the unlock, but only the track-specific kind (PXF-6)
 
 - **Yes, with a condition.** Ten 24–52 px *text* tiles make choosing a visual
@@ -1494,6 +1512,35 @@ was played.
 Order: HX-1+HX-3 (pure core: schema, parse, refuse, append) → HX-2 (runner +
 rail) → HX-5 (gate) → HX-4's generate/digest buttons last, since the MVP loop
 works without them.
+
+### Status (2026-08-08, HX wave)
+
+- [x] **HX-1 + HX-3** — `core::feedback`: `musializer.protocol/v1` parse/emit
+      and the `musializer.protocol-answer/v1` JSONL line. Strict in the `.musi`
+      codec's sense; every refusal in the design has a named test (wrong
+      digest, junk JSON, unknown kind/scene, snapshot invalid for its own
+      item's scene, a third snapshot label, out-of-charset and duplicate ids).
+      The answers reader tolerates exactly one torn line, only at the end.
+- [x] **HX-2** — `--protocol PATH` (additive), the `classify_drop`
+      `.protocol.json` arm (matched on the *double* extension so a bare
+      `.json` keeps the oracle's audio branch), bottom-anchored pennants on
+      the waveform strip, the keyboard-first question card, keys `1`-`4` /
+      `R` / `B` / `N` that exist only while a session runs, the self-pausing
+      audition window, and append-then-mark answer flow. Two deviations from
+      the sketch, both deliberate: the card is its own drawing (the notice
+      machinery has no options affordance — the tray now stacks *above* the
+      card instead), and markers overlay the strip's bottom edge rather than
+      taking a new band, so no `workspace_layout` guarantee moves. `text`
+      items parse and round-trip but the runner cannot take typed answers yet
+      — the card says so by name and `N` skips (missing beats pretending).
+- [x] **HX-5** — `--ui-probe protocol-flip=ID` / `protocol-answer=ID:CHOICE
+      [+ID:CHOICE]` (by id, never pixels — GX-1), the `protocol:` report line,
+      and the gate section: flip + answer through the probe, read the JSONL
+      back, assert the recorded variant order equals the claimed one, prove a
+      relaunch resumes from disk, and the negative control — a wrong digest
+      refuses with a nonzero exit and no answers file.
+- [ ] **HX-4** — the `claude -p` generate/digest buttons. The MVP loop works
+      without them; the agent writing the protocol reads the JSONL directly.
 
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 

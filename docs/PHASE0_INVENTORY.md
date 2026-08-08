@@ -285,6 +285,20 @@ short names **and six long aliases**:
 falling back. It is **not** persisted in `.musi`: the encoder describes the
 machine, not the piece.
 
+**`--protocol FILE`** is post-legacy (2026-08-08, HX) with no C counterpart:
+loads a `musializer.protocol/v1` file — schema in `core::feedback` — opens the
+audio the file names (path resolved against the protocol's own directory,
+sha256 verified before playback; a mismatch warns, sets the error flag and
+loads nothing), and starts the listening session. It is applied after
+`--analysis-bridge` and before `--auto-scenes`, and is gated on a prior error
+like the other staged inputs. Answers append beside the file as
+`<stem>.answers.jsonl` (`musializer.protocol-answer/v1`, one JSON object per
+line); a relaunch resumes at the first unanswered item. The probe keys
+`protocol-flip=ID` and `protocol-answer=ID:CHOICE[+ID:CHOICE]` (choices `1`-`4`)
+require a loaded session and address items by id. The dropped-file classifier
+also gains a `*.protocol.json` arm, matched case-insensitively on the double
+extension; a bare `.json` still takes the audio else-branch.
+
 Comparison is exact and case-sensitive `strcmp`. Selecting a scene can also
 fail for a reason unrelated to the name: `plug_select_scene`
 (`src/plug.c:984-986`) refuses a change while the route editor holds the active
