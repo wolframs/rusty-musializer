@@ -591,6 +591,30 @@ fn run(
         }
     }
 
+    // `--encoder` (2026-08-08). Refused rather than silently ignored: an export
+    // that quietly used a different encoder than the one asked for is something
+    // nobody notices until they compare file sizes, and the whole point of the
+    // flag is to be able to say which one produced a file.
+    //
+    // Availability is *not* probed here. `ffmpeg -encoders` is another process
+    // launch on every startup for a flag almost nobody passes, and FFmpeg's own
+    // failure — "Unknown encoder 'h264_nvenc'" — is already precise and already
+    // surfaced by the export's error path.
+    if let Some(name) = options.encoder.as_deref() {
+        match musializer_runtime::process::ffmpeg::VideoEncoder::from_cli_name(name) {
+            Some(encoder) => app.shell.video_encoder = encoder,
+            None => {
+                eprintln!(
+                    "warning: unknown encoder {name:?}; expected one of: {}",
+                    musializer_runtime::process::ffmpeg::VideoEncoder::ALL
+                        .map(|e| e.name())
+                        .join(", ")
+                );
+                options.error = true;
+            }
+        }
+    }
+
     // The readout's default, decided once. A probe run turns it on because a
     // capture that carries its own evidence is why the line exists; an interactive
     // run leaves it off because it is a developer HUD. `--hud=0|1` overrides both,
@@ -3974,6 +3998,24 @@ impl Report {
         // same picture; `off` versus `unavailable` is a claim only this line
         // can carry.
         println!("caption halo:    {}", renderer.describe_caption_halo());
+        // Phosphor Dream's own line, for the same reason the two above have one.
+        // This scene can draw a good-looking frame in several wrong states — the
+        // wrong field, a collapsed grid, a bloom that never built — and none of
+        // them are distinguishable in a capture. `none` means it has not drawn.
+        println!("phosphor dream:  {}", renderer.describe_phosphor());
+        // Which encoder an export from this run would use. Evidence rather than
+        // assertion: an NVENC file and an x264 file of the same frames are
+        // different bytes, so a capture that compares two exports has to be able
+        // to say they were made the same way.
+        println!(
+            "video encoder:   {} ({})",
+            app.shell.video_encoder.name(),
+            if app.shell.video_encoder.is_hardware() {
+                "GPU"
+            } else {
+                "CPU"
+            }
+        );
         println!(
             "ui layout:       scale={} sidebar={} inspector={} timeline={}",
             (fonts.ui().scale() * 100.0).round() as u16,

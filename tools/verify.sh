@@ -2,9 +2,10 @@
 #
 # Everything that can check itself, in one command.
 #
-#   tools/verify.sh            # the full suite
-#   tools/verify.sh --quick    # skip the headless capture (no Xvfb needed)
-#   tools/verify.sh --jobs 1   # serialize non-visual checks for diagnosis
+#   tools/verify.sh                 # build, lint, tests, and the capture gate
+#   tools/verify.sh --quick         # skip the headless capture (no Xvfb needed)
+#   tools/verify.sh --differential  # also the 13 harnesses against the frozen C
+#   tools/verify.sh --jobs 1        # serialize non-visual checks for diagnosis
 #
 # Run this before handing work over and after every merge. It is deliberately
 # ordered cheapest-first, so a formatting slip fails in seconds rather than after
@@ -17,14 +18,16 @@
 set -uo pipefail
 
 QUICK=0
+DIFFERENTIAL=0
 VERIFY_JOBS="${VERIFY_JOBS:-4}"
 
 usage() {
     cat <<'EOF'
-Usage: tools/verify.sh [--quick] [--jobs N]
+Usage: tools/verify.sh [--quick] [--differential] [--jobs N]
 
-  --quick    skip the private-Xvfb capture gate
-  --jobs N   run at most N independent non-visual checks together (default: 4)
+  --quick         skip the private-Xvfb capture gate
+  --differential  also run the 13 differential harnesses against the frozen C
+  --jobs N        run at most N independent non-visual checks together (default: 4)
 EOF
 }
 
@@ -32,6 +35,9 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --quick)
             QUICK=1
+            ;;
+        --differential|--full)
+            DIFFERENTIAL=1
             ;;
         --jobs)
             shift
@@ -168,19 +174,41 @@ step "cargo clippy" cargo clippy --all-targets --quiet
 queue_step "cargo-test" "cargo test" cargo test --quiet
 queue_step "support-bundle" "support bundle (offline Assist)" tools/support_bundle_check.sh
 queue_step "secret-canary" "secret canary (provider credentials)" tools/secret_canary_check.sh
+# Static isolation checks on the capture scripts. Cheap, and it guards two
+# defects that shipped for months because nothing they break is visible until a
+# capture spawns a GUI child — at which point a file dialog opens on the
+# operator's real desktop. See the traps in AGENTS.md.
+queue_step "capture-isolation" "capture isolation (Wayland, env)" tools/capture_isolation_lint.py
 
 # Differential harnesses against the frozen C. These are the evidence that the
-# ports are faithful rather than merely plausible.
-for harness in analyzer beat_tracker settings routes route_persistence event_merge assist_ui preset_store song_atlas_map ascii_art project_io timeline_view layout; do
-    script="tools/differential_${harness}.sh"
-    if [ ! -x "$script" ]; then
-        printf '\n\033[31mFAILED\033[0m  missing executable differential harness: %s\n' "$script"
-        FAILED+=("differential: $harness")
-        continue
-    fi
-    queue_step "differential-$harness" "differential: $harness" "$script"
-done
+# ports are faithful rather than merely plausible, and one of them
+# (`beat_tracker`) found a real rendering bug that ten unit tests were green
+# against.
+#
+# **Opt-in since 2026-08-08** (operator decision). They compile C from the oracle
+# on every run, and they re-verify pure logic that changes very rarely — so
+# paying for them on every iteration buys nothing most of the time. They are
+# anchors, not a gate: keep them green, run them when you touch ported logic or
+# before handing work over, and never let one fail quietly.
+#
+#   tools/verify.sh --differential      # or --full
+#   tools/differential_settings.sh      # or just the one you moved
+if [ "$DIFFERENTIAL" -eq 1 ]; then
+    for harness in analyzer beat_tracker settings routes route_persistence event_merge assist_ui preset_store song_atlas_map ascii_art project_io timeline_view layout; do
+        script="tools/differential_${harness}.sh"
+        if [ ! -x "$script" ]; then
+            printf '\n\033[31mFAILED\033[0m  missing executable differential harness: %s\n' "$script"
+            FAILED+=("differential: $harness")
+            continue
+        fi
+        queue_step "differential-$harness" "differential: $harness" "$script"
+    done
+fi
 finish_queued_steps
+
+if [ "$DIFFERENTIAL" -eq 0 ]; then
+    printf '\n\033[33mskipped\033[0m  13 differential harnesses (run with --differential)\n'
+fi
 
 if [ "$QUICK" -eq 0 ]; then
     if command -v Xvfb >/dev/null 2>&1; then

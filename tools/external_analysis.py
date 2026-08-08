@@ -65,9 +65,13 @@ REFERENCE_SIBLING_SUFFIX = ".lyrics.txt"
 SCENE_PLAN_VERSION = "musializer.scene-plan/v1"
 SEMANTIC_NOTES_VERSION = "musializer.semantic-notes/v1"
 BRIDGE_VERSION = "MUSIALIZER_BRIDGE\t1"
+# The scene vocabulary the model may recommend. `phosphor` postdates the frozen
+# C (2026-08-08); it is listed here because a scene the planner cannot name is a
+# scene an assist run can never choose, which is how a finished feature stays
+# unreachable from the one surface that picks scenes automatically.
 SCENES = (
     "spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium",
-    "constellation", "cadence", "loom", "pentagram",
+    "constellation", "cadence", "loom", "pentagram", "phosphor",
 )
 
 # Keep the orchestrator's measured-cache contract dependency-free. These are
@@ -942,6 +946,7 @@ def _scene_for(features: dict[str, float], semantic: dict[str, Any] | None,
         ({"journey", "landscape", "terrain", "vast", "horizon"}, "atlas"),
         ({"mechanical", "drive", "tunnel", "kinetic", "industrial"}, "orbital"),
         ({"geometric", "mathematical", "recursive", "hypnotic", "ritual"}, "pentagram"),
+        ({"psychedelic", "trippy", "nostalgic", "retro", "kaleidoscopic"}, "phosphor"),
     )
     for keywords, scene in keyword_scenes:
         if words.intersection(keywords):

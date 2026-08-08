@@ -1723,6 +1723,7 @@ impl ExportSession {
             config,
             window,
             protected: &protected,
+            encoder: app.shell.video_encoder,
         };
         let job = match RenderJob::start(audio, &request) {
             Ok(job) => job,

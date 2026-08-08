@@ -81,6 +81,15 @@ pub struct RenderRequest<'a> {
     /// Paths the destination must not alias, beyond the source audio: the
     /// track's `.musi`, in the oracle (`plug.c:6903-6909`).
     pub protected: &'a [PathBuf],
+    /// Which encoder compresses the frames (2026-08-08).
+    ///
+    /// Lives on the *request* rather than on `RenderExportConfig`, deliberately:
+    /// the config is a `.musi` surface and the frozen C's own type, while this
+    /// is a property of the machine doing the encoding. A project carried
+    /// between two machines should not insist on an NVIDIA card, and a project
+    /// file should not be able to make a build here pick an encoder it does not
+    /// have.
+    pub encoder: super::ffmpeg::VideoEncoder,
 }
 
 /// Why an export could not start.
@@ -360,6 +369,7 @@ impl RenderJob {
             },
             staged_audio,
             nonce,
+            request.encoder,
         )
     }
 
@@ -368,6 +378,13 @@ impl RenderJob {
     ///
     /// Split out so the stepping logic can be exercised against a fake encoder
     /// and synthetic samples, with no audio device and no FFmpeg.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the encoder-spawn seam: program, destination, config, plan, \
+                  decoded track, staging path, nonce, video encoder — each is a \
+                  distinct input and bundling them into a struct would only move \
+                  the list"
+    )]
     fn spawn(
         program: &std::ffi::OsStr,
         destination: &Path,
@@ -376,11 +393,12 @@ impl RenderJob {
         track: DecodedTrack,
         staged_audio: PathBuf,
         nonce: u64,
+        video_encoder: super::ffmpeg::VideoEncoder,
     ) -> Result<Self, RenderStartError> {
         let encoder = Encoder::start_with_program(
             program,
             destination,
-            &encoder_config(&config),
+            &encoder_config(&config, video_encoder),
             &staged_audio,
             plan.encoded_frames(),
             nonce,
@@ -683,7 +701,10 @@ impl Drop for RenderJob {
 /// The boundary note in [`super::ffmpeg`] asked for exactly this conversion once
 /// `musializer_core::timing::render_export` landed. It lives here rather than
 /// there so that module keeps no dependency on this one.
-fn encoder_config(config: &RenderExportConfig) -> ExportConfig {
+fn encoder_config(
+    config: &RenderExportConfig,
+    encoder: super::ffmpeg::VideoEncoder,
+) -> ExportConfig {
     ExportConfig {
         width: config.width,
         height: config.height,
@@ -693,6 +714,7 @@ fn encoder_config(config: &RenderExportConfig) -> ExportConfig {
             Quality::High => ExportQuality::High,
             Quality::Master => ExportQuality::Master,
         },
+        encoder,
         supersample_factor: config.supersample_factor,
     }
 }
@@ -1040,7 +1062,7 @@ mod tests {
         ] {
             let mut config = RenderExportConfig::default();
             config.set_quality(quality);
-            let encoder = encoder_config(&config);
+            let encoder = encoder_config(&config, crate::process::ffmpeg::VideoEncoder::default());
             assert_eq!(encoder.quality, expected);
             assert_eq!(encoder.supersample_factor, config.supersample_factor);
             assert_eq!(encoder.validate().is_ok(), config.validate().is_ok());

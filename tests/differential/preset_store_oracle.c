@@ -92,8 +92,16 @@ int main(int argc, char **argv)
     }
     const char *scratch = argv[1];
 
-    /* 1. Scene tokens, both directions. One past the end proves the rejection. */
-    for (size_t scene = 0; scene <= SCENE_SETTINGS_SCENE_COUNT; ++scene) {
+    /* 1. Scene tokens, both directions.
+     *
+     * The loop runs over this registry's own scenes and the rejection probe is
+     * printed separately, because the two registries are no longer the same
+     * size: the Rust tree gained an eleventh scene on 2026-08-08 that the frozen
+     * C cannot have. Probing a hard-coded index 10 would compare "past the end"
+     * on one side against "a real scene" on the other, which is a comparison of
+     * two different questions. Each side now probes one past *its own* end, so
+     * the printed line means the same thing in both. */
+    for (size_t scene = 0; scene < SCENE_SETTINGS_SCENE_COUNT; ++scene) {
         char token[64];
         if (preset_store_scene_token(scene, token, sizeof(token))) {
             printf("token %zu %s\n", scene, token);
@@ -104,6 +112,12 @@ int main(int argc, char **argv)
         } else {
             printf("token %zu none\n", scene);
         }
+    }
+    {
+        char token[64];
+        printf("token_past_end %s\n",
+               preset_store_scene_token(SCENE_SETTINGS_SCENE_COUNT, token, sizeof(token))
+                   ? "unexpectedly_named" : "none");
     }
     static const char *bad_tokens[] = {"", "nope", "Loom", "loom.", " loom"};
     for (size_t i = 0; i < sizeof(bad_tokens)/sizeof(bad_tokens[0]); ++i) {

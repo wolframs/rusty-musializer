@@ -407,6 +407,12 @@ pub struct Shell {
     /// itself to the wrong audience. The probe harness turns it back on, because a
     /// capture that carries its own evidence is the reason it was written.
     pub hud_visible: bool,
+    /// Which encoder an export uses (2026-08-08, `--encoder`).
+    ///
+    /// Session state rather than project state: it describes the machine, not
+    /// the piece. A `.musi` carried to a box with no NVIDIA card must not insist
+    /// on `h264_nvenc`.
+    pub video_encoder: musializer_runtime::process::ffmpeg::VideoEncoder,
     pub notices: NoticeQueue,
     pub timeline: TimelineView,
     /// One owner for every timeline drag. A scene boundary and the waveform
@@ -957,6 +963,7 @@ impl Shell {
             inspector_open: false,
             panel: UiPanel::None,
             fullscreen: false,
+            video_encoder: musializer_runtime::process::ffmpeg::VideoEncoder::default(),
             hud_visible: false,
             timeline: TimelineView::new(0.0),
             timeline_gesture: None,
@@ -3723,8 +3730,6 @@ impl Shell {
         }
         let content = widgets::panel(d, input.fonts.ui(), boundary, "SCENES");
         let padding = 8.0f32;
-        let columns = 2usize;
-        let rows = SceneId::ALL.len().div_ceil(columns);
         // The ASCII footer's seat, reserved before the tiles are sized (D2). A
         // panel that reserves height it never draws steals it from something
         // else, and one that draws height it never reserved prints over its
@@ -3735,6 +3740,27 @@ impl Shell {
             return;
         }
         let gap = 4.0f32;
+        // Two columns is the C's layout, and ten scenes fit it. **An eleventh
+        // does not** (SX1, 2026-08-08): the grid goes to six rows, six rows at
+        // the 24 px floor exceed the panel at 720p, and the loop below silently
+        // skips any tile that would fall outside the panel. The result was a
+        // scene that `--scene phosphor` could select and the picker could not —
+        // reachable by flag, invisible to a user, and a perfectly plausible
+        // screenshot either way.
+        //
+        // Widen the grid rather than drop tiles or shrink past legibility. The
+        // floor stays 24 px because that is what `WORKSPACE_SCENES_MINIMUM` is
+        // for, and the search stops at four columns because the longest label
+        // ("Spectral Terrarium") stops being readable below a quarter width.
+        let mut columns = 2usize;
+        let fits = |columns: usize| {
+            let rows = SceneId::ALL.len().div_ceil(columns) as f32;
+            rows * 24.0 + (rows - 1.0) * gap <= available_height
+        };
+        while columns < 4 && !fits(columns) {
+            columns += 1;
+        }
+        let rows = SceneId::ALL.len().div_ceil(columns);
         // Tiles clamp to a 24 px floor and a 52 px cap, the numbers
         // WORKSPACE_SCENES_MINIMUM and _MAXIMUM are derived from
         // (`workspace_layout.h:55-62`). Raising one without the other changes
@@ -5137,6 +5163,49 @@ fn draw_splitter(
 
 #[cfg(test)]
 mod tests {
+    /// Every scene must have a seat in the browser at the smallest window.
+    ///
+    /// The regression this pins (SX1, 2026-08-08): the grid was a hard two
+    /// columns, eleven scenes made it six rows, six rows at the 24 px floor no
+    /// longer fit the panel, and `scene_browser`'s "a tile that does not fit is
+    /// not drawn" guard silently dropped the last one. `--scene phosphor` still
+    /// worked, so nothing failed — the scene was simply unreachable from the
+    /// only surface a user has for picking one, and both screenshots are
+    /// plausible.
+    ///
+    /// This is the arithmetic, not the draw, because the draw needs a window.
+    /// It is the same expression `scene_browser` uses, so a change to the floor
+    /// or the gap fails here rather than in a capture nobody looks at.
+    #[test]
+    fn every_scene_gets_a_tile_at_the_narrowest_layout() {
+        const TILE_FLOOR: f32 = 24.0;
+        const GAP: f32 = 4.0;
+        // The tightest the panel gets: the 720p minimum window, sidebar at its
+        // automatic width, with the ASCII footer's seat already reserved.
+        for available_height in [80.0f32, 100.0, 112.0, 160.0] {
+            let mut columns = 2usize;
+            let fits = |columns: usize| {
+                let rows = SceneId::ALL.len().div_ceil(columns) as f32;
+                rows * TILE_FLOOR + (rows - 1.0) * GAP <= available_height
+            };
+            while columns < 4 && !fits(columns) {
+                columns += 1;
+            }
+            let rows = SceneId::ALL.len().div_ceil(columns);
+            assert!(
+                columns * rows >= SceneId::ALL.len(),
+                "{available_height}px: {columns}x{rows} cannot seat {} scenes",
+                SceneId::ALL.len()
+            );
+            let needed = rows as f32 * TILE_FLOOR + (rows as f32 - 1.0) * GAP;
+            assert!(
+                needed <= available_height,
+                "{available_height}px: {rows} rows need {needed}px, so tiles \
+                 would be silently dropped"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

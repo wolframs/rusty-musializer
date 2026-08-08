@@ -1,0 +1,50 @@
+post-constant-count 12
+post-constant 0 settings.phosphor.field 0 0 0 1 0 0 1 1
+post-constant-is-constant 0 1
+post-constant 1 settings.phosphor.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 1 1
+post-constant 2 settings.phosphor.breathe 0 0 0 1 1 1 1 1
+post-constant-is-constant 2 1
+post-constant 3 settings.phosphor.density 0 0 0 1 1 1 1 1
+post-constant-is-constant 3 1
+post-constant 4 settings.phosphor.ramp 0 0 0 1 0 0 1 1
+post-constant-is-constant 4 1
+post-constant 5 settings.phosphor.bloom 0 0 0 1 1 1 1 1
+post-constant-is-constant 5 1
+post-constant 6 settings.phosphor.aberration 0 0 0 1 1 1 1 1
+post-constant-is-constant 6 1
+post-constant 7 settings.phosphor.scanlines 0 0 0 1 1 1 1 1
+post-constant-is-constant 7 1
+post-constant 8 settings.phosphor.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 8 1
+post-constant 9 settings.phosphor.reactivity 0 0 0 1 1 1 1 1
+post-constant-is-constant 9 1
+post-constant 10 settings.phosphor.dwell 0 0 0 1 10 10 1 1
+post-constant-is-constant 10 1
+post-constant 11 settings.phosphor.titles 0 0 0 1 0 0 1 1
+post-constant-is-constant 11 1
+post-routed-count 12
+post-routed 0 settings.phosphor.field 0 0 0 1 0 0 1 1
+post-routed 1 settings.phosphor.motion 0 0 0 1 1 1 1 1
+post-routed 2 settings.phosphor.breathe 0 0 0 1 1 1 1 1
+post-routed 3 settings.phosphor.density 0 0 0 1 1 1 1 1
+post-routed 4 settings.phosphor.ramp 0 0 0 1 0 0 1 1
+post-routed 5 settings.phosphor.bloom 0 0 0 1 1 1 1 1
+post-routed 6 settings.phosphor.aberration 0 0 0 1 1 1 1 1
+post-routed 7 settings.phosphor.scanlines 0 0 0 1 1 1 1 1
+post-routed 8 settings.phosphor.hue 0 0 0 1 0 0 1 1
+post-routed 9 settings.phosphor.reactivity 0 0 0 1 1 1 1 1
+post-routed 10 settings.phosphor.dwell 0 0 0 1 10 10 1 1
+post-routed 11 settings.phosphor.titles 0 0 0 1 0 0 1 1
+post-import-value 10 0 0
+post-import-value 10 1 1
+post-import-value 10 2 1
+post-import-value 10 3 1
+post-import-value 10 4 0
+post-import-value 10 5 1
+post-import-value 10 6 1
+post-import-value 10 7 1
+post-import-value 10 8 0
+post-import-value 10 9 1
+post-import-value 10 10 10
+post-import-value 10 11 0

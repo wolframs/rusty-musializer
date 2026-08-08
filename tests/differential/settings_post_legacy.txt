@@ -1,0 +1,13 @@
+scene 10 count 12
+10 0 settings.phosphor.field|Field (0 = cycle)|0|10|0|0|0
+10 1 settings.phosphor.motion|Field motion|0|2|1|2|0
+10 2 settings.phosphor.breathe|World drift|0|2|1|2|0
+10 3 settings.phosphor.density|Cell density|0.5|2|1|2|0
+10 4 settings.phosphor.ramp|Alphabet (0 = auto)|0|7|0|0|0
+10 5 settings.phosphor.bloom|CRT bloom|0|2|1|2|0
+10 6 settings.phosphor.aberration|Colour split|0|2|1|2|0
+10 7 settings.phosphor.scanlines|Scanlines|0|2|1|2|0
+10 8 settings.phosphor.hue|Hue shift (deg)|-180|180|0|0|0
+10 9 settings.phosphor.reactivity|Music coupling|0|2|1|2|0
+10 10 settings.phosphor.dwell|Seconds per field|4|30|10|0|0
+10 11 settings.phosphor.titles|Surfacing words|0|1|0|0|1

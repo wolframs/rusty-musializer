@@ -203,6 +203,24 @@ pub mod index {
         pub const PULSE: usize = 6;
         pub const ZOOM: usize = 7;
     }
+    /// Phosphor Dream. No C counterpart — this scene is a post-legacy addition
+    /// (2026-08-08), so there is no `scene_settings.h` line to cite.
+    pub mod phosphor {
+        /// `0` runs the sequence; `1..=FIELD_COUNT` pins one field.
+        pub const FIELD: usize = 0;
+        pub const MOTION: usize = 1;
+        pub const BREATHE: usize = 2;
+        pub const DENSITY: usize = 3;
+        /// `0` lets each field choose its own alphabet; `1..=RAMP_COUNT` pins one.
+        pub const RAMP: usize = 4;
+        pub const BLOOM: usize = 5;
+        pub const ABERRATION: usize = 6;
+        pub const SCANLINES: usize = 7;
+        pub const HUE: usize = 8;
+        pub const REACTIVITY: usize = 9;
+        pub const DWELL: usize = 10;
+        pub const TITLES: usize = 11;
+    }
 }
 
 use SettingDescriptor as D;
@@ -339,7 +357,42 @@ const PENTAGRAM: &[SettingDescriptor] = &[
     D::slider("settings.pentagram.zoom", "Field scale", 0.60, 1.50, 1.00, 2),
 ];
 
-/// The descriptor table, in scene registry order (`scene_settings.c:129-141`).
+/// Phosphor Dream, a post-legacy addition with no oracle line to cite.
+///
+/// Twelve controls, which is exactly [`MAX_CONTROLS`] — Song Atlas set that
+/// ceiling and this scene meets it rather than raising it, because the dense
+/// value array is `[[f32; MAX_CONTROLS]; SCENE_COUNT]` and widening it grows
+/// every scene's row for the benefit of one.
+///
+/// Two of them are **selectors** rather than magnitudes, and both spell zero as
+/// "let the scene decide": `field` 0 runs the whole sequence and 1..=10 pins one
+/// field, `ramp` 0 lets each field keep its own alphabet and 1..=7 pins one.
+/// Encoding "auto" as a value inside the range rather than as a separate toggle
+/// is what keeps them routable and randomizable like anything else — a toggle
+/// plus a value would need `tune_explore` to know they are paired.
+///
+/// `titles` defaults **off**. The source piece surfaces its own words out of the
+/// field, and this application already has a caption layer with authored timing;
+/// two word layers fighting for the same frame is the wrong default even though
+/// the effect is worth keeping.
+#[rustfmt::skip]
+const PHOSPHOR: &[SettingDescriptor] = &[
+    D::slider("settings.phosphor.field", "Field (0 = cycle)", 0.00, 10.00, 0.00, 0),
+    D::slider("settings.phosphor.motion", "Field motion", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.breathe", "World drift", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.density", "Cell density", 0.50, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.ramp", "Alphabet (0 = auto)", 0.00, 7.00, 0.00, 0),
+    D::slider("settings.phosphor.bloom", "CRT bloom", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.aberration", "Colour split", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.scanlines", "Scanlines", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.hue", "Hue shift (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.phosphor.reactivity", "Music coupling", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.phosphor.dwell", "Seconds per field", 4.00, 30.00, 10.00, 0),
+    D::toggle("settings.phosphor.titles", "Surfacing words", 0.0),
+];
+
+/// The descriptor table, in scene registry order (`scene_settings.c:129-141`
+/// for the first ten).
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     SPECTRUM,
     PULSE,
@@ -351,6 +404,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     CADENCE,
     LOOM,
     PENTAGRAM,
+    PHOSPHOR,
 ];
 
 /// Descriptors for one scene.
@@ -542,7 +596,9 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         SceneId::SongAtlas => count == 8 || count == 10,
         SceneId::SpectralTerrarium => count == 3 || count == 7,
         SceneId::Constellation => count == 3 || count == 7,
-        SceneId::Cadence | SceneId::Loom | SceneId::Pentagram => false,
+        // Phosphor Dream shipped with twelve and has never had another count;
+        // it postdates the C entirely, so there is no legacy shape to admit.
+        SceneId::Cadence | SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream => false,
     }
 }
 

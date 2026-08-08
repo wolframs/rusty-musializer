@@ -102,6 +102,7 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             state_version: 1,
             make_state: |seed| Box::new(core_scenes::pentagram::PentagramState::new(seed)),
         },
+        SceneId::PhosphorDream => core_scenes::phosphor_dream::descriptor(),
     }
 }
 
@@ -144,6 +145,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::Cadence => |_| Box::new(StatelessScene::new(SceneId::Cadence)),
             SceneId::Loom => |_| Box::new(StatelessScene::new(SceneId::Loom)),
             SceneId::Pentagram => |_| Box::new(StatelessScene::new(SceneId::Pentagram)),
+            SceneId::PhosphorDream => |_| Box::new(StatelessScene::new(SceneId::PhosphorDream)),
         },
     }
 }
@@ -186,6 +188,9 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         SceneId::Cadence => "scene_cadence.c",
         SceneId::Loom => "scene_loom.c",
         SceneId::Pentagram => "scene_pentagram.c",
+        // The one scene with no oracle behind it. Named rather than left to fall
+        // through to a plausible-looking C filename that does not exist.
+        SceneId::PhosphorDream => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -239,6 +244,14 @@ pub struct SceneRenderer {
     /// like the other GPU resources: one shader and one buffer pair for the
     /// whole application, not a reload per scene switch.
     caption_halo: HaloBlur,
+    /// Phosphor Dream's grid buffer and its own blur.
+    ///
+    /// A *second* `HaloBlur` rather than sharing `caption_halo`, because the two
+    /// want very different buffer sizes on the same frame — a caption's halo is
+    /// sized from its glyph box and the scene's from the whole panel — and one
+    /// instance would reallocate both every frame. Owned here like every other
+    /// GPU resource, so a scene switch does not leak a shader.
+    phosphor: scenes::phosphor_dream::PhosphorResources,
     /// What the glow did on the last caption frame — `off`, `blurred`, or
     /// `unavailable` — because a frame with no halo and a frame whose halo
     /// silently failed to build are the same picture.
@@ -277,6 +290,7 @@ impl SceneRenderer {
             cadence_text: "none",
             caption_halo: HaloBlur::load(rl, thread),
             caption_halo_last: "none",
+            phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
         })
     }
 
@@ -295,6 +309,19 @@ impl SceneRenderer {
             ),
         };
         format!("{shader}, cadence-text={}", self.cadence_text)
+    }
+
+    /// One line naming what Phosphor Dream last drew: its field, its alphabet,
+    /// its grid and its bloom.
+    ///
+    /// Every one of those is invisible in a capture. Two fields in the same
+    /// alphabet photograph as the same kind of picture; a grid that collapsed to
+    /// its floor still draws something plausible; and a bloom that failed to
+    /// build looks exactly like `bloom` turned down. This is a scene that can
+    /// draw a good-looking frame in several wrong states, so it says which one.
+    #[must_use]
+    pub fn describe_phosphor(&self) -> String {
+        self.phosphor.describe()
     }
 
     /// One line naming the caption glow's mechanism and last outcome, for its
@@ -342,6 +369,17 @@ impl SceneRenderer {
         pixel_scale: f32,
     ) {
         let id = instance.id();
+        // Phosphor Dream evaluates its grid and builds its bloom *before* the
+        // scene clip opens, and that ordering is load-bearing rather than
+        // stylistic: `HaloBlur::render` redirects the framebuffer, and a scissor
+        // rect is global GL state in framebuffer coordinates, so an active clip
+        // meant for the preview panel would crop the offscreen blur passes. The
+        // caption halo below is outside the same block for the same reason.
+        if id == SceneId::PhosphorDream {
+            if let Some(state) = state_of(instance, id) {
+                scenes::phosphor_dream::prepare(d, &mut self.phosphor, state, frame, boundary);
+            }
+        }
         // The scene clip lives here rather than at the call site, because the
         // caption halo below must run with *no* scissor active: its offscreen
         // blur passes redirect the framebuffer, and a scissor rect is global GL
@@ -463,6 +501,18 @@ impl SceneRenderer {
                 SceneId::Loom => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::loom::draw(d, frame, state, boundary, pixel_scale);
+                    }
+                }
+                SceneId::PhosphorDream => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::phosphor_dream::draw(
+                            d,
+                            &mut self.phosphor,
+                            state,
+                            frame,
+                            boundary,
+                            pixel_scale,
+                        );
                     }
                 }
                 SceneId::Pentagram => {
@@ -609,6 +659,7 @@ mod tests {
                 "cadence",
                 "loom",
                 "pentagram",
+                "phosphor",
             ]
         );
     }
@@ -636,6 +687,7 @@ mod tests {
                 SceneId::Cadence => any.is::<cs::cadence::CadenceState>(),
                 SceneId::Loom => any.is::<cs::loom::LoomState>(),
                 SceneId::Pentagram => any.is::<cs::pentagram::PentagramState>(),
+                SceneId::PhosphorDream => any.is::<cs::phosphor_dream::PhosphorDreamState>(),
             };
             assert!(
                 recovered,
@@ -645,10 +697,23 @@ mod tests {
         }
     }
 
+    /// Every C-era scene names the `.c` its drawing half came from, and the one
+    /// scene that has no oracle says so in words rather than naming a file that
+    /// does not exist. A reviewer reading a placeholder card has to be able to
+    /// tell "look here" from "there is nothing to look at".
     #[test]
-    fn every_scene_names_its_c_source() {
+    fn every_scene_names_its_source_and_the_one_without_an_oracle_says_so() {
         for id in SceneId::ALL {
-            assert!(oracle_source(id).ends_with(".c"), "{}", id.stable_name());
+            let source = oracle_source(id);
+            if id.exists_in_oracle() {
+                assert!(source.ends_with(".c"), "{}: {source}", id.stable_name());
+            } else {
+                assert!(
+                    source.contains("no oracle"),
+                    "{}: {source}",
+                    id.stable_name()
+                );
+            }
         }
     }
 }

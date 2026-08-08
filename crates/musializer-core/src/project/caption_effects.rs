@@ -29,6 +29,25 @@ pub struct EffectInputs {
     pub flux: f32,
 }
 
+/// The application's one definition of "bass": the mean of the lowest quarter of
+/// the *smoothed* band memory.
+///
+/// Public and named because a second scene now reads it. Phosphor Dream's audio
+/// coupling used to take the lowest eighth of the instantaneous `bands` instead,
+/// which read `0.00` on every frame of the synthetic fixture while the caption
+/// glow on the same frames was driven fine — two numbers called "bass" in one
+/// application, disagreeing. The trails are already smoothed, which is why a
+/// bass-driven glow breathes instead of flickering, and that is as true for a
+/// camera zoom as for a halo.
+#[must_use]
+pub fn bass_from_trails(trails: &[f32]) -> f32 {
+    if trails.is_empty() {
+        return 0.0;
+    }
+    let low = (trails.len() / 4).max(1).min(trails.len());
+    trails[..low].iter().sum::<f32>() / low as f32
+}
+
 impl EffectInputs {
     /// Derives the drive inputs from a frame's audio figures.
     ///
@@ -43,16 +62,10 @@ impl EffectInputs {
         beat_phase: f32,
         flux: f32,
     ) -> Self {
-        let low = (trails.len() / 4).max(1).min(trails.len().max(1));
-        let bass = if trails.is_empty() {
-            0.0
-        } else {
-            trails[..low].iter().sum::<f32>() / low as f32
-        };
         Self {
             time_seconds,
             rms,
-            bass,
+            bass: bass_from_trails(trails),
             beat_phase,
             flux,
         }

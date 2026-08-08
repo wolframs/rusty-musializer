@@ -7,8 +7,9 @@
 # cannot be run is worse than one that lives in its own file until it can be
 # folded in. The block to add to the gate is in LX1-d's report.
 #
-# Isolation follows tools/headless_check.sh exactly — private Xvfb, no
-# WAYLAND_DISPLAY, an unresolvable PULSE_SERVER, and --mute on every launch — with
+# Isolation follows tools/headless_check.sh exactly — private Xvfb, an
+# unresolvable WAYLAND_DISPLAY, an unresolvable PULSE_SERVER, and --mute on every
+# launch — with
 # one addition it should also have: MUSIALIZER_UI_PREFERENCES points at a scratch
 # file, so a capture measures the application rather than whatever timeline split
 # the operator last dragged on this machine.
@@ -18,6 +19,11 @@ OUT_DIR="${1:-build/lyric-lane}"
 DISPLAY_NUM="${MUSIALIZER_CAPTURE_DISPLAY:-:78}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+# See tools/headless_check.sh: a *name that cannot resolve*, never an unset
+# variable. libwayland falls back to a hardcoded "wayland-0" when the variable is
+# missing, and that is the name of the operator's real socket.
+MZ_NO_WAYLAND="${MZ_NO_WAYLAND:-musializer-headless-check-no-compositor}"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
@@ -45,7 +51,7 @@ run() {
     # run LOGNAME -- ARGS...
     local name="$1"; shift; shift
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-lyric-lane" \
         MUSIALIZER_UI_PREFERENCES="$PREFS" \
@@ -105,7 +111,7 @@ capture() {
     # capture NAME SIZE PROBE [EXTRA...]
     local name="$1" size="$2" probe="$3"; shift 3
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-lyric-lane" \
         MUSIALIZER_UI_PREFERENCES="$PREFS" \

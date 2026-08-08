@@ -147,6 +147,9 @@ fn run(options: &Options) -> Result<(), String> {
         .map_err(|error| format!("could not initialize the audio device: {error}"))?;
 
     let request = RenderRequest {
+        // The probe pins x264's exact arguments, so it must not follow a
+        // `--encoder` default that could move.
+        encoder: musializer_runtime::process::ffmpeg::VideoEncoder::X264,
         destination: &options.output,
         source_audio: &options.audio,
         config: options.config,

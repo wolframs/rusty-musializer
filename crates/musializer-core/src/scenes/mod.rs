@@ -14,6 +14,9 @@ pub mod constellation;
 pub mod loom;
 pub mod orbital_lattice;
 pub mod pentagram;
+/// The one scene here with no oracle behind it: a post-legacy addition rather
+/// than a port. See its module docs for what that changes about its evidence.
+pub mod phosphor_dream;
 pub mod pulse_field;
 pub mod song_atlas;
 pub mod spectral_terrarium;

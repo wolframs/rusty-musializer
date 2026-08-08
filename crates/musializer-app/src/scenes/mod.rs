@@ -11,6 +11,7 @@ pub mod constellation;
 pub mod loom;
 pub mod orbital_lattice;
 pub mod pentagram;
+pub mod phosphor_dream;
 pub mod pulse_field;
 pub mod song_atlas;
 pub mod spectral_terrarium;

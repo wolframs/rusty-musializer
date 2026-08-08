@@ -21,10 +21,18 @@ pub use settings::{SceneSettings, SettingDescriptor, SettingKind, SettingsSnapsh
 
 use std::any::Any;
 
-/// The ten scenes, in registry order (`../musializer/src/scene.h:17-29`).
+/// The scenes, in registry order (`../musializer/src/scene.h:17-29` for 0..=9).
 ///
-/// The discriminants are the C enum's values and are load-bearing: `.musi`
-/// projects and the `--scene` CLI flag both resolve through them.
+/// The discriminants are load-bearing: `.musi` projects and the `--scene` CLI
+/// flag both resolve through them. Ids 0..=9 are the frozen C's own enum values
+/// and may never move.
+///
+/// [`PhosphorDream`] is the first scene with no oracle behind it at all — a
+/// post-legacy addition (2026-08-08) rather than a port, appended at id 10 so
+/// every C-era id keeps its meaning and every project written before it still
+/// opens. See [`SCENE_COUNT`] for what an eleventh scene costs.
+///
+/// [`PhosphorDream`]: SceneId::PhosphorDream
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum SceneId {
@@ -38,11 +46,41 @@ pub enum SceneId {
     Cadence = 7,
     Loom = 8,
     Pentagram = 9,
+    /// Post-legacy, no C counterpart (2026-08-08).
+    PhosphorDream = 10,
 }
 
-/// Number of scenes. C's `COUNT_SCENES` and `SCENE_SETTINGS_SCENE_COUNT`
-/// (`scene.h:28`, `scene_settings_values.h:8`) — the two must stay equal.
-pub const SCENE_COUNT: usize = 10;
+/// Number of scenes.
+///
+/// This was C's `COUNT_SCENES`/`SCENE_SETTINGS_SCENE_COUNT` (`scene.h:28`,
+/// `scene_settings_values.h:8`) and equalled 10 for as long as the rewrite was
+/// chasing parity. It is now **11**, and that is a deliberate divergence under
+/// the 2026-08-03 legacy decision rather than a drift.
+///
+/// What it moves, recorded here because the number is load-bearing in four
+/// places a reader would not guess:
+///
+/// - [`settings::SceneSettings`] is a dense `[[f32; MAX_CONTROLS]; SCENE_COUNT]`,
+///   so it grows by one row. Row 10 is unreachable from any pre-existing file.
+/// - [`routes::RouteTable`] grows the same way.
+/// - `project::model::MAX_MAPPINGS_PER_SCENE` and `MAX_SCENE_PRESETS` are
+///   derived from it and grow with it — both are ceilings, so raising them
+///   cannot reject a file that used to load.
+/// - The differential harnesses compare the **C-era ten** and pin the eleventh
+///   separately; see `tools/differential_settings.sh`.
+///
+/// Nothing here is visible to a `.musi` file written before 2026-08-08: a
+/// project stores per-scene data by token (`settings.loom.weight`), not by
+/// count, so a shorter table is simply a table with no `phosphor` rows in it.
+pub const SCENE_COUNT: usize = 11;
+
+/// The scenes the frozen C had, which is the prefix every differential harness
+/// compares against (`scene.h:17-29`).
+///
+/// Named rather than written as a literal 10 in the harness dumps, so that
+/// "how many scenes does the oracle have" and "how many do we have" can never
+/// be confused for each other again.
+pub const ORACLE_SCENE_COUNT: usize = 10;
 
 impl SceneId {
     /// Every scene in registry order.
@@ -57,7 +95,31 @@ impl SceneId {
         SceneId::Cadence,
         SceneId::Loom,
         SceneId::Pentagram,
+        SceneId::PhosphorDream,
     ];
+
+    /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
+    pub const ORACLE_ALL: [SceneId; ORACLE_SCENE_COUNT] = [
+        SceneId::Spectrum,
+        SceneId::PulseField,
+        SceneId::OrbitalLattice,
+        SceneId::AsciiField,
+        SceneId::SongAtlas,
+        SceneId::SpectralTerrarium,
+        SceneId::Constellation,
+        SceneId::Cadence,
+        SceneId::Loom,
+        SceneId::Pentagram,
+    ];
+
+    /// Whether the frozen C has this scene at all.
+    ///
+    /// The harnesses read this rather than comparing against a literal 10, and
+    /// so does the report line that names which scene drew a capture.
+    #[must_use]
+    pub fn exists_in_oracle(self) -> bool {
+        self.index() < ORACLE_SCENE_COUNT
+    }
 
     /// Registry index, equal to the C enum value.
     #[must_use]
@@ -84,6 +146,7 @@ impl SceneId {
             SceneId::Cadence => "Cadence",
             SceneId::Loom => "Loom",
             SceneId::Pentagram => "Pentagram Orbits",
+            SceneId::PhosphorDream => "Phosphor Dream",
         }
     }
 
@@ -103,6 +166,10 @@ impl SceneId {
             SceneId::Cadence => "cadence",
             SceneId::Loom => "loom",
             SceneId::Pentagram => "pentagram",
+            // Not "dreamscape": the piece this scene grew out of is named after a
+            // copyrighted track, and a persisted token is forever. "phosphor" is
+            // what the scene actually is.
+            SceneId::PhosphorDream => "phosphor",
         }
     }
 
@@ -485,7 +552,16 @@ mod tests {
         assert_eq!(SceneId::Spectrum as u32, 0);
         assert_eq!(SceneId::SongAtlas as u32, 4);
         assert_eq!(SceneId::Pentagram as u32, 9);
+        // Appended, not inserted: every C-era id above keeps its value, which is
+        // what lets a .musi written before 2026-08-08 still resolve its scenes.
+        assert_eq!(SceneId::PhosphorDream as u32, 10);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
+        assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
+        assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);
+        for id in SceneId::ORACLE_ALL {
+            assert!(id.exists_in_oracle());
+        }
+        assert!(!SceneId::PhosphorDream.exists_in_oracle());
         for (index, id) in SceneId::ALL.into_iter().enumerate() {
             assert_eq!(id.index(), index);
             assert_eq!(SceneId::from_index(index), Some(id));
@@ -506,6 +582,7 @@ mod tests {
             "cadence",
             "loom",
             "pentagram",
+            "phosphor",
         ];
         for (id, name) in SceneId::ALL.into_iter().zip(expected) {
             assert_eq!(id.stable_name(), name);

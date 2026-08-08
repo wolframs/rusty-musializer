@@ -276,6 +276,14 @@ short names **and six long aliases**:
 | `cadence` | Cadence |
 | `loom` | Loom |
 | `pentagram`, `pentagram-orbits` | Pentagram Orbits |
+| `phosphor`, `phosphor-dream` | Phosphor Dream (post-legacy; the C rejects both) |
+
+**`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
+`x264` (default, and byte-identical to every export this application has made),
+`nvenc`, `nvenc-hevc`, plus the aliases `cpu`/`gpu`/`libx264`/`h264_nvenc`/
+`hevc`/`hevc_nvenc`. An unrecognised name sets the CLI error flag rather than
+falling back. It is **not** persisted in `.musi`: the encoder describes the
+machine, not the piece.
 
 Comparison is exact and case-sensitive `strcmp`. Selecting a scene can also
 fail for a reason unrelated to the name: `plug_select_scene`
@@ -409,6 +417,17 @@ each descriptor.
 | 7 | `SCENE_CADENCE` | `cadence` | `Cadence` | 1 | `src/scene_cadence.c:473-480` (+ `src/scene_cadence_timing.c`) |
 | 8 | `SCENE_LOOM` | `loom` | `Loom` | 2 | `src/scene_loom.c:391-398` (+ `src/scene_loom_weave.c`) |
 | 9 | `SCENE_PENTAGRAM` | `pentagram` | `Pentagram Orbits` | 1 | `src/scene_pentagram.c:436-443` |
+
+**Since 2026-08-08 the Rust registry has an eleventh entry the table above does
+not list, because this table describes the frozen C.** Phosphor Dream — id 10,
+stable name `phosphor`, display name `Phosphor Dream`, 12 controls, no C source —
+is a post-legacy addition under the rule that features past the C's ceiling need
+no parity justification. It is **appended**, so every id above keeps its value
+and a `.musi` written before that date resolves its scenes unchanged. The C
+simply cannot read a project that names it, which is the same statement already
+recorded for the `time` route source. `musializer_core::scene::SCENE_COUNT` is
+therefore 11 and `ORACLE_SCENE_COUNT` is 10; the differential harnesses read the
+second.
 
 `COUNT_SCENES == 10` (`src/scene.h:28`) and
 `SCENE_SETTINGS_SCENE_COUNT == 10` (`src/scene_settings_values.h:8`). These two
@@ -604,6 +623,37 @@ Note `density` defaults to its **maximum**.
 | 5 | `settings.pentagram.hue` | Hue shift (deg) | -180.0 | 180.0 | **-91.0** | 0 | slider |
 | 6 | `settings.pentagram.pulse` | Music coupling | 0.00 | 2.00 | **1.00** | 2 | slider |
 | 7 | `settings.pentagram.zoom` | Field scale | 0.60 | 1.50 | **1.00** | 2 | slider |
+
+### `phosphor` — Phosphor Dream (12 controls, no C counterpart)
+
+Post-legacy, 2026-08-08. Pinned by `tests/differential/settings_post_legacy.txt`
+rather than by the oracle, because there is no oracle row to diff against; the
+harness fails on any change to them exactly as it does for a C-era bound.
+
+| # | key | label | min | max | default | precision | kind |
+|---|-----|-------|-----|-----|---------|-----------|------|
+| 0 | `settings.phosphor.field` | Field (0 = cycle) | 0.00 | 10.00 | **0.00** | 0 | slider |
+| 1 | `settings.phosphor.motion` | Field motion | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 2 | `settings.phosphor.breathe` | World drift | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 3 | `settings.phosphor.density` | Cell density | 0.50 | 2.00 | **1.00** | 2 | slider |
+| 4 | `settings.phosphor.ramp` | Alphabet (0 = auto) | 0.00 | 7.00 | **0.00** | 0 | slider |
+| 5 | `settings.phosphor.bloom` | CRT bloom | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 6 | `settings.phosphor.aberration` | Colour split | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 7 | `settings.phosphor.scanlines` | Scanlines | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 8 | `settings.phosphor.hue` | Hue shift (deg) | -180.0 | 180.0 | **0.0** | 0 | slider |
+| 9 | `settings.phosphor.reactivity` | Music coupling | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 10 | `settings.phosphor.dwell` | Seconds per field | 4.00 | 30.00 | **10.00** | 0 | slider |
+| 11 | `settings.phosphor.titles` | Surfacing words | 0.00 | 1.00 | **0.00** | 0 | toggle |
+
+Two are **selectors**, and both spell zero as "let the scene decide": `field` 0
+runs the whole cycle and 1..=10 pins one, `ramp` 0 lets each field keep its own
+alphabet and 1..=7 pins one. Encoding "auto" inside the range rather than as a
+paired toggle is what keeps them routable and randomizable like anything else.
+
+Twelve controls is exactly `MAX_CONTROLS`, which Song Atlas already set. The
+scene meets that ceiling rather than raising it, because the value store is a
+dense `[[f32; MAX_CONTROLS]; SCENE_COUNT]` and widening it grows every scene's
+row for the benefit of one.
 
 **`settings.pentagram.hue` defaults to `-91.0`, not `0.0`.** It is the only
 hue control that does not default to zero and the single most likely default to

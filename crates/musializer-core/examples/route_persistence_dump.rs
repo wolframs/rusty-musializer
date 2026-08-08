@@ -13,6 +13,20 @@
 //! exists to find.
 //!
 //! Run through `tools/differential_route_persistence.sh`.
+//!
+//! ## Why the fixture is `ORACLE_ALL` and not `ALL`
+//!
+//! What this harness pins is the **route persistence grammar** — how a mapping
+//! is spelled, parsed and paired back up — against a frozen C binary with ten
+//! scenes in it. The Rust tree has eleven since 2026-08-08.
+//!
+//! Sweeping the eleventh through here would not test the grammar harder; it
+//! would shift every row's index, make the two sides compare different fixtures,
+//! and fail forever for a reason that has nothing to do with parsing. So the
+//! fixture stays the ten scenes both sides have, and the eleventh's routes are
+//! covered by `a_post_legacy_scene_routes_and_round_trips` in
+//! `scene::routes` — which can assert the round trip directly instead of
+//! diffing it against an implementation that has no such scene.
 
 use musializer_core::scene::routes::{
     self, AnalysisSource, Interpolation, ParameterMapping, RouteTable,
@@ -69,6 +83,31 @@ const PARSE_CORPUS: [&str; 35] = [
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:rms:0:0:1:0:1",
 ];
 
+/// Splits an exported mapping list into the C-era scenes and everything after.
+///
+/// `export_mappings` walks the whole registry, which is correct — a `.musi` file
+/// must carry every scene's values — but it means the list is 93 long here and
+/// 81 in the oracle. Partitioning by the mapping's own parameter key (rather
+/// than by a count) keeps working if a post-legacy scene is ever inserted
+/// somewhere other than the end.
+fn split_by_era(mappings: &[ParameterMapping]) -> (Vec<ParameterMapping>, Vec<ParameterMapping>) {
+    let mut oracle = Vec::new();
+    let mut post = Vec::new();
+    for mapping in mappings {
+        let in_oracle = settings::descriptor_by_key(&mapping.parameter)
+            .is_some_and(|(scene, _, _)| scene.exists_in_oracle());
+        if in_oracle {
+            oracle.push(mapping.clone());
+        } else {
+            post.push(mapping.clone());
+        }
+    }
+    (oracle, post)
+}
+
+/// Separates the C-era section from everything added after the legacy decision.
+const POST_LEGACY_MARKER: &str = "--- post-legacy (no oracle) ---";
+
 fn main() {
     // -- parse ---------------------------------------------------------------
     for (at, spec) in PARSE_CORPUS.into_iter().enumerate() {
@@ -86,8 +125,9 @@ fn main() {
     let settings_values = fixture_settings();
     let mappings = routes::export_mappings(&settings_values, None)
         .expect("the fixture settings are valid, so the constant export cannot refuse");
-    println!("constant-count {}", mappings.len());
-    for (at, mapping) in mappings.iter().enumerate() {
+    let (constant_oracle, constant_post) = split_by_era(&mappings);
+    println!("constant-count {}", constant_oracle.len());
+    for (at, mapping) in constant_oracle.iter().enumerate() {
         print_mapping("constant", at, mapping);
         println!(
             "constant-is-constant {at} {}",
@@ -96,7 +136,7 @@ fn main() {
     }
     println!(
         "constant-supported {}",
-        u8::from(routes::mappings_supported(&mappings))
+        u8::from(routes::mappings_supported(&constant_oracle))
     );
 
     // -- export, with routes replacing slots in place -------------------------
@@ -112,19 +152,20 @@ fn main() {
 
     let mappings = routes::export_mappings(&settings_values, Some(&table))
         .expect("every fixture route targets a descriptor the constant export lists");
-    println!("routed-count {}", mappings.len());
-    for (at, mapping) in mappings.iter().enumerate() {
+    let (routed_oracle, routed_post) = split_by_era(&mappings);
+    println!("routed-count {}", routed_oracle.len());
+    for (at, mapping) in routed_oracle.iter().enumerate() {
         print_mapping("routed", at, mapping);
     }
     println!(
         "routed-supported {}",
-        u8::from(routes::mappings_supported(&mappings))
+        u8::from(routes::mappings_supported(&routed_oracle))
     );
 
     // -- import: the round trip, every descriptor out and back ----------------
     let (restored, restored_table) =
         routes::import_mappings(&mappings).expect("the exported list imports");
-    for scene in SceneId::ALL {
+    for scene in SceneId::ORACLE_ALL {
         for index in 0..settings::count(scene) {
             println!(
                 "import-value {} {index} {}",
@@ -192,6 +233,39 @@ fn main() {
             u8::from(routes::mappings_supported(std::slice::from_ref(mapping)))
         );
     }
+
+    // -- everything the oracle has no row for ---------------------------------
+    //
+    // Below the marker, so the harness can diff the section above against the
+    // frozen C byte-for-byte and this one against a pinned file. These mappings
+    // go into a real `.musi`, so they are still a compatibility surface — they
+    // just have nothing to be compared against except a decision somebody wrote
+    // down.
+    println!("{POST_LEGACY_MARKER}");
+    println!("post-constant-count {}", constant_post.len());
+    for (at, mapping) in constant_post.iter().enumerate() {
+        print_mapping("post-constant", at, mapping);
+        println!(
+            "post-constant-is-constant {at} {}",
+            u8::from(routes::mapping_is_constant(mapping))
+        );
+    }
+    println!("post-routed-count {}", routed_post.len());
+    for (at, mapping) in routed_post.iter().enumerate() {
+        print_mapping("post-routed", at, mapping);
+    }
+    for scene in SceneId::ALL {
+        if scene.exists_in_oracle() {
+            continue;
+        }
+        for index in 0..settings::count(scene) {
+            println!(
+                "post-import-value {} {index} {}",
+                scene.index(),
+                g9(f64::from(restored.get(scene, index)))
+            );
+        }
+    }
 }
 
 /// The settings fixture, written out independently of the C harness's copy.
@@ -201,7 +275,7 @@ fn main() {
 /// of the harness and not the other.
 fn fixture_settings() -> SceneSettings {
     let mut values = SceneSettings::new();
-    for scene in SceneId::ALL {
+    for scene in SceneId::ORACLE_ALL {
         for (index, descriptor) in settings::descriptors(scene).iter().enumerate() {
             let frac = f64::from(((scene.index() * 7 + index * 13) % 11) as u32) / 10.0;
             let value = if descriptor.kind == SettingKind::Toggle {

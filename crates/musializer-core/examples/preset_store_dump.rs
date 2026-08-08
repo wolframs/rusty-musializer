@@ -12,7 +12,7 @@ use musializer_core::project::preset_store::{
     self, PathEnvironment, Preset, PresetLibrary, PresetStoreError,
 };
 use musializer_core::scene::settings::{self, SceneSettings, SettingKind, PRESETS_PER_SCENE};
-use musializer_core::scene::{SceneId, SCENE_COUNT};
+use musializer_core::scene::{SceneId, ORACLE_SCENE_COUNT, SCENE_COUNT};
 
 /// The same deterministic value the C harness fills a snapshot with, written as
 /// one expression in the same order: a differently associated `min + span*t` can
@@ -118,7 +118,12 @@ fn result_code(result: Result<(), PresetStoreError>) -> i32 {
 
 fn main() {
     // 1. Scene tokens, both directions.
-    for scene_index in 0..=SCENE_COUNT {
+    // Tokens are enumerated over the C-era range for the same reason: the oracle
+    // has no row past 9, and `token 10 phosphor` has nothing to be compared
+    // against. `scene_token` is derived from the settings key rather than from a
+    // second table, so a post-legacy scene cannot get this wrong silently — and
+    // the test named below asserts it anyway.
+    for scene_index in 0..ORACLE_SCENE_COUNT {
         let Some(scene) = SceneId::from_index(scene_index) else {
             println!("token {scene_index} none");
             continue;
@@ -138,6 +143,15 @@ fn main() {
             back.map_or(scene_index, SceneId::index)
         );
     }
+    // One past *this* registry's end, matching the C harness's own probe rather
+    // than a shared literal. See the note there.
+    println!(
+        "token_past_end {}",
+        match SceneId::from_index(SCENE_COUNT).and_then(preset_store::scene_token) {
+            Some(_) => "unexpectedly_named",
+            None => "none",
+        }
+    );
     for token in ["", "nope", "Loom", "loom.", " loom"] {
         // The C leaves its out-parameter untouched on refusal, and its caller
         // seeds it with 999. Same here, so the refusal is compared and not just
@@ -170,9 +184,21 @@ fn main() {
     dump_path("empty_home", None, None, Some(""));
 
     // 3. The store document's exact bytes, then the load round trip.
+    //
+    // Built over `ORACLE_ALL`, not `ALL`. What this section pins is the store's
+    // *format* — the JSON grammar, the id sequence, the float spelling — against
+    // a C binary that cannot be rebuilt with an eleventh scene in it. Adding
+    // Phosphor Dream's presets here would change every downstream id and the
+    // whole `store_bytes` line, and the harness would then be comparing two
+    // different fixtures rather than two implementations of one format.
+    //
+    // The new scene's own participation in the store is not left unproven: it is
+    // covered by `a_post_legacy_scene_round_trips_through_the_store` in
+    // `project::preset_store`, where a token derived from the settings key can
+    // actually be asserted rather than diffed against something that has none.
     let mut values = SceneSettings::new();
     let mut library = PresetLibrary::new();
-    for (scene_index, scene) in SceneId::ALL.into_iter().enumerate() {
+    for (scene_index, scene) in SceneId::ORACLE_ALL.into_iter().enumerate() {
         let presets = if scene_index == 0 { 3 } else { 2 };
         for k in 0..presets {
             let name = format!("Preset {}", library.next_id());

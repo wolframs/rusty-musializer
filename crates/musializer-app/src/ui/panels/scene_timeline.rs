@@ -87,6 +87,11 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         SceneId::Cadence => (185, 73, 137),
         SceneId::Loom => (139, 102, 55),
         SceneId::Pentagram => (106, 106, 116),
+        // A phosphor cyan, deliberately clear of ASCII Field's green and
+        // Spectral Terrarium's teal: the scene lane identifies a segment by this
+        // swatch alone, so two scenes a glance cannot separate would make the
+        // plan unreadable.
+        SceneId::PhosphorDream => (0, 148, 176),
     };
     Color::new(r, g, b, alpha)
 }

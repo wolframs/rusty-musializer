@@ -572,10 +572,25 @@ mod tests {
             "loom",
             "pentagram",
         ];
-        assert_eq!(bridge_names.len(), SceneId::ALL.len());
+        assert_eq!(bridge_names.len(), SceneId::ORACLE_ALL.len());
         for (index, name) in bridge_names.iter().enumerate() {
-            assert_eq!(SceneId::ALL[index].stable_name(), *name);
-            assert_eq!(parse_scene(name), Some(SceneId::ALL[index]));
+            assert_eq!(SceneId::ORACLE_ALL[index].stable_name(), *name);
+            assert_eq!(parse_scene(name), Some(SceneId::ORACLE_ALL[index]));
+        }
+        // Scenes added after the C is where the claim would rot: `parse_scene`
+        // delegates to the registry, so an addition is picked up here for free —
+        // but only if `tools/external_analysis.py`'s own `SCENES` tuple names it
+        // too, or the planner can never emit a document containing it. That is a
+        // second list in a second language, so it is asserted rather than assumed.
+        assert_eq!(parse_scene("phosphor"), Some(SceneId::PhosphorDream));
+        let planner = include_str!("../../../../tools/external_analysis.py");
+        for scene in SceneId::ALL {
+            assert!(
+                planner.contains(&format!("\"{}\"", scene.stable_name())),
+                "{} is missing from external_analysis.py's SCENES vocabulary, so \
+                 an assist run can never recommend it",
+                scene.stable_name()
+            );
         }
         assert_eq!(parse_scene("nonexistent"), None);
         assert_eq!(parse_scene("Spectrum"), None, "case matters");

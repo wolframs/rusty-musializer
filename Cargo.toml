@@ -39,6 +39,23 @@ sha2 = "0.10"
 tempfile = "3"
 clap = { version = "4", features = ["derive"] }
 
+# Optimize dev builds, because the evidence in this repository is *captures*,
+# and every capture is a real application launch. `tools/headless_check.sh` makes
+# roughly two hundred of them, and at opt-level 0 the per-frame scene arithmetic
+# — analyzer bands, layout, and Phosphor Dream's 8,640 cells of trigonometry —
+# dominates the run. Measured on this machine at 240 frames: 5.0 s wall for
+# Spectrum and 8.1 s for Phosphor Dream, against a build that is otherwise idle.
+#
+# `debug_assertions` is on at every opt-level, so the debug-only checks the tests
+# and the gate rely on are untouched. Dependencies go to 3 because they are built
+# once and then cached; the workspace crates stay at 1, which is most of the
+# speed for a small fraction of the compile time.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 # The C build deliberately avoids fast-math: project parsing, analysis, and
 # event contracts reject NaN/Inf, and finite-only assumptions would compile

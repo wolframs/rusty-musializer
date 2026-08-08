@@ -38,6 +38,82 @@ use super::process_group::{
 };
 use super::publish::export_temporary_path;
 
+/// Which encoder turns the rendered frames into a video stream.
+///
+/// **This does not change what is rendered.** The determinism contract in
+/// `AGENTS.md` is about frames: the same project must produce the same pixels,
+/// and every encoder here is fed byte-identical input. What it changes is the
+/// *file* — an NVENC stream and an x264 stream of the same frames are different
+/// bytes at similar quality, so a check that compares two exports by md5 must
+/// hold the encoder fixed, and several in `tools/headless_check.sh` do.
+///
+/// Added 2026-08-08. [`VideoEncoder::X264`] is the default and is byte-for-byte
+/// what this application has always produced; nothing selects a GPU encoder
+/// unless asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoEncoder {
+    /// `libx264` on the CPU. Best quality per bit, and slow.
+    #[default]
+    X264,
+    /// `h264_nvenc` — NVIDIA's fixed-function encoder. Roughly an order of
+    /// magnitude faster than x264 `slow`, at a larger file for the same
+    /// perceptual quality. H.264 plays everywhere.
+    NvencH264,
+    /// `hevc_nvenc` — the same silicon at better compression, and H.265 is not
+    /// as universally playable. Worth it for a local check, less so for
+    /// something you intend to post.
+    NvencHevc,
+}
+
+impl VideoEncoder {
+    /// The `-c:v` argument.
+    #[must_use]
+    pub const fn codec(self) -> &'static str {
+        match self {
+            VideoEncoder::X264 => "libx264",
+            VideoEncoder::NvencH264 => "h264_nvenc",
+            VideoEncoder::NvencHevc => "hevc_nvenc",
+        }
+    }
+
+    /// The name accepted on the command line and printed in reports.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            VideoEncoder::X264 => "x264",
+            VideoEncoder::NvencH264 => "nvenc",
+            VideoEncoder::NvencHevc => "nvenc-hevc",
+        }
+    }
+
+    /// Whether this encoder runs on the GPU.
+    #[must_use]
+    pub const fn is_hardware(self) -> bool {
+        !matches!(self, VideoEncoder::X264)
+    }
+
+    /// Resolves a `--encoder` value. `None` for anything unrecognised, which the
+    /// caller reports rather than silently falling back — an export that
+    /// quietly used a different encoder than asked for is the kind of thing
+    /// nobody notices until they compare file sizes.
+    #[must_use]
+    pub fn from_cli_name(name: &str) -> Option<Self> {
+        match name {
+            "x264" | "cpu" | "libx264" => Some(VideoEncoder::X264),
+            "nvenc" | "gpu" | "h264_nvenc" => Some(VideoEncoder::NvencH264),
+            "nvenc-hevc" | "hevc" | "hevc_nvenc" => Some(VideoEncoder::NvencHevc),
+            _ => None,
+        }
+    }
+
+    /// Every spelling, for the help text and the tests.
+    pub const ALL: [VideoEncoder; 3] = [
+        VideoEncoder::X264,
+        VideoEncoder::NvencH264,
+        VideoEncoder::NvencHevc,
+    ];
+}
+
 /// The three encode qualities, `Render_Quality`
 /// (`src/render_export.h:23-28`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -76,6 +152,36 @@ impl ExportQuality {
             ExportQuality::Master => "320k",
         }
     }
+
+    /// NVENC's preset for this quality.
+    ///
+    /// NVENC takes `p1`..`p7` (fastest to slowest), a different scale from
+    /// x264's named presets, and mapping them by *name* would be wrong: NVENC's
+    /// `slow` alias is p7 with two passes, which throws away most of the speed
+    /// this encoder is being chosen for. These are picked for what each quality
+    /// is *for* — Balanced is the quick check, Master is the one you keep.
+    const fn nvenc_preset(self) -> &'static str {
+        match self {
+            ExportQuality::Balanced => "p1",
+            ExportQuality::High => "p4",
+            ExportQuality::Master => "p6",
+        }
+    }
+
+    /// NVENC's constant-quality target.
+    ///
+    /// `-cq` is not `-crf` and the numbers do not transfer: NVENC is a
+    /// fixed-function encoder and needs a lower number for comparable quality.
+    /// These are offset from the x264 values rather than copied, which is the
+    /// mistake that makes a GPU export look obviously worse and get blamed on
+    /// the silicon.
+    const fn nvenc_cq(self) -> &'static str {
+        match self {
+            ExportQuality::Balanced => "28",
+            ExportQuality::High => "23",
+            ExportQuality::Master => "19",
+        }
+    }
 }
 
 /// The subset of `Render_Export_Config` (`src/render_export.h:30-36`) the
@@ -93,6 +199,9 @@ pub struct ExportConfig {
     pub height: u32,
     pub fps: u32,
     pub quality: ExportQuality,
+    /// Which encoder compresses the frames. Does not change what is rendered —
+    /// see [`VideoEncoder`].
+    pub encoder: VideoEncoder,
     /// Offline supersampling factor. Only 1 and 2 are valid. The encoder never
     /// sees a supersampled frame — the render target is downsampled to
     /// `width`×`height` first — but the factor is validated here because the C
@@ -108,6 +217,9 @@ impl Default for ExportConfig {
             height: 1080,
             fps: 30,
             quality: ExportQuality::High,
+            // The CPU encoder by default, so an unasked-for export is
+            // byte-identical to every one this application has produced before.
+            encoder: VideoEncoder::X264,
             supersample_factor: 2,
         }
     }
@@ -387,15 +499,43 @@ impl Encoder {
             .arg("-map")
             .arg("1:a:0")
             .arg("-c:v")
-            .arg("libx264")
-            .arg("-preset")
-            .arg(config.quality.preset())
-            .arg("-crf")
-            .arg(config.quality.crf())
-            .arg("-profile:v")
-            .arg("high")
-            .arg("-x264-params")
-            .arg("colorprim=bt709:transfer=bt709:colormatrix=bt709")
+            .arg(config.encoder.codec());
+        match config.encoder {
+            VideoEncoder::X264 => {
+                command
+                    .arg("-preset")
+                    .arg(config.quality.preset())
+                    .arg("-crf")
+                    .arg(config.quality.crf())
+                    .arg("-profile:v")
+                    .arg("high")
+                    // x264-only. Passing it to NVENC is a hard error, not a
+                    // warning, which is why the encoders branch here rather than
+                    // sharing one argument list with a couple of swaps.
+                    .arg("-x264-params")
+                    .arg("colorprim=bt709:transfer=bt709:colormatrix=bt709");
+            }
+            VideoEncoder::NvencH264 | VideoEncoder::NvencHevc => {
+                command
+                    .arg("-preset")
+                    .arg(config.quality.nvenc_preset())
+                    // Constant quality: `-rc vbr` with `-cq` and no bitrate
+                    // ceiling. Without `-b:v 0` NVENC quietly caps at its 2 Mbit
+                    // default and a 1080p export of high-frequency ASCII turns
+                    // to mush — which looks like the GPU encoder being bad
+                    // rather than like a missing flag.
+                    .arg("-rc")
+                    .arg("vbr")
+                    .arg("-cq")
+                    .arg(config.quality.nvenc_cq())
+                    .arg("-b:v")
+                    .arg("0");
+                if config.encoder == VideoEncoder::NvencH264 {
+                    command.arg("-profile:v").arg("high");
+                }
+            }
+        }
+        command
             .arg("-c:a")
             .arg("aac")
             .arg("-b:a")
@@ -744,6 +884,7 @@ mod tests {
             height: 16,
             fps: 30,
             quality: ExportQuality::Balanced,
+            encoder: VideoEncoder::X264,
             supersample_factor: 1,
         }
     }
@@ -782,6 +923,7 @@ mod tests {
             height: 240,
             fps: 30,
             quality: ExportQuality::Balanced,
+            encoder: VideoEncoder::X264,
             supersample_factor: 1,
         };
         let total_frames = 60; // exactly two seconds at 30 fps
@@ -816,6 +958,73 @@ mod tests {
             summary, "h264,320,240,60",
             "ffprobe should see exactly the frames that were written"
         );
+    }
+
+    /// Every CLI spelling resolves, and an unknown one is refused.
+    #[test]
+    fn encoder_names_resolve_and_an_unknown_one_is_refused() {
+        for encoder in VideoEncoder::ALL {
+            assert_eq!(
+                VideoEncoder::from_cli_name(encoder.name()),
+                Some(encoder),
+                "{} does not round-trip through its own name",
+                encoder.name()
+            );
+        }
+        for (name, expected) in [
+            ("cpu", VideoEncoder::X264),
+            ("libx264", VideoEncoder::X264),
+            ("gpu", VideoEncoder::NvencH264),
+            ("h264_nvenc", VideoEncoder::NvencH264),
+            ("hevc", VideoEncoder::NvencHevc),
+            ("hevc_nvenc", VideoEncoder::NvencHevc),
+        ] {
+            assert_eq!(VideoEncoder::from_cli_name(name), Some(expected), "{name}");
+        }
+        // Refused, not defaulted. An export that quietly used a different
+        // encoder than the one asked for is invisible until file sizes are
+        // compared.
+        for name in ["", "nvenc-av1", "av1", "x265", "NVENC", "vaapi"] {
+            assert_eq!(VideoEncoder::from_cli_name(name), None, "{name}");
+        }
+        // The default is the CPU encoder, so an export nobody configured is
+        // byte-identical to every one this application has produced before.
+        assert_eq!(VideoEncoder::default(), VideoEncoder::X264);
+        assert!(!VideoEncoder::X264.is_hardware());
+        assert!(VideoEncoder::NvencH264.is_hardware());
+        assert!(VideoEncoder::NvencHevc.is_hardware());
+    }
+
+    /// NVENC's constant-quality scale is not x264's, and the presets are not the
+    /// named ones.
+    ///
+    /// Pinned because copying `-crf` into `-cq` is the specific mistake that
+    /// makes a GPU export look obviously worse and get blamed on the silicon,
+    /// and because NVENC's `slow` *alias* is p7 with two passes — which throws
+    /// away the speed the encoder is being chosen for.
+    #[test]
+    fn nvenc_quality_is_offset_from_x264_rather_than_copied() {
+        for quality in [
+            ExportQuality::Balanced,
+            ExportQuality::High,
+            ExportQuality::Master,
+        ] {
+            let crf: i32 = quality.crf().parse().unwrap();
+            let cq: i32 = quality.nvenc_cq().parse().unwrap();
+            assert!(
+                cq > crf,
+                "{quality:?}: -cq {cq} must be looser than -crf {crf}; NVENC needs \
+                 a different number for comparable quality"
+            );
+            let preset = quality.nvenc_preset();
+            assert!(
+                preset.starts_with('p') && preset[1..].parse::<u8>().is_ok(),
+                "{quality:?}: {preset} is not NVENC's p1..p7 scale"
+            );
+        }
+        // Faster for the quick check, slower for the one you keep.
+        assert_eq!(ExportQuality::Balanced.nvenc_preset(), "p1");
+        assert_eq!(ExportQuality::Master.nvenc_preset(), "p6");
     }
 
     #[test]

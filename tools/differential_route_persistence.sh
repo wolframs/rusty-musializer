@@ -47,9 +47,45 @@ cc -O1 -std=c99 \
 echo "=== running both ==="
 "$OUT_DIR/route_persistence_oracle" >"$OUT_DIR/route_persistence_oracle.txt"
 cargo run --quiet -p musializer-core --example route_persistence_dump \
-    >"$OUT_DIR/route_persistence_rust.txt"
+    >"$OUT_DIR/route_persistence_rust_full.txt"
 
-echo "=== comparing ==="
+# The Rust registry has scenes the frozen C does not (Phosphor Dream, id 10,
+# added 2026-08-08), and `export_mappings` walks the whole registry because a
+# .musi must carry every scene. So the dump prints the C-era mappings, a marker,
+# then the rest.
+#
+# Split rather than relax. The section above the marker is still compared to the
+# oracle line-for-line, so the persistence grammar stays a frozen contract; the
+# section below is compared to a checked-in expectation, so a post-legacy
+# mapping cannot drift either — it fails against a file a person has to update
+# on purpose.
+MARKER="--- post-legacy (no oracle) ---"
+EXPECTED="tests/differential/route_persistence_post_legacy.txt"
+awk -v m="$MARKER" '$0 == m {found=1; next} !found' \
+    "$OUT_DIR/route_persistence_rust_full.txt" >"$OUT_DIR/route_persistence_rust.txt"
+awk -v m="$MARKER" '$0 == m {found=1; next} found' \
+    "$OUT_DIR/route_persistence_rust_full.txt" >"$OUT_DIR/route_persistence_rust_post.txt"
+
+# `--` because the marker starts with a dash and grep would read it as flags.
+if ! grep -qxF -- "$MARKER" "$OUT_DIR/route_persistence_rust_full.txt"; then
+    echo "FAIL: the dump printed no '$MARKER' line." >&2
+    exit 1
+fi
+
+echo "=== comparing the post-legacy section (exact, against the pinned file) ==="
+if [ ! -f "$EXPECTED" ]; then
+    echo "FAIL: $EXPECTED is missing. Copy" \
+         "$OUT_DIR/route_persistence_rust_post.txt there and read it first." >&2
+    exit 1
+fi
+if ! diff -u "$EXPECTED" "$OUT_DIR/route_persistence_rust_post.txt"; then
+    echo
+    echo "FAIL: a post-legacy scene's persisted mappings changed ('-' is the" \
+         "pinned expectation, '+' is the code). These go into real .musi files." >&2
+    exit 1
+fi
+
+echo "=== comparing the C-era section ==="
 python3 - "$OUT_DIR/route_persistence_oracle.txt" \
           "$OUT_DIR/route_persistence_rust.txt" "$TOLERANCE" <<'PY'
 import sys

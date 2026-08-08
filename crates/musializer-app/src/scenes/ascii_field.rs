@@ -43,10 +43,14 @@ const PI: f32 = std::f32::consts::PI;
 ///
 /// A newtype rather than `raylib::text::WeakFont` because that type cannot be
 /// constructed outside its crate. It owns nothing and unloads nothing.
-struct DefaultFont(raylib_sys::Font);
+///
+/// Shared with `scenes::phosphor_dream`, which needs the same monospaced face
+/// for the same reason. One type rather than two identical ones so the `unsafe`
+/// inventory in `AGENTS.md` keeps naming a single island.
+pub(crate) struct DefaultFont(raylib_sys::Font);
 
 impl DefaultFont {
-    fn get() -> Self {
+    pub(crate) fn get() -> Self {
         // SAFETY: a getter over raylib's global default font, which exists for as
         // long as the window does. The handle is never unloaded by this type.
         Self(unsafe { raylib_sys::GetFontDefault() })

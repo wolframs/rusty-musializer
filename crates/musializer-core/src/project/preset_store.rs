@@ -1010,4 +1010,59 @@ mod tests {
         assert_eq!(save_label(PRESETS_PER_SCENE - 1), "Save");
         assert_eq!(save_label(PRESETS_PER_SCENE), "Full");
     }
+
+    /// A scene the frozen C does not have still round-trips through the store.
+    ///
+    /// This exists because `differential_preset_store.sh` deliberately builds
+    /// its fixture over `SceneId::ORACLE_ALL`: that harness pins the store
+    /// *format* against a binary that cannot be rebuilt with an eleventh scene
+    /// in it, so putting one in would change every downstream id and compare two
+    /// different fixtures rather than two implementations. The coverage it gives
+    /// up is exactly this, so this takes it back — and it can assert more than a
+    /// diff could, because it knows the token is *derived* from the settings key
+    /// rather than written down twice.
+    #[test]
+    fn a_post_legacy_scene_round_trips_through_the_store() {
+        for scene in SceneId::ALL {
+            let token = scene_token(scene)
+                .unwrap_or_else(|| panic!("{} has no token", scene.stable_name()));
+            assert_eq!(
+                token,
+                scene.stable_name(),
+                "the token is derived from the first setting key, so it must                  equal the stable name or a saved preset resolves to the wrong                  scene on reload"
+            );
+            assert_eq!(scene_from_token(token), Some(scene));
+        }
+
+        let scene = SceneId::PhosphorDream;
+        let mut values = SceneSettings::new();
+        // Something distinguishable at both ends of the table, including the
+        // toggle, so a truncated or reordered snapshot cannot pass.
+        assert!(values.set(scene, 0, 4.0));
+        assert!(values.set(scene, 10, 22.0));
+        assert!(values.set(scene, 11, 1.0));
+        let snapshot = values.capture(scene).expect("a capturable scene");
+        assert_eq!(snapshot.count, 12);
+
+        let mut library = PresetLibrary::new();
+        library
+            .push(scene, "surfacing", &snapshot)
+            .expect("room for one");
+        let text = save_to_string(&library).expect("the store encodes");
+        assert!(
+            text.contains("\"scene_name\":\"phosphor\""),
+            "the store did not name the scene: {text}"
+        );
+
+        let reloaded = load_from_bytes(text.as_bytes()).expect("the store decodes");
+        let presets = reloaded.presets(scene);
+        assert_eq!(presets.len(), 1, "the preset came back on the wrong scene");
+        assert_eq!(presets[0].name, "surfacing");
+        assert_eq!(
+            presets[0].snapshot.values[..12],
+            snapshot.values[..12],
+            "the twelve values must survive the round trip exactly"
+        );
+        assert!(presets[0].snapshot.is_valid_for(scene));
+    }
 }

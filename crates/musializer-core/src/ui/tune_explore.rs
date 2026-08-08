@@ -662,11 +662,23 @@ mod tests {
     }
 
     #[test]
-    fn the_descriptor_sweep_really_covers_all_eighty_one() {
-        // The number `differential_settings.sh` pins. If a scene gains a control
-        // this fails and every sweep below is knowingly re-scoped rather than
-        // silently narrowed.
-        assert_eq!(all_descriptors().len(), 81);
+    fn the_descriptor_sweep_really_covers_every_control() {
+        // If a scene gains a control this fails and every sweep below is
+        // knowingly re-scoped rather than silently narrowed.
+        //
+        // Two numbers now, because the tree has a scene the oracle does not.
+        // 81 is what `differential_settings.sh` still diffs against the frozen C
+        // and must not move; 93 is what this module sweeps, and it moves whenever
+        // a post-legacy scene is added or changed.
+        let oracle: usize = SceneId::ORACLE_ALL
+            .into_iter()
+            .map(|scene| settings::descriptors(scene).len())
+            .sum();
+        assert_eq!(
+            oracle, 81,
+            "the C-era descriptor count is a frozen contract"
+        );
+        assert_eq!(all_descriptors().len(), 93);
     }
 
     // -- conform / step / parse ------------------------------------------------

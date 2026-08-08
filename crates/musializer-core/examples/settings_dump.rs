@@ -3,12 +3,33 @@
 //! verified against the frozen C mechanically rather than by eye.
 //!
 //! Run through `tools/differential_settings.sh`.
+//!
+//! ## Two sections, since 2026-08-08
+//!
+//! The tree now has a scene the frozen C does not (Phosphor Dream, id 10). The
+//! oracle cannot dump a table for it, so a single-file diff would fail forever
+//! and the honest contract — *the C-era descriptors are still byte-exact* —
+//! would be lost in the noise.
+//!
+//! So the dump prints the C-era ten, then [`POST_LEGACY_MARKER`], then
+//! everything added since. The harness diffs the first section against the
+//! oracle exactly and the second against a checked-in expectation. Changing a
+//! C-era bound still fails against the C; changing a post-legacy one fails
+//! against a file somebody has to update on purpose. Neither can drift quietly.
 
 use musializer_core::scene::settings::{self, SettingKind};
 use musializer_core::scene::SceneId;
 
+/// Separates the C-era table from everything added after the legacy decision.
+pub const POST_LEGACY_MARKER: &str = "--- post-legacy (no oracle) ---";
+
 fn main() {
+    let mut marked = false;
     for scene in SceneId::ALL {
+        if !scene.exists_in_oracle() && !marked {
+            println!("{POST_LEGACY_MARKER}");
+            marked = true;
+        }
         let descriptors = settings::descriptors(scene);
         println!("scene {} count {}", scene.index(), descriptors.len());
         for (index, d) in descriptors.iter().enumerate() {

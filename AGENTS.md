@@ -2,7 +2,7 @@
 
 The Rust rewrite of Musializer. The C repository is feature frozen.
 
-**The application is built and runs.** All ten scenes draw, `.musi` projects open
+**The application is built and runs.** All eleven scenes draw, `.musi` projects open
 and save, video exports through FFmpeg, every bottom panel is real, and
 `tools/verify.sh` is 21 passed / 0 failed — thirteen differential harnesses
 against the frozen C, a headless capture gate, and the assist-era gates
@@ -99,6 +99,16 @@ is never touched.
 | `differential_timeline_view.sh` | 30865 records, 204953 values, largest delta **0** |
 | `differential_layout.sh` | 27547 records, 527187 values, largest delta **0** |
 | `differential_beat_tracker.sh` | 12352 records, 123522 values, largest delta **0** — **found a parity bug** |
+
+Two of those harnesses now compare in **two sections**. The tree has a scene the
+frozen C cannot have (Phosphor Dream, id 10, 2026-08-08), so `settings_dump` and
+`route_persistence_dump` print the C-era rows, a `--- post-legacy (no oracle) ---`
+marker, then the rest; the driver diffs the first half against the oracle exactly
+and the second against `tests/differential/*_post_legacy.txt`. Both controls were
+run: perturbing `settings.spectrum.trail`'s bound fails against the C, and
+perturbing `settings.phosphor.dwell`'s fails against the pinned file. Do not
+"simplify" this back to one diff — the point is that a post-legacy value is still
+a `.musi` compatibility surface and still has to fail loudly when it moves.
 
 **This is the pattern to copy for every pure module.** A number to compare beats
 a paragraph of reasoning about whether a port is faithful, and it catches the
@@ -212,7 +222,8 @@ never collide with a parallel agent), and the driver in `tools/`. Add the name t
 
 `tools/headless_check.sh` is how this project checks its own work without
 occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`
-unset and `PULSE_SERVER` pointed somewhere unresolvable, and writes artifacts
+pointed at an unresolvable socket name (**not** unset — see the trap below) and
+`PULSE_SERVER` pointed somewhere unresolvable, and writes artifacts
 under the gitignored `build/`. Read `../musializer/tools/UI_REVIEW.md` for the
 reasoning; the isolation rules there are not optional.
 
@@ -296,7 +307,7 @@ comment stating why it holds. Current islands:
 | `runtime::font::flush_render_batch` | the on-demand atlases are built *inside* a begin/end drawing pair, which nothing else here does, and `rlLoadTexture` binds a texture behind the batch's back | One block wrapping `rlDrawRenderBatchActive`, which takes no arguments, writes through no caller pointer and only submits raylib's own batch. Belt and braces rather than a known defect, and it runs only on the handful of frames that rebuild an atlas |
 | `runtime::halo` | the caption glow halo and soft shadow are blurred offscreen mid-frame, and raylib texture modes do not nest: `EndTextureMode` always returns to the *default* framebuffer (`rcore.c:1110-1131`), so the safe guard would end the export's supersampled texture mode behind its back and redirect the rest of the frame to the screen | Six blocks. The batch is flushed and the active framebuffer captured (`rlGetActiveFramebuffer` plus the width/height pair `draw::SceneViewport` already trusts) before any GL call; each pass runs through by-value `BeginTextureMode` calls, which flush and rebind everything they touch; and the caller's framebuffer is restored on every exit path — `EndTextureMode` **plus an explicit `rlSetFramebufferWidth`/`Height`** for the screen, because `EndTextureMode` restores the viewport through `SetupViewport` (`rcore.c:1109-1131`, `rcore.c:3537`) but never rlgl's cached size pair, or a reconstructed `BeginTextureMode` for a render target, which reads only the id and the colour texture's dimensions and sets all three size authorities itself (`rcore.c:1079-1108`). `LoadRenderTexture`'s zero-id failure is checked before `RenderTexture2D::from_raw` takes ownership (its `Drop` is `UnloadRenderTexture`), and no pointer crosses the boundary anywhere. The shadow's luminance-as-alpha composite (`halo_mask.fs`) is safe code throughout |
 | `runtime::assist::env` | `std::env::remove_var` is `unsafe` in edition 2024, and E1 in `docs/ASSIST_PROVIDER_CONTRACTS.md` requires the app to take `OPENROUTER_API_KEY` out of its own environment after importing it, so no child — `ffmpeg`, `kdialog`/`zenity`, `codex`, a Python helper — can inherit it by accident | One block, inside `import_session_credentials`, which is itself an `unsafe fn` documenting the contract. `musializer-app`'s `main` calls it as its **first statement**, before the window, the audio device, `cli::parse` and any thread, so no other thread can be reading the environment concurrently. The value is copied into an owned `String` before the removal and nothing reads the environment after it |
-| `app::scenes::ascii_field` `DefaultFont` | `scene_ascii_field.c:154-160` deliberately draws through raylib's built-in font rather than the caption face; the safe wrapper has no way to borrow `GetFontDefault()`'s handle without a crate-private constructor | One block. `GetFontDefault` returns a non-owning handle that exists for as long as the window does; the newtype never calls `UnloadFont` on it |
+| `app::scenes::ascii_field` `DefaultFont` | `scene_ascii_field.c:154-160` deliberately draws through raylib's built-in font rather than the caption face; the safe wrapper has no way to borrow `GetFontDefault()`'s handle without a crate-private constructor. **Shared with `app::scenes::phosphor_dream`**, which needs the same monospaced face — one type rather than two identical ones, so this stays a single island | One block. `GetFontDefault` returns a non-owning handle that exists for as long as the window does; the newtype never calls `UnloadFont` on it |
 | `app::scenes::song_atlas` `Batch`/`LineWidth`/`color_to_hsv` | `scene_song_atlas.c`'s immediate-mode terrain draw needs `rlBegin`/`rlVertex3f`/`rlColor4ub`/`rlEnd`/`rlSetLineWidth` and `ColorToHSV`, none of which raylib-rs exposes on its own `Color` | Six blocks. `Batch`/`LineWidth` are RAII guards whose `Drop` closes what `begin`/`set` opened, so every call happens inside an already-open drawing context that `self` proves; `color_to_hsv` is pure arithmetic over a by-value colour |
 | `app::scenes::orbital_lattice` `color_brightness` | `ColorBrightness`, which the safe raylib API only exposes for images, not colours | One block. Pure arithmetic over a by-value colour, no global state |
 | `app::scenes::cadence` `glyph_alpha_at` | `cadence_glyph_alpha_at` (`:184-194`) reads a loaded TTF glyph's CPU-side bitmap so particles condense onto the letterform | One `unsafe fn`, documented with a `# Safety` section: the caller (`glyph_ink`) proves `data` is non-null with a supported format and positive dimensions before calling, and clamps `(x, y)` inside `width * height` first |
@@ -306,13 +317,43 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
 ## Traps this rewrite has already paid for
 
-- **Unset `WAYLAND_DISPLAY`, not just `DISPLAY`, before testing anything that can
-  open a window or a dialog.** This operator's session is Wayland
-  (`XDG_SESSION_TYPE=wayland`), so `DISPLAY= somecommand` isolates nothing: Qt and
-  GTK fall straight through to `WAYLAND_DISPLAY` and draw on the real desktop.
-  This has already leaked a `kdialog` error box onto the operator's screen mid-session.
-  `tools/headless_check.sh` gets this right with `env -u WAYLAND_DISPLAY`; the rule
-  applies just as much to a two-line shell test as to a capture run.
+- **`WAYLAND_DISPLAY` must be *set to a name that cannot resolve*. Unsetting it
+  is not weaker isolation — it is none at all, and this entry told you to unset
+  it until 2026-08-08.** `wl_display_connect(NULL)` reads the variable and, when
+  it is missing, falls back to a **hardcoded `"wayland-0"`** (the literal is in
+  `libwayland-client.so.0`; check with `strings`). This operator's socket is
+  `$XDG_RUNTIME_DIR/wayland-0`. So `env -u WAYLAND_DISPLAY` resolves to exactly
+  the same compositor as changing nothing, and `DISPLAY=:77` alongside it changes
+  nothing either, because Qt and GTK prefer Wayland when they can reach it.
+
+  Proven rather than reasoned: a probe that calls `wl_display_connect(NULL)` and
+  disconnects (mapping no surface, so it is safe to run) **connects** under
+  `env -u WAYLAND_DISPLAY DISPLAY=:78`, and is refused under
+  `WAYLAND_DISPLAY=musializer-no-such-display`. `XDG_RUNTIME_DIR` pointed
+  somewhere empty also refuses, which is the belt to that braces.
+
+  Use `MZ_NO_WAYLAND`, which `tools/headless_check.sh` and
+  `tools/lyric_lane_capture.sh` define and pass at every launch. Never write
+  `env -u WAYLAND_DISPLAY` again, in a script or in a two-line shell test.
+
+  **Why it survived so long, which is the transferable part.** The guard was
+  wrong at 46 call sites while every capture passed, because the application
+  itself reaches Xvfb through X11 and never asks for Wayland — so a broken guard
+  is *invisible until something spawns a GUI child*. It was found when an agent
+  hand-ran a click probe onto the ASCII **Import** row without the separate
+  `PATH` guard that keeps `kdialog` off the search path, and file dialogs opened
+  on the operator's real screen. Two independent guards, one of them dead for
+  months, and only the live one was holding. `headless_check.sh` now opens with
+  an **isolation self-check** that connects unguarded (to prove the probe works
+  at all) and then asserts the guarded environment is refused; a guard nothing
+  tests is a guard you find out about like this.
+- **A second guard keeps GUI children unreachable, and it is per-call-site.**
+  `ENTRY_PATH_OVERRIDE`/`ENTRY_NO_DIALOG_PATH` in `tools/headless_check.sh` strip
+  `kdialog` and `zenity` from `PATH` for probes that press a control which opens a
+  picker. It lives in a shell variable at one call site, so **anything not routed
+  through `entry_capture` silently loses it** — which is exactly what happened
+  above. If you hand-run a probe that clicks anything, take the `PATH` guard with
+  it.
 - **Do not invoke `kdialog` with no display reachable.** It aborts with `SIGABRT`,
   which on Ubuntu summons an Apport "internal error" report for a crash you caused.
   `tools/rusty-musializer-launcher` guards against this by checking for a display
@@ -552,6 +593,12 @@ in the tree:
 | No still-frame output of any kind | `Save still`: the playhead frame as a PNG through the same offline renderer an encoded frame uses (`with_export_frame`/`draw_offline_frame`, shared with `ExportSession::step`) | PX3 (UX0-C10), post-legacy extension. One renderer rather than two, so analyzer feed, beat phase, scene plan, routed settings and the EX3 linear-light resolve cannot diverge between the still and the video — proven at 45.55 dB against the MP4's own frame, and the check earned its keep by catching the still shipping vertically mirrored (`rlReadScreenPixels` is bottom-row-first) |
 | — | `--ui-probe save-to=PATH`, plus `export clip:` and `export still:` report lines | Invented, PX3. A headless run cannot answer a destination dialog, and "the CLIP row took the press" and "it drew a highlight" are different observations |
 | — | `--ui-probe middle-drag=FROMxTO` and `wheel-shift=0|1`, plus `gesture=` and `markers=` on the `timeline:` line | Invented, D4. `click=` cannot reach the pan — it goes through `Widgets`' pointer seam and the pan reads `MOUSE_BUTTON_MIDDLE` from raylib directly, since it claims nothing from the bank. And a **stranded pointer claim is invisible in a picture**: the view sits where the hand left it either way, and the symptom is the *next* interaction misbehaving. `gesture=none` is the only way a capture can say the release was taken |
+| Ten scenes, `COUNT_SCENES == 10` | **Eleven.** Phosphor Dream (`phosphor`, id 10) — a generative ASCII screensaver: ten procedural fields cycling on a dwell clock, dithered crossfades between character alphabets, a CRT of bloom, colour split, scanlines and a rolling refresh band | Operator request, 2026-08-08, adapted with permission from a third party's Python offline renderer (`OUTSIDE-DROPS/`). The first scene here with **no oracle at all**, so its evidence is its own tests rather than a diff. Appended at id 10, never inserted, so every C-era id keeps its meaning and every earlier `.musi` still resolves its scenes. `SCENE_COUNT` is 11 and `ORACLE_SCENE_COUNT` is 10; the harnesses read the second |
+| — | Two-section differential dumps: the C-era scenes diffed against the frozen C byte-for-byte, then a `--- post-legacy (no oracle) ---` marker, then rows diffed against a checked-in expectation | The eleventh scene made three harnesses fail for a reason unrelated to what they test. Splitting rather than relaxing keeps *both* halves a contract: a C-era bound still fails against the C, and a post-legacy one fails against a file somebody has to update on purpose. `settings` and `route_persistence` split; `preset_store` instead scopes its **fixture** to `ORACLE_ALL`, because its divergence is interleaved inside one JSON line and a marker cannot cut it — the coverage that gives up is taken back by a named unit test |
+| The shade blocks `░▒▓█` as font glyphs | 4x4 dither patterns drawn from geometry (`SHADE_PATTERNS`) | raylib's built-in face is Latin-1 and stops; the whole `blocks` alphabet is above U+2500. Bundling a monospace TTF is a new asset and licence for ~20 glyphs, and a bitmap glyph magnified under export supersampling is the blur the caption work already answered for once. The **dither** specifically, rather than a flat rectangle at matching coverage: a capture of Plasma drawn with flat rectangles came out as three featureless teal blobs, correct in coverage and no longer recognisable as a grid of characters |
+| The source's filmic rolloff, applied to `frame + 0.9 * glow` | Not reproduced | Reaching the bloomed signal needs a second full-frame render target. Running the same curve on the bare cell value is not a cheaper approximation of it — it is a 40 % dimmer, which a capture caught. Additive blending saturating against white does approximately the same job at the top of the range |
+| The source surfaces six hardcoded words out of the field | The `titles` toggle surfaces the **track's own lyric cue**, through a built-in 5x7 face, and defaults **off** | This application has authored cue timing and a document behind it. Putting a canned `BREATHE` over somebody's track is not a thing it should do on their behalf, and two word layers fighting for one frame is the wrong default even though the effect is worth keeping |
+| — | `phosphor dream:` report line — field, alphabet, grid, `amp`/`bass`, mean and peak cell, bloom outcome | Invented. This scene draws a plausible frame in several wrong states: the wrong field, a grid collapsed to its floor, a bloom that never built, an audio coupling reading zero. None are distinguishable in a capture, and two of them were found by reading this line rather than by looking at the picture |
 
 **Not negotiable by accident — anything a user or a file can observe.** Since
 the 2026-08-03 legacy decision these may change *deliberately* (with a schema
@@ -652,6 +699,79 @@ makes an unfinished area show up in a capture instead of in a bug report.
   files, preference JSON, argv, logs, analysis artifacts, or a repository `.env`.
 - **Non-secret preferences**: versioned, atomically replaced, per-user config
   directory (XDG on Linux).
+
+## Use the GPU for exports you are only going to look at (2026-08-08)
+
+This machine has an RTX 3090 and FFmpeg has `h264_nvenc` and `hevc_nvenc`. Pass
+`--encoder nvenc` for **every export an agent makes to check its own work**.
+Leave the default (`x264`) alone for anything the operator will keep or post:
+x264 `slow` still wins on quality per byte, and it is what every existing
+md5-identity check in `tools/headless_check.sh` compares against.
+
+```sh
+cargo run -- --mute track.mp3 --scene phosphor --encoder nvenc --render /tmp/check.mp4
+```
+
+`--encoder` takes `x264` (default), `nvenc`, or `nvenc-hevc`. An unknown name is
+**refused**, not ignored, because an export that quietly used a different encoder
+is not something anyone notices until they compare file sizes. The `video
+encoder:` report line names what a run would use.
+
+**Measured on this machine, so nobody re-derives it.** 600 frames of 1080p:
+
+| step | x264 `slow -crf 16` | `h264_nvenc p4 -cq 23` |
+| --- | --- | --- |
+| encode only | 5.66 s | **2.29 s** |
+| file size | 26.8 MB | 25.9 MB |
+| a real 20 s export, end to end | 59.0 s | 56.6 s |
+
+Read the last row before reaching for this expecting a transformation. The
+encoder is about 4 % of an export's wall clock right now; the other 54 seconds is
+**rendering through Mesa's `llvmpipe` on the CPU**, because Xvfb has no GPU. Put
+the *rendering* on the GPU (VirtualGL — see below) and the encoder's share, and
+this rule, start to matter.
+
+Two things not to get wrong:
+
+- **NVENC's `-cq` is not x264's `-crf`** and the numbers do not transfer. The
+  mapping lives in `ExportQuality::nvenc_cq`, offset rather than copied; copying
+  them is what makes a GPU export look obviously worse and get blamed on the
+  silicon.
+- **`-b:v 0` is load-bearing.** Without it NVENC caps at its 2 Mbit default and a
+  1080p frame of high-frequency ASCII turns to mush.
+- **The 3090 cannot encode AV1.** `av1_nvenc` is listed by `ffmpeg -encoders`
+  because the *driver* supports it; the encode silicon is Ada and later. There is
+  deliberately no `--encoder av1`.
+
+**The encoder is session state, not project state.** It is on `RenderRequest`,
+not on `RenderExportConfig`, so a `.musi` carried to a machine with no NVIDIA
+card cannot insist on `h264_nvenc`. It does not change what is rendered — every
+encoder is fed byte-identical frames, and the determinism contract is about
+frames — but it does change the *file*, so a check that compares two exports by
+md5 must hold the encoder fixed.
+
+## Put the headless gate on the GPU
+
+`tools/headless_check.sh` launches the application 46 times, several in loops,
+and every frame is rasterized by `llvmpipe` on the CPU: 23 s of CPU for a
+240-frame Spectrum capture, 50 s for Phosphor Dream, across five to eight
+threads. That is where the gate's wall clock goes. It is not the differential
+harnesses (about a minute, and opt-in since 2026-08-08) and it is not the Rust —
+`[profile.dev] opt-level = 1` moved it by a quarter and no further.
+
+The gate uses `vglrun` automatically when it is installed and prints which path
+it took (`gpu:` line). Nothing else changes: no application change, no raylib
+change, no capture change, and a machine without it still passes, just slowly.
+
+```sh
+curl -LO https://github.com/VirtualGL/virtualgl/releases/download/3.1.4/virtualgl_3.1.4_amd64.deb
+sudo dpkg -i virtualgl_3.1.4_amd64.deb
+```
+
+`MZ_GL_LAUNCH` overrides the detection either way (set it empty to force the CPU
+path, which is how the two are compared); `MZ_VGL_DEVICE` picks the VirtualGL
+device, default `egl0` — the EGL back end, which is the one that needs no X
+server on the GPU side.
 
 ## Rules for this repository
 

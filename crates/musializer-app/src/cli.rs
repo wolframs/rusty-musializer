@@ -476,6 +476,12 @@ pub struct Cli {
     /// render configuration is applied, not when the flag is seen
     /// (`musializer.c:491-499` stores, `:563-569` validates).
     pub quality: Option<String>,
+    /// `--encoder NAME` (2026-08-08). Which encoder compresses the frames.
+    ///
+    /// Not in the frozen C's grammar, which is why it is additive: absent means
+    /// `x264`, exactly what this application has always produced. See
+    /// `AGENTS.md` for when an agent should reach for the GPU one.
+    pub encoder: Option<String>,
     pub save_project: Option<PathBuf>,
     pub analysis_bridge: Option<PathBuf>,
     pub auto_scenes: bool,
@@ -563,14 +569,17 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         "song-atlas" => Some(SceneId::SongAtlas),
         "spectral-terrarium" => Some(SceneId::SpectralTerrarium),
         "pentagram-orbits" => Some(SceneId::Pentagram),
+        // The scene's display name is two words, so the hyphenated spelling is
+        // the one a user will reach for first.
+        "phosphor-dream" => Some(SceneId::PhosphorDream),
         other => SceneId::from_stable_name(other),
     }
 }
 
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
-constellation, cadence, loom, pentagram (also pulse-field, orbital-lattice, ascii-field, \
-song-atlas, spectral-terrarium, pentagram-orbits)";
+constellation, cadence, loom, pentagram, phosphor (also pulse-field, orbital-lattice, \
+ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, phosphor-dream)";
 
 /// The pre-pass, then the main loop. Mirrors `main` (`musializer.c:315-561`).
 pub fn parse<I, S>(arguments: I) -> Outcome
@@ -678,6 +687,10 @@ where
                 None => cli.warn("Invalid render frame rate"),
             },
 
+            "--encoder" => match value_of(&argv, i) {
+                Some(name) => cli.encoder = Some(name.to_string()),
+                None => cli.warn("Missing encoder name"),
+            },
             "--quality" => match value_of(&argv, i) {
                 Some(name) => cli.quality = Some(name.to_string()),
                 None => cli.warn("Missing render quality"),
@@ -779,6 +792,7 @@ fn takes_one_value(flag: &str) -> bool {
             | "--resolution"
             | "--fps"
             | "--quality"
+            | "--encoder"
             | "--project"
             | "--save-project"
             | "--analysis-bridge"
@@ -1187,6 +1201,8 @@ Export:
   --resolution WIDTHxHEIGHT
   --fps N
   --quality NAME          balanced, high, or master
+  --encoder NAME          x264 (default), nvenc, or nvenc-hevc. nvenc uses the
+                          GPU: far faster, larger file at equal quality.
 
 Diagnostics:
   --mute                  Start with the output volume at zero
@@ -1407,6 +1423,8 @@ mod tests {
             ("loom", SceneId::Loom),
             ("pentagram", SceneId::Pentagram),
             ("pentagram-orbits", SceneId::Pentagram),
+            ("phosphor", SceneId::PhosphorDream),
+            ("phosphor-dream", SceneId::PhosphorDream),
         ];
         for (name, id) in expected {
             assert_eq!(scene_from_cli_name(name), Some(id), "{name}");

@@ -8,7 +8,13 @@
 #
 #   - a private Xvfb display (:77 by default), so nothing is drawn on the
 #     operator's session, no window takes focus, and the real cursor never moves;
-#   - WAYLAND_DISPLAY unset, so GLFW cannot pick the operator's compositor;
+#   - WAYLAND_DISPLAY pointed at a socket name that cannot resolve, so neither
+#     GLFW nor any GUI child can reach the operator's compositor. It is *set to
+#     garbage*, never unset: `wl_display_connect(NULL)` reads the variable and,
+#     when it is missing, falls back to a hardcoded "wayland-0" — which is
+#     exactly what the operator's socket is called. Unsetting it is not weaker
+#     isolation than setting it, it is *no isolation at all*, and this script
+#     shipped `env -u WAYLAND_DISPLAY` at 46 call sites until 2026-08-08;
 #   - PULSE_SERVER pointed at a path that cannot resolve, so a check never opens
 #     a client stream on the audio server the operator is using;
 #   - every application launch also passes --mute, which leaves decoded/analyzer
@@ -35,6 +41,91 @@ SCREEN_SIZE="2560x1440x24"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+
+# The Wayland socket name every child in this script is given.
+#
+# A name, not an absent variable, and not a path: libwayland joins it to
+# XDG_RUNTIME_DIR, so any name with no socket behind it refuses the connection.
+# The one thing that must never happen is for this to be empty or unset, because
+# both mean "wayland-0" to libwayland.
+MZ_NO_WAYLAND="musializer-headless-check-no-compositor"
+export MZ_NO_WAYLAND
+
+# How the application is launched, so it can be put on a real GPU.
+#
+# Xvfb has no GPU, so GLX falls through to Mesa's `llvmpipe` and every frame is
+# rasterized on the CPU across five to eight threads. Measured on this machine at
+# 240 frames: 23 s of CPU for Spectrum and 50 s for Phosphor Dream, and this
+# script launches the application 46 times, several of them in loops. That is
+# where the gate's wall clock goes — not in the Rust, which `opt-level = 1` only
+# moved by a quarter, and not in the differential harnesses.
+#
+# VirtualGL redirects GLX to a real GPU and reads the result back into the X
+# display, which needs no change to the application, to raylib, or to any
+# capture. It is optional: with it absent the gate runs exactly as before, just
+# slowly, so a fresh clone still works and CI without a GPU still passes.
+#
+# `-d egl0` selects VirtualGL's EGL back end, which is the one that works with no
+# X server on the GPU side — the NVIDIA driver exposes the card as an EGL device
+# (`eglinfo` shows `EGL_EXT_device_drm`), so nothing needs a monitor attached.
+MZ_GL="${MZ_GL_LAUNCH-}"
+if [ -z "${MZ_GL_LAUNCH+set}" ]; then
+    if command -v vglrun >/dev/null 2>&1; then
+        MZ_GL="vglrun -d ${MZ_VGL_DEVICE:-egl0}"
+    else
+        MZ_GL=""
+    fi
+fi
+if [ -n "$MZ_GL" ]; then
+    echo "gpu: launching through '$MZ_GL'"
+else
+    echo "gpu: none — rendering through Mesa on the CPU."
+    echo "     Install VirtualGL to put this on the GPU; see AGENTS.md."
+fi
+
+# Prove the isolation before anything is launched, rather than trusting it.
+#
+# This is a negative control on the harness itself, and it exists because the
+# thing it checks was wrong for months while every capture passed: the app draws
+# through X11 on Xvfb and never asks for Wayland, so a broken guard is invisible
+# until something spawns a GUI child — and then a file dialog opens on the
+# operator's real desktop. Which is how it was found.
+#
+# The probe connects and disconnects, mapping no surface, so it cannot draw
+# anything even when it does connect.
+assert_wayland_isolated() {
+    python3 - "$1" <<'PROBE'
+import ctypes, os, sys
+label = sys.argv[1]
+try:
+    lib = ctypes.CDLL("libwayland-client.so.0")
+except OSError:
+    sys.exit(0)          # no libwayland: nothing here can reach a compositor
+lib.wl_display_connect.restype = ctypes.c_void_p
+lib.wl_display_connect.argtypes = [ctypes.c_char_p]
+lib.wl_display_disconnect.argtypes = [ctypes.c_void_p]
+handle = lib.wl_display_connect(None)
+if handle:
+    lib.wl_display_disconnect(handle)
+    sys.stderr.write(
+        "FAIL: %s reaches the operator's Wayland compositor. A GUI child "
+        "spawned from here would draw on their real screen. "
+        "WAYLAND_DISPLAY=%r\n" % (label, os.environ.get("WAYLAND_DISPLAY", "<unset>")))
+    sys.exit(1)
+PROBE
+}
+
+echo "=== isolation self-check ==="
+# Both directions, so a probe that can never connect cannot pass by accident.
+if assert_wayland_isolated "the unguarded environment" 2>/dev/null; then
+    echo "note: no compositor reachable even unguarded; the guard is untested here"
+else
+    echo "ok  a compositor IS reachable unguarded, so the check below means something"
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" bash -c \
+        "$(declare -f assert_wayland_isolated); assert_wayland_isolated 'the guarded environment'" \
+        || exit 1
+    echo "ok  the guarded environment cannot reach it"
+fi
 
 mkdir -p "$OUT_DIR"
 
@@ -109,10 +200,10 @@ fi
 
 echo "=== running $PROBE_FRAMES frames ==="
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 \
         --probe-frames "$PROBE_FRAMES" \
         --probe-shot "$SHOT" \
@@ -176,10 +267,10 @@ fi
 echo "=== output-underrun negative control ==="
 UNDERRUN_REPORT="$OUT_DIR/output-underrun-negative-control.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --size 960x640 \
         --probe-frames 120 \
         --ui-probe "play=1,audio-stall=750" \
@@ -217,10 +308,10 @@ esac
 echo "=== the silent stall band ==="
 STALL_REPORT="$OUT_DIR/frame-stall-negative-control.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --size 960x640 \
         --probe-frames 120 \
         --ui-probe "play=1,audio-stall=120" \
@@ -293,10 +384,10 @@ capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -327,7 +418,7 @@ capture() {
 
 echo "=== scene sweep ==="
 SWEEP_FAILED=0
-for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram; do
+for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram phosphor; do
     capture "scene-$scene" 1280x720 --scene "$scene" || SWEEP_FAILED=1
 done
 
@@ -363,10 +454,46 @@ if [ "${SPECTRUM_ONSETS:-0}" -eq 0 ] 2>/dev/null \
     SWEEP_FAILED=1
 fi
 
+# Phosphor Dream can draw a plausible frame in several wrong states, and the
+# sweep above only proves the process exited 0 and honoured `--scene`. The
+# report line is the only thing that separates them, so it is asserted rather
+# than printed: a grid collapsed to its floor, a bloom that never built, and a
+# field that silently fell back all photograph as "some ASCII, looks fine".
+PHOSPHOR_LINE="$(sed -n 's/^phosphor dream: *//p' "$OUT_DIR/scene-phosphor.txt")"
+echo "phosphor dream: ${PHOSPHOR_LINE:-<absent>}"
+PHOSPHOR_GRID="$(printf '%s' "$PHOSPHOR_LINE" | sed -n 's/.*grid=\([0-9]*\)x\([0-9]*\).*/\1 \2/p')"
+PHOSPHOR_COLUMNS="${PHOSPHOR_GRID%% *}"
+PHOSPHOR_ROWS="${PHOSPHOR_GRID##* }"
+case "$PHOSPHOR_LINE" in
+    *"bloom=blurred"*) : ;;
+    *) echo "FAIL: Phosphor Dream's bloom did not build: ${PHOSPHOR_LINE:-<absent>}" >&2
+       SWEEP_FAILED=1 ;;
+esac
+case "$PHOSPHOR_LINE" in
+    field=none*|"") echo "FAIL: Phosphor Dream named no field" >&2; SWEEP_FAILED=1 ;;
+esac
+# The grid must actually fill the panel rather than collapsing to the one-cell
+# floor `Geometry::resolve` is allowed to return. 54 rows at density 1.0 over a
+# 16:9 preview is 160x54; anything under half of that is a collapse.
+if [ "${PHOSPHOR_ROWS:-0}" -lt 27 ] 2>/dev/null || [ "${PHOSPHOR_COLUMNS:-0}" -lt 80 ] 2>/dev/null; then
+    echo "FAIL: Phosphor Dream's grid collapsed: ${PHOSPHOR_GRID:-<absent>}" >&2
+    SWEEP_FAILED=1
+fi
+# And it must put ink on the frame. A field that evaluates to zero everywhere is
+# a black rectangle, which is exactly what the rolloff mistake produced.
+PHOSPHOR_LUMA="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/scene-phosphor.png,crop=640:300:460:40,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "phosphor peak luma: ${PHOSPHOR_LUMA:-?}"
+if [ "${PHOSPHOR_LUMA%%.*}" -lt 60 ] 2>/dev/null; then
+    echo "FAIL: Phosphor Dream drew an almost-black frame (peak luma $PHOSPHOR_LUMA)" >&2
+    SWEEP_FAILED=1
+fi
+
 echo "=== long scene aliases ==="
-# The six long aliases are a separate code path from the ten stable names
+# The long aliases are a separate code path from the stable names
 # (`plug.c:933-964`), so they are exercised rather than assumed.
-for alias in pulse-field orbital-lattice ascii-field song-atlas spectral-terrarium pentagram-orbits; do
+for alias in pulse-field orbital-lattice ascii-field song-atlas spectral-terrarium pentagram-orbits phosphor-dream; do
     capture "alias-$alias" 1280x720 --scene "$alias" || SWEEP_FAILED=1
 done
 
@@ -436,10 +563,10 @@ done
 BAD_IMAGE="$OUT_DIR/not-an-image.png"
 printf 'this is not a PNG' >"$BAD_IMAGE"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --probe-frames 10 --scene ascii --ascii-image "$BAD_IMAGE" \
     >"$OUT_DIR/ascii-image-refused.txt" 2>&1
 bad_status=$?
@@ -621,9 +748,9 @@ click_export 4x5   745x589 "1080x1350 at 30 fps, High, supersample 2x"
 # one configuration rather than eight independent buttons.
 capture "click-export-tall-2160p" 1280x720 \
     --ui-probe "panel=export,click=605x589" >/dev/null 2>&1 || true
-TALL_THEN_2160="$(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+TALL_THEN_2160="$(env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --resolution 1080x1920 \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --resolution 1080x1920 \
         --probe-frames 30 --ui-probe "panel=export,click=368x542" 2>&1 \
     | sed -n 's/^export config: *//p')"
 echo "vertical then 2160p: [$TALL_THEN_2160]"
@@ -638,9 +765,9 @@ fi
 check_preview_frame() {
     # check_preview_frame NAME RESOLUTION EXPECTED-RATIO
     local name="$1" geometry="$2" expected="$3"
-    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute "$FIXTURE" --size 1600x1000 \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1600x1000 \
             --resolution "$geometry" --probe-frames 20 --ui-probe "panel=none" \
         >"$OUT_DIR/preview-frame-$name.txt" 2>&1
     local line
@@ -733,9 +860,9 @@ click_clip out 360x496 5.0 "clip in 0.000 out 5.000 (5.000 s, 150 frames)"
 # `--render-window` and the CLIP row are one state, so the flag shows up in the
 # panel; Full track clears it. Both are asserted, because "the seed worked" and
 # "the button worked" produce the same line if the seed silently did nothing.
-SEEDED_CLIP="$(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+SEEDED_CLIP="$(env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --render-window 2 3 --probe-frames 20 --ui-probe "panel=export" 2>&1 \
     | sed -n 's/^export clip: *//p')"
 echo "--render-window 2 3 seeds the panel: [$SEEDED_CLIP]"
@@ -743,9 +870,9 @@ if [ "$SEEDED_CLIP" != "clip in 2.000 out 5.000 (3.000 s, 90 frames)" ]; then
     echo "FAIL: --render-window did not reach the panel's CLIP row" >&2
     SWEEP_FAILED=1
 fi
-CLEARED_CLIP="$(env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+CLEARED_CLIP="$(env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --render-window 2 3 --probe-frames 30 \
         --ui-probe "panel=export,click=124x496" 2>&1 \
     | sed -n 's/^export clip: *//p')"
@@ -780,9 +907,9 @@ fi
 echo "=== a clip export, from the button to the file ==="
 CLIP_MP4="$OUT_DIR/clip-export.mp4"
 rm -f "$CLIP_MP4"
-env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --render-window 2 3 --probe-frames 40 \
         --ui-probe "panel=export,click=1153x683,save-to=$CLIP_MP4" \
     >"$OUT_DIR/clip-export.txt" 2>&1 || true
@@ -826,9 +953,9 @@ STILL_B="$OUT_DIR/still-b.png"
 rm -f "$STILL_A" "$STILL_B"
 still_at() {
     # still_at PATH TIME
-    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
             --probe-frames 30 \
             --ui-probe "panel=export,time=$2,click=868x683,save-to=$1" \
         >"$OUT_DIR/still-$(basename "$1" .png).txt" 2>&1 || true
@@ -866,9 +993,9 @@ else
     # ceiling is h264 4:2:0 on saturated thin features rather than our error.
     STILL_MP4="$OUT_DIR/still-window.mp4"
     rm -f "$STILL_MP4"
-    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
             --render "$STILL_MP4" --render-window 4 1.0 \
         >"$OUT_DIR/still-window.txt" 2>&1 || true
     if [ ! -f "$STILL_MP4" ]; then
@@ -916,10 +1043,10 @@ mkdir -p "$LYRIC_DIR"
 cp "$FIXTURE" "$LYRIC_DIR/source.wav"
 LYRIC_PROJECT="$LYRIC_DIR/cues.musi"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$LYRIC_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$LYRIC_DIR/source.wav" \
         --save-project "$LYRIC_PROJECT" \
     >"$LYRIC_DIR/save.txt" 2>&1
 LYRIC_SAVE=$?
@@ -937,10 +1064,10 @@ else
         local out="$OUT_DIR/$name.png"
         local log="$OUT_DIR/$name.txt"
         set +e
-        env -u WAYLAND_DISPLAY \
+        env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
             DISPLAY="$DISPLAY_NUM" \
             PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-            ./target/debug/musializer --mute --project "$LYRIC_PROJECT" \
+            $MZ_GL ./target/debug/musializer --mute --project "$LYRIC_PROJECT" \
                 --size "$size" \
                 --probe-frames 30 \
                 --probe-shot "$out" \
@@ -1169,10 +1296,10 @@ frame_lane_capture() {
     local name="$1"
     local directory="$FRAME_LANE_DIR/$name"
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute --project "$directory/cues.musi" \
+        $MZ_GL ./target/debug/musializer --mute --project "$directory/cues.musi" \
             --size 1280x720 \
             --hud=0 \
             --probe-frames 12 \
@@ -1470,10 +1597,10 @@ run_project_lane_export() {
     local directory="$FRAME_LANE_DIR/$fixture"
     local output="$FRAME_LANE_DIR/$run.mp4"
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute --project "$directory/cues.musi" \
+        $MZ_GL ./target/debug/musializer --mute --project "$directory/cues.musi" \
             --render "$output" --render-window 1 0.2 \
             --resolution 640x360 --fps 30 --quality balanced \
         >"$FRAME_LANE_DIR/$run-export.txt" 2>&1
@@ -1529,10 +1656,10 @@ for size in 1280x720 960x640; do
     out="$OUT_DIR/welcome-$size.png"
     log="$OUT_DIR/welcome-$size.txt"
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute \
+        $MZ_GL ./target/debug/musializer --mute \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -1570,10 +1697,10 @@ echo "=== command-line action ordering ==="
 # survived long enough to be opened.
 CLI_MULTI_LOG="$OUT_DIR/cli-multiple-inputs.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" "$FIXTURE_TWO" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" "$FIXTURE_TWO" \
         --probe-frames 1 \
     >"$CLI_MULTI_LOG" 2>&1
 CLI_MULTI_STATUS=$?
@@ -1597,10 +1724,10 @@ fi
 # prints its report on failure, so this checks the state as well as the exit code.
 CLI_ASCII_LOG="$OUT_DIR/cli-failed-ascii.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute --scene loom \
+    $MZ_GL ./target/debug/musializer --mute --scene loom \
         --ascii-image "$OUT_DIR/cli-absent-image.png" \
         --probe-frames 1 \
     >"$CLI_ASCII_LOG" 2>&1
@@ -1627,10 +1754,10 @@ CLI_BLOCKED_PROJECT="$OUT_DIR/cli-error-must-not-save.musi"
 CLI_BLOCKED_LOG="$OUT_DIR/cli-error-save.txt"
 rm -f "$CLI_BLOCKED_PROJECT"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" --fps 0 \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --fps 0 \
         --save-project "$CLI_BLOCKED_PROJECT" \
     >"$CLI_BLOCKED_LOG" 2>&1
 CLI_BLOCKED_STATUS=$?
@@ -1643,10 +1770,10 @@ fi
 
 REOPEN_LOG="$OUT_DIR/reopen.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 \
         --probe-frames 120 \
         --probe-reopen "$FIXTURE_TWO" \
@@ -1701,10 +1828,10 @@ cp "$FIXTURE" "$PROJECT_DIR/source.wav"
 PROJECT="$PROJECT_DIR/show.musi"
 SAVE_LOG="$OUT_DIR/project-save.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$PROJECT_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$PROJECT_DIR/source.wav" \
         --save-project "$PROJECT" \
     >"$SAVE_LOG" 2>&1
 SAVE_STATUS=$?
@@ -1722,10 +1849,10 @@ fi
 CONFIG_PROJECT="$PROJECT_DIR/configured.musi"
 CONFIG_LOG="$OUT_DIR/project-configured-save.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$PROJECT_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$PROJECT_DIR/source.wav" \
         --resolution 854x480 --fps 24 --quality master \
         --save-project "$CONFIG_PROJECT" \
     >"$CONFIG_LOG" 2>&1
@@ -1756,10 +1883,10 @@ fi
 rm -f "$PROJECT_DIR/source.wav"
 OPEN_LOG="$OUT_DIR/project-open.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute --project "$PROJECT" \
+    $MZ_GL ./target/debug/musializer --mute --project "$PROJECT" \
         --size 1280x720 \
         --probe-frames 90 \
         --probe-shot "$OUT_DIR/project-open.png" \
@@ -1796,10 +1923,10 @@ esac
 # immediate action. This run catches both halves of the ordering contract.
 PROJECT_ROUTE_LOG="$OUT_DIR/project-route.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute --project "$PROJECT" --scene loom \
+    $MZ_GL ./target/debug/musializer --mute --project "$PROJECT" --scene loom \
         --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --probe-frames 1 \
     >"$PROJECT_ROUTE_LOG" 2>&1
@@ -1840,7 +1967,7 @@ run_export() {
     local name="$1"
     shift
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         ./target/debug/examples/export_probe \
@@ -1954,11 +2081,11 @@ assist_capture() {
     local helper_env=()
     [ "$helper" = "missing" ] && helper_env=("MUSIALIZER_ASSIST_HELPER=$OUT_DIR/absent-assist-helper.py")
     set +e
-    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+    env -u MUSIALIZER_ASSIST_HELPER WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         "${helper_env[@]}" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -1997,9 +2124,9 @@ assist_capture() {
 # reporting them needs the live `main.rs` and `shell.rs` seams. The report below
 # verifies those seams rather than treating a drawn panel body as sufficient.
 set +e
-env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER DISPLAY="$DISPLAY_NUM" \
+env -u MUSIALIZER_ASSIST_HELPER WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --probe-frames 3 \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --probe-frames 3 \
     >"$OUT_DIR/assist-probe.txt" 2>&1
 set -e
 ASSIST_WIRED=0
@@ -2096,13 +2223,13 @@ assist_routes_capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+    env -u MUSIALIZER_ASSIST_HELPER WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         XDG_CONFIG_HOME="$config" \
         XDG_CACHE_HOME="$ROUTE_CONFIG/cache" \
         MUSIALIZER_ASSIST_PROBE_LANES="$lanes" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size 1280x720 \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -2460,14 +2587,15 @@ assist_review_capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+    env -u MUSIALIZER_ASSIST_HELPER \
         -u MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW \
+        WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_ASSIST_PROBE_DIR="$dir" \
         MUSIALIZER_ASSIST_PROBE_LANES="$lanes" \
         MUSIALIZER_ASSIST_PROBE_REVIEW_SCROLL="${REVIEW_SCROLL:-}" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -2501,13 +2629,13 @@ assist_review_navigate_capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+    env -u MUSIALIZER_ASSIST_HELPER WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_ASSIST_PROBE_DIR="$ASSIST_REVIEW_DIR/navigate" \
         MUSIALIZER_ASSIST_PROBE_LANES="lyrics" \
         MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW="$row" \
-        ./target/debug/musializer --mute --project "$LYRIC_PROJECT" \
+        $MZ_GL ./target/debug/musializer --mute --project "$LYRIC_PROJECT" \
             --size 1280x720 \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -3007,10 +3135,10 @@ else
             probe="panel=tune,time=5,play=0,scene-pick=pentagram"
         fi
         set +e
-        env -u WAYLAND_DISPLAY \
+        env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
             DISPLAY="$DISPLAY_NUM" \
             PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-            ./target/debug/musializer --mute --project "$AUTO_SCENE_DIR/plan.musi" \
+            $MZ_GL ./target/debug/musializer --mute --project "$AUTO_SCENE_DIR/plan.musi" \
                 "$@" \
                 --size 1280x720 \
                 --probe-frames 12 \
@@ -3126,10 +3254,10 @@ fi
 # `assist=confirm` without `panel=assist` must be refused rather than quietly
 # arming a step in a panel nobody can see (`musializer.c:128-130`).
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 --probe-frames 5 \
         --ui-probe "panel=export,assist=confirm" \
     >"$OUT_DIR/assist-misplaced.txt" 2>&1
@@ -3250,7 +3378,7 @@ ai_capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -u WAYLAND_DISPLAY -u MUSIALIZER_ASSIST_HELPER \
+    env -u MUSIALIZER_ASSIST_HELPER WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_ASSIST_SETTINGS="$REPO_ROOT/$AI_DIR/config/assist.json" \
@@ -3260,7 +3388,7 @@ ai_capture() {
         MUSIALIZER_ASSIST_SETTINGS_KEY_TEST=no-key \
         MUSIALIZER_ASSIST_DISCOVERY=off \
         "${extra_env[@]}" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size "$size" \
             --probe-frames 20 \
             --probe-shot "$out" \
@@ -4012,7 +4140,14 @@ codex_capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -i -u WAYLAND_DISPLAY \
+    # `WAYLAND_DISPLAY` is *assigned*, not cleared, even though `env -i` has
+    # already emptied the environment. Clearing it is what reaches the operator's
+    # compositor: libwayland reads an absent variable as "wayland-0", and the
+    # line below deliberately hands back their real XDG_RUNTIME_DIR, which is
+    # where that socket lives. This capture spawns a picker, so it is the one
+    # that would put a file dialog on their screen.
+    env -i \
+        WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PATH="$path" \
         HOME="$REPO_ROOT/$home" \
@@ -4027,7 +4162,7 @@ codex_capture() {
         MUSIALIZER_ASSIST_DISCOVERY="$discovery" \
         MUSIALIZER_ASSIST_SETTINGS_OPEN=codex \
         "$@" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size 1280x720 --probe-frames 300 --probe-shot "$out" \
             --ui-probe "panel=assist,play=0" \
         >"$log" 2>&1
@@ -4139,10 +4274,10 @@ rm -rf "$BRIDGE_DIR"
 mkdir -p "$BRIDGE_DIR"
 BRIDGE_LOG="$OUT_DIR/analysis-bridge.txt"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --analysis-bridge "$BRIDGE_DIR/absent.bridge.tsv" \
         --size 1280x720 --probe-frames 5 \
     >"$BRIDGE_LOG" 2>&1
@@ -4183,10 +4318,10 @@ hud_state() {
     shift 2
     local out="$OUT_DIR/$name.png"
     set +e
-    env -u WAYLAND_DISPLAY \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute "$FIXTURE" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size 1280x720 --probe-frames 10 --probe-shot "$out" "$@" \
         >"$OUT_DIR/$name.txt" 2>&1
     local status=$?
@@ -4353,10 +4488,10 @@ fi
 # section: without it, a `route=` that silently did nothing would look identical
 # to one that worked.
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$FIXTURE" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
         --size 1280x720 --probe-frames 5 \
         --ui-probe "panel=tune,route=loom.wieght" \
     >"$OUT_DIR/route-editor-typo.txt" 2>&1
@@ -4454,9 +4589,9 @@ save_state_run() {
     local name="$1" frames="$2"
     shift 2
     set +e
-    env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-        ./target/debug/musializer --mute \
+        $MZ_GL ./target/debug/musializer --mute \
             --size 1600x1000 --probe-frames "$frames" \
             --probe-shot "$OUT_DIR/$name.png" "$@" \
         >"$OUT_DIR/$name.txt" 2>&1
@@ -4485,9 +4620,9 @@ expect_save_state "no project file" "$NO_FILE_STATE" "*no-file"
 
 # 2. A project that has just been written is Saved, and stays Saved with no edit.
 set +e
-env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$SAVE_STATE_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$SAVE_STATE_DIR/source.wav" \
         --save-project "$SAVE_STATE_DIR/show.musi" \
     >"$OUT_DIR/save-state-write.txt" 2>&1
 set -e
@@ -4646,10 +4781,10 @@ cp resources/logo/logo-256.png "$ENTRY_DIR/picture.png"
 printf 'this is not audio\n' >"$ENTRY_DIR/notes.txt"
 ENTRY_PROJECT="$ENTRY_DIR/night-drive.musi"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$ENTRY_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$ENTRY_DIR/source.wav" \
         --save-project "$ENTRY_PROJECT" \
     >"$ENTRY_DIR/save.txt" 2>&1
 set -e
@@ -4697,12 +4832,12 @@ entry_capture() {
     local log="$ENTRY_DIR/$name.txt"
     local path_override="${ENTRY_PATH_OVERRIDE:-$PATH}"
     set +e
-    timeout 120 env -u WAYLAND_DISPLAY \
+    timeout 120 env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PATH="$path_override" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         MUSIALIZER_RECENT_PROJECTS="$store" \
-        ./target/debug/musializer --mute \
+        $MZ_GL ./target/debug/musializer --mute \
             --size 1280x720 \
             --probe-frames 30 \
             --probe-shot "$out" \
@@ -4945,18 +5080,33 @@ entry_expect_contains "ascii-populated" "ascii" "54x54 glyphs from"
 
 # Cleared: the same seat now claims Clear, and the grid goes back to procedural.
 # Path, digest, cells and dimensions are one `Option`, so they cannot part ways.
+#
+# These two y coordinates sit *below the scene tile grid*, so they move by one
+# tile row when the scene grid reflows. SX1's eleventh scene moved them from
+# 375/400 to 377/402, and the first failure was worth more than the two pixels:
+# the click was landing on a scene tile, because eleven tiles no longer fit two
+# columns and the browser was *silently dropping* the last one. The scene was
+# selectable by `--scene phosphor` and invisible in the picker.
+#
+# If this fails after a registry change, re-measure — and measure it the way the
+# gate runs it, or you will get different numbers:
+#   - under `PATH="$ENTRY_NO_DIALOG_PATH"`, or pressing Import opens a real file
+#     dialog on the operator's desktop;
+#   - under this script's hermetic `XDG_CONFIG_HOME`, or the app reads the
+#     operator's own `ui.json` and lays the sidebar out at *their* width.
+# Both of those cost a round trip in the session that introduced this comment.
 entry_capture "ascii-cleared" "$ENTRY_DIR/store-ignored.json" \
     "$ENTRY_DIR/source.wav" --ascii-image "$ENTRY_DIR/picture.png" \
-    --ui-probe "click=150x400" || true
-entry_expect "ascii-cleared" "click probe" "at=150x400 claimed=0xd00000002"
+    --ui-probe "click=150x402" || true
+entry_expect "ascii-cleared" "click probe" "at=150x402 claimed=0xd00000002"
 entry_expect "ascii-cleared" "ascii" "none (procedural mode)"
 
 # Import takes the press and reaches the picker. Run with no backend on PATH, so
 # the refusal is deterministic and no modal is drawn on the capture display.
 ENTRY_PATH_OVERRIDE="$ENTRY_NO_DIALOG_PATH" \
     entry_capture "ascii-import-click" "$ENTRY_DIR/store-ignored.json" \
-        "$ENTRY_DIR/source.wav" --ui-probe "click=150x375" || true
-entry_expect "ascii-import-click" "click probe" "at=150x375 claimed=0xd00000001"
+        "$ENTRY_DIR/source.wav" --ui-probe "click=150x377" || true
+entry_expect "ascii-import-click" "click probe" "at=150x377 claimed=0xd00000001"
 
 # Staged with no track: the fourth state D2 asks for, and the one where the
 # scene browser is not even on screen. The frame is the evidence that the
@@ -4990,11 +5140,11 @@ TIMING_PROJECT="$TIMING_DIR/timing.musi"
 TIMING_PREFS="$TIMING_DIR/ui.json"
 printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$TIMING_PREFS"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
     MUSIALIZER_UI_PREFERENCES="$TIMING_PREFS" \
-    ./target/debug/musializer --mute "$TIMING_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$TIMING_DIR/source.wav" \
         --save-project "$TIMING_PROJECT" \
     >"$TIMING_DIR/save.txt" 2>&1
 TIMING_SAVE=$?
@@ -5036,11 +5186,11 @@ PY
         local name="$1" size="$2" probe="$3"
         local log="$OUT_DIR/$name.txt"
         set +e
-        env -u WAYLAND_DISPLAY \
+        env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
             DISPLAY="$DISPLAY_NUM" \
             PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
             MUSIALIZER_UI_PREFERENCES="$TIMING_PREFS" \
-            ./target/debug/musializer --mute --project "$TIMING_PROJECT" \
+            $MZ_GL ./target/debug/musializer --mute --project "$TIMING_PROJECT" \
                 --size "$size" \
                 --probe-frames 30 \
                 --probe-shot "$OUT_DIR/$name.png" \
@@ -5233,12 +5383,12 @@ PY
         # timing_click NAME XxY
         local name="$1" at="$2"
         set +e
-        env -u WAYLAND_DISPLAY \
+        env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
             DISPLAY="$DISPLAY_NUM" \
             PATH="$TIMING_EMPTY_BIN" \
             PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
             MUSIALIZER_UI_PREFERENCES="$TIMING_PREFS" \
-            ./target/debug/musializer --mute --project "$TIMING_PROJECT" \
+            $MZ_GL ./target/debug/musializer --mute --project "$TIMING_PROJECT" \
                 --size 1280x720 \
                 --probe-frames 30 \
                 --probe-shot "$OUT_DIR/$name.png" \
@@ -5368,10 +5518,10 @@ mkdir -p "$D4_DIR"
 cp "$FIXTURE" "$D4_DIR/source.wav"
 D4_PROJECT="$D4_DIR/events.musi"
 set +e
-env -u WAYLAND_DISPLAY \
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-    ./target/debug/musializer --mute "$D4_DIR/source.wav" \
+    $MZ_GL ./target/debug/musializer --mute "$D4_DIR/source.wav" \
         --save-project "$D4_PROJECT" \
     >"$D4_DIR/save.txt" 2>&1
 D4_SAVE=$?
@@ -5387,10 +5537,10 @@ else
         local name="$1" probe="$2"
         shift 2
         set +e
-        env -u WAYLAND_DISPLAY \
+        env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
             DISPLAY="$DISPLAY_NUM" \
             PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
-            ./target/debug/musializer --mute --project "$D4_PROJECT" \
+            $MZ_GL ./target/debug/musializer --mute --project "$D4_PROJECT" \
                 --size 1280x720 \
                 --probe-frames 30 \
                 --probe-shot "$OUT_DIR/d4-$name.png" \
