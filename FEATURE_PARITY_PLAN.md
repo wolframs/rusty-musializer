@@ -3812,16 +3812,20 @@ The `phosphor dream:` report line — field, alphabet, grid, `amp`/`bass`, mean 
 peak cell, bloom outcome — exists because of (1) and (3). This scene draws a
 plausible frame in at least four wrong states and a capture cannot separate them.
 
+### Attribution (resolved 2026-08-08)
+
+The source is by **Digi** — GitHub <https://github.com/digi-the-robot>,
+X <https://x.com/digi_dot_exe>, canonical <https://linktr.ee/digi_the_robot> —
+who handed it over and asked to be named. The credit is in the module docs of
+both halves and here.
+
 ### Open
 
-- **Attribution.** The author was asked whether they want to be named and had not
-  answered when this landed. The operator will supply a handle/GitHub link. Until
-  then the module docs and this entry say "a third party" and name the dropped
-  files. **Add the credit when it arrives** — module docs of both halves, and a
-  line here.
-- **`OUTSIDE-DROPS/` is untracked and should stay that way** unless the operator
-  decides otherwise: it holds someone else's source. `.gitignore` it or move it
-  out of the tree before any commit that runs `git add -A`.
+- **`OUTSIDE-DROPS/` holds Digi's original source** and was committed in
+  `4ff32ca` and pushed. With attribution settled that is now a credited
+  inclusion rather than an accident, but it remains their code: any edit to
+  those files is out of bounds, and removing the directory is the operator's
+  call, not an agent tidy-up.
 - The scene is faithful to the source's authored brightness, which on a synthetic
   fixture reads dark. It reads well on real broadband audio (`amp` 0.7, `bass`
   0.4). If the operator wants it brighter at defaults, the lever is the base

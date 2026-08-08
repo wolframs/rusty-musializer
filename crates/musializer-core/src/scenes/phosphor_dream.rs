@@ -15,9 +15,10 @@
 //! of the whole coordinate space. The drawing half adds the CRT: bloom, colour
 //! split, scanlines and a rolling refresh band.
 //!
-//! Adapted with permission from a Python offline renderer by a third party
-//! (`OUTSIDE-DROPS/dreamscape.py`, `README.md`). Attribution is pending the
-//! author's decision on being named; see `FEATURE_PARITY_PLAN.md`.
+//! Adapted with permission from a Python offline renderer by **Digi**
+//! (<https://github.com/digi-the-robot>, <https://x.com/digi_dot_exe>,
+//! canonical: <https://linktr.ee/digi_the_robot>) — the source is
+//! `OUTSIDE-DROPS/dreamscape.py` plus its `README.md`.
 //!
 //! ## What changed on the way in, and why
 //!

@@ -4,7 +4,9 @@
 //! [`musializer_core::scenes::phosphor_dream`] — fields, alphabets, crossfade,
 //! the audio followers — and only the raylib calls are here, which is the same
 //! split every other scene uses. See that module for what this scene is and what
-//! changed on the way in from the Python renderer it is adapted from.
+//! changed on the way in from the Python renderer it is adapted from — Digi's
+//! `dreamscape.py` (<https://github.com/digi-the-robot>,
+//! <https://x.com/digi_dot_exe>), adapted with permission.
 //!
 //! ## The CRT, and why it is built this way
 //!
