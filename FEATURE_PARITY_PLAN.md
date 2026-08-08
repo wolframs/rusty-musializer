@@ -1493,6 +1493,35 @@ Order: HX-1+HX-3 (pure core: schema, parse, refuse, append) → HX-2 (runner +
 rail) → HX-5 (gate) → HX-4's generate/digest buttons last, since the MVP loop
 works without them.
 
+### Status (2026-08-08, HX wave)
+
+- [x] **HX-1 + HX-3** — `core::feedback`: `musializer.protocol/v1` parse/emit
+      and the `musializer.protocol-answer/v1` JSONL line. Strict in the `.musi`
+      codec's sense; every refusal in the design has a named test (wrong
+      digest, junk JSON, unknown kind/scene, snapshot invalid for its own
+      item's scene, a third snapshot label, out-of-charset and duplicate ids).
+      The answers reader tolerates exactly one torn line, only at the end.
+- [x] **HX-2** — `--protocol PATH` (additive), the `classify_drop`
+      `.protocol.json` arm (matched on the *double* extension so a bare
+      `.json` keeps the oracle's audio branch), bottom-anchored pennants on
+      the waveform strip, the keyboard-first question card, keys `1`-`4` /
+      `R` / `B` / `N` that exist only while a session runs, the self-pausing
+      audition window, and append-then-mark answer flow. Two deviations from
+      the sketch, both deliberate: the card is its own drawing (the notice
+      machinery has no options affordance — the tray now stacks *above* the
+      card instead), and markers overlay the strip's bottom edge rather than
+      taking a new band, so no `workspace_layout` guarantee moves. `text`
+      items parse and round-trip but the runner cannot take typed answers yet
+      — the card says so by name and `N` skips (missing beats pretending).
+- [x] **HX-5** — `--ui-probe protocol-flip=ID` / `protocol-answer=ID:CHOICE
+      [+ID:CHOICE]` (by id, never pixels — GX-1), the `protocol:` report line,
+      and the gate section: flip + answer through the probe, read the JSONL
+      back, assert the recorded variant order equals the claimed one, prove a
+      relaunch resumes from disk, and the negative control — a wrong digest
+      refuses with a nonzero exit and no answers file.
+- [ ] **HX-4** — the `claude -p` generate/digest buttons. The MVP loop works
+      without them; the agent writing the protocol reads the JSONL directly.
+
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 
 A separate operator-directed codex agent landed `dc694e3`: the public-facing
