@@ -5880,10 +5880,20 @@ tune_wheel miss 1000x620 1 "$TUNE_BASE"
 # The seed is pinned, so the values below are an exact expectation rather than a
 # range check. Two different seeds must not agree, or the seed is being ignored
 # and the "reproducible" claim is vacuous.
+#
+# Re-pinned DELIBERATELY 2026-08-08 for CX-4's constants (move chance
+# 0.75 -> 0.45, toggles 0.25 -> 0.15, per-end endpoint metadata instead of the
+# blanket 5 % inset, cyclic controls named instead of inferred). The previous
+# pin — "spectrum 0.68 1 1 4.28 105 1.77 0.74 0.9" — fails against the new
+# draw, which is this change's negative control: the pin noticed the sampler
+# moved, and the movement is recorded in FEATURE_PARITY_PLAN.md CX-4 rather
+# than absorbed. Under 0.45 this particular draw moves one control; that is a
+# property of the seed, not a regression — the distribution is pinned by
+# `surprise_leaves_most_of_the_scene_alone` in tune_explore.rs.
 capture "tune-surprise" 1280x720 --ui-probe "panel=tune,tune-seed=4242,tune-explore=surprise" || TUNE_FAILED=1
 TUNE_SURPRISE="$(tune_values tune-surprise)"
 echo "surprise (seed 4242): [$TUNE_SURPRISE]"
-if [ "$TUNE_SURPRISE" != "spectrum 0.68 1 1 4.28 105 1.77 0.74 0.9" ]; then
+if [ "$TUNE_SURPRISE" != "spectrum 0.68 1 1 3 55 1 0.5 0.3" ]; then
     echo "FAIL: seed 4242 no longer produces the pinned tuning: [$TUNE_SURPRISE]" >&2
     TUNE_FAILED=1
 fi

@@ -245,30 +245,76 @@ pub enum Strength {
     Surprise,
 }
 
-/// The fraction of a slider's span kept clear of each end by [`Strength::Surprise`].
+/// The fraction of a slider's span kept clear of a **degenerate** end by
+/// [`Strength::Surprise`].
 ///
 /// **The bias that makes Surprise worth pressing.** A uniform draw over the full
-/// range lands on a hard endpoint often, and hard endpoints are exactly where
+/// range lands on a hard endpoint often, and hard endpoints are mostly where
 /// the degenerate looks live: zero density, zero glow, zero link weight, maximum
-/// everything. Five per cent off each end costs almost nothing expressive and
-/// removes the results a user would never keep. A *Nudge* is deliberately not
-/// inset — a user nudging a value that already sits at an endpoint must be able
-/// to stay there.
+/// everything. Five per cent off such an end costs almost nothing expressive and
+/// removes the results a user would never keep.
+///
+/// **Per end, not per range (CX-4).** The first version inset *every* end of
+/// *every* slider, which excluded designed values: `settings.pulse.petals` is
+/// `0..12` where **0 means auto**, and a blanket inset made auto undrawable —
+/// Surprise could never hand back the scene's own default character. Which ends
+/// are degenerate is per-descriptor metadata now ([`DRAWABLE_LOW_KEYS`],
+/// [`CYCLIC_KEYS`]); this constant is only the width used where an end *is*
+/// degenerate. A *Nudge* is deliberately not inset at all — a user nudging a
+/// value that already sits at an endpoint must be able to stay there.
 const SURPRISE_INSET: f32 = 0.05;
 
 /// Probability that [`Strength::Surprise`] moves any given slider.
 ///
-/// Not 1.0: changing all twelve of Song Atlas's controls at once produces a
-/// scene the user cannot recognise as the one they were tuning, so a quarter of
-/// the controls stay put and the result reads as *this* scene, differently.
-const SURPRISE_MOVE_CHANCE: f64 = 0.75;
+/// Not 1.0, and not the 0.75 it shipped at: CX-4's ruling is that nine changed
+/// controls out of twelve is not "the scene stays recognisable" — it only looked
+/// recognisable because it was still the same renderer. At 0.45 roughly half the
+/// controls stay put and the result reads as *this* scene, differently.
+const SURPRISE_MOVE_CHANCE: f64 = 0.45;
 
 /// Probability that [`Strength::Surprise`] flips a toggle.
 ///
-/// Low on purpose. `atlas.wireframe` and `atlas.hue_motion` are the only two,
-/// and both are whole-scene character switches — flipping one every press makes
-/// Surprise feel like a different button each time rather than a variation.
-const SURPRISE_TOGGLE_CHANCE: f64 = 0.25;
+/// Low on purpose, and lowered again by CX-4: `atlas.wireframe` and
+/// `atlas.hue_motion` are whole-scene character switches, and at 0.25 the
+/// chance that at least one of the two flips was 44 % *per press* — which is
+/// not "occasionally", it is a different button each time. 0.15 puts a flip at
+/// roughly every fourth press.
+const SURPRISE_TOGGLE_CHANCE: f64 = 0.15;
+
+/// Descriptors whose range is a **circle**: the two ends are the same point,
+/// so no end is degenerate, no inset applies, and Surprise samples uniformly —
+/// hue has no designed centre to pull toward.
+///
+/// **Explicit, not inferred (CX-4).** The first version read "circular" off the
+/// bounds (`minimum < 0 && maximum > 0`), which was true of all five matching
+/// descriptors at the time but is unsafe inference for any future symmetric
+/// range that is not circular — and was already wrong once: `atlas.orbit` is a
+/// camera composition control that merely *happens* to span `-180..180`, and it
+/// belongs with the triangular draws, not the colour wheel. A test resolves
+/// every key here against the descriptor table, so a renamed key fails loudly
+/// instead of silently losing its treatment.
+#[rustfmt::skip]
+const CYCLIC_KEYS: &[&str] = &[
+    "settings.pulse.hue",
+    "settings.orbital.hue",
+    "settings.atlas.color",
+    "settings.pentagram.hue",
+    "settings.phosphor.hue",
+];
+
+/// Descriptors whose **low** end is a designed value rather than a degenerate:
+/// Surprise may land exactly on it.
+///
+/// All three spell zero as "let the scene decide", which is the opposite of a
+/// degenerate look — it is the scene's own character. (No descriptor currently
+/// has a drawable *high* end; when one appears it gets the mirror table, not a
+/// relaxation of this one.)
+#[rustfmt::skip]
+const DRAWABLE_LOW_KEYS: &[&str] = &[
+    "settings.pulse.petals",   // 0 = auto petal fold
+    "settings.phosphor.field", // 0 = cycle all fields
+    "settings.phosphor.ramp",  // 0 = each field keeps its own alphabet
+];
 
 /// Half-width of a [`Strength::Nudge`], as a fraction of the descriptor's span.
 const NUDGE_SPREAD: f32 = 0.12;
@@ -295,20 +341,14 @@ fn triangular(rng: &mut impl RandomSource, low: f64, high: f64, mode: f64) -> f6
     }
 }
 
-/// Whether a descriptor is an angle, which changes how Surprise samples it.
-///
-/// Every descriptor whose range straddles zero is a `-180..180` hue or camera
-/// orbit (`settings.pulse.hue`, `settings.orbital.hue`, `settings.atlas.color`,
-/// `settings.atlas.orbit`, `settings.pentagram.hue`). Hue is *circular*: there
-/// is no "designed centre" to pull toward, and a triangular draw about the
-/// default would make the one control a user most wants shuffled the one that
-/// barely moves. These sample uniformly instead.
-///
-/// Read off the bounds rather than off the key, so a new angle descriptor gets
-/// the right treatment without being listed here — and note this reads the
-/// descriptor contract, it does not change it.
-fn is_angle(descriptor: &SettingDescriptor) -> bool {
-    descriptor.minimum < 0.0 && descriptor.maximum > 0.0
+/// Whether a descriptor is one of the explicitly-marked circular controls.
+fn is_cyclic(descriptor: &SettingDescriptor) -> bool {
+    CYCLIC_KEYS.contains(&descriptor.key)
+}
+
+/// Whether Surprise may land exactly on the descriptor's low end.
+fn low_end_is_drawable(descriptor: &SettingDescriptor) -> bool {
+    DRAWABLE_LOW_KEYS.contains(&descriptor.key)
 }
 
 /// One setting's new value under `strength`.
@@ -344,9 +384,19 @@ fn explore_value(
                 return conform(descriptor, current);
             }
             let span = descriptor.maximum - descriptor.minimum;
-            let low = f64::from(descriptor.minimum + span * SURPRISE_INSET);
-            let high = f64::from(descriptor.maximum - span * SURPRISE_INSET);
-            let value = if is_angle(descriptor) {
+            let cyclic = is_cyclic(descriptor);
+            // The inset applies per end, and only to a degenerate end: a
+            // circle has none, and a "0 = auto" low end is the scene's own
+            // character rather than a look nobody would keep (CX-4).
+            let low_inset = if cyclic || low_end_is_drawable(descriptor) {
+                0.0
+            } else {
+                span * SURPRISE_INSET
+            };
+            let high_inset = if cyclic { 0.0 } else { span * SURPRISE_INSET };
+            let low = f64::from(descriptor.minimum + low_inset);
+            let high = f64::from(descriptor.maximum - high_inset);
+            let value = if cyclic {
                 rng.next_range(low, high)
             } else {
                 triangular(rng, low, high, f64::from(descriptor.default_value))
@@ -364,8 +414,9 @@ fn explore_value(
 ///
 /// Guarantees at least one changed value where the scene has any control that
 /// *can* change — a button that sometimes does nothing is a button a user stops
-/// trusting, and with `SURPRISE_MOVE_CHANCE` at 0.75 an all-skipped draw happens
-/// roughly once in 1,800 presses for a seven-control scene.
+/// trusting, and with `SURPRISE_MOVE_CHANCE` at 0.45 an all-skipped draw
+/// happens about once in 66 presses for a seven-control scene (0.55⁷), which
+/// is why the force-one branch below is not decorative.
 #[must_use]
 pub fn explore(
     rng: &mut impl RandomSource,
@@ -902,17 +953,20 @@ mod tests {
     }
 
     #[test]
-    fn surprise_keeps_clear_of_the_degenerate_endpoints() {
+    fn surprise_keeps_clear_of_the_degenerate_endpoints_only() {
         // The bias, as a measurement. Over 400 draws no slider may land in the
-        // outer 5 % of its range — that is what `SURPRISE_INSET` buys, and
-        // without it a uniform draw would put ~10 % of values there.
+        // outer 5 % of a *degenerate* end — while a cyclic control has no
+        // degenerate end at all, and a "0 = auto" low end is exempt by name
+        // (CX-4). The exemptions are asserted per key, not skipped, so a
+        // regression to the blanket inset fails the drawability test below
+        // rather than passing this one vacuously.
         let base = SceneSettings::default();
         for seed in 0..400u64 {
             for scene in SceneId::ALL {
                 let mut rng = SplitMix64::new(seed ^ 0x5EED);
                 let snapshot = explore(&mut rng, scene, &base, Strength::Surprise);
                 for (index, descriptor) in settings::descriptors(scene).iter().enumerate() {
-                    if descriptor.kind == SettingKind::Toggle {
+                    if descriptor.kind == SettingKind::Toggle || is_cyclic(descriptor) {
                         continue;
                     }
                     let value = snapshot.values[index];
@@ -926,10 +980,18 @@ mod tests {
                     // One grid unit of tolerance: the inset is computed before
                     // the snap to precision, so a 5 % boundary can round outward
                     // by at most half a step.
+                    if !low_end_is_drawable(descriptor) {
+                        assert!(
+                            value >= descriptor.minimum + span * SURPRISE_INSET - grid,
+                            "{} landed at {value}, inside the degenerate low margin of {}..{}",
+                            descriptor.key,
+                            descriptor.minimum,
+                            descriptor.maximum
+                        );
+                    }
                     assert!(
-                        value >= descriptor.minimum + span * SURPRISE_INSET - grid
-                            && value <= descriptor.maximum - span * SURPRISE_INSET + grid,
-                        "{} landed at {value}, inside the degenerate margin of {}..{}",
+                        value <= descriptor.maximum - span * SURPRISE_INSET + grid,
+                        "{} landed at {value}, inside the degenerate high margin of {}..{}",
                         descriptor.key,
                         descriptor.minimum,
                         descriptor.maximum
@@ -937,6 +999,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_endpoint_and_cyclic_tables_resolve_against_the_descriptor_contract() {
+        // A renamed key would otherwise silently lose its treatment — the same
+        // defect class as a widget id minted outside the ALL table.
+        for key in CYCLIC_KEYS.iter().chain(DRAWABLE_LOW_KEYS) {
+            let (_, _, descriptor) = settings::descriptor_by_key(key)
+                .unwrap_or_else(|| panic!("{key} is not a descriptor"));
+            assert_eq!(descriptor.key, *key);
+        }
+        // Every cyclic control is a full turn of degrees; anything else listed
+        // here is a mistake, not a new kind of circle.
+        for key in CYCLIC_KEYS {
+            let (_, _, descriptor) = settings::descriptor_by_key(key).unwrap();
+            assert_eq!((descriptor.minimum, descriptor.maximum), (-180.0, 180.0));
+        }
+        // And the ruling's named counter-example stays out: `atlas.orbit`
+        // spans -180..180 but is camera composition, not colour (CX-4).
+        assert!(!CYCLIC_KEYS.contains(&"settings.atlas.orbit"));
+    }
+
+    #[test]
+    fn a_drawable_low_endpoint_is_actually_drawn() {
+        // The negative control for the metadata: under the blanket inset,
+        // `pulse.petals = 0` (auto) was *undrawable* — the 5 % inset put the
+        // floor at 0.6 and precision-0 rounding kept every draw at >= 1. Each
+        // exempt key must reach its own low end within a few hundred presses,
+        // or the exemption is dead and this fails.
+        let base = SceneSettings::default();
+        for key in DRAWABLE_LOW_KEYS {
+            let (scene, index, descriptor) = settings::descriptor_by_key(key).unwrap();
+            let mut reached = false;
+            for seed in 0..400u64 {
+                let mut rng = SplitMix64::new(seed ^ 0xD00D);
+                let snapshot = explore(&mut rng, scene, &base, Strength::Surprise);
+                if snapshot.values[index] == descriptor.minimum {
+                    reached = true;
+                    break;
+                }
+            }
+            assert!(reached, "{key} never drew its designed low end");
+        }
+    }
+
+    #[test]
+    fn surprise_leaves_most_of_the_scene_alone() {
+        // CX-4's actual complaint, as a measurement: at 0.75 move chance nine
+        // of Song Atlas's twelve controls changed per press. At 0.45 the
+        // average across many presses must sit near half — the scene stays
+        // recognisable as itself.
+        let base = SceneSettings::default();
+        let mut moved_total = 0.0f64;
+        let mut samples = 0.0f64;
+        for seed in 0..2000u64 {
+            let mut rng = SplitMix64::new(seed ^ 0x50_FA);
+            let snapshot = explore(&mut rng, SceneId::SongAtlas, &base, Strength::Surprise);
+            let moved = settings::descriptors(SceneId::SongAtlas)
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    snapshot.values[*index] != base.get(SceneId::SongAtlas, *index)
+                })
+                .count();
+            moved_total += moved as f64;
+            samples += 1.0;
+        }
+        let mean_moved = moved_total / samples;
+        assert!(
+            (4.0..7.0).contains(&mean_moved),
+            "Song Atlas moves {mean_moved} of 12 controls on average; 0.45 should put it near 5.4"
+        );
     }
 
     #[test]
@@ -967,27 +1101,36 @@ mod tests {
     }
 
     #[test]
-    fn surprise_moves_hue_widely_and_other_controls_toward_their_default() {
-        // The angle carve-out, measured rather than asserted in prose. Hue is
-        // uniform over its inset range, so its mean absolute value should be
-        // near a quarter of the full 360 span; a triangular draw about the 0
-        // default would be far below that.
+    fn surprise_moves_hue_widely_and_the_camera_orbit_gently() {
+        // The cyclic carve-out, measured rather than asserted in prose. A
+        // cyclic control samples uniformly over the whole circle, so its mean
+        // absolute value sits near 0.45 * 90 = 40; a triangular draw about the
+        // 0 default gives roughly a third of the uniform figure. `atlas.orbit`
+        // spans the same -180..180 and must land in the *triangular* regime —
+        // it is camera composition, and CX-4's point is exactly that the old
+        // bounds inference could not tell the two apart.
         let base = SceneSettings::default();
-        let hue_index = index::pulse::HUE;
-        let mut hue_total = 0.0f64;
-        let mut samples = 0.0f64;
-        for seed in 0..2000u64 {
-            let mut rng = SplitMix64::new(seed ^ 0xC0FFEE);
-            let snapshot = explore(&mut rng, SceneId::PulseField, &base, Strength::Surprise);
-            hue_total += f64::from(snapshot.values[hue_index].abs());
-            samples += 1.0;
-        }
-        let mean = hue_total / samples;
-        // Uniform on [-171, 171] with a 25 % chance of staying at 0 gives
-        // 0.75 * 85.5 = 64. A triangular draw about 0 would give ~27.
+        let mean_abs = |scene: SceneId, index: usize, salt: u64| {
+            let mut total = 0.0f64;
+            for seed in 0..2000u64 {
+                let mut rng = SplitMix64::new(seed ^ salt);
+                let snapshot = explore(&mut rng, scene, &base, Strength::Surprise);
+                total += f64::from(snapshot.values[index].abs());
+            }
+            total / 2000.0
+        };
+
+        let hue = mean_abs(SceneId::PulseField, index::pulse::HUE, 0xC0FFEE);
         assert!(
-            mean > 50.0,
-            "hue mean magnitude {mean} — the angle carve-out is not firing"
+            hue > 30.0,
+            "hue mean magnitude {hue} — the cyclic carve-out is not firing"
+        );
+
+        let color = mean_abs(SceneId::SongAtlas, index::atlas::COLOR, 0xC0FFEE);
+        let orbit = mean_abs(SceneId::SongAtlas, index::atlas::ORBIT, 0xC0FFEE);
+        assert!(
+            orbit < color * 0.75,
+            "orbit mean {orbit} vs colour mean {color}: the orbit is still being sampled as a colour wheel"
         );
     }
 
