@@ -1158,18 +1158,20 @@ Three lessons, in the order they cost time:
       table, or add a report line carrying the lane and control rectangles so the
       gate computes the point it presses. Until then every coordinate in
       `headless_check.sh` is a latent version of the defect above.
-- [ ] **GX-2 — the 25 ms frame-stall assertion measures the machine, not the
-      build.** It failed twice while an unrelated process on the operator's
-      machine held load average 15 — worst 25.3 ms, then 33.2 ms — and passed on
-      the same commit minutes later at load 2 with **worst 16.7 ms, 0 of 240
-      stalled**. So the headroom is 8.3 ms rather than the sub-millisecond margin
-      the failures suggested, and the whole of it is consumed by contention: a
-      failure here says the CPU was busy, not that the renderer regressed.
-      Report load alongside the verdict at minimum, so the next session does not
-      spend an hour bisecting a green build; better, normalise the budget or make
-      the assertion advisory off CI. Until then, check `uptime` before believing
-      a stall failure — the deliberately-stalled control run (129 ms) still
-      separates cleanly, so the check's *discriminating* power is intact.
+- [x] **GX-2 — the 25 ms frame-stall assertion measures the machine, not the
+      build** (fixed 2026-08-08, third session burned). The evidence: failed
+      twice at load average 15 — worst 25.3 ms, then 33.2 ms — and passed on
+      the same commit minutes later at load 2 with worst 16.7 ms, 0 of 240
+      stalled; headroom is 8.3 ms and contention consumes all of it. The fix is
+      this entry's own prescription: the 1-minute load average is sampled on
+      both sides of the ordinary run and printed with the verdict, and the
+      failure fires only when the machine was **quiet** (both samples under
+      half the cores). Above that it is a loud ADVISORY carrying the load —
+      a stall under load is contention, not a verdict, and two agent sessions
+      sharing the box must not make the gate un-runnable. A regression cannot
+      hide behind a quiet machine, and the deliberately-stalled control
+      (129 ms against the 25 ms budget) keeps its unconditional hard exit, so
+      the check's discriminating power is untouched.
 
 ## CX — the consultation rulings (2026-08-07)
 

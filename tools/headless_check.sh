@@ -232,6 +232,12 @@ if [ ! -e "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ]; then
 fi
 
 echo "=== running $PROBE_FRAMES frames ==="
+# The frame-budget verdict far below reads this run's 'frame budget:' line, and
+# GX-2 measured that the verdict tracks the *machine*: the same commit reads
+# worst 33.2ms at load 15 and worst 16.7ms with 0 stalled at load 2. So the
+# load average is sampled on both sides of the run and travels with the
+# verdict — a stall on a busy machine is contention, not a regression.
+LOAD_BEFORE="$(cut -d' ' -f1 /proc/loadavg)"
 set +e
 env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
@@ -243,6 +249,7 @@ env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     >"$REPORT" 2>&1
 STATUS=$?
 set -e
+LOAD_AFTER="$(cut -d' ' -f1 /proc/loadavg)"
 
 echo "=== report ==="
 cat "$REPORT"
@@ -385,11 +392,31 @@ if [ "${STALL_UNDERRUNS:-1}" != "0" ]; then
     exit 1
 fi
 # And a clean run must read clean, or the two lines are noise rather than signal.
+#
+# GX-2: clean *on a quiet machine*. The 25 ms budget has ~8.3 ms of headroom
+# under llvmpipe and unrelated load consumes all of it, so on a busy machine
+# this verdict measures the neighbours — it failed at load 15 and passed on the
+# same commit at load 2 — and two agent sessions sharing the box would make the
+# gate un-runnable exactly when it is needed. The failure therefore only fires
+# when the machine was quiet on both sides of the run (1-min load average
+# under half the cores); above that it is a loud advisory carrying the load,
+# so a session that sees it knows what to re-run and a regression cannot hide
+# behind a *quiet* machine. The forced-stall control above is load-independent
+# (129 ms against a 25 ms budget) and keeps its hard exit either way.
 CLEAN_BUDGET="$(sed -n 's/^frame budget: *//p' "$REPORT")"
-echo "clean run:    ${CLEAN_BUDGET:-<absent>}"
+echo "clean run:    ${CLEAN_BUDGET:-<absent>} (load ${LOAD_BEFORE} before, ${LOAD_AFTER} after, $(nproc) cores)"
 case "${CLEAN_BUDGET:-absent}" in
     *"0 of "*" stalled"*) : ;;
-    *) echo "FAIL: the ordinary run reported a stall: ${CLEAN_BUDGET:-<absent>}" >&2; exit 1 ;;
+    *)
+        if python3 -c "import sys; sys.exit(0 if max(float(sys.argv[1]), float(sys.argv[2])) < $(nproc)/2 else 1)" \
+                "$LOAD_BEFORE" "$LOAD_AFTER"; then
+            echo "FAIL: the ordinary run stalled on a quiet machine: ${CLEAN_BUDGET:-<absent>}" >&2
+            exit 1
+        fi
+        echo "ADVISORY: the ordinary run stalled under load (${CLEAN_BUDGET:-<absent>};" \
+             "load ${LOAD_BEFORE}/${LOAD_AFTER} on $(nproc) cores) — contention, not a verdict." \
+             "Re-run on a quiet machine before trusting the renderer either way."
+        ;;
 esac
 
 echo "=== screenshot ==="
