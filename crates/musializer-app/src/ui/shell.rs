@@ -1493,15 +1493,21 @@ impl Shell {
             self.splitters(d, frame, input, &mut commands);
         }
         // The protocol question card sits over the preview's bottom edge, and
-        // under the notice tray: a failure card must be able to out-shout a
-        // question. Drawn in fullscreen too — a listening session is exactly
-        // when the panels are hidden.
+        // the notice tray stacks *above* it rather than over it — the first
+        // smoke capture had the session-start notice covering the question
+        // text. Drawn in fullscreen too: a listening session is exactly when
+        // the panels are hidden.
+        let mut notice_region = frame.preview;
         if let Some(session) = &self.protocol {
             if !modal {
-                super::protocol::draw_card(d, input.fonts.ui(), session, frame.preview);
+                if let Some(card_top) =
+                    super::protocol::draw_card(d, input.fonts.ui(), session, frame.preview)
+                {
+                    notice_region.height = (card_top - notice_region.y).max(0.0);
+                }
             }
         }
-        self.notice_tray(d, input.fonts.ui(), frame.preview);
+        self.notice_tray(d, input.fonts.ui(), notice_region);
 
         if modal {
             // AP3-R S11: the one fact the dialog cannot read off disk. It states

@@ -370,18 +370,22 @@ const MARKER_HALF_WIDTH: f32 = 5.0;
 /// "press play, listen, press a number". The card names every key it takes.
 /// No widget claims a pointer here, so it cannot steal a press from the
 /// preview underneath it.
+///
+/// Returns the card's top edge so the notice tray can stack above it instead
+/// of over it — the first smoke capture had the session-start notice sitting
+/// on the question text.
 pub(crate) fn draw_card(
     d: &mut RaylibDrawHandle<'_>,
     font: &UiFonts,
     session: &ProtocolSession,
     preview: UiRect,
-) {
+) -> Option<f32> {
     if preview.is_empty() {
-        return;
+        return None;
     }
     let width = CARD_WIDTH.min(preview.width - 24.0);
     if width <= 120.0 {
-        return;
+        return None;
     }
     let text_width = width - CARD_PADDING * 2.0;
 
@@ -441,7 +445,7 @@ pub(crate) fn draw_card(
     let x = preview.x + (preview.width - width) * 0.5;
     let y = preview.y + preview.height - height - 12.0;
     if y < preview.y {
-        return;
+        return None;
     }
     let card = UiRect::new(x, y, width, height);
     widgets::fill(d, card, color::ui_overlay_surface());
@@ -499,6 +503,7 @@ pub(crate) fn draw_card(
         metric::UI_FONT_CAPTION,
         color::ui_overlay_muted(),
     );
+    Some(card.y)
 }
 
 const CARD_WIDTH: f32 = 520.0;
