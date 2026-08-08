@@ -1403,6 +1403,96 @@ means 1920x1080 to everyone, and the marked case carries the mark.
   the product. Closing PXF-5 (the still blocking the frame loop) falls out of
   the same cancellable prepared-frame batch.
 
+## HX — human-feedback protocols (operator proposal, 2026-08-08)
+
+The operator, reading CX-4's listening-session recipe: *"what if you can place
+concrete markers with concrete questions at concrete points for a concrete audio
+track?"* — and, on top, wire `claude -p` into the assist features to help the
+feedback loop.
+
+The observation this answers is structural. Today the loop is: an agent writes a
+prose protocol into this file, the operator reads it, holds it in their head,
+runs the app, and reports back in chat. Three lossy hops — and one thing prose
+can **never** do: blind the operator. CX-4's Surprise comparison wants five
+current seeds against five proposed seeds judged blind, and a plan section that
+names which is which has already unblinded it. The application is the only party
+that can apply variant A or B without saying which. That makes this a
+correctness feature for feedback, not a convenience.
+
+### The design
+
+**HX-1 — the protocol file.** A sidecar, deliberately **not** `.musi`: an
+agent's questions are session artifacts, not authored work, and a project file
+accumulating a bot's questionnaires is CX-3's "recents shelf full of
+experiments" problem in a new coat. `*.protocol.json`, schema-versioned,
+referring to its audio by path **and digest** (the ASCII-import pattern) so the
+wrong track is refused rather than mis-asked. Items carry: `id`, `at_seconds`,
+an audition window (pre/post seconds), the question text, an answer `kind`
+(`choice` / `scale` / `text`), options, and an optional `apply` block — scene,
+seed, and up to two `SettingsSnapshot`s (the PX6 type, 12 f32s) labelled only
+`a`/`b`. The `apply` block is what makes a blind A/B a *file* an agent can
+write.
+
+**HX-2 — the in-app runner.** Loaded via `--protocol PATH` (additive flag; the
+CLI grammar is a contract) and via drop — `classify_drop`
+(`crates/musializer-app/src/ui/shell.rs:307`) gains a `.protocol.json` arm,
+which is additive over D1 since the extension can never be audio or image.
+Markers draw on the timeline as their own rail — this is CX-1's review-queue
+interaction wearing a different hat: **Next** jumps to the marker's window,
+auditions from `pre` seconds before it, the question card draws through the
+notice machinery (`crates/musializer-core/src/ui/notice.rs`), and the operator
+answers with `1`–`4`/typed text without leaving playback. A `choice` item with
+an `apply` block gets an A/B toggle that re-auditions the window under the
+other snapshot — the CX-4 session becomes: press play, listen, press a number,
+next. Progress reads `3 of 10 answered`; quitting mid-run loses nothing
+(answers are already on disk, HX-3).
+
+**HX-3 — the answers file.** Append-only JSONL beside the protocol
+(`*.answers.jsonl`): one line per answer with `item_id`, the answer, the
+variant order the app *actually* played (recorded at answer time, so the
+unblinding survives for the agent while never reaching the screen), wall-clock,
+playhead, and how many times the window was re-auditioned — that last number is
+itself feedback (a question auditioned five times was a hard question).
+Append-only rather than atomic-replace because a crash mid-session must lose at
+most one line, and an agent reading it needs no lock.
+
+**HX-4 — the loop closes without any new AI plumbing.** The agent that wrote
+the protocol reads the JSONL and edits the plan/constants. That is the whole
+MVP: `claude -p` is *already* the thing reading this repository. The in-app
+wiring is a second step, and it has a precedented seam — the assist stack
+already discovers and supervises `codex` child processes
+(`crates/musializer-runtime/src/assist/discover.rs`, `process_group`), so a
+`claude -p` runner is the same shape. Two uses earn it: **generate** (a button
+that turns a plan section like CX-4 into a protocol file) and **digest** (turn
+a finished answers file into a proposed plan edit the operator reviews).
+`claude` carries its own auth under `~/.claude`, so nothing touches the E1
+credential contract — but it inherits the child-env hygiene that exists for
+`codex` anyway. Rate/cost honesty: a run is operator-initiated, never ambient.
+
+**HX-5 — the evidence.** The invented-probe pattern applies unchanged: a
+`--ui-probe protocol-answer=ID:CHOICE` key and a `protocol:` report line
+(loaded file, item count, answered count, current item, which variant is live),
+because Xvfb can neither hear the track nor press `2`. The gate asserts a
+seeded protocol round-trips: load, answer two items headlessly, read the JSONL
+back, confirm the variant order recorded matches what the report line claimed
+was played.
+
+### Why this is worth a wave
+
+- CX-4's nine-minute session stops being prose and becomes a file this session
+  can emit tonight; blinding becomes real; and every future "operator judgment"
+  item (PXF-8's density calibration, CX-1's acceptance test, thumbnail
+  legibility) is a protocol rather than a paragraph.
+- It is almost entirely assembled from existing parts: PX6's
+  `SettingsSnapshot`, CX-1's review-queue interaction, D1's drop dispatch, the
+  notice card, the digest check, JSONL sidecars, the probe pattern.
+- The same runner is a **user** feature later ("A or B?" is how non-developers
+  tune anything), but nothing in HX-1..5 commits to that.
+
+Order: HX-1+HX-3 (pure core: schema, parse, refuse, append) → HX-2 (runner +
+rail) → HX-5 (gate) → HX-4's generate/digest buttons last, since the MVP loop
+works without them.
+
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 
 A separate operator-directed codex agent landed `dc694e3`: the public-facing
@@ -3668,3 +3758,73 @@ parallel task lists.
 - Keep historical investigation and negative-control details in
   `REWRITE_PLAN.md` NOTE ENTRIES or focused code/test comments; keep the live queue
   here concise and current.
+
+## SX1 — Phosphor Dream, the first scene with no oracle (operator request, 2026-08-08)
+
+The operator was handed the source of a third party's generative ASCII
+screensaver — a Python offline renderer, `dreamscape.py` plus its `README.md`,
+dropped into `OUTSIDE-DROPS/` — and asked for it as a scene. Scene name was left
+to the agent.
+
+**Shipped as `Phosphor Dream` / `phosphor`, scene id 10.** Not `dreamscape`: the
+piece it grew out of is named after a copyrighted track, and a `stable_name` is
+forever.
+
+### What it is
+
+Ten procedural scalar fields — domain-warped noise, four-sine plasma, checkered
+tunnel, six-fold kaleidoscope, seven metaballs, falling glyph columns,
+hyperspace, log spiral, moiré, interfering ripples — drawn as a grid of glyphs,
+cycling on a `dwell` clock with a dithered crossfade between seven character
+alphabets, under a slow rotate/zoom/ripple of the whole coordinate space. Then a
+CRT: offscreen Gaussian bloom, chromatic split on the glow only, scanlines and a
+rolling refresh band.
+
+### What it cost, and what it moved
+
+`SCENE_COUNT` went from 10 to 11 — the first time it has moved since the fork.
+Appended at id 10, never inserted, so every C-era id keeps its value and a
+`.musi` written before today resolves its scenes unchanged. `ORACLE_SCENE_COUNT`
+is the new name for the ten the frozen C has, and it is what the harnesses read.
+
+Three differential harnesses failed on the eleventh scene for reasons unrelated
+to what they test. All three were **split rather than relaxed** — see the
+`AGENTS.md` divergence table and the two `tests/differential/*_post_legacy.txt`
+files. Both negative controls were run.
+
+### What the captures found that the tests did not
+
+Three defects, none of which any unit test could have caught, all found by
+looking at a frame or at the report line:
+
+1. **The filmic rolloff was in the wrong place.** The source applies it to the
+   *bloomed* signal; running the same curve on the bare cell value is a 40 %
+   dimmer, and it rendered Plasma as two green blobs on black. Not reproduced now.
+2. **Flat rectangles for `░▒▓█` destroyed the ASCII.** Correct coverage, and a
+   contiguous bright region merged into a featureless plate. Drawn as 4x4 dither
+   patterns now, which is what the real shade blocks are.
+3. **The scene had its own definition of "bass".** It averaged the lowest eighth
+   of the instantaneous bands and read `0.00` on every frame while the caption
+   glow's drive on those same frames worked. Both now go through
+   `caption_effects::bass_from_trails`.
+
+The `phosphor dream:` report line — field, alphabet, grid, `amp`/`bass`, mean and
+peak cell, bloom outcome — exists because of (1) and (3). This scene draws a
+plausible frame in at least four wrong states and a capture cannot separate them.
+
+### Open
+
+- **Attribution.** The author was asked whether they want to be named and had not
+  answered when this landed. The operator will supply a handle/GitHub link. Until
+  then the module docs and this entry say "a third party" and name the dropped
+  files. **Add the credit when it arrives** — module docs of both halves, and a
+  line here.
+- **`OUTSIDE-DROPS/` is untracked and should stay that way** unless the operator
+  decides otherwise: it holds someone else's source. `.gitignore` it or move it
+  out of the tree before any commit that runs `git add -A`.
+- The scene is faithful to the source's authored brightness, which on a synthetic
+  fixture reads dark. It reads well on real broadband audio (`amp` 0.7, `bass`
+  0.4). If the operator wants it brighter at defaults, the lever is the base
+  `pulse` term in `evaluate_grid`, not `reactivity` — the ±10 % audio modulation
+  is deliberately gentle and the source's author asked that it stay that way for
+  photosensitivity reasons.
