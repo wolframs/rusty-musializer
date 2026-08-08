@@ -4,9 +4,10 @@ The Rust rewrite of Musializer. The C repository is feature frozen.
 
 **The application is built and runs.** All eleven scenes draw, `.musi` projects open
 and save, video exports through FFmpeg, every bottom panel is real, and
-`tools/verify.sh` is 21 passed / 0 failed — thirteen differential harnesses
-against the frozen C, a headless capture gate, and the assist-era gates
-(secret canary scan among them). The sole live completion queue
+`tools/verify.sh --differential` is 23 passed / 0 failed — thirteen
+differential harnesses against the frozen C (opt-in since 2026-08-08; the
+plain run is 10 passed and skips them), a headless capture gate, and the
+assist-era gates (secret canary scan among them). The sole live completion queue
 is `FEATURE_PARITY_PLAN.md`. It records the application-boundary gaps those gates
 do not cover — currently the durable-edit guarantees (complete dirty marking,
 all-track autosave, draft guards), the missing C entry points (file drop, ASCII
