@@ -83,6 +83,34 @@ else
     echo "     Install VirtualGL to put this on the GPU; see AGENTS.md."
 fi
 
+# The same shape for the video encoder: use NVENC for this script's own MP4
+# renders when the silicon is actually there, x264 otherwise, and let
+# `MZ_ENCODER` override either way (`MZ_ENCODER=x264` is how the two paths are
+# compared). Detection is a real one-frame encode, not `ffmpeg -encoders` —
+# that lists every encoder the build was *compiled* with, on machines with no
+# NVIDIA card at all.
+#
+# The checks fed by `$MZ_ENC` still assert determinism and PSNR, so this is
+# only safe because both were re-measured under NVENC when it landed: two
+# encodes of the same frames are byte-identical, and the still cross-check's
+# matched pair sits ~5 dB above its 40 dB floor either way. If a driver update
+# ever breaks that, the failure names the encoder — the `video encoder:` line
+# is asserted below rather than trusted.
+if [ -n "${MZ_ENCODER+set}" ]; then
+    MZ_ENC_NAME="${MZ_ENCODER:-x264}"
+elif ffmpeg -v error -f lavfi -i color=black:s=64x64:d=0.1 \
+        -c:v h264_nvenc -f null - >/dev/null 2>&1; then
+    MZ_ENC_NAME="nvenc"
+else
+    MZ_ENC_NAME="x264"
+fi
+if [ "$MZ_ENC_NAME" = "x264" ]; then
+    MZ_ENC=""     # x264 is the application default; passing nothing proves that path too
+else
+    MZ_ENC="--encoder $MZ_ENC_NAME"
+fi
+echo "encoder: $MZ_ENC_NAME for this script's own renders"
+
 # Prove the isolation before anything is launched, rather than trusting it.
 #
 # This is a negative control on the harness itself, and it exists because the
@@ -996,8 +1024,19 @@ else
     env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
-            --render "$STILL_MP4" --render-window 4 1.0 \
+            --render "$STILL_MP4" --render-window 4 1.0 $MZ_ENC \
         >"$OUT_DIR/still-window.txt" 2>&1 || true
+    # The flag is asserted, not trusted: `--encoder` resolving to something the
+    # build refuses would fall back to an error banner and an x264 file, and a
+    # PSNR check cannot tell those apart from a slow day.
+    STILL_ENCODER_LINE="$(sed -n 's/^video encoder: *//p' "$OUT_DIR/still-window.txt")"
+    case "$STILL_ENCODER_LINE" in
+        "$MZ_ENC_NAME ("*) : ;;
+        *)
+            echo "FAIL: the reference MP4 reported encoder [$STILL_ENCODER_LINE], expected $MZ_ENC_NAME" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
     if [ ! -f "$STILL_MP4" ]; then
         echo "FAIL: the still cross-check could not render its reference MP4" >&2
         SWEEP_FAILED=1
@@ -1601,7 +1640,7 @@ run_project_lane_export() {
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         $MZ_GL ./target/debug/musializer --mute --project "$directory/cues.musi" \
-            --render "$output" --render-window 1 0.2 \
+            --render "$output" --render-window 1 0.2 $MZ_ENC \
             --resolution 640x360 --fps 30 --quality balanced \
         >"$FRAME_LANE_DIR/$run-export.txt" 2>&1
     local status=$?

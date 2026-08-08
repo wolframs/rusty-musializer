@@ -705,8 +705,21 @@ makes an unfinished area show up in a capture instead of in a bug report.
 This machine has an RTX 3090 and FFmpeg has `h264_nvenc` and `hevc_nvenc`. Pass
 `--encoder nvenc` for **every export an agent makes to check its own work**.
 Leave the default (`x264`) alone for anything the operator will keep or post:
-x264 `slow` still wins on quality per byte, and it is what every existing
-md5-identity check in `tools/headless_check.sh` compares against.
+x264 `slow` still wins on quality per byte.
+
+**The headless gate's own MP4 renders pick NVENC automatically** (2026-08-08)
+when a one-frame test encode succeeds, the same detect-and-fall-back shape as
+VirtualGL; `MZ_ENCODER=x264` forces the CPU path and the `encoder:` line names
+which one a run took. This is safe against the gate's own assertions because
+both were measured rather than assumed: two NVENC encodes of the same frames
+are **byte-identical** (same md5), and the still cross-check's matched pair
+reads 45.64 dB under NVENC against 45.55 under x264, both ~5.6 dB above the
+40 dB floor with the 21.5 dB negative control unchanged. `export_probe` keeps
+its deliberate X264 pin — it digests the frames *fed to* the encoder, so the
+encoder cannot move its numbers and swapping it would prove nothing. A check
+that compares two exports by md5 still has to hold the encoder fixed; the
+gate's determinism checks satisfy that by comparing two runs of the *same*
+`$MZ_ENC` invocation, never an NVENC file against an x264 one.
 
 ```sh
 cargo run -- --mute track.mp3 --scene phosphor --encoder nvenc --render /tmp/check.mp4
