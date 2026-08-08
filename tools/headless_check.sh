@@ -98,8 +98,13 @@ fi
 # is asserted below rather than trusted.
 if [ -n "${MZ_ENCODER+set}" ]; then
     MZ_ENC_NAME="${MZ_ENCODER:-x264}"
-elif ffmpeg -v error -f lavfi -i color=black:s=64x64:d=0.1 \
+elif ffmpeg -v error -f lavfi -i color=black:s=256x144:d=0.1 \
         -c:v h264_nvenc -f null - >/dev/null 2>&1; then
+    # 256x144, not something smaller: NVENC refuses frames below a minimum
+    # dimension ("invalid param (8)"), so a 64x64 probe reports "no NVENC" on
+    # a machine where every real render works — which is exactly how the first
+    # version of this check shipped. 256x144 is under the gate's smallest real
+    # render (640x360), so a pass here transfers.
     MZ_ENC_NAME="nvenc"
 else
     MZ_ENC_NAME="x264"
