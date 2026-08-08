@@ -171,6 +171,27 @@ pub enum ShellCommand {
     ExportLyrics,
     /// Replace the current track's cue document from a `.lyrics.tsv`.
     ImportLyrics,
+    /// A dropped `*.protocol.json` (HX-2). Additive over D1: the double
+    /// extension can never be audio or an image, and a bare `.json` still
+    /// takes the oracle's else branch into the audio decoder.
+    OpenDroppedProtocol(PathBuf),
+    /// One keystroke of a running feedback protocol (HX-2). A command because
+    /// every consequence — applying a snapshot, seeking the stream, appending
+    /// the answer line — needs owners the shell may not hold.
+    Protocol(ProtocolAction),
+}
+
+/// What a protocol keystroke asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProtocolAction {
+    /// Keys `1`-`4`: answer the current item.
+    Answer(u8),
+    /// `R`: audition the current item's window again.
+    Replay,
+    /// `B`: the other look, re-auditioned. Never named `a` or `b` on screen.
+    Flip,
+    /// `N`: move to the next item without answering this one.
+    Next,
 }
 
 impl ShellCommand {
@@ -259,6 +280,10 @@ impl ShellCommand {
             // contract is explicit that exporting must not dirty the project.
             ShellCommand::ImportLyrics => true,
             ShellCommand::ExportLyrics => false,
+            // A protocol session is a session artifact (HX-1's whole argument
+            // for the sidecar): answers append to `*.answers.jsonl`, and the
+            // snapshots it applies are auditions, not authored work.
+            ShellCommand::OpenDroppedProtocol(_) | ShellCommand::Protocol(_) => false,
         }
     }
 }
@@ -281,6 +306,10 @@ pub enum DropKind {
     /// list of formats raylib can open is raylib's to know, not this function's,
     /// and a whitelist here would start silently refusing files that work.
     Audio,
+    /// `*.protocol.json` (HX-2). Matched on the double extension, not on
+    /// `.json`: a bare `.json` is not a protocol and keeps taking the audio
+    /// branch, exactly as the oracle's else arm would.
+    Protocol,
 }
 
 impl DropKind {
@@ -292,6 +321,7 @@ impl DropKind {
             DropKind::Project => "project",
             DropKind::Image => "image",
             DropKind::Audio => "audio file",
+            DropKind::Protocol => "protocol",
         }
     }
 }
@@ -305,6 +335,16 @@ impl DropKind {
 /// MP4 or a documented command line can observe the difference.
 #[must_use]
 pub fn classify_drop(path: &Path) -> DropKind {
+    // The protocol arm keys on the *double* extension (HX-2), checked before
+    // the single-extension match because `Path::extension` only ever sees
+    // `json`. Case-insensitive like everything else here.
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.ends_with(".protocol.json") {
+        return DropKind::Protocol;
+    }
     let extension = path
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
@@ -324,6 +364,7 @@ fn drop_command(path: &Path) -> ShellCommand {
         DropKind::Project => ShellCommand::OpenDroppedProject(path),
         DropKind::Image => ShellCommand::ImportAsciiImage(path),
         DropKind::Audio => ShellCommand::LoadTrack(path),
+        DropKind::Protocol => ShellCommand::OpenDroppedProtocol(path),
     }
 }
 
@@ -577,6 +618,13 @@ pub struct Shell {
     /// `main.rs`'s `SessionCredentials`. Set once, so the dialog can say
     /// "session only" without holding a second copy of a credential.
     pub session_credential_fingerprint: Option<String>,
+    /// The running feedback protocol, if `--protocol` or a drop loaded one
+    /// (HX-2).
+    ///
+    /// On `Shell` because the keyboard, the marker rail and the question card
+    /// all consult it every frame; every side effect its transitions ask for
+    /// travels back to `main.rs` as a [`ShellCommand::Protocol`].
+    pub protocol: Option<super::protocol::ProtocolSession>,
     /// A mouse cursor a panel asked for this frame, via [`Shell::request_cursor`].
     ///
     /// It exists because [`Shell::splitters`] sets the cursor unconditionally and
@@ -883,6 +931,13 @@ pub(crate) struct KeyboardFrame {
     /// only ones, and nothing on screen said so. The collapsed strip is the real
     /// fix; this is the second route, and the strip's tooltip names it.
     pub save: bool,
+    /// `1`-`4`, the protocol answer row (HX-2). Consulted only while a
+    /// protocol session is live, so the digits stay free everywhere else.
+    pub answer_digit: Option<u8>,
+    /// `R`, `B`, `N` — replay, other look, next item. Same rule as the digits.
+    pub protocol_replay: bool,
+    pub protocol_flip: bool,
+    pub protocol_next: bool,
 }
 
 impl KeyboardFrame {
@@ -908,6 +963,18 @@ impl KeyboardFrame {
             cycle_scene: d.is_key_pressed(Key::KEY_TAB),
             toggle_inspector: d.is_key_pressed(Key::KEY_T),
             save: d.is_key_pressed(Key::KEY_S),
+            answer_digit: [
+                (Key::KEY_ONE, Key::KEY_KP_1, 1u8),
+                (Key::KEY_TWO, Key::KEY_KP_2, 2),
+                (Key::KEY_THREE, Key::KEY_KP_3, 3),
+                (Key::KEY_FOUR, Key::KEY_KP_4, 4),
+            ]
+            .into_iter()
+            .find(|(key, pad, _)| d.is_key_pressed(*key) || d.is_key_pressed(*pad))
+            .map(|(_, _, digit)| digit),
+            protocol_replay: d.is_key_pressed(Key::KEY_R),
+            protocol_flip: d.is_key_pressed(Key::KEY_B),
+            protocol_next: d.is_key_pressed(Key::KEY_N),
         }
     }
 }
@@ -999,6 +1066,7 @@ impl Shell {
             last_split_press: None,
             assist_settings: super::assist_settings::AssistSettingsDialog::new(),
             session_credential_fingerprint: None,
+            protocol: None,
             pointer_cursor: None,
         }
     }
@@ -1423,6 +1491,15 @@ impl Shell {
                 self.inspector(d, frame, input, &mut commands);
             }
             self.splitters(d, frame, input, &mut commands);
+        }
+        // The protocol question card sits over the preview's bottom edge, and
+        // under the notice tray: a failure card must be able to out-shout a
+        // question. Drawn in fullscreen too — a listening session is exactly
+        // when the panels are hidden.
+        if let Some(session) = &self.protocol {
+            if !modal {
+                super::protocol::draw_card(d, input.fonts.ui(), session, frame.preview);
+            }
         }
         self.notice_tray(d, input.fonts.ui(), frame.preview);
 
@@ -2016,6 +2093,25 @@ impl Shell {
         // under the cursor.
         if self.text_entry_has_focus() {
             return;
+        }
+
+        // The protocol answer row (HX-2), before the global bindings so a
+        // session owns its keys — and only while one is running, so `1`-`4`,
+        // `R`, `B` and `N` mean nothing anywhere else. Ctrl-chorded digits
+        // stay with the scale ladder above.
+        if self.protocol.is_some() && !keys.control {
+            if let Some(digit) = keys.answer_digit {
+                commands.push(ShellCommand::Protocol(ProtocolAction::Answer(digit)));
+            }
+            if keys.protocol_replay {
+                commands.push(ShellCommand::Protocol(ProtocolAction::Replay));
+            }
+            if keys.protocol_flip {
+                commands.push(ShellCommand::Protocol(ProtocolAction::Flip));
+            }
+            if keys.protocol_next {
+                commands.push(ShellCommand::Protocol(ProtocolAction::Next));
+            }
         }
 
         // The C's bindings (`ui_theme.h:60-64`), plus Tab for scene cycling,
@@ -4566,6 +4662,20 @@ impl Shell {
         // the only one of the three the user is moving.
         self.timeline_event_markers = self.event_markers(d, input, strip, duration);
 
+        // Protocol markers ride the same strip, bottom-anchored where the
+        // event lollipops are top-anchored — position is the channel that
+        // survives at 5 px, which is CX-1's ruling applied here (HX-2).
+        if let Some(session) = &self.protocol {
+            super::protocol::draw_markers(
+                d,
+                session,
+                &self.timeline,
+                strip,
+                duration,
+                input.ui_scale,
+            );
+        }
+
         // The open panel draws **before** the zoom row now, because it is the
         // panel that says where that row goes (LX1). The readout, the nudge-key
         // hint and the Zoom out button then land under every timed lane rather
@@ -5762,7 +5872,14 @@ mod tests {
     #[test]
     fn a_dropped_file_is_dispatched_by_what_it_is() {
         use std::path::PathBuf;
-        let cases: [(&str, DropKind); 16] = [
+        let cases: [(&str, DropKind); 20] = [
+            // The protocol branch (HX-2): the double extension, case blind,
+            // and never a bare `.json` — which stays on the oracle's audio
+            // else-branch below.
+            ("/tmp/cx4.protocol.json", DropKind::Protocol),
+            ("/tmp/CX4.PROTOCOL.JSON", DropKind::Protocol),
+            ("session.protocol.json", DropKind::Protocol),
+            ("/tmp/settings.json", DropKind::Audio),
             // The project branch (`plug.c:7542`).
             ("/tmp/song.musi", DropKind::Project),
             ("/tmp/UPPER.MUSI", DropKind::Project),
@@ -5796,6 +5913,7 @@ mod tests {
                 DropKind::Project => ShellCommand::OpenDroppedProject(path.clone()),
                 DropKind::Image => ShellCommand::ImportAsciiImage(path.clone()),
                 DropKind::Audio => ShellCommand::LoadTrack(path.clone()),
+                DropKind::Protocol => ShellCommand::OpenDroppedProtocol(path.clone()),
             };
             assert_eq!(command, expected_command, "{}", path.display());
         }
@@ -5808,23 +5926,28 @@ mod tests {
     /// derived from the same match, which is why this asserts the commands are
     /// pairwise distinct instead.
     #[test]
-    fn the_three_drop_arms_are_three_different_commands() {
+    fn the_four_drop_arms_are_four_different_commands() {
         use std::path::Path;
         let project = drop_command(Path::new("/tmp/a.musi"));
         let image = drop_command(Path::new("/tmp/a.png"));
         let audio = drop_command(Path::new("/tmp/a.wav"));
-        assert_ne!(project, image);
-        assert_ne!(project, audio);
-        assert_ne!(image, audio);
+        let protocol = drop_command(Path::new("/tmp/a.protocol.json"));
+        let commands = [project, image, audio, protocol];
+        for (index, left) in commands.iter().enumerate() {
+            for right in commands.iter().skip(index + 1) {
+                assert_ne!(left, right);
+            }
+        }
         // And each failure names a different type, which is the reporting half
         // of D1: "unsupported/corrupt input is reported by its attempted type".
         let nouns = [
             DropKind::Project.attempted_noun(),
             DropKind::Image.attempted_noun(),
             DropKind::Audio.attempted_noun(),
+            DropKind::Protocol.attempted_noun(),
         ];
         let distinct: std::collections::HashSet<&str> = nouns.into_iter().collect();
-        assert_eq!(distinct.len(), 3, "two branches report the same noun");
+        assert_eq!(distinct.len(), 4, "two branches report the same noun");
     }
 
     /// The image picker's filter and the drop classifier must agree (D2).
@@ -5942,6 +6065,77 @@ mod tests {
             .any(|command| matches!(command, ShellCommand::SelectScene(_))));
         assert!(shell.hud_visible);
         assert!(shell.inspector_open);
+    }
+
+    /// The protocol keys exist only while a session is running (HX-2): `2`
+    /// pressed in an ordinary session must mean nothing, and `2` pressed in a
+    /// listening session must be an answer.
+    #[test]
+    fn protocol_keys_belong_to_a_running_session_and_nobody_else() {
+        use musializer_core::feedback::{AnswerKind, Protocol, ProtocolItem, Window};
+
+        let mut keys = KeyboardFrame {
+            answer_digit: Some(2),
+            protocol_replay: true,
+            protocol_flip: true,
+            protocol_next: true,
+            ..KeyboardFrame::default()
+        };
+
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        shell.keyboard_actions(keys, context(), &mut commands);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, ShellCommand::Protocol(_))),
+            "protocol keys fired with no session"
+        );
+
+        let protocol = Protocol {
+            title: "t".to_string(),
+            audio_path: "x.wav".to_string(),
+            audio_sha256: musializer_core::project::sha256::digest_hex(b"x"),
+            items: vec![ProtocolItem {
+                id: "one".to_string(),
+                at_seconds: 1.0,
+                window: Window {
+                    pre: 1.0,
+                    post: 2.0,
+                },
+                question: "?".to_string(),
+                kind: AnswerKind::Choice,
+                options: vec!["yes".to_string(), "no".to_string()],
+                apply: None,
+            }],
+        };
+        shell.protocol = Some(super::super::protocol::ProtocolSession::new(
+            protocol,
+            "t.protocol.json".to_string(),
+            std::path::PathBuf::from("t.answers.jsonl"),
+            Vec::new(),
+        ));
+        let mut commands = Vec::new();
+        shell.keyboard_actions(keys, context(), &mut commands);
+        for expected in [
+            ShellCommand::Protocol(ProtocolAction::Answer(2)),
+            ShellCommand::Protocol(ProtocolAction::Replay),
+            ShellCommand::Protocol(ProtocolAction::Flip),
+            ShellCommand::Protocol(ProtocolAction::Next),
+        ] {
+            assert!(commands.contains(&expected), "{expected:?} did not fire");
+        }
+
+        // Ctrl chords the digits to the scale ladder, never to an answer.
+        keys.control = true;
+        let mut commands = Vec::new();
+        shell.keyboard_actions(keys, context(), &mut commands);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, ShellCommand::Protocol(_))),
+            "a Ctrl-chorded digit answered a protocol item"
+        );
     }
 
     /// A stale focus flag is the same defect as a stale widget claim: the panel

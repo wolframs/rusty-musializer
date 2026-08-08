@@ -706,6 +706,31 @@ fn run(
         }
     }
 
+    // `--protocol` (HX-2), after every other input is resolved. The protocol
+    // names its own audio by path and digest, so this one flag starts a whole
+    // listening session; a wrong or missing track is refused by name rather
+    // than mis-asked.
+    if let Some(path) = options.protocol.clone() {
+        if options.error {
+            eprintln!("warning: could not load protocol {}", path.display());
+        } else if let Err(error) = load_protocol_session(
+            &path,
+            &audio,
+            &mut analysis,
+            &mut music,
+            &mut app,
+            &mut scratch,
+            &mut scene_clock_previous,
+            play,
+        ) {
+            eprintln!(
+                "warning: could not load protocol {}: {error}",
+                path.display()
+            );
+            options.error = true;
+        }
+    }
+
     // `--auto-scenes` is evaluated after the project/bridge input, because it
     // enables the plan those stages supplied (`musializer.c:585-589`). An empty
     // plan is a command-line failure, not a successful no-op.
@@ -959,6 +984,37 @@ fn run(
                 }
                 for line in lines {
                     println!("{line}");
+                }
+            }
+            // HX-5: protocol items are addressed by *id*, never by pixel —
+            // GX-1 is why. A flip goes first so an answer in the same spec
+            // records both looks in its variant order.
+            if probe.protocol_flip.is_some() || probe.protocol_answer.is_some() {
+                if app.shell.protocol.is_none() {
+                    eprintln!("warning: --ui-probe protocol keys need a --protocol session");
+                    options.error = true;
+                }
+                if let Some(id) = probe.protocol_flip.clone() {
+                    let line = protocol_probe_flip(
+                        &id,
+                        &mut app,
+                        &music,
+                        &mut analysis,
+                        &mut scene_clock_previous,
+                    );
+                    println!("{line}");
+                }
+                if let Some(spec) = probe.protocol_answer.clone() {
+                    for pair in spec.split('+') {
+                        let line = protocol_probe_answer(
+                            pair,
+                            &mut app,
+                            &music,
+                            &mut analysis,
+                            &mut scene_clock_previous,
+                        );
+                        println!("{line}");
+                    }
                 }
             }
             // Last in the probe stage on purpose (LX3): the playhead it reads
@@ -1586,6 +1642,23 @@ fn run(
             }
         }
 
+        // A protocol audition pauses itself at the end of its window (HX-2):
+        // the operator asked to hear `pre + post` seconds around the marker,
+        // and a window that keeps rolling into the next verse makes every
+        // judgment about the wrong moment. R plays it again.
+        if let Some(session) = app.shell.protocol.as_mut() {
+            if let Some(stop) = session.stop_at {
+                if time_seconds >= stop {
+                    session.stop_at = None;
+                    if let Some(music) = music.as_ref() {
+                        if music.is_stream_playing() {
+                            music.pause_stream();
+                        }
+                    }
+                }
+            }
+        }
+
         for command in commands {
             match command {
                 ShellCommand::SetVolume(value) => {
@@ -1891,6 +1964,36 @@ fn run(
                 ShellCommand::ImportLyrics => {
                     let now = rl.get_time();
                     import_lyrics_command(&mut app, now);
+                }
+                // A dropped `*.protocol.json` (HX-2). The loader refuses by
+                // name — junk JSON, foreign schema, digest mismatch — and a
+                // refusal must not kill the session the drop landed on.
+                ShellCommand::OpenDroppedProtocol(path) => {
+                    if let Err(error) = load_protocol_session(
+                        &path,
+                        &audio,
+                        &mut analysis,
+                        &mut music,
+                        &mut app,
+                        &mut scratch,
+                        &mut scene_clock_previous,
+                        true,
+                    ) {
+                        app.shell.notify(
+                            Severity::Error,
+                            "Protocol could not be loaded",
+                            &format!("{}: {error}", path.display()),
+                        );
+                    }
+                }
+                ShellCommand::Protocol(action) => {
+                    handle_protocol_action(
+                        action,
+                        &mut app,
+                        &music,
+                        &mut analysis,
+                        &mut scene_clock_previous,
+                    );
                 }
                 ShellCommand::SaveProject => {
                     save_project_command(&mut app, true);
@@ -2912,6 +3015,379 @@ fn seek_preview(
     if !was_playing {
         music.pause_stream();
     }
+}
+
+// -- the protocol runner's file and audio edges (HX-2) --------------------------
+//
+// `ui::protocol::ProtocolSession` owns the state machine and is pure; every
+// function here is a side effect it asked for — reading the file, hashing the
+// audio, applying a snapshot, seeking the stream, appending an answer line.
+
+/// `<stem>.protocol.json` -> `<stem>.answers.jsonl`, beside the protocol.
+fn protocol_answers_path(protocol_path: &Path) -> PathBuf {
+    let name = protocol_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lowered = name.to_ascii_lowercase();
+    let stem = if lowered.ends_with(".protocol.json") {
+        &name[..name.len() - ".protocol.json".len()]
+    } else {
+        name.as_str()
+    };
+    protocol_path.with_file_name(format!("{stem}.answers.jsonl"))
+}
+
+/// One appended line, flushed before the function returns: HX-3's contract is
+/// that quitting mid-session loses nothing, and a line buffered in this
+/// process is not yet "on disk".
+fn append_answer_line(path: &Path, line: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(line.as_bytes())?;
+    file.flush()
+}
+
+/// Bind a scene for a protocol item, quietly.
+///
+/// Deliberately not [`App::select_scene`]: that marks the track dirty and
+/// raises a "Base scene changed" notice, and a 24-item session would stack 24
+/// of them over the question card.
+fn protocol_bind_scene(app: &mut App, id: SceneId) {
+    if app.scene.id() == id {
+        return;
+    }
+    let seed = app
+        .workspace
+        .current()
+        .map_or(DEFAULT_SCENE_SEED, |track| track.scene_seed);
+    app.scene = SceneInstance::new(scene_host::descriptor(id), seed);
+    if let Some(track) = app.workspace.current_mut() {
+        track.select_base_scene(id);
+    }
+}
+
+/// Put an activation on screen: tuning first, then the audition window.
+fn protocol_apply_activation(
+    app: &mut App,
+    music: &Option<Music<'_>>,
+    analysis: &mut Analysis,
+    scene_clock_previous: &mut Option<f64>,
+    activation: ui::protocol::Activation,
+    play: bool,
+) {
+    if let Some((scene, snapshot)) = activation.apply {
+        protocol_bind_scene(app, scene);
+        if !app.settings_mut().apply_snapshot(scene, &snapshot) {
+            // Unreachable for a parsed protocol — `Protocol::parse` validated
+            // every snapshot — which is exactly why it is reported rather
+            // than unwrapped.
+            app.shell.notify(
+                Severity::Warning,
+                "Protocol tuning was refused",
+                "A snapshot failed descriptor validation; the scene keeps its current tuning.",
+            );
+        }
+    }
+    if let Some(music) = music.as_ref() {
+        seek_preview(
+            music,
+            analysis,
+            app,
+            activation.seek_to,
+            scene_clock_previous,
+        );
+        if play && !music.is_stream_playing() {
+            music.resume_stream();
+        }
+    }
+}
+
+/// Load a `*.protocol.json` and start (or resume) its listening session.
+///
+/// The audio path resolves against the protocol file's own directory, and the
+/// digest is checked before anything is opened for playback — the wrong track
+/// is refused rather than mis-asked (HX-1).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the loader spans the same owners open_track does, plus the scene clock the audition seek resets"
+)]
+fn load_protocol_session<'audio>(
+    path: &Path,
+    audio: &'audio RaylibAudio,
+    analysis: &mut Analysis,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    scene_clock_previous: &mut Option<f64>,
+    play: bool,
+) -> Result<(), String> {
+    use musializer_core::feedback;
+
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let protocol = feedback::Protocol::parse(&bytes).map_err(|error| error.to_string())?;
+
+    let declared = Path::new(&protocol.audio_path);
+    let audio_path = if declared.is_absolute() {
+        declared.to_path_buf()
+    } else {
+        path.parent().unwrap_or(Path::new(".")).join(declared)
+    };
+    let digest = project_files::sha256_file_hex(&audio_path)
+        .map_err(|error| format!("{}: {error}", audio_path.display()))?;
+    protocol
+        .verify_audio_digest(&digest)
+        .map_err(|error| error.to_string())?;
+
+    open_track(audio, &audio_path, analysis, music, app, scratch, false)?;
+
+    // Answers already on disk resume the session at the first unanswered item;
+    // a torn final line is worth a notice, not a refusal (HX-3).
+    let answers_path = protocol_answers_path(path);
+    let mut already_answered = Vec::new();
+    match std::fs::read_to_string(&answers_path) {
+        Ok(text) => match feedback::read_answer_log(&text) {
+            Ok(log) => {
+                if log.torn_tail.is_some() {
+                    app.shell.notify(
+                        Severity::Warning,
+                        "The answers file ends mid-line",
+                        "A crash interrupted the last append; that one answer will be asked again.",
+                    );
+                }
+                already_answered = log
+                    .records
+                    .iter()
+                    .map(|record| record.item_id.clone())
+                    .collect();
+            }
+            Err((line, error)) => {
+                return Err(format!("{} line {line}: {error}", answers_path.display()));
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("{}: {error}", answers_path.display())),
+    }
+
+    let file_name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let title = protocol.title.clone();
+    let total = protocol.items.len();
+    let mut session =
+        ui::protocol::ProtocolSession::new(protocol, file_name, answers_path, already_answered);
+    let activation = session
+        .next_unanswered(0)
+        .and_then(|index| session.activate(index));
+    app.shell.protocol = Some(session);
+    if let Some(activation) = activation {
+        protocol_apply_activation(app, music, analysis, scene_clock_previous, activation, play);
+    }
+    app.shell.notify(
+        Severity::Info,
+        &format!("Listening session: {title}"),
+        &format!(
+            "{total} questions on the timeline. 1-4 answer, R replays the moment, B plays the other look, N skips. Every answer saves the instant you press it."
+        ),
+    );
+    Ok(())
+}
+
+/// One protocol keystroke's consequences (HX-2).
+fn handle_protocol_action(
+    action: ui::shell::ProtocolAction,
+    app: &mut App,
+    music: &Option<Music<'_>>,
+    analysis: &mut Analysis,
+    scene_clock_previous: &mut Option<f64>,
+) {
+    use ui::shell::ProtocolAction;
+
+    let Some(mut session) = app.shell.protocol.take() else {
+        return;
+    };
+    let mut activation: Option<ui::protocol::Activation> = None;
+    match action {
+        ProtocolAction::Answer(choice) => {
+            if let Some(mut record) = session.answer_choice(choice) {
+                record.playhead_seconds = music
+                    .as_ref()
+                    .map_or(0.0, |music| f64::from(music.get_time_played()));
+                record.answered_at_unix = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|since| since.as_secs());
+                match append_answer_line(&session.answers_path, &record.to_line()) {
+                    Ok(()) => {
+                        session.mark_answered(record);
+                        let next = session
+                            .current
+                            .and_then(|current| session.next_unanswered(current + 1));
+                        match next {
+                            Some(index) => activation = session.activate(index),
+                            None => {
+                                // Done. The card says so; the pause is the
+                                // session getting out of the operator's ears.
+                                session.current = None;
+                                session.stop_at = None;
+                                if let Some(music) = music.as_ref() {
+                                    if music.is_stream_playing() {
+                                        music.pause_stream();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        app.shell.notify(
+                            Severity::Error,
+                            "The answer could not be saved",
+                            &format!(
+                                "{}: {error}. The item stays unanswered.",
+                                session.answers_path.display()
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        ProtocolAction::Replay => activation = session.replay(),
+        ProtocolAction::Flip => activation = session.flip(),
+        ProtocolAction::Next => {
+            let total = session.total();
+            if total > 0 {
+                let index = session.current.map_or(0, |current| (current + 1) % total);
+                activation = session.activate(index);
+            }
+        }
+    }
+    app.shell.protocol = Some(session);
+    if let Some(activation) = activation {
+        protocol_apply_activation(app, music, analysis, scene_clock_previous, activation, true);
+    }
+}
+
+/// `--ui-probe protocol-flip=ID`: activate the item and put its other look on
+/// record. Prints what the session actually did, not what the spec asked.
+fn protocol_probe_flip(
+    id: &str,
+    app: &mut App,
+    music: &Option<Music<'_>>,
+    analysis: &mut Analysis,
+    scene_clock_previous: &mut Option<f64>,
+) -> String {
+    let Some(activation) = protocol_probe_activate(app, id) else {
+        return format!("protocol probe:  flip {id} REFUSED unknown item or no session");
+    };
+    if let Some(activation) = activation {
+        protocol_apply_activation(
+            app,
+            music,
+            analysis,
+            scene_clock_previous,
+            activation,
+            false,
+        );
+    }
+    let flip = {
+        let Some(session) = app.shell.protocol.as_mut() else {
+            return format!("protocol probe:  flip {id} REFUSED no session");
+        };
+        session.flip()
+    };
+    match flip {
+        None => format!("protocol probe:  flip {id} REFUSED item has one look"),
+        Some(activation) => {
+            protocol_apply_activation(
+                app,
+                music,
+                analysis,
+                scene_clock_previous,
+                activation,
+                false,
+            );
+            let order = app
+                .shell
+                .protocol
+                .as_ref()
+                .map_or_else(|| "-".to_string(), |s| ui::protocol::order_token(&s.order));
+            format!("protocol probe:  flip {id} order={order}")
+        }
+    }
+}
+
+/// `--ui-probe protocol-answer=ID:CHOICE`, one pair.
+fn protocol_probe_answer(
+    pair: &str,
+    app: &mut App,
+    music: &Option<Music<'_>>,
+    analysis: &mut Analysis,
+    scene_clock_previous: &mut Option<f64>,
+) -> String {
+    let Some((id, choice_text)) = pair.split_once(':') else {
+        return format!("protocol probe:  answer {pair} REFUSED malformed pair");
+    };
+    let Ok(choice) = choice_text.parse::<u8>() else {
+        return format!("protocol probe:  answer {pair} REFUSED malformed choice");
+    };
+    let Some(activation) = protocol_probe_activate(app, id) else {
+        return format!("protocol probe:  answer {pair} REFUSED unknown item or no session");
+    };
+    if let Some(activation) = activation {
+        protocol_apply_activation(
+            app,
+            music,
+            analysis,
+            scene_clock_previous,
+            activation,
+            false,
+        );
+    }
+    handle_protocol_action(
+        ui::shell::ProtocolAction::Answer(choice),
+        app,
+        music,
+        analysis,
+        scene_clock_previous,
+    );
+    // Report what was recorded, off the session's own last-answer field — the
+    // same one the `protocol:` report line prints, so the two cannot disagree.
+    match app
+        .shell
+        .protocol
+        .as_ref()
+        .and_then(|session| session.last_answer.as_ref())
+        .filter(|record| record.item_id == id)
+    {
+        None => format!("protocol probe:  answer {pair} REFUSED not recorded"),
+        Some(record) => format!(
+            "protocol probe:  answer {id} choice={choice} \"{}\" order={} auditions={}",
+            record.answer,
+            ui::protocol::order_token(&record.variant_order),
+            record.auditions,
+        ),
+    }
+}
+
+/// Make `id` the current item if it is not already; `None` when it cannot be.
+///
+/// `Some(None)` means "already current, nothing to apply" — re-activating
+/// would reset the variant order a flip in the same spec just built.
+#[allow(
+    clippy::option_option,
+    reason = "tri-state: no session/unknown id, already current, activated"
+)]
+fn protocol_probe_activate(app: &mut App, id: &str) -> Option<Option<ui::protocol::Activation>> {
+    let session = app.shell.protocol.as_mut()?;
+    let already = session.item().is_some_and(|item| item.id == id);
+    if already {
+        return Some(None);
+    }
+    session.activate_id(id).map(Some)
 }
 
 /// Detaches and drops the playing stream, leaving no stale samples behind.
@@ -4283,6 +4759,13 @@ impl Report {
                 path.display(),
                 kind.attempted_noun()
             ),
+        }
+        // The protocol session's own account (HX-5): item counts, the current
+        // item, and the exact order-and-choice of the last appended answer —
+        // which is what the gate compares against the JSONL it reads back.
+        match &app.shell.protocol {
+            None => println!("protocol:        none"),
+            Some(session) => println!("protocol:        {}", session.describe()),
         }
         println!("panel:           {}", app.shell.panel.label());
         // The scene panel, and the rect inside it the scene was drawn into

@@ -20,6 +20,7 @@ pub mod icons;
 pub mod mapping_editor;
 pub mod panels;
 pub mod preferences;
+pub mod protocol;
 pub mod scale;
 pub mod shell;
 pub mod shell_layout;
