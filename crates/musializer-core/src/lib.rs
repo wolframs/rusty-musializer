@@ -11,6 +11,7 @@
 
 pub mod assist;
 pub mod audio;
+pub mod feedback;
 pub mod project;
 pub mod render;
 pub mod scene;
