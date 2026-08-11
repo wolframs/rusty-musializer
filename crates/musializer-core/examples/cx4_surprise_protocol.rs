@@ -255,8 +255,9 @@ fn main() {
 
     for (scene_index, scene) in scenes.into_iter().enumerate() {
         let [current_count, revised_count] = singles_split[scene_index];
-        let mut samplers: Vec<Sampler> = std::iter::repeat_n(Sampler::Current, current_count)
-            .chain(std::iter::repeat_n(Sampler::Revised, revised_count))
+        let mut samplers: Vec<Sampler> = std::iter::repeat(Sampler::Current)
+            .take(current_count)
+            .chain(std::iter::repeat(Sampler::Revised).take(revised_count))
             .collect();
         shuffle(&mut samplers, &mut shuffle_rng);
 
