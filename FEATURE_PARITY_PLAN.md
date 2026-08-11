@@ -1282,10 +1282,10 @@ can recover the session, verifies every referenced asset before replacing the
 workspace, and returns the track unnamed with the warning `Save As to keep it`.
 Named save or explicit discard retires both generations. Fullscreen reports and
 draws the amber/red attention-only treatment, including the initial
-`Unfiled work · Ctrl+S` expansion. Evidence is pinned in the 435 app tests and
+`Unfiled work · Ctrl+S` expansion. Evidence is pinned in the 437 app tests and
 the `Unfiled work: recovery restart round trip` section of
-`tools/headless_check.sh`, which crosses two isolated application processes and
-inspects the snapshot's data boundary.
+`tools/headless_check.sh`, which crosses three isolated application processes,
+guards a competing open, and inspects the snapshot's data boundary.
 
 - **The escalation rule.** `No file` stays calm until the **first** of: three
   durable edit *transactions* (one user gesture — a whole slider drag, an
