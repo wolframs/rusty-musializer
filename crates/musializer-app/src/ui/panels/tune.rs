@@ -36,11 +36,11 @@
 //!    (`plug.c:5673-5674`).
 
 use musializer_core::project::preset_store::PresetAction;
-use musializer_core::scene::routes::{AnalysisSource, ParameterMapping, RouteTable};
+use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
 use musializer_core::scene::settings::{self, SceneSettings, SettingDescriptor, SettingsSnapshot};
 use musializer_core::scene::SceneId;
 use musializer_core::ui::notice::Severity;
-use musializer_core::ui::route_editor_state::{self, RouteEditorState};
+use musializer_core::ui::route_editor_state::{self, RouteEditorDraft, RouteEditorState};
 use musializer_core::ui::text_edit::TextRules;
 use musializer_core::ui::tune_explore::{
     self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
@@ -48,6 +48,7 @@ use musializer_core::ui::tune_explore::{
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
+use serde::{Deserialize, Serialize};
 
 use super::super::mapping_editor::{self, AnchorPair};
 use super::super::shell::{Shell, ShellCommand, ShellInput};
@@ -199,6 +200,92 @@ pub(crate) struct EditorHost {
     explore_presses: u64,
     /// `--ui-probe tune-seed=`, replacing the counter for a capture run.
     probe_seed: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RouteRecoveryDraft {
+    track_slot: usize,
+    scene: String,
+    setting_index: usize,
+    committed: Option<RecoveryMapping>,
+    draft: RecoveryMapping,
+    touched: bool,
+}
+
+impl RouteRecoveryDraft {
+    fn into_session(self) -> Option<RouteEditorDraft> {
+        let scene = SceneId::from_stable_name(&self.scene)?;
+        let draft = self.draft.into_mapping()?;
+        let committed = match self.committed {
+            Some(mapping) => Some(mapping.into_mapping()?),
+            None => None,
+        };
+        Some(RouteEditorDraft {
+            track_slot: self.track_slot,
+            scene,
+            setting_index: self.setting_index,
+            committed,
+            draft,
+            touched: self.touched,
+        })
+    }
+
+    pub(crate) fn is_valid_for_tracks(&self, track_count: usize) -> bool {
+        if self.track_slot >= track_count {
+            return false;
+        }
+        let Some(session) = self.clone().into_session() else {
+            return false;
+        };
+        RouteEditorState::new().restore_session(session)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryMapping {
+    parameter: String,
+    source: String,
+    band_index: u16,
+    input_min: f64,
+    input_max: f64,
+    output_min: f64,
+    output_max: f64,
+    interpolation: String,
+    clamp: bool,
+}
+
+impl From<&ParameterMapping> for RecoveryMapping {
+    fn from(mapping: &ParameterMapping) -> Self {
+        Self {
+            parameter: mapping.parameter.clone(),
+            source: mapping.source.canonical_name().to_string(),
+            band_index: mapping.band_index,
+            input_min: mapping.input_min,
+            input_max: mapping.input_max,
+            output_min: mapping.output_min,
+            output_max: mapping.output_max,
+            interpolation: mapping.interpolation.canonical_name().to_string(),
+            clamp: mapping.clamp,
+        }
+    }
+}
+
+impl RecoveryMapping {
+    fn into_mapping(self) -> Option<ParameterMapping> {
+        Some(ParameterMapping {
+            parameter: self.parameter,
+            source: AnalysisSource::from_canonical_name(&self.source)?,
+            band_index: self.band_index,
+            input_min: self.input_min,
+            input_max: self.input_max,
+            output_min: self.output_min,
+            output_max: self.output_max,
+            interpolation: Interpolation::from_canonical_name(&self.interpolation)?,
+            clamp: self.clamp,
+        })
+    }
 }
 
 impl Default for EditorHost {
@@ -399,6 +486,29 @@ fn push_snapshot(scene: SceneId, snapshot: &SettingsSnapshot, commands: &mut Vec
 impl Shell {
     pub(crate) fn route_edit_is_dirty(&self) -> bool {
         self.peek_editor(|host| host.state.is_dirty())
+    }
+
+    #[must_use]
+    pub(crate) fn route_recovery_draft(&self) -> Option<RouteRecoveryDraft> {
+        self.peek_editor(|host| {
+            let session = host.state.session()?;
+            host.state.is_dirty().then(|| RouteRecoveryDraft {
+                track_slot: session.track_slot,
+                scene: session.scene.stable_name().to_string(),
+                setting_index: session.setting_index,
+                committed: session.committed.as_ref().map(RecoveryMapping::from),
+                draft: RecoveryMapping::from(&session.draft),
+                touched: session.touched,
+            })
+        })
+    }
+
+    pub(crate) fn restore_route_recovery_draft(&mut self, recovered: RouteRecoveryDraft) -> bool {
+        let Some(session) = recovered.into_session() else {
+            return false;
+        };
+        self.route_editor.track_slot = session.track_slot;
+        self.route_editor.state.restore_session(session)
     }
 
     /// Whether preview must keep the scene hosting the inline route editor
@@ -2206,6 +2316,32 @@ mod tests {
         for index in 0..settings::descriptors(SceneId::Loom).len() {
             assert_eq!(shell.route_editor_height(SceneId::Loom, index), 0.0);
         }
+    }
+
+    #[test]
+    fn recovery_restores_a_route_edit_as_a_dirty_draft() {
+        let mut shell = Shell::new();
+        let weight = index::loom::WEIGHT;
+        assert!(shell
+            .route_editor
+            .state
+            .open(2, SceneId::Loom, weight, None));
+        assert!(shell
+            .route_editor
+            .state
+            .set_curve(Interpolation::Smoothstep));
+        let recovery = shell.route_recovery_draft().expect("dirty draft");
+        assert!(!recovery.is_valid_for_tracks(2));
+        assert!(recovery.is_valid_for_tracks(3));
+
+        let mut restored = Shell::new();
+        assert!(restored.restore_route_recovery_draft(recovery));
+        assert!(restored.route_edit_is_dirty());
+        let session = restored.route_editor.state.session().unwrap();
+        assert_eq!(session.track_slot, 2);
+        assert_eq!(session.scene, SceneId::Loom);
+        assert_eq!(session.setting_index, weight);
+        assert_eq!(session.draft.interpolation, Interpolation::Smoothstep);
     }
 
     #[test]

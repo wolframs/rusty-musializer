@@ -152,6 +152,27 @@ impl RouteEditorState {
         true
     }
 
+    /// Restores an in-flight editor draft from an app-owned recovery snapshot.
+    /// The same validation as [`Self::open`] is repeated for both copies so a
+    /// malformed recovery file cannot construct a state the live editor could
+    /// never reach.
+    pub fn restore_session(&mut self, recovered: RouteEditorDraft) -> bool {
+        let Some(descriptor) = settings::descriptor(recovered.scene, recovered.setting_index)
+        else {
+            return false;
+        };
+        if recovered.draft.parameter != descriptor.key
+            || !recovered.draft.is_valid_for(recovered.scene)
+            || recovered.committed.as_ref().is_some_and(|committed| {
+                committed.parameter != descriptor.key || !committed.is_valid_for(recovered.scene)
+            })
+        {
+            return false;
+        }
+        self.session = Some(recovered);
+        true
+    }
+
     /// Discards the draft (`route_editor_close`, `route_editor_state.c:91-94`).
     pub fn close(&mut self) {
         self.session = None;

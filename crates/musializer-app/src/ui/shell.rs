@@ -25,7 +25,7 @@ use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::transport_bar;
 use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
 use musializer_runtime::font::{Faces, UiFonts};
-use raylib::prelude::{RaylibDraw, RaylibDrawHandle, Vector2};
+use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::icons;
 use super::panels::{lyrics, scene_timeline};
@@ -158,6 +158,10 @@ pub enum ShellCommand {
     /// inside a drawing pair. Split that way so the headless probe can take the
     /// expanded layout without making a window call that Xvfb cannot serve.
     SetFullscreen(bool),
+    /// Restore the app-owned session snapshot advertised on the welcome screen.
+    RecoverSession,
+    /// Explicitly discard both recovery generations.
+    DiscardRecovery,
     /// Persist workstation UI state outside the current `.musi` project.
     SaveUiPreferences(UiPreferences),
     /// Write the current track's cue document to a `.lyrics.tsv` through a
@@ -250,6 +254,8 @@ impl ShellCommand {
             | ShellCommand::SetVolume(_)
             | ShellCommand::ToggleMute
             | ShellCommand::SetFullscreen(_)
+            | ShellCommand::RecoverSession
+            | ShellCommand::DiscardRecovery
             | ShellCommand::StartRender
             // A still is a read of the project, written to a PNG outside it
             // (UX0-C10) — same footing as StartRender.
@@ -531,6 +537,8 @@ pub struct Shell {
     /// An unreadable history and no history at all are different facts, and a
     /// blank region is indistinguishable from a broken one.
     pub recent_unavailable: bool,
+    /// Whether the app-owned state directory contains a recovery generation.
+    pub recovery_available: bool,
     /// One frame of `--ui-probe middle-drag=`, set by the composition root.
     ///
     /// `None` on every other frame, so the real device drives the pan whenever
@@ -639,6 +647,10 @@ pub struct Shell {
     /// anything sticky here would keep a resize arrow on screen after the hand
     /// had left the handle.
     pointer_cursor: Option<raylib::consts::MouseCursor>,
+    /// First frame on which fullscreen gained an attention state. The expanded
+    /// label lives for 2.5 seconds, then the same state collapses to its dot.
+    fullscreen_attention_since: Option<f64>,
+    fullscreen_attention_token: &'static str,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1053,6 +1065,7 @@ impl Shell {
             recent: super::preferences::recent::RecentProjects::default(),
             recent_now_unix: None,
             recent_unavailable: false,
+            recovery_available: false,
             transport_scrub: None,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
@@ -1068,6 +1081,8 @@ impl Shell {
             session_credential_fingerprint: None,
             protocol: None,
             pointer_cursor: None,
+            fullscreen_attention_since: None,
+            fullscreen_attention_token: "none",
         }
     }
 
@@ -1508,6 +1523,7 @@ impl Shell {
             }
         }
         self.notice_tray(d, input.fonts.ui(), notice_region);
+        self.fullscreen_attention(d, input);
 
         if modal {
             // AP3-R S11: the one fact the dialog cannot read off disk. It states
@@ -1547,6 +1563,55 @@ impl Shell {
 
         self.notices.tick(f64::from(d.get_frame_time()));
         commands
+    }
+
+    /// Fullscreen's deliberately tiny save-state surface (CX-3/PXF-1).
+    /// Nothing is drawn for a saved or genuinely fresh session; warning and
+    /// failure are the only states allowed to spend pixels over the work.
+    fn fullscreen_attention(&mut self, d: &mut RaylibDrawHandle<'_>, input: &ShellInput<'_>) {
+        let state = input
+            .workspace
+            .current()
+            .and_then(TrackAttention::from_track);
+        let Some(attention) = state.filter(|_| self.fullscreen) else {
+            self.fullscreen_attention_since = None;
+            self.fullscreen_attention_token = "none";
+            return;
+        };
+        let now = d.get_time();
+        let since = *self.fullscreen_attention_since.get_or_insert(now);
+        let expanded = fullscreen_attention_expanded(since, now);
+        self.fullscreen_attention_token = if expanded {
+            attention.expanded_token()
+        } else {
+            attention.dot_token()
+        };
+        let tint = attention.color();
+        let right = input.window.0 - 10.0;
+        let centre_y = 10.0;
+        if expanded {
+            let label = attention.label();
+            let width = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION) + 24.0;
+            let pill = UiRect::new(right - width, 4.0, width, 22.0);
+            widgets::fill(d, pill, widgets::alpha(color::ui_surface(), 0.94));
+            widgets::draw_text(
+                d,
+                input.fonts.ui(),
+                label,
+                pill.x + 9.0,
+                pill.y + 4.0,
+                metric::UI_FONT_CAPTION,
+                tint,
+            );
+            d.draw_circle((right - 4.0) as i32, centre_y as i32, 3.0, tint);
+        } else {
+            d.draw_circle(right as i32, centre_y as i32, 3.0, tint);
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn fullscreen_attention_token(&self) -> &'static str {
+        self.fullscreen_attention_token
     }
 
     /// The welcome screen, drawn instead of the workspace while no track is open
@@ -1642,48 +1707,105 @@ impl Shell {
         );
 
         // `Open audio` is drawn selected — accent fill, white label — which is how
-        // the C marks the one action the screen exists for (`plug.c:7790`).
-        if self
-            .widgets
-            .text_button(
+        // the C marks the one action the screen exists for (`plug.c:7790`). A
+        // recovery generation changes that priority: opening another session
+        // before deciding its fate could eventually replace the only recovery
+        // copy, so both entry points stay visibly unavailable until Recover or
+        // Dismiss is explicit.
+        if self.recovery_available {
+            self.widgets
+                .disabled_button(d, font, frame.open_audio, "Open audio", None);
+            self.widgets
+                .disabled_button(d, font, frame.open_project, "Open project", None);
+        } else {
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    font,
+                    widgets::widget_id(widgets::id::WELCOME, 0),
+                    frame.open_audio,
+                    "Open audio",
+                    true,
+                    ButtonStyle::Neutral,
+                    None,
+                )
+                .clicked
+            {
+                commands.push(ShellCommand::OpenAudio);
+            }
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    font,
+                    widgets::widget_id(widgets::id::WELCOME, 1),
+                    frame.open_project,
+                    "Open project",
+                    false,
+                    ButtonStyle::Neutral,
+                    None,
+                )
+                .clicked
+            {
+                commands.push(ShellCommand::OpenProject);
+            }
+        }
+        if self.recovery_available {
+            let recovery = UiRect::new(frame.drop_hint.x, frame.drop_hint.y, 286.0, 32.0);
+            let dismiss = UiRect::new(recovery.x + recovery.width + 8.0, recovery.y, 88.0, 32.0);
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    font,
+                    widgets::widget_id(widgets::id::WELCOME, 2),
+                    recovery,
+                    "Recover session",
+                    true,
+                    ButtonStyle::Neutral,
+                    None,
+                )
+                .clicked
+            {
+                commands.push(ShellCommand::RecoverSession);
+            }
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    font,
+                    widgets::widget_id(widgets::id::WELCOME, 3),
+                    dismiss,
+                    "Dismiss",
+                    false,
+                    ButtonStyle::Neutral,
+                    None,
+                )
+                .clicked
+            {
+                commands.push(ShellCommand::DiscardRecovery);
+            }
+            widgets::draw_text(
                 d,
                 font,
-                widgets::widget_id(widgets::id::WELCOME, 0),
-                frame.open_audio,
-                "Open audio",
-                true,
-                ButtonStyle::Neutral,
-                None,
-            )
-            .clicked
-        {
-            commands.push(ShellCommand::OpenAudio);
-        }
-        if self
-            .widgets
-            .text_button(
+                "Recover or Dismiss before opening another track",
+                frame.drop_hint.x,
+                frame.drop_hint.y + 42.0,
+                15.0,
+                color::ui_warning(),
+            );
+        } else {
+            widgets::draw_text(
                 d,
                 font,
-                widgets::widget_id(widgets::id::WELCOME, 1),
-                frame.open_project,
-                "Open project",
-                false,
-                ButtonStyle::Neutral,
-                None,
-            )
-            .clicked
-        {
-            commands.push(ShellCommand::OpenProject);
+                "or drop audio anywhere in this window",
+                frame.drop_hint.x,
+                frame.drop_hint.y,
+                15.0,
+                color::ui_muted(),
+            );
         }
-        widgets::draw_text(
-            d,
-            font,
-            "or drop audio anywhere in this window",
-            frame.drop_hint.x,
-            frame.drop_hint.y,
-            15.0,
-            color::ui_muted(),
-        );
 
         // The steps are the first thing to go when the window is too short for
         // everything, because they are the only part of the screen that is
@@ -3346,11 +3468,15 @@ impl Shell {
         // third for this would be widget infrastructure rather than a panel
         // change. The asterisk is also the convention every editor already uses
         // for the same fact, so it needs no legend.
-        let save_marked = input
-            .workspace
-            .current()
-            .is_some_and(|track| track.save_state().needs_attention());
-        let save_label = if save_marked { "Save *" } else { "Save" };
+        let current = input.workspace.current();
+        let save_marked = current.is_some_and(|track| track.save_state().needs_attention());
+        let unnamed = current.is_some_and(|track| track.project_path.is_none());
+        let save_label = match (unnamed, save_marked) {
+            (true, true) => "Keep this cut… *",
+            (true, false) => "Keep this cut…",
+            (false, true) => "Save *",
+            (false, false) => "Save",
+        };
         let labels: [&str; 4] = ["Open project", "Add audio", save_label, "Save As"];
         let columns = if stacked { 2 } else { 4 };
         let cell_width = (row.width - (columns - 1) as f32 * 4.0) / columns as f32;
@@ -3476,7 +3602,7 @@ impl Shell {
         }
         let tint = match state {
             SaveState::Failed => color::ui_danger(),
-            SaveState::Unsaved => color::ui_warning(),
+            SaveState::UnfiledWork | SaveState::Unsaved => color::ui_warning(),
             // Saved and "No file" are both calm states, and neither should pull
             // the eye off the work. The word carries the difference.
             SaveState::Saved | SaveState::NoProjectFile => color::ui_muted(),
@@ -5087,6 +5213,60 @@ impl Shell {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackAttention {
+    Warning { unfiled: bool },
+    Failure,
+}
+
+const FULLSCREEN_ATTENTION_EXPAND_SECONDS: f64 = 2.5;
+
+fn fullscreen_attention_expanded(since: f64, now: f64) -> bool {
+    now - since < FULLSCREEN_ATTENTION_EXPAND_SECONDS
+}
+
+impl TrackAttention {
+    fn from_track(track: &crate::workspace::Track) -> Option<Self> {
+        match track.save_state() {
+            SaveState::UnfiledWork => Some(Self::Warning { unfiled: true }),
+            SaveState::Unsaved => Some(Self::Warning { unfiled: false }),
+            SaveState::Failed => Some(Self::Failure),
+            SaveState::NoProjectFile | SaveState::Saved => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Warning { unfiled: true } => "Unfiled work · Ctrl+S",
+            Self::Warning { unfiled: false } => "Working changes · Ctrl+S",
+            Self::Failure => "Save failed · Ctrl+S",
+        }
+    }
+
+    fn color(self) -> Color {
+        match self {
+            Self::Warning { .. } => color::ui_warning(),
+            Self::Failure => color::ui_danger(),
+        }
+    }
+
+    fn expanded_token(self) -> &'static str {
+        match self {
+            Self::Warning { unfiled: true } => "unfiled-expanded",
+            Self::Warning { unfiled: false } => "changes-expanded",
+            Self::Failure => "failure-expanded",
+        }
+    }
+
+    fn dot_token(self) -> &'static str {
+        match self {
+            Self::Warning { unfiled: true } => "unfiled-dot",
+            Self::Warning { unfiled: false } => "changes-dot",
+            Self::Failure => "failure-dot",
+        }
+    }
+}
+
 /// Widest a notice card is drawn.
 const NOTICE_CARD_WIDTH: f32 = 380.0;
 const NOTICE_PADDING: f32 = 10.0;
@@ -5323,6 +5503,35 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn fullscreen_attention_is_absent_fresh_and_names_each_risk_state() {
+        let mut track = crate::workspace::Track::new(
+            PathBuf::from("/tmp/attention.wav"),
+            10.0,
+            SceneId::Spectrum,
+            7,
+        )
+        .unwrap();
+        assert_eq!(TrackAttention::from_track(&track), None);
+
+        track.mark_dirty_significant(1.0);
+        track.finish_durable_edit_frame(1.0);
+        let unfiled = TrackAttention::from_track(&track).unwrap();
+        assert_eq!(unfiled.label(), "Unfiled work · Ctrl+S");
+        assert_eq!(unfiled.dot_token(), "unfiled-dot");
+
+        track.project_path = Some(PathBuf::from("/tmp/attention.musi"));
+        let changes = TrackAttention::from_track(&track).unwrap();
+        assert_eq!(changes.label(), "Working changes · Ctrl+S");
+
+        track.mark_save_failed("disk full");
+        let failure = TrackAttention::from_track(&track).unwrap();
+        assert_eq!(failure.label(), "Save failed · Ctrl+S");
+
+        assert!(fullscreen_attention_expanded(10.0, 12.499));
+        assert!(!fullscreen_attention_expanded(10.0, 12.5));
+    }
 
     #[test]
     fn a_stub_panel_does_not_reserve_height_it_never_draws() {

@@ -392,9 +392,7 @@ pub fn save_to_path(
     }
     track.project_path = Some(path.to_path_buf());
     track.project_metadata = Some(project.metadata);
-    track.project_dirty = false;
-    track.project_autosave_failed = false;
-    track.project_save_error = None;
+    track.mark_saved();
     Ok(())
 }
 
@@ -463,6 +461,76 @@ pub struct OpenedProject {
     pub warning: Option<OpenWarning>,
 }
 
+/// Rehydrates the project payload embedded in an app-owned recovery snapshot.
+///
+/// Recovery paths are absolute runtime references, not a publish bundle. They
+/// are still checked against the digests already stored with the live track;
+/// the expensive audio hash happens here during an explicit restart action,
+/// never while the frame thread writes a snapshot (CX-3).
+pub fn open_recovery_json(
+    json: &str,
+    duration_for: impl FnOnce(&Path) -> Result<f64, String>,
+) -> Result<OpenedProject, ProjectError> {
+    if json.is_empty() || json.len() > io::MAX_INPUT {
+        return Err(ProjectError::Size);
+    }
+    let project = io::deserialize(json.as_bytes())?;
+    project
+        .validate()
+        .map_err(|error| ProjectError::Build(error.to_string()))?;
+    project
+        .editor_support()
+        .map_err(|error| ProjectError::Unsupported(error.to_string()))?;
+
+    let audio_path = PathBuf::from(&project.audio.path);
+    if !audio_path.is_absolute()
+        || !project_files::file_has_digest(&audio_path, &project.audio.sha256)
+    {
+        return Err(ProjectError::AudioMismatch);
+    }
+    let ascii_path = match &project.ascii_image {
+        Some(asset) => {
+            let path = PathBuf::from(&asset.path);
+            if !path.is_absolute() || !project_files::file_has_digest(&path, &asset.sha256) {
+                return Err(ProjectError::AsciiMismatch);
+            }
+            Some(path)
+        }
+        None => None,
+    };
+    let (font_path, licence_path) = match &project.caption_style.font {
+        Some(asset) => {
+            let font = PathBuf::from(&asset.path);
+            if !font.is_absolute() || !project_files::file_has_digest(&font, &asset.sha256) {
+                return Err(ProjectError::FontMismatch);
+            }
+            let licence = if asset.licence_path.is_empty() {
+                None
+            } else {
+                let path = PathBuf::from(&asset.licence_path);
+                if !path.is_absolute()
+                    || !project_files::file_has_digest(&path, &asset.licence_sha256)
+                {
+                    return Err(ProjectError::LicenceMismatch);
+                }
+                Some(path)
+            };
+            (Some(font), licence)
+        }
+        None => (None, None),
+    };
+    let duration = duration_for(&audio_path).map_err(ProjectError::Build)?;
+    hydrate_track(
+        project,
+        audio_path,
+        ascii_path,
+        font_path,
+        licence_path,
+        duration,
+        None,
+    )
+}
+
 /// `open_project_path` (`plug.c:4665-5044`), up to but not including the part
 /// that mutates the workspace.
 ///
@@ -485,28 +553,6 @@ pub fn open_path(
     project
         .editor_support()
         .map_err(|error| ProjectError::Unsupported(error.to_string()))?;
-
-    let entry = project
-        .scenes
-        .first()
-        .ok_or_else(|| ProjectError::Build("the project has no scene".into()))?;
-    let base_scene = SceneId::from_stable_name(&entry.scene_type)
-        .ok_or_else(|| ProjectError::UnknownScene(entry.scene_type.clone()))?;
-    let (scene_settings, scene_routes) =
-        routes::import_mappings(&entry.mappings).ok_or(ProjectError::Mappings)?;
-
-    let scene_switches = hydrate_scene_switches(&project.scene_switches, &project.audio)?;
-    let scene_presets = hydrate_presets(&project.scene_presets)?;
-
-    let mut render_config = RenderExportConfig {
-        width: project.output.width,
-        height: project.output.height,
-        fps: project.output.fps_numerator,
-        quality: output_to_quality(project.output.quality),
-        supersample_factor: 1,
-    };
-    render_config.set_quality(output_to_quality(project.output.quality));
-    render_config.validate().map_err(|_| ProjectError::Output)?;
 
     // Assets, in the C's order, each verified by digest before anything is built.
     let (audio_path, warning) = match project.audio.mode {
@@ -559,6 +605,51 @@ pub fn open_path(
     }
 
     let duration = duration_for(&audio_path).map_err(ProjectError::Build)?;
+    hydrate_track(
+        project,
+        audio_path,
+        ascii_path,
+        caption_font_path,
+        caption_licence_path,
+        duration,
+        Some(path.to_path_buf()),
+    )
+    .map(|mut opened| {
+        opened.warning = warning;
+        opened
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn hydrate_track(
+    project: Project,
+    audio_path: PathBuf,
+    ascii_path: Option<PathBuf>,
+    caption_font_path: Option<PathBuf>,
+    caption_licence_path: Option<PathBuf>,
+    duration: f64,
+    project_path: Option<PathBuf>,
+) -> Result<OpenedProject, ProjectError> {
+    let entry = project
+        .scenes
+        .first()
+        .ok_or_else(|| ProjectError::Build("the project has no scene".into()))?;
+    let base_scene = SceneId::from_stable_name(&entry.scene_type)
+        .ok_or_else(|| ProjectError::UnknownScene(entry.scene_type.clone()))?;
+    let (scene_settings, scene_routes) =
+        routes::import_mappings(&entry.mappings).ok_or(ProjectError::Mappings)?;
+    let scene_switches = hydrate_scene_switches(&project.scene_switches, &project.audio)?;
+    let scene_presets = hydrate_presets(&project.scene_presets)?;
+    let mut render_config = RenderExportConfig {
+        width: project.output.width,
+        height: project.output.height,
+        fps: project.output.fps_numerator,
+        quality: output_to_quality(project.output.quality),
+        supersample_factor: 1,
+    };
+    render_config.set_quality(output_to_quality(project.output.quality));
+    render_config.validate().map_err(|_| ProjectError::Output)?;
+
     let mut track = Track::new(
         audio_path.clone(),
         duration,
@@ -612,13 +703,14 @@ pub fn open_path(
     // build that had decoded it.
     track.audio_sample_rate = project.audio.sample_rate;
     track.audio_channels = project.audio.channels;
-    track.project_path = Some(path.to_path_buf());
+    track.project_path = project_path;
     track.project_metadata = Some(project.metadata);
-    track.project_dirty = false;
-    track.project_autosave_failed = false;
-    track.project_save_error = None;
+    track.mark_saved();
 
-    Ok(OpenedProject { track, warning })
+    Ok(OpenedProject {
+        track,
+        warning: None,
+    })
 }
 
 fn hydrate_scene_switches(

@@ -220,12 +220,17 @@ pub struct Track {
     /// actionable failure report (UX0-B01), so the reason travels with the latch
     /// and the Tracks panel prints it.
     pub project_save_error: Option<String>,
+    /// Session-local risk accounting for work that has no user-chosen project
+    /// file yet (CX-3). A frame is the transaction boundary: a slider may emit
+    /// one edit on every frame while held, but the uninterrupted run is one
+    /// gesture and therefore one transaction.
+    pub unfiled_risk: UnfiledRisk,
     /// Provenance, not dependencies: the referenced files are not needed to
     /// reopen evaluated project data.
     pub analysis_lanes: Vec<AnalysisLaneReference>,
 }
 
-/// The four states a user needs to be able to tell apart at a glance
+/// The five states a user needs to be able to tell apart at a glance
 /// (UX0-B01, `FEATURE_PARITY_PLAN.md` F1).
 ///
 /// The C has none of this, and neither did this port until now: `project_dirty`
@@ -236,6 +241,9 @@ pub struct Track {
 pub enum SaveState {
     /// Edits exist, or do not, but there is nowhere to put them yet.
     NoProjectFile,
+    /// Enough authored work has accumulated that the absence of a named file is
+    /// no longer a calm state.
+    UnfiledWork,
     /// On disk and up to date.
     Saved,
     /// Durable edits are waiting for the autosave settle or an explicit Save.
@@ -249,13 +257,14 @@ impl SaveState {
     /// The word drawn beside the track name.
     ///
     /// Short enough for the badge the tracks panel reserves, because that is the
-    /// only place all four of these can appear at once.
+    /// only place all five of these can appear at once.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             SaveState::NoProjectFile => "No file",
+            SaveState::UnfiledWork => "Unfiled work",
             SaveState::Saved => "Saved",
-            SaveState::Unsaved => "Unsaved",
+            SaveState::Unsaved => "Working changes",
             SaveState::Failed => "Save failed",
         }
     }
@@ -266,6 +275,7 @@ impl SaveState {
     pub fn token(self) -> &'static str {
         match self {
             SaveState::NoProjectFile => "no-file",
+            SaveState::UnfiledWork => "unfiled-work",
             SaveState::Saved => "saved",
             SaveState::Unsaved => "unsaved",
             SaveState::Failed => "failed",
@@ -276,7 +286,108 @@ impl SaveState {
     /// Save button's accent.
     #[must_use]
     pub fn needs_attention(self) -> bool {
-        matches!(self, SaveState::Unsaved | SaveState::Failed)
+        matches!(
+            self,
+            SaveState::UnfiledWork | SaveState::Unsaved | SaveState::Failed
+        )
+    }
+}
+
+/// The bounded state machine behind CX-3's hybrid escalation rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UnfiledRisk {
+    transactions: u8,
+    first_edit_seconds: Option<f64>,
+    mutation_this_frame: bool,
+    transaction_open: bool,
+    significant: bool,
+    escalated: bool,
+}
+
+/// Persistence-safe portion of [`UnfiledRisk`]. Frame-edge bookkeeping is
+/// deliberately excluded: a process cannot restart in the middle of a gesture.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UnfiledRiskSnapshot {
+    pub transactions: u8,
+    pub elapsed_since_first_edit: f64,
+    pub significant: bool,
+    pub escalated: bool,
+}
+
+impl UnfiledRisk {
+    const TRANSACTION_LIMIT: u8 = 3;
+    const ACTIVE_SECONDS_LIMIT: f64 = 5.0 * 60.0;
+    const RECOVERY_CLOCK_QUANTUM_SECONDS: f64 = 15.0;
+
+    fn note_mutation(&mut self) {
+        self.mutation_this_frame = true;
+    }
+
+    fn note_significance(&mut self) {
+        self.significant = true;
+    }
+
+    fn finish_frame(&mut self, now_seconds: f64) {
+        if self.mutation_this_frame {
+            if !self.transaction_open {
+                self.transactions = self.transactions.saturating_add(1);
+                self.first_edit_seconds.get_or_insert(now_seconds);
+            }
+            self.transaction_open = true;
+        } else {
+            self.transaction_open = false;
+        }
+        self.mutation_this_frame = false;
+        let aged = self
+            .first_edit_seconds
+            .is_some_and(|first| now_seconds - first >= Self::ACTIVE_SECONDS_LIMIT);
+        self.escalated |= self.significant || self.transactions >= Self::TRANSACTION_LIMIT || aged;
+    }
+
+    #[must_use]
+    pub fn started(self) -> bool {
+        self.first_edit_seconds.is_some()
+    }
+
+    #[must_use]
+    pub fn escalated(self) -> bool {
+        self.escalated
+    }
+
+    #[must_use]
+    pub fn snapshot(self, now_seconds: f64) -> Option<UnfiledRiskSnapshot> {
+        let first = self.first_edit_seconds?;
+        Some(UnfiledRiskSnapshot {
+            transactions: self.transactions,
+            // The live clock owns the five-minute transition. Quantizing keeps
+            // crash recovery within 15 seconds of that clock without rewriting
+            // both bounded generations on every 1.5-second snapshot poll.
+            elapsed_since_first_edit: {
+                let elapsed = (now_seconds - first).max(0.0);
+                if self.escalated {
+                    Self::ACTIVE_SECONDS_LIMIT
+                } else {
+                    (elapsed / Self::RECOVERY_CLOCK_QUANTUM_SECONDS).floor()
+                        * Self::RECOVERY_CLOCK_QUANTUM_SECONDS
+                }
+            },
+            significant: self.significant,
+            escalated: self.escalated,
+        })
+    }
+
+    pub fn restore(&mut self, snapshot: UnfiledRiskSnapshot, now_seconds: f64) {
+        self.transactions = snapshot.transactions;
+        self.first_edit_seconds = Some(now_seconds - snapshot.elapsed_since_first_edit.max(0.0));
+        self.significant = snapshot.significant;
+        self.escalated = snapshot.escalated;
+        self.mutation_this_frame = false;
+        self.transaction_open = false;
+        self.finish_frame(now_seconds);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -340,6 +451,7 @@ impl Track {
             project_autosave_failed: false,
             project_dirty_since: 0.0,
             project_save_error: None,
+            unfiled_risk: UnfiledRisk::default(),
             analysis_lanes: Vec::new(),
         })
     }
@@ -372,6 +484,34 @@ impl Track {
         // report.
         self.project_save_error = None;
         self.project_dirty_since = now_seconds;
+        self.unfiled_risk.note_mutation();
+    }
+
+    /// Marks a durable edit as one of CX-3's immediate-escalation events.
+    pub fn mark_dirty_significant(&mut self, now_seconds: f64) {
+        self.mark_dirty(now_seconds);
+        self.unfiled_risk.note_significance();
+    }
+
+    /// Escalates already-dirty work for an event such as attempting an export.
+    pub fn mark_significant(&mut self) {
+        if self.project_dirty {
+            self.unfiled_risk.note_significance();
+        }
+    }
+
+    /// Closes or continues the current user gesture after all edits for a frame
+    /// have been applied.
+    pub fn finish_durable_edit_frame(&mut self, now_seconds: f64) {
+        self.unfiled_risk.finish_frame(now_seconds);
+    }
+
+    /// A successful write to a user-named project retires the recovery risk.
+    pub fn mark_saved(&mut self) {
+        self.project_dirty = false;
+        self.project_autosave_failed = false;
+        self.project_save_error = None;
+        self.unfiled_risk.clear();
     }
 
     /// Records why a save attempt failed, and latches autosave off until the
@@ -669,10 +809,10 @@ impl Track {
     ///    failed write, and "Unsaved" would then be true but useless — it reads
     ///    as "autosave will get to it", which is exactly what the latch has
     ///    stopped from happening.
-    /// 2. **No project file outranks dirtiness**, because it is the actionable
-    ///    one. A track with edits and no destination is not waiting on autosave;
-    ///    it is waiting on the user to choose a file, and saying "Unsaved" would
-    ///    imply a file exists to be unsaved against.
+    /// 2. **An unnamed track is calm until its bounded risk rule escalates it.**
+    ///    The first small experiment stays `NoProjectFile`; three durable edit
+    ///    gestures, five minutes, or one significant event makes the same lack
+    ///    of destination actionable as `UnfiledWork`.
     /// 3. Otherwise dirty is Unsaved and clean is Saved.
     #[must_use]
     pub fn save_state(&self) -> SaveState {
@@ -680,7 +820,11 @@ impl Track {
             return SaveState::Failed;
         }
         if self.project_path.is_none() {
-            return SaveState::NoProjectFile;
+            return if self.unfiled_risk.escalated() {
+                SaveState::UnfiledWork
+            } else {
+                SaveState::NoProjectFile
+            };
         }
         if self.project_dirty {
             return SaveState::Unsaved;
@@ -822,6 +966,10 @@ impl Workspace {
         &self.tracks
     }
 
+    pub fn tracks_mut(&mut self) -> &mut [Track] {
+        &mut self.tracks
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.tracks.len()
@@ -858,6 +1006,7 @@ impl Workspace {
         for track in &mut self.tracks {
             track.project_dirty = false;
             track.project_dirty_since = 0.0;
+            track.unfiled_risk.clear();
         }
     }
 
@@ -948,7 +1097,7 @@ impl Workspace {
     /// Every track's save state, in list order — the probe report's `save state:`
     /// line (UX0-B01).
     ///
-    /// A capture can show a badge but cannot say which of four colours it is, and
+    /// A capture can show a badge but cannot say which of five states it is, and
     /// the two states that matter most — Unsaved and Save failed — differ by hue
     /// alone at a glance. So the gate asserts this string rather than a pixel.
     ///
@@ -1081,6 +1230,82 @@ mod tests {
     }
 
     #[test]
+    fn a_continuous_edit_run_is_one_durable_transaction() {
+        let mut track = track("/tmp/a.wav");
+        for frame in 0..20 {
+            track.mark_dirty(f64::from(frame) / 60.0);
+            track.finish_durable_edit_frame(f64::from(frame) / 60.0);
+        }
+        assert_eq!(track.save_state(), SaveState::NoProjectFile);
+
+        // One empty frame closes the slider gesture. Two more discrete edits
+        // then reach the three-transaction threshold.
+        track.finish_durable_edit_frame(1.0);
+        track.mark_dirty(1.1);
+        track.finish_durable_edit_frame(1.1);
+        track.finish_durable_edit_frame(1.2);
+        track.mark_dirty(1.3);
+        track.finish_durable_edit_frame(1.3);
+        assert_eq!(track.save_state(), SaveState::UnfiledWork);
+    }
+
+    #[test]
+    fn significance_and_five_minutes_each_escalate_unfiled_work() {
+        let mut significant = track("/tmp/significant.wav");
+        significant.mark_dirty_significant(10.0);
+        significant.finish_durable_edit_frame(10.0);
+        assert_eq!(significant.save_state(), SaveState::UnfiledWork);
+
+        let mut aged = track("/tmp/aged.wav");
+        aged.mark_dirty(10.0);
+        aged.finish_durable_edit_frame(10.0);
+        assert_eq!(aged.save_state(), SaveState::NoProjectFile);
+        aged.finish_durable_edit_frame(310.0);
+        assert_eq!(aged.save_state(), SaveState::UnfiledWork);
+    }
+
+    #[test]
+    fn recovery_preserves_the_five_minute_clock_without_churning_each_poll() {
+        let mut track = track("/tmp/clock.wav");
+        track.mark_dirty(10.0);
+        track.finish_durable_edit_frame(10.0);
+        let early = track.unfiled_risk.snapshot(11.6).unwrap();
+        let same_bucket = track.unfiled_risk.snapshot(24.9).unwrap();
+        assert_eq!(early.elapsed_since_first_edit, 0.0);
+        assert_eq!(same_bucket.elapsed_since_first_edit, 0.0);
+
+        let persisted = track.unfiled_risk.snapshot(169.0).unwrap();
+        assert_eq!(persisted.elapsed_since_first_edit, 150.0);
+        let mut restored = UnfiledRisk::default();
+        restored.restore(persisted, 1_000.0);
+        restored.finish_frame(1_149.9);
+        assert!(!restored.escalated());
+        restored.finish_frame(1_150.0);
+        assert!(restored.escalated());
+        assert_eq!(
+            restored.snapshot(1_151.6).unwrap().elapsed_since_first_edit,
+            UnfiledRisk::ACTIVE_SECONDS_LIMIT
+        );
+        assert_eq!(
+            restored.snapshot(2_000.0).unwrap().elapsed_since_first_edit,
+            UnfiledRisk::ACTIVE_SECONDS_LIMIT,
+            "an already-escalated clock must not churn the bounded generations"
+        );
+    }
+
+    #[test]
+    fn a_named_save_clears_the_recovery_risk() {
+        let mut track = track("/tmp/a.wav");
+        track.mark_dirty_significant(1.0);
+        track.finish_durable_edit_frame(1.0);
+        assert!(track.unfiled_risk.started());
+        track.project_path = Some(PathBuf::from("/tmp/a.musi"));
+        track.mark_saved();
+        assert_eq!(track.save_state(), SaveState::Saved);
+        assert!(!track.unfiled_risk.started());
+    }
+
+    #[test]
     fn command_line_cleanup_clears_every_loaded_track_without_hiding_failures() {
         let mut workspace = Workspace::new();
         workspace.push(track("/tmp/a.wav"));
@@ -1102,7 +1327,7 @@ mod tests {
         }
     }
 
-    // ---- UX0-B01 / F1: the four save states ----------------------------
+    // ---- UX0-B01 / F1 and CX-3: the five save states -------------------
 
     #[test]
     fn a_track_with_no_project_file_says_so_rather_than_saying_unsaved() {
@@ -1168,9 +1393,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_two_states_that_need_action_ask_for_attention() {
+    fn only_risk_states_ask_for_attention() {
         assert!(!SaveState::Saved.needs_attention());
         assert!(!SaveState::NoProjectFile.needs_attention());
+        assert!(SaveState::UnfiledWork.needs_attention());
         assert!(SaveState::Unsaved.needs_attention());
         assert!(SaveState::Failed.needs_attention());
     }
@@ -1182,6 +1408,7 @@ mod tests {
         // would make an assertion pass against the wrong state.
         let all = [
             SaveState::NoProjectFile,
+            SaveState::UnfiledWork,
             SaveState::Saved,
             SaveState::Unsaved,
             SaveState::Failed,

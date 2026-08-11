@@ -6084,6 +6084,149 @@ if [ "$TUNE_FAILED" -ne 0 ]; then
     SWEEP_FAILED=1
 fi
 
+# -- Unfiled work: settle, snapshot, restart, recover (CX-3/PXF-1) -------------
+#
+# This is deliberately an application-boundary round trip. The first launch
+# imports imagery — an immediate significance event — then stays alive past the
+# 1.5-second settle window. The second launch starts from an empty welcome
+# screen and presses Recover session. Both launches inherit this script's Xvfb,
+# impossible Wayland socket, impossible Pulse socket, and process-local --mute.
+# The snapshot itself is inspected too: audio remains one absolute,
+# content-addressed reference and is never copied into the recovery directory.
+echo "=== Unfiled work: recovery restart round trip (CX-3/PXF-1) ==="
+RECOVERY_FAILED=0
+RECOVERY_DIR="$OUT_DIR/recovery-roundtrip"
+RECOVERY_FIRST_LOG="$OUT_DIR/recovery-first.txt"
+RECOVERY_BLOCKED_LOG="$OUT_DIR/recovery-blocked-open.txt"
+RECOVERY_RESTART_LOG="$OUT_DIR/recovery-restart.txt"
+rm -rf "$RECOVERY_DIR"
+
+set +e
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    MUSIALIZER_RECOVERY_DIR="$RECOVERY_DIR" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
+        --size 1280x720 \
+        --probe-frames 120 \
+        --probe-shot "$OUT_DIR/recovery-unfiled-fullscreen.png" \
+        --ui-probe "fullscreen=1,drop=resources/logo/logo-256.png" \
+    >"$RECOVERY_FIRST_LOG" 2>&1
+RECOVERY_FIRST_STATUS=$?
+set -e
+if [ "$RECOVERY_FIRST_STATUS" -ne 0 ]; then
+    echo "FAIL: the recovery-producing run exited $RECOVERY_FIRST_STATUS" >&2
+    RECOVERY_FAILED=1
+fi
+if ! grep -q '^save state:      \*unfiled-work$' "$RECOVERY_FIRST_LOG"; then
+    echo "FAIL: a significant unfiled edit did not escalate by name" >&2
+    RECOVERY_FAILED=1
+fi
+if ! grep -q '^recovery:        available  fullscreen-attention=unfiled-expanded$' \
+        "$RECOVERY_FIRST_LOG"; then
+    echo "FAIL: fullscreen did not report the expanded unfiled-work invitation" >&2
+    RECOVERY_FAILED=1
+fi
+if [ ! -s "$OUT_DIR/recovery-unfiled-fullscreen.png" ]; then
+    echo "FAIL: the fullscreen recovery state produced no capture" >&2
+    RECOVERY_FAILED=1
+fi
+if ! python3 - "$RECOVERY_DIR" "$REPO_ROOT/$FIXTURE" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+audio = pathlib.Path(sys.argv[2]).resolve()
+files = sorted(root.glob("*.json"))
+if [path.name for path in files] != ["current.json"]:
+    raise SystemExit("expected one settled generation, got %r" % [p.name for p in files])
+document = json.loads(files[0].read_text())
+if document.get("schema") != "musializer.recovery/v1" or len(document.get("tracks", [])) != 1:
+    raise SystemExit("wrong recovery schema or track count")
+track = document["tracks"][0]
+project = json.loads(track["project_json"])
+identity = project["audio"]
+if identity.get("mode") != "referenced" or pathlib.Path(identity.get("path", "")) != audio:
+    raise SystemExit("audio is not the original absolute reference")
+if identity.get("sha256") != hashlib.sha256(audio.read_bytes()).hexdigest():
+    raise SystemExit("cached audio identity does not match the fixture")
+if not pathlib.Path(project["ascii_image"]["path"]).is_absolute():
+    raise SystemExit("recovery image reference is not absolute")
+if not track.get("risk", {}).get("significant") or not track["risk"].get("escalated"):
+    raise SystemExit("significant unfiled risk was not persisted")
+if any(path.suffix.lower() == ".wav" for path in root.rglob("*")):
+    raise SystemExit("audio was copied into the recovery directory")
+PY
+then
+    echo "FAIL: the recovery snapshot did not preserve its data boundary" >&2
+    RECOVERY_FAILED=1
+fi
+
+# A third entry route must not silently bypass that welcome decision. In
+# particular, desktop file associations arrive as argv input before the first
+# frame, so guard them at the command boundary as well as disabling the buttons.
+RECOVERY_BEFORE_HASH="$(sha256sum "$RECOVERY_DIR/current.json" 2>/dev/null | awk '{print $1}')"
+set +e
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    MUSIALIZER_RECOVERY_DIR="$RECOVERY_DIR" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
+        --size 1280x720 \
+        --probe-frames 30 \
+    >"$RECOVERY_BLOCKED_LOG" 2>&1
+RECOVERY_BLOCKED_STATUS=$?
+set -e
+RECOVERY_AFTER_HASH="$(sha256sum "$RECOVERY_DIR/current.json" 2>/dev/null | awk '{print $1}')"
+if [ "$RECOVERY_BLOCKED_STATUS" -ne 0 ] \
+        || ! grep -q '^tracks:          0 open$' "$RECOVERY_BLOCKED_LOG" \
+        || ! grep -q '^recovery:        available ' "$RECOVERY_BLOCKED_LOG" \
+        || ! grep -q '^warning: recovery needs a decision before opening ' "$RECOVERY_BLOCKED_LOG" \
+        || [ -z "$RECOVERY_BEFORE_HASH" ] \
+        || [ "$RECOVERY_BEFORE_HASH" != "$RECOVERY_AFTER_HASH" ]; then
+    echo "FAIL: another entry route bypassed or changed the pending recovery" >&2
+    RECOVERY_FAILED=1
+fi
+
+set +e
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+    DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    MUSIALIZER_RECOVERY_DIR="$RECOVERY_DIR" \
+    $MZ_GL ./target/debug/musializer --mute \
+        --size 1280x720 \
+        --probe-frames 60 \
+        --probe-shot "$OUT_DIR/recovery-restored.png" \
+        --ui-probe "click=200x365" \
+    >"$RECOVERY_RESTART_LOG" 2>&1
+RECOVERY_RESTART_STATUS=$?
+set -e
+if [ "$RECOVERY_RESTART_STATUS" -ne 0 ]; then
+    echo "FAIL: the recovery restart run exited $RECOVERY_RESTART_STATUS" >&2
+    RECOVERY_FAILED=1
+fi
+if ! grep -q '^tracks:          1 open, current 0 ' "$RECOVERY_RESTART_LOG" \
+        || ! grep -q '^project:         none (audio only)$' "$RECOVERY_RESTART_LOG" \
+        || ! grep -q '^save state:      \*unfiled-work$' "$RECOVERY_RESTART_LOG"; then
+    echo "FAIL: restart did not restore the unfiled track as recovery" >&2
+    RECOVERY_FAILED=1
+fi
+RECOVERY_CLAIM="$(sed -n 's/^click probe: .*claimed=//p' "$RECOVERY_RESTART_LOG")"
+if [ -z "$RECOVERY_CLAIM" ] || [ "$RECOVERY_CLAIM" = "none" ]; then
+    echo "FAIL: the welcome-screen recovery action did not claim its click" >&2
+    RECOVERY_FAILED=1
+fi
+if [ ! -s "$OUT_DIR/recovery-restored.png" ]; then
+    echo "FAIL: the recovered workspace produced no capture" >&2
+    RECOVERY_FAILED=1
+fi
+echo "recovery: unfiled snapshot, guarded reopen and restart restore reached the application boundary"
+if [ "$RECOVERY_FAILED" -ne 0 ]; then
+    SWEEP_FAILED=1
+fi
+
 # -- Feedback protocols: blind A/B, answers on disk (HX-5) ----------------------
 #
 # The protocol runner's whole claim is unphotographable by construction: the

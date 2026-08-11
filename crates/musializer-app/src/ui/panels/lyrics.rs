@@ -52,6 +52,7 @@ use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::{GlyphRepertoire, UiFonts};
 use raylib::consts::MouseCursor;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
+use serde::{Deserialize, Serialize};
 
 use super::super::mapping_editor;
 use super::super::shell::{draw_timeline_playhead, Shell, ShellCommand, ShellInput};
@@ -951,6 +952,19 @@ pub struct LyricEditor {
     nudge_repeat: HoldRepeat,
 }
 
+/// The authored form fields recovery must preserve without applying them to the
+/// canonical lyric document (CX-3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LyricRecoveryDraft {
+    pub owner_slot: usize,
+    pub selected_id: u64,
+    pub is_new: bool,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    pub text: String,
+}
+
 /// A time readout being typed into (UX0-B04).
 struct TimeEdit {
     /// `true` for START, `false` for END.
@@ -1074,6 +1088,28 @@ impl LyricEditor {
     #[must_use]
     pub fn draft_owner(&self) -> Option<usize> {
         self.owner_slot
+    }
+
+    #[must_use]
+    pub(crate) fn recovery_draft(&self) -> Option<LyricRecoveryDraft> {
+        Some(LyricRecoveryDraft {
+            owner_slot: self.owner_slot?,
+            selected_id: self.selected_id,
+            is_new: self.draft_new,
+            start_seconds: self.draft_start,
+            end_seconds: self.draft_end,
+            text: self.text.edit.text().to_string(),
+        })
+    }
+
+    pub(crate) fn restore_recovery_draft(&mut self, draft: LyricRecoveryDraft) {
+        self.owner_slot = Some(draft.owner_slot);
+        self.selected_id = draft.selected_id;
+        self.draft_new = draft.is_new;
+        self.draft_start = draft.start_seconds;
+        self.draft_end = draft.end_seconds;
+        self.text.bind(&draft.text);
+        self.text.set_focused(false);
     }
 
     /// Puts the editor in the state a user reaches by opening a cue on `slot`

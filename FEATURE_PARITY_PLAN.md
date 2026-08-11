@@ -1044,12 +1044,15 @@ software with good UX and good value?' perspective"*. They were put to
 in **CX** below; the items here now carry them. What actually needed a human was
 much smaller than the label claimed — see CX-4.
 
-- [ ] **PXF-1 — "No file" should escalate with accumulated edits (PX1).** A
+- [x] **PXF-1 — "No file" should escalate with accumulated edits (PX1).** A
       user who tuned for an hour with no project file sees calm grey,
       indistinguishable at a glance from Saved. `needs_attention()` returning
       false is right on frame one and wrong after real edits; escalate
       `NoProjectFile` once durable edits accumulate. Also: fullscreen has no
-      save-state surface at all.
+      save-state surface at all. Done by CX-3, 2026-08-11: bounded transaction,
+      time and significance escalation; two-generation recovery including dirty
+      drafts; welcome-screen restore; and the fullscreen attention dot are all
+      application-boundary gated.
 - [ ] **PXF-2 — persist the tap offset (PX2).** `[`/`]` calibration resets
       every launch, which for a calibration control is exactly wrong. Needs a
       `UiPreferences` field.
@@ -1269,6 +1272,21 @@ means 1920x1080 to everyone, and the marked case carries the mark.
 
 ### CX-3 — save state: escalate on accumulated risk, and back it with recovery (PXF-1)
 
+**Status (2026-08-11): delivered and headless-gated.** A continuous mutation
+run closes as one durable transaction; three transactions, five minutes, or a
+significance event escalates to `Unfiled work`. Recovery writes the ordinary
+project payload plus app-owned risk and dirty lyric/route drafts to at most
+`current.json` and `previous.json`; the 1.5-second poll uses the audio digest
+cached at explicit open and never reads or copies the audio. The welcome screen
+can recover the session, verifies every referenced asset before replacing the
+workspace, and returns the track unnamed with the warning `Save As to keep it`.
+Named save or explicit discard retires both generations. Fullscreen reports and
+draws the amber/red attention-only treatment, including the initial
+`Unfiled work · Ctrl+S` expansion. Evidence is pinned in the 435 app tests and
+the `Unfiled work: recovery restart round trip` section of
+`tools/headless_check.sh`, which crosses two isolated application processes and
+inspects the snapshot's data boundary.
+
 - **The escalation rule.** `No file` stays calm until the **first** of: three
   durable edit *transactions* (one user gesture — a whole slider drag, an
   editor Apply, an import — not every `ShellCommand` a drag emits); **five
@@ -1387,7 +1405,7 @@ not claim.
   preview is worse than text because it confidently lies**. So:
   **track-specific thumbnails are an unlock; canned pictures are decoration.**
 - **Priority, explicitly: trust outranks delight.** Validate tap feel (cheap
-  uncertainty reduction) → close PXF-1/CX-3 → thumbnails → tap flash, markers,
+  uncertainty reduction) → PXF-1/CX-3 (closed) → thumbnails → tap flash, markers,
   clip persistence.
 - **Kind: a deterministic still of the current track at the current playhead**,
   through the settings, routes, lyrics, semantic data, imagery, seed and aspect
@@ -1604,7 +1622,7 @@ open, in the order a session should pick it up:
 | --- | --- | --- | --- |
 | 0 | **The fifteen-minute listening session** — the only thing in the whole PXF debrief that a human genuinely has to do, now that CX has scoped it: validate the tap offset (4 min), compare 80/120/200 ms flashes (2 min), and blind-compare five current against five proposed Surprise seeds on two tracks (9 min), against CX-4's stated pass condition | CX-4 | 15 minutes, operator |
 | 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
-| 2 | **The CX rulings, in their own stated order:** CX-3 save trust (escalation + recovery snapshot), then CX-5 thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue, then CX-2 export variants (PXF-4 first, schema v2), then CX-4's revised Surprise constants. Trust outranks delight — that ordering is a ruling, not a preference | CX + PX sections | large; four or five agents |
+| 2 | **The remaining CX rulings, in their stated order:** CX-3 save trust is closed; next is CX-5 thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue, then CX-2 export variants (PXF-4 first, schema v2). CX-4's revised Surprise constants are already landed; its listening protocol remains operator work. Trust outranks delight — that ordering is a ruling, not a preference | CX + PX sections | large; four or five agents |
 | 2b | The remaining UX0-B (B06, B10–B19) and UX0-C (C08, C09, C17); PXF-3, PXF-5, PXF-10, PXF-12 | UX0 sections | medium |
 | 3 | C2/C3/C5 durable-edit remainder, D5–D8, then E2–E4 (prove the copied bundle runs), then F/G honesty and gates; DX1–DX9 dev-ex items, DX8 first | this document | large |
 | 4 | AP5-a/b/c/d, AP6-e — modality-loss invalidation, no-network-hang test, diagnostics bundle collector, clipboard canary, deferred discovery decisions | AP5, AP6 tranches | small each; c is a feature |
@@ -1784,10 +1802,12 @@ close the UX0 item.
 - [x] **UX0-B01 — continuous save state [C1/D8]:** show durable dirty state on
       the track and Save affordance; distinguish saved, unsaved and save-failed
       state before quit is attempted (`review` 2, Saving and trust).
-      Done by PX1, 2026-08-07. `Track::save_state()` returns one of four
-      `SaveState`s and the TRACKS header draws its word, right-aligned,
+      Done by PX1, 2026-08-07, and extended by CX-3 on 2026-08-11.
+      `Track::save_state()` returns one of five `SaveState`s and the TRACKS
+      header draws its word, right-aligned,
       colour-coded — muted for Saved and No file, warning for Unsaved, danger for
-      Save failed. A failure also draws its reason under the header and raises a
+      Save failed; accumulated unnamed work becomes amber `Unfiled work`. A
+      failure also draws its reason under the header and raises a
       persistent notice naming the track and the recovery. Both Save buttons (the
       panel's and the collapsed strip's) read `Save *` while there is work to
       write, and the strip's tooltip names the state in words. Rows other than
@@ -3669,7 +3689,7 @@ perturbation was reverted before the green run.
       to this plan.
 - [ ] Ensure intentionally unavailable actions name their real prerequisite
       (`helper missing`, `FFmpeg missing`, `no track`) rather than saying "stub".
-- [x] Show truthful Saved/Unsaved/Save failed/No project file state in the Tracks
+- [x] Show truthful Saved/Working changes/Save failed/No file/Unfiled work state in the Tracks
       header, including lyric and route drafts.
       Done by PX1, 2026-08-07 — see UX0-B01 above for the surface and C4 for the
       draft guard. Drafts participate through `editor_draft_blocks_autosave`,

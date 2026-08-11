@@ -1670,7 +1670,10 @@ fn apply_candidate_to_track(
         track.scene_selection_pending = false;
         track.scene_switches.reset();
     }
-    track.mark_dirty(now);
+    // Applying a validated analysis can replace several authored lanes at once.
+    // This shared seam covers both interactive Apply and bridge import, so CX-3
+    // escalates either path immediately rather than waiting for later gestures.
+    track.mark_dirty_significant(now);
     Ok(())
 }
 

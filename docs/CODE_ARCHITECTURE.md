@@ -117,6 +117,16 @@ resolves project-relative assets, hashes files, and performs the filesystem
 boundary. [`app::project`](../crates/musializer-app/src/project.rs) converts
 between the persisted model and workspace tracks.
 
+[`app::recovery`](../crates/musializer-app/src/recovery.rs) is a separate,
+app-owned crash boundary, not another project format. After authored work starts
+it snapshots the whole session on a 1.5-second settle into at most two files
+under the per-user state directory. Each track embeds ordinary validated project
+JSON but keeps assets as absolute content-addressed references; the audio digest
+is cached during explicit open, so the frame-thread poll neither reads nor copies
+large audio. Dirty lyric and route forms travel beside the project payload as
+drafts. Restart verifies every asset before rehydrating an unnamed recovery
+session, which must be saved with Save As to gain a user-chosen home.
+
 This separation is part of the parity argument: the format can be compared
 value-by-value with the frozen C without opening a window or relying on a local
 directory layout.

@@ -55,6 +55,7 @@ use raylib::prelude::*;
 
 mod cli;
 mod project;
+mod recovery;
 mod scene_host;
 mod scenes;
 mod ui;
@@ -362,6 +363,14 @@ fn run(
         },
     };
     app.shell.set_ui_scale_override(options.ui_scale);
+    // Batch/probe runs never touch the operator's state directory. Tests that
+    // exercise recovery opt into a scratch location explicitly.
+    let recovery_enabled = is_session_run(&options)
+        || std::env::var_os("MUSIALIZER_RECOVERY_DIR").is_some_and(|path| !path.is_empty());
+    let mut recovery_store =
+        recovery::Store::new(recovery_enabled.then(recovery::default_directory).flatten());
+    app.shell.recovery_available = recovery_store.available();
+    let mut recovery_warning_latched = false;
     if let Some(detail) = ui_preferences_warning {
         app.shell.notify(
             Severity::Warning,
@@ -507,6 +516,13 @@ fn run(
                 }
             }
             Action::OpenProject(path) => {
+                if recovery_blocks_new_session(&mut app, "opening a project") {
+                    eprintln!(
+                        "warning: recovery needs a decision before opening {}",
+                        path.display()
+                    );
+                    continue;
+                }
                 if let Err(error) = open_project(
                     &audio,
                     &path,
@@ -542,6 +558,13 @@ fn run(
                 }
             }
             Action::LoadTrack(path) => {
+                if recovery_blocks_new_session(&mut app, "opening audio") {
+                    eprintln!(
+                        "warning: recovery needs a decision before opening {}",
+                        path.display()
+                    );
+                    continue;
+                }
                 if let Err(error) = open_track(
                     &audio,
                     &path,
@@ -1204,9 +1227,18 @@ fn run(
         // flag as it reads it (`rcore_desktop_glfw.c`), which is what lets the
         // C's `WindowShouldClose() && plug_confirm_close()` refuse a quit without
         // re-asking every frame afterwards (`musializer.c:638`).
-        if rl.window_should_close() && confirm_close(&mut app, export.is_some(), &mut close_warned)
-        {
-            break;
+        if rl.window_should_close() {
+            let discards_work = app.workspace.any_unsaved_work()
+                || app.shell.lyric_draft_is_dirty(&app.workspace)
+                || app.shell.route_edit_is_dirty();
+            if confirm_close(&mut app, export.is_some(), &mut close_warned) {
+                if discards_work {
+                    if let Err(error) = recovery_store.discard() {
+                        eprintln!("warning: explicit discard could not remove recovery: {error}");
+                    }
+                }
+                break;
+            }
         }
         // An export replaces the frame loop while it runs: it owns the window,
         // the analyzer and the scene for the duration, and draws its own progress
@@ -1594,15 +1626,23 @@ fn run(
                 // mean "something changed", or the indicator this task adds would
                 // report Unsaved for work that never happened.
                 let mut applied = 0usize;
+                let mut created_lyrics = false;
                 for edit in edits {
+                    let creates_lyric =
+                        matches!(&edit, ui::panels::lyrics::LyricsEdit::Insert { .. });
                     if let Err(error) = edit.apply(track) {
                         failed = Some(error);
                         break;
                     }
+                    created_lyrics |= creates_lyric;
                     applied += 1;
                 }
                 if applied > 0 {
-                    track.mark_dirty(now);
+                    if created_lyrics {
+                        track.mark_dirty_significant(now);
+                    } else {
+                        track.mark_dirty(now);
+                    }
                 }
                 if let Some(error) = failed {
                     app.shell.notify(
@@ -1676,6 +1716,46 @@ fn run(
                 ShellCommand::SetFullscreen(on) => {
                     set_window_fullscreen(&mut rl, on, options.probe_frames.is_some());
                 }
+                ShellCommand::RecoverSession => {
+                    match recover_session(
+                        &audio,
+                        &mut analysis,
+                        &mut music,
+                        &mut app,
+                        &mut scratch,
+                        &mut recovery_store,
+                        rl.get_time(),
+                    ) {
+                        Ok(()) => {
+                            app.shell.recovery_available = true;
+                            app.shell.notify(
+                                Severity::Warning,
+                                "Session recovered",
+                                "This is recovery, not a saved project. Use Save As to keep it.",
+                            );
+                        }
+                        Err(error) => app.shell.notify(
+                            Severity::Error,
+                            "Session could not be recovered",
+                            &error,
+                        ),
+                    }
+                }
+                ShellCommand::DiscardRecovery => match recovery_store.discard() {
+                    Ok(()) => {
+                        app.shell.recovery_available = false;
+                        app.shell.notify(
+                            Severity::Info,
+                            "Recovery discarded",
+                            "Both app-owned recovery generations were removed.",
+                        );
+                    }
+                    Err(error) => app.shell.notify(
+                        Severity::Error,
+                        "Recovery could not be discarded",
+                        &error.to_string(),
+                    ),
+                },
                 ShellCommand::SaveUiPreferences(preferences) => {
                     if ui_preferences_editable {
                         if let Some(path) = ui_preferences_path.as_deref() {
@@ -1756,6 +1836,9 @@ fn run(
                     // words. It used to answer "restart with…", because the loop
                     // held the Music by shared reference and could not replace it;
                     // `open_track` owns that transition now.
+                    if recovery_blocks_new_session(&mut app, "opening dropped audio") {
+                        continue;
+                    }
                     if let Err(error) = open_track(
                         &audio,
                         &path,
@@ -1781,6 +1864,9 @@ fn run(
                 // D1's project branch. Distinct from `OpenProject`, which raises a
                 // picker first; the path is already known here.
                 ShellCommand::OpenDroppedProject(path) | ShellCommand::OpenRecentProject(path) => {
+                    if recovery_blocks_new_session(&mut app, "opening that project") {
+                        continue;
+                    }
                     match open_project(
                         &audio,
                         &path,
@@ -1830,6 +1916,9 @@ fn run(
                     }
                 }
                 ShellCommand::StartRender => {
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.mark_significant();
+                    }
                     // The panel's clip row, not `None` (UX0-C01). This is the
                     // one line that turns "in and out are set" into "the file
                     // covers that window", and the only thing between the CLIP
@@ -1858,6 +1947,9 @@ fn run(
                     }
                 }
                 ShellCommand::ExportStill => {
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.mark_significant();
+                    }
                     // Synchronous, inside the command loop and outside the
                     // drawing pair, for the same two reasons `StartRender` is:
                     // it opens a modal picker and it draws into a render
@@ -1928,9 +2020,20 @@ fn run(
                     }
                 }
                 ShellCommand::OpenAudio => {
-                    open_audio_dialog(&audio, &mut analysis, &mut music, &mut app, &mut scratch)
+                    if !recovery_blocks_new_session(&mut app, "opening audio") {
+                        open_audio_dialog(
+                            &audio,
+                            &mut analysis,
+                            &mut music,
+                            &mut app,
+                            &mut scratch,
+                        );
+                    }
                 }
                 ShellCommand::OpenProject => {
+                    if recovery_blocks_new_session(&mut app, "opening a project") {
+                        continue;
+                    }
                     let dialog = FileDialog::new("Open Musializer project")
                         .with_filter(dialogs::filters::MUSIALIZER_PROJECT);
                     match dialog.pick_file() {
@@ -1996,7 +2099,9 @@ fn run(
                     );
                 }
                 ShellCommand::SaveProject => {
-                    save_project_command(&mut app, true);
+                    if save_project_command(&mut app, true) {
+                        retire_recovery_after_save(&mut recovery_store, &mut app);
+                    }
                 }
                 ShellCommand::SaveProjectAs => {
                     let Some(index) = app.workspace.current_index() else {
@@ -2005,6 +2110,7 @@ fn run(
                     if let Some(destination) = ask_for_project_path(&mut app) {
                         match save_project_to(&mut app, index, &destination, false) {
                             Ok(()) => {
+                                retire_recovery_after_save(&mut recovery_store, &mut app);
                                 // A project the user just named is the one they
                                 // will look for next launch, so Save As earns a
                                 // place in the list the same way an open does.
@@ -2060,6 +2166,31 @@ fn run(
             }
         }
 
+        // The transaction edge is a frame with no durable mutation. This turns
+        // every uninterrupted slider drag into one edit while keeping separate
+        // button presses and editor Apply actions distinct (CX-3).
+        let edit_frame_now = rl.get_time();
+        for track in app.workspace.tracks_mut() {
+            track.finish_durable_edit_frame(edit_frame_now);
+        }
+        match recovery_store.poll(&app.workspace, &app.shell, edit_frame_now) {
+            Ok(wrote_or_cleared) => {
+                recovery_warning_latched = false;
+                if wrote_or_cleared {
+                    app.shell.recovery_available = recovery_store.available();
+                }
+            }
+            Err(error) if !recovery_warning_latched => {
+                recovery_warning_latched = true;
+                app.shell.notify(
+                    Severity::Warning,
+                    "Recovery snapshot could not be written",
+                    &error.to_string(),
+                );
+            }
+            Err(_) => {}
+        }
+
         report.frames += 1;
         // Sampled here because the drawing pair has closed: inside one, a texture
         // mode is allowed to have moved rlgl's framebuffer size, and out here it
@@ -2095,21 +2226,24 @@ fn run(
             // writes every frame. One track's failure does not `break`: the
             // others are independent files and there is no reason a full disk
             // under one destination should silence a save to another.
-            if let Err(error) = save_project_to(&mut app, index, &path, true) {
-                // Autosave used to discard this with `let _ =`. A save the user
-                // never asked for is still a save they are relying on, and the
-                // whole point of the latch is that it will not try again — so
-                // silence here means the work stops being written and nothing
-                // ever says why (UX0-B01).
-                let name = app.workspace.get(index).map_or_else(
-                    || path.display().to_string(),
-                    |t| t.display_name().to_string(),
-                );
-                app.shell.notify(
-                    Severity::Error,
-                    "Autosave failed",
-                    &format!("{name}: {error}. Edit again to retry, or use Save As."),
-                );
+            match save_project_to(&mut app, index, &path, true) {
+                Ok(()) => retire_recovery_after_save(&mut recovery_store, &mut app),
+                Err(error) => {
+                    // Autosave used to discard this with `let _ =`. A save the user
+                    // never asked for is still a save they are relying on, and the
+                    // whole point of the latch is that it will not try again — so
+                    // silence here means the work stops being written and nothing
+                    // ever says why (UX0-B01).
+                    let name = app.workspace.get(index).map_or_else(
+                        || path.display().to_string(),
+                        |t| t.display_name().to_string(),
+                    );
+                    app.shell.notify(
+                        Severity::Error,
+                        "Autosave failed",
+                        &format!("{name}: {error}. Edit again to retry, or use Save As."),
+                    );
+                }
             }
         }
 
@@ -2743,7 +2877,7 @@ fn import_ascii_image(
             // frame instead of after the import settled. And it never cleared
             // `project_autosave_failed`, so an import after any failed save was
             // never autosaved at all, silently.
-            track.mark_dirty(now_seconds);
+            track.mark_dirty_significant(now_seconds);
         }
         None => app.pending_ascii = Some(image),
     }
@@ -2815,7 +2949,9 @@ fn open_track<'audio>(
     scratch: &mut [f32],
     play: bool,
 ) -> Result<usize, String> {
-    let path_str = path.to_str().ok_or("audio path is not valid UTF-8")?;
+    let canonical = project_files::canonicalize_existing_file(path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let path_str = canonical.to_str().ok_or("audio path is not valid UTF-8")?;
     let (base_scene, seed) = app
         .workspace
         .inherited_scene(app.scene.id(), app.scene.seed());
@@ -2831,7 +2967,7 @@ fn open_track<'audio>(
         let duration = f64::from(probe.get_time_length());
         drop(probe);
 
-        let mut track = Track::new(path.to_path_buf(), duration, base_scene, seed)
+        let mut track = Track::new(canonical.clone(), duration, base_scene, seed)
             .map_err(|error| format!("could not prepare the track: {error}"))?;
         track.transport_seekable =
             musializer_core::timing::track_timeline::path_is_seekable(Some(path_str));
@@ -2840,6 +2976,15 @@ fn open_track<'audio>(
         // bumped). The whole-file decode is why playback is paused around this
         // preparation transaction.
         load_timeline_waveform(audio, &mut track);
+        // CX-3 recovery writes only this cached identity. Hash once while the
+        // input is already in its explicit open transaction; never re-read a
+        // large audio file from the 1.5-second frame-thread snapshot poll.
+        match project_files::sha256_file_hex(&canonical) {
+            Ok(digest) => track.audio_sha256 = digest,
+            Err(error) => {
+                eprintln!("warning: audio identity could not be cached for recovery: {error}")
+            }
+        }
         Ok::<Track, String>(track)
     })?;
 
@@ -3525,6 +3670,7 @@ fn handle_scene_plan_edit(
         let Some(track) = app.workspace.current_mut() else {
             return;
         };
+        let was_empty = track.scene_switches.is_empty();
         let result = match edit {
             Edit::SplitAt { seconds } => track.record_scene_cue(live_scene, seconds),
             Edit::RetimeBoundary {
@@ -3537,7 +3683,11 @@ fn handle_scene_plan_edit(
             Edit::SetEnabled(_) => unreachable!("handled above"),
         };
         if result.is_ok() {
-            track.mark_dirty(now);
+            if was_empty && !track.scene_switches.is_empty() {
+                track.mark_dirty_significant(now);
+            } else {
+                track.mark_dirty(now);
+            }
         }
         result
     };
@@ -3853,6 +4003,75 @@ fn open_project<'audio>(
     Ok(())
 }
 
+/// Restores the app-owned recovery generation into the empty welcome session.
+/// Every audio path and digest is verified before the workspace is replaced;
+/// the result intentionally has no project path, so Save opens Save As.
+#[allow(clippy::too_many_arguments)]
+fn recover_session<'audio>(
+    audio: &'audio RaylibAudio,
+    analysis: &mut Analysis,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    store: &mut recovery::Store,
+    now_seconds: f64,
+) -> Result<(), String> {
+    if !app.workspace.is_empty() {
+        return Err(
+            "Recovery is available from the welcome screen before another track is opened."
+                .to_string(),
+        );
+    }
+    let mut recovered = with_preview_paused(music.as_ref(), || {
+        store
+            .load(now_seconds, |audio_path| {
+                let probe = open_music(audio, audio_path)?;
+                Ok(f64::from(probe.get_time_length()))
+            })
+            .map_err(|error| error.to_string())
+    })?;
+    for track in &mut recovered.tracks {
+        load_timeline_waveform(audio, track);
+        if let Some(image) = track.ascii.as_mut() {
+            decode_ascii_grid(image);
+        }
+    }
+
+    let helper_available = app.workspace.assist.helper_available;
+    let mut workspace = Workspace::new();
+    workspace.assist.helper_available = helper_available;
+    for track in recovered.tracks {
+        workspace.push(track);
+    }
+    if !workspace.select(recovered.current_track) {
+        return Err("the recovery snapshot names a missing current track".to_string());
+    }
+    app.workspace = workspace;
+    let track = app
+        .workspace
+        .current()
+        .ok_or("the recovery snapshot contained no tracks")?;
+    app.scene = SceneInstance::new(scene_host::descriptor(track.base_scene), track.scene_seed);
+    bind_current_audio(audio, analysis, music, app, scratch, true)?;
+    app.shell.lyrics.enter_track(app.workspace.current_index());
+    if let Some(draft) = recovered.lyric_draft {
+        app.shell.lyrics.restore_recovery_draft(draft);
+    }
+    if let Some(draft) = recovered.route_draft {
+        if !app.shell.restore_route_recovery_draft(draft) {
+            return Err("the recovered route draft is no longer valid".to_string());
+        }
+    }
+    if recovered.used_previous_generation {
+        app.shell.notify(
+            Severity::Warning,
+            "Recovered the previous generation",
+            "The newest snapshot was unusable; the older bounded generation was restored.",
+        );
+    }
+    Ok(())
+}
+
 /// Whether this invocation is a user session rather than a batch job (UX0-C06).
 ///
 /// `--probe-frames` exits after a fixed frame count, `--render` after an export
@@ -3862,6 +4081,23 @@ fn open_project<'audio>(
 /// repository's own gate manufactures its `.musi` fixtures.
 fn is_session_run(options: &Cli) -> bool {
     options.probe_frames.is_none() && options.render.is_none() && options.save_project.is_none()
+}
+
+/// Keeps an advertised recovery generation from being displaced by a new
+/// session before the operator has explicitly chosen Recover or Dismiss.
+///
+/// The welcome controls carry the same guard for legibility; this is the trust
+/// boundary for keyboard shortcuts, drops, recent-project clicks and argv input.
+fn recovery_blocks_new_session(app: &mut App, action: &str) -> bool {
+    if !app.workspace.is_empty() || !app.shell.recovery_available {
+        return false;
+    }
+    app.shell.notify(
+        Severity::Warning,
+        "Choose recovery first",
+        &format!("Recover or Dismiss the saved session before {action}."),
+    );
+    true
 }
 
 /// Puts `path` at the top of the welcome screen's recent list and persists it
@@ -4168,7 +4404,7 @@ fn import_lyrics_command(app: &mut App, now: f64) {
         );
         return;
     }
-    track.mark_dirty(now);
+    track.mark_dirty_significant(now);
     app.shell.lyrics.enter_document_change();
     app.shell.notify(
         Severity::Success,
@@ -4179,9 +4415,9 @@ fn import_lyrics_command(app: &mut App, now: f64) {
 
 /// The Save button (`save_project`, `plug.c:4641-4646`): saves in place when the
 /// track has a project path, and otherwise falls through to Save As.
-fn save_project_command(app: &mut App, ask_if_unnamed: bool) {
+fn save_project_command(app: &mut App, ask_if_unnamed: bool) -> bool {
     let Some(index) = app.workspace.current_index() else {
-        return;
+        return false;
     };
     let existing = app
         .workspace
@@ -4191,12 +4427,12 @@ fn save_project_command(app: &mut App, ask_if_unnamed: bool) {
         Some(path) => Some(path),
         None if ask_if_unnamed => match ask_for_project_path(app) {
             Some(path) => Some(path),
-            None => return,
+            None => return false,
         },
-        None => return,
+        None => return false,
     };
     let Some(destination) = destination else {
-        return;
+        return false;
     };
     match save_project_to(app, index, &destination, false) {
         Ok(()) => {
@@ -4206,10 +4442,24 @@ fn save_project_command(app: &mut App, ask_if_unnamed: bool) {
                 "Project saved",
                 "Audio, ASCII imagery, lyrics, scenes, events, and output settings are durable.",
             );
+            true
         }
-        Err(error) => app
-            .shell
-            .notify(Severity::Error, "Project could not be saved", &error),
+        Err(error) => {
+            app.shell
+                .notify(Severity::Error, "Project could not be saved", &error);
+            false
+        }
+    }
+}
+
+fn retire_recovery_after_save(store: &mut recovery::Store, app: &mut App) {
+    match store.named_save(&app.workspace, &app.shell) {
+        Ok(cleared) => app.shell.recovery_available &= !cleared,
+        Err(error) => app.shell.notify(
+            Severity::Warning,
+            "Recovery could not be retired",
+            &error.to_string(),
+        ),
     }
 }
 
@@ -4811,6 +5061,15 @@ impl Report {
         // rows that are scrolled out, and all-track autosave is precisely a claim
         // about tracks the user is not looking at.
         println!("save state:      {}", app.workspace.describe_save_state());
+        println!(
+            "recovery:        {}  fullscreen-attention={}",
+            if app.shell.recovery_available {
+                "available"
+            } else {
+                "none"
+            },
+            app.shell.fullscreen_attention_token(),
+        );
         // Which part of the track the next export covers (UX0-C01). A sibling
         // line rather than more words on `export config:`, for two reasons: the
         // geometry line is asserted verbatim by five gate sections that predate
