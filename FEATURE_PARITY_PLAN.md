@@ -1563,14 +1563,20 @@ works without them.
       `tools/listening-lab/` is the audio-candidate counterpart to the in-app
       runner: agent-authored local paths, server-side blind labels, WaveSurfer
       PCM/timeline/region views, millisecond seek and ±10/100 ms steps,
-      same-playhead A/B switching, and choice/scale/text feedback appended under
-      `build/listening-lab/answers/`. Its headless Playwright gate starts Chromium
-      with `--mute-audio` and covers transport precision, A/B continuity,
-      answer/reload recovery, hidden source identity, and byte-range serving.
-      It deliberately does **not** claim HX-4 or replace the CX-4 Surprise
-      session: the latter compares visual `SettingsSnapshot`s that only the Rust
-      runner can apply. The lab's README recovers both that protocol and the
-      earlier 23-item lyric-timing adjudication for future authors.
+      same-playhead A/B switching, and agent-composable single/multi/scale/
+      timestamp fields with conditional reveal, required-field completion and a
+      collapsed prose escape hatch, all appended under
+      `build/listening-lab/answers/`. External-companion mode lets the Rust
+      runner retain audio, scene state and blind snapshot order while this lab
+      records the structured judgment; generated feedback sheets for both
+      current CX-4 sessions ask directly for keepability, music fit, repair
+      targets and pairwise visual distinctness. Its headless Playwright gate
+      starts Chromium with `--mute-audio` and covers transport precision, A/B
+      continuity, structured partial/completed saves, conditional controls,
+      external handoff, answer/reload recovery, hidden source identity, and
+      byte-range serving. It deliberately does **not** claim HX-4: there is no
+      in-app remote-model generation/digest button. The lab's README also
+      recovers the earlier 23-item lyric-timing adjudication for future authors.
 
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 

@@ -7,6 +7,12 @@ import { extname, isAbsolute, join, resolve } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Connect, Plugin } from 'vite'
 import { defineConfig } from 'vite'
+import type {
+  CompanionWorkflow,
+  FeedbackField,
+  FeedbackForm,
+  FeedbackValue,
+} from './src/types.ts'
 
 const root = new URL('.', import.meta.url).pathname
 const protocolsDir = resolve(
@@ -43,6 +49,7 @@ interface SourceQuestion {
   tracks: string[]
   loop?: boolean
   required?: boolean
+  feedback?: string | FeedbackForm
 }
 
 interface SourceProtocol {
@@ -51,6 +58,9 @@ interface SourceProtocol {
   title: string
   instructions?: string
   blind?: boolean
+  playback?: 'browser' | 'external'
+  companion?: CompanionWorkflow
+  feedback_templates?: Record<string, FeedbackForm>
   tracks: SourceTrack[]
   questions: SourceQuestion[]
 }
@@ -83,6 +93,16 @@ async function readProtocol(id: string): Promise<SourceProtocol> {
   if (!Array.isArray(parsed.questions) || parsed.questions.length < 1 || parsed.questions.length > 100) {
     throw new Error('protocol needs 1..100 questions')
   }
+  if (parsed.playback && !['browser', 'external'].includes(parsed.playback)) {
+    throw new Error('playback must be browser or external')
+  }
+  if (parsed.playback === 'external' && (!parsed.companion?.label || !parsed.companion.command)) {
+    throw new Error('external playback needs a companion label and command')
+  }
+  for (const [name, form] of Object.entries(parsed.feedback_templates || {})) {
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) throw new Error('feedback template id is invalid')
+    validateFeedbackForm(form, `feedback template ${name}`)
+  }
   const trackIds = new Set(parsed.tracks.map((track) => track.id))
   if (trackIds.size !== parsed.tracks.length) throw new Error('track ids must be unique')
   for (const track of parsed.tracks) {
@@ -111,8 +131,121 @@ async function readProtocol(id: string): Promise<SourceProtocol> {
     if (question.kind !== 'text' && (!question.options || question.options.length < 2 || question.options.length > 7)) {
       throw new Error(`question ${question.id} needs 2..7 options`)
     }
+    if (typeof question.feedback === 'string') {
+      if (!parsed.feedback_templates?.[question.feedback]) {
+        throw new Error(`question ${question.id} names an unknown feedback template`)
+      }
+    } else if (question.feedback) {
+      validateFeedbackForm(question.feedback, `question ${question.id} feedback`)
+    }
   }
   return parsed
+}
+
+function validateFeedbackForm(form: FeedbackForm, context: string) {
+  if (!form || !Array.isArray(form.fields) || form.fields.length > 12) {
+    throw new Error(`${context} needs 0..12 feedback fields`)
+  }
+  const ids = new Set<string>()
+  for (const field of form.fields) {
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(field.id) || ids.has(field.id)) {
+      throw new Error(`${context} field ids must be unique and filename-safe`)
+    }
+    if (!['single', 'multi', 'scale', 'timestamps'].includes(field.type) || !field.label) {
+      throw new Error(`${context} field ${field.id} has an invalid type or label`)
+    }
+    if (field.type !== 'timestamps') {
+      if (!Array.isArray(field.options) || field.options.length < 2 || field.options.length > 10) {
+        throw new Error(`${context} field ${field.id} needs 2..10 options`)
+      }
+      const values = new Set(field.options.map((option) => option.value))
+      if (
+        values.size !== field.options.length ||
+        field.options.some((option) => !option.value || !option.label)
+      ) {
+        throw new Error(`${context} field ${field.id} options need unique values and labels`)
+      }
+    }
+    if (field.show_when) {
+      if (!field.show_when.field || !field.show_when.any_of?.length) {
+        throw new Error(`${context} field ${field.id} has an invalid condition`)
+      }
+      if (field.show_when.field !== 'answer' && !ids.has(field.show_when.field)) {
+        throw new Error(`${context} field ${field.id} condition must name an earlier field`)
+      }
+    }
+    if (
+      field.max_selections !== undefined &&
+      (!Number.isSafeInteger(field.max_selections) || field.max_selections < 1 || field.max_selections > 20)
+    ) {
+      throw new Error(`${context} field ${field.id} has an invalid selection limit`)
+    }
+    ids.add(field.id)
+  }
+}
+
+function feedbackFor(protocol: SourceProtocol, question: SourceQuestion): FeedbackForm | undefined {
+  if (typeof question.feedback === 'string') return protocol.feedback_templates?.[question.feedback]
+  return question.feedback
+}
+
+function fieldVisible(
+  field: FeedbackField,
+  answer: unknown,
+  responses: Record<string, unknown>,
+): boolean {
+  if (!field.show_when) return true
+  const value = field.show_when.field === 'answer' ? answer : responses[field.show_when.field]
+  if (Array.isArray(value)) return value.some((item) => field.show_when!.any_of.includes(String(item)))
+  return field.show_when.any_of.includes(String(value))
+}
+
+function normalizeResponses(
+  form: FeedbackForm | undefined,
+  raw: unknown,
+  answer: unknown,
+): { responses: Record<string, FeedbackValue>; complete: boolean } {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {}
+  const responses: Record<string, FeedbackValue> = {}
+  let complete = true
+  for (const field of form?.fields || []) {
+    if (!fieldVisible(field, answer, responses)) continue
+    const value = source[field.id]
+    if (value === undefined) {
+      complete &&= !field.required
+      continue
+    }
+    if (field.type === 'timestamps') {
+      const maximum = field.max_selections || 4
+      if (
+        !Array.isArray(value) || value.length > maximum ||
+        value.some((item) => !Number.isFinite(item) || Number(item) < 0)
+      ) throw new Error(`feedback field ${field.id} has invalid timestamps`)
+      const normalized = value.map(Number)
+      responses[field.id] = normalized
+      complete &&= !field.required || normalized.length > 0
+      continue
+    }
+    const allowed = new Set(field.options!.map((option) => option.value))
+    if (field.type === 'multi') {
+      const maximum = field.max_selections || field.options!.length
+      if (
+        !Array.isArray(value) || value.length > maximum ||
+        value.some((item) => typeof item !== 'string' || !allowed.has(item)) ||
+        new Set(value).size !== value.length
+      ) throw new Error(`feedback field ${field.id} has invalid selections`)
+      responses[field.id] = value as string[]
+      complete &&= !field.required || value.length > 0
+    } else {
+      if (typeof value !== 'string' || !allowed.has(value)) {
+        throw new Error(`feedback field ${field.id} has an invalid selection`)
+      }
+      responses[field.id] = value
+    }
+  }
+  return { responses, complete }
 }
 
 function mappingFor(protocol: SourceProtocol): Array<{ alias: string; track: SourceTrack }> {
@@ -141,6 +274,8 @@ function publicProtocol(protocol: SourceProtocol) {
     title: protocol.title,
     instructions: protocol.instructions,
     blind: Boolean(protocol.blind),
+    playback: protocol.playback || 'browser',
+    companion: protocol.companion,
     tracks: mapping.map(({ alias, track }) => ({
       alias,
       label: protocol.blind ? `Track ${alias}` : track.label,
@@ -148,6 +283,7 @@ function publicProtocol(protocol: SourceProtocol) {
     questions: protocol.questions.map((question) => ({
       ...question,
       tracks: question.tracks.map((id) => aliases.get(id)),
+      feedback: feedbackFor(protocol, question),
     })),
   }
 }
@@ -248,7 +384,8 @@ function listeningApi(): Plugin {
           blind: Boolean(protocol.blind),
           track_count: protocol.tracks.length,
           question_count: protocol.questions.length,
-          answered_count: latestAnswers(await readAnswers(protocol.id)).length,
+          answered_count: latestAnswers(await readAnswers(protocol.id))
+            .filter((answer) => answer.complete !== false).length,
         })))
         return sendJson(response, summaries)
       }
@@ -293,6 +430,7 @@ function listeningApi(): Plugin {
             return [alias, Number.isSafeInteger(count) && count >= 0 ? count : 0]
           }),
         )
+        const structured = normalizeResponses(feedbackFor(protocol, question), value.responses, answer)
         const record = {
           schema: 'musializer.listening-answer/v1',
           protocol_id: protocolId,
@@ -300,6 +438,8 @@ function listeningApi(): Plugin {
           revision: previous.length + 1,
           answer,
           note: String(value.note || '').slice(0, 10_000),
+          responses: structured.responses,
+          complete: structured.complete,
           playhead_seconds: playhead,
           active_track: activeTrack,
           audition_counts: auditionCounts,

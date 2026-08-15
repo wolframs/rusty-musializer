@@ -31,8 +31,21 @@ test('loads waveforms and exposes precise playback controls', async ({ page }) =
 
 test('saves answer revisions and restores progress after reload', async ({ page }) => {
   await page.getByRole('group', { name: 'Answer choices' }).getByRole('button', { name: '2 B' }).click()
+  await expect(page.getByText('Saved; 1 required choice remains')).toBeVisible()
+  await expect(page.getByText('0/2 answered')).toBeVisible()
+
+  await page.getByRole('group', { name: 'How clear is the preference?' })
+    .getByRole('button', { name: /Immediately clear/ }).click()
   await expect(page.getByText('Saved to the append-only answer log')).toBeVisible()
   await expect(page.getByText('1/2 answered')).toBeVisible()
+  await page.getByRole('group', { name: 'What drove the choice?' })
+    .getByRole('button', { name: 'Timing' }).click()
+  await page.getByRole('button', { name: 'Capture 00:01.000' }).click()
+
+  await page.screenshot({
+    path: '../../build/listening-lab-e2e/structured-feedback.png',
+    fullPage: true,
+  })
 
   await page.getByRole('button', { name: 'Next' }).click()
   await page.getByLabel('Answer').fill('Candidate B has a higher tone at 00:02.000.')
@@ -43,9 +56,30 @@ test('saves answer revisions and restores progress after reload', async ({ page 
 
   await page.reload()
   await expect(page.getByText('2/2 answered')).toBeVisible()
+  await page.getByRole('button', { name: /01.*Answered/ }).click()
+  await expect(page.getByRole('group', { name: 'How clear is the preference?' })
+    .getByRole('button', { name: /Immediately clear/ })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: 'Timing' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByRole('button', { name: /Remove captured time 00:01.000/ })).toBeVisible()
   await page.getByRole('button', { name: /02.*Answered/ }).click()
   await expect(page.getByLabel('Answer')).toHaveValue('Candidate B has a higher tone at 00:02.000.')
   await expect(page.getByLabel('Notes and timestamps')).toHaveValue('Reviewed at normal speed.')
+})
+
+test('supports an external visual runner without exposing a duplicate player', async ({ page }) => {
+  await page.getByLabel('Session').selectOption('external-e2e')
+  await expect(page.getByRole('heading', { name: 'External companion E2E fixture' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Muted visual runner' })).toBeVisible()
+  await expect(page.getByText('cargo run -- --mute --protocol build/example.protocol.json')).toBeVisible()
+  await expect(page.getByTestId('waveform-A')).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Play' })).toHaveCount(0)
+
+  await page.getByRole('group', { name: 'Answer choices' }).getByRole('button', { name: '2 fix' }).click()
+  await expect(page.getByText('Saved; 1 required choice remains')).toBeVisible()
+  await expect(page.getByText('0/1 answered')).toBeVisible()
+  await page.getByRole('group', { name: 'What needs repair?' }).getByRole('button', { name: 'Motion' }).click()
+  await expect(page.getByText('Saved to the append-only answer log')).toBeVisible()
+  await expect(page.getByText('1/1 answered')).toBeVisible()
 })
 
 test('keeps blind sources private and serves seekable byte ranges', async ({ request }) => {

@@ -4,6 +4,45 @@
   "title": "Name the real comparison",
   "instructions": "Tell the listener what evidence to attend to without revealing candidate identity.",
   "blind": true,
+  "feedback_templates": {
+    "timing-choice": {
+      "fields": [
+        {
+          "id": "confidence",
+          "type": "scale",
+          "label": "How clear was the preference?",
+          "required": true,
+          "options": [
+            { "value": "guess", "label": "Close to a guess" },
+            { "value": "lean", "label": "A slight preference" },
+            { "value": "clear", "label": "Immediately clear" }
+          ]
+        },
+        {
+          "id": "decisive_times",
+          "type": "timestamps",
+          "label": "Capture the moments that decided it",
+          "max_selections": 3
+        },
+        {
+          "id": "neither_reason",
+          "type": "multi",
+          "label": "Why is neither right?",
+          "required": true,
+          "show_when": { "field": "answer", "any_of": ["neither"] },
+          "options": [
+            { "value": "both-early", "label": "Both early" },
+            { "value": "both-late", "label": "Both late" },
+            { "value": "different-errors", "label": "Different errors" }
+          ]
+        }
+      ],
+      "note": {
+        "collapsed": true,
+        "label": "Add context the controls missed"
+      }
+    }
+  },
   "tracks": [
     {
       "id": "internal-current",
@@ -27,7 +66,8 @@
       "options": ["A", "B", "either", "neither"],
       "tracks": ["internal-current", "internal-candidate"],
       "loop": true,
-      "required": true
+      "required": true,
+      "feedback": "timing-choice"
     },
     {
       "id": "q02",

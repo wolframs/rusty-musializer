@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
+    "import:cx4": "node scripts/import-cx4.mjs",
     "test": "vitest run src",
     "test:e2e": "playwright test"
   },

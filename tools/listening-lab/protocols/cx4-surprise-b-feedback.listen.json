@@ -1,0 +1,584 @@
+{
+  "schema": "musializer.listening-test/v1",
+  "id": "cx4-surprise-b-feedback",
+  "title": "CX-4 Surprise keepability - Resolve to You (GPT-5.6-Sol).mp3 — feedback sheet",
+  "instructions": "Keep the Rust visual runner and this sheet on the same question number. Judge the look in Rust, answer here, then press N in Rust to advance. Do not open the .key.json until both sessions are complete.",
+  "blind": true,
+  "playback": "external",
+  "companion": {
+    "label": "Rust visual protocol runner",
+    "command": "cargo run -- --protocol build/protocols/cx4-surprise-b.protocol.json",
+    "help": "The Rust app owns audio, scene state, and blind A/B order. This browser owns only the structured feedback log."
+  },
+  "tracks": [
+    {
+      "id": "reference-audio",
+      "label": "Resolve to You (GPT-5.6-Sol).mp3",
+      "path": "/home/wolfram/Music/Resolve to You (GPT-5.6-Sol).mp3"
+    }
+  ],
+  "feedback_templates": {
+    "cx4-single": {
+      "fields": [
+        {
+          "id": "track_fit",
+          "type": "scale",
+          "label": "How naturally does the look fit this music?",
+          "help": "Judge the relationship, not whether either the song or scene is good by itself.",
+          "required": true,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "keep",
+              "interesting but needs fixing",
+              "reject"
+            ]
+          },
+          "options": [
+            {
+              "value": "fights",
+              "label": "Fights it",
+              "description": "The visual energy contradicts the music."
+            },
+            {
+              "value": "loose",
+              "label": "Loosely related",
+              "description": "Plausible, but it could belong to many tracks."
+            },
+            {
+              "value": "works",
+              "label": "Works with it",
+              "description": "The major visual choices support the passage."
+            },
+            {
+              "value": "authored",
+              "label": "Feels authored",
+              "description": "It looks deliberately made for this passage."
+            }
+          ]
+        },
+        {
+          "id": "strengths",
+          "type": "multi",
+          "label": "What earns the result its value?",
+          "help": "Choose up to three. These tell the agent what not to erase while tuning.",
+          "max_selections": 3,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "keep",
+              "interesting but needs fixing"
+            ]
+          },
+          "options": [
+            {
+              "value": "music-fit",
+              "label": "Fits the music"
+            },
+            {
+              "value": "composition",
+              "label": "Strong composition"
+            },
+            {
+              "value": "motion",
+              "label": "Motion feels alive"
+            },
+            {
+              "value": "palette",
+              "label": "Palette works"
+            },
+            {
+              "value": "depth",
+              "label": "Good depth / layering"
+            },
+            {
+              "value": "distinctive",
+              "label": "Distinctive identity"
+            }
+          ]
+        },
+        {
+          "id": "repairs",
+          "type": "multi",
+          "label": "What most needs attention?",
+          "help": "Choose one to three concrete failure modes.",
+          "required": true,
+          "max_selections": 3,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "interesting but needs fixing",
+              "reject"
+            ]
+          },
+          "options": [
+            {
+              "value": "too-busy",
+              "label": "Too busy"
+            },
+            {
+              "value": "too-static",
+              "label": "Too static"
+            },
+            {
+              "value": "weak-focus",
+              "label": "Weak focal point"
+            },
+            {
+              "value": "palette-mismatch",
+              "label": "Palette misses the track"
+            },
+            {
+              "value": "motion-mismatch",
+              "label": "Motion misses the rhythm"
+            },
+            {
+              "value": "generic",
+              "label": "Feels generic"
+            },
+            {
+              "value": "illegible",
+              "label": "Hard to read visually"
+            }
+          ]
+        },
+        {
+          "id": "repair_distance",
+          "type": "scale",
+          "label": "How far is it from keepable?",
+          "required": true,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "interesting but needs fixing"
+            ]
+          },
+          "options": [
+            {
+              "value": "small",
+              "label": "One small tweak"
+            },
+            {
+              "value": "focused",
+              "label": "A focused tuning pass"
+            },
+            {
+              "value": "large",
+              "label": "Most of the look needs rebuilding"
+            }
+          ]
+        }
+      ],
+      "note": {
+        "collapsed": true,
+        "label": "Add a note only if the controls missed something",
+        "placeholder": "Name the visual moment or change the controls could not express."
+      }
+    },
+    "cx4-pair": {
+      "fields": [
+        {
+          "id": "difference",
+          "type": "scale",
+          "label": "How visually distinct were the two looks?",
+          "help": "This directly checks whether consecutive Surprise presses produce meaningfully different results.",
+          "required": true,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "the first look",
+              "the second look",
+              "either",
+              "neither"
+            ]
+          },
+          "options": [
+            {
+              "value": "barely",
+              "label": "Barely different"
+            },
+            {
+              "value": "noticeable",
+              "label": "Noticeably different"
+            },
+            {
+              "value": "clear",
+              "label": "Clearly different"
+            },
+            {
+              "value": "direction",
+              "label": "Different directions"
+            }
+          ]
+        },
+        {
+          "id": "separators",
+          "type": "multi",
+          "label": "What separated them?",
+          "help": "Choose up to three dimensions that actually changed the judgment.",
+          "max_selections": 3,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "the first look",
+              "the second look",
+              "either",
+              "neither"
+            ]
+          },
+          "options": [
+            {
+              "value": "music-fit",
+              "label": "Fit to the music"
+            },
+            {
+              "value": "composition",
+              "label": "Composition"
+            },
+            {
+              "value": "motion",
+              "label": "Motion"
+            },
+            {
+              "value": "palette",
+              "label": "Palette"
+            },
+            {
+              "value": "intensity",
+              "label": "Intensity"
+            },
+            {
+              "value": "identity",
+              "label": "Distinctiveness"
+            }
+          ]
+        },
+        {
+          "id": "neither_problem",
+          "type": "multi",
+          "label": "Why was neither keepable?",
+          "required": true,
+          "max_selections": 2,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "neither"
+            ]
+          },
+          "options": [
+            {
+              "value": "busy",
+              "label": "Both too busy"
+            },
+            {
+              "value": "static",
+              "label": "Both too static"
+            },
+            {
+              "value": "generic",
+              "label": "Both feel generic"
+            },
+            {
+              "value": "track-mismatch",
+              "label": "Both miss the track"
+            },
+            {
+              "value": "different-flaws",
+              "label": "Different flaws"
+            }
+          ]
+        },
+        {
+          "id": "confidence",
+          "type": "single",
+          "label": "How clear was your preference?",
+          "required": true,
+          "show_when": {
+            "field": "answer",
+            "any_of": [
+              "the first look",
+              "the second look",
+              "either",
+              "neither"
+            ]
+          },
+          "options": [
+            {
+              "value": "guess",
+              "label": "Close to a guess"
+            },
+            {
+              "value": "lean",
+              "label": "A real but slight preference"
+            },
+            {
+              "value": "clear",
+              "label": "Immediately clear"
+            }
+          ]
+        }
+      ],
+      "note": {
+        "collapsed": true,
+        "label": "Add a note only if the controls missed something",
+        "placeholder": "Describe the decisive difference the choices did not capture."
+      }
+    }
+  },
+  "questions": [
+    {
+      "id": "q01",
+      "at_seconds": 46.74963006,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Song Atlas: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q02",
+      "at_seconds": 59.73563840999999,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Cadence: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q03",
+      "at_seconds": 80.51325177,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Song Atlas: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q04",
+      "at_seconds": 93.49926012,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Cadence: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q05",
+      "at_seconds": 114.27687348,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Song Atlas: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q06",
+      "at_seconds": 127.26288183,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Cadence: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q07",
+      "at_seconds": 148.04049519000003,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Song Atlas: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q08",
+      "at_seconds": 161.02650354000002,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Cadence: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q09",
+      "at_seconds": 181.8041169,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Song Atlas: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q10",
+      "at_seconds": 194.79012525000002,
+      "window": {
+        "pre": 1.5,
+        "post": 10
+      },
+      "question": "Cadence: would you keep this look for this track?",
+      "detail": "Judge the complete look first. The next controls capture why it is keepable or what would need to change.",
+      "kind": "choice",
+      "options": [
+        "keep",
+        "interesting but needs fixing",
+        "reject"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-single"
+    },
+    {
+      "id": "q11",
+      "at_seconds": 223.35934362,
+      "window": {
+        "pre": 1.5,
+        "post": 9
+      },
+      "question": "Song Atlas: two looks — B swaps between them. Which would you keep?",
+      "detail": "Use B in the Rust runner to alternate the two blind looks. “First” and “second” refer to the order the runner presents.",
+      "kind": "choice",
+      "options": [
+        "the first look",
+        "the second look",
+        "either",
+        "neither"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-pair"
+    },
+    {
+      "id": "q12",
+      "at_seconds": 233.74815030000002,
+      "window": {
+        "pre": 1.5,
+        "post": 9
+      },
+      "question": "Cadence: two looks — B swaps between them. Which would you keep?",
+      "detail": "Use B in the Rust runner to alternate the two blind looks. “First” and “second” refer to the order the runner presents.",
+      "kind": "choice",
+      "options": [
+        "the first look",
+        "the second look",
+        "either",
+        "neither"
+      ],
+      "tracks": [
+        "reference-audio"
+      ],
+      "required": true,
+      "feedback": "cx4-pair"
+    }
+  ]
+}

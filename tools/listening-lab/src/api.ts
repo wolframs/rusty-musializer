@@ -1,4 +1,4 @@
-import type { ListeningProtocol, ProtocolSummary, SavedAnswer } from './types'
+import type { FeedbackValue, ListeningProtocol, ProtocolSummary, SavedAnswer } from './types'
 
 async function json<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, init)
@@ -25,6 +25,7 @@ export async function saveAnswer(
   questionId: string,
   answer: string | number | null,
   note: string,
+  responses: Record<string, FeedbackValue>,
   playheadSeconds: number,
   activeTrack: string,
   auditionCounts: Record<string, number>,
@@ -37,6 +38,7 @@ export async function saveAnswer(
       question_id: questionId,
       answer,
       note,
+      responses,
       playhead_seconds: playheadSeconds,
       active_track: activeTrack,
       audition_counts: auditionCounts,

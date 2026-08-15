@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { listProtocols, loadAnswers, loadProtocol, saveAnswer } from './api'
+import {
+  FeedbackFields,
+  pruneHiddenResponses,
+  requiredFeedbackRemaining,
+} from './FeedbackFields'
 import { formatTime } from './time'
 import type {
   AnswerDraft,
@@ -21,15 +26,16 @@ function App() {
   const [rate, setRate] = useState(1)
   const [zoom, setZoom] = useState(30)
   const [loop, setLoop] = useState(false)
-  const [draft, setDraft] = useState<AnswerDraft>({ answer: null, note: '' })
+  const [draft, setDraft] = useState<AnswerDraft>({ answer: null, note: '', responses: {} })
   const [auditions, setAuditions] = useState<Record<string, number>>({})
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [error, setError] = useState('')
   const [seekText, setSeekText] = useState('00:00.000')
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const deck = useRef<WaveformDeckHandle>(null)
 
   const question = protocol?.questions[questionIndex]
-  const completed = answers.size
+  const completed = [...answers.values()].filter((answer) => answer.complete !== false).length
 
   useEffect(() => {
     listProtocols()
@@ -47,14 +53,16 @@ function App() {
   useEffect(() => {
     if (!question) return
     const saved = answers.get(question.id)
-    setDraft(saved ? { answer: saved.answer, note: saved.note } : { answer: null, note: '' })
+    setDraft(saved
+      ? { answer: saved.answer, note: saved.note, responses: saved.responses || {} }
+      : { answer: null, note: '', responses: {} })
     const nextTrack = question.tracks.includes(activeTrack) ? activeTrack : question.tracks[0]
     setActiveTrack(nextTrack)
     setAuditions(Object.fromEntries(question.tracks.map((alias) => [alias, 0])))
     setLoop(Boolean(question.loop))
     setSaveState(saved ? 'saved' : 'idle')
     window.setTimeout(() => deck.current?.seek(Math.max(0, question.at_seconds - question.window.pre)), 0)
-  }, [question?.id])
+  }, [protocol?.id, question?.id])
 
   async function selectProtocol(id: string) {
     try {
@@ -62,8 +70,13 @@ function App() {
       deck.current?.pause()
       const [next, saved] = await Promise.all([loadProtocol(id), loadAnswers(id)])
       setProtocol(next)
-      setAnswers(new Map(saved.map((answer) => [answer.question_id, answer])))
+      setAnswers(new Map(saved.map((answer) => [answer.question_id, {
+        ...answer,
+        responses: answer.responses || {},
+        complete: answer.complete !== false,
+      }])))
       setQuestionIndex(0)
+      setCopyState('idle')
       setActiveTrack(next.questions[0]?.tracks[0] || next.tracks[0].alias)
       setDeckState(emptyDeck)
     } catch (reason) {
@@ -87,6 +100,7 @@ function App() {
         question.id,
         nextDraft.answer,
         nextDraft.note,
+        nextDraft.responses,
         deck.current?.getTime() || 0,
         activeTrack,
         auditions,
@@ -105,9 +119,39 @@ function App() {
 
   const responseReady = useMemo(() => {
     if (!question) return false
-    if (question.kind === 'text') return Boolean(String(draft.answer || '').trim())
-    return draft.answer !== null
+    return question.kind === 'text'
+      ? Boolean(String(draft.answer || '').trim())
+      : draft.answer !== null
   }, [question, draft.answer])
+
+  const missingRequired = question
+    ? requiredFeedbackRemaining(question.feedback, draft)
+    : 0
+
+  function choosePrimary(answer: string) {
+    if (!question) return
+    const next = pruneHiddenResponses(question.feedback, { ...draft, answer })
+    void persist(next)
+  }
+
+  async function copyCompanionCommand() {
+    const command = protocol?.companion?.command || ''
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
+      await navigator.clipboard.writeText(command)
+      setCopyState('copied')
+    } catch {
+      const field = document.createElement('textarea')
+      field.value = command
+      field.style.position = 'fixed'
+      field.style.opacity = '0'
+      document.body.append(field)
+      field.select()
+      const copied = document.execCommand('copy')
+      field.remove()
+      setCopyState(copied ? 'copied' : 'error')
+    }
+  }
 
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
@@ -134,7 +178,7 @@ function App() {
         const option = question?.options?.[Number(event.key) - 1]
         if (option) {
           event.preventDefault()
-          void persist({ ...draft, answer: option })
+          choosePrimary(option)
         }
       }
     }
@@ -181,7 +225,10 @@ function App() {
           {protocol.instructions && <p className="instructions">{protocol.instructions}</p>}
           <nav aria-label="Questions">
             {protocol.questions.map((item, index) => {
-              const saved = answers.has(item.id)
+              const saved = answers.get(item.id)
+              const status = saved
+                ? saved.complete === false ? 'In progress' : 'Answered'
+                : item.required === false ? 'Optional' : 'Open'
               return (
                 <button
                   key={item.id}
@@ -191,7 +238,7 @@ function App() {
                 >
                   <span>{String(index + 1).padStart(2, '0')}</span>
                   <span>{formatTime(item.at_seconds)}</span>
-                  <span>{saved ? 'Answered' : item.required === false ? 'Optional' : 'Open'}</span>
+                  <span>{status}</span>
                 </button>
               )
             })}
@@ -199,7 +246,34 @@ function App() {
         </aside>
 
         <section className="listening-stage">
-          <div className="measurement-bar">
+          {protocol.playback === 'external' ? (
+            <section className="companion-panel" aria-label="Companion application">
+              <div>
+                <span className="field-label">Companion application</span>
+                <h2>{protocol.companion?.label}</h2>
+                {protocol.companion?.help && <p>{protocol.companion.help}</p>}
+              </div>
+              <div className="companion-command">
+                <code>{protocol.companion?.command}</code>
+                <button
+                  type="button"
+                  onClick={() => void copyCompanionCommand()}
+                >
+                  {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Select and copy' : 'Copy command'}
+                </button>
+              </div>
+              <dl>
+                <div><dt>Runner item</dt><dd>{question.id}</dd></div>
+                <div><dt>Anchor</dt><dd>{formatTime(question.at_seconds)}</dd></div>
+                <div>
+                  <dt>Window</dt>
+                  <dd>{formatTime(Math.max(0, question.at_seconds - question.window.pre))}–{formatTime(question.at_seconds + question.window.post)}</dd>
+                </div>
+              </dl>
+            </section>
+          ) : (
+            <>
+            <div className="measurement-bar">
             <div>
               <span className="field-label">Playhead</span>
               <strong data-testid="playhead">{formatTime(deckState.time)}</strong>
@@ -310,6 +384,8 @@ function App() {
             </label>
             <p className="shortcuts">Space play · R window · ,/. ±10 ms · Shift ,/. ±100 ms · [/] switch track</p>
           </div>
+            </>
+          )}
 
           <article className="feedback-card">
             <header>
@@ -334,7 +410,7 @@ function App() {
                     key={option}
                     className={draft.answer === option ? 'is-selected' : ''}
                     aria-pressed={draft.answer === option}
-                    onClick={() => void persist({ ...draft, answer: option })}
+                    onClick={() => choosePrimary(option)}
                   >
                     <span>{index + 1}</span>
                     {option}
@@ -343,22 +419,47 @@ function App() {
               </div>
             )}
 
-            <label className="note-field">
-              <span className="field-label">Notes and timestamps</span>
-              <textarea
-                value={draft.note}
-                onChange={(event) => {
-                  setDraft({ ...draft, note: event.target.value })
-                  setSaveState('idle')
-                }}
-                placeholder="Optional context for the agent."
+            {question.feedback && draft.answer !== null && (
+              <FeedbackFields
+                form={question.feedback}
+                draft={draft}
+                playhead={deckState.time}
+                onCommit={(next) => void persist(next)}
               />
-            </label>
+            )}
+
+            {question.feedback?.note?.collapsed ? (
+              <details className="note-disclosure">
+                <summary>{question.feedback.note.label || 'Add a note only if the controls missed something'}</summary>
+                <textarea
+                  aria-label={question.feedback.note.label || 'Additional note'}
+                  value={draft.note}
+                  onChange={(event) => {
+                    setDraft({ ...draft, note: event.target.value })
+                    setSaveState('idle')
+                  }}
+                  placeholder={question.feedback.note.placeholder || 'Optional context for the agent.'}
+                />
+              </details>
+            ) : (
+              <label className="note-field">
+                <span className="field-label">{question.feedback?.note?.label || 'Notes and timestamps'}</span>
+                <textarea
+                  value={draft.note}
+                  onChange={(event) => {
+                    setDraft({ ...draft, note: event.target.value })
+                    setSaveState('idle')
+                  }}
+                  placeholder={question.feedback?.note?.placeholder || 'Optional context for the agent.'}
+                />
+              </label>
+            )}
 
             <footer>
               <div className={`save-state is-${saveState}`} role="status">
                 {saveState === 'saving' && 'Saving…'}
-                {saveState === 'saved' && 'Saved to the append-only answer log'}
+                {saveState === 'saved' && missingRequired === 0 && 'Saved to the append-only answer log'}
+                {saveState === 'saved' && missingRequired > 0 && `Saved; ${missingRequired} required ${missingRequired === 1 ? 'choice remains' : 'choices remain'}`}
                 {saveState === 'error' && 'Could not save'}
                 {saveState === 'idle' && (answers.has(question.id) ? 'Notes have unsaved changes' : 'Not answered')}
               </div>

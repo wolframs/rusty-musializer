@@ -58,6 +58,41 @@ export default async function setup() {
             options: ['A', 'B', 'either', 'neither'],
             tracks: ['candidate-a', 'candidate-b'],
             required: true,
+            feedback: {
+              fields: [
+                {
+                  id: 'confidence',
+                  type: 'scale',
+                  label: 'How clear is the preference?',
+                  required: true,
+                  options: [
+                    { value: 'close', label: 'Close call' },
+                    { value: 'clear', label: 'Immediately clear' },
+                  ],
+                },
+                {
+                  id: 'evidence',
+                  type: 'multi',
+                  label: 'What drove the choice?',
+                  max_selections: 2,
+                  options: [
+                    { value: 'timing', label: 'Timing' },
+                    { value: 'clarity', label: 'Clarity' },
+                    { value: 'tone', label: 'Tone' },
+                  ],
+                },
+                {
+                  id: 'moments',
+                  type: 'timestamps',
+                  label: 'Capture decisive moments',
+                  max_selections: 2,
+                },
+              ],
+              note: {
+                collapsed: true,
+                label: 'Add context the controls missed',
+              },
+            },
           },
           {
             id: 'detail',
@@ -67,6 +102,56 @@ export default async function setup() {
             kind: 'text',
             tracks: ['candidate-a', 'candidate-b'],
             required: true,
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  )
+  await writeFile(
+    resolve(protocols, 'external-e2e.listen.json'),
+    JSON.stringify(
+      {
+        schema: 'musializer.listening-test/v1',
+        id: 'external-e2e',
+        title: 'External companion E2E fixture',
+        instructions: 'Keep both tools on the same question.',
+        blind: true,
+        playback: 'external',
+        companion: {
+          label: 'Muted visual runner',
+          command: 'cargo run -- --mute --protocol build/example.protocol.json',
+          help: 'The companion owns playback; this page records the judgment.',
+        },
+        tracks: [
+          { id: 'reference', label: 'Reference', path: '../candidate-a.wav' },
+        ],
+        questions: [
+          {
+            id: 'look',
+            at_seconds: 1.5,
+            window: { pre: 0.5, post: 1.0 },
+            question: 'Would you keep this look?',
+            kind: 'choice',
+            options: ['keep', 'fix', 'reject'],
+            tracks: ['reference'],
+            required: true,
+            feedback: {
+              fields: [
+                {
+                  id: 'repair',
+                  type: 'multi',
+                  label: 'What needs repair?',
+                  required: true,
+                  show_when: { field: 'answer', any_of: ['fix', 'reject'] },
+                  options: [
+                    { value: 'motion', label: 'Motion' },
+                    { value: 'palette', label: 'Palette' },
+                  ],
+                },
+              ],
+            },
           },
         ],
       },
