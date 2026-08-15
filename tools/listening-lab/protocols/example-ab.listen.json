@@ -1,0 +1,44 @@
+{
+  "schema": "musializer.listening-test/v1",
+  "id": "example-ab",
+  "title": "Example A/B protocol — synthetic fixture",
+  "instructions": "This is a functional example for protocol authors. Both entries deliberately point to the same generated fixture; replace them with real candidate paths before collecting listening judgments.",
+  "blind": false,
+  "tracks": [
+    {
+      "id": "fixture-a",
+      "label": "Synthetic fixture A",
+      "path": "../../../build/fixture.wav"
+    },
+    {
+      "id": "fixture-b",
+      "label": "Synthetic fixture B (same file)",
+      "path": "../../../build/fixture.wav"
+    }
+  ],
+  "questions": [
+    {
+      "id": "switch-continuity",
+      "at_seconds": 2.0,
+      "window": { "pre": 1.0, "post": 4.0 },
+      "question": "Does switching A/B preserve the exact playhead position?",
+      "detail": "Pause on a visible transient, switch tracks, and record the timestamp if the cursor moves.",
+      "kind": "choice",
+      "options": ["yes", "no"],
+      "tracks": ["fixture-a", "fixture-b"],
+      "loop": false,
+      "required": true
+    },
+    {
+      "id": "precision-control",
+      "at_seconds": 4.0,
+      "window": { "pre": 1.0, "post": 3.0 },
+      "question": "Record a precisely controlled playback time from this window.",
+      "detail": "Use the waveform, millisecond seek field, or ±10 ms controls, then include the time and what you targeted.",
+      "kind": "text",
+      "tracks": ["fixture-a"],
+      "loop": true,
+      "required": true
+    }
+  ]
+}

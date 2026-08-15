@@ -24,6 +24,9 @@ authoritative code and evidence without reconstructing the project from scratch.
 
 ## Operations and evidence
 
+- [`../tools/listening-lab/README.md`](../tools/listening-lab/README.md) documents
+  the local browser A/B listening workspace: agent-authored audio protocols,
+  precise waveform playback, blinding, and append-only feedback logs.
 - [`../tools/ANALYSIS_ADAPTERS.md`](../tools/ANALYSIS_ADAPTERS.md) is the operator
   guide for analysis dependencies, discovery, privacy boundaries, and commands.
 - [`../tools/MEASURED_ANALYSIS.md`](../tools/MEASURED_ANALYSIS.md) describes the

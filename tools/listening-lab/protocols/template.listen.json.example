@@ -1,0 +1,42 @@
+{
+  "schema": "musializer.listening-test/v1",
+  "id": "replace-with-session-id",
+  "title": "Name the real comparison",
+  "instructions": "Tell the listener what evidence to attend to without revealing candidate identity.",
+  "blind": true,
+  "tracks": [
+    {
+      "id": "internal-current",
+      "label": "Current render",
+      "path": "/absolute/path/to/current.wav"
+    },
+    {
+      "id": "internal-candidate",
+      "label": "Candidate render",
+      "path": "/absolute/path/to/candidate.wav"
+    }
+  ],
+  "questions": [
+    {
+      "id": "q01",
+      "at_seconds": 42.125,
+      "window": { "pre": 2.0, "post": 8.0 },
+      "question": "Which version places the onset more convincingly?",
+      "detail": "Listen for the first consonant and note its exact time if neither is right.",
+      "kind": "choice",
+      "options": ["A", "B", "either", "neither"],
+      "tracks": ["internal-current", "internal-candidate"],
+      "loop": true,
+      "required": true
+    },
+    {
+      "id": "q02",
+      "at_seconds": 68.0,
+      "window": { "pre": 3.0, "post": 10.0 },
+      "question": "What changed in the second version?",
+      "kind": "text",
+      "tracks": ["internal-current", "internal-candidate"],
+      "required": false
+    }
+  ]
+}

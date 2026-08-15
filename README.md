@@ -154,6 +154,11 @@ control method behind the tests. [`FEATURE_PARITY_PLAN.md`](FEATURE_PARITY_PLAN.
 is the sole live product/completion queue; `REWRITE_PLAN.md` is historical
 evidence, not a second backlog.
 
+Agent-authored human listening checks can use the local
+[`tools/listening-lab`](tools/listening-lab/) Vite workspace. It serves declared
+local audio through zoomable waveforms, preserves exact time across blind A/B
+switches, and appends each feedback revision to a gitignored JSONL log.
+
 For navigation:
 
 - [`docs/README.md`](docs/README.md) — documentation index and authority map

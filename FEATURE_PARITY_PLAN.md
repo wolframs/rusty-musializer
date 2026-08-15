@@ -1559,6 +1559,18 @@ works without them.
       refuses with a nonzero exit and no answers file.
 - [ ] **HX-4** — the `claude -p` generate/digest buttons. The MVP loop works
       without them; the agent writing the protocol reads the JSONL directly.
+- [x] **HX-W — browser listening lab (2026-08-15).**
+      `tools/listening-lab/` is the audio-candidate counterpart to the in-app
+      runner: agent-authored local paths, server-side blind labels, WaveSurfer
+      PCM/timeline/region views, millisecond seek and ±10/100 ms steps,
+      same-playhead A/B switching, and choice/scale/text feedback appended under
+      `build/listening-lab/answers/`. Its headless Playwright gate starts Chromium
+      with `--mute-audio` and covers transport precision, A/B continuity,
+      answer/reload recovery, hidden source identity, and byte-range serving.
+      It deliberately does **not** claim HX-4 or replace the CX-4 Surprise
+      session: the latter compares visual `SettingsSnapshot`s that only the Rust
+      runner can apply. The lab's README recovers both that protocol and the
+      earlier 23-item lyric-timing adjudication for future authors.
 
 ## DX — dev-ex audit follow-ups (codex agent, 2026-08-07, `dc694e3`)
 
