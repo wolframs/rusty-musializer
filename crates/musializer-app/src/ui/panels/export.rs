@@ -79,6 +79,10 @@ mod clip_ids {
     pub(super) const SET_OUT: u32 = 42;
     /// The footer's still-frame button (UX0-C10).
     pub(super) const STILL: u32 = 43;
+    /// Restore the ordinary first frame of the output.
+    pub(super) const SHARE_NORMAL: u32 = 44;
+    /// Replace encoded frame zero with the deterministic playhead frame.
+    pub(super) const SHARE_PLAYHEAD: u32 = 45;
 }
 
 /// The CLIP row's readout, in the two lengths the panel can afford.
@@ -662,6 +666,14 @@ impl Shell {
         // coordinates aim at the footer's right edge and a shifted Close would
         // have been a silently mis-aimed press rather than a failure.
         let still = UiRect::new(close.x - 132.0 - gap, render.y, 132.0, render.height);
+        // The share-preview choice, left of Save still. It uses the same
+        // playhead gesture as CLIP and the still: listen/scrub to an inviting
+        // image, then press once. Two explicit choices keep the default visible
+        // and make undo discoverable; a toggle labelled only with the selected
+        // time would not say how to get the ordinary opening frame back.
+        let share_at = UiRect::new(still.x - 142.0 - gap, render.y, 142.0, render.height);
+        let share_normal = UiRect::new(share_at.x - 72.0 - gap, render.y, 72.0, render.height);
+        let share_label_x = share_normal.x - 104.0;
         let render_label = if encoder_present {
             "Choose output and render"
         } else {
@@ -734,6 +746,82 @@ impl Shell {
                     font,
                     still,
                     "Save still",
+                    Some(footer_font),
+                );
+            }
+        }
+        if boundary.contains(share_normal) && share_label_x >= boundary.x + padding {
+            widgets::draw_text(
+                &mut clip,
+                font,
+                "SHARE FRAME",
+                share_label_x,
+                render.y + 10.0,
+                13.0,
+                color::ui_muted(),
+            );
+            let has_track = input.workspace.current().is_some();
+            if has_track {
+                let normal_id = widgets::widget_id(EXPORT_WIDGETS, clip_ids::SHARE_NORMAL);
+                let normal_state = self.widgets.text_button(
+                    &mut clip,
+                    font,
+                    normal_id,
+                    share_normal,
+                    "Normal",
+                    self.export_share_frame_seconds.is_none(),
+                    ButtonStyle::Neutral,
+                    Some(footer_font),
+                );
+                self.widgets.hint(
+                    &clip,
+                    normal_state,
+                    normal_id,
+                    share_normal,
+                    "Let the output begin with its normal first timeline frame",
+                );
+                if normal_state.clicked {
+                    self.export_share_frame_seconds = None;
+                }
+
+                let at_id = widgets::widget_id(EXPORT_WIDGETS, clip_ids::SHARE_PLAYHEAD);
+                let at_label = self.export_share_frame_seconds.map_or_else(
+                    || "Use playhead".to_owned(),
+                    |seconds| format!("At {}", widgets::format_timestamp(seconds)),
+                );
+                let at_state = self.widgets.text_button(
+                    &mut clip,
+                    font,
+                    at_id,
+                    share_at,
+                    &at_label,
+                    self.export_share_frame_seconds.is_some(),
+                    ButtonStyle::Neutral,
+                    Some(footer_font),
+                );
+                self.widgets.hint(
+                    &clip,
+                    at_state,
+                    at_id,
+                    share_at,
+                    "Use the frame at the playhead as encoded frame 1; audio, duration, and every later frame stay in place",
+                );
+                if at_state.clicked {
+                    self.export_share_frame_seconds = Some(input.time_seconds);
+                }
+            } else {
+                self.widgets.disabled_button(
+                    &mut clip,
+                    font,
+                    share_normal,
+                    "Normal",
+                    Some(footer_font),
+                );
+                self.widgets.disabled_button(
+                    &mut clip,
+                    font,
+                    share_at,
+                    "Use playhead",
                     Some(footer_font),
                 );
             }
@@ -1132,61 +1220,16 @@ pub(crate) fn export_still(
     time_seconds: f64,
     probe_destination: Option<&Path>,
 ) -> Option<PathBuf> {
-    let Some(track) = app.workspace.current() else {
+    if app.workspace.current().is_none() {
         app.shell.notify(
             Severity::Error,
             "No still was written",
             "There is no track to render a frame from.",
         );
         return None;
-    };
-    let config = track.render_config;
-    let source = track.file_path.clone();
-    let duration_seconds = track.duration_seconds;
-    let (scene, seed) = (track.base_scene, track.scene_seed);
+    }
 
     let destination = ask_for_still_destination(app, time_seconds, probe_destination)?;
-
-    // Decoded here rather than streamed, exactly as `RenderJob::start` does: the
-    // analyzer must hear the file's own samples, not raylib's stereo mix.
-    let Some(source_text) = source.to_str() else {
-        app.shell.notify(
-            Severity::Error,
-            "No still was written",
-            "The source audio path is not valid text.",
-        );
-        return None;
-    };
-    let decoded = audio
-        .new_wave(source_text)
-        .ok()
-        .filter(raylib::core::audio::Wave::is_wave_valid)
-        .and_then(|wave| {
-            let format = (wave.sample_rate(), wave.channels(), wave.frame_count());
-            musializer_runtime::decode::wave_samples(&wave).map(|samples| (samples, format))
-        });
-    let Some((samples, (sample_rate, channels, frame_count))) = decoded else {
-        app.shell.notify(
-            Severity::Error,
-            "No still was written",
-            "The source audio decoder rejected the file, so the frame could not be prepared.",
-        );
-        return None;
-    };
-
-    let plan = render_export::total_frames(u64::from(frame_count), sample_rate, config.fps)
-        .and_then(|total| {
-            render_export::still_frame_index(time_seconds, config.fps, total)
-                .map(|index| (total, index))
-        });
-    let Ok((total_frames, frame_index)) = plan else {
-        app.shell.notify(
-            Severity::Error,
-            "No still was written",
-            "The playhead is not on a frame this track can produce.",
-        );
-        return None;
-    };
 
     let restore_position = music.map_or(0.0, Music::get_time_played);
     let restore_playing = music.is_some_and(Music::is_stream_playing);
@@ -1197,32 +1240,137 @@ pub(crate) fn export_still(
         music.stop_stream();
     }
 
-    let Some((mut target, achieved_factor)) = offline_render_target(rl, thread, &config) else {
-        app.shell.notify(
-            Severity::Error,
-            "No still was written",
-            "The offline surface could not be created. Try a lower resolution or Balanced quality.",
-        );
-        restore_preview(music, app, analysis, restore_position, restore_playing);
-        return None;
-    };
+    let prepared = prepare_frame_pixels(
+        rl,
+        thread,
+        audio,
+        app,
+        analysis,
+        renderer,
+        fonts,
+        time_seconds,
+        "Rendering still frame",
+    );
+    restore_preview(music, app, analysis, restore_position, restore_playing);
 
-    // The export's analyzer configuration, from the decoded wave's own channel
-    // count (`render_job.rs::analyzer_config`, `plug.c:7094`).
-    let analyzer_config = AudioAnalyzerConfig {
-        sample_rate,
-        channel_count: channels,
-        channel_mode: musializer_core::audio::ChannelMode::Select(0),
-    };
-    if let Err(error) = analysis.reconfigure(analyzer_config) {
-        app.shell.notify(
-            Severity::Error,
-            "No still was written",
-            &format!("The analyzer could not be configured: {error}"),
-        );
-        restore_preview(music, app, analysis, restore_position, restore_playing);
-        return None;
+    match prepared.and_then(|prepared| {
+        write_resolved_png(&prepared.pixels, &prepared.config, &destination)?;
+        Ok(prepared)
+    }) {
+        Ok(prepared) => {
+            // The line a capture can assert, and the only evidence that the
+            // still is the frame the video would have encoded: the index, not
+            // just the time (EX1's argument about `export config:`).
+            println!(
+                "export still:    t={time_seconds:.3} frame {} of {} at \
+                 {}x{} ({}x target), {}",
+                prepared.frame_index,
+                prepared.total_frames,
+                prepared.config.width,
+                prepared.config.height,
+                prepared.achieved_factor,
+                destination.display(),
+            );
+            app.shell.notify(
+                Severity::Success,
+                "Still frame saved",
+                &format!(
+                    "Frame {} at {:.3} s, rendered through the export path: {}",
+                    prepared.frame_index,
+                    time_seconds,
+                    destination.display()
+                ),
+            );
+            Some(destination)
+        }
+        Err(detail) => {
+            app.shell.notify(
+                Severity::Error,
+                "The still frame could not be written",
+                &format!("{detail}. Nothing else was changed."),
+            );
+            None
+        }
     }
+}
+
+/// A deterministic frame prepared from track time zero, in the same bottom-up
+/// RGBA layout the video encoder consumes.
+struct PreparedFrame {
+    pixels: Vec<u8>,
+    config: RenderExportConfig,
+    frame_index: u64,
+    total_frames: u64,
+    achieved_factor: u32,
+}
+
+/// Replays the offline scene path to one frame and reads back resolved pixels.
+///
+/// This is shared by PNG stills and share-preview substitution. Keeping the
+/// replay here is the important part: stateful scenes, analyzer history, beat
+/// tracking, routes, captions and automatic scene switches all see every frame
+/// they would have seen in an ordinary export. The caller must stop preview
+/// playback first and restore or reinitialize the preview/export state after.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one offline export frame needs"
+)]
+fn prepare_frame_pixels(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    time_seconds: f64,
+    progress_label: &str,
+) -> Result<PreparedFrame, String> {
+    let track = app
+        .workspace
+        .current()
+        .ok_or_else(|| "there is no track to render a frame from".to_owned())?;
+    let config = track.render_config;
+    let source = track.file_path.clone();
+    let duration_seconds = track.duration_seconds;
+    let (scene, seed) = (track.base_scene, track.scene_seed);
+
+    // Decoded here rather than streamed, exactly as `RenderJob::start` does:
+    // the analyzer must hear the file's own samples, not raylib's stereo mix.
+    let source_text = source
+        .to_str()
+        .ok_or_else(|| "the source audio path is not valid text".to_owned())?;
+    let decoded = audio
+        .new_wave(source_text)
+        .ok()
+        .filter(raylib::core::audio::Wave::is_wave_valid)
+        .and_then(|wave| {
+            let format = (wave.sample_rate(), wave.channels(), wave.frame_count());
+            musializer_runtime::decode::wave_samples(&wave).map(|samples| (samples, format))
+        });
+    let (samples, (sample_rate, channels, frame_count)) = decoded.ok_or_else(|| {
+        "the source audio decoder rejected the file, so the frame could not be prepared".to_owned()
+    })?;
+    let (total_frames, frame_index) =
+        render_export::total_frames(u64::from(frame_count), sample_rate, config.fps)
+            .and_then(|total| {
+                render_export::still_frame_index(time_seconds, config.fps, total)
+                    .map(|index| (total, index))
+            })
+            .map_err(|_| "the playhead is not on a frame this track can produce".to_owned())?;
+
+    let (mut target, achieved_factor) =
+        offline_render_target(rl, thread, &config).ok_or_else(|| {
+            "the offline surface could not be created; try a lower resolution or Balanced quality"
+                .to_owned()
+        })?;
+    analysis
+        .reconfigure(AudioAnalyzerConfig {
+            sample_rate,
+            channel_count: channels,
+            channel_mode: musializer_core::audio::ChannelMode::Select(0),
+        })
+        .map_err(|error| format!("the analyzer could not be configured: {error}"))?;
     app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
     if let Some(track) = app.workspace.current_mut() {
         track.scene_switches.reset();
@@ -1236,18 +1384,16 @@ pub(crate) fn export_still(
     {
         let (screen_width, screen_height) = (rl.get_screen_width(), rl.get_screen_height());
         let font = fonts.ui();
-        let label = "Rendering still frame";
-        // 34, the export progress screen's own title size, and a *native* one:
-        // `UI_FONT_SIZES` has no 30, so a 30 px label quantizes down to 28 and
-        // the gate counts it as a bypass of size quantization — which it is,
-        // and which is exactly how it was caught.
-        let width = widgets::measure(font, label, 34.0);
+        // 34 is the export progress screen's own native size. A free 30 px
+        // request would quantize to 28 and make the font-bank gate report a
+        // bypass, even though this transient screen still belongs to the UI.
+        let width = widgets::measure(font, progress_label, 34.0);
         let mut d = rl.begin_drawing(thread);
         d.clear_background(color::background());
         widgets::draw_text(
             &mut d,
             font,
-            label,
+            progress_label,
             (screen_width as f32 - width) / 2.0,
             screen_height as f32 / 2.0 - 20.0,
             34.0,
@@ -1255,10 +1401,7 @@ pub(crate) fn export_still(
         );
     }
 
-    let mut pixels = vec![0u8; config.width as usize * config.height as usize * 4];
-    let mut resolver = LinearResolver::new();
     let mut sample_cursor = 0u64;
-    let mut failure: Option<String> = None;
     {
         let mut d = rl.begin_drawing(thread);
         for index in 0..=frame_index {
@@ -1268,24 +1411,18 @@ pub(crate) fn export_still(
             let slice = if index == 0 {
                 &[][..]
             } else {
-                match render_export::sample_cursor(
+                let next = render_export::sample_cursor(
                     index,
                     sample_rate,
                     config.fps,
                     u64::from(frame_count),
-                ) {
-                    Ok(next) => {
-                        let channels = channels as usize;
-                        let from = sample_cursor as usize * channels;
-                        let to = (next as usize * channels).min(samples.len());
-                        sample_cursor = next;
-                        samples.get(from..to).unwrap_or(&[])
-                    }
-                    Err(error) => {
-                        failure = Some(format!("{error}"));
-                        break;
-                    }
-                }
+                )
+                .map_err(|error| format!("{error}"))?;
+                let channel_count = channels as usize;
+                let from = sample_cursor as usize * channel_count;
+                let to = (next as usize * channel_count).min(samples.len());
+                sample_cursor = next;
+                samples.get(from..to).unwrap_or(&[])
             };
             let draws = index == frame_index;
             let pixel_scale = config
@@ -1318,53 +1455,20 @@ pub(crate) fn export_still(
         }
     }
 
-    let published = failure.map_or_else(
-        || {
-            resolve_and_write_png(
-                &mut target,
-                &mut resolver,
-                &mut pixels,
-                &config,
-                &destination,
-            )
-        },
-        Err,
-    );
-    drop(target);
-    restore_preview(music, app, analysis, restore_position, restore_playing);
-
-    match published {
-        Ok(()) => {
-            // The line a capture can assert, and the only evidence that the
-            // still is the frame the video would have encoded: the index, not
-            // just the time (EX1's argument about `export config:`).
-            println!(
-                "export still:    t={time_seconds:.3} frame {frame_index} of {total_frames} at \
-                 {}x{} ({achieved_factor}x target), {}",
-                config.width,
-                config.height,
-                destination.display(),
-            );
-            app.shell.notify(
-                Severity::Success,
-                "Still frame saved",
-                &format!(
-                    "Frame {frame_index} at {:.3} s, rendered through the export path: {}",
-                    time_seconds,
-                    destination.display()
-                ),
-            );
-            Some(destination)
-        }
-        Err(detail) => {
-            app.shell.notify(
-                Severity::Error,
-                "The still frame could not be written",
-                &format!("{detail}. Nothing else was changed."),
-            );
-            None
-        }
-    }
+    let mut pixels = vec![0u8; config.width as usize * config.height as usize * 4];
+    resolve_offline_frame(
+        &mut target,
+        &mut LinearResolver::new(),
+        &mut pixels,
+        &config,
+    )?;
+    Ok(PreparedFrame {
+        pixels,
+        config,
+        frame_index,
+        total_frames,
+        achieved_factor,
+    })
 }
 
 /// Where a still goes, following the video's own convention (UX0-C10).
@@ -1421,12 +1525,11 @@ fn ask_for_still_destination(
 /// The readback and the resolve are the export's, verbatim (EX3): a still that
 /// averaged in gamma space would be exactly the third of the light the video
 /// export used to lose, in a file whose whole purpose is to be looked at.
-fn resolve_and_write_png(
+fn resolve_offline_frame(
     target: &mut RenderTexture2D,
     resolver: &mut LinearResolver,
     pixels: &mut Vec<u8>,
     config: &RenderExportConfig,
-    destination: &Path,
 ) -> Result<(), String> {
     let mut image = target
         .load_image()
@@ -1443,8 +1546,16 @@ fn resolve_and_write_png(
             config.height as usize,
             pixels,
         )
-        .map_err(|error| format!("the frame could not be resolved: {error}"))?;
+        .map_err(|error| format!("the frame could not be resolved: {error}"))
+}
 
+/// Writes already-resolved bottom-up export pixels as a conventional top-down
+/// PNG. The video encoder performs the same flip while streaming raw frames.
+fn write_resolved_png(
+    pixels: &[u8],
+    config: &RenderExportConfig,
+    destination: &Path,
+) -> Result<(), String> {
     let Some(path) = destination.to_str() else {
         return Err("the destination path is not valid text".to_owned());
     };
@@ -1500,7 +1611,7 @@ fn resolve_and_write_png(
 ///
 /// **This is what makes a still the same picture as the video frame beside it**
 /// (UX0-C10). The two callers are [`ExportSession::step`] and
-/// [`export_still`], and every decision that shapes a frame — which samples the
+/// [`prepare_frame_pixels`], and every decision that shapes a frame — which samples the
 /// analyzer has heard, the beat phase, the automatic scene switch, the routed
 /// settings, the project lanes — happens here once rather than in two places
 /// that could drift. The closure takes the assembled frame because
@@ -1586,6 +1697,10 @@ pub(crate) struct ExportSession {
     /// cannot prove which lane produced it, and the same line lets the headless
     /// gate compare export with a parked preview at the identical scene time.
     reported_frame_lanes: bool,
+    /// Deterministic playhead pixels used only for the first frame handed to
+    /// the encoder. The ordinary frame is still prepared and drawn first, so
+    /// consuming this cannot change any subsequent scene state or timing.
+    share_frame: Option<PreparedFrame>,
 }
 
 /// Builds any whole-track data the export's frames will need, before the first one
@@ -1640,8 +1755,11 @@ impl ExportSession {
         music: Option<&Music<'audio>>,
         app: &mut crate::App,
         analysis: &mut crate::Analysis,
+        renderer: &mut scene_host::SceneRenderer,
+        fonts: &Faces,
         destination: &Path,
         window: Option<(f64, f64)>,
+        share_frame_seconds: Option<f64>,
     ) -> Option<Self> {
         let Some(track) = app.workspace.current() else {
             app.shell.notify(
@@ -1668,6 +1786,45 @@ impl ExportSession {
             }
             music.stop_stream();
         }
+
+        // Prepare the selected share frame in its own replay before the real
+        // export starts. `prepare_frame_pixels` resets and advances all
+        // stateful lanes from track time zero; the ordinary export reset below
+        // then starts from zero again. Thus the chosen image can replace only
+        // encoder frame zero without leaking its future scene state into frame
+        // one, shifting audio, or adding a frame to the file.
+        let share_frame = match share_frame_seconds {
+            None => None,
+            Some(seconds) => match prepare_frame_pixels(
+                rl,
+                thread,
+                audio,
+                app,
+                analysis,
+                renderer,
+                fonts,
+                seconds,
+                "Preparing share frame",
+            ) {
+                Ok(prepared) => {
+                    println!(
+                        "export share frame: playhead t={:.3} frame {} -> encoded frame 0; audio and duration unchanged",
+                        render_export::frame_time_seconds(prepared.frame_index, prepared.config.fps),
+                        prepared.frame_index,
+                    );
+                    Some(prepared)
+                }
+                Err(error) => {
+                    app.shell.notify(
+                        Severity::Error,
+                        "Export was not started",
+                        &format!("The selected share frame could not be prepared: {error}."),
+                    );
+                    restore_preview(music, app, analysis, restore_position, restore_playing);
+                    return None;
+                }
+            },
+        };
 
         let (target, achieved_factor) = match offline_render_target(rl, thread, &config) {
             Some(pair) => pair,
@@ -1773,6 +1930,7 @@ impl ExportSession {
             restore_position,
             restore_playing,
             reported_frame_lanes: false,
+            share_frame,
         })
     }
 
@@ -2036,17 +2194,37 @@ impl ExportSession {
         // The pixel buffer and the job are separate fields, so this needs the
         // two borrows split rather than `self.job_mut()` while `self.pixels` is
         // read.
-        let ExportSession { job, pixels, .. } = self;
+        let ExportSession {
+            job,
+            pixels,
+            share_frame,
+            ..
+        } = self;
         let job = job
             .as_mut()
             .expect("a session is dropped on the tick its job is concluded");
-        job.send_frame(pixels, config.width as usize, config.height as usize)
-            .map_err(|error| {
-                (
-                    "Export failed while writing a frame",
-                    format!("{error}. The previous destination was preserved."),
-                )
-            })?;
+        let uses_share_frame = job.encoded_frames() == 0 && share_frame.is_some();
+        let encoded_pixels = if uses_share_frame {
+            &share_frame.as_ref().expect("checked above").pixels
+        } else {
+            pixels
+        };
+        job.send_frame(
+            encoded_pixels,
+            config.width as usize,
+            config.height as usize,
+        )
+        .map_err(|error| {
+            (
+                "Export failed while writing a frame",
+                format!("{error}. The previous destination was preserved."),
+            )
+        })?;
+        if uses_share_frame {
+            // Release an 8 MiB buffer at 1080p as soon as the only frame that
+            // can use it is safely in the encoder pipe.
+            *share_frame = None;
+        }
         job.advance();
         Ok(true)
     }
@@ -2347,8 +2525,10 @@ mod tests {
         claim(clip_ids::SET_IN, "clip in");
         claim(clip_ids::SET_OUT, "clip out");
         claim(clip_ids::STILL, "save still");
-        // 4 sizes + 3 rates + 3 qualities + 3 footer + 4 aspects + 4 clip.
-        assert_eq!(used.len(), 21);
+        claim(clip_ids::SHARE_NORMAL, "normal share frame");
+        claim(clip_ids::SHARE_PLAYHEAD, "playhead share frame");
+        // 4 sizes + 3 rates + 3 qualities + 3 footer + 4 aspects + 6 clip/share.
+        assert_eq!(used.len(), 23);
     }
 
     /// The CLIP row's readout says what the export will cover, in whichever

@@ -867,6 +867,9 @@ fn run(
             // reach a file, which is the same "a control nothing presses" hole
             // one level further along.
             probe_save_to = probe.save_to.clone();
+            if probe.share_frame_playhead {
+                app.shell.export_share_frame_seconds = Some(probe.seek_seconds.unwrap_or(0.0));
+            }
             // Delivered by the shell on the first frame it draws, wherever
             // `hover=` parked the pointer.
             app.shell.probe_wheel = probe.wheel;
@@ -1101,8 +1104,11 @@ fn run(
                 music.as_ref(),
                 &mut app,
                 &mut analysis,
+                &mut renderer,
+                &fonts,
                 &destination,
                 options.render_window,
+                None,
             );
             if export.is_none() {
                 running = false;
@@ -1934,6 +1940,7 @@ fn run(
                     if let Some(destination) =
                         ui::panels::export::ask_for_destination(&mut app, probe_save_to.as_deref())
                     {
+                        let share_frame_seconds = app.shell.export_share_frame_seconds;
                         export = ExportSession::begin(
                             &mut rl,
                             &thread,
@@ -1941,8 +1948,11 @@ fn run(
                             music.as_ref(),
                             &mut app,
                             &mut analysis,
+                            &mut renderer,
+                            &fonts,
                             &destination,
                             window,
+                            share_frame_seconds,
                         );
                     }
                 }
@@ -4525,6 +4535,10 @@ fn select_track<'audio>(
 
     app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
     app.workspace.select(index);
+    // A share frame names a visual moment in one track. Carrying its seconds
+    // into another track would silently choose an unrelated picture there, so
+    // unlike the generic clip window it clears on a successful track switch.
+    app.shell.export_share_frame_seconds = None;
     // `lyric_editor_clear_draft()` at `plug.c:5274`, and the reason a stale
     // binding is unreachable rather than merely guarded against (review 1.3).
     app.shell.lyrics.enter_track(Some(index));
@@ -5082,6 +5096,13 @@ impl Report {
                 app.shell
                     .export_clip
                     .describe(track.duration_seconds, track.render_config.fps)
+            );
+            println!(
+                "export share:    {}",
+                app.shell.export_share_frame_seconds.map_or_else(
+                    || "normal output start".to_owned(),
+                    |seconds| format!("playhead at {seconds:.3} s")
+                )
             );
         }
         // What `--ui-probe click=` actually reached (EX1). `claimed` is the

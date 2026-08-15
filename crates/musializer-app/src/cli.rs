@@ -377,6 +377,14 @@ pub struct UiProbe {
     /// after it — the `.mp4` extension rule, the alias checks, the geometry —
     /// still applies.
     pub save_to: Option<PathBuf>,
+    /// `share-frame=playhead`: seed the Export panel's first-frame choice from
+    /// `time=` before a single `click=` is delivered.
+    ///
+    /// **Invented because the claim is about two presses.** A person first
+    /// chooses the playhead frame and then presses Render, while `click=` can
+    /// prove only one control per run. This seeds the first decision so the
+    /// second still travels through the real button and destination seam.
+    pub share_frame_playhead: bool,
     /// `audio-stall=MS`: block only the main/refill thread once during a probe.
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
@@ -1086,6 +1094,12 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // unphotographable in exactly the way the probe exists to fix.
         "drop" => probe.drop_file = Some(PathBuf::from(value)),
         "time" => probe.seek_seconds = Some(parse_seconds(value)?),
+        "share-frame" => {
+            if value != "playhead" {
+                return None;
+            }
+            probe.share_frame_playhead = true;
+        }
         "size" => probe.size = Some(parse_resolution(value)?),
         "sidebar" => probe.sidebar_width = Some(parse_split_position(value)?),
         "inspector" => probe.inspector_width = Some(parse_split_position(value)?),
@@ -1297,6 +1311,8 @@ Diagnostics:
                           tooltip dwell; click=XxY presses there over
                           three frames; wheel=NOTCHES turns the wheel
                           once wherever hover= parked it,
+                          share-frame=playhead seeds the Export panel's
+                          first-frame choice from time= before click=,
                           scene-pick=NAME presses that scene tile,
                           picker=ink|plate|glow and tune=pulse|hue open
                           the caption pane's disclosures,
@@ -1799,7 +1815,8 @@ mod tests {
         let probe = parse_ui_probe(
             "panel=assist,assist=confirm,lyric=3,play=1,fullscreen=0,\
              time=12.5,zoom=4,size=960x640,sidebar=400,inspector=440,\
-             timeline-height=330,lyrics-file=/tmp/a.txt,drop=/tmp/b.musi",
+             timeline-height=330,lyrics-file=/tmp/a.txt,drop=/tmp/b.musi,\
+             share-frame=playhead",
         )
         .unwrap();
         assert_eq!(probe.panel, UiPanel::Assist);
@@ -1818,6 +1835,7 @@ mod tests {
             Some(PathBuf::from("/tmp/a.txt"))
         );
         assert_eq!(probe.drop_file, Some(PathBuf::from("/tmp/b.musi")));
+        assert!(probe.share_frame_playhead);
 
         let probe = parse_ui_probe("panel=lyrics,style=caption,fonts=consent").unwrap();
         assert!(probe.caption_style_pane);
@@ -1963,6 +1981,8 @@ mod tests {
         assert!(parse_ui_probe("assist=candidate").is_some());
         // time= is parse_seconds: finite and non-negative.
         assert!(parse_ui_probe("time=-1").is_none());
+        assert!(parse_ui_probe("share-frame=playhead").is_some());
+        assert!(parse_ui_probe("share-frame=normal").is_none());
         assert!(parse_ui_probe("sidebar=79").is_none());
         assert!(parse_ui_probe("sidebar=80").is_some());
         assert!(parse_ui_probe("timeline-height=4096").is_some());

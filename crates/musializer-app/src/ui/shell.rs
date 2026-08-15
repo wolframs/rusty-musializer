@@ -595,6 +595,13 @@ pub struct Shell {
     /// outlives a frame. `--render-window` seeds it at startup so the panel and
     /// the command line are one state.
     pub export_clip: musializer_core::timing::render_export::ClipSelection,
+    /// Optional playhead time whose deterministic render replaces encoded
+    /// frame zero of the next video export.
+    ///
+    /// Session-only for the same reason as [`Self::export_clip`]: this is a
+    /// publishing choice for the render being made now, not authored project
+    /// content. `None` preserves the ordinary export path byte-for-byte.
+    pub export_share_frame_seconds: Option<f64>,
     /// The font browser's catalogue, query, selection and consent, plus the
     /// importer it drives.
     ///
@@ -1073,6 +1080,7 @@ impl Shell {
             lyrics: super::panels::lyrics::LyricEditor::new(),
             scene_lane: super::panels::scene_timeline::SceneLaneEditor::default(),
             export_clip: musializer_core::timing::render_export::ClipSelection::full_track(),
+            export_share_frame_seconds: None,
             ui_preferences,
             ui_scale_override: None,
             split_drag: None,

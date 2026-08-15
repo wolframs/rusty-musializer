@@ -810,6 +810,7 @@ features these scenes are made of.
 | PX3-c | The clip reaches `RenderRequest::window`, and `--render-window` seeds the row | `main.rs` | **done** |
 | PX3-d | `Save still`: the frame at the playhead as a PNG, through the export renderer | `ui/panels/export.rs` | **done** |
 | PX3-e | `--ui-probe save-to=`, `export clip:`, `export still:`, and a gate section that presses all of it | `cli.rs`, `main.rs`, `tools/headless_check.sh` | **done** |
+| PX3-f | `SHARE FRAME`: use the playhead's deterministic picture as encoded frame zero without shifting the export | `ui/panels/export.rs`, `main.rs` | **done** |
 
 **One press is a renderable clip.** `set_start` selects from the playhead *to the
 end of the track* and `set_end` from the start *to here*, so the common gesture —
@@ -870,6 +871,16 @@ because two adjacent frames of a slow scene would also score well. The ceiling i
 h264 4:2:0 on a saturated cyan feature, not our error — EX3 measured the same
 codec turning a 1 px cyan line into `(97,227,225)`.
 
+**The share frame changes the embed, not the timeline.** `SHARE FRAME -> Use
+playhead` prepares the selected time through the still's deterministic replay,
+then resets the analyzer, beat tracker, automatic plan and `SceneInstance` before
+the real export begins. The ordinary first timeline frame is still updated and
+drawn — its pixels alone are discarded — and the selected pixels are handed to
+the encoder for encoded frame zero. No frame is inserted, duplicated or moved;
+audio, duration and every later scene update keep their normal timestamp. The
+choice is opt-in and session-only, so `Normal` preserves the previous export path
+and remains the visible default.
+
 **Evidence.**
 
 | claim | how |
@@ -880,8 +891,10 @@ codec turning a 1 px cyan line into `(97,227,225)`.
 | The clip reaches the file | Gate: the render button pressed with `save-to=`, then ffprobe — **90 frames, 3.000 s**, and `export frame lanes: t=2.000` proving it is a window rather than a short render from zero |
 | The still is deterministic | Gate: two runs, identical md5 |
 | The still is *that* frame | Gate: PSNR against the MP4's own frame, with the frame 0.5 s later as the negative control |
+| The share choice takes a press at the 960x640 minimum | Gate: `click=` on `Use playhead`, then `export share: playhead at 4.000 s` and a non-empty widget claim |
+| Only encoded frame zero is substituted | Gate: a 2.0–3.0 s clip with a 4.0 s share frame remains **30 frames / 1.000 s video / 1.000 s audio**; frame zero matches the ordinary 4.0 s export at >40 dB, rejects the ordinary 2.0 s opener at <30 dB, and frame one still matches the ordinary clip at >40 dB |
 | 16:9 full-track export is unchanged | `85d6dcc7b6fe71ba8ce4e010f1f781e4` from a build of `9db6684` and from this branch — same md5, not "looks the same" |
-| Panel ids do not collide | `the_panels_own_widget_indices_never_collide` claims all 21 indices this panel mints; `widgets::id::ALL` only protects namespaces, and EX1 was an index collision |
+| Panel ids do not collide | `the_panels_own_widget_indices_never_collide` claims all 23 indices this panel mints; `widgets::id::ALL` only protects namespaces, and EX1 was an index collision |
 
 **`--ui-probe save-to=PATH` is new, and it is `click=`'s missing half.** EX1's
 probe proves a control takes a press; it cannot prove the press produced a file,
@@ -898,6 +911,7 @@ in this repository to produce an MP4 by pressing the button a user presses.
 | `--render-window` is a command-line-only state | It seeds the panel's CLIP row, and the panel is what the render button reads | A panel that said "whole track" while the flag was in force would be lying about the file it is about to write |
 | A clip and a full render propose the same file name | `suggest_clip_path` adds `-clip-MMmSSsMMM-MMmSSsMMM` | Otherwise the teaser silently replaces the full render of the same track and scene |
 | No still export at all | `Save still`, through the export renderer, needing no encoder | UX0-C10. It is the one control in this panel that works without FFmpeg installed |
+| Every MP4 begins with its timeline's first frame | `SHARE FRAME` can replace encoded frame zero with the playhead's deterministic render | Social embeds commonly choose the first decoded frame; the user can choose an inviting preview without changing the song or video timing |
 
 **Not done, deliberately.**
 
@@ -912,8 +926,10 @@ in this repository to produce an MP4 by pressing the button a user presses.
   user would reach for next, and it belongs to the timeline's own gesture owner
   (`shell.rs`), not to this panel.
 - **The still is not reused for scene thumbnails (UX0-C05) or cover output
-  (UX0-C09).** Those need a cache keyed by scene and a deterministic seeded
-  moment; the renderer half now exists and is the reusable piece.
+  (UX0-C09).** The share-frame feature reuses its one-frame renderer, but it is
+  intentionally not CX-5's cached, revision-keyed, cancellable poster service.
+  Scene/recent-project thumbnails still need that service rather than calling
+  this synchronous path ten times.
 - **A long track's still blocks the frame loop.** Decoding and fast-forwarding to
   the playhead is a second or two on an eight-second fixture in a debug build and
   will be longer on a real track; the window draws "Rendering still frame" and

@@ -1099,6 +1099,116 @@ PYEOF
     fi
 fi
 
+# The share frame: a playhead-selected picture replaces encoded frame zero and
+# nothing else. This is deliberately beside the still check because the two use
+# the same deterministic replay; the checks below prove that reuse reaches the
+# MP4 rather than stopping at a plausible report line.
+echo "=== the share frame is encoded frame zero only ==="
+capture "click-share-frame" 960x640 \
+    --ui-probe "panel=export,time=4.0,click=383x603" || SWEEP_FAILED=1
+SHARE_SELECTION="$(sed -n 's/^export share: *//p' \
+    "$OUT_DIR/click-share-frame.txt")"
+SHARE_CLAIM="$(sed -n 's/^click probe: *//p' \
+    "$OUT_DIR/click-share-frame.txt")"
+echo "share-frame choice: [${SHARE_SELECTION:-<absent>}] via ${SHARE_CLAIM:-<absent>}"
+if [ "$SHARE_SELECTION" != "playhead at 4.000 s" ]; then
+    echo "FAIL: Use playhead selected [$SHARE_SELECTION], expected 4.000 s" >&2
+    SWEEP_FAILED=1
+fi
+case "$SHARE_CLAIM" in
+    *"claimed=nothing"*|"")
+        echo "FAIL: the share-frame button did not claim its press" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+
+SHARE_MP4="$OUT_DIR/share-frame.mp4"
+SHARE_NORMAL_TWO="$OUT_DIR/share-normal-two.mp4"
+SHARE_NORMAL_FOUR="$OUT_DIR/share-normal-four.mp4"
+rm -f "$SHARE_MP4" "$SHARE_NORMAL_TWO" "$SHARE_NORMAL_FOUR"
+# `share-frame=playhead` seeds the first of the two decisions a person makes so
+# the one available `click=` can still press the real Render button. It is a
+# probe seam, not a second export path.
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        --resolution 640x360 --quality balanced --render-window 2 1 \
+        --probe-frames 40 $MZ_ENC \
+        --ui-probe "panel=export,time=4,share-frame=playhead,click=1153x683,save-to=$SHARE_MP4" \
+    >"$OUT_DIR/share-frame.txt" 2>&1 || true
+share_normal_export() {
+    # share_normal_export START PATH LABEL
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
+            --resolution 640x360 --quality balanced \
+            --render "$2" --render-window "$1" 1 $MZ_ENC \
+        >"$OUT_DIR/share-normal-$3.txt" 2>&1 || true
+}
+share_normal_export 2 "$SHARE_NORMAL_TWO" two
+share_normal_export 4 "$SHARE_NORMAL_FOUR" four
+if [ ! -f "$SHARE_MP4" ] || [ ! -f "$SHARE_NORMAL_TWO" ] \
+    || [ ! -f "$SHARE_NORMAL_FOUR" ]; then
+    echo "FAIL: the share-frame comparison could not produce all three MP4s" >&2
+    SWEEP_FAILED=1
+else
+    SHARE_LINE="$(sed -n 's/^export share frame: *//p' \
+        "$OUT_DIR/share-frame.txt")"
+    SHARE_FIRST_TIMELINE="$(sed -n 's/^export frame lanes: t=\([0-9.]*\).*/\1/p' \
+        "$OUT_DIR/share-frame.txt" | head -1)"
+    SHARE_FRAMES="$(ffprobe -v error -select_streams v:0 -count_frames \
+        -show_entries stream=nb_read_frames -of csv=p=0 "$SHARE_MP4")"
+    SHARE_VIDEO_DURATION="$(ffprobe -v error -select_streams v:0 \
+        -show_entries stream=duration -of csv=p=0 "$SHARE_MP4")"
+    SHARE_AUDIO_DURATION="$(ffprobe -v error -select_streams a:0 \
+        -show_entries stream=duration -of csv=p=0 "$SHARE_MP4")"
+    echo "share-frame export: ${SHARE_LINE:-<absent>}; timeline starts at ${SHARE_FIRST_TIMELINE:-?}; $SHARE_FRAMES frames, video=${SHARE_VIDEO_DURATION}s audio=${SHARE_AUDIO_DURATION}s"
+    case "$SHARE_LINE" in
+        "playhead t=4.000 frame 120 -> encoded frame 0; audio and duration unchanged") : ;;
+        *) echo "FAIL: the share-frame export reported [$SHARE_LINE]" >&2; SWEEP_FAILED=1 ;;
+    esac
+    if [ "$SHARE_FIRST_TIMELINE" != "2.000" ]; then
+        echo "FAIL: preparing the 4 s share frame contaminated the real export start ($SHARE_FIRST_TIMELINE)" >&2
+        SWEEP_FAILED=1
+    fi
+    if [ "$SHARE_FRAMES" != "30" ] || [ "$SHARE_VIDEO_DURATION" != "1.000000" ] \
+        || [ "$SHARE_AUDIO_DURATION" != "1.000000" ]; then
+        echo "FAIL: share substitution changed the one-second clip's frame/audio timing" >&2
+        SWEEP_FAILED=1
+    fi
+
+    ffmpeg -v error -i "$SHARE_MP4" -vf "select=lte(n\,1)" -vsync 0 \
+        "$OUT_DIR/share-frame-%d.png" -y
+    ffmpeg -v error -i "$SHARE_NORMAL_TWO" -vf "select=lte(n\,1)" -vsync 0 \
+        "$OUT_DIR/share-normal-two-%d.png" -y
+    ffmpeg -v error -i "$SHARE_NORMAL_FOUR" -vf "select=eq(n\,0)" -vframes 1 \
+        "$OUT_DIR/share-normal-four-1.png" -y
+    share_psnr() {
+        ffmpeg -hide_banner -i "$1" -i "$2" -lavfi psnr -f null - 2>&1 \
+            | sed -n 's/.*average:\([^ ]*\).*/\1/p' | head -1
+    }
+    SHARE_MATCH="$(share_psnr "$OUT_DIR/share-frame-1.png" \
+        "$OUT_DIR/share-normal-four-1.png")"
+    SHARE_CONTROL="$(share_psnr "$OUT_DIR/share-frame-1.png" \
+        "$OUT_DIR/share-normal-two-1.png")"
+    SHARE_LATER="$(share_psnr "$OUT_DIR/share-frame-2.png" \
+        "$OUT_DIR/share-normal-two-2.png")"
+    echo "share-frame PSNR: selected=${SHARE_MATCH:-?} dB control=${SHARE_CONTROL:-?} dB later=${SHARE_LATER:-?} dB"
+    python3 - "${SHARE_MATCH:-0}" "${SHARE_CONTROL:-0}" "${SHARE_LATER:-0}" <<'PYEOF' || SWEEP_FAILED=1
+import sys
+selected, control, later = map(float, sys.argv[1:])
+if selected < 40.0:
+    print(f"FAIL: encoded frame zero is only {selected:.2f} dB from the selected playhead frame", file=sys.stderr)
+    sys.exit(1)
+if control > 30.0:
+    print(f"FAIL: the negative control reached {control:.2f} dB; it cannot distinguish the selected frame", file=sys.stderr)
+    sys.exit(1)
+if later < 40.0:
+    print(f"FAIL: frame one drifted from the ordinary export ({later:.2f} dB)", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+fi
+
 echo "=== the lyrics editor, over a project that actually has cues ==="
 # The panel loop above photographs the editor over the bare sweep, which has no
 # lyrics: an empty cue list is a real state and worth a frame, but it cannot show
