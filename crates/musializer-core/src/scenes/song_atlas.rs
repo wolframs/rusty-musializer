@@ -107,47 +107,34 @@ pub fn hash_unit(seed: u64, salt: u32) -> f32 {
     (hash(seed, salt) & 0xffff) as f32 / 65535.0
 }
 
-/// How many rows to draw for `available` slices at `detail_level`
-/// (`song_atlas_map_render_sample_count`, `song_atlas_map.c:48-58`).
+/// Stable slice indices for a sampling-detail level.
 ///
-/// Returns 0 for anything the renderer must skip.
-#[must_use]
-pub fn render_sample_count(available: usize, detail_level: usize) -> usize {
-    if available < 2 || available > MAX_SLICES || detail_level < 1 || detail_level > MAX_DETAIL {
-        return 0;
-    }
-    let mut sample_count = (available * detail_level + MAX_DETAIL - 1) / MAX_DETAIL;
-    if sample_count < 2 {
-        sample_count = 2;
-    }
-    if sample_count > available {
-        sample_count = available;
-    }
-    sample_count
-}
-
-/// Which slice index sample `sample` maps to
-/// (`song_atlas_map_render_sample_index`, `song_atlas_map.c:60-68`).
-///
-/// C returns `SIZE_MAX` for an invalid request, which every caller would then use
-/// as an index; `None` makes that impossible.
-#[must_use]
-pub fn render_sample_index(
+/// The old range-relative interpolation redistributed the chosen rows whenever
+/// `first` advanced. At detail 1 or 2 that made unchanged terrain ahead of the
+/// playhead acquire different source slices every frame. Anchoring the pattern
+/// to each slice's absolute index makes advancing the window remove old rows
+/// without reshaping the rest of the song. Detail 3 still selects every row.
+pub fn render_sample_indices(
     first: usize,
     available: usize,
-    sample_count: usize,
-    sample: usize,
-) -> Option<usize> {
-    if available < 2
-        || available > MAX_SLICES
-        || sample_count < 2
-        || sample_count > available
-        || sample >= sample_count
-        || first > usize::MAX - available
-    {
-        return None;
-    }
-    Some(first + (sample * (available - 1) + (sample_count - 1) / 2) / (sample_count - 1))
+    detail_level: usize,
+) -> impl Iterator<Item = usize> {
+    let valid = available >= 2
+        && available <= MAX_SLICES
+        && (1..=MAX_DETAIL).contains(&detail_level)
+        && first <= usize::MAX - available;
+    (0..available).filter_map(move |offset| {
+        if !valid {
+            return None;
+        }
+        let index = first + offset;
+        (index % MAX_DETAIL < detail_level).then_some(index)
+    })
+}
+
+#[must_use]
+pub fn render_sample_count(first: usize, available: usize, detail_level: usize) -> usize {
+    render_sample_indices(first, available, detail_level).count()
 }
 
 /// Converts a distance in slices into a distance in world spacing units
@@ -622,31 +609,38 @@ mod tests {
     }
 
     #[test]
-    fn render_sampling_matches_the_c_arithmetic() {
-        // Detail 3 of 3 samples every slice; detail 1 samples a third of them.
-        assert_eq!(render_sample_count(100, 3), 100);
-        assert_eq!(render_sample_count(100, 1), 34);
-        assert_eq!(render_sample_count(100, 2), 67);
-        // Guards: too few slices, too many, and an out-of-range detail level.
-        assert_eq!(render_sample_count(1, 3), 0);
-        assert_eq!(render_sample_count(MAX_SLICES + 1, 3), 0);
-        assert_eq!(render_sample_count(100, 0), 0);
-        assert_eq!(render_sample_count(100, MAX_DETAIL + 1), 0);
+    fn render_sampling_is_anchored_to_the_song() {
+        assert_eq!(
+            render_sample_indices(0, 10, 1).collect::<Vec<_>>(),
+            vec![0, 3, 6, 9]
+        );
+        assert_eq!(
+            render_sample_indices(0, 10, 2).collect::<Vec<_>>(),
+            vec![0, 1, 3, 4, 6, 7, 9]
+        );
+        assert_eq!(
+            render_sample_indices(0, 10, 3).collect::<Vec<_>>(),
+            (0..10).collect::<Vec<_>>()
+        );
 
-        // The index walk spans the whole range and is monotonic.
-        let count = render_sample_count(100, 1);
-        assert_eq!(render_sample_index(0, 100, count, 0), Some(0));
-        assert_eq!(render_sample_index(0, 100, count, count - 1), Some(99));
-        let mut previous = 0;
-        for sample in 0..count {
-            let index = render_sample_index(7, 100, count, sample).expect("in range");
-            assert!(index >= previous, "the walk is monotonic");
-            previous = index;
+        // Advancing the visible window may discard rows behind the playhead,
+        // but every row still ahead must retain exactly the same source slice.
+        for detail in 1..=MAX_DETAIL {
+            let before = render_sample_indices(30, 100, detail).collect::<Vec<_>>();
+            let after = render_sample_indices(31, 99, detail).collect::<Vec<_>>();
+            assert_eq!(
+                before
+                    .into_iter()
+                    .filter(|&row| row >= 31)
+                    .collect::<Vec<_>>(),
+                after
+            );
         }
-        // Out of range requests must not become an index.
-        assert_eq!(render_sample_index(0, 100, count, count), None);
-        assert_eq!(render_sample_index(0, 1, 2, 0), None);
-        assert_eq!(render_sample_index(usize::MAX, 100, count, 0), None);
+
+        assert_eq!(render_sample_indices(0, 1, 3).count(), 0);
+        assert_eq!(render_sample_indices(0, MAX_SLICES + 1, 3).count(), 0);
+        assert_eq!(render_sample_indices(0, 100, 0).count(), 0);
+        assert_eq!(render_sample_indices(usize::MAX, 100, 3).count(), 0);
     }
 
     #[test]

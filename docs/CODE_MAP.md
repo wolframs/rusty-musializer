@@ -13,8 +13,8 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 40 | 60,251 | 437 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 93 | 58,650 | 950 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 40 | 60,223 | 437 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 93 | 58,644 | 950 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 26 | 14,829 | 176 |
 | [`raylib-5-5-link`](../crates/raylib-5-5-link/Cargo.toml) | Builds and links raylib 5.5 from vendored source, for raylib-sys nobuild mode | `raylib_5_5_link` (lib), `build-script-build` (custom-build) | 2 | 126 | 0 |
 
@@ -72,7 +72,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/pentagram.rs`](../crates/musializer-app/src/scenes/pentagram.rs) | 309 | 0 | Pentagram Orbits: the drawing half. |
 | [`src/scenes/phosphor_dream.rs`](../crates/musializer-app/src/scenes/phosphor_dream.rs) | 986 | 9 | Phosphor Dream: the drawing half. |
 | [`src/scenes/pulse_field.rs`](../crates/musializer-app/src/scenes/pulse_field.rs) | 186 | 0 | Pulse Field: the drawing half. |
-| [`src/scenes/song_atlas.rs`](../crates/musializer-app/src/scenes/song_atlas.rs) | 720 | 0 | Song Atlas: the drawing half. |
+| [`src/scenes/song_atlas.rs`](../crates/musializer-app/src/scenes/song_atlas.rs) | 692 | 0 | Song Atlas: the drawing half. |
 | [`src/scenes/spectral_terrarium.rs`](../crates/musializer-app/src/scenes/spectral_terrarium.rs) | 392 | 0 | Spectral Terrarium: the drawing half. |
 | [`src/scenes/spectrum.rs`](../crates/musializer-app/src/scenes/spectrum.rs) | 217 | 0 | Spectrum: the drawing half. |
 | [`src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 8,357 | 53 | The **AI settings** dialog: one modal surface for assist routing, local runtimes, Codex, OpenRouter and the privacy/provenance summary. |
@@ -167,7 +167,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/pentagram.rs`](../crates/musializer-core/src/scenes/pentagram.rs) | 599 | 13 | Pentagram Orbits: the Lyness phase portrait, traced deterministically. |
 | [`src/scenes/phosphor_dream.rs`](../crates/musializer-core/src/scenes/phosphor_dream.rs) | 1,708 | 16 | Phosphor Dream: deterministic state, the field bank, and grid evaluation. |
 | [`src/scenes/pulse_field.rs`](../crates/musializer-core/src/scenes/pulse_field.rs) | 110 | 3 | Pulse Field: deterministic state and update. |
-| [`src/scenes/song_atlas.rs`](../crates/musializer-core/src/scenes/song_atlas.rs) | 688 | 10 | Song Atlas: deterministic state, update, and the render-side map sampling. |
+| [`src/scenes/song_atlas.rs`](../crates/musializer-core/src/scenes/song_atlas.rs) | 682 | 10 | Song Atlas: deterministic state, update, and the render-side map sampling. |
 | [`src/scenes/spectral_terrarium.rs`](../crates/musializer-core/src/scenes/spectral_terrarium.rs) | 701 | 7 | Spectral Terrarium: deterministic state and update. |
 | [`src/scenes/spectrum.rs`](../crates/musializer-core/src/scenes/spectrum.rs) | 62 | 2 | Spectrum: the registry half. There is no deterministic state. |
 | [`src/timing/mod.rs`](../crates/musializer-core/src/timing/mod.rs) | 9 | 0 | Deterministic time and frame arithmetic. |

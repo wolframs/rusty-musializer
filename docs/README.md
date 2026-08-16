@@ -15,9 +15,6 @@ authoritative code and evidence without reconstructing the project from scratch.
 - [`ASSIST_PIPELINE.md`](ASSIST_PIPELINE.md) follows an Assist request from the UI
   through the Python evidence tools, validation, staging, and project application.
   It also records the lyrics timing design and its trust boundaries.
-- [`PHASE0_INVENTORY.md`](PHASE0_INVENTORY.md) records the observable contract
-  inherited from the frozen C application: CLI grammar, settings, schemas, and
-  environment variables. It is a contract inventory, not a code tour.
 - [`ASSIST_PROVIDER_CONTRACTS.md`](ASSIST_PROVIDER_CONTRACTS.md) is the design
   authority for Assist provider configuration: task contracts, the credentials
   lifecycle, the secret-exposure inventory, and the execution-snapshot schema.
@@ -46,17 +43,16 @@ authoritative code and evidence without reconstructing the project from scratch.
   and output-shaping axes, with the scoring rubric and cost projection. Running it
   spends credits and sends audio off the machine.
 - [`../FEATURE_PARITY_PLAN.md`](../FEATURE_PARITY_PLAN.md) is the sole live
-  completion queue and the C-to-Rust feature ledger.
+  completion queue.
 - [`../AGENTS.md`](../AGENTS.md) contains engineering constraints, the `unsafe`
-  inventory, test-silence requirements, and the differential-testing method.
+  inventory, test-silence requirements, and current verification method.
 
 ## Historical material
 
-[`../REWRITE_PLAN.md`](../REWRITE_PLAN.md) preserves design reasoning and the
-history of the rewrite. Its phase sketches are not the current task list. When a
-historical note and current code disagree, current code plus its tests are the
-implementation authority; the frozen C code is the behavioral authority for
-features covered by parity.
+[`archive/C_PORT_HISTORY.md`](archive/C_PORT_HISTORY.md) defines the boundary
+around the earlier C implementation, differential harnesses, `REWRITE_PLAN.md`,
+and `PHASE0_INVENTORY.md`. Those materials are migration history only. Current
+Rust code, tests, product documentation, and operator judgment are authoritative.
 
 ## Documentation rules
 

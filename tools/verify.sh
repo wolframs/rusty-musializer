@@ -4,29 +4,22 @@
 #
 #   tools/verify.sh                 # build, lint, tests, and the capture gate
 #   tools/verify.sh --quick         # skip the headless capture (no Xvfb needed)
-#   tools/verify.sh --differential  # also the 13 harnesses against the frozen C
 #   tools/verify.sh --jobs 1        # serialize non-visual checks for diagnosis
 #
 # Run this before handing work over and after every merge. It is deliberately
 # ordered cheapest-first, so a formatting slip fails in seconds rather than after
 # a five-minute encode.
-#
-# The oracle at ../musializer is read-only throughout, and the last step proves it:
-# a non-clean oracle tree fails the run. Several stages compile C from it, with all
-# output going into our own build/.
 
 set -uo pipefail
 
 QUICK=0
-DIFFERENTIAL=0
 VERIFY_JOBS="${VERIFY_JOBS:-4}"
 
 usage() {
     cat <<'EOF'
-Usage: tools/verify.sh [--quick] [--differential] [--jobs N]
+Usage: tools/verify.sh [--quick] [--jobs N]
 
   --quick         skip the private-Xvfb capture gate
-  --differential  also run the 13 differential harnesses against the frozen C
   --jobs N        run at most N independent non-visual checks together (default: 4)
 EOF
 }
@@ -35,9 +28,6 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --quick)
             QUICK=1
-            ;;
-        --differential|--full)
-            DIFFERENTIAL=1
             ;;
         --jobs)
             shift
@@ -68,9 +58,6 @@ esac
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-
-ORACLE="/home/wolfram/Projects/musializer"
-ORACLE_COMMIT="9300af942bd00d8c85fc4e3c8c02cf2b6356764f"
 
 FAILED=()
 PASSED=0
@@ -180,35 +167,7 @@ queue_step "secret-canary" "secret canary (provider credentials)" tools/secret_c
 # operator's real desktop. See the traps in AGENTS.md.
 queue_step "capture-isolation" "capture isolation (Wayland, env)" tools/capture_isolation_lint.py
 
-# Differential harnesses against the frozen C. These are the evidence that the
-# ports are faithful rather than merely plausible, and one of them
-# (`beat_tracker`) found a real rendering bug that ten unit tests were green
-# against.
-#
-# **Opt-in since 2026-08-08** (operator decision). They compile C from the oracle
-# on every run, and they re-verify pure logic that changes very rarely — so
-# paying for them on every iteration buys nothing most of the time. They are
-# anchors, not a gate: keep them green, run them when you touch ported logic or
-# before handing work over, and never let one fail quietly.
-#
-#   tools/verify.sh --differential      # or --full
-#   tools/differential_settings.sh      # or just the one you moved
-if [ "$DIFFERENTIAL" -eq 1 ]; then
-    for harness in analyzer beat_tracker settings routes route_persistence event_merge assist_ui preset_store song_atlas_map ascii_art project_io timeline_view layout; do
-        script="tools/differential_${harness}.sh"
-        if [ ! -x "$script" ]; then
-            printf '\n\033[31mFAILED\033[0m  missing executable differential harness: %s\n' "$script"
-            FAILED+=("differential: $harness")
-            continue
-        fi
-        queue_step "differential-$harness" "differential: $harness" "$script"
-    done
-fi
 finish_queued_steps
-
-if [ "$DIFFERENTIAL" -eq 0 ]; then
-    printf '\n\033[33mskipped\033[0m  13 differential harnesses (run with --differential)\n'
-fi
 
 if [ "$QUICK" -eq 0 ]; then
     if command -v Xvfb >/dev/null 2>&1; then
@@ -216,24 +175,6 @@ if [ "$QUICK" -eq 0 ]; then
     else
         printf '\n\033[33mskipped\033[0m  headless gate: Xvfb not installed\n'
     fi
-fi
-
-# Last, and non-negotiable: the parity oracle must be untouched. Every stage above
-# only reads it, and this is what proves the whole run kept that promise.
-printf '\n\033[1m=== oracle is read-only ===\033[0m\n'
-oracle_dirty=$(git -C "$ORACLE" status --porcelain 2>/dev/null | wc -l)
-oracle_head=$(git -C "$ORACLE" rev-parse HEAD 2>/dev/null)
-if [ "$oracle_dirty" -ne 0 ]; then
-    printf '\033[31mFAILED\033[0m  the oracle has %s uncommitted changes — it must never be modified\n' "$oracle_dirty"
-    git -C "$ORACLE" status --short | head -20
-    FAILED+=("oracle unmodified")
-elif [ "$oracle_head" != "$ORACLE_COMMIT" ]; then
-    printf '\033[31mFAILED\033[0m  the oracle is at %s, expected the freeze commit %s\n' \
-        "${oracle_head:0:7}" "${ORACLE_COMMIT:0:7}"
-    FAILED+=("oracle at freeze commit")
-else
-    PASSED=$((PASSED + 1))
-    printf '\033[32mok\033[0m  clean at %s\n' "${oracle_head:0:7}"
 fi
 
 printf '\n\033[1m=== summary ===\033[0m\n'

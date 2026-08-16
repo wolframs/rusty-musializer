@@ -1,12 +1,13 @@
 # Repository guide for coding agents
 
-The Rust rewrite of Musializer. The C repository is feature frozen.
+Rusty Musializer is the current application and the sole implementation
+authority. The earlier C implementation is archived migration history; see
+`docs/archive/C_PORT_HISTORY.md`. Do not consult it for current behavior, make
+new work depend on its checkout, or preserve one of its defects for parity.
 
 **The application is built and runs.** All eleven scenes draw, `.musi` projects open
 and save, video exports through FFmpeg, every bottom panel is real, and
-`tools/verify.sh --differential` is 23 passed / 0 failed — thirteen
-differential harnesses against the frozen C (opt-in since 2026-08-08; the
-plain run is 10 passed and skips them), a headless capture gate, and the
+`tools/verify.sh` covers the Rust checks, a headless capture gate, and the
 assist-era gates (secret canary scan among them). The sole live completion queue
 is `FEATURE_PARITY_PLAN.md`. It records the application-boundary gaps those gates
 do not cover — currently the durable-edit guarantees (complete dirty marking,
@@ -51,8 +52,6 @@ cargo run --bin make-fixture-wav -- build/x.wav 8   # synthetic fixture audio
 
 tools/headless_check.sh            # the self-check: private Xvfb, evidence
 tools/install-linux-launcher.sh    # per-user desktop entry; --uninstall removes it
-tools/differential_*.sh            # one per ported pure module, vs the frozen C
-                                   #   verify.sh runs all of them; see the table below
 ```
 
 ## Test audio must never reach the operator's headphones

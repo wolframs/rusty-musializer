@@ -30,8 +30,8 @@
 use musializer_core::scene::settings::index::atlas as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::song_atlas::{
-    render_distance, render_sample_count, render_sample_index, Slice, SongAtlasMap, SongAtlasState,
-    BAND_COUNT, BASE_SLICES, MAX_DETAIL, SLICE_SPACING,
+    render_distance, render_sample_count, render_sample_indices, Slice, SongAtlasMap,
+    SongAtlasState, BAND_COUNT, BASE_SLICES, MAX_DETAIL, SLICE_SPACING,
 };
 use musializer_runtime::draw;
 use raylib::prelude::{
@@ -286,7 +286,7 @@ fn draw_live_surface(
         return;
     }
     let available = atlas.count();
-    let render_count = render_sample_count(available, detail_level);
+    let render_count = render_sample_count(0, available, detail_level);
     if render_count < 2 {
         return;
     }
@@ -296,14 +296,9 @@ fn draw_live_surface(
 
     if !wireframe {
         let mut batch = Batch::begin(raylib_sys::RL_TRIANGLES);
-        for sample in 1..render_count {
-            let Some(newer_age) = render_sample_index(0, available, render_count, sample - 1)
-            else {
-                continue;
-            };
-            let Some(older_age) = render_sample_index(0, available, render_count, sample) else {
-                continue;
-            };
+        for (newer_age, older_age) in render_sample_indices(0, available, detail_level)
+            .zip(render_sample_indices(0, available, detail_level).skip(1))
+        {
             let (Some(newer), Some(older)) = (slice_at(newer_age), slice_at(older_age)) else {
                 continue;
             };
@@ -338,9 +333,8 @@ fn draw_live_surface(
     let mut batch = Batch::begin(raylib_sys::RL_LINES);
     let row_step = if wireframe { 1usize } else { 5 };
     let band_step = if wireframe { 1usize } else { 5 };
-    let mut sample = 0usize;
-    while sample < render_count {
-        if let Some(source_age) = render_sample_index(0, available, render_count, sample) {
+    for (sample, source_age) in render_sample_indices(0, available, detail_level).enumerate() {
+        if sample % row_step == 0 {
             if let Some(slice) = slice_at(source_age) {
                 let line = draw::color_alpha(
                     Color::RAYWHITE,
@@ -353,7 +347,6 @@ fn draw_live_surface(
                 }
             }
         }
-        sample += row_step;
     }
     let mut band = if wireframe { 0usize } else { 2 };
     while band + 1 < BAND_COUNT {
@@ -361,14 +354,9 @@ fn draw_live_surface(
             hue_shift(MERIDIAN, color_shift),
             if wireframe { 0.32 } else { 0.18 },
         );
-        for sample in 1..render_count {
-            let Some(newer_age) = render_sample_index(0, available, render_count, sample - 1)
-            else {
-                continue;
-            };
-            let Some(older_age) = render_sample_index(0, available, render_count, sample) else {
-                continue;
-            };
+        for (newer_age, older_age) in render_sample_indices(0, available, detail_level)
+            .zip(render_sample_indices(0, available, detail_level).skip(1))
+        {
             let (Some(newer), Some(older)) = (slice_at(newer_age), slice_at(older_age)) else {
                 continue;
             };
@@ -377,10 +365,7 @@ fn draw_live_surface(
         }
         band += band_step;
     }
-    for sample in 0..render_count {
-        let Some(source_age) = render_sample_index(0, available, render_count, sample) else {
-            continue;
-        };
+    for source_age in render_sample_indices(0, available, detail_level) {
         let Some(slice) = slice_at(source_age) else {
             continue;
         };
@@ -455,21 +440,16 @@ fn draw_complete_surface(
         0
     };
     let available = slices.len() - first;
-    let sample_count = render_sample_count(available, detail_level);
+    let sample_count = render_sample_count(first, available, detail_level);
     if sample_count < 2 {
         return;
     }
 
     if !wireframe {
         let mut batch = Batch::begin(raylib_sys::RL_TRIANGLES);
-        for sample in 0..sample_count - 1 {
-            let Some(row) = render_sample_index(first, available, sample_count, sample) else {
-                continue;
-            };
-            let Some(next_row) = render_sample_index(first, available, sample_count, sample + 1)
-            else {
-                continue;
-            };
+        for (row, next_row) in render_sample_indices(first, available, detail_level)
+            .zip(render_sample_indices(first, available, detail_level).skip(1))
+        {
             let near = &slices[row];
             let far = &slices[next_row];
             let near_distance = row as f32 - playhead;
@@ -497,10 +477,7 @@ fn draw_complete_surface(
 
     let _line_width = LineWidth::set(1.0f32.max(pixel_scale * contour_scale));
     let mut batch = Batch::begin(raylib_sys::RL_LINES);
-    for sample in 0..sample_count {
-        let Some(row) = render_sample_index(first, available, sample_count, sample) else {
-            continue;
-        };
+    for row in render_sample_indices(first, available, detail_level) {
         let distance = row as f32 - playhead;
         // Solid mode draws every eighth cross-line plus every onset; wireframe
         // draws them all.
@@ -527,14 +504,9 @@ fn draw_complete_surface(
             hue_shift(MERIDIAN, color_shift),
             if wireframe { 0.30 } else { 0.16 },
         );
-        for sample in 0..sample_count - 1 {
-            let Some(row) = render_sample_index(first, available, sample_count, sample) else {
-                continue;
-            };
-            let Some(next_row) = render_sample_index(first, available, sample_count, sample + 1)
-            else {
-                continue;
-            };
+        for (row, next_row) in render_sample_indices(first, available, detail_level)
+            .zip(render_sample_indices(first, available, detail_level).skip(1))
+        {
             let near_distance = row as f32 - playhead;
             let far_distance = next_row as f32 - playhead;
             batch.vertex(complete_vertex(&slices[row], band, near_distance), line);
