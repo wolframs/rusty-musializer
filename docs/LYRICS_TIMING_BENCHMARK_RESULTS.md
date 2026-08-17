@@ -1,5 +1,14 @@
 # Lyrics timing: trimmed benchmark results (2026-08-04)
 
+> **Superseded acceptance interpretation (2026-08-17).** The matrix below is
+> valid historical evidence, but its 100% coverage gate was insufficient.
+> Groyper Idol produced 18/18 cues while ten placements disagreed by as much as
+> 44.6 seconds. Localization policy v2 now measures accepted-cue precision:
+> occurrence-scale and backwards-order disagreements abstain, section/coarse
+> evidence bounds sparse-anchor searches only with an unconditioned global
+> challenger, and the authored source is visible.
+> See [`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md).
+
 Companion to `LYRICS_TIMING_RESEARCH_PLAN.md` (design) and
 `LYRICS_TIMING_WEB_EVIDENCE.md` (why the cut lanes stayed cut). Harness:
 `tools/lyrics_research/`; raw artifacts under gitignored
@@ -32,7 +41,7 @@ truth. Total GPU time for the whole matrix: under two minutes.
   (47–76% on the three longer tracks), with catastrophic mid-song drift
   (median 50 s on the choir track). The web evidence predicted this risk: the
   aligner was only ever validated on speech. Lane retired; harness kept.
-- **Anchor→block MMS: passes.** 100% authored-line coverage on all four
+- **Anchor→block MMS: passed the 2026-08-04 coverage gate.** 100% authored-line coverage on all four
   tracks with the already-installed model, recovering the canary's two
   Whisper-looped outro lines at plausible positions (90.7–95.7 s), and both
   failure classes from the incident (coverage, search-space) are gone. This
@@ -112,3 +121,9 @@ from 150.6 s to 134.6 s against a truth of 156.2 s, and carries **no** flag. It
 is the weak one-word-exclamation class the adjudication predicted, and it shows
 the limit of cross-view flagging — when both views derive from the same Whisper
 evidence and both are wrong, their agreement says nothing.
+
+The 2026-08-17 incident turned that caveat into a hard rule: a line is not
+accepted merely because CTC emitted a span. The v2 negative controls require a
++40-second disagreement and any unresolved backwards pair to stay out of the
+bridge. Authored accounting remains 100% only as `accepted + unresolved`, not
+as a claim that every line has a safe timestamp.

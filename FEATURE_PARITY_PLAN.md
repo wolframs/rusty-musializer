@@ -3186,6 +3186,38 @@ review flags come from cross-lane disagreement and unresolved lines
       both are wrong — cross-view disagreement cannot catch a shared-evidence
       error.
 
+### LT1-I — Groyper Idol incident hardening (2026-08-17)
+
+The production artifact for `Groyper Idol.mp3` exposed two independent trust
+failures. Discovery silently chose a stale embedded lyric tag (18 alignable
+lines) because no explicit or sibling lyric file existed; `18 / 1024` was full
+accounting for that source, not truncation. Then the block path moved ten cues
+22–45 seconds away from their coarse occurrences, flagged the disagreements,
+and still published every cue. Full evidence and research are in
+`docs/LYRICS_TIMING_INCIDENT_2026-08-17.md`.
+
+- [x] Version the localization policy and acoustic runner at v2. Coarse
+      proposal clusters now partition sparse-anchor songs into bounded section
+      windows; a one-line local CTC path may refine a high-confidence proposal
+      only when the block path agrees on its occurrence. Unanchored sections
+      must additionally agree with an unconditioned global path; coarse-derived
+      paths may not validate one another.
+- [x] Make abstention a safety boundary. A fine/coarse start disagreement over
+      8 seconds and any unresolved backwards authored path become explicit
+      `unresolved` records, retaining both rejected acoustic and coarse times;
+      neither may cross the bridge as a displayable lyric cue.
+- [x] Put exact reference provenance in the review contract: source kind,
+      alignable-line count and a short content hash. The staged review names an
+      embedded source and requires an explicitly labelled `Confirm embedded`
+      action before Apply.
+- [x] Pin the measured four-line +22–42 second chorus jump as a pure regression.
+      The real local replay accepts 10/18 embedded-source lines, abstains on eight
+      contradictory occurrences, has zero authored-order violations, and no
+      longer moves the first chorus to 79–91 seconds. Replaying the user-supplied
+      19-line sheet accepts 7 and abstains on 12, correctly exposing that it
+      conflicts with the performed/embedded evidence instead of manufacturing
+      complete coverage.
+
 ### LT1-R — fresh-eyes review fixes for the lyrics-review surface
 
 Independent user-perspective review of `7881776` (2026-08-04): ten confirmed

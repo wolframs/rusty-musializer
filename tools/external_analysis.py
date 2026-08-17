@@ -1645,6 +1645,8 @@ def _anchor_block_cache_accepts(
         and document.get("localization_policy_version")
         == lyric_anchor_block.LOCALIZATION_POLICY_VERSION
         and refinement.get("adapter") == "tools/anchor_block_align.py"
+        and refinement.get("alignment_version")
+        == lyric_anchor_block.ALIGNMENT_VERSION
         and refinement.get("model") == "torchaudio.pipelines.MMS_FA"
         and refinement.get("localization_policy")
         == lyric_anchor_block.LOCALIZATION_POLICY
@@ -2214,6 +2216,14 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
         }
     elif lyrics:
         manifest["lyric_localization"] = None
+    if lyrics and lyric_lane == "lyric_sync":
+        reference = lyrics.get("reference", {})
+        statistics = lyrics.get("statistics", {})
+        manifest["lyric_reference"] = {
+            "source": reference.get("source"),
+            "sha256": reference.get("sha256"),
+            "alignable_lines": statistics.get("reference_lines"),
+        }
     # The frozen route graph, with the model ids this run observed (§6). Absent
     # rather than null for an unrouted run: "this job carried no route graph"
     # and "its routes were empty" are different answers.

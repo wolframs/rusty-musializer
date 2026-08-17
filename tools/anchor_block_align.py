@@ -47,9 +47,13 @@ from force_align_lyrics import alignment_words  # noqa: E402
 # Bump with any change to the acoustic request itself (model, window padding,
 # star policy). The localization policy version in `lyric_anchor_block` covers
 # the decisions made around it.
-ALIGNMENT_VERSION = "1"
+ALIGNMENT_VERSION = lyric_anchor_block.ALIGNMENT_VERSION
 MODEL_ID = "torchaudio.pipelines.MMS_FA"
 ADAPTER = "tools/anchor_block_align.py"
+COARSE_LOCAL_LEAD_SECONDS = 1.5
+COARSE_LOCAL_TAIL_SECONDS = 4.0
+MINIMUM_COARSE_CONFIDENCE = (
+    lyric_anchor_block.MINIMUM_TRUSTED_COARSE_CONFIDENCE)
 
 
 def _load_audio(audio: Path) -> tuple[Any, int]:
@@ -179,9 +183,12 @@ def align(
         raise RuntimeError("anchor/block alignment requires a CUDA device")
 
     started = time.monotonic()
+    coarse = lyric_anchor_block.coarse_proposals(coarse_document)
+    trusted_coarse = lyric_anchor_block.coarse_proposals(
+        coarse_document, trusted_only=True)
     plan = lyric_anchor_block.plan_localization(
         reference_text, whisper, audio_duration=audio_duration,
-        max_block_seconds=max_block_seconds)
+        max_block_seconds=max_block_seconds, coarse=trusted_coarse)
     lines = plan["lines"]
 
     waveform, sample_rate = _load_audio(audio)
@@ -190,26 +197,166 @@ def align(
     tokenizer = bundle.get_tokenizer()
     aligner = bundle.get_aligner()
 
-    decisions: dict[int, dict[str, Any]] = {}
-    owning_block: dict[int, int] = {}
-    for block in plan["blocks"]:
-        block_started = time.monotonic()
-        outcome = align_block(
-            waveform, sample_rate, lines, block, model, tokenizer, aligner,
-            interior_stars=interior_stars)
-        block["runtime_seconds"] = time.monotonic() - block_started
-        block["line_count"] = block["last_line"] - block["first_line"] + 1
-        for position, decision in outcome.items():
-            previous = decisions.get(position)
-            # A split span overlaps; keep the better-supported copy.
-            if previous is None or (float(decision.get("score", 0.0))
-                                    > float(previous.get("score", 0.0))):
-                decisions[position] = decision
-                owning_block[position] = block["index"]
+    def run_blocks(
+        blocks: list[dict[str, Any]],
+    ) -> tuple[dict[int, dict[str, Any]], dict[int, int]]:
+        run_decisions: dict[int, dict[str, Any]] = {}
+        run_owners: dict[int, int] = {}
+        for block in blocks:
+            block_started = time.monotonic()
+            outcome = align_block(
+                waveform, sample_rate, lines, block, model, tokenizer, aligner,
+                interior_stars=interior_stars)
+            block["runtime_seconds"] = time.monotonic() - block_started
+            block["line_count"] = block["last_line"] - block["first_line"] + 1
+            for position, decision in outcome.items():
+                previous = run_decisions.get(position)
+                # A split span overlaps; keep the better-supported copy.
+                if previous is None or (float(decision.get("score", 0.0))
+                                        > float(previous.get("score", 0.0))):
+                    run_decisions[position] = decision
+                    run_owners[position] = block["index"]
+        return run_decisions, run_owners
 
-    coarse = lyric_anchor_block.coarse_proposals(coarse_document)
+    decisions, owning_block = run_blocks(plan["blocks"])
+
+    # Coarse section windows are a candidate generator, not an independent
+    # vote. For sections without a rare exact anchor, challenge them with the
+    # original unconditioned anchor/global partition. A coarse-conditioned CTC
+    # path and a coarse-local CTC path may not validate one another.
+    uses_section_windows = any(
+        block.get("kind") == "section-evidence" for block in plan["blocks"])
+    global_decisions: dict[int, dict[str, Any]] = decisions
+    if uses_section_windows:
+        global_plan = lyric_anchor_block.plan_localization(
+            reference_text, whisper, audio_duration=audio_duration,
+            max_block_seconds=max_block_seconds)
+        global_blocks = global_plan["blocks"]
+        block_offset = len(plan["blocks"])
+        for index, block in enumerate(global_blocks):
+            block["index"] = block_offset + index
+            block["kind"] = f"global-{block['kind']}"
+        global_decisions, _ = run_blocks(global_blocks)
+        plan["blocks"].extend(global_blocks)
+
+    blocks_by_index = {int(block["index"]): block for block in plan["blocks"]}
+    anchored_sections: set[Any] = set()
+    for anchor in plan["anchors"]:
+        anchor_position = int(anchor["line_position"])
+        owner = owning_block.get(anchor_position)
+        if lyric_anchor_block.anchor_supports_section_occurrence(
+                anchor, decisions.get(anchor_position),
+                blocks_by_index.get(owner) if owner is not None else None):
+            anchored_sections.add(
+                lines[anchor_position].get("section_position"))
+    candidate_keys = (
+        "status", "score", "acoustic_start_seconds", "acoustic_end_seconds",
+        "first_word_score", "last_word_score",
+    )
+    for position, decision in decisions.items():
+        global_candidate = global_decisions.get(position)
+        if uses_section_windows and global_candidate is not None:
+            decision["independent_global_candidate"] = {
+                key: global_candidate.get(key) for key in candidate_keys
+            }
+        section_has_anchor = (
+            lines[position].get("section_position") in anchored_sections)
+        if not uses_section_windows:
+            continue
+        local_start = decision.get("acoustic_start_seconds")
+        global_start = (
+            global_candidate.get("acoustic_start_seconds")
+            if isinstance(global_candidate, dict) else None)
+        globally_supported = (
+            isinstance(local_start, (int, float))
+            and not isinstance(local_start, bool)
+            and isinstance(global_start, (int, float))
+            and not isinstance(global_start, bool)
+            and abs(float(local_start) - float(global_start))
+            <= lyric_anchor_block.MAXIMUM_ACCEPTED_DISAGREEMENT_SECONDS
+        )
+        if section_has_anchor:
+            if not globally_supported:
+                decision["global_disagreement_anchor_resolved"] = True
+            continue
+        if not globally_supported:
+            decision["occurrence_disputed"] = True
+
+    # When the independent block path agrees with a strong Whisper proposal on
+    # the occurrence, a tightly bounded one-line CTC pass may refine its word
+    # boundaries without allowing the star token to skip forty seconds forward.
+    # This is deliberately not done for weak proposals or cross-view disputes:
+    # forced local CTC cannot validate the window that selected it.
+    coarse_root = coarse_document if isinstance(coarse_document, dict) else {}
+    coarse_lines = {
+        int(line["reference_line_index"]): line
+        for line in coarse_root.get("lines", [])
+        if isinstance(line, dict)
+        and isinstance(line.get("reference_line_index"), int)
+    }
+    for position, line in enumerate(lines):
+        proposal = coarse_lines.get(int(line["index"]))
+        if proposal is None:
+            continue
+        confidence = proposal.get("confidence")
+        if (proposal.get("estimated") is True
+                or not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or float(confidence) < MINIMUM_COARSE_CONFIDENCE):
+            continue
+        try:
+            proposal_start = float(proposal["start_seconds"])
+            proposal_end = float(proposal["end_seconds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        independent = decisions.get(position)
+        if (not isinstance(independent, dict)
+                or independent.get("occurrence_disputed") is True):
+            continue
+        if not lyric_anchor_block.coarse_local_refinement_allowed(
+                independent, proposal_start):
+            continue
+        local_block = {
+            "index": len(plan["blocks"]),
+            "first_line": position,
+            "last_line": position,
+            "window_start": max(
+                0.0, proposal_start - COARSE_LOCAL_LEAD_SECONDS),
+            "window_end": min(
+                audio_duration, proposal_end + COARSE_LOCAL_TAIL_SECONDS),
+            "kind": "coarse-local-evidence",
+            "coarse_confidence": float(confidence),
+            "split": False,
+        }
+        started_local = time.monotonic()
+        local = align_block(
+            waveform, sample_rate, lines, local_block, model, tokenizer,
+            aligner, interior_stars=False).get(position)
+        local_block["runtime_seconds"] = time.monotonic() - started_local
+        local_block["line_count"] = 1
+        plan["blocks"].append(local_block)
+        if local is None or local.get("status") not in {"aligned", "weak"}:
+            continue
+        if independent is not None:
+            local["independent_block_candidate"] = {
+                key: independent.get(key)
+                for key in ("status", "score", "acoustic_start_seconds",
+                            "acoustic_end_seconds", "first_word_score",
+                            "last_word_score")
+            }
+            if independent.get("independent_global_candidate") is not None:
+                local["independent_global_candidate"] = independent[
+                    "independent_global_candidate"]
+            if independent.get("global_disagreement_anchor_resolved") is True:
+                local["global_disagreement_anchor_resolved"] = True
+        local["candidate_source"] = "coarse-block-local-consensus"
+        local["coarse_confidence"] = float(confidence)
+        decisions[position] = local
+        owning_block[position] = local_block["index"]
+
     document = lyric_anchor_block.assemble_document(
-        plan, decisions, owning_block, coarse, audio_duration=audio_duration)
+        plan, decisions, owning_block, coarse, audio_duration=audio_duration,
+        trusted_coarse=trusted_coarse)
 
     settings = {
         "anchor_lengths": list(lyric_anchor_block.ANCHOR_LENGTHS),
@@ -217,11 +364,18 @@ def align(
         "block_tail_seconds": lyric_anchor_block.BLOCK_TAIL_SECONDS,
         "max_block_seconds": max_block_seconds,
         "block_split_overlap_seconds": lyric_anchor_block.BLOCK_SPLIT_OVERLAP_SECONDS,
+        "section_window_overlap_seconds": (
+            lyric_anchor_block.SECTION_WINDOW_OVERLAP_SECONDS),
+        "coarse_local_lead_seconds": COARSE_LOCAL_LEAD_SECONDS,
+        "coarse_local_tail_seconds": COARSE_LOCAL_TAIL_SECONDS,
+        "minimum_coarse_confidence": MINIMUM_COARSE_CONFIDENCE,
         "cue_lead_seconds": lyric_anchor_block.CUE_LEAD_SECONDS,
         "cue_tail_seconds": lyric_anchor_block.CUE_TAIL_SECONDS,
         "minimum_alignment_score": lyric_anchor_block.MINIMUM_ALIGNMENT_SCORE,
         "minimum_line_seconds": lyric_anchor_block.MINIMUM_LINE_SECONDS,
         "review_disagreement_seconds": lyric_anchor_block.REVIEW_DISAGREEMENT_SECONDS,
+        "maximum_accepted_disagreement_seconds": (
+            lyric_anchor_block.MAXIMUM_ACCEPTED_DISAGREEMENT_SECONDS),
         "repeated_collapse_seconds": lyric_anchor_block.REPEATED_COLLAPSE_SECONDS,
         "interior_stars": interior_stars,
     }
@@ -295,7 +449,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Anchor/block localization timed {stats['matched_lines']}/"
           f"{stats['reference_lines']} authored lines "
           f"({stats['unresolved_lines']} unresolved, "
-          f"{stats['abstained_lines']} abstained on repeated phrases, "
+          f"{stats['abstained_lines']} abstained on occurrence disputes, "
           f"{stats['review_flagged_lines']} flagged for review) from "
           f"{stats['anchor_count']} anchors in {stats['block_count']} blocks "
           f"in {stats['runtime_seconds']:.1f} s.")

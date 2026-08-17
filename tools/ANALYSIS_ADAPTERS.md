@@ -61,7 +61,9 @@ Modes have deliberately narrow authority:
   chooses one of two lyric paths. If authored reference lyrics are found —
   an explicit `--lyrics-file`, a sibling `<stem>.lyrics.txt`, or an
   unsynchronized lyric tag embedded in the audio container (read locally via
-  ffprobe) — the deterministic `tools/lyric_align.py` stage synchronizes the
+  ffprobe) — the manifest records the exact chosen source, alignable-line count
+  and reference hash so an embedded fallback cannot masquerade as user-supplied
+  text. The deterministic `tools/lyric_align.py` stage synchronizes the
   authored lines against Whisper word timing and writes the `lyric_sync` lane
   to `lyrics.sync.json`; no model request is involved. Display text comes
   verbatim from the reference; section headings, sound events, and delivery
@@ -70,7 +72,8 @@ Modes have deliberately narrow authority:
   are interpolated only across short trusted gaps (flagged `estimated` and
   `uncertain`) and otherwise reported in `unmatched`. Without a reference,
   the evidence-preserving Codex review runs as before. The manifest records
-  `lyric_source` and unmatched counts; the job log names the sync source.
+  `lyric_source`, reference identity and unmatched counts; the job log names
+  the sync source.
 - `sections` is entirely local and uses measured audio analysis plus any
   independently valid cached local lyric sync or lyric review. It never
   consumes a cached MiMo semantic lane.
@@ -107,12 +110,18 @@ enabled, and defaults to a one-hour timeout. Its token onsets are retained as
 provisional text/order evidence, with obviously stretched interval ends capped.
 They are **not published as final cue boundaries**: real produced-song audits
 found first-word onsets commonly 0.5-1.1 seconds early and occasionally 3-5
-seconds early. After authored sync or Codex text review, the CUDA MMS_FA CTC
-acoustic model teacher-forces the decided display text in one bounded request
-per cue and writes `lyrics.aligned.json`, including word-level acoustic evidence.
-It never changes authored wording or order; weak or implausibly displaced
-alignments retain their provisional timing and are marked uncertain. A
-no-reference phrase is omitted only when weak Whisper and MMS evidence agree, or
+seconds early. After authored sync, the anchor/block MMS_FA CTC lane compares a
+trusted section-bounded path, a coarse-local boundary refinement, and — for a
+section without its own rare exact anchor — an unconditioned global challenger.
+Estimated and low-confidence coarse rows never narrow a search window, and two
+coarse-conditioned paths cannot validate one another. The lane writes
+`lyrics.aligned.json`, including the competing acoustic evidence. It never
+changes authored wording or order; an occurrence-scale or global-localization
+dispute, or a path whose authored order remains backwards, is `unresolved` and
+cannot become a displayable bridge cue. Smaller boundary disagreements remain
+uncertain review flags. The no-authored-text review lane continues to use
+per-cue MMS refinement. A no-reference phrase is omitted only when weak Whisper
+and MMS evidence agree, or
 when two identical candidates claim the same acoustic span. Full-mix and
 Demucs-vocal-stem controls normally agreed within 0.02 seconds; the recorded
 outliers were repeated phrases and were adjudicated against the independent

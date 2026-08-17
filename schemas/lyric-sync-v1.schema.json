@@ -287,12 +287,35 @@
               "null"
             ],
             "minimum": 0
+          },
+          "acoustic_start_seconds": {
+            "description": "Rejected fine-placement proposal retained for audit; never a published cue.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "acoustic_end_seconds": {
+            "description": "Rejected fine-placement proposal retained for audit; never a published cue.",
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "independent_global_candidate": {
+            "description": "Unconditioned anchor/global challenger retained when it rejected a coarse-conditioned path.",
+            "type": [
+              "object",
+              "null"
+            ]
           }
         }
       }
     },
     "review_flags": {
-      "description": "Lines a human should check: cross-view disagreement over 3 s, or unresolved. Never derived from the aligner's own score.",
+      "description": "Lines a human should check: cross-view disagreement, a rare anchor overriding the unconditioned path, or unresolved. Never derived from the aligner's own score.",
       "type": "array",
       "items": {
         "type": "object",
@@ -315,6 +338,7 @@
           "flag": {
             "enum": [
               "coarse_disagreement",
+              "global_disagreement_anchor_resolved",
               "unresolved"
             ]
           },
@@ -476,6 +500,28 @@
             "null"
           ],
           "minimum": 0
+        },
+        "candidate_source": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "coarse_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "independent_block_candidate": {
+          "description": "Section/block challenger retained when a bounded coarse-local refinement wins.",
+          "type": "object"
+        },
+        "independent_global_candidate": {
+          "description": "Unconditioned anchor/global challenger retained when section windows were derived from coarse evidence.",
+          "type": "object"
+        },
+        "global_disagreement_anchor_resolved": {
+          "description": "The unconditioned path picked another occurrence, while a rare exact anchor resolved this section; remains a review flag.",
+          "type": "boolean"
         },
         "coarse_start_seconds": {
           "type": [

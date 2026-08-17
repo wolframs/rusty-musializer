@@ -310,6 +310,11 @@ pub struct ReviewManifest {
     /// `lyric_localization.policy`, empty on the per-cue lane.
     pub policy: String,
     pub policy_version: String,
+    /// Exact authored-text authority used by the run. Empty for old manifests
+    /// and no-reference transcription lanes.
+    pub reference_source: String,
+    pub reference_sha256: String,
+    pub reference_lines: usize,
     /// The **file names** of the lyric documents to try, best first: the
     /// acoustic result before the coarse proposal.
     ///
@@ -335,6 +340,9 @@ pub struct LyricsReview {
     pub omitted: usize,
     pub policy: String,
     pub policy_version: String,
+    pub reference_source: String,
+    pub reference_sha256: String,
+    pub reference_lines: usize,
     /// What the **manifest** claimed, kept after the document overrules it
     /// (review LT1-R, R10). A disagreement is a stale or truncated artifact and
     /// the panel says which side it drew rather than resolving it in silence.
@@ -362,6 +370,9 @@ impl LyricsReview {
             omitted: manifest.flagged,
             policy: manifest.policy.clone(),
             policy_version: manifest.policy_version.clone(),
+            reference_source: manifest.reference_source.clone(),
+            reference_sha256: manifest.reference_sha256.clone(),
+            reference_lines: manifest.reference_lines,
             manifest_unresolved: manifest.unresolved,
             manifest_flagged: manifest.flagged,
             document_read: false,
@@ -419,6 +430,29 @@ impl LyricsReview {
         } else {
             counts
         }
+    }
+
+    /// Compact provenance sentence for the staged-result surface.  An embedded
+    /// tag and an explicitly chosen sheet can contain equally plausible prose;
+    /// the UI must name which one became immutable display truth.
+    #[must_use]
+    pub fn source_summary(&self) -> String {
+        if self.reference_source.is_empty() {
+            return String::new();
+        }
+        let digest = self
+            .reference_sha256
+            .get(..8)
+            .unwrap_or(self.reference_sha256.as_str());
+        let identity = if digest.is_empty() {
+            String::new()
+        } else {
+            format!(", id {digest}")
+        };
+        format!(
+            "Lyrics source: {} ({} authored lines{})",
+            self.reference_source, self.reference_lines, identity
+        )
     }
 
     /// Fills the named list from a `lyric-sync-v1` document.
@@ -562,6 +596,7 @@ pub fn parse_review_manifest(bytes: &[u8]) -> Option<ReviewManifest> {
     let localization = root
         .get("lyric_localization")
         .filter(|value| !value.is_null());
+    let reference = root.get("lyric_reference").and_then(Value::as_object);
     if unresolved.is_none() && flagged.is_none() && localization.is_none() {
         return None;
     }
@@ -594,6 +629,21 @@ pub fn parse_review_manifest(bytes: &[u8]) -> Option<ReviewManifest> {
             .and_then(Value::as_str)
             .map(truncated)
             .unwrap_or_default(),
+        reference_source: reference
+            .and_then(|block| block.get("source"))
+            .and_then(Value::as_str)
+            .map(truncated)
+            .unwrap_or_default(),
+        reference_sha256: reference
+            .and_then(|block| block.get("sha256"))
+            .and_then(Value::as_str)
+            .map(truncated)
+            .unwrap_or_default(),
+        reference_lines: bounded_count(
+            reference
+                .and_then(|block| block.get("alignable_lines"))
+                .and_then(Value::as_u64),
+        ),
         documents,
     })
 }
@@ -1516,6 +1566,25 @@ mod tests {
         let review = LyricsReview::from_manifest(&manifest);
         assert!(review.is_clear());
         assert_eq!(review.summary(), "All lines placed, none flagged");
+    }
+
+    #[test]
+    fn the_review_names_the_exact_authored_source_and_digest() {
+        let manifest = parse_review_manifest(
+            br#"{"schema_version":"musializer.assist-manifest/v1","mode":"lyrics",
+                "result_counts":{"lyrics_unresolved":0,"lyrics_review_flags":0},
+                "lyric_reference":{"source":"embedded:lyrics-eng",
+                    "sha256":"86f12025841a482aa16a100bf97560fa1a5675c0d681d3a3dc0b2762ec2222b9",
+                    "alignable_lines":18}}"#,
+        )
+        .expect("manifest");
+        let review = LyricsReview::from_manifest(&manifest);
+        assert_eq!(review.reference_source, "embedded:lyrics-eng");
+        assert_eq!(review.reference_lines, 18);
+        assert_eq!(
+            review.source_summary(),
+            "Lyrics source: embedded:lyrics-eng (18 authored lines, id 86f12025)"
+        );
     }
 
     #[test]
