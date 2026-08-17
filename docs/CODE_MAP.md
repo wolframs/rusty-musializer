@@ -13,9 +13,9 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 40 | 60,223 | 437 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 40 | 60,497 | 437 |
 | [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 93 | 58,644 | 950 |
-| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 26 | 14,829 | 176 |
+| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 26 | 14,894 | 176 |
 | [`raylib-5-5-link`](../crates/raylib-5-5-link/Cargo.toml) | Builds and links raylib 5.5 from vendored source, for raylib-sys nobuild mode | `raylib_5_5_link` (lib), `build-script-build` (custom-build) | 2 | 126 | 0 |
 
 Dependency direction: `musializer-app` → `musializer-runtime` → raylib,
@@ -63,17 +63,17 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/recovery.rs`](../crates/musializer-app/src/recovery.rs) | 535 | 5 | App-owned crash recovery for edited sessions without a durable home (CX-3). |
 | [`src/scene_host.rs`](../crates/musializer-app/src/scene_host.rs) | 719 | 5 | Binding and drawing the ten scenes. |
 | [`src/scenes/ascii_field.rs`](../crates/musializer-app/src/scenes/ascii_field.rs) | 471 | 0 | ASCII Field: the drawing half. |
-| [`src/scenes/cadence.rs`](../crates/musializer-app/src/scenes/cadence.rs) | 609 | 0 | Cadence: the drawing half. |
+| [`src/scenes/cadence.rs`](../crates/musializer-app/src/scenes/cadence.rs) | 649 | 0 | Cadence: the drawing half. |
 | [`src/scenes/caption.rs`](../crates/musializer-app/src/scenes/caption.rs) | 683 | 6 | Shared project lyric captions, drawn after every scene except Cadence. |
-| [`src/scenes/constellation.rs`](../crates/musializer-app/src/scenes/constellation.rs) | 244 | 0 | Constellation: the drawing half. |
-| [`src/scenes/loom.rs`](../crates/musializer-app/src/scenes/loom.rs) | 330 | 0 | Loom: the drawing half. |
+| [`src/scenes/constellation.rs`](../crates/musializer-app/src/scenes/constellation.rs) | 270 | 0 | Constellation: the drawing half. |
+| [`src/scenes/loom.rs`](../crates/musializer-app/src/scenes/loom.rs) | 372 | 0 | Loom: the drawing half. |
 | [`src/scenes/mod.rs`](../crates/musializer-app/src/scenes/mod.rs) | 18 | 0 | The drawing halves of the scenes. |
-| [`src/scenes/orbital_lattice.rs`](../crates/musializer-app/src/scenes/orbital_lattice.rs) | 360 | 0 | Orbital Lattice: the drawing half. |
+| [`src/scenes/orbital_lattice.rs`](../crates/musializer-app/src/scenes/orbital_lattice.rs) | 392 | 0 | Orbital Lattice: the drawing half. |
 | [`src/scenes/pentagram.rs`](../crates/musializer-app/src/scenes/pentagram.rs) | 309 | 0 | Pentagram Orbits: the drawing half. |
 | [`src/scenes/phosphor_dream.rs`](../crates/musializer-app/src/scenes/phosphor_dream.rs) | 986 | 9 | Phosphor Dream: the drawing half. |
-| [`src/scenes/pulse_field.rs`](../crates/musializer-app/src/scenes/pulse_field.rs) | 186 | 0 | Pulse Field: the drawing half. |
-| [`src/scenes/song_atlas.rs`](../crates/musializer-app/src/scenes/song_atlas.rs) | 692 | 0 | Song Atlas: the drawing half. |
-| [`src/scenes/spectral_terrarium.rs`](../crates/musializer-app/src/scenes/spectral_terrarium.rs) | 392 | 0 | Spectral Terrarium: the drawing half. |
+| [`src/scenes/pulse_field.rs`](../crates/musializer-app/src/scenes/pulse_field.rs) | 206 | 0 | Pulse Field: the drawing half. |
+| [`src/scenes/song_atlas.rs`](../crates/musializer-app/src/scenes/song_atlas.rs) | 713 | 0 | Song Atlas: the drawing half. |
+| [`src/scenes/spectral_terrarium.rs`](../crates/musializer-app/src/scenes/spectral_terrarium.rs) | 485 | 0 | Spectral Terrarium: the drawing half. |
 | [`src/scenes/spectrum.rs`](../crates/musializer-app/src/scenes/spectrum.rs) | 217 | 0 | Spectrum: the drawing half. |
 | [`src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 8,357 | 53 | The **AI settings** dialog: one modal surface for assist routing, local runtimes, Codex, OpenRouter and the privacy/provenance summary. |
 | [`src/ui/icons.rs`](../crates/musializer-app/src/ui/icons.rs) | 176 | 2 | The transport row's control vocabulary: an icon, a text fallback, and the tooltip that names both. |
@@ -209,7 +209,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/assist/plan.rs`](../crates/musializer-runtime/src/assist/plan.rs) | 459 | 3 | Gathering the impure facts an execution snapshot needs, and freezing it. |
 | [`src/audio_bridge.rs`](../crates/musializer-runtime/src/audio_bridge.rs) | 306 | 5 | The realtime audio callback bridge. |
 | [`src/decode.rs`](../crates/musializer-runtime/src/decode.rs) | 259 | 3 | Whole-file decoding: audio to PCM, images to RGBA8. |
-| [`src/draw.rs`](../crates/musializer-runtime/src/draw.rs) | 489 | 0 | Drawing primitives shared by every scene. |
+| [`src/draw.rs`](../crates/musializer-runtime/src/draw.rs) | 554 | 0 | Drawing primitives shared by every scene. |
 | [`src/font.rs`](../crates/musializer-runtime/src/font.rs) | 2,335 | 17 | The interface and caption faces. |
 | [`src/halo.rs`](../crates/musializer-runtime/src/halo.rs) | 464 | 0 | The offscreen Gaussian blur behind the caption glow halo (UX0-C11). |
 | [`src/lib.rs`](../crates/musializer-runtime/src/lib.rs) | 36 | 0 | Unsafe and platform-sensitive work behind small, named safe APIs. |

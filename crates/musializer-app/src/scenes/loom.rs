@@ -1,20 +1,18 @@
 //! Loom: the drawing half.
 //!
-//! **Owner: Agent D.** Port of the drawing half of `../musializer/src/scene_loom.c`.
 //! The woven record and the cloth's structural rules are in
 //! `musializer_core::scenes::loom`.
 //!
 //! **The cloth filling only part of the stage is not a framing bug.**
 //! `../musializer/tools/UI_REVIEW.md` records this: the weave is revealed in
 //! proportion to elapsed track time, so a capture at 15% of the track shows 15% of
-//! the cloth and bare warp for the rest. Do not "fix" it.
+//! the settled cloth. Loose warp and weft keep the future side alive without
+//! pretending that part of the song has already been woven.
 //!
 //! Draw order, which is the composition: background, cloth backing, bare warp ahead
 //! of the fell, woven warp, weft picks with their shadows, interlace stubs, the fell
 //! itself, additive glints, cloth outline.
 
-// See the note in `spectral_terrarium`: nothing dispatches the scene drawing
-// halves yet.
 #![allow(dead_code)]
 
 use musializer_core::scene::settings::index::loom as setting;
@@ -72,8 +70,19 @@ pub fn draw(
     );
     let current = loom::semantic_at(frame, weave_state, frame.time_seconds);
     let background = draw::color_from_hsv(224.0, 0.48, 0.025 + current.energy * 0.045);
-    d.draw_rectangle_rec(boundary, background);
-    d.draw_rectangle_rec(cloth, draw::color_alpha(Color::new(13, 14, 28, 255), 0.92));
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
+        background,
+        draw::color_from_hsv(246.0, 0.52, 0.055 + current.energy * 0.045),
+        Vector2::new(
+            boundary.x + boundary.width * 0.38,
+            boundary.y + boundary.height * 0.50,
+        ),
+        boundary.width.max(boundary.height) * 0.52,
+        draw::color_alpha(thread_color(current, saturation_scale, 0.38), 0.18),
+    );
+    d.draw_rectangle_rec(cloth, draw::color_alpha(Color::new(13, 14, 28, 255), 0.86));
 
     let (columns, rows) = loom::dimensions(density_scale);
     let visible_columns = ((columns as f32 * progress).ceil() as usize).min(columns);
@@ -102,6 +111,38 @@ pub fn draw(
             0.6 * pixel_scale * weight_scale,
             draw::color_alpha(draw::color_from_hsv(224.0, 0.10, shade), 0.30),
         );
+    }
+    // Loose future weft keeps the unwoven side feeling like material waiting at
+    // the loom, not an empty progress-meter grid. It is deliberately faint and
+    // slack; the settled cloth to the left remains the visual record.
+    if visible_columns < columns {
+        let future_width = cloth.x + cloth.width - frontier_x;
+        for row in 0..rows {
+            let base_y = cloth.y + ((row as f32 + 0.5) / rows as f32) * cloth.height;
+            let phase = loom::unit(state.seed, row as u64 * 11 + 700) * 2.0 * PI
+                + frame.time_seconds as f32 * 0.10 * motion_scale;
+            let mut previous = Vector2::new(frontier_x, base_y);
+            for segment in 1..=24 {
+                let t = segment as f32 / 24.0;
+                let point = Vector2::new(
+                    frontier_x + future_width * t,
+                    base_y
+                        + (t * PI).sin()
+                            * (2.0 + 4.0 * (phase + row as f32 * 0.17).sin())
+                            * pixel_scale,
+                );
+                d.draw_line_ex(
+                    previous,
+                    point,
+                    (0.45 * pixel_scale * weight_scale).max(0.35),
+                    draw::color_alpha(
+                        draw::color_from_hsv(224.0 + row as f32 * 0.45, 0.18, 0.42),
+                        0.14,
+                    ),
+                );
+                previous = point;
+            }
+        }
     }
 
     // Woven warp: swaying segmented threads with crimp at every weft row. Fresh warp
@@ -325,6 +366,7 @@ pub fn draw(
     d.draw_rectangle_lines_ex(
         cloth,
         pixel_scale.max(1.0),
-        draw::color_alpha(Color::RAYWHITE, 0.12),
+        draw::color_alpha(Color::RAYWHITE, 0.055),
     );
+    draw::vignette(d, boundary, 0.18);
 }

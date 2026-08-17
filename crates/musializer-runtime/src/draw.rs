@@ -174,6 +174,71 @@ pub fn color_alpha(color: Color, alpha: f32) -> Color {
     Color::new(raw.r, raw.g, raw.b, raw.a)
 }
 
+/// Paints a scene background as atmosphere rather than a flat clear colour.
+///
+/// Scenes use this before opening their clipped viewport or drawing their form:
+/// a restrained vertical grade establishes depth, while one broad off-centre
+/// pool of colour gives the composition somewhere for its brightest material to
+/// belong.  It is deliberately image-space and geometry-agnostic — the scene's
+/// own metaphor remains in charge.
+pub fn atmospheric_backdrop<D: RaylibDraw>(
+    d: &mut D,
+    boundary: Rectangle,
+    top: Color,
+    bottom: Color,
+    glow_center: Vector2,
+    glow_radius: f32,
+    glow: Color,
+) {
+    if boundary.width <= 0.0 || boundary.height <= 0.0 {
+        return;
+    }
+    d.draw_rectangle_gradient_v(
+        boundary.x as i32,
+        boundary.y as i32,
+        boundary.width.ceil() as i32,
+        boundary.height.ceil() as i32,
+        top,
+        bottom,
+    );
+    if glow_radius.is_finite() && glow_radius > 0.0 && glow.a > 0 {
+        d.draw_circle_gradient(
+            glow_center.x as i32,
+            glow_center.y as i32,
+            glow_radius,
+            glow,
+            Color::BLANK,
+        );
+    }
+}
+
+/// Darkens only the outer edge of a scene, leaving its focal region untouched.
+///
+/// Four alpha gradients are cheaper and more predictable than a full-screen
+/// shader, work in preview and export, and keep the UI outside `boundary` crisp.
+/// This is not a blanket filter: scenes opt in with a strength appropriate to
+/// their material.
+pub fn vignette<D: RaylibDraw>(d: &mut D, boundary: Rectangle, strength: f32) {
+    let strength = strength.clamp(0.0, 1.0);
+    if strength <= 0.0 || boundary.width <= 1.0 || boundary.height <= 1.0 {
+        return;
+    }
+    let alpha = (strength * 255.0).round() as u8;
+    let dark = Color::new(0, 0, 0, alpha);
+    let clear = Color::BLANK;
+    let horizontal = (boundary.width * 0.12).max(1.0) as i32;
+    let vertical = (boundary.height * 0.15).max(1.0) as i32;
+    let x = boundary.x as i32;
+    let y = boundary.y as i32;
+    let width = boundary.width.ceil() as i32;
+    let height = boundary.height.ceil() as i32;
+
+    d.draw_rectangle_gradient_h(x, y, horizontal, height, dark, clear);
+    d.draw_rectangle_gradient_h(x + width - horizontal, y, horizontal, height, clear, dark);
+    d.draw_rectangle_gradient_v(x, y, width, vertical, dark, clear);
+    d.draw_rectangle_gradient_v(x, y + height - vertical, width, vertical, clear, dark);
+}
+
 // ---------------------------------------------------------------------------
 // 3D panel machinery.
 //

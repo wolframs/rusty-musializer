@@ -1,8 +1,7 @@
 //! Constellation: the drawing half.
 //!
-//! **Owner: Agent D.** Port of the drawing half of
-//! `../musializer/src/scene_constellation.c`. Node geometry, the event lane and the
-//! envelope filter are in `musializer_core::scenes::constellation`.
+//! Node geometry, the event lane and the envelope filter are in
+//! `musializer_core::scenes::constellation`.
 //!
 //! Draw order, which is the composition because the glow pass is additive:
 //! background, nebula, web tubes, opaque node spheres, additive halos and
@@ -13,8 +12,6 @@
 //! no event keeps its own spectral hue. That mapping is what keeps four evidence
 //! lanes visually distinct instead of merging into one glow.
 
-// See the note in `spectral_terrarium`: nothing dispatches the scene drawing
-// halves yet.
 #![allow(dead_code)]
 
 use musializer_core::scene::settings::index::constellation as setting;
@@ -79,8 +76,12 @@ pub fn draw(
         + time * 1.8
         + frame.semantic.valence * hue_swing * semantic_weight)
         % 360.0;
-    let background = draw::color_from_hsv(base_hue, 0.72, 0.035 + state.motion.energy * 0.035);
-    d.draw_rectangle_rec(boundary, background);
+    let background = draw::color_from_hsv(base_hue, 0.66, 0.032 + state.motion.energy * 0.032);
+    let horizon = draw::color_from_hsv(
+        (base_hue + 34.0) % 360.0,
+        0.70,
+        0.075 + state.motion.energy * 0.055,
+    );
     // A soft off-center nebula gives the star field a deep sky to sit in instead of
     // flat black.
     let nebula_center = Vector2::new(
@@ -88,19 +89,21 @@ pub fn draw(
         boundary.y + boundary.height * (0.34 + constellation::unit(state.seed, 12) * 0.30),
     );
     let nebula_radius = boundary.width.max(boundary.height) * 0.62;
-    d.draw_circle_gradient(
-        nebula_center.x as i32,
-        nebula_center.y as i32,
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
+        background,
+        horizon,
+        nebula_center,
         nebula_radius,
         draw::color_alpha(
             draw::color_from_hsv(
                 (base_hue + 24.0) % 360.0,
-                0.66,
-                0.16 + state.motion.energy * 0.10,
+                0.62,
+                0.25 + state.motion.energy * 0.12,
             ),
-            0.55,
+            0.64,
         ),
-        Color::BLANK,
     );
 
     let Some(viewport) = SceneViewport::begin(d, boundary) else {
@@ -111,13 +114,13 @@ pub fn draw(
         time * (0.035 + state.motion.flux * 0.055) + constellation::unit(state.seed, 10) * TAU;
     let camera = Camera3D::perspective(
         Vector3::new(
-            orbit.cos() * 8.9,
+            orbit.cos() * 7.8,
             1.2 + (orbit * 0.61).sin() * 0.8,
-            orbit.sin() * 8.9,
+            orbit.sin() * 7.8,
         ),
-        Vector3::new(0.0, 0.0, 0.0),
+        Vector3::new(0.24, -0.08, 0.0),
         Vector3::new(0.0, 1.0, 0.0),
-        56.0 + state.motion.onset_pulse * 3.0,
+        52.0 + state.motion.onset_pulse * 1.4,
     );
 
     // Positions and flares are resolved once for the whole frame, because the web
@@ -146,8 +149,18 @@ pub fn draw(
         if web > 0.001 {
             let long_step = if node_count > 36 { 13 } else { 7 };
             for i in 0..node_count {
-                for other in [(i + 1) % node_count, (i + long_step) % node_count] {
+                for (kind, other) in [(i + 1) % node_count, (i + long_step) % node_count]
+                    .into_iter()
+                    .enumerate()
+                {
                     let active = flares[i].strength.max(flares[other].strength);
+                    // A complete graph advertises its algorithm before it reads
+                    // as a sky. Keep a sparse underlying filament structure and
+                    // let authored/audio events temporarily reveal extra paths.
+                    let structural = if kind == 0 { i % 2 == 0 } else { i % 5 == 0 };
+                    if !structural && active < 0.18 {
+                        continue;
+                    }
                     let line = draw::color_from_hsv(
                         (base_hue + i as f32 * 1.7) % 360.0,
                         0.48 + active * 0.35,
@@ -159,7 +172,7 @@ pub fn draw(
                         positions[other],
                         0.006 + active * 0.012,
                         5,
-                        draw::color_alpha(line, ((0.40 + active * 0.55) * web).min(1.0)),
+                        draw::color_alpha(line, ((0.24 + active * 0.62) * web).min(1.0)),
                     );
                 }
             }
@@ -167,7 +180,7 @@ pub fn draw(
 
         for i in 0..node_count {
             let band = constellation::band(frame, i);
-            let brightness = 0.47 + band * 0.3 + flares[i].strength * 0.52;
+            let brightness = 0.62 + band * 0.32 + flares[i].strength * 0.48;
             let (hue, saturation, value) = constellation::event_hsv(
                 flares[i].event_type,
                 (base_hue + i as f32 * 2.1) % 360.0,
@@ -196,7 +209,7 @@ pub fn draw(
                     let band = constellation::band(frame, i);
                     let flare =
                         band * 0.35 + flares[i].strength * 0.85 + state.motion.onset_pulse * 0.12;
-                    if flare < 0.08 || glow_scale <= 0.001 {
+                    if glow_scale <= 0.001 {
                         continue;
                     }
                     let (hue, saturation, value) = constellation::event_hsv(
@@ -206,14 +219,26 @@ pub fn draw(
                     );
                     let glow = draw::color_from_hsv(hue, saturation, value);
                     let halo = (0.30 + band * 0.34 + flares[i].strength * 0.75) * glow_scale;
+                    if flare >= 0.08 {
+                        draw_billboard_rec(
+                            &mut pass,
+                            camera,
+                            glow_texture,
+                            glow_source,
+                            positions[i],
+                            Vector2::new(halo, halo),
+                            draw::color_alpha(glow, (0.34 + flare * 0.42).min(0.72)),
+                        );
+                    }
+                    let core = (0.095 + band * 0.08 + flares[i].strength * 0.14) * glow_scale;
                     draw_billboard_rec(
                         &mut pass,
                         camera,
                         glow_texture,
                         glow_source,
                         positions[i],
-                        Vector2::new(halo, halo),
-                        draw::color_alpha(glow, (0.22 + flare * 0.40).min(0.60)),
+                        Vector2::new(core, core),
+                        draw::color_alpha(Color::RAYWHITE, 0.52 + flare.min(0.35)),
                     );
                     if flare > 0.45 {
                         let streak = Vector2::new(halo * (2.4 + flare), halo * 0.30);
@@ -240,5 +265,6 @@ pub fn draw(
     });
 
     viewport.end(d);
-    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.035));
+    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.018));
+    draw::vignette(d, boundary, 0.20);
 }

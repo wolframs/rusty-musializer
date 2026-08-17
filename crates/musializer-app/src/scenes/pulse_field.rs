@@ -1,21 +1,16 @@
 //! Pulse Field: the drawing half.
 //!
-//! **Owner: Agent C.** Port of `../musializer/src/scene_pulse_field.c`'s
-//! `pulse_field_draw` (frozen at `9300af9`, read-only). The deterministic half is
-//! `musializer_core::scenes::pulse_field`, and it is one number.
+//! The deterministic half is `musializer_core::scenes::pulse_field`, and it is
+//! one number.
 //!
 //! A stack of rose curves, drawn outermost first so the additive blend builds up
 //! toward the centre. Everything animated is derived from `frame.time_seconds`,
 //! not from accumulated state, which is what makes a seeked preview and an export
 //! agree.
 //!
-//! Formulas and draw-call order are kept recognizable against the C on purpose;
-//! refactoring the artistry comes after the Rust application works.
+//! A broad, low-alpha echo and a tighter bright stroke give the rose a continuous
+//! light material without sacrificing its spare line language.
 
-// Nothing dispatches this yet: `main.rs` still calls Spectrum directly and the
-// scene registry that will call all ten is the integration owner's. Remove this
-// allow once the frame loop dispatches by `SceneId` — every item here is reached
-// from `draw`.
 #![allow(dead_code)]
 // The sweep clamp is C's two `if`s rather than a `clamp` call, so the line diffs
 // against the line it came from.
@@ -105,6 +100,20 @@ pub fn draw(
         + frame.audio.spectral_flux * motion * 45.0
         + interpretation * motion * 14.0;
 
+    let ground_hue = (rotation + semantic_hue + hue_shift + 720.0) % 360.0;
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
+        draw::color_from_hsv(ground_hue, 0.62, 0.016 + frame.audio.rms * 0.018),
+        draw::color_from_hsv((ground_hue + 34.0) % 360.0, 0.66, 0.045 + bass * 0.035),
+        center,
+        boundary.width.max(boundary.height) * 0.48,
+        draw::color_alpha(
+            draw::color_from_hsv((ground_hue + 318.0) % 360.0, 0.58, 0.15),
+            0.46 + bass * 0.12,
+        ),
+    );
+
     // raylib-rs models raylib's Begin/End mode pairs as scoped closures rather
     // than as bare calls, so C's `BeginBlendMode`/`EndBlendMode` pair becomes this
     // block. The contents and their order are unchanged.
@@ -149,7 +158,7 @@ pub fn draw(
             if sweep > 356.0 {
                 sweep = 356.0;
             }
-            let thickness = (1.0 + amplitude * 8.0) * pixel_scale * weight;
+            let thickness = (1.0 + amplitude * 5.6) * pixel_scale * weight;
             let color = draw::color_from_hsv(
                 (i as f32 / rings as f32 * 280.0 + rotation + semantic_hue + hue_shift + 720.0)
                     % 360.0,
@@ -172,15 +181,26 @@ pub fn draw(
                     center.y + theta.sin() * radius,
                 );
                 if segment > 0 {
+                    // A broad faint echo makes the rose feel drawn in light,
+                    // without turning every ring into the same glowing rope.
+                    if bloom > 0.001 {
+                        blend.draw_line_ex(
+                            previous,
+                            point,
+                            thickness * (2.4 + bloom * 0.8),
+                            draw::color_alpha(color, (0.028 + amplitude * 0.070) * bloom),
+                        );
+                    }
                     blend.draw_line_ex(
                         previous,
                         point,
                         thickness,
-                        draw::color_alpha(color, 0.18 + amplitude * 0.62),
+                        draw::color_alpha(color, 0.24 + amplitude * 0.68),
                     );
                 }
                 previous = point;
             }
         }
     });
+    draw::vignette(d, boundary, 0.18);
 }

@@ -407,7 +407,7 @@ impl SceneRenderer {
                 }
                 SceneId::OrbitalLattice => {
                     if let Some(state) = state_of(instance, id) {
-                        scenes::orbital_lattice::draw(d, state, frame, boundary);
+                        scenes::orbital_lattice::draw(d, state, frame, &mut self.circle, boundary);
                     }
                 }
                 SceneId::AsciiField => {

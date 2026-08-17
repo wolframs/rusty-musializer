@@ -1,25 +1,12 @@
 //! Spectral Terrarium: the drawing half.
 //!
-//! **Owner: Agent D.** Port of the drawing half of
-//! `../musializer/src/scene_spectral_terrarium.c`. The deterministic simulation is
-//! in `musializer_core::scenes::spectral_terrarium`.
+//! The deterministic simulation is in
+//! `musializer_core::scenes::spectral_terrarium`.
 //!
-//! Formulas and draw-call order are kept recognizable against the C, because
-//! additive blending makes order visible and order is therefore behaviour.
-//!
-//! Draw order, which is the composition: background, soil, floor ring, onset
-//! ripple, plants, particles, creatures, additive creature glow, glass rings, then
-//! the atmospheric wash on top.
-//!
-//! This module also carries [`SceneViewport`], the sub-rectangle 3D viewport dance
-//! that Constellation needs too. It belongs in `musializer_runtime::draw` next to
-//! `tube()` — both scene agents need it and Agent C's 3D scenes will want it as
-//! well — but that file is the integration owner's. See the Agent D note in
-//! REWRITE_PLAN.md.
+//! Draw order, which is the composition: atmospheric water, shallow habitat
+//! strata, onset ripple, curved growth, pollen, swimming creatures, selective
+//! bioluminescence, then sparse glass latitudes.
 
-// Nothing calls the scene drawing halves yet: `main.rs` still drives only
-// Spectrum, and the registry that will dispatch all ten is the integration
-// owner's. Remove this once a scene selector exists.
 #![allow(dead_code)]
 
 use musializer_core::scene::settings::index::terrarium as setting;
@@ -83,8 +70,23 @@ pub fn draw(
         + frame.time_seconds as f32 * motion_scale * (1.2 + state.flux * 2.5)
         + frame.semantic.valence * 75.0 * semantic_weight)
         % 360.0;
-    let background = draw::color_from_hsv(hue, 0.68, 0.035 + state.energy * 0.035);
-    d.draw_rectangle_rec(boundary, background);
+    let background = draw::color_from_hsv(hue, 0.60, 0.032 + state.energy * 0.030);
+    let deep_water = draw::color_from_hsv((hue + 38.0) % 360.0, 0.68, 0.078 + state.energy * 0.05);
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
+        background,
+        deep_water,
+        Vector2::new(
+            boundary.x + boundary.width * 0.50,
+            boundary.y + boundary.height * 0.57,
+        ),
+        boundary.width.max(boundary.height) * 0.55,
+        draw::color_alpha(
+            draw::color_from_hsv((hue + 320.0) % 360.0, 0.52, 0.30 + state.bass * 0.10),
+            0.68,
+        ),
+    );
 
     let Some(viewport) = SceneViewport::begin(d, boundary) else {
         return;
@@ -124,7 +126,8 @@ pub fn draw(
     viewport.end(d);
     // A faint wash of the background over the whole panel: atmospheric depth, and
     // it also hides the seam at the viewport edge.
-    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.035));
+    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.018));
+    draw::vignette(d, boundary, 0.20);
 }
 
 /// The five habitat settings, bundled only to keep [`draw_world`]'s argument list
@@ -151,15 +154,30 @@ fn draw_world<D>(
 ) where
     D: RaylibDraw3D + RaylibDraw + RaylibBlendModeExt + RaylibShaderModeExt + Sized,
 {
-    let soil = draw::color_from_hsv((hue + 115.0) % 360.0, 0.55, 0.16 + state.bass * 0.08);
-    d.draw_cylinder(Vector3::new(0.0, -1.82, 0.0), 4.15, 3.9, 0.22, 48, soil);
+    // A shallow dark substrate lets the growth read as a suspended ecology.
+    // The old broad brown cylinder dominated the lower half like an untextured
+    // primitive; layered rings now imply a habitat without becoming the subject.
+    let soil = draw::color_from_hsv((hue + 18.0) % 360.0, 0.62, 0.060 + state.bass * 0.040);
+    d.draw_cylinder(Vector3::new(0.0, -1.76, 0.0), 4.02, 3.78, 0.10, 64, soil);
     d.draw_circle_3D(
-        Vector3::new(0.0, -1.69, 0.0),
-        4.0,
+        Vector3::new(0.0, -1.70, 0.0),
+        3.88,
         Vector3::new(1.0, 0.0, 0.0),
         90.0,
-        draw::color_alpha(draw::color_from_hsv(hue, 0.52, 0.28), 0.55),
+        draw::color_alpha(draw::color_from_hsv(hue, 0.48, 0.46), 0.42),
     );
+    for ring in 1..=3 {
+        d.draw_circle_3D(
+            Vector3::new(0.0, -1.695 + ring as f32 * 0.002, 0.0),
+            3.88 * ring as f32 / 4.0,
+            Vector3::new(1.0, 0.0, 0.0),
+            90.0,
+            draw::color_alpha(
+                draw::color_from_hsv((hue + 32.0) % 360.0, 0.40, 0.52),
+                0.07 + state.bass * 0.05,
+            ),
+        );
+    }
     // Each onset rings the soil like a struck bell: the pulse decays while its
     // ripple expands outward across the floor.
     if state.onset_pulse > 0.03 {
@@ -189,10 +207,11 @@ fn draw_world<D>(
         let sway = (state.simulation_time as f32 * (0.75 + state.flux) + plant.phase).sin()
             * plant.lean
             * (0.45 + amplitude);
+        let root = vec3(plant.root);
         let middle = Vector3::new(
-            plant.root.x + sway * 0.42,
+            plant.root.x + sway * 0.38,
             plant.root.y + height * 0.54,
-            plant.root.z + plant.phase.cos() * sway * 0.25,
+            plant.root.z + plant.phase.cos() * sway * 0.28,
         );
         let tip = Vector3::new(
             plant.root.x + sway,
@@ -204,16 +223,34 @@ fn draw_world<D>(
             0.72,
             0.38 + amplitude * 0.48,
         );
-        let stem_radius = 0.012 + amplitude * 0.012;
-        draw::tube(
-            d,
-            vec3(plant.root),
+        let stem_radius = 0.017 + amplitude * 0.016;
+        // Four tapered, offset segments give each stem a drawn curve. The former
+        // two-segment fork made the habitat read as cylinders assembled in 3D.
+        let stem_points = [
+            root,
+            Vector3::new(
+                plant.root.x + sway * 0.08,
+                plant.root.y + height * 0.25,
+                plant.root.z - plant.phase.sin() * sway * 0.10,
+            ),
             middle,
-            stem_radius,
-            6,
-            draw::color_alpha(stem, 0.78),
-        );
-        draw::tube(d, middle, tip, stem_radius * 0.72, 6, stem);
+            Vector3::new(
+                plant.root.x + sway * 0.73,
+                plant.root.y + height * 0.80,
+                plant.root.z + plant.phase.sin() * sway * 0.42,
+            ),
+            tip,
+        ];
+        for segment in 0..stem_points.len() - 1 {
+            draw::tube(
+                d,
+                stem_points[segment],
+                stem_points[segment + 1],
+                stem_radius * (1.0 - segment as f32 * 0.13),
+                6,
+                draw::color_alpha(stem, 0.84 + segment as f32 * 0.04),
+            );
+        }
         // A pair of leaf blades branching from mid-stem turns a bare stalk into a
         // plant; they sway with the stem and open with amplitude.
         let leaf_angle = terrarium::hash_unit(state.seed, i as u32 + 1300) * 2.0 * PI;
@@ -239,13 +276,15 @@ fn draw_world<D>(
                 draw::color_alpha(leaf, 0.85),
             );
         }
-        d.draw_sphere(
+        d.draw_sphere_ex(
             tip,
-            0.055 + amplitude * 0.14 + state.onset_pulse * 0.025,
+            0.035 + amplitude * 0.085 + state.onset_pulse * 0.018,
+            7,
+            7,
             draw::color_from_hsv(
                 (hue + 145.0 + i as f32 * 8.0) % 360.0,
-                0.62,
-                0.55 + amplitude * 0.42,
+                0.54,
+                0.74 + amplitude * 0.25,
             ),
         );
     }
@@ -258,10 +297,12 @@ fn draw_world<D>(
             0.38,
             0.48 + shimmer * 0.45,
         );
-        d.draw_sphere(
+        d.draw_sphere_ex(
             vec3(particle.position),
-            particle.size * (0.8 + state.treble * 1.3) * scales.particles,
-            draw::color_alpha(color, 0.38 + shimmer * 0.52),
+            particle.size * (0.42 + state.treble * 0.72) * scales.particles,
+            6,
+            6,
+            draw::color_alpha(color, 0.24 + shimmer * 0.38),
         );
     }
 
@@ -335,11 +376,11 @@ fn draw_world<D>(
                 draw::color_alpha(color, 0.62),
             );
         }
-        d.draw_sphere(head, 0.07 + amplitude * 0.09, color);
+        d.draw_sphere_ex(head, 0.045 + amplitude * 0.055, 7, 7, color);
         d.draw_sphere(
             vec3(position),
-            0.045 + state.energy * 0.035,
-            draw::color_alpha(Color::RAYWHITE, 0.72),
+            0.022 + state.energy * 0.018,
+            draw::color_alpha(Color::RAYWHITE, 0.54),
         );
     }
 
@@ -351,6 +392,58 @@ fn draw_world<D>(
         set_circle(shader, 0.06, 2.8);
         d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
             blend.draw_shader_mode(&mut shader.shader, |mut pass| {
+                // Blossoms and pollen share the swimmers' luminous medium. The
+                // scene still has three organisms, but they no longer look like
+                // three unrelated sets of raylib primitives.
+                for i in 0..plant_count {
+                    let plant = &state.plants[i];
+                    let amplitude = terrarium::band(frame, plant.band as usize);
+                    let height = plant.height
+                        * (0.72 + amplitude * 0.75 + state.bass * 0.18)
+                        * scales.growth;
+                    let sway = (state.simulation_time as f32 * (0.75 + state.flux) + plant.phase)
+                        .sin()
+                        * plant.lean
+                        * (0.45 + amplitude);
+                    let tip = Vector3::new(
+                        plant.root.x + sway,
+                        plant.root.y + height,
+                        plant.root.z + plant.phase.sin() * sway * 0.55,
+                    );
+                    let color =
+                        draw::color_from_hsv((hue + 145.0 + i as f32 * 8.0) % 360.0, 0.48, 0.94);
+                    let halo =
+                        (0.30 + amplitude * 0.42 + state.onset_pulse * 0.10) * scales.creature_glow;
+                    draw_billboard_rec(
+                        &mut pass,
+                        camera,
+                        glow_texture,
+                        glow_source,
+                        tip,
+                        Vector2::new(halo, halo),
+                        draw::color_alpha(color, 0.38 + amplitude * 0.42),
+                    );
+                }
+                for i in 0..particle_count {
+                    let particle = &state.particles[i];
+                    let shimmer =
+                        0.5 + 0.5 * (state.simulation_time as f32 * 2.1 + particle.phase).sin();
+                    let halo = particle.size
+                        * (1.8 + state.treble * 1.6)
+                        * scales.particles
+                        * scales.creature_glow;
+                    let color =
+                        draw::color_from_hsv((hue + 35.0 + i as f32 * 4.7) % 360.0, 0.34, 0.90);
+                    draw_billboard_rec(
+                        &mut pass,
+                        camera,
+                        glow_texture,
+                        glow_source,
+                        vec3(particle.position),
+                        Vector2::new(halo, halo),
+                        draw::color_alpha(color, 0.13 + shimmer * 0.22),
+                    );
+                }
                 for i in 0..creature_count {
                     let creature = &state.creatures[i];
                     let amplitude = terrarium::band(frame, creature.band as usize);
@@ -366,7 +459,7 @@ fn draw_world<D>(
                         glow_source,
                         vec3(position),
                         Vector2::new(halo, halo),
-                        draw::color_alpha(color, 0.30 + amplitude * 0.25),
+                        draw::color_alpha(color, 0.40 + amplitude * 0.30),
                     );
                 }
             });
@@ -376,10 +469,10 @@ fn draw_world<D>(
     // Sparse latitude rings imply a glass habitat without hiding its contents.
     let glass = draw::color_alpha(
         draw::color_from_hsv((hue + 25.0) % 360.0, 0.2, 0.9),
-        scales.glass_opacity,
+        scales.glass_opacity * 0.48,
     );
-    for ring in 0..4 {
-        let y = -1.35 + ring as f32 * 1.15;
+    for ring in 0..3 {
+        let y = -1.25 + ring as f32 * 1.55;
         let radius = (16.0f32 - (y + 1.65) * (y + 1.65)).max(0.0).sqrt();
         d.draw_circle_3D(
             Vector3::new(0.0, y, 0.0),

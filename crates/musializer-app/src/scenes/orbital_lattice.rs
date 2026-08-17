@@ -1,44 +1,34 @@
 //! Orbital Lattice: the drawing half.
 //!
-//! **Owner: Agent C.** Port of `../musializer/src/scene_orbital_lattice.c`'s
-//! `draw` (frozen at `9300af9`, read-only). The deterministic half is
-//! `musializer_core::scenes::orbital_lattice`, and every damped envelope this
-//! file reads was computed there.
+//! The deterministic half is `musializer_core::scenes::orbital_lattice`, and
+//! every damped envelope this file reads was computed there.
 //!
 //! A convoy of twelve rings receding down a bounded travel path, each ring a
-//! sixteen-node cube lattice linked by swaying tubes. The camera path is a
-//! function of seed and transport time only; audio moves the geometry.
-//!
-//! Formulas and draw-call order are kept recognizable against the C on purpose.
+//! sixteen-node constellation linked by swaying filaments. Pearl cores and
+//! selective billboard halos make the nodes read as suspended light rather than
+//! exposed construction primitives.
 //!
 //! ## The viewport dance
 //!
 //! This scene draws 3D into a sub-rectangle of a 2D frame, which raylib does not
 //! support directly, so it takes over the GL viewport and puts it back
-//! ([`SceneViewport`]). That is genuinely shared machinery — Song Atlas uses it
-//! and several of Agent D's scenes will too — and it belongs in
-//! `musializer_runtime::draw` next to [`draw::tube`]. It is here only because
-//! `musializer-runtime` is not Agent C's to edit; see the note in
-//! REWRITE_PLAN.md asking the integration owner to hoist it.
+//! ([`SceneViewport`]). Song Atlas and the other 3D scenes use the same shared
+//! machinery from `musializer_runtime::draw`.
 
-// Nothing dispatches this yet: `main.rs` still calls Spectrum directly and the
-// scene registry that will call all ten is the integration owner's. Remove this
-// allow once the frame loop dispatches by `SceneId` — every item here is reached
-// from `draw`, and `SceneViewport` is also used by Song Atlas.
 #![allow(dead_code)]
 
 use musializer_core::scene::settings::index::orbital as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::orbital_lattice::{OrbitalLatticeState, NODES_PER_RING, RING_COUNT};
 use musializer_runtime::draw;
+use musializer_runtime::draw::{draw_billboard_rec, SceneViewport};
 use raylib::prelude::{
-    Camera3D, Color, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector3,
+    BlendMode, Camera3D, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt,
+    RaylibShaderModeExt, Rectangle, Vector2, Vector3,
 };
-// Aliased because `musializer_runtime::draw` has its own `RaylibDraw3D` — the
-// narrow capability `draw::tube` needs. Both must be in scope: this one for the
-// cube calls, that one for the tube.
-use musializer_runtime::draw::SceneViewport;
-use raylib::prelude::RaylibDraw3D as RlDraw3D;
+
+use super::spectral_terrarium::set_circle;
+use super::spectrum::CircleShader;
 
 const PI: f32 = std::f32::consts::PI;
 
@@ -148,6 +138,7 @@ pub fn draw(
     d: &mut RaylibDrawHandle<'_>,
     state: &OrbitalLatticeState,
     frame: &SceneFrame<'_>,
+    shader: &mut CircleShader,
     boundary: Rectangle,
 ) {
     if boundary.width <= 1.0 || boundary.height <= 1.0 {
@@ -176,12 +167,27 @@ pub fn draw(
     let hue_base =
         (lattice.hue_degrees as f32 + hue_shift + lattice.semantic_valence * 55.0 + 720.0) % 360.0;
 
-    let background = draw::color_from_hsv(
-        hue_base,
-        0.58 + lattice.semantic_tension * 0.16,
-        0.055 + energy * 0.035,
+    let background = draw::color_from_hsv(hue_base, 0.58, 0.038 + energy * 0.032);
+    let horizon = draw::color_from_hsv(
+        (hue_base + 26.0) % 360.0,
+        0.68 + lattice.semantic_tension * 0.12,
+        0.090 + energy * 0.060,
     );
-    d.draw_rectangle_rec(boundary, background);
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
+        background,
+        horizon,
+        Vector2::new(
+            boundary.x + boundary.width * 0.52,
+            boundary.y + boundary.height * 0.49,
+        ),
+        boundary.width.max(boundary.height) * 0.52,
+        draw::color_alpha(
+            draw::color_from_hsv((hue_base + 325.0) % 360.0, 0.60, 0.27),
+            0.62,
+        ),
+    );
 
     let screen_width = d.get_screen_width();
     let screen_height = d.get_screen_height();
@@ -205,22 +211,28 @@ pub fn draw(
         Vector3::new(
             camera_orbit.cos() * camera_radius,
             camera_lift,
-            10.9 - bass * 0.28 - pulse * 0.12,
+            9.65 - bass * 0.18 - pulse * 0.08,
         ),
-        Vector3::new(0.0, 0.0, -8.5 * depth_scale),
+        Vector3::new(0.0, 0.0, -7.4 * depth_scale),
         Vector3::new(0.0, 1.0, 0.0),
-        55.0 + flux * 2.3 + pulse * 0.8,
+        50.0 + flux * 1.2 + pulse * 0.4,
     );
 
     {
         let mut space = d.begin_mode3D(camera);
         viewport.correct_projection_aspect();
 
+        // The old renderer exposed its construction vocabulary — literal cubes,
+        // facets and wire boxes.  Keep the lattice and its audio motion, but give
+        // the nodes one coherent material: pearl-like cores suspended in a soft
+        // emissive field.
+        let mut lanterns = Vec::with_capacity(RING_COUNT * NODES_PER_RING);
+
         let breathe_phase = time_phase(frame.time_seconds, 0.55);
         let drift_x_phase = time_phase(frame.time_seconds, 0.17);
         let drift_y_phase = time_phase(frame.time_seconds, 0.13);
-        // Far rings first: painting back to front is what makes the near cubes
-        // occlude cleanly under additive facets and wire overlays.
+        // Far rings first so the nearer pearls and filaments establish the final
+        // depth hierarchy.
         for ring in (0..RING_COUNT).rev() {
             let Some(ring_motion) = lattice.ring(ring) else {
                 continue;
@@ -274,43 +286,20 @@ pub fn draw(
                     z + (angle * 2.0 + seed_phase).sin() * 0.07 * (0.4 + treble),
                 );
 
-                let fog = (1.0 - depth_t * 0.78) * ring_motion.visibility;
+                let fog = (1.0 - depth_t * 0.66) * ring_motion.visibility;
                 let hue = (hue_base + node_t * 105.0 + ring as f32 * 5.0) % 360.0;
-                // Directional key light from the upper left so cubes shade around
-                // the ring instead of rendering as one flat tone.
+                // A directional value bias keeps the ring from reading as one
+                // flat tone even before the emissive pass.
                 let shade = 0.74 + 0.26 * (angle - 2.35).cos();
                 let color = draw::color_from_hsv(
                     hue,
                     0.64 + amplitude * 0.28,
-                    clamp01(fog * shade * (0.60 + amplitude * 0.44)),
+                    clamp01(fog * shade * (0.72 + amplitude * 0.48)),
                 );
                 let color = draw::color_alpha(color, ring_motion.visibility);
                 let size = (0.10 + amplitude * 0.23 + energy * 0.06 + pulse * 0.04) * node_scale;
-                let cube_size = Vector3::new(
-                    size * (0.88 + bass * 0.30),
-                    size * (1.0 + amplitude * 0.55),
-                    size * (1.45 + treble * 0.65),
-                );
-                space.draw_cube_v(position, cube_size, color);
-                let facet_position = Vector3::new(
-                    position.x - size * 0.10,
-                    position.y + size * 0.13,
-                    position.z + size * 0.08,
-                );
-                let facet_size =
-                    Vector3::new(cube_size.x * 0.48, cube_size.y * 0.42, cube_size.z * 0.36);
-                space.draw_cube_v(
-                    facet_position,
-                    facet_size,
-                    draw::color_alpha(color_brightness(color, 0.34), 0.34 + amplitude * 0.34),
-                );
-                if ring_motion.distance < 11.0 || amplitude > 0.55 {
-                    space.draw_cube_wires_v(
-                        position,
-                        cube_size,
-                        draw::color_alpha(Color::RAYWHITE, fog * 0.32),
-                    );
-                }
+                let pearl_radius = size * (0.48 + bass * 0.10 + amplitude * 0.10);
+                lanterns.push((position, pearl_radius, color, amplitude, fog));
 
                 if node == 0 {
                     first = position;
@@ -318,7 +307,7 @@ pub fn draw(
                 if node > 0 && link_scale > 0.001 {
                     let edge = draw::color_alpha(
                         color,
-                        fog * (0.22 + energy * 0.20) * 1.0f32.min(link_scale),
+                        fog * (0.43 + energy * 0.27) * 1.0f32.min(link_scale),
                     );
                     draw_swaying_link(
                         &mut space,
@@ -349,12 +338,55 @@ pub fn draw(
                 );
             }
         }
+
+        // One additive pass turns the pearls into light sources.  The analytic
+        // circle texture stays smooth under both preview MSAA and export
+        // supersampling; depth fog keeps the tunnel readable instead of making
+        // all twelve rings equally loud.
+        let glow_texture = draw::default_texture();
+        let glow_source = Rectangle::new(0.0, 0.0, 1.0, 1.0);
+        set_circle(shader, 0.055, 2.8);
+        space.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
+            blend.draw_shader_mode(&mut shader.shader, |mut pass| {
+                for (index, &(position, radius, color, amplitude, fog)) in
+                    lanterns.iter().enumerate()
+                {
+                    // Broad glow is selective; every pearl gets a hot core, but
+                    // only a stable subset and genuinely active bands illuminate
+                    // the surrounding haze. This creates hierarchy and keeps the
+                    // software-GL headless path comfortably inside frame budget.
+                    if index % 3 == 0 || amplitude > 0.18 {
+                        let diameter = radius * (6.4 + amplitude * 4.2 + pulse * 1.8);
+                        draw_billboard_rec(
+                            &mut pass,
+                            camera,
+                            glow_texture,
+                            glow_source,
+                            position,
+                            Vector2::new(diameter, diameter),
+                            draw::color_alpha(color, fog * (0.58 + amplitude * 0.42)),
+                        );
+                    }
+                    let core = radius * (2.5 + amplitude * 1.3);
+                    draw_billboard_rec(
+                        &mut pass,
+                        camera,
+                        glow_texture,
+                        glow_source,
+                        position,
+                        Vector2::new(core, core),
+                        draw::color_alpha(Color::RAYWHITE, fog * (0.82 + amplitude * 0.18)),
+                    );
+                }
+            });
+        });
     }
     drop(viewport);
 
     // A faint veil of the background colour over the whole scene: it lifts the
     // black point so a quiet passage is not a black rectangle, and it is drawn
     // *after* the viewport is restored so it covers the full boundary.
-    let veil = draw::color_alpha(background, 0.08 + (1.0 - energy) * 0.07);
+    let veil = draw::color_alpha(background, 0.025 + (1.0 - energy) * 0.025);
     d.draw_rectangle_rec(boundary, veil);
+    draw::vignette(d, boundary, 0.22);
 }

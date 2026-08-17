@@ -1,8 +1,7 @@
 //! Cadence: the drawing half.
 //!
-//! **Owner: Agent D.** Port of the drawing half of
-//! `../musializer/src/scene_cadence.c`. Word splitting, the estimated word windows
-//! and the focus envelopes are in `musializer_core::scenes::cadence`.
+//! Word splitting, the estimated word windows and the focus envelopes are in
+//! `musializer_core::scenes::cadence`.
 //!
 //! The scene condenses a swarm of particles onto the letterforms of the lyric line
 //! currently being sung, word by word. Two details in here are the reason it reads
@@ -16,8 +15,6 @@
 //! `../musializer/cadence-overhauls-2026-07-26.md` describes a different Cadence and
 //! is an unimplemented scratchpad; it is deliberately not ported.
 
-// See the note in `spectral_terrarium`: nothing dispatches the scene drawing
-// halves yet.
 #![allow(dead_code)]
 
 use std::ffi::CString;
@@ -319,7 +316,7 @@ fn glyph_ink<F: RaylibFont>(
     want
 }
 
-/// `cadence_draw_ambient` (`:243-265`) — the idle state, with no lyric line.
+/// The instrumental idle state, with no lyric line.
 fn draw_ambient(
     d: &mut RaylibDrawHandle<'_>,
     frame: &SceneFrame<'_>,
@@ -331,6 +328,37 @@ fn draw_ambient(
 ) {
     let phase = frame.audio.beat_phase * 2.0 * PI;
     d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
+        // With no authored words there is still a typographic *field*: broad,
+        // slowly breathing strokes suggest ink waiting to condense instead of
+        // leaving ninety-six pinpricks in an almost black frame. Nothing here
+        // invents text; the actual cue remains the only source of letterforms.
+        let extent = boundary.width.min(boundary.height);
+        for ribbon in 0..4 {
+            let ribbon_phase = frame.time_seconds as f32 * (0.11 + ribbon as f32 * 0.018)
+                + cadence::unit(state.seed, 900 + ribbon) * 2.0 * PI;
+            let mut previous = Vector2::zero();
+            for segment in 0..=96 {
+                let t = segment as f32 / 96.0;
+                let x = boundary.x + boundary.width * (0.12 + t * 0.76);
+                let wave = (t * PI * (1.5 + ribbon as f32 * 0.34) + ribbon_phase).sin();
+                let counter = (t * PI * 3.0 - ribbon_phase * 0.63).cos();
+                let y = boundary.y
+                    + boundary.height * (0.36 + ribbon as f32 * 0.085)
+                    + wave * extent * (0.055 + frame.audio.rms * 0.055)
+                    + counter * extent * 0.018;
+                let point = Vector2::new(x, y);
+                if segment > 0 {
+                    let taper = (t * PI).sin().max(0.0);
+                    blend.draw_line_ex(
+                        previous,
+                        point,
+                        (1.2 + taper * (2.8 + frame.audio.rms * 3.8)) * pixel_scale * swarm,
+                        draw::color_alpha(color, (0.13 + taper * 0.17) * swarm),
+                    );
+                }
+                previous = point;
+            }
+        }
         for i in 0..AMBIENT_PARTICLES as u64 {
             let angle = cadence::unit(state.seed, i * 3 + 1) * 2.0 * PI + phase * 0.12;
             let radius = cadence::unit(state.seed, i * 3 + 2).sqrt()
@@ -342,13 +370,13 @@ fn draw_ambient(
                 boundary.x + boundary.width * 0.5 + angle.cos() * radius * breathing,
                 boundary.y + boundary.height * 0.5 + angle.sin() * radius * breathing,
             );
-            let size = (0.7 + cadence::unit(state.seed, i * 3 + 3) * 1.8 + frame.audio.rms * 2.5)
+            let size = (0.9 + cadence::unit(state.seed, i * 3 + 3) * 2.2 + frame.audio.rms * 3.0)
                 * pixel_scale
                 * swarm;
             blend.draw_circle_v(
                 point,
                 size,
-                draw::color_alpha(color, 0.10 + frame.audio.rms * 0.16),
+                draw::color_alpha(color, 0.34 + frame.audio.rms * 0.32),
             );
         }
     });
@@ -549,7 +577,7 @@ pub fn draw(
         + frame.audio.spectral_flux * 72.0
         + 360.0)
         % 360.0;
-    let background = draw::color_from_hsv(hue, 0.62, 0.025 + frame.audio.rms * 0.025);
+    let background = draw::color_from_hsv(hue, 0.60, 0.030 + frame.audio.rms * 0.030);
     // The ink is the hue's near-complement, so type stays legible against the
     // background whatever the semantic lane does to the hue.
     let ink = draw::color_from_hsv(
@@ -557,10 +585,22 @@ pub fn draw(
         0.48 + frame.semantic.tension * 0.28 * semantic_weight,
         0.94,
     );
-    d.draw_rectangle_rec(boundary, background);
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
+        background,
+        draw::color_from_hsv((hue + 24.0) % 360.0, 0.56, 0.076 + frame.audio.rms * 0.05),
+        Vector2::new(
+            boundary.x + boundary.width * 0.48,
+            boundary.y + boundary.height * 0.52,
+        ),
+        boundary.width.max(boundary.height) * 0.52,
+        draw::color_alpha(ink, 0.13 + frame.audio.rms * 0.10),
+    );
 
     let Some(lyric) = frame.lyric.filter(|lyric| !lyric.text.is_empty()) else {
         draw_ambient(d, frame, state, boundary, ink, swarm, pixel_scale);
+        draw::vignette(d, boundary, 0.22);
         return;
     };
 

@@ -1,8 +1,7 @@
 //! Song Atlas: the drawing half.
 //!
-//! **Owner: Agent C.** Port of `../musializer/src/scene_song_atlas.c`'s `draw`
-//! (frozen at `9300af9`, read-only). The live ring, the map's validity and
-//! interpolation, and the render-sampling arithmetic are all in
+//! The live ring, the map's validity and interpolation, and the render-sampling
+//! arithmetic are all in
 //! `musializer_core::scenes::song_atlas`.
 //!
 //! A lit heightfield of the song's spectrum, flown over from above: frequency
@@ -19,12 +18,9 @@
 //! separately. [`Batch`] wraps the immediate-mode calls so the `rlEnd` cannot be
 //! forgotten.
 //!
-//! Formulas and draw-call order are kept recognizable against the C on purpose.
+//! The surface uses softened display samples, luminous survey contours and an
+//! atmospheric horizon so the map reads as cartography rather than a raw mesh.
 
-// Nothing dispatches this yet: `main.rs` still calls Spectrum directly and the
-// scene registry that will call all ten is the integration owner's. Remove this
-// allow once the frame loop dispatches by `SceneId` — every item here is reached
-// from `draw`.
 #![allow(dead_code)]
 
 use musializer_core::scene::settings::index::atlas as setting;
@@ -35,7 +31,7 @@ use musializer_core::scenes::song_atlas::{
 };
 use musializer_runtime::draw;
 use raylib::prelude::{
-    Camera3D, Color, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector3,
+    Camera3D, Color, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector2, Vector3,
 };
 
 use musializer_core::scenes::song_atlas as core_atlas;
@@ -66,11 +62,24 @@ fn clamp01(value: f32) -> f32 {
     value
 }
 
+/// A small display kernel over adjacent perceptual bands.
+///
+/// The map remains exact data; only its drawn surface is rounded. A one-bin peak
+/// used to become a row of knife-edged triangular fins, advertising the mesh
+/// more loudly than the music. The 1-2-3-2-1 kernel keeps peaks and frequency
+/// position intact while letting the heightfield read as continuous terrain.
+fn display_amplitude(slice: &Slice, band: usize) -> f32 {
+    let at = |offset: isize| {
+        let index = (band as isize + offset).clamp(0, (BAND_COUNT - 1) as isize) as usize;
+        slice.bands[index]
+    };
+    (at(-2) + at(-1) * 2.0 + at(0) * 3.0 + at(1) * 2.0 + at(2)) / 9.0
+}
+
 /// An open rlgl immediate-mode batch. `rlEnd` runs on drop.
 ///
-/// This is the one place in Agent C's files that issues vertices directly. Like
-/// [`SceneViewport`], it is machinery that belongs in `musializer_runtime::draw`
-/// and is here only because that crate is not Agent C's to edit.
+/// The terrain issues vertices directly because raylib's safe per-triangle call
+/// would break this thousands-of-vertices pass into separate submissions.
 struct Batch;
 
 impl Batch {
@@ -140,7 +149,7 @@ fn color_to_hsv(color: Color) -> Vector3 {
 /// only 0.72, so the surface arches across the frequency axis.
 fn vertex(slice: &Slice, band: usize, age: f32, scroll_phase: f32) -> Vector3 {
     let across = band as f32 / (BAND_COUNT - 1) as f32;
-    let amplitude = slice.bands[band];
+    let amplitude = display_amplitude(slice, band);
     let terrain_profile = 0.42 + 0.58 * (across * PI).sin();
     Vector3::new(
         (across - 0.5) * 9.4,
@@ -197,7 +206,7 @@ fn terrain_color(slice: &Slice, band: usize, age: f32, color_shift: f32) -> Colo
     } else {
         mix_color(MIDDLE, TREBLE, (across - 0.5) * 2.0)
     };
-    let amplitude = slice.bands[band];
+    let amplitude = display_amplitude(slice, band);
     let mut color = mix_color(
         frequency,
         SUMMIT,
@@ -209,12 +218,16 @@ fn terrain_color(slice: &Slice, band: usize, age: f32, color_shift: f32) -> Colo
     color.r = (f32::from(color.r) * scale) as u8;
     color.g = (f32::from(color.g) * scale) as u8;
     color.b = (f32::from(color.b) * scale) as u8;
+    color.a = (188.0 + amplitude * 52.0).min(240.0) as u8;
     hue_shift(color, color_shift)
 }
 
 /// `atlas_light_color` (`scene_song_atlas.c:253-263`).
 fn light_color(color: Color, light: f32) -> Color {
-    let light = 0.26 + clamp01(light) * 0.86;
+    // A broad fill plus a restrained key: the old 0.26 floor turned adjacent
+    // triangles into near-black facets. Relief remains visible, but it no longer
+    // reads as a low-poly material demo.
+    let light = 0.76 + clamp01(light) * 0.28;
     Color::new(
         (f32::from(color.r) * light).min(255.0) as u8,
         (f32::from(color.g) * light).min(255.0) as u8,
@@ -338,7 +351,7 @@ fn draw_live_surface(
             if let Some(slice) = slice_at(source_age) {
                 let line = draw::color_alpha(
                     Color::RAYWHITE,
-                    (if wireframe { 0.16 } else { 0.08 })
+                    (if wireframe { 0.20 } else { 0.14 })
                         + 0.22 * (1.0 - sample as f32 / render_count as f32),
                 );
                 for band in 0..BAND_COUNT - 1 {
@@ -352,7 +365,7 @@ fn draw_live_surface(
     while band + 1 < BAND_COUNT {
         let line = draw::color_alpha(
             hue_shift(MERIDIAN, color_shift),
-            if wireframe { 0.32 } else { 0.18 },
+            if wireframe { 0.36 } else { 0.25 },
         );
         for (newer_age, older_age) in render_sample_indices(0, available, detail_level)
             .zip(render_sample_indices(0, available, detail_level).skip(1))
@@ -490,7 +503,7 @@ fn draw_complete_surface(
                 0.28 + slices[row].flux * 0.50,
             )
         } else {
-            draw::color_alpha(Color::RAYWHITE, 0.12)
+            draw::color_alpha(Color::RAYWHITE, 0.17)
         };
         for band in 0..BAND_COUNT - 1 {
             batch.vertex(complete_vertex(&slices[row], band, distance), line);
@@ -502,7 +515,7 @@ fn draw_complete_surface(
     while band + 1 < BAND_COUNT {
         let line = draw::color_alpha(
             hue_shift(MERIDIAN, color_shift),
-            if wireframe { 0.30 } else { 0.16 },
+            if wireframe { 0.35 } else { 0.24 },
         );
         for (row, next_row) in render_sample_indices(first, available, detail_level)
             .zip(render_sample_indices(first, available, detail_level).skip(1))
@@ -587,15 +600,22 @@ pub fn draw(
         + color_shift
         + 720.0)
         % 360.0;
-    let background = draw::color_from_hsv(hue, 0.70, 0.038 + energy * 0.025);
-    let horizon = draw::color_from_hsv((hue + 24.0) % 360.0, 0.64, 0.075 + energy * 0.035);
-    d.draw_rectangle_gradient_v(
-        boundary.x as i32,
-        boundary.y as i32,
-        boundary.width as i32,
-        boundary.height as i32,
+    let background = draw::color_from_hsv(hue, 0.70, 0.022 + energy * 0.022);
+    let horizon = draw::color_from_hsv((hue + 24.0) % 360.0, 0.62, 0.072 + energy * 0.045);
+    draw::atmospheric_backdrop(
+        d,
+        boundary,
         background,
         horizon,
+        Vector2::new(
+            boundary.x + boundary.width * 0.53,
+            boundary.y + boundary.height * 0.62,
+        ),
+        boundary.width.max(boundary.height) * 0.58,
+        draw::color_alpha(
+            draw::color_from_hsv((hue + 42.0) % 360.0, 0.58, 0.17 + energy * 0.06),
+            0.58,
+        ),
     );
 
     let screen_width = d.get_screen_width();
@@ -622,7 +642,7 @@ pub fn draw(
     let mut camera = Camera3D::perspective(
         Vector3::new(
             journey.sin() * 0.52,
-            (4.62 + (journey * 0.47).cos() * 0.14 + energy * 0.20) * camera_scale,
+            (4.28 + (journey * 0.47).cos() * 0.10 + energy * 0.16) * camera_scale,
             7.35,
         ),
         Vector3::new(
@@ -631,7 +651,7 @@ pub fn draw(
             target_z,
         ),
         Vector3::new(0.0, 1.0, 0.0),
-        49.0 + flux * 2.2,
+        46.0 + flux * 1.4,
     );
 
     // Orbit rotates the vantage horizontally around the focus point; distance
@@ -688,5 +708,6 @@ pub fn draw(
     }
     drop(viewport);
 
-    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.045));
+    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.018));
+    draw::vignette(d, boundary, 0.20);
 }
