@@ -1551,14 +1551,15 @@ def _whisper_installs() -> tuple[Path, ...]:
     )
 
 
-# Model preference. turbo leads: on the singing fixture it recovered strictly
-# more lyric lines than full large-v3 (which suppressed loud ensemble
-# passages) with no hallucination loops, at roughly a seventh of the CPU
-# cost — full large-v3 can exceed the 40-minute assist timeout for longer
-# tracks on CPU-only builds.
+# Model preference. Full large-v3 now leads when it is installed: the 2026-08-17
+# Groyper regression recovered 17/18 authored lines in the coarse pass and
+# 16/18 after conservative occurrence gating, versus turbo's 14/18 and 10/18.
+# Turbo remains the fallback for smaller installations. The full model can be
+# substantially slower on CPU-only systems, while an explicit override remains
+# authoritative.
 _WHISPER_MODEL_PREFERENCE = (
-    "ggml-large-v3-turbo.bin",
     "ggml-large-v3.bin",
+    "ggml-large-v3-turbo.bin",
     "ggml-large-v3-q5_0.bin",
     "ggml-medium.en.bin",
 )
@@ -2200,7 +2201,10 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
             # claim about a lane, and a run without the lane has no standing to
             # make it.
             **({"lyrics_unresolved": len(lyrics.get("unresolved", [])),
-                "lyrics_review_flags": len(lyrics.get("review_flags", []))}
+                "lyrics_review_flags": (len(lyrics.get("review_flags", [])) +
+                                         len(lyrics.get("performed_candidates", []))),
+                "lyrics_performed_candidates": len(
+                    lyrics.get("performed_candidates", []))}
                if lyrics else {}),
             "sections": len(plan.get("sections", [])),
             "semantics": len(semantic.get("segments", [])) if semantic else 0,

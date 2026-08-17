@@ -235,6 +235,26 @@ class RuntimeInventoryTests(unittest.TestCase):
             self.assertIsInstance(runtime["remediation"], str)
 
 
+class DoctorExecutableDiscoveryTests(unittest.TestCase):
+    def test_explicit_codex_path_survives_a_desktop_path_that_cannot_find_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            codex = Path(tmp) / "codex"
+            codex.write_text("#!/bin/sh\n")
+            codex.chmod(0o755)
+            found, detail = musializer_doctor._codex_executable(
+                codex, lambda _name: None)
+            self.assertEqual(found, str(codex))
+            self.assertEqual(detail, str(codex))
+
+    def test_invalid_explicit_codex_path_is_loud_and_never_falls_back(self) -> None:
+        missing = Path("/definitely/missing/codex")
+        found, detail = musializer_doctor._codex_executable(
+            missing, lambda _name: "/usr/bin/codex")
+
+        self.assertIsNone(found)
+        self.assertIn(str(missing), detail)
+
+
 # --- Models directory resolution (AP2-b) ------------------------------------
 
 def _assist_settings(models_dir: str, **extra) -> str:

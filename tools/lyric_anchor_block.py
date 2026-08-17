@@ -66,7 +66,7 @@ LOCALIZATION_POLICY = "anchor-block-mms"
 LOCALIZATION_POLICY_VERSION = "2"
 # Acoustic request identity, shared with the runner and cache reader without
 # importing torch into the orchestration process.
-ALIGNMENT_VERSION = "2"
+ALIGNMENT_VERSION = "3"
 
 # Anchor spotting. An n-gram is only an anchor when it is unique on *both*
 # sides: a phrase repeated in the lyrics cannot say which chorus it belongs to,
@@ -1067,6 +1067,7 @@ def assemble_document(
         "localization_policy": LOCALIZATION_POLICY,
         "localization_policy_version": LOCALIZATION_POLICY_VERSION,
         "lines": cues,
+        "performed_candidates": list(plan.get("performed_candidates", [])),
         "unresolved": unresolved,
         # `unmatched` keeps its established meaning — authored lines with no
         # timing — so the manifest count and the CLI summary keep working.
@@ -1086,6 +1087,7 @@ def assemble_document(
             "matched_lines": len(cues),
             "estimated_lines": 0,
             "unmatched_lines": len(unresolved),
+            "performed_candidates": len(plan.get("performed_candidates", [])),
             "unresolved_lines": len(unresolved),
             "abstained_lines": len(abstentions),
             "review_flagged_lines": len(review_flags),

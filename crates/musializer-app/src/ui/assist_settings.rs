@@ -642,6 +642,10 @@ pub struct DoctorReport {
     pub runtimes: BTreeMap<String, RuntimeIdentity>,
 }
 
+fn runtime_is_available(state: &str) -> bool {
+    matches!(state, "ok" | "available")
+}
+
 /// The three runtimes the Local models section names, in display order.
 pub const RUNTIME_ROWS: [(&str, &str); 3] = [
     ("whisper", "Whisper"),
@@ -1696,6 +1700,13 @@ impl AssistSettingsDialog {
         self.now = now_utc();
         self.reload();
         self.apply_probe_state();
+        // Runtime discovery is local and read-only. A desktop user should not
+        // have to know that the button named "Run doctor" is the prerequisite
+        // for the routing matrix to stop saying "Not probed". Probe-driven
+        // captures supply their own deterministic report and never spawn this.
+        if std::env::var_os(PROBE_OPEN_VARIABLE).is_none() && self.doctor.is_none() {
+            self.start_doctor();
+        }
     }
 
     pub fn close(&mut self) {
@@ -1780,9 +1791,9 @@ impl AssistSettingsDialog {
             document.schema_version == "musializer.codex-model-catalog/v1"
         });
         self.resolve_codex();
-        self.doctor = None;
-        self.doctor_error = None;
         if let Ok(path) = std::env::var(PROBE_DOCTOR_VARIABLE) {
+            self.doctor = None;
+            self.doctor_error = None;
             match std::fs::read(&path)
                 .map_err(|error| error.to_string())
                 .and_then(|bytes| {
@@ -2335,11 +2346,12 @@ impl AssistSettingsDialog {
         if route.route_type == RouteType::OpenRouter && !self.credentials.is_usable() {
             return Readiness::Blocked(NO_KEY.to_string());
         }
-        // 2. Something to send. A Codex route with no `model_id` is the
-        //    documented `Codex default` (§5 rule 6), which is a choice; every
-        //    other route type with no model has nothing to run.
+        // 2. Something to send. Codex has its documented default, and a local
+        //    runtime can resolve its concrete weights from local_runtimes or
+        //    its installation. The completed job records the exact file/hash.
+        //    Only a remote provider truly has no request without a model id.
         let has_model = match (route.route_type, &route.model_id) {
-            (RouteType::Builtin | RouteType::Codex, _) => true,
+            (RouteType::Builtin | RouteType::Codex | RouteType::LocalProc, _) => true,
             (_, Some(id)) => !id.is_empty(),
             (_, None) => false,
         };
@@ -2360,7 +2372,7 @@ impl AssistSettingsDialog {
                     .and_then(|report| report.runtimes.get(key))
                 {
                     None => Readiness::Unknown("Run doctor".to_string()),
-                    Some(identity) if identity.state == "available" => Readiness::Ready,
+                    Some(identity) if runtime_is_available(&identity.state) => Readiness::Ready,
                     Some(identity) => Readiness::Blocked(sanitize_display(
                         identity
                             .remediation
@@ -4463,11 +4475,11 @@ impl AssistSettingsDialog {
             body,
             cursor,
             Section::LocalModels.heading(),
-            "Where downloaded weights live, and what the installed runtimes actually are. Nothing \
-             here is guessed: a runtime that has not been probed says so.",
+            "Where new downloads go, and what the installed runtimes actually use. Existing \
+             runtime weights may live elsewhere; their exact paths are listed below.",
         );
 
-        subheading(d, font, body, cursor, "Models directory");
+        subheading(d, font, body, cursor, "Download destination");
         match (&self.models_dir, &self.models_dir_error) {
             (Some(resolution), _) => {
                 let resolution = resolution.clone();
@@ -4627,7 +4639,7 @@ impl AssistSettingsDialog {
                                 cursor,
                                 "State",
                                 &sanitize_display(&identity.state),
-                                if identity.state == "available" {
+                                if runtime_is_available(&identity.state) {
                                     color::ui_success()
                                 } else {
                                     color::ui_warning()
@@ -6631,6 +6643,12 @@ impl AssistSettingsDialog {
         };
         let mut command = Command::new("python3");
         command.arg(&tool).arg("--json");
+        // The dialog already solved the desktop-launcher PATH problem. Passing
+        // that absolute answer prevents the Python doctor from contradicting
+        // the Codex section by repeating only `shutil.which("codex")`.
+        if let Some(path) = self.codex_binary() {
+            command.arg("--codex-bin").arg(path);
+        }
         strip_credential_variables(&mut command);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
@@ -7409,7 +7427,7 @@ mod tests {
             runtimes: BTreeMap::from([(
                 "mms_ctc_aligner".to_string(),
                 RuntimeIdentity {
-                    state: "available".to_string(),
+                    state: "ok".to_string(),
                     ..RuntimeIdentity::default()
                 },
             )]),

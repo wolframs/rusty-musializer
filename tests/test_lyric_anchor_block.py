@@ -139,6 +139,12 @@ class ShippedSchemaTests(unittest.TestCase):
         plan = _plan(lines)
         plan["structure"] = [{"reference_line_index": 9, "kind": "section",
                               "text": "[Chorus]"}]
+        plan["performed_candidates"] = [{
+            "start_seconds": 30.0, "end_seconds": 31.0, "text": "yeah",
+            "confidence": 0.7, "source": "whisper-unmatched",
+            "uncertain": True,
+            "reason": "heard outside every authored lyric placement",
+        }]
         document = anchor_block.assemble_document(
             plan, {0: _decision(10.0, 12.0)}, {0: 0}, {0: (9.5, 11.5)},
             audio_duration=60.0)
@@ -150,6 +156,11 @@ class ShippedSchemaTests(unittest.TestCase):
         document["generation"] = {}
         document["timing_refinement"] = {}
         return document
+
+    def test_performed_candidates_survive_acoustic_refinement_separately(self) -> None:
+        document = self._document()
+        self.assertEqual(document["performed_candidates"][0]["text"], "yeah")
+        self.assertEqual(document["statistics"]["performed_candidates"], 1)
 
     def test_no_field_falls_outside_the_shipped_schema(self) -> None:
         document = self._document()
