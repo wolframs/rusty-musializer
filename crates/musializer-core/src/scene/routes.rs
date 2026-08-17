@@ -1,4 +1,4 @@
-//! Audio-to-parameter routes: the shared modulation layer under all ten scenes.
+//! Audio-to-parameter routes: the shared modulation layer under every scene.
 //!
 //! **Shared contract.** Consumed by Agents B, C, D and F. Port of
 //! `../musializer/src/scene_routes.c`/`.h` and the mapping evaluation in
@@ -22,13 +22,14 @@ use super::SceneId;
 /// (`scene_routes.h:16`).
 pub const ROUTES_PER_SCENE: usize = MAX_CONTROLS;
 
-/// Which per-frame figure drives a route (`project.h:60-67`, plus `Time`).
+/// Which per-frame figure drives a route (`project.h:60-67`, plus the
+/// post-legacy sources below).
 ///
 /// Discriminants are persisted in `.musi`, so they are a compatibility surface.
-/// `Time` post-dates the frozen C (UX0-C15, 2026-08-04): the same eight-second
-/// triangle clock the caption effects' Time drive uses, so a route can breathe
-/// without any audio at all. Additive — every C-era token keeps its meaning,
-/// which is what keeps the route differential harnesses green.
+/// New sources are appended, never inserted: every earlier token keeps its
+/// meaning in existing `.musi` files. `Bass`, `Mids`, `Treble`, and `Balance`
+/// expose shared perceptual summaries of the smoothed spectrum so scene-critical
+/// properties do not need private PCM formulas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum AnalysisSource {
@@ -40,16 +41,28 @@ pub enum AnalysisSource {
     Band = 4,
     /// The deterministic eight-second triangle clock ([`time_triangle`]).
     Time = 5,
+    /// Mean of the lowest fifth of the log-spaced analyzer bands.
+    Bass = 6,
+    /// Mean of the analyzer bands between the outer fifths.
+    Mids = 7,
+    /// Mean of the highest fifth of the log-spaced analyzer bands.
+    Treble = 8,
+    /// Treble's share of bass-plus-treble energy: 0 bass-heavy, 1 treble-heavy.
+    Balance = 9,
 }
 
 impl AnalysisSource {
-    pub const ALL: [AnalysisSource; 6] = [
+    pub const ALL: [AnalysisSource; 10] = [
         AnalysisSource::Rms,
         AnalysisSource::Peak,
         AnalysisSource::SpectralFlux,
         AnalysisSource::BeatPhase,
         AnalysisSource::Band,
         AnalysisSource::Time,
+        AnalysisSource::Bass,
+        AnalysisSource::Mids,
+        AnalysisSource::Treble,
+        AnalysisSource::Balance,
     ];
 
     /// The codec's canonical name, as `--route` specs and `.musi` files spell it.
@@ -62,6 +75,10 @@ impl AnalysisSource {
             AnalysisSource::BeatPhase => "beat_phase",
             AnalysisSource::Band => "band",
             AnalysisSource::Time => "time",
+            AnalysisSource::Bass => "bass",
+            AnalysisSource::Mids => "mids",
+            AnalysisSource::Treble => "treble",
+            AnalysisSource::Balance => "balance",
         }
     }
 
@@ -296,6 +313,10 @@ pub struct RouteSources<'a> {
     pub peak: f32,
     pub spectral_flux: f32,
     pub beat_phase: f32,
+    pub bass: f32,
+    pub mids: f32,
+    pub treble: f32,
+    pub spectral_balance: f32,
     /// Playback (or export frame) time. `SceneAudioFrame` carries no clock, so
     /// [`RouteSources::from_audio`] takes it separately.
     pub time_seconds: f64,
@@ -304,12 +325,17 @@ pub struct RouteSources<'a> {
 impl<'a> RouteSources<'a> {
     #[must_use]
     pub fn from_audio(audio: &super::SceneAudioFrame<'a>, time_seconds: f64) -> Self {
+        let (bass, mids, treble) = audio.spectral_regions();
         Self {
             bands: audio.bands,
             rms: audio.rms,
             peak: audio.peak,
             spectral_flux: audio.spectral_flux,
             beat_phase: audio.beat_phase,
+            bass,
+            mids,
+            treble,
+            spectral_balance: audio.spectral_balance(),
             time_seconds,
         }
     }
@@ -332,6 +358,10 @@ impl<'a> RouteSources<'a> {
                 let wave = time_triangle(self.time_seconds);
                 return wave.is_finite().then_some(wave);
             }
+            AnalysisSource::Bass => self.bass,
+            AnalysisSource::Mids => self.mids,
+            AnalysisSource::Treble => self.treble,
+            AnalysisSource::Balance => self.spectral_balance,
         };
         sample.is_finite().then_some(sample as f64)
     }
@@ -685,6 +715,9 @@ mod tests {
     fn enum_discriminants_and_names_match_the_codec() {
         assert_eq!(AnalysisSource::Rms as u32, 0);
         assert_eq!(AnalysisSource::Band as u32, 4);
+        assert_eq!(AnalysisSource::Time as u32, 5);
+        assert_eq!(AnalysisSource::Bass as u32, 6);
+        assert_eq!(AnalysisSource::Balance as u32, 9);
         assert_eq!(Interpolation::Step as u32, 0);
         assert_eq!(Interpolation::EaseOut as u32, 4);
         assert_eq!(Interpolation::default(), Interpolation::Linear);
@@ -991,6 +1024,36 @@ mod tests {
     }
 
     #[test]
+    fn a_balance_route_is_a_first_class_persisted_spec() {
+        let (scene, route) =
+            parse_route_spec("pulse.petals:balance:0:0.2:0.8:3:9:smoothstep").unwrap();
+        assert_eq!(scene, SceneId::PulseField);
+        assert_eq!(route.source, AnalysisSource::Balance);
+        assert_eq!(route.band_index, 0);
+        assert_eq!(route.input_min, 0.2);
+        assert_eq!(route.input_max, 0.8);
+        assert_eq!(route.output_min, 3.0);
+        assert_eq!(route.output_max, 9.0);
+        assert_eq!(route.interpolation, Interpolation::Smoothstep);
+        assert!(route.clamp);
+
+        let mut table = RouteTable::new();
+        table.add(scene, route).unwrap();
+        let base = SceneSettings::default();
+        for (balance, expected_fold) in [(0.1, 3.0), (0.9, 9.0)] {
+            let sources = RouteSources {
+                spectral_balance: balance,
+                ..RouteSources::default()
+            };
+            let effective = table.apply(scene, &sources, &base).unwrap();
+            assert_eq!(
+                effective.get(SceneId::PulseField, index::pulse::PETALS),
+                expected_fold
+            );
+        }
+    }
+
+    #[test]
     fn the_time_triangle_is_continuous_and_bounded() {
         assert!((time_triangle(0.0)).abs() < 1e-12);
         assert!((time_triangle(4.0) - 1.0).abs() < 1e-12);
@@ -1016,5 +1079,21 @@ mod tests {
         // The band rule covers Time exactly as it covers RMS: a nonzero band
         // index refuses the route.
         assert!(parse_route_spec("loom.weight:time:3:0:1:0.4:2.2").is_none());
+    }
+
+    #[test]
+    fn perceptual_routes_share_the_scene_audio_regions() {
+        let bands = [0.2, 0.4, 0.5, 0.7, 0.8, 1.0, 0.9, 0.3, 0.6, 0.8];
+        let audio = super::super::SceneAudioFrame {
+            bands: &bands,
+            ..super::super::SceneAudioFrame::default()
+        };
+        let sources = RouteSources::from_audio(&audio, 0.0);
+        assert!((sources.value(AnalysisSource::Bass, 0).unwrap() - 0.3).abs() < 1.0e-6);
+        assert!((sources.value(AnalysisSource::Mids, 0).unwrap() - 0.7).abs() < 1.0e-6);
+        assert!((sources.value(AnalysisSource::Treble, 0).unwrap() - 0.7).abs() < 1.0e-6);
+        assert!(
+            (sources.value(AnalysisSource::Balance, 0).unwrap() - (0.7 / 1.001)).abs() < 1.0e-6
+        );
     }
 }

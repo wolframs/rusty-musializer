@@ -76,24 +76,13 @@ pub fn draw(
     } else {
         0.0
     };
-    // A fifth of the spectrum at each end, and never fewer than one band.
-    let low_count = (count / 5).max(1);
-    let mut bass = 0.0f32;
-    let mut treble = 0.0f32;
-    for &band in &bands[..low_count] {
-        bass += band;
-    }
-    for &band in &bands[count - low_count..] {
-        treble += band;
-    }
-    bass /= low_count as f32;
-    treble /= low_count as f32;
+    let (bass, _, _) = frame.audio.spectral_regions();
     // Zero keeps the audio-driven fold (bass/treble balance chooses the rose);
     // any explicit petal count pins the silhouette for a consistent look.
     let fold = if petal_setting >= 0.5 {
         petal_setting.round() as i32
     } else {
-        3 + (1.0f32.min(treble / (bass + treble + 0.001)) * 6.0).round() as i32
+        3 + (frame.audio.spectral_balance() * 6.0).round() as i32
     };
     let rotation = state.rotation
         + frame.time_seconds as f32 * motion * 12.0

@@ -2005,7 +2005,7 @@ mod tests {
     use super::*;
     use crate::project::model::tests_support::valid_project;
     use crate::project::sha256;
-    use crate::scene::routes::constant_mapping;
+    use crate::scene::routes::{constant_mapping, AnalysisSource, Interpolation, ParameterMapping};
 
     fn round_trip(project: &Project) -> Project {
         let text = serialize(project).expect("the fixture project serializes");
@@ -2076,6 +2076,27 @@ mod tests {
         let first = serialize(&project).unwrap();
         let second = serialize(&deserialize(first.as_bytes()).unwrap()).unwrap();
         assert_eq!(first, second, "reading and rewriting must not drift");
+    }
+
+    #[test]
+    fn post_legacy_balance_routes_round_trip_by_canonical_name() {
+        let mut project = valid_project();
+        project.scenes[0].mappings.clear();
+        project.scenes[0].mappings.push(ParameterMapping {
+            parameter: "settings.spectrum.amplitude".to_string(),
+            source: AnalysisSource::Balance,
+            band_index: 0,
+            input_min: 0.2,
+            input_max: 0.8,
+            output_min: 0.5,
+            output_max: 2.0,
+            interpolation: Interpolation::Smoothstep,
+            clamp: true,
+        });
+        let text = serialize(&project).unwrap();
+        assert!(text.contains("\"source\":\"balance\""));
+        let reparsed = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(reparsed.scenes[0].mappings, project.scenes[0].mappings);
     }
 
     #[test]

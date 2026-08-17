@@ -96,10 +96,13 @@ impl RouteEditorState {
     ///
     /// With `existing == None` the draft starts as a full-range RMS route (input
     /// 0..1, output spanning the descriptor range, linear, clamped) so the first
-    /// Apply is visible. A `Some` route must be valid for exactly this setting and
-    /// becomes both the draft and the committed snapshot. Opening replaces any
-    /// previous draft; a *failed* open leaves the previous draft alone, as in C,
-    /// where the guards run before the struct is zeroed.
+    /// Apply is visible. Pulse Field's petal fold is the one semantic exception:
+    /// its legacy zero already means `Balance -> 3..9`, so the fresh draft exposes
+    /// that exact hidden rule instead of proposing RMS -> 0..12. A `Some` route
+    /// must be valid for exactly this setting and becomes both the draft and the
+    /// committed snapshot. Opening replaces any previous draft; a *failed* open
+    /// leaves the previous draft alone, as in C, where the guards run before the
+    /// struct is zeroed.
     ///
     /// The descriptor is looked up on demand rather than stored, because in C the
     /// descriptor tables were static data inside the hot-reloaded module and a
@@ -131,6 +134,7 @@ impl RouteEditorState {
         }
         // C had to guard against the descriptor key overflowing the mapping's
         // fixed-size `parameter` buffer; a `String` removes that failure mode.
+        let pulse_fold = scene == SceneId::PulseField && descriptor.key == "settings.pulse.petals";
         self.session = Some(RouteEditorDraft {
             track_slot,
             scene,
@@ -138,12 +142,27 @@ impl RouteEditorState {
             committed: None,
             draft: ParameterMapping {
                 parameter: descriptor.key.to_string(),
-                source: AnalysisSource::Rms,
+                source: if pulse_fold {
+                    AnalysisSource::Balance
+                } else {
+                    AnalysisSource::Rms
+                },
                 band_index: 0,
                 input_min: 0.0,
                 input_max: 1.0,
-                output_min: descriptor.minimum as f64,
-                output_max: descriptor.maximum as f64,
+                // Zero is Pulse Field's legacy shorthand for its hidden auto
+                // formula, not a useful routed petal count. A fresh route makes
+                // that formula explicit and editable without passing through 0.
+                output_min: if pulse_fold {
+                    3.0
+                } else {
+                    descriptor.minimum as f64
+                },
+                output_max: if pulse_fold {
+                    9.0
+                } else {
+                    descriptor.maximum as f64
+                },
                 interpolation: Interpolation::Linear,
                 clamp: true,
             },
@@ -534,6 +553,10 @@ pub fn source_label(source: AnalysisSource) -> &'static str {
         AnalysisSource::BeatPhase => "Beat",
         AnalysisSource::Band => "Band",
         AnalysisSource::Time => "Time",
+        AnalysisSource::Bass => "Bass",
+        AnalysisSource::Mids => "Mids",
+        AnalysisSource::Treble => "Treble",
+        AnalysisSource::Balance => "Balance",
     }
 }
 
@@ -546,7 +569,12 @@ pub fn source_label(source: AnalysisSource) -> &'static str {
 #[must_use]
 pub fn anchor_label(source: AnalysisSource, high: bool) -> &'static str {
     match source {
-        AnalysisSource::Rms | AnalysisSource::Peak | AnalysisSource::Band => {
+        AnalysisSource::Rms
+        | AnalysisSource::Peak
+        | AnalysisSource::Band
+        | AnalysisSource::Bass
+        | AnalysisSource::Mids
+        | AnalysisSource::Treble => {
             if high {
                 "Loud"
             } else {
@@ -574,6 +602,13 @@ pub fn anchor_label(source: AnalysisSource, high: bool) -> &'static str {
                 "Cycle peak"
             } else {
                 "Cycle low"
+            }
+        }
+        AnalysisSource::Balance => {
+            if high {
+                "Treble-heavy"
+            } else {
+                "Bass-heavy"
             }
         }
     }
@@ -707,6 +742,18 @@ mod tests {
         let weight = index::loom::WEIGHT;
         assert!(!state.open(TRACK_A, SceneId::Loom, weight, Some(&poisoned)));
         assert!(!state.is_open());
+    }
+
+    #[test]
+    fn pulse_fold_opens_as_its_existing_balance_auto_mapping() {
+        let mut state = RouteEditorState::new();
+        assert!(state.open(TRACK_A, SceneId::PulseField, index::pulse::PETALS, None));
+        let draft = state.draft().unwrap();
+        assert_eq!(draft.source, AnalysisSource::Balance);
+        assert_eq!(draft.output_min, 3.0);
+        assert_eq!(draft.output_max, 9.0);
+        assert_eq!(draft.interpolation, Interpolation::Linear);
+        assert!(state.can_apply());
     }
 
     #[test]
@@ -885,6 +932,10 @@ mod tests {
         assert_eq!(anchor_label(AnalysisSource::SpectralFlux, true), "Busy");
         assert_eq!(anchor_label(AnalysisSource::BeatPhase, false), "Beat start");
         assert_eq!(anchor_label(AnalysisSource::BeatPhase, true), "Beat end");
+        assert_eq!(anchor_label(AnalysisSource::Bass, false), "Quiet");
+        assert_eq!(anchor_label(AnalysisSource::Treble, true), "Loud");
+        assert_eq!(anchor_label(AnalysisSource::Balance, false), "Bass-heavy");
+        assert_eq!(anchor_label(AnalysisSource::Balance, true), "Treble-heavy");
     }
 
     #[test]

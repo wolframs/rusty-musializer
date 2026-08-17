@@ -32,9 +32,6 @@ use super::spectrum::CircleShader;
 
 const PI: f32 = std::f32::consts::PI;
 
-/// Segments per swaying link (`scene_orbital_lattice.c:45`).
-const LINK_SEGMENTS: i32 = 7;
-
 /// `orbital_clamp01` (`scene_orbital_lattice.c:10-15`).
 ///
 /// Note this is **not** the motion module's clamp: it has no `isfinite` test, so a
@@ -101,32 +98,66 @@ fn color_brightness(color: Color, factor: f32) -> Color {
     Color::new(out.r, out.g, out.b, out.a)
 }
 
-/// `orbital_draw_swaying_link` (`scene_orbital_lattice.c:43-60`).
+fn average_color(left: Color, right: Color) -> Color {
+    Color::new(
+        ((u16::from(left.r) + u16::from(right.r)) / 2) as u8,
+        ((u16::from(left.g) + u16::from(right.g)) / 2) as u8,
+        ((u16::from(left.b) + u16::from(right.b)) / 2) as u8,
+        ((u16::from(left.a) + u16::from(right.a)) / 2) as u8,
+    )
+}
+
+/// A filament that yields to the emissive field around both endpoint pearls.
 ///
-/// A parabolic arch of tubes rather than one straight line: `arch` peaks at the
-/// midpoint, so links bow outward and the lattice reads as suspended rather than
-/// welded.
-fn draw_swaying_link<D: draw::RaylibDraw3D>(
+/// The previous seven-piece bowed tube exposed every cylinder cap at a slightly
+/// different angle. In motion those caps read as intermittent rectangular kinks.
+/// This link stays collinear, trims itself by each pearl's glow radius, and uses
+/// two short tapers around one continuous middle span. The surrounding billboard
+/// glow supplies the visual fade while the geometry never crosses the hot core.
+fn draw_glow_cleared_link<D: draw::RaylibDraw3D>(
     d: &mut D,
     from: Vector3,
     to: Vector3,
+    from_clearance: f32,
+    to_clearance: f32,
     radius: f32,
-    sway: f32,
-    phase: f32,
     color: Color,
 ) {
-    let mut previous = from;
-    for segment in 1..=LINK_SEGMENTS {
-        let t = segment as f32 / LINK_SEGMENTS as f32;
-        let arch = 4.0 * t * (1.0 - t);
-        let point = Vector3::new(
-            from.x + (to.x - from.x) * t,
-            from.y + (to.y - from.y) * t + arch * sway,
-            from.z + (to.z - from.z) * t + arch * sway * 0.45 * (phase + t * PI).sin(),
-        );
-        draw::tube(d, previous, point, radius, 6, color);
-        previous = point;
+    let dx = to.x - from.x;
+    let dy = to.y - from.y;
+    let dz = to.z - from.z;
+    let length = (dx * dx + dy * dy + dz * dz).sqrt();
+    if !length.is_finite() || length <= 1.0e-5 {
+        return;
     }
+
+    // Never let two unusually broad halos erase the complete edge. Scaling the
+    // clearances together preserves which endpoint has the larger glow.
+    let requested = from_clearance.max(0.0) + to_clearance.max(0.0);
+    let clearance_scale = if requested > length * 0.72 {
+        length * 0.72 / requested
+    } else {
+        1.0
+    };
+    let start_t = from_clearance.max(0.0) * clearance_scale / length;
+    let end_t = 1.0 - to_clearance.max(0.0) * clearance_scale / length;
+    if end_t <= start_t {
+        return;
+    }
+
+    let point = |t: f32| Vector3::new(from.x + dx * t, from.y + dy * t, from.z + dz * t);
+    let span = end_t - start_t;
+    let start = point(start_t);
+    let full_start = point(start_t + span * 0.16);
+    let full_end = point(end_t - span * 0.16);
+    let end = point(end_t);
+    d.draw_cylinder_ex(start, full_start, 0.0, radius, 6, color);
+    d.draw_cylinder_ex(full_start, full_end, radius, radius, 6, color);
+    d.draw_cylinder_ex(full_end, end, radius, 0.0, 6, color);
+}
+
+fn glow_clearance(radius: f32, amplitude: f32, pulse: f32) -> f32 {
+    radius * (2.25 + amplitude * 1.75 + pulse * 0.75)
 }
 
 /// Draws Orbital Lattice into `boundary`.
@@ -262,6 +293,10 @@ pub fn draw(
 
             let mut first = Vector3::zero();
             let mut previous = Vector3::zero();
+            let mut first_clearance = 0.0;
+            let mut previous_clearance = 0.0;
+            let mut first_edge = Color::BLANK;
+            let mut previous_edge = Color::BLANK;
             for node in 0..NODES_PER_RING {
                 let node_t = node as f32 / NODES_PER_RING as f32;
                 let angle = node_t * 2.0 * PI + twist;
@@ -300,41 +335,41 @@ pub fn draw(
                 let size = (0.10 + amplitude * 0.23 + energy * 0.06 + pulse * 0.04) * node_scale;
                 let pearl_radius = size * (0.48 + bass * 0.10 + amplitude * 0.10);
                 lanterns.push((position, pearl_radius, color, amplitude, fog));
+                let clearance = glow_clearance(pearl_radius, amplitude, pulse);
+                let edge =
+                    draw::color_alpha(color, fog * (0.43 + energy * 0.27) * 1.0f32.min(link_scale));
 
                 if node == 0 {
                     first = position;
+                    first_clearance = clearance;
+                    first_edge = edge;
                 }
                 if node > 0 && link_scale > 0.001 {
-                    let edge = draw::color_alpha(
-                        color,
-                        fog * (0.43 + energy * 0.27) * 1.0f32.min(link_scale),
-                    );
-                    draw_swaying_link(
+                    draw_glow_cleared_link(
                         &mut space,
                         previous,
                         position,
+                        previous_clearance,
+                        clearance,
                         (0.0085 + energy * 0.007) * link_scale,
-                        (0.025 + flux * 0.11) * (angle + breathe_phase).sin(),
-                        angle + seed_phase,
-                        edge,
+                        average_color(previous_edge, edge),
                     );
                 }
                 previous = position;
+                previous_clearance = clearance;
+                previous_edge = edge;
             }
-            // The closing link back to node 0, drawn white rather than in the
-            // ring's hue so the ring reads as a closed loop.
+            // Close the loop with the same endpoint material as every other
+            // edge; a white seam advertised the ring's implementation detail.
             if link_scale > 0.001 {
-                draw_swaying_link(
+                draw_glow_cleared_link(
                     &mut space,
                     previous,
                     first,
+                    previous_clearance,
+                    first_clearance,
                     (0.0085 + energy * 0.007) * link_scale,
-                    (0.025 + flux * 0.11) * (twist + breathe_phase).sin(),
-                    twist,
-                    draw::color_alpha(
-                        Color::RAYWHITE,
-                        1.0f32.min(link_scale) * (1.0 - depth_t) * ring_motion.visibility * 0.24,
-                    ),
+                    average_color(previous_edge, first_edge),
                 );
             }
         }
@@ -342,7 +377,6 @@ pub fn draw(
         // One additive pass turns the pearls into light sources.  The analytic
         // circle texture stays smooth under both preview MSAA and export
         // supersampling; depth fog keeps the tunnel readable instead of making
-        // all twelve rings equally loud.
         let glow_texture = draw::default_texture();
         let glow_source = Rectangle::new(0.0, 0.0, 1.0, 1.0);
         set_circle(shader, 0.055, 2.8);

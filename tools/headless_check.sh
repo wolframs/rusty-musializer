@@ -4651,6 +4651,25 @@ for name in band fresh; do
     done
 done
 
+# Pulse Field is the reason the post-legacy perceptual sources exist. Its legacy
+# `0 = auto` petal fold opens as the exact hidden rule made editable:
+# Balance (bass-heavy..treble-heavy) -> 3..9. Use 1080p because this is the sixth
+# setting and the application deliberately asks a 720p user to enlarge rather
+# than putting a second scrollbar inside the inspector.
+capture "route-editor-pulse-balance-1600x1080" 1600x1080 \
+    --scene pulse --ui-probe "panel=tune,play=1,route=pulse.petals" \
+    || ROUTE_EDITOR_FAILED=1
+PULSE_BALANCE_ROW="$(sed -n 's/^route editor: //p' \
+    "$OUT_DIR/route-editor-pulse-balance-1600x1080.txt" | head -n1)"
+echo "pulse auto fold: ${PULSE_BALANCE_ROW:-<absent>}"
+case "$PULSE_BALANCE_ROW" in
+    *"settings.pulse.petals open row=314px source=Balance committed=0"*) ;;
+    *)
+        echo "FAIL: Pulse petal auto did not open as a fresh Balance -> 3..9 route" >&2
+        ROUTE_EDITOR_FAILED=1
+        ;;
+esac
+
 # The committed route is 24 px taller than the fresh one, because its source is
 # `band` and the band stepper is a row. Asserting the difference is what
 # distinguishes "the editor opened" from "the editor opened onto the right draft".
@@ -4659,8 +4678,8 @@ BAND_ROW="$(sed -n 's/^route editor: .* row=\([0-9.]*\)px .*/\1/p' \
 FRESH_ROW="$(sed -n 's/^route editor: .* row=\([0-9.]*\)px .*/\1/p' \
     "$OUT_DIR/route-editor-fresh-1280x720.txt" | head -n1)"
 echo "row heights: band=${BAND_ROW:-?} fresh=${FRESH_ROW:-?} (band is 24 px taller)"
-if [ "${BAND_ROW:-0}" != "312" ] || [ "${FRESH_ROW:-0}" != "288" ]; then
-    echo "FAIL: expected row heights 312 (band) and 288 (fresh)" >&2
+if [ "${BAND_ROW:-0}" != "338" ] || [ "${FRESH_ROW:-0}" != "314" ]; then
+    echo "FAIL: expected row heights 338 (band) and 314 (fresh)" >&2
     ROUTE_EDITOR_FAILED=1
 fi
 

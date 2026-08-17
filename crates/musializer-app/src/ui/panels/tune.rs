@@ -5,8 +5,8 @@
 //!
 //! The route editor is **not a new panel** — that was a misreading this
 //! repository has already made once. It replaces the setting's own 30 px slider
-//! zone with a taller block: `24+26+40+40+70+26+32+4` px, plus 24 more when the
-//! source is `band` (`route_editor_state.h:10-16`, `plug.c:5517-5528`). Draft
+//! zone with a taller block: the legacy editor's 262 px plus a second 26 px row
+//! for post-legacy musical sources, and 24 more when the source is `band`. Draft
 //! edits, Apply commits, Close discards, and dirty participates in the close
 //! guards — all of which [`musializer_core::ui::route_editor_state`] already
 //! implements and tests.
@@ -29,11 +29,9 @@
 //!    `&Workspace`, so [`ShellCommand::ApplyRoute`] and
 //!    [`ShellCommand::RemoveRoute`] carry the commit back to `main.rs` after the
 //!    drawing pair closes.
-//! 3. **The live source values are not in [`ShellInput`].** `main.rs` builds a
-//!    `RouteSources` for the frame loop but hands the shell only `rms`. So RMS
-//!    reads live and the other four sources honestly report `no signal`, which is
-//!    the same wording the C uses when a source is unavailable
-//!    (`plug.c:5673-5674`).
+//! 3. **The live source values cross the shell boundary.** [`ShellInput`] carries
+//!    the same `RouteSources` the frame loop evaluates, so every button's meter
+//!    previews the exact value that will drive preview and export.
 
 use musializer_core::project::preset_store::PresetAction;
 use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
@@ -69,7 +67,7 @@ use crate::workspace::Track;
 /// cursor by exactly these.
 #[rustfmt::skip]
 const ROUTE_EDITOR_AREA_HEIGHT: f32 = 24.0  // live caption + meter
-                                    + 26.0  // the five source buttons
+                                    + 52.0  // two rows of source buttons
                                     + 40.0  // the low anchor
                                     + 40.0  // the high anchor
                                     + 70.0  // the transfer graph
@@ -974,15 +972,23 @@ impl Shell {
             // setting's number is produced by its route, and a text field over it
             // would take a value the next frame overwrites.
             let editable = !routed && expanded <= 0.0;
-            let readout = format!(
-                "{:.*}{}",
-                descriptor.precision as usize,
-                effective,
-                if routed { "  routed" } else { "" }
-            );
+            let pulse_auto = input.scene == SceneId::PulseField
+                && descriptor.key == "settings.pulse.petals"
+                && effective < 0.5
+                && !routed;
+            let readout = if pulse_auto {
+                "Auto: balance".to_string()
+            } else {
+                format!(
+                    "{:.*}{}",
+                    descriptor.precision as usize,
+                    effective,
+                    if routed { "  routed" } else { "" }
+                )
+            };
             let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
             let chip_width = if editable {
-                (readout_width + 14.0).clamp(46.0, 88.0)
+                (readout_width + 14.0).clamp(46.0, 104.0)
             } else {
                 readout_width
             };
@@ -1059,7 +1065,7 @@ impl Shell {
 
             if editable {
                 self.value_chip(
-                    d, input, chip, index, descriptor, effective, target, commands,
+                    d, input, chip, index, descriptor, effective, &readout, target, commands,
                 );
             } else {
                 widgets::draw_text(
@@ -1227,6 +1233,7 @@ impl Shell {
         index: usize,
         descriptor: &SettingDescriptor,
         value: f32,
+        display: &str,
         target: TuneTarget,
         commands: &mut Vec<ShellCommand>,
     ) {
@@ -1356,12 +1363,11 @@ impl Shell {
                 color::ui_rule()
             },
         );
-        let text = format!("{:.*}", descriptor.precision as usize, value);
-        let width = widgets::measure(font, &text, metric::UI_FONT_VALUE);
+        let width = widgets::measure(font, display, metric::UI_FONT_VALUE);
         widgets::draw_text(
             d,
             font,
-            &text,
+            display,
             chip.x + (chip.width - width) * 0.5,
             chip.y + (chip.height - metric::UI_FONT_VALUE) * 0.5,
             metric::UI_FONT_VALUE,
@@ -1792,15 +1798,19 @@ impl Shell {
         );
         cursor += 24.0;
 
-        // 2. The sources (`plug.c:5683-5697`, plus the post-legacy Time clock —
-        // the count comes from `ALL` so a new source widens the row instead of
-        // silently missing its button).
-        let source_count = AnalysisSource::ALL.len() as f32;
-        let source_width = (area.width - GAP * (source_count - 1.0)) / source_count;
+        // 2. The sources. Post-legacy musical summaries make this a two-row
+        // palette: five comfortably readable choices per row instead of ten
+        // cryptic slivers. `ALL` remains the authority so another appended source
+        // cannot silently disappear.
+        const SOURCE_COLUMNS: usize = 5;
+        let source_width =
+            (area.width - GAP * (SOURCE_COLUMNS as f32 - 1.0)) / SOURCE_COLUMNS as f32;
         for (slot_index, source) in AnalysisSource::ALL.into_iter().enumerate() {
+            let column = slot_index % SOURCE_COLUMNS;
+            let source_row = slot_index / SOURCE_COLUMNS;
             let button = UiRect::new(
-                area.x + slot_index as f32 * (source_width + GAP),
-                cursor,
+                area.x + column as f32 * (source_width + GAP),
+                cursor + source_row as f32 * 26.0,
                 source_width,
                 22.0,
             );
@@ -1830,10 +1840,16 @@ impl Shell {
                     AnalysisSource::BeatPhase => "Position inside the current beat, 0 to 1",
                     AnalysisSource::Band => "One analyzer band, chosen below",
                     AnalysisSource::Time => "An eight-second triangle clock; needs no audio",
+                    AnalysisSource::Bass => "Mean energy in the lowest fifth of the spectrum",
+                    AnalysisSource::Mids => "Mean energy between the low and high fifths",
+                    AnalysisSource::Treble => "Mean energy in the highest fifth of the spectrum",
+                    AnalysisSource::Balance => {
+                        "Treble share of bass plus treble: 0 bass-heavy, 1 treble-heavy"
+                    }
                 },
             );
         }
-        cursor += 26.0;
+        cursor += 52.0;
 
         // 3. The band stepper, only for the band source (`plug.c:5699-5721`).
         if draft.source == AnalysisSource::Band {
@@ -2345,11 +2361,13 @@ mod tests {
     }
 
     #[test]
-    fn the_expanded_row_is_the_oracles_area_plus_this_inspectors_furniture() {
+    fn the_expanded_row_accounts_for_the_extended_source_palette() {
         // The oracle's `scene_route_editor_area_height` (`plug.c:5517-5523`),
-        // written out so a change to the constant has to change this number too.
+        // plus one deliberate post-legacy source row. Written out so a geometry
+        // change has to update the accounting rather than clipping controls.
         const ORACLE_AREA: f32 = 24.0 + 26.0 + 40.0 + 40.0 + 70.0 + 26.0 + 32.0 + 4.0;
-        assert_eq!(ROUTE_EDITOR_AREA_HEIGHT, ORACLE_AREA);
+        const MUSICAL_SOURCE_ROW: f32 = 26.0;
+        assert_eq!(ROUTE_EDITOR_AREA_HEIGHT, ORACLE_AREA + MUSICAL_SOURCE_ROW);
 
         let mut shell = Shell::new();
         let weight = index::loom::WEIGHT;
@@ -2359,7 +2377,7 @@ mod tests {
             .open(0, SceneId::Loom, weight, None));
         assert_eq!(
             shell.route_editor_height(SceneId::Loom, weight),
-            ORACLE_AREA + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP
+            ROUTE_EDITOR_AREA_HEIGHT + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP
         );
         // Only the row that hosts the draft grows.
         assert_eq!(
@@ -2374,7 +2392,7 @@ mod tests {
         assert!(shell.route_editor.state.set_source(AnalysisSource::Band));
         assert_eq!(
             shell.route_editor_height(SceneId::Loom, weight),
-            ORACLE_AREA
+            ROUTE_EDITOR_AREA_HEIGHT
                 + ROUTE_EDITOR_BAND_ROW_HEIGHT
                 + ROUTE_EDITOR_ROW_HEADER
                 + ROUTE_EDITOR_ROW_GAP

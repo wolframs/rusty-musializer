@@ -207,6 +207,40 @@ impl<'a> SceneAudioFrame<'a> {
         self.bands.len()
     }
 
+    /// Broad, stable spectral regions for parameter routing and scene design.
+    ///
+    /// The analyzer bands are logarithmically spaced and already temporally
+    /// smoothed. The lowest and highest fifths preserve Pulse Field's original
+    /// bass/treble definition; the middle is everything between them. Keeping
+    /// this derivation here gives every scene and route the same musical terms
+    /// instead of letting each renderer invent slightly different cutoffs.
+    #[must_use]
+    pub fn spectral_regions(&self) -> (f32, f32, f32) {
+        if self.bands.is_empty() {
+            return (0.0, 0.0, 0.0);
+        }
+        let edge_count = (self.bands.len() / 5).max(1);
+        let bass = mean(&self.bands[..edge_count]);
+        let treble = mean(&self.bands[self.bands.len() - edge_count..]);
+        let mids = if edge_count * 2 >= self.bands.len() {
+            mean(self.bands)
+        } else {
+            mean(&self.bands[edge_count..self.bands.len() - edge_count])
+        };
+        (bass, mids, treble)
+    }
+
+    /// Treble's share of the bass-plus-treble energy, from bass-heavy `0` to
+    /// treble-heavy `1`.
+    ///
+    /// The small denominator floor is the original Pulse Field formula. Silence
+    /// therefore settles at zero instead of producing a non-finite route value.
+    #[must_use]
+    pub fn spectral_balance(&self) -> f32 {
+        let (bass, _, treble) = self.spectral_regions();
+        1.0f32.min(treble / (bass + treble + 0.001))
+    }
+
     /// Derives the aggregate audio figures from a spectrum view, exactly as
     /// `make_scene_frame` does (`../musializer/src/plug.c:1116-1128`).
     ///
@@ -293,6 +327,10 @@ impl<'a> SceneAudioFrame<'a> {
             tracker.reset();
         }
     }
+}
+
+fn mean(values: &[f32]) -> f32 {
+    values.iter().copied().sum::<f32>() / values.len() as f32
 }
 
 /// The onset threshold on spectral flux (`../musializer/src/plug.c:1139`).
@@ -613,6 +651,28 @@ mod tests {
         assert_eq!(audio.rms, 0.0);
         assert_eq!(audio.spectral_flux, 0.0);
         assert!(!audio.onset);
+        assert_eq!(audio.spectral_regions(), (0.0, 0.0, 0.0));
+        assert_eq!(audio.spectral_balance(), 0.0);
+    }
+
+    #[test]
+    fn spectral_regions_preserve_pulses_fifths_and_balance() {
+        let bands = [0.2, 0.4, 0.3, 0.5, 0.7, 0.9, 0.6, 0.8, 0.1, 1.0];
+        let audio = SceneAudioFrame {
+            bands: &bands,
+            ..SceneAudioFrame::default()
+        };
+        let (bass, mids, treble) = audio.spectral_regions();
+        assert!((bass - 0.3).abs() < 1.0e-6);
+        assert!((mids - (3.8 / 6.0)).abs() < 1.0e-6);
+        assert!((treble - 0.55).abs() < 1.0e-6);
+        assert!((audio.spectral_balance() - (0.55 / 0.851)).abs() < 1.0e-6);
+
+        let single = SceneAudioFrame {
+            bands: &[0.75],
+            ..SceneAudioFrame::default()
+        };
+        assert_eq!(single.spectral_regions(), (0.75, 0.75, 0.75));
     }
 
     #[test]

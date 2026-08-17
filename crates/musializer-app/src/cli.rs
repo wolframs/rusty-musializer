@@ -1249,9 +1249,10 @@ Workspace:
                           parameter:source:band:in_min:in_max:
                           out_min:out_max[:curve][:noclamp], e.g.
                           loom.weight:band:2:0:1:0.4:2.2:smoothstep
-                          Sources: rms, peak, spectral_flux,
-                          beat_phase, band. Curves: step, linear,
-                          smoothstep, ease_in, ease_out
+                          Sources: rms, peak, spectral_flux, beat_phase,
+                          band, time, bass, mids, treble, balance.
+                          Curves: step, linear, smoothstep, ease_in,
+                          ease_out
   --analysis-bridge FILE  Import a verified analysis bridge
   --protocol FILE         Run a *.protocol.json listening session: the file
                           names its audio (path + sha256), questions land on
