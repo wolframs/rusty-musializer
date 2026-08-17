@@ -3537,11 +3537,16 @@ models = [
                              "model_sha256": None,
                              "language_support": "romanized text normalized to the MMS_FA alphabet",
                              "gpu_ready": False, "remediation": None},
-        # Deliberately missing, so the picture carries a remediation string.
-        "stem_separator": {"state": "unavailable", "path": None, "version": None,
+        # Deliberately absent and deliberately longer than the one-row display
+        # cap. The picture proves doctor prose wraps instead of ending in an
+        # unexplained ellipsis, and the last-control probe reaches Copy below it.
+        "stem_separator": {"state": "not installed (optional; unused)", "path": None, "version": None,
                             "model_path": None, "model_sha256": None, "language_support": None,
                             "gpu_ready": None,
-                            "remediation": "pip install demucs into the alignment venv"},
+                            "remediation": ("Current Assist always analyzes the full mix. Demucs is not "
+                                            "installed, and installing it alone would not enable a stem "
+                                            "lane. This complete diagnostic sentence remains visible "
+                                            "instead of being cut to the table-row limit.")},
     },
 }, indent=2, sort_keys=True) + "\n")
 PYFIXTURES

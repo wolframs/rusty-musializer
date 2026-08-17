@@ -206,22 +206,40 @@ class RuntimeInventoryTests(unittest.TestCase):
             self.assertIsNone(result["model_sha256"])
             self.assertEqual(called, [])
 
-    def test_stem_separator_unavailable_by_default(self) -> None:
-        result = runtime_inventory.stem_separator_identity(which=lambda name: None, environ={})
-        self.assertEqual(result["state"], "unavailable")
-        self.assertIn("MUSIALIZER_STEM_SEPARATOR_BIN", result["remediation"])
+    def test_stem_separator_is_honest_about_being_absent_and_unused(self) -> None:
+        result = runtime_inventory.stem_separator_identity(
+            which=lambda name: None, runner=lambda *a, **k: _completed(), environ={})
+        self.assertEqual(result["state"], "not installed (optional; unused)")
+        self.assertIn("always analyzes the full mix", result["remediation"])
 
-    def test_stem_separator_ok_when_env_override_resolves(self) -> None:
+    def test_stem_separator_is_detected_but_not_claimed_as_wired(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             binary = Path(tmp) / "demucs"
             binary.write_text("#!/bin/sh\n")
             binary.chmod(0o755)
             result = runtime_inventory.stem_separator_identity(
                 which=lambda name: None,
+                runner=lambda *a, **k: _completed(stdout="usage: demucs"),
                 environ={"MUSIALIZER_STEM_SEPARATOR_BIN": str(binary)},
             )
-            self.assertEqual(result["state"], "ok")
+            self.assertEqual(result["state"], "detected (unused)")
             self.assertEqual(result["path"], str(binary))
+            self.assertIn("does not invoke", result["remediation"])
+
+    def test_stale_executable_shim_is_broken_not_installed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "demucs"
+            binary.write_text("#!/bin/sh\n")
+            binary.chmod(0o755)
+            result = runtime_inventory.stem_separator_identity(
+                which=lambda name: str(binary),
+                runner=lambda *a, **k: subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="",
+                    stderr="ModuleNotFoundError: No module named demucs"),
+                environ={},
+            )
+            self.assertEqual(result["state"], "broken (unused)")
+            self.assertIn("ModuleNotFoundError", result["remediation"])
 
     def test_collect_never_raises_when_everything_is_absent(self) -> None:
         runtimes = runtime_inventory.collect(
@@ -230,8 +248,12 @@ class RuntimeInventoryTests(unittest.TestCase):
             sha256_file=lambda p: "unused",
         )
         self.assertEqual(set(runtimes), {"whisper", "mms_ctc_aligner", "stem_separator"})
+        self.assertEqual(runtimes["whisper"]["state"], "unavailable")
+        self.assertEqual(runtimes["mms_ctc_aligner"]["state"], "unavailable")
+        self.assertEqual(
+            runtimes["stem_separator"]["state"],
+            "not installed (optional; unused)")
         for runtime in runtimes.values():
-            self.assertEqual(runtime["state"], "unavailable")
             self.assertIsInstance(runtime["remediation"], str)
 
 

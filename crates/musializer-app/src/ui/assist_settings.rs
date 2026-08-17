@@ -650,8 +650,62 @@ fn runtime_is_available(state: &str) -> bool {
 pub const RUNTIME_ROWS: [(&str, &str); 3] = [
     ("whisper", "Whisper"),
     ("mms_ctc_aligner", "MMS/CTC forced aligner"),
-    ("stem_separator", "Stem separator"),
+    (
+        "stem_separator",
+        "Stem separator (not used by current Assist)",
+    ),
 ];
+
+/// Complete, bounded text behind the Local models page's Copy button.
+///
+/// The canvas is not a selectable text widget. A clipboard action is therefore
+/// part of the information surface, not a convenience: paths, hashes and
+/// remediation commands are exactly the strings a user needs elsewhere.
+fn runtime_report_text(report: &DoctorReport) -> String {
+    let mut lines = vec![format!(
+        "Runtime report schema: {}",
+        if report.schema_version.is_empty() {
+            "not reported".to_string()
+        } else {
+            sanitize_paragraph(&report.schema_version)
+        }
+    )];
+    for (key, label) in RUNTIME_ROWS {
+        lines.push(String::new());
+        lines.push(label.to_string());
+        let Some(identity) = report.runtimes.get(key) else {
+            lines.push("State: not reported".to_string());
+            continue;
+        };
+        lines.push(format!("State: {}", sanitize_paragraph(&identity.state)));
+        for (name, value) in [
+            ("Path", identity.path.as_deref()),
+            ("Version", identity.version.as_deref()),
+            ("Model", identity.model_path.as_deref()),
+            ("Model sha256", identity.model_sha256.as_deref()),
+            ("Languages", identity.language_support.as_deref()),
+        ] {
+            lines.push(format!(
+                "{name}: {}",
+                value.map_or_else(|| "not reported".to_string(), sanitize_paragraph,)
+            ));
+        }
+        lines.push(format!(
+            "GPU: {}",
+            identity.gpu_ready.map_or("not reported", |ready| {
+                if ready {
+                    "ready"
+                } else {
+                    "not ready"
+                }
+            })
+        ));
+        if let Some(remediation) = &identity.remediation {
+            lines.push(format!("Help: {}", sanitize_paragraph(remediation)));
+        }
+    }
+    lines.join("\n")
+}
 
 // ---------------------------------------------------------------------------
 // The recommended profile, and route resolution
@@ -1402,6 +1456,7 @@ const FOCUS_MODELS_DIR: ControlId = 500;
 const FOCUS_MODELS_DOCTOR: ControlId = 501;
 const FOCUS_MODELS_GPU: ControlId = 502;
 const FOCUS_MODELS_STEMS: ControlId = 503;
+const FOCUS_MODELS_COPY: ControlId = 504;
 const FOCUS_CODEX_EFFORT_BASE: ControlId = 600;
 const FOCUS_CODEX_REFRESH: ControlId = 610;
 const FOCUS_KEY_FIELD: ControlId = 700;
@@ -2130,9 +2185,11 @@ impl AssistSettingsDialog {
             Section::LocalModels => {
                 order.push(FOCUS_MODELS_DIR);
                 order.push(FOCUS_MODELS_GPU);
-                order.push(FOCUS_MODELS_STEMS);
                 if self.doctor_enabled() {
                     order.push(FOCUS_MODELS_DOCTOR);
+                }
+                if self.doctor.is_some() {
+                    order.push(FOCUS_MODELS_COPY);
                 }
             }
             Section::Codex => {
@@ -3695,6 +3752,18 @@ fn is_bidi_control(character: char) -> bool {
 /// entry with a hostile id still appears, it simply cannot rearrange the page.
 #[must_use]
 pub fn sanitize_display(text: &str) -> String {
+    sanitize_bounded(text, DISPLAY_CAP)
+}
+
+/// External prose can wrap over multiple rows, so it gets a much larger bound
+/// than a one-line field. This keeps complete actionable remediation visible
+/// without letting a corrupt doctor document allocate or measure forever.
+#[must_use]
+fn sanitize_paragraph(text: &str) -> String {
+    sanitize_bounded(text, 2048)
+}
+
+fn sanitize_bounded(text: &str, cap: usize) -> String {
     let mut out = String::new();
     let mut drawn = 0usize;
     let mut pending_space = false;
@@ -3710,7 +3779,7 @@ pub fn sanitize_display(text: &str) -> String {
             continue;
         }
         if pending_space && drawn > 0 {
-            if drawn >= DISPLAY_CAP {
+            if drawn >= cap {
                 out.push('\u{2026}');
                 return out;
             }
@@ -3718,7 +3787,7 @@ pub fn sanitize_display(text: &str) -> String {
             drawn += 1;
         }
         pending_space = false;
-        if drawn >= DISPLAY_CAP {
+        if drawn >= cap {
             out.push('\u{2026}');
             return out;
         }
@@ -4683,7 +4752,7 @@ impl AssistSettingsDialog {
                                     font,
                                     body,
                                     cursor,
-                                    &sanitize_display(remediation),
+                                    &sanitize_paragraph(remediation),
                                     color::ui_warning(),
                                 );
                             }
@@ -4720,22 +4789,19 @@ impl AssistSettingsDialog {
             210.0f32.min((body.width - gpu_box.width - 8.0).max(0.0)),
             CONTROL_HEIGHT,
         );
-        if self.picker(
+        let _ = self.picker(
             d,
             font,
             31,
             FOCUS_MODELS_STEMS,
             stems_box,
-            &format!("Stem separation: {}", stem_token(stems)),
-            "never / on-demand / always",
-            true,
-        ) {
-            self.draft.local_runtimes.stem_separation = match stems {
-                StemSeparation::Never => StemSeparation::OnDemand,
-                StemSeparation::OnDemand => StemSeparation::Always,
-                StemSeparation::Always => StemSeparation::Never,
-            };
-        }
+            "Stem separation: not wired",
+            &format!(
+                "The saved policy is {}, but current Assist always analyzes the full mix.",
+                stem_token(stems)
+            ),
+            false,
+        );
         let doctor_box = UiRect::new(
             body.x + gpu_box.width + stems_box.width + 16.0,
             *cursor,
@@ -4760,6 +4826,27 @@ impl AssistSettingsDialog {
             self.start_doctor();
         }
         *cursor += CONTROL_HEIGHT + 8.0;
+        if let Some(report) = self.doctor.clone() {
+            let copy_box = UiRect::new(body.x, *cursor, 200.0f32.min(body.width), CONTROL_HEIGHT);
+            if self.picker(
+                d,
+                font,
+                34,
+                FOCUS_MODELS_COPY,
+                copy_box,
+                "Copy runtime report",
+                "Copies every runtime field and the complete help text to the clipboard.",
+                true,
+            ) {
+                let text = runtime_report_text(&report);
+                let _ = d.set_clipboard_text(&text);
+                self.status = Some((
+                    "Runtime report copied to the clipboard.".to_string(),
+                    color::ui_success(),
+                ));
+            }
+            *cursor += CONTROL_HEIGHT + 8.0;
+        }
     }
 
     /// The models-directory override field.
@@ -7022,6 +7109,26 @@ mod tests {
         }
     }
 
+    /// A setting that production does not consume must not pretend to be an
+    /// editable control. Once a report exists, its non-selectable canvas text
+    /// gains a real clipboard route instead.
+    #[test]
+    fn local_models_focus_excludes_unwired_stems_and_offers_report_copy() {
+        let mut dialog = dialog();
+        dialog.section = Section::LocalModels;
+        let before = dialog.focus_order();
+        assert!(!before.contains(&FOCUS_MODELS_STEMS));
+        assert!(!before.contains(&FOCUS_MODELS_COPY));
+
+        dialog.doctor = Some(DoctorReport {
+            schema_version: "musializer.doctor/v1".to_string(),
+            runtimes: BTreeMap::new(),
+        });
+        let after = dialog.focus_order();
+        assert!(!after.contains(&FOCUS_MODELS_STEMS));
+        assert!(after.contains(&FOCUS_MODELS_COPY));
+    }
+
     /// One Enter activates exactly one control.
     #[test]
     fn an_activation_is_consumed_by_the_focused_control_only() {
@@ -8071,6 +8178,39 @@ mod tests {
         // A string already fit for display is returned unchanged, so ordinary
         // ids do not gain an ellipsis.
         assert_eq!(sanitize_display("xiaomi/mimo-v2.5"), "xiaomi/mimo-v2.5");
+    }
+
+    /// Doctor remediation is prose, not a table-cell identifier. The visible
+    /// paragraph and clipboard report retain it past the row cap that caused
+    /// the operator's screenshot to end in an unexplained ellipsis.
+    #[test]
+    fn runtime_help_is_not_cut_to_the_single_row_cap_and_is_copyable() {
+        let remediation = format!(
+            "Current Assist always analyzes the full mix. {}",
+            "This complete diagnostic sentence must remain available. ".repeat(5)
+        );
+        assert!(remediation.chars().count() > DISPLAY_CAP);
+        assert!(remediation.chars().count() < 2048);
+        assert!(sanitize_display(&remediation).ends_with('\u{2026}'));
+        assert_eq!(sanitize_paragraph(&remediation), remediation.trim());
+
+        let identity = RuntimeIdentity {
+            state: "not installed (optional; unused)".to_string(),
+            path: Some("/tmp/example-demucs".to_string()),
+            model_sha256: Some("0123456789abcdef".to_string()),
+            remediation: Some(remediation.clone()),
+            ..RuntimeIdentity::default()
+        };
+        let report = DoctorReport {
+            schema_version: "musializer.doctor/v1".to_string(),
+            runtimes: BTreeMap::from([("stem_separator".to_string(), identity)]),
+        };
+        let clipboard = runtime_report_text(&report);
+        assert!(clipboard.contains("Stem separator (not used by current Assist)"));
+        assert!(clipboard.contains("Path: /tmp/example-demucs"));
+        assert!(clipboard.contains("Model sha256: 0123456789abcdef"));
+        assert!(clipboard.contains(remediation.trim()));
+        assert!(!clipboard.contains("must remain available. \u{2026}"));
     }
 
     /// S8. The coarse lane the production path already runs is recommended on

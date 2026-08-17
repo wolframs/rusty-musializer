@@ -197,29 +197,49 @@ def alignment_identity(*, python_bin: Optional[Path], model: Optional[Path], run
     )
 
 
-def stem_separator_identity(*, which: Which, environ: Mapping[str, str]) -> dict[str, Any]:
-    # No stem separator is wired into this repository yet -- only referenced
-    # as a future direction in docs/LYRICS_TIMING_RESEARCH_PLAN.md (Demucs
-    # htdemucs, for TC-COARSE's optional vocal stem). Discovery here follows
-    # the same override-then-PATH shape as the Whisper/alignment runtimes so
-    # a later feature build has a stable place to report from, but today
-    # this should read "unavailable" on a stock checkout.
+def stem_separator_identity(*, which: Which, runner: Runner,
+                            environ: Mapping[str, str]) -> dict[str, Any]:
+    # No stem separator is wired into production Assist yet. Report Demucs as
+    # installed/detected only after its launcher can actually import and show
+    # help; an executable bit alone accepted the stale build-investigation
+    # shim whose Python environment had already been deleted.
     configured = environ.get("MUSIALIZER_STEM_SEPARATOR_BIN", "").strip()
     resolved = configured or which("demucs")
     if not resolved:
         return _runtime(
-            "unavailable",
-            remediation=("install a source separator (Demucs is the one referenced in "
-                         "docs/LYRICS_TIMING_RESEARCH_PLAN.md) and set "
-                         "MUSIALIZER_STEM_SEPARATOR_BIN, or leave TC-COARSE full-mix-only"),
+            "not installed (optional; unused)",
+            remediation=("Current Assist always analyzes the full mix. Demucs is not "
+                         "installed, and installing it alone would not enable a stem lane."),
         )
     binary = Path(resolved)
     if not (binary.is_file() and (os.name == "nt" or os.access(binary, os.X_OK))):
         return _runtime(
-            "unavailable",
+            "broken (unused)",
             remediation=f"MUSIALIZER_STEM_SEPARATOR_BIN={resolved!r} does not resolve to an executable",
         )
-    return _runtime("ok", path=binary, language_support="n/a (audio-domain source separation)")
+    try:
+        probe = runner(
+            [str(binary), "--help"], text=True, capture_output=True,
+            timeout=15, check=False, env=_safe_environ(environ),
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return _runtime(
+            "broken (unused)", path=binary,
+            remediation=f"Demucs was found but could not start: {error}",
+        )
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout or "launcher exited nonzero").strip()
+        detail = " ".join(detail.split())[:240]
+        return _runtime(
+            "broken (unused)", path=binary,
+            remediation=f"Demucs was found but its import/help probe failed: {detail}",
+        )
+    return _runtime(
+        "detected (unused)", path=binary,
+        language_support="n/a (audio-domain source separation)",
+        remediation=("Detected, but current Assist does not invoke stem separation; "
+                     "TC-COARSE still analyzes the full mix."),
+    )
 
 
 def collect(*, whisper_binary: Optional[Path], whisper_model: Optional[Path],
@@ -233,5 +253,6 @@ def collect(*, whisper_binary: Optional[Path], whisper_model: Optional[Path],
         "mms_ctc_aligner": alignment_identity(python_bin=align_python, model=align_model,
                                                runner=runner, environ=environ,
                                                sha256_file=sha256_file),
-        "stem_separator": stem_separator_identity(which=which, environ=environ),
+        "stem_separator": stem_separator_identity(
+            which=which, runner=runner, environ=environ),
     }
