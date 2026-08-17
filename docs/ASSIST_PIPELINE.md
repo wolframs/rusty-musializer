@@ -145,25 +145,16 @@ allowed to answer implicitly:
                        /                 \
                     yes                   no
                      |                     |
-          preserve text and order    Whisper transcription
-                     |                + conservative review
-      Whisper words as evidence              |
-                     |                       |
-      rare unique n-grams -> anchors         |
-                     |                       |
-      ordered blocks (initial and            |
-      terminal blocks included)              |
-                     |                       |
-      one CTC pass per block          per-cue MMS alignment
-                     |                       |
-      placed? -- no --> unresolved   strong evidence? -- no --> keep
-         |              + flagged          |                    proposal,
-        yes                               yes                   uncertain
-         |                                 |
-   repeated phrase the global       replace/narrow timing only
-   order did not decide?
-         |
-        yes --> abstain: unresolved + flagged
+       preserve text and order      Whisper transcription
+              |                     + conservative review
+    rare anchors + trusted blocks             |
+              |                       per-cue MMS alignment
+    unconditioned global challenger           |
+              |                        strong evidence?
+    occurrence agreement or rare anchor?     /       \
+          /                 \              yes       no
+        yes                 no              |         |
+   bounded cue       unresolved + flag    refine   uncertain proposal
 ```
 
 The pure half of that policy is
@@ -191,17 +182,20 @@ selected anchor→block, and it is now the production default.
   helper refuses to write a lane that lost one (`validate_full_coverage`).
 - **Abstention.** A repeated authored phrase abstains when the coarse
   Whisper-derived view puts it nearer a *sibling* occurrence's block placement
-  than its own, by more than the 3-second review tolerance, or when two
-  identical lines collapse onto one acoustic phrase. Guessing an occurrence
-  confidently is worse than saying so.
-- **Review flags.** A flag is cross-view disagreement (coarse proposal versus
-  block placement, > 3 s) or an unresolved line. It is **never** the aligner's
+  than its own, or when two identical lines collapse onto one phrase. Any
+  occurrence-scale fine/coarse dispute, backwards path without a deciding
+  margin, or unanchored section that disagrees with the unconditioned global
+  path also abstains. Guessing an occurrence confidently is worse than saying so.
+- **Review flags.** A flag is cross-view disagreement, a rare anchor resolving
+  disagreement with the unconditioned path, or an unresolved line. It is
+  **never** the aligner's
   own score: the 2026-08-04 operator adjudication measured median score 0.139
   on confirmed-correct lines against 0.142 on confirmed-wrong ones, and cues
   therefore carry `confidence: null` rather than a number that orders nothing.
 - **The coarse lane is demoted, not deleted.** `lyrics.sync.json` is still
-  written, because both the flags and the abstention are defined as
-  disagreement with it. Its cache identity records `role: coarse_proposal`.
+  written for candidate windows, flags and abstention. Estimated and sub-0.8
+  rows are review-only; they cannot narrow acoustic search. Its cache identity
+  records `role: coarse_proposal`.
 
 ### Whisper evidence pass
 
@@ -273,9 +267,10 @@ evidence and a new policy/cache version.
 | --- | --- |
 | Authored lyric text and ordering | Explicit sheet, sibling file, or embedded metadata |
 | No-reference text and ordering | Whisper proposal plus conservative review |
-| Authored-line position in the song | Anchor→block CTC path over the whole ordered block; Whisper words are evidence for the anchors only |
-| Final cue timing | MMS acoustic evidence when strong; otherwise marked provisional timing |
-| Whether a line is placed at all | The acoustics and the global order — never the aligner's own score |
+| Authored-line position in the song | Policy v2 consensus: trusted section-bounded block CTC, a coarse-local boundary refinement, and an unconditioned global challenger for every section without its own rare anchor; the candidates remain auditable |
+| Final cue timing | Bounded MMS acoustic evidence supported by the coarse occurrence; an occurrence-scale disagreement never becomes a cue |
+| Whether a line is placed at all | Independent-view agreement and the global authored order — never the aligner's own score or raw coverage |
+| Authored-text source | Exact explicit/sibling/embedded source, digest and alignable-line count in the manifest and staged UI; embedded metadata is never visually anonymous |
 | Sections and semantic cues | Measured/model evidence bounded by bridge validation |
 | Audio identity | SHA-256 carried by the bridge and verified by Rust |
 | Project mutation | Rust `AnalysisCandidate` plus explicit Apply |
@@ -299,8 +294,13 @@ Failure should remain visible at the narrowest boundary that can explain it:
   rejects the bridge and stages nothing.
 - Authorized mode producing no changes: a truthful terminal no-change result,
   not an empty candidate.
-- Weak lyric evidence: retain timing as uncertain rather than manufacture
-  confidence or silently delete a line.
+- Weak boundary evidence within one occurrence: retain timing as uncertain.
+  Fine/coarse disagreement above eight seconds, or a backwards authored-order
+  placement, is `unresolved` with both proposals retained — never a cue painted
+  amber and shipped anyway.
+- Coarse-conditioned section and local paths are one evidence family, not two.
+  Without a rare anchor in that section they must agree with the unconditioned
+  global path; estimated and low-confidence coarse rows cannot narrow a window.
 - An authored line that cannot be located, or a repeated phrase whose occurrence
   the global order did not decide: an `unresolved` record and a review flag
   naming the line, never a cue placed on a guess and never an omission.
@@ -310,7 +310,7 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Concern | Evidence |
 | --- | --- |
 | Timestamp-token parsing, cluster selection, alignment policy | [`tests/test_lyrics_timing.py`](../tests/test_lyrics_timing.py) |
-| Coverage invariant, repeated-phrase abstention, review flags, Whisper flags, localization cache identity | [`tests/test_lyric_anchor_block.py`](../tests/test_lyric_anchor_block.py) |
+| Coverage invariant, section/coarse windows, occurrence/order abstention, source provenance, review flags, Whisper flags, localization cache identity | [`tests/test_lyric_anchor_block.py`](../tests/test_lyric_anchor_block.py) |
 | Four-track localization coverage through the production path | `tools/lyrics_research/run.py --method baseline` plus `scoreboard.py`; gitignored `build/lyrics-research-v2` artifacts |
 | Assist state and mode authority parity | `tools/differential_assist_ui.sh` and core tests |
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |

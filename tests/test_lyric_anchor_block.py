@@ -287,15 +287,141 @@ class ReviewFlagTests(unittest.TestCase):
         self.assertEqual([flag["reference_line_index"]
                           for flag in document["review_flags"]], [1])
 
-    def test_cues_are_sorted_by_start_so_the_bridge_stays_parseable(self) -> None:
+    def test_an_occurrence_scale_disagreement_never_becomes_a_cue(self) -> None:
+        """Negative control for the Groyper Idol +40 s chorus jump."""
+        lines = _lines("a completely unique authored line")
+        document = anchor_block.assemble_document(
+            _plan(lines), {0: _decision(50.0, 54.0, score=0.95)}, {0: 0},
+            {0: (10.0, 14.0)}, audio_duration=90.0)
+        self.assertEqual(document["lines"], [])
+        self.assertEqual(len(document["unresolved"]), 1)
+        unresolved = document["unresolved"][0]
+        self.assertEqual(
+            unresolved["reason"], "cross_view_occurrence_ambiguous")
+        self.assertAlmostEqual(unresolved["coarse_start_seconds"], 10.0)
+        self.assertAlmostEqual(unresolved["acoustic_start_seconds"], 49.9)
+        self.assertEqual(document["review_flags"][0]["flag"], "unresolved")
+
+    def test_groyper_incident_chorus_is_four_abstentions_not_four_cues(self) -> None:
+        """Pin the four measured v1 chorus jumps without distributing audio."""
+        lines = _lines(
+            "started like a now im just an idol",
+            "room gets wild pass me the flare gun",
+            "texas in july sweat through the denim",
+            "dont go soft on me dont go soft on me",
+        )
+        fine_starts = (79.73, 83.83, 86.53, 88.92)
+        coarse_starts = (37.30, 45.88, 51.28, 66.34)
+        decisions = {
+            position: _decision(start, start + 2.5, score=0.95)
+            for position, start in enumerate(fine_starts)
+        }
+        coarse = {
+            position: (start, start + 2.5)
+            for position, start in enumerate(coarse_starts)
+        }
+        document = anchor_block.assemble_document(
+            _plan(lines), decisions, {position: 0 for position in range(4)},
+            coarse, audio_duration=247.36)
+        self.assertEqual(document["lines"], [])
+        self.assertEqual(len(document["unresolved"]), 4)
+        self.assertEqual(
+            {entry["reason"] for entry in document["unresolved"]},
+            {"cross_view_occurrence_ambiguous"})
+        self.assertTrue(all(
+            abs(entry["acoustic_start_seconds"]
+                - entry["coarse_start_seconds"])
+            > anchor_block.MAXIMUM_ACCEPTED_DISAGREEMENT_SECONDS
+            for entry in document["unresolved"]))
+
+    def test_a_backwards_authored_pair_abstains_instead_of_being_sorted(self) -> None:
         lines = _lines("first line here", "second line here")
         document = anchor_block.assemble_document(
             _plan(lines), {0: _decision(30.0, 32.0), 1: _decision(10.0, 12.0)},
             {0: 0, 1: 0}, {}, audio_duration=60.0)
-        starts = [cue["start_seconds"] for cue in document["lines"]]
-        self.assertEqual(starts, sorted(starts))
-        # The violation against authored order is still recorded, not hidden.
-        self.assertEqual(len(document["order_violations"]), 1)
+        self.assertEqual(document["lines"], [])
+        self.assertEqual(
+            [entry["reason"] for entry in document["unresolved"]],
+            ["authored_order_ambiguous", "authored_order_ambiguous"])
+        self.assertEqual(document["order_violations"], [])
+
+    def test_equal_coarse_support_cannot_choose_a_survivor_from_reversed_lines(
+            self) -> None:
+        lines = _lines("first line here", "second line here")
+        document = anchor_block.assemble_document(
+            _plan(lines), {0: _decision(30.0, 32.0), 1: _decision(10.0, 12.0)},
+            {0: 0, 1: 0}, {0: (29.9, 32.0), 1: (9.9, 12.0)},
+            audio_duration=60.0)
+        self.assertEqual(document["lines"], [])
+        self.assertEqual(len(document["unresolved"]), 2)
+
+    def test_a_coarse_local_refinement_needs_the_independent_block_view(
+            self) -> None:
+        proposal_start = 10.0
+        self.assertFalse(anchor_block.coarse_local_refinement_allowed(
+            None, proposal_start))
+        self.assertFalse(anchor_block.coarse_local_refinement_allowed(
+            _decision(50.0, 54.0, score=0.95), proposal_start))
+        self.assertTrue(anchor_block.coarse_local_refinement_allowed(
+            _decision(14.0, 18.0, score=0.02), proposal_start))
+
+    def test_a_coarse_conditioned_path_disputed_by_global_search_abstains(
+            self) -> None:
+        lines = _lines("a unique but wrongly localized line")
+        decision = _decision(50.0, 54.0, score=0.95)
+        decision["occurrence_disputed"] = True
+        decision["independent_global_candidate"] = _decision(
+            10.0, 14.0, score=0.95)
+        document = anchor_block.assemble_document(
+            _plan(lines), {0: decision}, {0: 0}, {}, audio_duration=90.0)
+        self.assertEqual(document["lines"], [])
+        self.assertEqual(
+            document["unresolved"][0]["reason"],
+            "global_localization_disagreement")
+        self.assertEqual(
+            document["unresolved"][0]["independent_global_candidate"]
+            ["acoustic_start_seconds"],
+            10.0)
+
+    def test_a_conditioned_miss_retains_its_successful_global_challenger(
+            self) -> None:
+        lines = _lines("a line missed by the conditioned path")
+        decision = {"status": "no_alignment", "score": 0.0,
+                    "independent_global_candidate": _decision(10.0, 14.0)}
+        document = anchor_block.assemble_document(
+            _plan(lines), {0: decision}, {}, {}, audio_duration=90.0)
+        self.assertEqual(document["unresolved"][0]["reason"], "no_alignment")
+        self.assertEqual(
+            document["unresolved"][0]["independent_global_candidate"]
+            ["acoustic_start_seconds"],
+            10.0)
+
+    def test_a_rare_anchor_can_resolve_global_occurrence_but_stays_flagged(
+            self) -> None:
+        lines = _lines("a rare exact anchored line")
+        decision = _decision(50.0, 54.0, score=0.95)
+        decision["global_disagreement_anchor_resolved"] = True
+        decision["independent_global_candidate"] = _decision(
+            10.0, 14.0, score=0.95)
+        document = anchor_block.assemble_document(
+            _plan(lines), {0: decision}, {0: 0}, {}, audio_duration=90.0)
+        self.assertEqual(len(document["lines"]), 1)
+        self.assertTrue(document["lines"][0]["uncertain"])
+        self.assertEqual(
+            document["review_flags"][0]["flag"],
+            "global_disagreement_anchor_resolved")
+
+    def test_an_anchor_at_another_time_cannot_validate_a_coarse_section(
+            self) -> None:
+        anchor = {"start_seconds": 10.0, "end_seconds": 12.0}
+        candidate = _decision(100.0, 104.0, score=0.95)
+        block = {"window_start": 94.0, "window_end": 113.0}
+        self.assertFalse(anchor_block.anchor_supports_section_occurrence(
+            anchor, candidate, block))
+        anchored_candidate = _decision(11.0, 14.0, score=0.02)
+        anchored_block = {"window_start": 5.0, "window_end": 30.0}
+        self.assertTrue(anchor_block.anchor_supports_section_occurrence(
+            anchor, anchored_candidate, anchored_block))
 
 
 class BlockPartitionTests(unittest.TestCase):
@@ -320,6 +446,79 @@ class BlockPartitionTests(unittest.TestCase):
         self.assertEqual(blocks[0]["kind"], "unanchored")
         self.assertEqual((blocks[0]["first_line"], blocks[0]["last_line"]),
                          (0, len(lines) - 1))
+
+    def test_section_coarse_evidence_bounds_a_sparse_anchor_tail(self) -> None:
+        """The Groyper shape: evidence after the intro beats token splitting."""
+        lines = _lines(
+            "verse one a", "verse one b", "chorus one a", "chorus one b",
+            "verse two a", "verse two b")
+        for position, line in enumerate(lines):
+            line["section_position"] = position // 2
+        coarse = {
+            0: (20.0, 23.0), 1: (24.0, 27.0),
+            2: (40.0, 44.0), 3: (48.0, 52.0),
+            4: (100.0, 104.0), 5: (108.0, 112.0),
+        }
+        blocks = anchor_block.build_blocks(
+            lines, [], coarse=coarse, audio_duration=180.0)
+        self.assertGreaterEqual(len(blocks), 3)
+        self.assertTrue(all(block["kind"] == "section-evidence"
+                            for block in blocks))
+        chorus = next(block for block in blocks
+                       if block["first_line"] == 2)
+        self.assertEqual((chorus["first_line"], chorus["last_line"]), (2, 3))
+        self.assertLess(chorus["window_start"], 40.0)
+        self.assertGreater(chorus["window_end"], 52.0)
+        # Crucially, its search cannot drift into verse two at 100 s.
+        self.assertLess(chorus["window_end"], 90.0)
+
+    def test_groyper_chorus_window_excludes_the_measured_eighty_second_jump(
+            self) -> None:
+        """Pin the real section density, not a conveniently spaced toy."""
+        lines = _lines(*[f"line {position}" for position in range(18)])
+        section_sizes = (4, 4, 4, 4, 1, 1)
+        position = 0
+        for section, size in enumerate(section_sizes):
+            for _ in range(size):
+                lines[position]["section_position"] = section
+                position += 1
+        coarse = {
+            0: (8.86, 19.23), 1: (19.96, 26.04),
+            2: (26.04, 29.60), 3: (29.60, 36.86),
+            4: (37.30, 45.88), 5: (45.88, 51.16),
+            6: (51.28, 58.41), 7: (66.34, 73.65),
+            10: (120.05, 121.64), 11: (122.08, 127.51),
+            14: (168.40, 171.13), 15: (171.13, 172.32),
+            16: (172.32, 174.33), 17: (174.33, 194.68),
+        }
+        blocks = anchor_block.build_blocks(
+            lines, [], coarse=coarse, audio_duration=247.36)
+        chorus = next(block for block in blocks
+                       if block["first_line"] == 4)
+        self.assertEqual((chorus["first_line"], chorus["last_line"]), (4, 7))
+        self.assertTrue(chorus["fully_coarse_evidenced"])
+        self.assertLess(chorus["window_start"], 37.30)
+        self.assertGreater(chorus["window_end"], 73.65)
+        self.assertLess(chorus["window_end"], 80.58)
+
+    def test_estimated_coarse_rows_are_review_only_not_window_evidence(
+            self) -> None:
+        sync = {
+            "lines": [
+                {"reference_line_index": 2, "start_seconds": 10.0,
+                 "end_seconds": 12.0, "confidence": 1.0,
+                 "estimated": False},
+                {"reference_line_index": 3, "start_seconds": 40.0,
+                 "end_seconds": 42.0, "confidence": None,
+                 "estimated": True},
+                {"reference_line_index": 4, "start_seconds": 70.0,
+                 "end_seconds": 72.0, "confidence": 0.3,
+                 "estimated": False},
+            ]
+        }
+        self.assertEqual(set(anchor_block.coarse_proposals(sync)), {2, 3, 4})
+        self.assertEqual(
+            set(anchor_block.coarse_proposals(sync, trusted_only=True)), {2})
 
     def test_every_authored_line_belongs_to_some_block(self) -> None:
         lines = _lines(*[f"authored line number {n}" for n in range(9)])
@@ -403,6 +602,7 @@ class LocalizationCacheIdentityTests(unittest.TestCase):
             "localization_policy_version": anchor_block.LOCALIZATION_POLICY_VERSION,
             "timing_refinement": {
                 "adapter": "tools/anchor_block_align.py",
+                "alignment_version": anchor_block.ALIGNMENT_VERSION,
                 "model": "torchaudio.pipelines.MMS_FA",
                 "localization_policy": anchor_block.LOCALIZATION_POLICY,
                 "localization_policy_version": (
@@ -428,6 +628,11 @@ class LocalizationCacheIdentityTests(unittest.TestCase):
     def test_an_older_policy_version_is_regenerated(self) -> None:
         self.assertFalse(self._accepts(self._document(
             localization_policy_version="0")))
+
+    def test_an_older_acoustic_request_is_regenerated(self) -> None:
+        document = self._document()
+        document["timing_refinement"]["alignment_version"] = "0"
+        self.assertFalse(self._accepts(document))
 
     def test_the_previous_per_cue_lane_is_not_accepted(self) -> None:
         legacy = {
@@ -473,6 +678,9 @@ class AssistManifestLaneKeys(unittest.TestCase):
             "unresolved": [{}, {}], "review_flags": [{}, {}, {}],
             "localization_policy": "anchor-block-mms",
             "localization_policy_version": "3",
+            "reference": {"source": "embedded:lyrics-eng",
+                          "sha256": "8" * 64},
+            "statistics": {"reference_lines": 5},
         }
 
     def test_a_run_without_a_lyrics_lane_writes_no_review_keys(self) -> None:
@@ -493,6 +701,10 @@ class AssistManifestLaneKeys(unittest.TestCase):
         self.assertEqual(manifest["result_counts"]["lyrics_review_flags"], 3)
         self.assertEqual(manifest["lyric_localization"],
                          {"policy": "anchor-block-mms", "policy_version": "3"})
+        self.assertEqual(manifest["lyric_reference"], {
+            "source": "embedded:lyrics-eng", "sha256": "8" * 64,
+            "alignable_lines": 5,
+        })
         self.assertIn("lyrics", manifest["provenance_streams"])
 
     def test_a_lyrics_run_that_placed_everything_still_says_zero(self) -> None:

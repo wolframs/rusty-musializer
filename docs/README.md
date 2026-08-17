@@ -38,6 +38,10 @@ authoritative code and evidence without reconstructing the project from scratch.
   [`LYRICS_TIMING_WEB_EVIDENCE.md`](LYRICS_TIMING_WEB_EVIDENCE.md) are the trimmed
   local benchmark and the published/community evidence that together justified
   the anchor→block MMS design the research plan narrowed down to.
+- [`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md)
+  diagnoses the Groyper Idol wrong-source and wrong-occurrence failure, records
+  the linked-project review, and defines localization policy v2's evidence and
+  abstention rules.
 - [`MIMO_BENCHMARK_PLAN.md`](MIMO_BENCHMARK_PLAN.md) is the designed-but-not-yet-run
   benchmark of `xiaomi/mimo-v2.5`'s musical description: chunking, prompt register
   and output-shaping axes, with the scoring rubric and cost projection. Running it

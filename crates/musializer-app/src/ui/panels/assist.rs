@@ -3838,11 +3838,32 @@ impl Shell {
             widgets::draw_text(d, font, &line, x, line_y, 14.0, color::ui_ink());
             line_y += 18.0;
         }
-        // Suppressed only when the reason has taken this exact row, which happens
-        // when all three lanes are staged *and* the panel is too narrow to put
-        // the reason beside the buttons.
+        // Authored wording is a separate authority from timing.  Name it on the
+        // staged surface so an automatically discovered embedded tag cannot
+        // look like the explicitly chosen sheet the user had in mind.  This
+        // takes the existing preview row; the action row geometry stays fixed.
         let preview_row_taken = matches!(row.reason, ReasonSlot::Above(rect) if line_y >= rect.y);
-        if !session.candidate_first_lyric.is_empty() && !preview_row_taken {
+        let source_line = candidate
+            .lyrics_review()
+            .map(LyricsReview::source_summary)
+            .filter(|line| !line.is_empty() && !preview_row_taken);
+        if let Some(line) = source_line.as_deref() {
+            widgets::draw_text(
+                d,
+                font,
+                line,
+                x,
+                line_y,
+                REASON_FONT_SIZE,
+                color::ui_muted(),
+            );
+        }
+
+        // Suppressed only when the source used the preview row or the reason
+        // has taken it, which happens when all three lanes are staged and the
+        // panel is too narrow to put the reason beside the buttons.
+        if source_line.is_none() && !session.candidate_first_lyric.is_empty() && !preview_row_taken
+        {
             widgets::draw_text(
                 d,
                 font,
@@ -3856,7 +3877,12 @@ impl Shell {
 
         let apply = row.apply;
         let discard = row.discard;
-        let apply_label = if session.apply_confirmation_pending() {
+        let embedded_reference = candidate
+            .lyrics_review()
+            .is_some_and(|review| review.reference_source.starts_with("embedded:"));
+        let apply_label = if session.apply_confirmation_pending() && embedded_reference {
+            "Confirm embedded"
+        } else if session.apply_confirmation_pending() {
             "Confirm apply"
         } else {
             "Apply changes"
