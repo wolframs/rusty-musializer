@@ -231,8 +231,27 @@ def _gpu_hint(which: Which, runner: Runner,
     return {"kind": "none", "available": False, "devices": []}
 
 
+def _codex_executable(explicit: Optional[Path], which: Which) -> tuple[Optional[str], str]:
+    """Resolve Codex using the path the desktop dialog already discovered.
+
+    A Plasma-launched process does not inherit the interactive shell's PATH.
+    The Rust dialog has a deliberate four-rung discovery ladder for that case;
+    making the doctor repeat only ``shutil.which`` produced two contradictory
+    answers in the same window.  An explicit path is therefore authoritative
+    and set-but-invalid is reported rather than silently falling back.
+    """
+    if explicit is not None:
+        candidate = explicit.expanduser()
+        if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+            return str(candidate), str(candidate)
+        return None, f"configured Codex path is not executable: {candidate}"
+    discovered = which("codex")
+    return discovered, discovered or "install Codex or select its executable in AI settings"
+
+
 def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
           output_dir: Optional[Path] = None,
+          codex_bin: Optional[Path] = None,
           environ: Optional[Mapping[str, str]] = None,
           which: Which = shutil.which, find_spec: FindSpec = importlib.util.find_spec,
           runner: Runner = subprocess.run) -> dict[str, Any]:
@@ -332,11 +351,11 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
         detail="present" if not missing else "missing: " + ", ".join(missing),
     ))
 
-    codex = which("codex")
+    codex, codex_detail = _codex_executable(codex_bin, which)
     checks.append(_check(
         "codex", codex is not None, "Codex executable for lyric review",
         required_for=("local_lyrics",),
-        detail=codex or "install Codex and add it to PATH",
+        detail=codex_detail,
     ))
 
     if external_analysis is not None:
@@ -509,6 +528,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="analysis cache directory to probe")
     parser.add_argument("--output-dir", type=Path,
                         help="video output directory to probe (default: current directory)")
+    parser.add_argument("--codex-bin", type=Path,
+                        help="resolved Codex executable from the desktop discovery ladder")
     parser.add_argument("--require", action="append", choices=CAPABILITIES,
                         default=[], help="exit nonzero unless this capability is ready")
     return parser
@@ -517,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     report = audit(root=args.root, analysis_dir=args.analysis_dir,
-                   output_dir=args.output_dir)
+                   output_dir=args.output_dir, codex_bin=args.codex_bin)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
     else:

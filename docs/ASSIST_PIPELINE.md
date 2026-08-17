@@ -139,6 +139,13 @@ allowed to answer implicitly:
    named for review; it is never dropped. A no-reference cue is removed only
    with corroborating evidence such as weak Whisper plus weak alignment, or
    duplicate candidates claiming the same acoustic span.
+4. **Did the performance add words the sheet never contained?** Short Whisper
+   spans outside every authored placement are retained as a separate
+   `performed_candidates` lane. They may be Suno ad-libs, generated repeats or
+   background vocals, but they may also be ASR errors. The application parks
+   each as a non-rendering `Potential` cue and labels it `HEARD`; only a human
+   promotion can make it a published caption. Long tail segments and known
+   repetition-loop intervals are discarded rather than presented as vocals.
 
 ```text
                      authored text available?
@@ -165,7 +172,10 @@ which runs under the installed alignment runtime. The no-reference lane stays in
 [`force_align_lyrics.py`](../tools/force_align_lyrics.py). Either way the output
 `lyrics.aligned.json` contains the audit evidence used to construct the bridge;
 the bridge contains the bounded result the Rust application needs, and an
-unresolved line is never in it.
+unresolved line is never in it. Performed candidates also stay outside the
+bridge's accepted cue list; Rust reads them from the review artifact and parks
+them with `Potential` origin so Apply cannot turn unreviewed ASR prose into a
+rendered lyric.
 
 ### Anchor→block localization (LT1)
 

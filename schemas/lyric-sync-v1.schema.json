@@ -61,6 +61,24 @@
         "$ref": "#/$defs/line"
       }
     },
+    "performed_candidates": {
+      "description": "Short ASR spans outside every authored placement. Review evidence only; never an automatically accepted lyric cue.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_seconds", "end_seconds", "text", "confidence", "source", "uncertain", "reason"],
+        "properties": {
+          "start_seconds": {"type": "number", "minimum": 0},
+          "end_seconds": {"type": "number", "exclusiveMinimum": 0},
+          "text": {"type": "string", "minLength": 1, "maxLength": 512},
+          "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+          "source": {"const": "whisper-unmatched"},
+          "uncertain": {"const": true},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      }
+    },
     "unmatched": {
       "type": "array",
       "items": {
@@ -164,6 +182,10 @@
           "minimum": 0
         },
         "unmatched_lines": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "performed_candidates": {
           "type": "integer",
           "minimum": 0
         },

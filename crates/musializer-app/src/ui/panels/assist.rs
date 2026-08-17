@@ -1330,6 +1330,8 @@ const PROPOSAL_TAIL_GUARD_SECONDS: f64 = 0.25;
 pub(crate) struct ParkedProposals {
     /// Review rows whose line never became a cue.
     pub unresolved: usize,
+    /// Performed-but-unauthored ASR spans offered for human promotion.
+    pub performed: usize,
     /// Proposals now in the staged lane as `Potential` cues.
     pub parked: usize,
     /// Unresolved lines with no proposed time this side can honour. These stay
@@ -1353,7 +1355,7 @@ impl ParkedProposals {
     /// things — so the words "also listed below" are load-bearing, not padding.
     #[must_use]
     pub fn summary(&self) -> String {
-        if self.unresolved == 0 {
+        if self.unresolved == 0 && self.performed == 0 {
             return String::new();
         }
         if self.refused > 0 {
@@ -1376,10 +1378,19 @@ impl ParkedProposals {
                 }
             );
         }
-        let mut text = format!(
-            "{} parked on the timeline as potential cues (also listed below)",
-            self.parked
-        );
+        let mut text = if self.performed > 0 {
+            format!(
+                "{} parked as potential cues, including {} performed vocal candidate{} (also listed below)",
+                self.parked,
+                self.performed,
+                if self.performed == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "{} parked on the timeline as potential cues (also listed below)",
+                self.parked
+            )
+        };
         if self.unplaceable > 0 {
             text.push_str(&format!(
                 "; {} proposed no time and {} listed here only",
@@ -1442,7 +1453,7 @@ fn proposal_cues(candidate: &AnalysisCandidate) -> Vec<LyricCue> {
     review
         .entries
         .iter()
-        .filter(|entry| entry.kind.is_unresolved())
+        .filter(|entry| entry.kind.is_proposal())
         .filter_map(|entry| {
             let (start_seconds, end_seconds) = proposal_window(entry, duration)?;
             Some(LyricCue {
@@ -1479,12 +1490,18 @@ fn parked_summary(candidate: &AnalysisCandidate) -> ParkedProposals {
         .iter()
         .filter(|entry| entry.kind.is_unresolved())
         .count();
+    let performed = review
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == LyricReviewKind::Performed)
+        .count();
     let placeable = proposal_cues(candidate).len();
     let parked = candidate.potential_cue_count();
     ParkedProposals {
         unresolved,
+        performed,
         parked,
-        unplaceable: unresolved.saturating_sub(placeable),
+        unplaceable: (unresolved + performed).saturating_sub(placeable),
         // All or nothing, so the only way a placeable proposal is not in the lane
         // is a whole-run refusal.
         refused: placeable.saturating_sub(parked),
@@ -2297,7 +2314,7 @@ fn draw_route_graph(
 /// ordinary ink. They are different jobs — one line has no cue at all, the other
 /// has a cue that may be in the wrong place.
 fn review_row_color(kind: LyricReviewKind) -> raylib::prelude::Color {
-    if kind.is_unresolved() {
+    if kind.is_proposal() {
         color::ui_warning()
     } else {
         color::ui_ink()
@@ -2568,28 +2585,33 @@ pub(crate) enum ReviewNavigation {
 
 impl ReviewNavigation {
     fn describe(&self, entry: &LyricReviewEntry) -> String {
+        let subject = review_subject(entry);
         match self {
             ReviewNavigation::Cue { id, seconds } => format!(
-                "line {} -> cue {id} at {} (Lyrics panel)",
-                entry.line_number,
+                "{subject} -> cue {id} at {} (Lyrics panel)",
                 review_clock(*seconds)
             ),
             ReviewNavigation::NoCue {
                 seconds: Some(seconds),
             } => format!(
-                "line {} -> no cue; Lyrics panel at the proposed {}",
-                entry.line_number,
+                "{subject} -> no cue; Lyrics panel at the proposed {}",
                 review_clock(*seconds)
             ),
             ReviewNavigation::NoCue { seconds: None } => format!(
-                "line {} -> no cue and no proposed time; Lyrics panel, playhead unchanged",
-                entry.line_number
+                "{subject} -> no cue and no proposed time; Lyrics panel, playhead unchanged"
             ),
-            ReviewNavigation::Refused => format!(
-                "line {} refused: an unsaved lyric draft is open",
-                entry.line_number
-            ),
+            ReviewNavigation::Refused => {
+                format!("{subject} refused: an unsaved lyric draft is open")
+            }
         }
+    }
+}
+
+fn review_subject(entry: &LyricReviewEntry) -> String {
+    if entry.kind == LyricReviewKind::Performed {
+        format!("candidate {}", entry.line_number)
+    } else {
+        format!("line {}", entry.line_number)
     }
 }
 
@@ -2617,20 +2639,16 @@ fn review_clock(seconds: f64) -> String {
 /// R9 complains about, wearing a label. So the text is built from the same
 /// resolution the press will perform.
 fn review_row_hint(entry: &LyricReviewEntry, cue: Option<u64>) -> String {
+    let subject = review_subject(entry);
     match (cue, entry.start_seconds) {
-        (Some(_), _) => format!(
-            "Open line {} in the Lyrics panel and select its cue",
-            entry.line_number
-        ),
+        (Some(_), _) => format!("Open {subject} in the Lyrics panel and select its cue"),
         (None, Some(start)) => format!(
-            "Open the Lyrics panel at the proposed {} — line {} has no cue yet",
+            "Open the Lyrics panel at the proposed {} — {subject} has no cue yet",
             review_clock(start),
-            entry.line_number
         ),
-        (None, None) => format!(
-            "Open the Lyrics panel — line {} has no cue and no proposed time",
-            entry.line_number
-        ),
+        (None, None) => {
+            format!("Open the Lyrics panel — {subject} has no cue and no proposed time")
+        }
     }
 }
 
@@ -5622,11 +5640,45 @@ mod tests {
             parked_summary(&candidate),
             ParkedProposals {
                 unresolved: 3,
+                performed: 0,
                 parked: 2,
                 unplaceable: 1,
                 refused: 0,
             }
         );
+    }
+
+    #[test]
+    fn a_performed_vocal_candidate_reaches_the_timeline_but_stays_potential() {
+        let scratch = Scratch::new("performed-candidate");
+        let folder = review_job_folder(
+            &scratch,
+            "performed",
+            r#"{"schema_version":"musializer.assist-manifest/v1","mode":"lyrics",
+                "result_counts":{"lyrics":2,"lyrics_unresolved":0,
+                    "lyrics_review_flags":1,"lyrics_performed_candidates":1},
+                "lyric_localization":{"policy":"anchor-block-mms","policy_version":"3"}}"#,
+            r#"{"unresolved":[],"review_flags":[],"performed_candidates":[
+                {"start_seconds":31.0,"end_seconds":34.0,"text":"yeah, come on",
+                 "confidence":0.71,"source":"whisper-unmatched","uncertain":true,
+                 "reason":"heard outside every authored lyric placement"}]}"#,
+        );
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
+        stage_lyrics_review(&mut candidate, &folder.display().to_string());
+
+        let cue = candidate
+            .lyrics()
+            .cues()
+            .iter()
+            .find(|cue| cue.text == "yeah, come on")
+            .expect("performed candidate is parked");
+        assert_eq!(cue.origin, CueOrigin::Potential);
+        assert!((cue.start_seconds - 31.0).abs() < 1e-9);
+        assert!((cue.end_seconds - 34.0).abs() < 1e-9);
+        let parked = parked_summary(&candidate);
+        assert_eq!(parked.performed, 1);
+        assert_eq!(parked.parked, 1);
+        assert!(parked.summary().contains("performed vocal candidate"));
     }
 
     #[test]

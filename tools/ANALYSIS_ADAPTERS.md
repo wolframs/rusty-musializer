@@ -98,16 +98,22 @@ checks `~/.local/share/musializer/whisper.cpp` (the durable per-user install;
 CUDA-enabled on this workstation) and then the legacy tmpfs setup at
 `/tmp/music-visualizations-whisper-1.8.6`, taking `build/bin/whisper-cli`
 from the first install that has one. Models are ranked
-`ggml-large-v3-turbo.bin`, then `ggml-large-v3.bin`,
+`ggml-large-v3.bin`, then `ggml-large-v3-turbo.bin`,
 `ggml-large-v3-q5_0.bin`, and `ggml-medium.en.bin`, with the best model in
 any install outranking a lesser model in a preferred install.
-The order was measured on sung material: turbo recovered strictly more lyric
-lines than full large-v3 (which suppressed loud ensemble passages) with no
-hallucination loops, at roughly a seventh of the CPU cost.
+The full model now leads because the 2026-08-17 Groyper regression recovered
+17/18 authored lines in its coarse pass and 16/18 after conservative acoustic
+gating, versus turbo's 14/18 and 10/18. Turbo remains the fallback for an
+installation without the full model and is substantially cheaper on CPU.
 Whisper receives a temporary FFmpeg-decoded 16 kHz mono WAV, requests full
 JSON, runs with one worker thread per host CPU, keeps GPU/flash attention
 enabled, and defaults to a one-hour timeout. Its token onsets are retained as
 provisional text/order evidence, with obviously stretched interval ends capped.
+Short Whisper spans outside every authored placement are retained separately
+as performed-vocal candidates. They enter the editor as non-rendering
+`Potential` cues for human promotion; they never rewrite authored text or
+silently become accepted captions. Long tail segments and known repetition
+loops remain excluded as likely hallucination evidence.
 They are **not published as final cue boundaries**: real produced-song audits
 found first-word onsets commonly 0.5-1.1 seconds early and occasionally 3-5
 seconds early. After authored sync, the anchor/block MMS_FA CTC lane compares a

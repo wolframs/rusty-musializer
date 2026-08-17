@@ -131,6 +131,44 @@ class CoherentMatchTests(unittest.TestCase):
         self.assertEqual(synced["statistics"]["discarded_outlier_tokens"], 1)
 
 
+class PerformedCandidateTests(unittest.TestCase):
+    def test_short_uncovered_vocal_is_preserved_but_not_made_an_authored_cue(self) -> None:
+        whisper = {
+            "lines": [
+                {"start_seconds": 1.0, "end_seconds": 3.0,
+                 "text": "the authored line"},
+                {"start_seconds": 6.0, "end_seconds": 8.0,
+                 "text": "yeah come on"},
+            ],
+            "words": [
+                {"start_seconds": 6.0, "end_seconds": 6.5,
+                 "text": "yeah", "confidence": 0.8},
+                {"start_seconds": 6.5, "end_seconds": 7.5,
+                 "text": "come on", "confidence": 0.6},
+            ],
+        }
+        candidates = lyric_align.find_performed_candidates(
+            whisper,
+            [{"start_seconds": 1.1, "end_seconds": 3.1}],
+            [], audio_duration=20.0)
+        self.assertEqual([candidate["text"] for candidate in candidates],
+                         ["yeah come on"])
+        self.assertEqual(candidates[0]["source"], "whisper-unmatched")
+        self.assertTrue(candidates[0]["uncertain"])
+        self.assertAlmostEqual(candidates[0]["confidence"], 0.7)
+
+    def test_long_tail_hallucination_and_unreliable_span_are_not_candidates(self) -> None:
+        whisper = {"lines": [
+            {"start_seconds": 10.0, "end_seconds": 30.0,
+             "text": "we will be right back"},
+            {"start_seconds": 40.0, "end_seconds": 42.0,
+             "text": "repeat repeat repeat"},
+        ], "words": []}
+        candidates = lyric_align.find_performed_candidates(
+            whisper, [], [(39.0, 43.0)], audio_duration=60.0)
+        self.assertEqual(candidates, [])
+
+
 class ReferenceClassificationTests(unittest.TestCase):
     def test_numbered_verse_parenthetical_is_not_timed_as_a_backing_vocal(self) -> None:
         lines = lyric_align.classify_reference_lines(

@@ -170,7 +170,10 @@ pub struct ResolvedRoute {
 
 impl ResolvedRoute {
     /// The model identity to display. An absent `model_id` on a Codex route is
-    /// `Codex default` — the documented fallback, not a guess (§5 rule 6).
+    /// `Codex default` — the documented fallback, not a guess (§5 rule 6). A
+    /// local runtime without an explicit weights override names the runtime
+    /// family: the helper resolves and records the concrete model file. Calling
+    /// that state "not chosen" contradicted the job that immediately ran it.
     #[must_use]
     pub fn model_label(&self) -> String {
         let Some(route) = &self.route else {
@@ -179,7 +182,7 @@ impl ResolvedRoute {
         match (&route.model_id, route.route_type) {
             (Some(id), _) => id.clone(),
             (None, RouteType::Codex) => CODEX_DEFAULT_LABEL.to_string(),
-            (None, RouteType::Builtin) => route.runtime_id.clone(),
+            (None, RouteType::Builtin | RouteType::LocalProc) => route.runtime_id.clone(),
             (None, _) => "not chosen".to_string(),
         }
     }
@@ -1077,6 +1080,18 @@ mod tests {
             }
         )
         .is_empty());
+    }
+
+    #[test]
+    fn an_auto_discovered_local_model_names_its_runtime_instead_of_not_chosen() {
+        let mut route = recommended_route(ContractId::Coarse).unwrap();
+        route.model_id = None;
+        let resolved = ResolvedRoute {
+            contract: ContractId::Coarse,
+            route: Some(route),
+            origin: RouteOrigin::Override,
+        };
+        assert_eq!(resolved.model_label(), "whisper.cpp");
     }
 
     #[test]

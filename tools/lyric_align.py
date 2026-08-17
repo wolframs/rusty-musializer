@@ -23,8 +23,10 @@ Pipeline stages, all pure functions:
    per-line windows from matched words, bounded interpolation only across
    short trusted gaps, and explicit unmatched reporting.
 
-The evidence is untrusted data; no text from it ever reaches the output
-document. Only timing and match statistics do.
+The evidence is untrusted data. Authored cues always keep authored display
+text, while plausible words heard outside every authored placement are kept in
+a separate ``performed_candidates`` review lane. They are never promoted to
+normal cues automatically.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from typing import Any, Sequence
 from analysis_io import AnalysisValidationError, duration
 
 LYRIC_SYNC_VERSION = "musializer.lyric-sync/v1"
-ALIGNER_VERSION = "4"
+ALIGNER_VERSION = "5"
 
 # Hard input bounds. A full-length song is a few hundred lines and well under
 # a thousand words; these caps keep the O(ref * hyp) alignment matrix small
@@ -78,6 +80,17 @@ MINIMUM_CUE_SECONDS = 0.5
 # caption renderer shows at most three wrapped lines; authored lines beyond
 # this are flagged for review instead of being truncated silently.
 MAX_CUE_TEXT_BYTES = 480
+# Whisper frequently hears real ad-libs, backing vocals and generated repeats
+# that are absent from an authored Suno sheet. Preserve short unmatched spans
+# for review, but refuse the long, low-information segments characteristic of
+# Whisper's instrumental-tail hallucinations.
+PERFORMED_CANDIDATE_MAX_SECONDS = 15.0
+PERFORMED_CANDIDATE_MIN_SECONDS = 0.15
+# Whisper segments do not share lyric-line boundaries: a real authored line can
+# occupy only the latter third of one segment. A one-third overlap is therefore
+# enough to call the segment explained; truly extra spans in the Groyper
+# regression have no authored overlap at all.
+PERFORMED_COVERED_OVERLAP_RATIO = 0.35
 
 _SMALL_NUMBERS = (
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
@@ -576,6 +589,9 @@ def sync_lyrics(
     matched_lines.sort(key=lambda line: (line["start_seconds"],
                                          line["end_seconds"],
                                          line["reference_line_index"]))
+    performed_candidates = find_performed_candidates(
+        whisper_document, matched_lines, unreliable,
+        audio_duration=audio_duration)
     structure = [{"reference_line_index": line["index"], "kind": line["kind"],
                   "text": line["display"]}
                  for line in classified
@@ -585,6 +601,7 @@ def sync_lyrics(
         "lane": "lyric_sync",
         "aligner_version": ALIGNER_VERSION,
         "lines": matched_lines,
+        "performed_candidates": performed_candidates,
         "unmatched": unmatched_lines,
         "structure": structure,
         "unreliable_evidence": [
@@ -596,6 +613,7 @@ def sync_lyrics(
             "matched_lines": len(matched_lines),
             "estimated_lines": len(estimated),
             "unmatched_lines": len(unmatched_lines),
+            "performed_candidates": len(performed_candidates),
             "matched_tokens": sum(hits),
             "discarded_outlier_tokens": discarded_outlier_tokens,
             "recovered_outlier_tokens": recovered_outlier_tokens,
@@ -603,6 +621,69 @@ def sync_lyrics(
             "reference_tokens": len(reference_tokens),
         },
     }
+
+
+def find_performed_candidates(
+    whisper_document: dict[str, Any],
+    authored_placements: Sequence[dict[str, Any]],
+    unreliable: Sequence[tuple[float, float]],
+    *,
+    audio_duration: float,
+) -> list[dict[str, Any]]:
+    """Return short ASR spans not already explained by an authored cue.
+
+    These are deliberately *candidates*, not truth. Suno can add vocals the
+    prompt never contained, while Whisper can hallucinate speech over music.
+    Keeping the spans as Potential cues lets a human promote the former without
+    letting either class render or export silently.
+    """
+    words = whisper_document.get("words") or []
+    candidates: list[dict[str, Any]] = []
+    for line in whisper_document.get("lines") or []:
+        try:
+            start = max(0.0, float(line.get("start_seconds")))
+            end = min(audio_duration, float(line.get("end_seconds")))
+        except (TypeError, ValueError):
+            continue
+        span = end - start
+        text = str(line.get("text") or "").strip()
+        if (span < PERFORMED_CANDIDATE_MIN_SECONDS or
+                span > PERFORMED_CANDIDATE_MAX_SECONDS or
+                not normalize_tokens(text) or
+                len(text.encode("utf-8")) > MAX_CUE_TEXT_BYTES):
+            continue
+        if any(max(start, low) < min(end, high) for low, high in unreliable):
+            continue
+        covered = any(
+            max(0.0, min(end, float(cue["end_seconds"])) -
+                max(start, float(cue["start_seconds"]))) / span
+            >= PERFORMED_COVERED_OVERLAP_RATIO
+            for cue in authored_placements
+        )
+        if covered:
+            continue
+        confidences = []
+        for word in words:
+            try:
+                word_start = float(word.get("start_seconds"))
+                word_end = float(word.get("end_seconds"))
+                confidence = word.get("confidence")
+                if (max(start, word_start) < min(end, word_end) and
+                        confidence is not None):
+                    confidences.append(float(confidence))
+            except (TypeError, ValueError):
+                continue
+        candidates.append({
+            "start_seconds": start,
+            "end_seconds": end,
+            "text": text,
+            "confidence": (None if not confidences else
+                           round(sum(confidences) / len(confidences), 4)),
+            "source": "whisper-unmatched",
+            "uncertain": True,
+            "reason": "heard outside every authored lyric placement",
+        })
+    return candidates
 
 
 # Display bounds for transcription-review cues. Roughly two wrapped caption

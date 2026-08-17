@@ -165,6 +165,10 @@ pub enum LyricReviewKind {
     /// The line *is* a cue, but the coarse Whisper proposal and the anchor/block
     /// placement disagree by more than the review tolerance.
     Disagreement,
+    /// Whisper heard a short vocal span outside every authored placement.
+    /// This may be a generated ad-lib/repeat or an ASR error; it is offered as
+    /// a non-rendering Potential cue and never accepted automatically.
+    Performed,
 }
 
 impl LyricReviewKind {
@@ -176,6 +180,7 @@ impl LyricReviewKind {
             LyricReviewKind::Unresolved => "UNPLACED",
             LyricReviewKind::Abstained => "AMBIGUOUS",
             LyricReviewKind::Disagreement => "CHECK",
+            LyricReviewKind::Performed => "HEARD",
         }
     }
 
@@ -186,6 +191,12 @@ impl LyricReviewKind {
             self,
             LyricReviewKind::Unresolved | LyricReviewKind::Abstained
         )
+    }
+
+    /// Whether the row can be parked as a non-rendering Potential cue.
+    #[must_use]
+    pub const fn is_proposal(self) -> bool {
+        self.is_unresolved() || matches!(self, LyricReviewKind::Performed)
     }
 }
 
@@ -231,7 +242,9 @@ impl LyricReviewEntry {
             (Some(start), None) => clock(start),
             _ => return "not placed".to_string(),
         };
-        if self.kind.is_unresolved() {
+        if matches!(self.kind, LyricReviewKind::Performed) {
+            format!("heard at {span}")
+        } else if self.kind.is_unresolved() {
             format!("proposed {span}")
         } else {
             format!("at {span}")
@@ -255,6 +268,7 @@ impl LyricReviewEntry {
             },
             LyricReviewKind::Abstained => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
             LyricReviewKind::Unresolved => String::new(),
+            LyricReviewKind::Performed => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
         }
     }
 
@@ -267,10 +281,15 @@ impl LyricReviewEntry {
     #[must_use]
     pub fn describe(&self) -> String {
         let detail = self.detail();
+        let subject = if matches!(self.kind, LyricReviewKind::Performed) {
+            format!("candidate {}", self.line_number)
+        } else {
+            format!("line {}", self.line_number)
+        };
         format!(
-            "{} line {} {} \"{}\"{}",
+            "{} {} {} \"{}\"{}",
             self.kind.label(),
-            self.line_number,
+            subject,
             self.window(),
             self.text,
             if detail.is_empty() {
@@ -482,7 +501,8 @@ impl LyricsReview {
 
         let unresolved = root.get("unresolved").and_then(Value::as_array);
         let flags = root.get("review_flags").and_then(Value::as_array);
-        if unresolved.is_none() && flags.is_none() {
+        let performed = root.get("performed_candidates").and_then(Value::as_array);
+        if unresolved.is_none() && flags.is_none() && performed.is_none() {
             // A pre-LT1 document, or the no-reference per-cue lane. The
             // manifest's counts stand; inventing entries from `lines[]` alone
             // would be this side deciding what needs review.
@@ -532,10 +552,16 @@ impl LyricsReview {
                 merge_entry(&mut entries, entry);
             }
         }
+        for (index, record) in performed.map_or(&[][..], Vec::as_slice).iter().enumerate() {
+            if let Some(entry) = review_entry_from_performed(record, index) {
+                entries.push(entry);
+            }
+        }
+        let performed_count = performed.map_or(0, Vec::len);
         self.flagged = match flags {
             // Never fewer than the list: a count the panel can visibly
             // contradict is worse than a count that is generous.
-            Some(flags) => flags.len().max(entries.len()),
+            Some(flags) => (flags.len() + performed_count).max(entries.len()),
             None => entries.len(),
         };
 
@@ -837,6 +863,22 @@ fn review_entry_from_line(line: &Value) -> Option<LyricReviewEntry> {
         start_seconds: seconds_at(line, "start_seconds"),
         end_seconds: seconds_at(line, "end_seconds"),
         reason: text_at(line, "status"),
+        delta_seconds: None,
+    })
+}
+
+fn review_entry_from_performed(record: &Value, index: usize) -> Option<LyricReviewEntry> {
+    let text = text_at(record, "text");
+    if text.is_empty() {
+        return None;
+    }
+    Some(LyricReviewEntry {
+        kind: LyricReviewKind::Performed,
+        line_number: index as u64 + 1,
+        text,
+        start_seconds: seconds_at(record, "start_seconds"),
+        end_seconds: seconds_at(record, "end_seconds"),
+        reason: text_at(record, "reason"),
         delta_seconds: None,
     })
 }
@@ -1566,6 +1608,28 @@ mod tests {
         let review = LyricsReview::from_manifest(&manifest);
         assert!(review.is_clear());
         assert_eq!(review.summary(), "All lines placed, none flagged");
+    }
+
+    #[test]
+    fn an_unwritten_performed_vocal_is_a_named_potential_candidate() {
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(
+            br#"{"unresolved":[],"review_flags":[],"performed_candidates":[
+                {"start_seconds":70.5,"end_seconds":72.7,"text":"yeah, come on",
+                 "confidence":0.71,"source":"whisper-unmatched","uncertain":true,
+                 "reason":"heard outside every authored lyric placement"}]}"#
+        ));
+        assert_eq!(review.unresolved, 0);
+        assert_eq!(review.flagged, 1);
+        assert_eq!(review.entries.len(), 1);
+        let entry = &review.entries[0];
+        assert_eq!(entry.kind, LyricReviewKind::Performed);
+        assert!(entry.kind.is_proposal());
+        assert_eq!(entry.text, "yeah, come on");
+        assert_eq!(
+            entry.describe(),
+            "HEARD candidate 1 heard at 1:10.5-1:12.7 \"yeah, come on\" (heard outside every authored lyric placement)"
+        );
     }
 
     #[test]

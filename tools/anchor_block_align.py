@@ -189,6 +189,8 @@ def align(
     plan = lyric_anchor_block.plan_localization(
         reference_text, whisper, audio_duration=audio_duration,
         max_block_seconds=max_block_seconds, coarse=trusted_coarse)
+    plan["performed_candidates"] = list(
+        coarse_document.get("performed_candidates", []))
     lines = plan["lines"]
 
     waveform, sample_rate = _load_audio(audio)
