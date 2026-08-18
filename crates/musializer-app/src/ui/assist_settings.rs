@@ -910,8 +910,8 @@ pub fn set_override(settings: &mut AssistSettings, route: Route) {
 #[must_use]
 pub fn local_runtimes_for(contract: ContractId) -> &'static [&'static str] {
     match contract {
-        ContractId::Coarse | ContractId::Verify => &["whisper.cpp"],
-        ContractId::Align => &["mms-ctc", "qwen3-fa"],
+        ContractId::Coarse => &["whisper.cpp"],
+        ContractId::Align => &["mms-ctc"],
         _ => &[],
     }
 }
@@ -2035,9 +2035,14 @@ impl AssistSettingsDialog {
     }
 
     fn route_cell_enabled(&self, contract: ContractId) -> bool {
-        self.settings_editable()
-            && !contract.is_locked()
-            && contract.eligible_route_types().len() > 1
+        if !self.settings_editable() || contract.is_locked() {
+            return false;
+        }
+        let implemented = contract.implemented_route_types();
+        let current = resolve_route(&self.draft, contract)
+            .route
+            .map(|route| route.route_type);
+        implemented.len() > 1 || (implemented.len() == 1 && current != implemented.first().copied())
     }
 
     /// Enabled when the picker can reach a value it is not already showing.
@@ -2050,6 +2055,14 @@ impl AssistSettingsDialog {
     /// disabled.
     fn model_cell_enabled(&self, contract: ContractId) -> bool {
         if !self.settings_editable() || contract.is_locked() {
+            return false;
+        }
+        if !resolve_route(&self.draft, contract)
+            .route
+            .is_some_and(|route| {
+                contract.runtime_is_implemented(route.route_type, &route.runtime_id)
+            })
+        {
             return false;
         }
         let configured = self.configured_model(contract);
@@ -2100,7 +2113,15 @@ impl AssistSettingsDialog {
         self.settings_editable()
             && !contract.is_locked()
             && contract.allowed_fallbacks().len() > 1
-            && resolve_route(&self.draft, contract).route.is_some()
+            && resolve_route(&self.draft, contract)
+                .route
+                .is_some_and(|route| {
+                    contract.route_is_implemented(
+                        route.route_type,
+                        &route.runtime_id,
+                        route.model_id.as_deref(),
+                    )
+                })
     }
 
     fn doctor_enabled(&self) -> bool {
@@ -2184,7 +2205,6 @@ impl AssistSettingsDialog {
             }
             Section::LocalModels => {
                 order.push(FOCUS_MODELS_DIR);
-                order.push(FOCUS_MODELS_GPU);
                 if self.doctor_enabled() {
                     order.push(FOCUS_MODELS_DOCTOR);
                 }
@@ -2217,7 +2237,6 @@ impl AssistSettingsDialog {
                     order.push(FOCUS_KEY_FORGET);
                 }
                 order.push(FOCUS_CATALOG_NETWORK);
-                order.push(FOCUS_CATALOG_REFRESH_ON_OPEN);
                 if self.catalog_refresh_enabled() {
                     order.push(FOCUS_CATALOG_REFRESH);
                 }
@@ -2396,8 +2415,27 @@ impl AssistSettingsDialog {
     #[must_use]
     pub fn readiness(&self, resolved: &ResolvedRoute) -> Readiness {
         let Some(route) = &resolved.route else {
-            return Readiness::Blocked("No route chosen".to_string());
+            return Readiness::Blocked(if resolved.contract == ContractId::Verify {
+                "Not implemented in this build".to_string()
+            } else {
+                "No route chosen".to_string()
+            });
         };
+        if !resolved.contract.route_is_implemented(
+            route.route_type,
+            &route.runtime_id,
+            route.model_id.as_deref(),
+        ) {
+            return Readiness::Blocked(format!(
+                "{} route is not implemented; select {}",
+                route.route_type.token(),
+                resolved
+                    .contract
+                    .implemented_route_types()
+                    .first()
+                    .map_or("no route is available", |route_type| route_type.token()),
+            ));
+        }
         // 1. The credential, where the route type needs one. Codex authenticates
         //    itself and the local lanes open no socket, so only OpenRouter does.
         if route.route_type == RouteType::OpenRouter && !self.credentials.is_usable() {
@@ -2989,9 +3027,9 @@ impl AssistSettingsDialog {
             color::accent(),
         );
         let subtitle = if self.is_dirty() {
-            "Unsaved changes \u{00b7} they apply to the next job"
+            "Draft differs \u{00b7} Save to affect the next job"
         } else {
-            "Settings only \u{00b7} opening this never starts an analysis"
+            "Saved settings \u{00b7} active for the next job"
         };
         draw_subtitle(d, font, &layout, subtitle, self.is_dirty());
 
@@ -3113,15 +3151,36 @@ impl AssistSettingsDialog {
                 color::ui_muted(),
             ),
         };
+        let text_boundary = UiRect::new(
+            layout.footer.x + DIALOG_PADDING,
+            layout.footer.y + 3.0,
+            (layout.footer.width - DIALOG_PADDING * 2.0).max(0.0),
+            (layout.footer.height - 6.0).max(0.0),
+        );
+        let shown = ellipsize(font, &text, text_boundary.width, metric::UI_FONT_CAPTION);
         widgets::draw_text(
             d,
             font,
-            &text,
-            layout.footer.x + DIALOG_PADDING,
+            &shown,
+            text_boundary.x,
             layout.footer.y + 10.0,
             metric::UI_FONT_CAPTION,
             tint,
         );
+        if self.status.is_some() && self.background.is_none() {
+            let id = widgets::widget_id(DIALOG_WIDGETS, 999);
+            let state = self.widgets.button(d, id, text_boundary);
+            if state.clicked {
+                let _ = d.set_clipboard_text(&text);
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                text_boundary,
+                "Click to copy the complete status message. It is also wrapped at the top of this page.",
+            );
+        }
     }
 
     fn draw_body(
@@ -3397,6 +3456,9 @@ impl AssistSettingsDialog {
         body: UiRect,
         cursor: &mut f32,
     ) {
+        if let Some((text, tint)) = self.status.clone() {
+            banner(d, font, body, cursor, &text, tint);
+        }
         if self.job_running {
             banner(
                 d,
@@ -3836,9 +3898,12 @@ impl AssistSettingsDialog {
         let font = fonts.ui();
         self.draw_banners(d, font, body, cursor);
         heading(
-            d, font, body, cursor,
+            d,
+            font,
+            body,
+            cursor,
             Section::Routing.heading(),
-            "One row per task contract. Every change applies to the next job \u{2014} a job already \
+            "One row per task contract. Draft edits affect nothing until Save; a job already \
              running keeps the routes it started with.",
         );
 
@@ -4234,10 +4299,12 @@ impl AssistSettingsDialog {
         boundary: UiRect,
         resolved: &ResolvedRoute,
     ) {
-        let eligible = contract.eligible_route_types();
+        let eligible = contract.implemented_route_types();
         let enabled = self.route_cell_enabled(contract);
         let label = if contract.is_locked() {
             "locked".to_string()
+        } else if eligible.is_empty() {
+            "not available".to_string()
         } else {
             resolved.route.as_ref().map_or_else(
                 || "choose".to_string(),
@@ -4249,7 +4316,7 @@ impl AssistSettingsDialog {
         // (AP3-R S5).
         let tip = if enabled {
             format!(
-                "{} ({}): {} eligible route type(s) \u{00b7} caps at {}",
+                "{} ({}): {} implemented route type(s) \u{00b7} caps at {}",
                 contract.human_label(),
                 contract.token(),
                 eligible.len(),
@@ -4264,9 +4331,14 @@ impl AssistSettingsDialog {
                 "{} is the built-in deterministic analyzer and is not user-routable (§7).",
                 contract.token()
             )
+        } else if eligible.is_empty() {
+            format!(
+                "{} is not implemented by any workflow in this build.",
+                contract.token()
+            )
         } else {
             format!(
-                "{} has exactly one eligible route type ({}), so there is nothing to switch to.",
+                "{} has exactly one implemented route type ({}), so there is nothing to switch to.",
                 contract.token(),
                 eligible
                     .first()
@@ -4288,7 +4360,7 @@ impl AssistSettingsDialog {
                 let mut route = resolved.route.clone().unwrap_or(Route {
                     contract,
                     route_type: next,
-                    runtime_id: default_runtime_id(next),
+                    runtime_id: default_runtime_id(contract, next),
                     model_id: None,
                     model_path: None,
                     reasoning_effort: None,
@@ -4296,7 +4368,7 @@ impl AssistSettingsDialog {
                     provider: None,
                 });
                 route.route_type = next;
-                route.runtime_id = default_runtime_id(next);
+                route.runtime_id = default_runtime_id(contract, next);
                 route.model_id = None;
                 route.reasoning_effort =
                     (next == RouteType::Codex).then_some(ReasoningEffort::Medium);
@@ -4517,12 +4589,15 @@ impl AssistSettingsDialog {
 }
 
 /// The runtime id a freshly chosen route type starts with.
-fn default_runtime_id(route_type: RouteType) -> String {
-    match route_type {
-        RouteType::Builtin => "builtin".to_string(),
-        RouteType::LocalProc => "whisper.cpp".to_string(),
-        RouteType::Codex => "codex".to_string(),
-        RouteType::OpenRouter => "openrouter".to_string(),
+fn default_runtime_id(contract: ContractId, route_type: RouteType) -> String {
+    match (contract, route_type) {
+        (ContractId::Measured, RouteType::Builtin) => "builtin-analyzer".to_string(),
+        (ContractId::Plan, RouteType::Builtin) => "builtin-planner".to_string(),
+        (ContractId::Align, RouteType::LocalProc) => "mms-ctc".to_string(),
+        (_, RouteType::Builtin) => "builtin".to_string(),
+        (_, RouteType::LocalProc) => "whisper.cpp".to_string(),
+        (_, RouteType::Codex) => "codex".to_string(),
+        (_, RouteType::OpenRouter) => "openrouter".to_string(),
     }
 }
 
@@ -4765,23 +4840,17 @@ impl AssistSettingsDialog {
         *cursor += 6.0;
         let gpu = self.draft.local_runtimes.prefer_gpu;
         let gpu_box = UiRect::new(body.x, *cursor, 160.0f32.min(body.width), CONTROL_HEIGHT);
-        if self.toggle(
+        let _ = self.toggle(
             d,
             font,
             30,
             FOCUS_MODELS_GPU,
             gpu_box,
-            if gpu {
-                "Prefer GPU: ON"
-            } else {
-                "Prefer GPU: off"
-            },
+            "GPU policy: runtime-owned",
             gpu,
-            "Ask the local runtimes for a GPU device when one is available",
-            true,
-        ) {
-            self.draft.local_runtimes.prefer_gpu = !gpu;
-        }
+            "Current helpers choose their device themselves; this saved field is not wired to execution.",
+            false,
+        );
         let stems = self.draft.local_runtimes.stem_separation;
         let stems_box = UiRect::new(
             body.x + gpu_box.width + 8.0,
@@ -5771,23 +5840,17 @@ impl AssistSettingsDialog {
             self.draft.catalog.network_allowed = !network;
         }
         x += toggle_width + 8.0;
-        if self.toggle(
+        let _ = self.toggle(
             d,
             font,
             711,
             FOCUS_CATALOG_REFRESH_ON_OPEN,
             UiRect::new(x, *cursor, toggle_width, CONTROL_HEIGHT),
-            if refresh_on_open {
-                "Refresh on open: ON"
-            } else {
-                "Refresh on open: off"
-            },
+            "Refresh on open: not wired",
             refresh_on_open,
-            "Fetch a stale catalog when this section opens. Needs network access.",
-            true,
-        ) {
-            self.draft.catalog.refresh_on_open = !refresh_on_open;
-        }
+            "The saved field is not executed in this build. Use Refresh now for an explicit network request.",
+            false,
+        );
         x += toggle_width + 8.0;
         let catalog_refresh_enabled = self.catalog_refresh_enabled();
         if self.picker(
@@ -6124,15 +6187,19 @@ impl AssistSettingsDialog {
             font,
             body,
             cursor,
-            "Dry run \u{2014} what the NEXT job would use",
+            if self.is_dirty() {
+                "Draft preview \u{2014} what the next job would use IF SAVED"
+            } else {
+                "Saved preview \u{2014} what the NEXT job will use"
+            },
         );
         paragraph(
             d,
             font,
             body,
             cursor,
-            "Resolved from the settings above, not from a run. A job already in flight keeps the \
-             route graph it snapshotted at Start.",
+            "This is configuration, not a run. Unsaved edits are draft-only; a job already in \
+             flight keeps the route graph it snapshotted at Start.",
             color::ui_muted(),
         );
         *cursor += 4.0;
@@ -6706,11 +6773,20 @@ impl AssistSettingsDialog {
         std::thread::spawn(move || {
             let outcome = match command.output() {
                 Ok(output) if output.status.success() => Ok(()),
-                Ok(output) => Err(String::from_utf8_lossy(&output.stderr)
-                    .lines()
-                    .last()
-                    .unwrap_or("the discovery tool failed")
-                    .to_string()),
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let last_line = |text: &str| -> Option<String> {
+                        text.lines()
+                            .map(str::trim)
+                            .rfind(|line| !line.is_empty())
+                            .map(str::to_string)
+                    };
+                    let detail = last_line(&stderr)
+                        .or_else(|| last_line(&stdout))
+                        .unwrap_or_else(|| "the discovery tool failed".to_string());
+                    Err(detail)
+                }
                 Err(error) => Err(error.to_string()),
             };
             let _ = sender.send(outcome);
@@ -8133,7 +8209,7 @@ mod tests {
         assert!(!dialog.fallback_cell_enabled(ContractId::Verify));
         assert!(dialog.fallback_cell_enabled(ContractId::Coarse));
 
-        // Give it a route and the picker becomes real.
+        // A future/schema-legal route still does not make an executor appear.
         let route = Route {
             contract: ContractId::Verify,
             route_type: RouteType::LocalProc,
@@ -8145,7 +8221,11 @@ mod tests {
             provider: None,
         };
         set_override(&mut dialog.draft, route);
-        assert!(dialog.fallback_cell_enabled(ContractId::Verify));
+        assert!(!dialog.fallback_cell_enabled(ContractId::Verify));
+        assert!(matches!(
+            dialog.readiness(&resolve_route(&dialog.draft, ContractId::Verify)),
+            Readiness::Blocked(reason) if reason.contains("not implemented")
+        ));
     }
 
     /// S7. Catalog strings are display data. The three cases are the reviewer's

@@ -319,6 +319,33 @@ def _safe_local_env() -> dict[str, str]:
             if not any(marker in key.upper() for marker in sensitive)}
 
 
+def _local_runtime_env(executable: str | Path) -> dict[str, str]:
+    """Safe child environment with user-local interpreter directories.
+
+    Musializer can discover an npm Codex wrapper outside a desktop launcher's
+    PATH. The wrapper may in turn use ``#!/usr/bin/env node``, so passing only
+    its absolute path is insufficient. Add the documented user-local runtime
+    directories for this child without changing the application environment.
+    """
+    environment = _safe_local_env()
+    home = Path(environment.get("HOME", str(Path.home())))
+    executable_path = Path(executable)
+    candidates = []
+    if executable_path.is_absolute():
+        candidates.append(str(executable_path.parent))
+    candidates.extend(str(home / suffix) for suffix in (
+        ".local/bin", ".local/npm-global/bin", ".npm-global/bin",
+        ".volta/bin", ".bun/bin", ".asdf/shims",
+    ))
+    candidates.extend(environment.get("PATH", "").split(os.pathsep))
+    entries = []
+    for entry in candidates:
+        if entry and entry not in entries:
+            entries.append(entry)
+    environment["PATH"] = os.pathsep.join(entries)
+    return environment
+
+
 def _openrouter_env(dotenv_path: Path | None = None, *, allow_dotenv: bool = True) -> dict[str, str]:
     """Expose only the one credential authorized for the MiMo helper.
 
@@ -791,7 +818,7 @@ def run_codex_review(
                   temporary if value == "<isolated-workdir>" else value for value in argv]
         diagnostic_sink = output.with_name(output.stem + ".diagnostic.log")
         _run(actual, timeout=timeout, stdin=codex_review_request(source),
-             cwd=Path(temporary), env=_safe_local_env(), runner=runner,
+             cwd=Path(temporary), env=_local_runtime_env(codex_bin), runner=runner,
              diagnostic_sink=diagnostic_sink)
         # A stale diagnostic from an earlier failed attempt would misdescribe
         # this successful run; drop it once the child has exited cleanly.
@@ -1236,6 +1263,28 @@ def read_execution_snapshot(path: Path | None) -> dict[str, Any] | None:
     contracts = document.get("contracts")
     if not isinstance(contracts, list):
         raise AnalysisValidationError("execution snapshot has no contracts array")
+    for entry in contracts:
+        if not isinstance(entry, dict):
+            raise AnalysisValidationError("execution snapshot contract is not an object")
+        contract = entry.get("contract")
+        route_type = entry.get("route_type")
+        runtime_id = entry.get("runtime_id")
+        model_id = entry.get("model_id")
+        implemented = {
+            "TC-MEASURED": route_type == "builtin" and runtime_id == "builtin-analyzer",
+            "TC-COARSE": (route_type == "local-proc" and runtime_id == "whisper.cpp"
+                          and model_id in (None, "", "whisper.cpp")),
+            "TC-WORDING": route_type == "codex" and runtime_id == "codex",
+            "TC-ALIGN": (route_type == "local-proc" and runtime_id == "mms-ctc"
+                         and model_id in (None, "", "mms-ctc")),
+            "TC-SEMANTIC": route_type == "openrouter" and runtime_id == "openrouter",
+            "TC-PLAN": route_type == "builtin" and runtime_id == "builtin-planner",
+            "TC-VERIFY": False,
+        }.get(contract, False)
+        if not implemented:
+            raise AnalysisValidationError(
+                f"execution snapshot asks {contract!r} to use "
+                f"{route_type!r}/{runtime_id!r}, which this helper does not implement")
     return document
 
 

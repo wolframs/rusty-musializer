@@ -45,6 +45,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -82,6 +83,37 @@ class DiscoveryResult:
 def _safe_environ(environ: Mapping[str, str]) -> dict[str, str]:
     return {key: value for key, value in environ.items()
             if not any(marker in key.upper() for marker in _SENSITIVE_MARKERS)}
+
+
+def _runtime_environ(codex_bin: str | Sequence[str],
+                     environ: Mapping[str, str]) -> dict[str, str]:
+    """Build the environment used for the resolved Codex launch.
+
+    A desktop session can find an npm-installed ``codex`` through Musializer's
+    well-known-location search while still being unable to execute its
+    ``#!/usr/bin/env node`` shebang. Keep the inherited PATH, then add the same
+    user-local runtime directories the Rust resolver documents. This is a
+    launch recipe, not global environment mutation, and it is also used by the
+    real Assist Codex child in ``external_analysis.py``.
+    """
+    result = _safe_environ(environ)
+    home = Path(result.get("HOME", str(Path.home())))
+    first = codex_bin if isinstance(codex_bin, str) else (
+        codex_bin[0] if codex_bin else "")
+    candidates = []
+    if first and os.path.isabs(first):
+        candidates.append(str(Path(first).parent))
+    candidates.extend(str(home / suffix) for suffix in (
+        ".local/bin", ".local/npm-global/bin", ".npm-global/bin",
+        ".volta/bin", ".bun/bin", ".asdf/shims",
+    ))
+    candidates.extend(result.get("PATH", "").split(os.pathsep))
+    path_entries = []
+    for entry in candidates:
+        if entry and entry not in path_entries:
+            path_entries.append(entry)
+    result["PATH"] = os.pathsep.join(path_entries)
+    return result
 
 
 class _AppServerSession:
@@ -122,9 +154,21 @@ class _AppServerSession:
             if remaining <= 0:
                 return None
             try:
-                line = self._queue.get(timeout=remaining)
+                line = self._queue.get(timeout=min(remaining, 0.05))
             except queue.Empty:
-                return None
+                returncode = self._proc.poll()
+                if returncode is None:
+                    continue
+                detail = ""
+                if self._proc.stderr is not None:
+                    try:
+                        detail = self._proc.stderr.read(4096).decode(
+                            "utf-8", "replace").strip()
+                    except (OSError, ValueError):
+                        pass
+                suffix = f": {detail}" if detail else ""
+                raise DiscoveryError(
+                    f"codex app-server exited with code {returncode}{suffix}")
             line = line.strip()
             if not line:
                 continue
@@ -138,12 +182,12 @@ class _AppServerSession:
     def close(self) -> None:
         proc = self._proc
         try:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except OSError:
+                pass
             if proc.poll() is None:
-                try:
-                    if proc.stdin:
-                        proc.stdin.close()
-                except OSError:
-                    pass
                 proc.terminate()
                 try:
                     proc.wait(timeout=2)
@@ -229,7 +273,8 @@ def discover_models(*, codex_bin: str | Sequence[str] = "codex", timeout: float 
     """
     argv_prefix = [codex_bin] if isinstance(codex_bin, str) else list(codex_bin)
     argv = [*argv_prefix, "app-server"]
-    safe_environ = _safe_environ(environ if environ is not None else os.environ)
+    safe_environ = _runtime_environ(
+        codex_bin, environ if environ is not None else os.environ)
     deadline = time.monotonic() + timeout
 
     try:
@@ -246,7 +291,10 @@ def discover_models(*, codex_bin: str | Sequence[str] = "codex", timeout: float 
         except (OSError, DiscoveryError) as error:
             return DiscoveryResult(False, error=f"could not write to codex app-server: {error}")
 
-        init_response = session.wait_for_id(1, deadline)
+        try:
+            init_response = session.wait_for_id(1, deadline)
+        except DiscoveryError as error:
+            return DiscoveryResult(False, error=str(error))
         if init_response is None:
             return DiscoveryResult(False, error="codex app-server did not respond to initialize in time")
         if "error" in init_response:
@@ -257,7 +305,10 @@ def discover_models(*, codex_bin: str | Sequence[str] = "codex", timeout: float 
         except OSError as error:
             return DiscoveryResult(False, error=f"could not write model/list request: {error}")
 
-        list_response = session.wait_for_id(2, deadline)
+        try:
+            list_response = session.wait_for_id(2, deadline)
+        except DiscoveryError as error:
+            return DiscoveryResult(False, error=str(error))
         if list_response is None:
             return DiscoveryResult(False, error="codex app-server did not respond to model/list in time")
         if "error" in list_response:
@@ -358,7 +409,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             # A failed discovery leaves the prior valid cache alone, which is
             # why this is a message rather than a deletion.
-            print(f"discovery failed: {result.error}")
+            print(f"discovery failed: {result.error}", file=sys.stderr)
         return 0 if result.supported else 1
 
     if args.command == "show":

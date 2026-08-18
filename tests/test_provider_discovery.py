@@ -600,6 +600,50 @@ class CodexModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(result.models[0]["supported_reasoning_efforts"],
                           [{"reasoning_effort": "low", "description": "fast"}])
 
+    def test_desktop_launch_finds_node_for_an_npm_style_codex_wrapper(self) -> None:
+        """The absolute Codex shim is not a complete launch recipe.
+
+        Plasma omits both user-local directories here: Codex lives in the npm
+        one and its ``/usr/bin/env node`` interpreter lives in ``.local/bin``.
+        Discovery must add the latter for the child instead of timing out after
+        the wrapper exits 127.
+        """
+        stub = self._write_stub(_NEW_CODEX_TAIL)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            node_dir = home / ".local/bin"
+            codex_dir = home / ".local/npm-global/bin"
+            node_dir.mkdir(parents=True)
+            codex_dir.mkdir(parents=True)
+            node = node_dir / "node"
+            node.write_text(f'#!/bin/sh\nexec {sys.executable} "$@"\n')
+            node.chmod(0o755)
+            codex = codex_dir / "codex"
+            codex.write_text(f'#!/usr/bin/env node\n{stub.read_text()}')
+            codex.chmod(0o755)
+
+            result = codex_model_discovery.discover_models(
+                codex_bin=str(codex), timeout=2.0,
+                environ={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+            )
+            self.assertTrue(result.supported, result.error)
+            self.assertEqual(len(result.models), 2)
+
+    def test_early_codex_exit_reports_stderr_without_waiting_for_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            broken = Path(tmp) / "codex"
+            broken.write_text("#!/bin/sh\necho missing runtime >&2\nexit 127\n")
+            broken.chmod(0o755)
+            started = __import__("time").monotonic()
+            result = codex_model_discovery.discover_models(
+                codex_bin=str(broken), timeout=2.0,
+                environ={"HOME": tmp, "PATH": "/usr/bin:/bin"},
+            )
+            elapsed = __import__("time").monotonic() - started
+            self.assertFalse(result.supported)
+            self.assertIn("missing runtime", result.error or "")
+            self.assertLess(elapsed, 1.0)
+
     def test_spawned_process_is_always_terminated(self) -> None:
         stub = self._write_stub(_NEW_CODEX_TAIL)
         spawned: list[subprocess.Popen] = []

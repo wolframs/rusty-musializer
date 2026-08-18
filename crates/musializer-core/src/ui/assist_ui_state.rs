@@ -77,10 +77,10 @@ impl AssistMode {
     #[must_use]
     pub fn badge(self) -> &'static str {
         match self {
-            AssistMode::Lyrics => "LOCAL AUDIO / CODEX TEXT",
-            AssistMode::Sections => "LOCAL AUDIO",
-            AssistMode::Mimo => "OPENROUTER AUDIO",
-            AssistMode::All => "LOCAL + REMOTE",
+            AssistMode::Lyrics => "LYRICS · LOCAL AUDIO",
+            AssistMode::Sections => "SCENES · LOCAL AUDIO",
+            AssistMode::Mimo => "FEELINGS · SENDS AUDIO",
+            AssistMode::All => "ALL 3 · SENDS AUDIO",
         }
     }
 
@@ -89,15 +89,15 @@ impl AssistMode {
     pub fn workflow(self) -> &'static str {
         match self {
             AssistMode::Lyrics => {
-                "Workflow: local Whisper transcription, then Codex timing review."
+                "Creates timed lyrics: local Whisper + local MMS alignment. Codex reviews wording only when no authored lyric source is found."
             }
             AssistMode::Sections => {
-                "Workflow: measured local audio analysis proposes scene-change sections."
+                "Creates scene changes: measured local audio feeds the deterministic scene planner."
             }
             AssistMode::Mimo => {
-                "Workflow: MiMo describes how the music feels and stages feeling cues."
+                "Creates feeling cues: the full track is sent to OpenRouter MiMo, then the local planner stages cues."
             }
-            AssistMode::All => "Workflow: lyrics, measured scene changes, and MiMo feeling cues.",
+            AssistMode::All => "Creates timed lyrics, scene changes, and feeling cues by running all implemented lanes.",
         }
     }
 
@@ -106,7 +106,7 @@ impl AssistMode {
     pub fn data_boundary(self) -> &'static str {
         match self {
             AssistMode::Lyrics => {
-                "Audio stays local. Transcript evidence is sent to headless Codex."
+                "Audio stays local. Codex receives bounded transcript text only if wording review is needed."
             }
             AssistMode::Sections => {
                 "Runs locally. Audio and analysis output do not leave this computer."
@@ -115,7 +115,7 @@ impl AssistMode {
                 "Track audio is sent to OpenRouter for MiMo; Zero Data Retention is requested."
             }
             AssistMode::All => {
-                "Transcript evidence goes to Codex; track audio goes to OpenRouter MiMo with ZDR requested."
+                "Track audio goes to OpenRouter MiMo with ZDR requested; Codex gets bounded transcript text only if wording review is needed."
             }
         }
     }
@@ -129,7 +129,7 @@ impl AssistMode {
     pub fn empty_result(self) -> &'static str {
         match self {
             AssistMode::Lyrics => {
-                "Whisper and Codex produced no validated lyric cues. Existing lyrics were left unchanged."
+                "The lyric pipeline produced no accepted timed cues. Existing lyrics were left unchanged."
             }
             AssistMode::Sections => {
                 "Measured analysis produced no validated scene changes. Existing cues were left unchanged."
@@ -1250,7 +1250,7 @@ mod tests {
         assert!(AssistMode::Lyrics.data_boundary().contains("Codex"));
         assert!(AssistMode::Lyrics
             .empty_result()
-            .contains("no validated lyric cues"));
+            .contains("no accepted timed cues"));
         assert!(AssistMode::All
             .empty_result()
             .contains("no validated editor changes"));

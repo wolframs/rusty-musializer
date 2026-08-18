@@ -53,6 +53,36 @@ Rules that follow from the table and are not negotiable per-route:
   `Full assist`) resolves to a set of these ids. Confirmation shows the resolved
   set, per-contract, before any process starts.
 
+### Implemented adapters in this build
+
+The contract table above is the durable settings/schema capability envelope; it
+is not a claim that every listed adapter exists today. The executable currently
+dispatches exactly these identities:
+
+| Contract | Implemented route |
+| --- | --- |
+| `TC-MEASURED` | `builtin/builtin-analyzer` |
+| `TC-COARSE` | `local-proc/whisper.cpp` |
+| `TC-ALIGN` | `local-proc/mms-ctc` |
+| `TC-WORDING` | `codex/codex` |
+| `TC-SEMANTIC` | `openrouter/openrouter` |
+| `TC-PLAN` | `builtin/builtin-planner` |
+| `TC-VERIFY` | not implemented or composed by any workflow |
+
+A schema-legal future route is retained in a saved profile, but the UI marks it
+unimplemented and preflight refuses it. The helper repeats the same check before
+reading or writing caches. It is never acceptable to execute one adapter while
+recording another in provenance.
+
+The four workflow buttons map to output lanes and stages as follows:
+
+| Workflow | Staged editor output | Stages that actually run |
+| --- | --- | --- |
+| Timed lyrics | lyrics only | measured analysis, local Whisper, conditional Codex wording review only when no authored source is found, local MMS alignment, deterministic planner support |
+| Scene changes | scene switches only | measured analysis and deterministic planner |
+| MiMo feelings | semantic cues only | measured analysis, OpenRouter MiMo over the track audio, deterministic planner |
+| Full assist | all three lanes | the union of the preceding stages |
+
 ## 2. Non-secret preferences record
 
 One versioned, atomically replaced file in the per-user config directory.

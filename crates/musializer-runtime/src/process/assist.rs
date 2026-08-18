@@ -245,12 +245,13 @@ pub struct AssistSpec<'a> {
     pub local_runtimes: LocalRuntimeOverrides<'a>,
 }
 
-/// The three local-runtime paths the AI settings dialog can override.
+/// The local-runtime paths the AI settings dialog can override.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LocalRuntimeOverrides<'a> {
     pub whisper_bin: Option<&'a Path>,
     pub whisper_model: Option<&'a Path>,
     pub align_python: Option<&'a Path>,
+    pub codex_bin: Option<&'a Path>,
 }
 
 /// A running `external_analysis.py` child and its artifacts.
@@ -333,6 +334,7 @@ impl AssistJob {
             ("--whisper-bin", spec.local_runtimes.whisper_bin),
             ("--whisper-model", spec.local_runtimes.whisper_model),
             ("--align-python", spec.local_runtimes.align_python),
+            ("--codex-bin", spec.local_runtimes.codex_bin),
         ] {
             if let Some(path) = path {
                 command.arg(flag).arg(path);
@@ -733,6 +735,24 @@ mod tests {
             !argv.contains(&"--execution-snapshot".to_string()),
             "no snapshot was resolved, so none may be passed"
         );
+    }
+
+    #[test]
+    fn the_resolved_codex_binary_reaches_the_real_helper_argv() {
+        let scratch = Scratch::new("codex-bin-argv");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "pathlib.Path(sys.argv[sys.argv.index('--bridge') + 1])\
+             .write_text('\\n'.join(sys.argv[1:]))",
+        );
+        let codex = Path::new("/home/example/.local/npm-global/bin/codex");
+        let mut configured = spec(&helper, &scratch.0, AssistMode::Lyrics);
+        configured.local_runtimes.codex_bin = Some(codex);
+        let mut job = AssistJob::start(&configured, 0).expect("start");
+        assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
+        let argv = std::fs::read_to_string(job.bridge_path()).expect("bridge");
+        assert!(argv.contains("--codex-bin"));
+        assert!(argv.contains(&codex.to_string_lossy().to_string()));
     }
 
     /// The child's whole view of the hand-off: its argv, and every variable it

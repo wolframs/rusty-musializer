@@ -238,6 +238,70 @@ impl ContractId {
         }
     }
 
+    /// Route types the current executable actually dispatches for this task.
+    ///
+    /// `eligible_route_types` is the durable settings/schema capability table:
+    /// it preserves profiles written for future adapters. This narrower table
+    /// is the product truth today. A route must not be offered as runnable (or
+    /// recorded as provenance) until `tools/external_analysis.py` has a matching
+    /// dispatcher for it.
+    #[must_use]
+    pub const fn implemented_route_types(self) -> &'static [RouteType] {
+        match self {
+            Self::Measured => &[RouteType::Builtin],
+            Self::Coarse => &[RouteType::LocalProc],
+            Self::Align => &[RouteType::LocalProc],
+            Self::Wording => &[RouteType::Codex],
+            Self::Semantic => &[RouteType::OpenRouter],
+            Self::Plan => &[RouteType::Builtin],
+            Self::Verify => &[],
+        }
+    }
+
+    /// Whether this exact route has an executor in this build.
+    #[must_use]
+    pub fn route_is_implemented(
+        self,
+        route_type: RouteType,
+        runtime_id: &str,
+        model_id: Option<&str>,
+    ) -> bool {
+        if !self.runtime_is_implemented(route_type, runtime_id) {
+            return false;
+        }
+        match self {
+            Self::Coarse => match model_id {
+                None | Some("whisper.cpp") => true,
+                Some(_) => false,
+            },
+            Self::Align => match model_id {
+                None | Some("mms-ctc") => true,
+                Some(_) => false,
+            },
+            _ => true,
+        }
+    }
+
+    /// Whether the adapter itself exists, before its selected model is checked.
+    /// This lets the UI keep a model picker enabled when it is the control that
+    /// can repair an unsupported model selection.
+    #[must_use]
+    pub fn runtime_is_implemented(self, route_type: RouteType, runtime_id: &str) -> bool {
+        match self {
+            Self::Measured => {
+                route_type == RouteType::Builtin && runtime_id == "builtin-analyzer"
+            }
+            Self::Coarse => route_type == RouteType::LocalProc && runtime_id == "whisper.cpp",
+            Self::Align => route_type == RouteType::LocalProc && runtime_id == "mms-ctc",
+            Self::Wording => route_type == RouteType::Codex && runtime_id == "codex",
+            Self::Semantic => route_type == RouteType::OpenRouter && runtime_id == "openrouter",
+            Self::Plan => {
+                route_type == RouteType::Builtin && runtime_id == "builtin-planner"
+            }
+            Self::Verify => false,
+        }
+    }
+
     /// Which fallback policies may be stored for this contract.
     #[must_use]
     pub const fn allowed_fallbacks(self) -> &'static [FallbackPolicy] {
@@ -366,6 +430,16 @@ mod tests {
         assert!(!ContractId::Align
             .allowed_fallbacks()
             .contains(&FallbackPolicy::Ask));
+    }
+
+    #[test]
+    fn implemented_routes_are_a_subset_of_schema_eligible_routes() {
+        for contract in ALL_CONTRACTS {
+            for route_type in contract.implemented_route_types() {
+                assert!(contract.eligible_route_types().contains(route_type));
+            }
+        }
+        assert!(ContractId::Verify.implemented_route_types().is_empty());
     }
 
     #[test]

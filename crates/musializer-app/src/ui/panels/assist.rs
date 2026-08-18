@@ -69,6 +69,7 @@ use musializer_core::ui::assist_ui_state::{
 use musializer_core::ui::lyric_lane_edit::LYRIC_MIN_CUE_SECONDS;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::workspace_layout::UiRect;
+use musializer_runtime::assist::discover;
 use musializer_runtime::assist::env::SessionCredentials;
 use musializer_runtime::assist::plan::{self, ExecutionPlan, PlanInputs};
 use musializer_runtime::font::UiFonts;
@@ -419,6 +420,17 @@ impl AssistController {
             .align_python
             .as_deref()
             .map(Path::new);
+        // Resolve the executable the same way the settings dialog does. This
+        // matters under a desktop launcher: its PATH need not contain an npm
+        // global install even though the documented well-known location does.
+        // `external_analysis.py` augments this child's PATH for an npm shim's
+        // `#!/usr/bin/env node` dependency.
+        let codex_discovery = discover::resolve_cached(
+            "codex",
+            resolved.local_runtimes.codex_bin.as_deref(),
+            discover::Options::thorough(),
+        );
+        let codex_bin = codex_discovery.path();
         let spec = AssistSpec {
             helper: &helper,
             audio: &audio,
@@ -432,6 +444,7 @@ impl AssistController {
                 whisper_bin,
                 whisper_model,
                 align_python,
+                codex_bin,
             },
         };
         match AssistJob::start(&spec, self.nonce) {

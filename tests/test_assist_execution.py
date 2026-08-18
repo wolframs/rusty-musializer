@@ -119,6 +119,19 @@ class ExecutionSnapshotReading(unittest.TestCase):
             with self.assertRaises(AnalysisValidationError):
                 external_analysis.read_execution_snapshot(path)
 
+    def test_a_schema_legal_route_without_a_helper_adapter_is_refused(self) -> None:
+        document = snapshot()
+        document["contracts"].append({
+            "contract": "TC-COARSE", "route_type": "openrouter",
+            "runtime_id": "openrouter", "model_id": "google/gemini-test",
+        })
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "snapshot.json"
+            path.write_text(json.dumps(document))
+            with self.assertRaises(AnalysisValidationError) as raised:
+                external_analysis.read_execution_snapshot(path)
+            self.assertIn("does not implement", str(raised.exception))
+
 
 class RouteIdentity(unittest.TestCase):
     def test_the_identity_is_exactly_what_a_user_can_change(self) -> None:

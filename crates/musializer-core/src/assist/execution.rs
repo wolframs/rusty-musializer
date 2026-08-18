@@ -812,6 +812,14 @@ pub fn parse_doctor_facts(bytes: &[u8]) -> (Vec<(String, String)>, Vec<(String, 
 pub enum ExecutionBlock {
     /// A composed contract has no route at all.
     Unrouted(ContractId),
+    /// The settings schema accepts this future route, but this build has no
+    /// dispatcher for it. Running another adapter while recording this one
+    /// would make the execution snapshot false.
+    UnsupportedRoute {
+        contract: ContractId,
+        route_type: RouteType,
+        runtime_id: String,
+    },
     /// A route that needs a model has none.
     NoModel(ContractId),
     /// A remote route with no credential to authorize it.
@@ -830,6 +838,7 @@ impl ExecutionBlock {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Unrouted(_) => "No route chosen",
+            Self::UnsupportedRoute { .. } => "Route not implemented",
             Self::NoModel(_) => NO_MODEL,
             Self::NoCredential(_) => NO_KEY,
             Self::NoEndpoint { .. } => NO_ENDPOINT,
@@ -843,6 +852,7 @@ impl ExecutionBlock {
             | Self::NoModel(contract)
             | Self::NoCredential(contract)
             | Self::NoEndpoint { contract, .. } => *contract,
+            Self::UnsupportedRoute { contract, .. } => *contract,
         }
     }
 
@@ -856,6 +866,18 @@ impl ExecutionBlock {
                 "{} ({}) has no route. Choose one in AI settings \u{2192} Routing.",
                 contract.human_label(),
                 contract.token(),
+            ),
+            Self::UnsupportedRoute {
+                contract,
+                route_type,
+                runtime_id,
+            } => format!(
+                "{} ({}) is configured as {}/{}, but this build has no executor for that route. \
+                 Choose the implemented route in AI settings \u{2192} Routing.",
+                contract.human_label(),
+                contract.token(),
+                route_type.token(),
+                runtime_id,
             ),
             Self::NoModel(contract) => format!(
                 "{} ({}) has no model chosen. Pick one in AI settings \u{2192} Routing.",
@@ -915,6 +937,18 @@ pub fn preflight(snapshot: &ExecutionSnapshot, facts: &PreflightFacts) -> Vec<Ex
     for entry in &snapshot.contracts {
         if entry.runtime_id == "unrouted" {
             blocks.push(ExecutionBlock::Unrouted(entry.contract));
+            continue;
+        }
+        if !entry.contract.route_is_implemented(
+            entry.route_type,
+            &entry.runtime_id,
+            (!entry.model_id.is_empty()).then_some(entry.model_id.as_str()),
+        ) {
+            blocks.push(ExecutionBlock::UnsupportedRoute {
+                contract: entry.contract,
+                route_type: entry.route_type,
+                runtime_id: entry.runtime_id.clone(),
+            });
             continue;
         }
         let needs_model = !matches!(entry.route_type, RouteType::Builtin | RouteType::Codex);
@@ -1290,6 +1324,42 @@ mod tests {
         assert!(sentence.contains("TC-SEMANTIC"), "{sentence}");
         assert!(sentence.contains("AI settings"), "{sentence}");
         assert!(sentence.contains("route this task locally"), "{sentence}");
+    }
+
+    #[test]
+    fn a_schema_legal_route_without_an_executor_is_refused_before_spawn() {
+        let mut settings = AssistSettings::default();
+        let mut route = recommended_route(ContractId::Coarse).unwrap();
+        route.route_type = RouteType::OpenRouter;
+        route.runtime_id = "openrouter".to_string();
+        route.model_id = Some("google/gemini-test".to_string());
+        route.provider = Some(Provider::defaults_for(ContractId::Coarse));
+        settings.profiles.push(Profile {
+            id: "studio".to_string(),
+            label: "Studio".to_string(),
+            routes: BTreeMap::from([(ContractId::Coarse, route)]),
+        });
+        settings.active_profile = "studio".to_string();
+        settings
+            .validate()
+            .expect("future route remains schema-legal");
+        let snapshot = resolve(&settings, WorkflowKind::Lyrics, true, &facts());
+        let blocks = preflight(
+            &snapshot,
+            &PreflightFacts {
+                credential_present: true,
+                catalog_model_ids: None,
+            },
+        );
+        assert_eq!(
+            blocks,
+            vec![ExecutionBlock::UnsupportedRoute {
+                contract: ContractId::Coarse,
+                route_type: RouteType::OpenRouter,
+                runtime_id: "openrouter".to_string(),
+            }]
+        );
+        assert!(blocks[0].sentence().contains("no executor"));
     }
 
     #[test]
