@@ -4743,6 +4743,11 @@ impl Report {
         // wrong field, a collapsed grid, a bloom that never built — and none of
         // them are distinguishable in a capture. `none` means it has not drawn.
         println!("phosphor dream:  {}", renderer.describe_phosphor());
+        // Clawd's line, same argument: a dead expression machine, petals that
+        // never coupled to their bands, and an empty floor that should have
+        // cats all photograph as a perfectly plausible cute picture. `none`
+        // means it has not drawn.
+        println!("clawd:           {}", renderer.describe_clawd());
         // Which encoder an export from this run would use. Evidence rather than
         // assertion: an NVENC file and an x264 file of the same frames are
         // different bytes, so a capture that compares two exports has to be able

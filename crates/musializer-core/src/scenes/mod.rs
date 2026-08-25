@@ -10,6 +10,8 @@
 
 pub mod ascii_field;
 pub mod cadence;
+/// Post-legacy (2026-08-24), no oracle. See its module docs for its evidence.
+pub mod clawd;
 pub mod constellation;
 pub mod loom;
 pub mod orbital_lattice;

@@ -92,6 +92,10 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         // swatch alone, so two scenes a glance cannot separate would make the
         // plan unreadable.
         SceneId::PhosphorDream => (0, 148, 176),
+        // The character's own terracotta. Clear of Pulse Field's red (213,83,73)
+        // by sitting well into orange, and of Song Atlas's ochre (197,137,46) by
+        // staying red of it — the swatch should *be* Clawd at a glance.
+        SceneId::Clawd => (222, 112, 68),
     };
     Color::new(r, g, b, alpha)
 }

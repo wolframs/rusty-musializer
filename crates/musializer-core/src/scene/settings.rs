@@ -221,6 +221,33 @@ pub mod index {
         pub const DWELL: usize = 10;
         pub const TITLES: usize = 11;
     }
+    /// Clawd. No C counterpart — a post-legacy addition (2026-08-24), so there
+    /// is no `scene_settings.h` line to cite.
+    pub mod clawd {
+        /// Petal-to-band coupling strength.
+        pub const PETALS: usize = 0;
+        /// Beat squash-and-stretch depth.
+        pub const BOUNCE: usize = 1;
+        /// Petal ring rotation. Signed: negative spins widdershins.
+        pub const SPIN: usize = 2;
+        /// Expression sensitivity. `0` pins the face to its resting smile.
+        pub const MOOD: usize = 3;
+        /// Kaomoji cat count. `0` clears the floor.
+        pub const CATS: usize = 4;
+        /// Smoke ribbon density. `0` puts the smoke out.
+        pub const SMOKE: usize = 5;
+        /// Types the current lyric cue as a terminal prompt line.
+        pub const TERMINAL: usize = 6;
+        pub const HUE: usize = 7;
+        /// Backdrop from moody dark (`0`) to tiki-bar cream (`1`).
+        pub const DAYLIGHT: usize = 8;
+        /// Outline stroke weight.
+        pub const INK: usize = 9;
+        /// Bass-driven halo behind the head.
+        pub const GLOW: usize = 10;
+        /// Idle sway amplitude.
+        pub const WIGGLE: usize = 11;
+    }
 }
 
 use SettingDescriptor as D;
@@ -391,6 +418,36 @@ const PHOSPHOR: &[SettingDescriptor] = &[
     D::toggle("settings.phosphor.titles", "Surfacing words", 0.0),
 ];
 
+/// Clawd, a post-legacy addition (2026-08-24) with no oracle line to cite.
+///
+/// Twelve controls, meeting [`MAX_CONTROLS`] like Phosphor Dream rather than
+/// raising it. `cats` is an integer count whose zero means "no cats", and
+/// `smoke` at zero puts the smoke out — both lows are designed states, not
+/// degenerate ones. `mood` at zero pins the face to its resting smile, which is
+/// what makes "the expression machine is dead" and "the operator asked for a
+/// calm face" distinguishable: the first is a bug the report line catches, the
+/// second is this value.
+///
+/// `terminal` defaults **off** for the same reason phosphor's `titles` does:
+/// the caption layer already draws authored lyrics, and two word layers
+/// fighting for one frame is the wrong default even though the effect — the
+/// track's own cue typed behind a prompt — is worth keeping.
+#[rustfmt::skip]
+const CLAWD: &[SettingDescriptor] = &[
+    D::slider("settings.clawd.petals", "Petal coupling", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.clawd.bounce", "Beat bounce", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.clawd.spin", "Petal spin", -2.00, 2.00, 0.35, 2),
+    D::slider("settings.clawd.mood", "Mood swings", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.clawd.cats", "Cats", 0.00, 6.00, 3.00, 0),
+    D::slider("settings.clawd.smoke", "Smoke", 0.00, 2.00, 1.00, 2),
+    D::toggle("settings.clawd.terminal", "Lyric terminal", 0.0),
+    D::slider("settings.clawd.hue", "Hue shift (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.clawd.daylight", "Daylight", 0.00, 1.00, 0.85, 2),
+    D::slider("settings.clawd.ink", "Line weight", 0.50, 2.00, 1.00, 2),
+    D::slider("settings.clawd.glow", "Bass glow", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.clawd.wiggle", "Idle sway", 0.00, 2.00, 1.00, 2),
+];
+
 /// The descriptor table, in scene registry order (`scene_settings.c:129-141`
 /// for the first ten).
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
@@ -405,6 +462,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     LOOM,
     PENTAGRAM,
     PHOSPHOR,
+    CLAWD,
 ];
 
 /// Descriptors for one scene.
@@ -596,9 +654,14 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         SceneId::SongAtlas => count == 8 || count == 10,
         SceneId::SpectralTerrarium => count == 3 || count == 7,
         SceneId::Constellation => count == 3 || count == 7,
-        // Phosphor Dream shipped with twelve and has never had another count;
-        // it postdates the C entirely, so there is no legacy shape to admit.
-        SceneId::Cadence | SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream => false,
+        // Phosphor Dream and Clawd shipped with twelve and have never had
+        // another count; both postdate the C entirely, so there is no legacy
+        // shape to admit.
+        SceneId::Cadence
+        | SceneId::Loom
+        | SceneId::Pentagram
+        | SceneId::PhosphorDream
+        | SceneId::Clawd => false,
     }
 }
 

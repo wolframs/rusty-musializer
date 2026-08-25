@@ -478,7 +478,7 @@ capture() {
 
 echo "=== scene sweep ==="
 SWEEP_FAILED=0
-for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram phosphor; do
+for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram phosphor clawd; do
     capture "scene-$scene" 1280x720 --scene "$scene" || SWEEP_FAILED=1
 done
 
@@ -550,10 +550,62 @@ if [ "${PHOSPHOR_LUMA%%.*}" -lt 60 ] 2>/dev/null; then
     SWEEP_FAILED=1
 fi
 
+# Clawd has the same shape of failure modes: a dead expression machine is a
+# permanent smile, petals uncoupled from their bands are a symmetric flower,
+# and an empty floor that should hold the default three cats is a choreography
+# that never ran — all of them photograph as a perfectly plausible cute
+# picture, so the report line is asserted rather than admired.
+CLAWD_LINE="$(sed -n 's/^clawd: *//p' "$OUT_DIR/scene-clawd.txt")"
+echo "clawd: ${CLAWD_LINE:-<absent>}"
+case "$CLAWD_LINE" in
+    face=*) : ;;
+    *) echo "FAIL: Clawd never drew (no face= on its report line)" >&2; SWEEP_FAILED=1 ;;
+esac
+# The petals must couple to the analyzer: the synthetic fixture is loud by
+# frame 30, so a peak petal energy near zero means the band grouping never
+# landed, however symmetric and pretty the flower looks.
+CLAWD_PETAL="$(printf '%s' "$CLAWD_LINE" | sed -n 's/.*petal-peak=\([0-9.]*\)@.*/\1/p')"
+if ! awk -v p="${CLAWD_PETAL:-0}" 'BEGIN { exit !(p >= 0.05) }'; then
+    echo "FAIL: Clawd's petals never coupled to the spectrum (petal-peak=${CLAWD_PETAL:-absent})" >&2
+    SWEEP_FAILED=1
+fi
+CLAWD_AMP="$(printf '%s' "$CLAWD_LINE" | sed -n 's/.*amp=\([0-9.]*\).*/\1/p')"
+if ! awk -v a="${CLAWD_AMP:-0}" 'BEGIN { exit !(a >= 0.02) }'; then
+    echo "FAIL: Clawd's amplitude envelope never moved (amp=${CLAWD_AMP:-absent})" >&2
+    SWEEP_FAILED=1
+fi
+# The default `cats` is 3; a sweep frame that drew fewer means the choreography
+# or the pose table silently died.
+case "$CLAWD_LINE" in
+    *"cats=3"*) : ;;
+    *) echo "FAIL: Clawd's default three cats did not draw: ${CLAWD_LINE:-<absent>}" >&2
+       SWEEP_FAILED=1 ;;
+esac
+# The senses wave's plumbing must print even when its inputs are absent: the
+# fixture has no Assist analysis and no lyric cue, so the honest values are
+# `semantic=off` and `mouth=0.00` — a line missing the fields entirely means
+# the report fell out of sync with the state the scene actually carries.
+case "$CLAWD_LINE" in
+    *"semantic=off"*) : ;;
+    *) echo "FAIL: Clawd's semantic-lane field is absent or wrongly 'on' with no analysis: ${CLAWD_LINE:-<absent>}" >&2
+       SWEEP_FAILED=1 ;;
+esac
+# At the default daylight (0.85) the backdrop is cream, the face plate is
+# near-white and the petals are saturated — a nearly black frame here means the
+# gradient or the geometry did not draw at all.
+CLAWD_LUMA="$(ffprobe -v error -f lavfi \
+    -i "movie=$OUT_DIR/scene-clawd.png,crop=640:300:460:40,signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+echo "clawd peak luma: ${CLAWD_LUMA:-?}"
+if [ "${CLAWD_LUMA%%.*}" -lt 150 ] 2>/dev/null; then
+    echo "FAIL: Clawd drew an almost-dark frame at daylight 0.85 (peak luma $CLAWD_LUMA)" >&2
+    SWEEP_FAILED=1
+fi
+
 echo "=== long scene aliases ==="
 # The long aliases are a separate code path from the stable names
 # (`plug.c:933-964`), so they are exercised rather than assumed.
-for alias in pulse-field orbital-lattice ascii-field song-atlas spectral-terrarium pentagram-orbits phosphor-dream; do
+for alias in pulse-field orbital-lattice ascii-field song-atlas spectral-terrarium pentagram-orbits phosphor-dream claude; do
     capture "alias-$alias" 1280x720 --scene "$alias" || SWEEP_FAILED=1
 done
 

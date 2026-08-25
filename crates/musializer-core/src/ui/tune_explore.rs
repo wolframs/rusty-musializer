@@ -300,20 +300,26 @@ const CYCLIC_KEYS: &[&str] = &[
     "settings.atlas.color",
     "settings.pentagram.hue",
     "settings.phosphor.hue",
+    "settings.clawd.hue",
 ];
 
 /// Descriptors whose **low** end is a designed value rather than a degenerate:
 /// Surprise may land exactly on it.
 ///
-/// All three spell zero as "let the scene decide", which is the opposite of a
-/// degenerate look — it is the scene's own character. (No descriptor currently
-/// has a drawable *high* end; when one appears it gets the mirror table, not a
-/// relaxation of this one.)
+/// The first three spell zero as "let the scene decide"; `clawd.cats` spells it
+/// as "an empty floor", which is an authored look, not a broken one. All four
+/// are precision-0 controls — the membership test requires the exact minimum to
+/// be *drawn* within a few hundred presses, which a fine-grained slider cannot
+/// satisfy, so a continuous control with a designed zero (`clawd.smoke`) takes
+/// the ordinary 5 % inset instead. (No descriptor currently has a drawable
+/// *high* end; when one appears it gets the mirror table, not a relaxation of
+/// this one.)
 #[rustfmt::skip]
 const DRAWABLE_LOW_KEYS: &[&str] = &[
     "settings.pulse.petals",   // 0 = auto petal fold
     "settings.phosphor.field", // 0 = cycle all fields
     "settings.phosphor.ramp",  // 0 = each field keeps its own alphabet
+    "settings.clawd.cats",     // 0 = an empty floor
 ];
 
 /// Half-width of a [`Strength::Nudge`], as a fraction of the descriptor's span.
@@ -717,10 +723,11 @@ mod tests {
         // If a scene gains a control this fails and every sweep below is
         // knowingly re-scoped rather than silently narrowed.
         //
-        // Two numbers now, because the tree has a scene the oracle does not.
+        // Two numbers now, because the tree has scenes the oracle does not.
         // 81 is what `differential_settings.sh` still diffs against the frozen C
-        // and must not move; 93 is what this module sweeps, and it moves whenever
-        // a post-legacy scene is added or changed.
+        // and must not move; 105 is what this module sweeps (81 + phosphor's 12
+        // + clawd's 12), and it moves whenever a post-legacy scene is added or
+        // changed.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
             .map(|scene| settings::descriptors(scene).len())
@@ -729,7 +736,7 @@ mod tests {
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 93);
+        assert_eq!(all_descriptors().len(), 105);
     }
 
     // -- conform / step / parse ------------------------------------------------

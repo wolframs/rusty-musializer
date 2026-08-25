@@ -1064,5 +1064,31 @@ mod tests {
             "the twelve values must survive the round trip exactly"
         );
         assert!(presets[0].snapshot.is_valid_for(scene));
+
+        // The second post-legacy scene, same shape: distinguishable values at
+        // both ends of the table including the toggle, saved and reloaded onto
+        // the right scene.
+        let scene = SceneId::Clawd;
+        let mut values = SceneSettings::new();
+        assert!(values.set(scene, 0, 1.5));
+        assert!(values.set(scene, 4, 6.0));
+        assert!(values.set(scene, 6, 1.0));
+        let snapshot = values.capture(scene).expect("a capturable scene");
+        assert_eq!(snapshot.count, 12);
+        let mut library = PresetLibrary::new();
+        library
+            .push(scene, "tiki hour", &snapshot)
+            .expect("room for one");
+        let text = save_to_string(&library).expect("the store encodes");
+        assert!(
+            text.contains("\"scene_name\":\"clawd\""),
+            "the store did not name the scene: {text}"
+        );
+        let reloaded = load_from_bytes(text.as_bytes()).expect("the store decodes");
+        let presets = reloaded.presets(scene);
+        assert_eq!(presets.len(), 1, "the preset came back on the wrong scene");
+        assert_eq!(presets[0].name, "tiki hour");
+        assert_eq!(presets[0].snapshot.values[..12], snapshot.values[..12]);
+        assert!(presets[0].snapshot.is_valid_for(scene));
     }
 }

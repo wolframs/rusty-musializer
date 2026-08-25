@@ -11,3 +11,16 @@ scene 10 count 12
 10 9 settings.phosphor.reactivity|Music coupling|0|2|1|2|0
 10 10 settings.phosphor.dwell|Seconds per field|4|30|10|0|0
 10 11 settings.phosphor.titles|Surfacing words|0|1|0|0|1
+scene 11 count 12
+11 0 settings.clawd.petals|Petal coupling|0|2|1|2|0
+11 1 settings.clawd.bounce|Beat bounce|0|2|1|2|0
+11 2 settings.clawd.spin|Petal spin|-2|2|0.349999994|2|0
+11 3 settings.clawd.mood|Mood swings|0|2|1|2|0
+11 4 settings.clawd.cats|Cats|0|6|3|0|0
+11 5 settings.clawd.smoke|Smoke|0|2|1|2|0
+11 6 settings.clawd.terminal|Lyric terminal|0|1|0|0|1
+11 7 settings.clawd.hue|Hue shift (deg)|-180|180|0|0|0
+11 8 settings.clawd.daylight|Daylight|0|1|0.850000024|2|0
+11 9 settings.clawd.ink|Line weight|0.5|2|1|2|0
+11 10 settings.clawd.glow|Bass glow|0|2|1|2|0
+11 11 settings.clawd.wiggle|Idle sway|0|2|1|2|0

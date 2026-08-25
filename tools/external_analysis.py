@@ -71,7 +71,7 @@ BRIDGE_VERSION = "MUSIALIZER_BRIDGE\t1"
 # unreachable from the one surface that picks scenes automatically.
 SCENES = (
     "spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium",
-    "constellation", "cadence", "loom", "pentagram", "phosphor",
+    "constellation", "cadence", "loom", "pentagram", "phosphor", "clawd",
 )
 
 # Keep the orchestrator's measured-cache contract dependency-free. These are
@@ -974,6 +974,7 @@ def _scene_for(features: dict[str, float], semantic: dict[str, Any] | None,
         ({"mechanical", "drive", "tunnel", "kinetic", "industrial"}, "orbital"),
         ({"geometric", "mathematical", "recursive", "hypnotic", "ritual"}, "pentagram"),
         ({"psychedelic", "trippy", "nostalgic", "retro", "kaleidoscopic"}, "phosphor"),
+        ({"playful", "cute", "whimsical", "cheeky", "cartoon", "mascot"}, "clawd"),
     )
     for keywords, scene in keyword_scenes:
         if words.intersection(keywords):

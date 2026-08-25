@@ -279,6 +279,7 @@ short names **and six long aliases**:
 | `loom` | Loom |
 | `pentagram`, `pentagram-orbits` | Pentagram Orbits |
 | `phosphor`, `phosphor-dream` | Phosphor Dream (post-legacy; the C rejects both) |
+| `clawd`, `claude` | Clawd (post-legacy; the C rejects both) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -434,16 +435,17 @@ each descriptor.
 | 8 | `SCENE_LOOM` | `loom` | `Loom` | 2 | `src/scene_loom.c:391-398` (+ `src/scene_loom_weave.c`) |
 | 9 | `SCENE_PENTAGRAM` | `pentagram` | `Pentagram Orbits` | 1 | `src/scene_pentagram.c:436-443` |
 
-**Since 2026-08-08 the Rust registry has an eleventh entry the table above does
-not list, because this table describes the frozen C.** Phosphor Dream — id 10,
-stable name `phosphor`, display name `Phosphor Dream`, 12 controls, no C source —
-is a post-legacy addition under the rule that features past the C's ceiling need
-no parity justification. It is **appended**, so every id above keeps its value
-and a `.musi` written before that date resolves its scenes unchanged. The C
-simply cannot read a project that names it, which is the same statement already
-recorded for the `time` route source. `musializer_core::scene::SCENE_COUNT` is
-therefore 11 and `ORACLE_SCENE_COUNT` is 10; the differential harnesses read the
-second.
+**Since 2026-08-08 the Rust registry has entries the table above does not
+list, because this table describes the frozen C.** Phosphor Dream — id 10,
+stable name `phosphor`, display name `Phosphor Dream`, 12 controls, no C
+source — is a post-legacy addition under the rule that features past the C's
+ceiling need no parity justification, and Clawd — id 11, stable name `clawd`,
+display name `Clawd`, 12 controls, no C source — followed on 2026-08-24. Both
+are **appended**, so every id above keeps its value and a `.musi` written
+before those dates resolves its scenes unchanged. The C simply cannot read a
+project that names either, which is the same statement already recorded for
+the `time` route source. `musializer_core::scene::SCENE_COUNT` is therefore 12
+and `ORACLE_SCENE_COUNT` is 10; the differential harnesses read the second.
 
 `COUNT_SCENES == 10` (`src/scene.h:28`) and
 `SCENE_SETTINGS_SCENE_COUNT == 10` (`src/scene_settings_values.h:8`). These two
@@ -665,6 +667,33 @@ Two are **selectors**, and both spell zero as "let the scene decide": `field` 0
 runs the whole cycle and 1..=10 pins one, `ramp` 0 lets each field keep its own
 alphabet and 1..=7 pins one. Encoding "auto" inside the range rather than as a
 paired toggle is what keeps them routable and randomizable like anything else.
+
+### `clawd` — Clawd (12 controls, no C counterpart)
+
+Post-legacy, 2026-08-24. Pinned by `tests/differential/settings_post_legacy.txt`
+like Phosphor Dream's, and for the same reason.
+
+| # | key | label | min | max | default | precision | kind |
+|---|-----|-------|-----|-----|---------|-----------|------|
+| 0 | `settings.clawd.petals` | Petal coupling | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 1 | `settings.clawd.bounce` | Beat bounce | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 2 | `settings.clawd.spin` | Petal spin | -2.00 | 2.00 | **0.35** | 2 | slider |
+| 3 | `settings.clawd.mood` | Mood swings | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 4 | `settings.clawd.cats` | Cats | 0.00 | 6.00 | **3.00** | 0 | slider |
+| 5 | `settings.clawd.smoke` | Smoke | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 6 | `settings.clawd.terminal` | Lyric terminal | 0.00 | 1.00 | **0.00** | 0 | toggle |
+| 7 | `settings.clawd.hue` | Hue shift (deg) | -180.0 | 180.0 | **0.0** | 0 | slider |
+| 8 | `settings.clawd.daylight` | Daylight | 0.00 | 1.00 | **0.85** | 2 | slider |
+| 9 | `settings.clawd.ink` | Line weight | 0.50 | 2.00 | **1.00** | 2 | slider |
+| 10 | `settings.clawd.glow` | Bass glow | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 11 | `settings.clawd.wiggle` | Idle sway | 0.00 | 2.00 | **1.00** | 2 | slider |
+
+`mood` 0 pins the face to its resting smile — a designed calm, distinguishable
+from a dead expression machine because the `clawd:` report line names the face
+either way. `cats` 0 and `smoke` 0 are likewise designed states ("an empty
+floor", "the smoke put out"), not degenerates. `terminal` defaults off for the
+same reason phosphor's `titles` does: the caption layer already draws authored
+lyrics, and two word layers fighting for one frame is the wrong default.
 
 Twelve controls is exactly `MAX_CONTROLS`, which Song Atlas already set. The
 scene meets that ceiling rather than raising it, because the value store is a

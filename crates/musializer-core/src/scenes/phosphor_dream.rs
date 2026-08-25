@@ -1318,7 +1318,7 @@ mod tests {
         // Twelve controls is exactly MAX_CONTROLS; a thirteenth would silently be
         // unreachable through the dense value array rather than failing to build.
         assert!(descriptors.len() <= crate::scene::settings::MAX_CONTROLS);
-        assert_eq!(SCENE_COUNT, 11);
+        assert_eq!(SCENE_COUNT, 12);
     }
 
     /// Every `Ink::Char` must be inside raylib's built-in face, which is Latin-1.

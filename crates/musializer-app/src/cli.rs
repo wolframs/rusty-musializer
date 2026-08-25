@@ -595,14 +595,18 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         // The scene's display name is two words, so the hyphenated spelling is
         // the one a user will reach for first.
         "phosphor-dream" => Some(SceneId::PhosphorDream),
+        // The one alias that is a courtesy rather than a display-name spelling:
+        // someone who knows who the flower is will type the assistant's name.
+        "claude" => Some(SceneId::Clawd),
         other => SceneId::from_stable_name(other),
     }
 }
 
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
-constellation, cadence, loom, pentagram, phosphor (also pulse-field, orbital-lattice, \
-ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, phosphor-dream)";
+constellation, cadence, loom, pentagram, phosphor, clawd (also pulse-field, \
+orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
+phosphor-dream, claude)";
 
 /// The pre-pass, then the main loop. Mirrors `main` (`musializer.c:315-561`).
 pub fn parse<I, S>(arguments: I) -> Outcome
@@ -1518,7 +1522,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_names_accept_the_ten_short_and_six_long_spellings() {
+    fn scene_names_accept_the_twelve_short_and_eight_long_spellings() {
         let expected = [
             ("spectrum", SceneId::Spectrum),
             ("pulse", SceneId::PulseField),
@@ -1538,6 +1542,8 @@ mod tests {
             ("pentagram-orbits", SceneId::Pentagram),
             ("phosphor", SceneId::PhosphorDream),
             ("phosphor-dream", SceneId::PhosphorDream),
+            ("clawd", SceneId::Clawd),
+            ("claude", SceneId::Clawd),
         ];
         for (name, id) in expected {
             assert_eq!(scene_from_cli_name(name), Some(id), "{name}");

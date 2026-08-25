@@ -1397,9 +1397,10 @@ guards a competing open, and inspects the snapshot's data boundary.
 a protocol file.** `SURPRISE_MOVE_CHANCE` 0.75 → 0.45, `SURPRISE_TOGGLE_CHANCE`
 0.25 → 0.15, the blanket 5 % inset replaced by per-end metadata
 (`DRAWABLE_LOW_KEYS`: `pulse.petals`, `phosphor.field`, `phosphor.ramp` — all
-"0 = auto", now drawable, with a test proving each low end is actually drawn),
+"0 = auto" — and, since SX2, `clawd.cats`, whose 0 is "an empty floor"; each
+with a test proving the low end is actually drawn),
 and cyclic controls are the explicit `CYCLIC_KEYS` list (the four C-era hues
-plus `phosphor.hue`) instead of `is_angle`'s bounds inference — so
+plus `phosphor.hue` and `clawd.hue`) instead of `is_angle`'s bounds inference — so
 `atlas.orbit` now draws triangular about its default like the camera control it
 is, pinned by a measured orbit-vs-colour spread test. The gate's seed-4242 pin
 was re-pinned **deliberately**; the old pin fails against the new draw, which
@@ -3967,3 +3968,138 @@ both halves and here.
   `pulse` term in `evaluate_grid`, not `reactivity` — the ±10 % audio modulation
   is deliberately gentle and the source's author asked that it stay that way for
   photosensitivity reasons.
+
+## SX2 — Clawd, the character scene (operator request, 2026-08-24)
+
+The operator asked for a scene that is "extremely Claude — like thebes'
+Claude", attaching three reference images of the character: the twelve-petalled
+terracotta flower with the kaomoji face, its ASCII cats, the smoking portrait
+with terminal-text overlays, and a 3x4 expression sheet.
+
+**Shipped as `Clawd` / `clawd`, scene id 11.** Not `claude`: the token is a
+persisted identifier and a scene is not the assistant — `clawd` is the name the
+community gives thebes' flower. `--scene claude` exists as a CLI alias courtesy.
+
+### What it is
+
+The flower as a live visualizer. Twelve petals are twelve contiguous analyzer
+band groups (fast-attack/slow-release followers per petal), the head does
+squash-and-stretch on beat-phase wraps, and the face is an expression state
+machine over the analysis: resting smile, `>` `<` scrunch on hard onsets,
+spiral-eyed dizzy under sustained flux, pleading after long quiet, and a
+head-explode (mushroom cloud, shock eyes) gated behind a 22 s cooldown so it
+stays an event. Up to six ASCII kaomoji cats take turns hopping on the beat
+(all of them when the track is loud), a smoke ribbon rises on sustained energy
+with asymmetric attack/decay, and a `terminal` toggle types the current lyric
+cue behind a `>` prompt with a deterministic blinking block cursor. Backdrop
+runs `daylight` from moody dark to tiki-bar cream; one ink colour derives from
+it so outlines read on both.
+
+Everything is procedural geometry and ASCII text through the built-in face —
+no artwork copied (thebes' art is thebes'), no new asset, and nothing that
+blurs under export supersampling. Split as always: the state machine, petal
+grouping, cat choreography, smoke follower and typist in
+`core/src/scenes/clawd.rs` (14 unit tests: determinism, per-band petal
+coupling, every expression's entry and exit, the boom cooldown, mood-zero
+pinning, beat/hop impulses, cat bounds and the stable curious cat, typist
+reset/clamp, smoke asymmetry, the 0.25 s stall cap, spin sign); the raylib
+drawing in `app/src/scenes/clawd.rs` (ASCII-only cat strings pinned by test,
+petal outline bounds, ink contrast on both backdrops).
+
+### What it cost, and what it moved
+
+`SCENE_COUNT` 11 → 12; `ORACLE_SCENE_COUNT` stays 10. The two-section dumps
+absorbed the twelfth scene with **no script changes** — the split machinery SX1
+built partitions by `exists_in_oracle`/parameter key, so clawd's rows landed in
+the post-legacy sections of `tests/differential/settings_post_legacy.txt` (12
+descriptors) and `route_persistence_post_legacy.txt` (constant + routed + import
+rows), both regenerated and re-pinned. Negative controls run both ways:
+`spectrum.trail` 2.50 → 2.51 failed against the frozen C, `clawd.daylight`
+0.85 → 0.86 failed against the pinned file, both reverted byte-for-byte and the
+clean tree passes. `preset_store`'s ORACLE_ALL-scoped fixture was untouched and
+its named unit test gained the clawd round trip. The tune sweep total moved
+93 → 105; `clawd.hue` joined `CYCLIC_KEYS`, `clawd.cats` joined
+`DRAWABLE_LOW_KEYS` (`clawd.smoke` deliberately did not: the membership test
+requires the exact minimum drawn within 400 presses, which a precision-2 slider
+cannot satisfy — it takes the ordinary 5 % inset).
+
+Twelve descriptors at the `MAX_CONTROLS` ceiling: `petals`, `bounce`, `spin`
+(signed), `mood` (0 pins the resting smile — a designed calm the report line
+keeps distinguishable from a dead machine), `cats` (0..6), `smoke`, `terminal`
+(toggle, default off — phosphor's `titles` argument), `hue`, `daylight`, `ink`,
+`glow`, `wiggle`.
+
+The `clawd:` report line carries the claims a capture cannot: the face name,
+`amp`/`bass`, peak petal energy *and which petal*, beat count, bounce, drawn
+cat count, smoke level, terminal state and daylight. The headless gate asserts
+face is named, petal peak ≥ 0.05 (band coupling landed), amp moved, `cats=3`
+at defaults, and peak luma ≥ 150 at default daylight. The scene tile grid kept
+its row count at every column width going 11 → 12 tiles, so the gate's click
+probes below the grid did not move.
+
+### What the captures found that the tests did not
+
+One defect, and it is the repository's signature failure shape: the first
+headless capture showed the flower as a colouring-book page — every petal
+outlined, the terracotta fill silently missing. `draw_triangle_fan` submits
+back-face-culled geometry, and the petal ellipse was swept clockwise in screen
+coordinates, so every fill quad was culled. All unit tests green, exit 0, and
+the picture *plausible*: outlines-only is a coherent art style, which is
+exactly why no assertion short of a human (or a luma probe on the petal ring)
+catches it. The sweep now runs counter-clockwise with a comment naming the
+capture that proved it. The `clawd:` line could not have caught this one — the
+report says what the state machine did, not what the GPU kept — so the gate's
+peak-luma floor is the only automated witness, and it passed both ways
+(outlines on cream still clear 150). Recorded so the next fan-filled shape
+starts from "check the winding against a capture", not from the docs.
+
+### The senses wave (same day, fan-out)
+
+A second wave, built as a two-agent fan-out along the repo's one-file-per-agent
+rule (core model / drawing half), integrated and gated by the orchestrator:
+
+- **Semantic-lane coupling** — the first consumer of `SemanticFrame` in a
+  scene: `warmth()` envelope-follows valence (neutral 0.6 when the lane is
+  absent or below the 0.35 confidence floor) and tints petal saturation and the
+  resting smile's depth; tension raises effective mood
+  (`mood * (1 + 0.6 * tension * confidence)`, capped at the descriptor
+  ceiling), so a tense track scrunches easier at the same slider. Two tracks at
+  the same RMS now read differently when an Assist analysis is attached.
+- **Sing-along mouth** — `mouth_open()`: a 5.5 Hz syllable carrier gated by
+  flux while a lyric cue is active; the drawing half flattens the resting `w`
+  and opens an ink capsule (capsule, not a circle, so it cannot be mistaken
+  for Boom's shock `O`). Happy-only by design.
+- **Seeded blinks** — 0.24 s triangular, 2.5–6.5 s apart from a dedicated
+  `SplitMix64` domain (so cat-table draws can never shift the schedule),
+  suppressed during Scrunch/Boom; drawn as replacement lid strokes rather than
+  vertically squashed eyes, because a squashed spiral is a scribble.
+- **Boom petal scatter** — petals blast out 1.6 head-radii by progress 0.3,
+  hold while fading to 0.35 alpha, regrow over the last 25 %; endpoints are
+  guards returning exactly `(0.0, 1.0)` so a non-boom frame is byte-identical.
+- **Glow on cream fixed** — the additive bass glow was invisible at the
+  default daylight (additive light saturates toward white on a near-white
+  ground): a control that silently did nothing. Light backdrops now composite
+  a darkened petal-hue gradient under normal blending; the dark path is
+  untouched.
+
+`STATE_VERSION` 1 → 2. The `clawd:` line gained ` warmth= mouth= semantic=`,
+and the gate asserts `semantic=off` on the fixture — the plumbing must print
+even when its inputs are absent. Core tests 14 → 19 in the module (979 total),
+app-side file tests 3 → 10.
+
+### Attribution
+
+An homage to the flower character drawn by **thebes**
+(<https://x.com/voooooogel>). Rendered procedurally from scratch; no image of
+theirs is bundled or traced.
+
+### Open
+
+- The boom's bass gate (0.60 against `bass_from_trails`) is tuned against the
+  synthetic fixtures; a listening pass on real material may want it moved. The
+  lever is `boom_bass` in `step_expression`.
+- The smoke is a single ribbon; the reference's hatched texture was skipped as
+  a first pass (a flat translucent ribbon reads fine at preview size).
+- No HX protocol run yet on the expression thresholds; if the face feels numb
+  or twitchy on real tracks, `mood`'s threshold scaling in `step_expression`
+  is one knob and the dwell constants are the other.

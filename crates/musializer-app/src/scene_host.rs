@@ -1,4 +1,4 @@
-//! Binding and drawing the ten scenes.
+//! Binding and drawing the scenes.
 //!
 //! This is the registry and application-overlay crossing. Everything a scene
 //! needs to become visible goes through the descriptor/draw tables below, and
@@ -16,7 +16,7 @@
 //!
 //! ## Future scene additions
 //!
-//! All ten current scenes are complete. A future scene whose deterministic half
+//! All twelve current scenes are complete. A future scene whose deterministic half
 //! has not landed yet starts with
 //! [`StatelessScene`], and a scene whose drawing half has not landed yet gets
 //! [`draw_placeholder`] — a labelled card naming the scene and the C file it
@@ -103,6 +103,7 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             make_state: |seed| Box::new(core_scenes::pentagram::PentagramState::new(seed)),
         },
         SceneId::PhosphorDream => core_scenes::phosphor_dream::descriptor(),
+        SceneId::Clawd => core_scenes::clawd::descriptor(),
     }
 }
 
@@ -124,7 +125,7 @@ fn state_of<T: 'static>(instance: &SceneInstance, id: SceneId) -> Option<&T> {
 
 /// A descriptor for a scene whose deterministic half has not landed.
 ///
-/// Unused now that all ten are ported, and kept deliberately: it is what a
+/// Unused now that every scene is ported, and kept deliberately: it is what a
 /// newly added scene should start from, and deleting it would push the next
 /// person toward wiring a half-built scene straight into `descriptor`.
 #[allow(dead_code)]
@@ -146,6 +147,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::Loom => |_| Box::new(StatelessScene::new(SceneId::Loom)),
             SceneId::Pentagram => |_| Box::new(StatelessScene::new(SceneId::Pentagram)),
             SceneId::PhosphorDream => |_| Box::new(StatelessScene::new(SceneId::PhosphorDream)),
+            SceneId::Clawd => |_| Box::new(StatelessScene::new(SceneId::Clawd)),
         },
     }
 }
@@ -156,15 +158,15 @@ fn stateless(id: SceneId) -> SceneDescriptor {
 /// has one answer rather than two that can disagree.
 #[must_use]
 pub fn drawing_is_ported(id: SceneId) -> bool {
-    // All ten drawing halves have landed. `draw_placeholder` is kept because it is
+    // Every drawing half has landed. `draw_placeholder` is kept because it is
     // the right answer for a scene added later, and because deleting it would make
     // the next addition silently draw nothing.
     let _ = id;
     true
 }
 
-/// The placeholder machinery below is unreachable now that all ten drawing halves
-/// have landed, and it stays on purpose.
+/// The placeholder machinery below is unreachable now that every drawing half
+/// has landed, and it stays on purpose.
 ///
 /// It is what an eleventh scene should render before its drawing half exists, and
 /// the reason is worth keeping: a labelled card naming the scene and its C source
@@ -188,9 +190,10 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         SceneId::Cadence => "scene_cadence.c",
         SceneId::Loom => "scene_loom.c",
         SceneId::Pentagram => "scene_pentagram.c",
-        // The one scene with no oracle behind it. Named rather than left to fall
+        // The scenes with no oracle behind them. Named rather than left to fall
         // through to a plausible-looking C filename that does not exist.
         SceneId::PhosphorDream => "(no oracle: post-legacy addition)",
+        SceneId::Clawd => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -252,6 +255,12 @@ pub struct SceneRenderer {
     /// instance would reallocate both every frame. Owned here like every other
     /// GPU resource, so a scene switch does not leak a shader.
     phosphor: scenes::phosphor_dream::PhosphorResources,
+    /// Clawd's report string. No GPU resources — the flower is immediate-mode
+    /// geometry — but the scene can draw a plausible frame in several wrong
+    /// states (a dead expression machine, petals uncoupled from their bands, an
+    /// empty floor that should have cats), so its evidence lives here like
+    /// phosphor's.
+    clawd: scenes::clawd::ClawdResources,
     /// What the glow did on the last caption frame — `off`, `blurred`, or
     /// `unavailable` — because a frame with no halo and a frame whose halo
     /// silently failed to build are the same picture.
@@ -291,6 +300,7 @@ impl SceneRenderer {
             caption_halo: HaloBlur::load(rl, thread),
             caption_halo_last: "none",
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
+            clawd: scenes::clawd::ClawdResources::new(),
         })
     }
 
@@ -322,6 +332,19 @@ impl SceneRenderer {
     #[must_use]
     pub fn describe_phosphor(&self) -> String {
         self.phosphor.describe()
+    }
+
+    /// One line naming what Clawd last drew: the face, the audio couplings, the
+    /// beat count, the cats and the terminal.
+    ///
+    /// Same argument as phosphor's: a permanent resting smile over a loud track
+    /// is a dead expression machine, a petal peak of zero under music is a
+    /// band-coupling that never landed, and an empty floor with `cats` at its
+    /// default is a choreography that never ran — and all three photograph as a
+    /// perfectly plausible cute picture.
+    #[must_use]
+    pub fn describe_clawd(&self) -> String {
+        self.clawd.describe()
     }
 
     /// One line naming the caption glow's mechanism and last outcome, for its
@@ -520,6 +543,18 @@ impl SceneRenderer {
                         scenes::pentagram::draw(d, frame, state, &mut self.circle, boundary);
                     }
                 }
+                SceneId::Clawd => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::clawd::draw(
+                            d,
+                            &mut self.clawd,
+                            state,
+                            frame,
+                            boundary,
+                            pixel_scale,
+                        );
+                    }
+                }
             }
         }
         if id != SceneId::Cadence {
@@ -660,13 +695,14 @@ mod tests {
                 "loom",
                 "pentagram",
                 "phosphor",
+                "clawd",
             ]
         );
     }
 
     /// Every scene's descriptor must hand back the state type its drawing arm
     /// downcasts to. A mismatch would silently draw nothing, because `state_of`
-    /// returns `None` and the arm skips — so this walks all ten and asserts the
+    /// returns `None` and the arm skips — so this walks every scene and asserts the
     /// downcast succeeds.
     #[test]
     fn every_drawing_arm_can_recover_its_scenes_state() {
@@ -688,6 +724,7 @@ mod tests {
                 SceneId::Loom => any.is::<cs::loom::LoomState>(),
                 SceneId::Pentagram => any.is::<cs::pentagram::PentagramState>(),
                 SceneId::PhosphorDream => any.is::<cs::phosphor_dream::PhosphorDreamState>(),
+                SceneId::Clawd => any.is::<cs::clawd::ClawdState>(),
             };
             assert!(
                 recovered,

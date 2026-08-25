@@ -48,14 +48,17 @@ pub enum SceneId {
     Pentagram = 9,
     /// Post-legacy, no C counterpart (2026-08-08).
     PhosphorDream = 10,
+    /// Post-legacy, no C counterpart (2026-08-24).
+    Clawd = 11,
 }
 
 /// Number of scenes.
 ///
 /// This was C's `COUNT_SCENES`/`SCENE_SETTINGS_SCENE_COUNT` (`scene.h:28`,
 /// `scene_settings_values.h:8`) and equalled 10 for as long as the rewrite was
-/// chasing parity. It is now **11**, and that is a deliberate divergence under
-/// the 2026-08-03 legacy decision rather than a drift.
+/// chasing parity. It is now **12** — Phosphor Dream (id 10, 2026-08-08) and
+/// Clawd (id 11, 2026-08-24) — and that is a deliberate divergence under the
+/// 2026-08-03 legacy decision rather than a drift.
 ///
 /// What it moves, recorded here because the number is load-bearing in four
 /// places a reader would not guess:
@@ -72,7 +75,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = 11;
+pub const SCENE_COUNT: usize = 12;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -96,6 +99,7 @@ impl SceneId {
         SceneId::Loom,
         SceneId::Pentagram,
         SceneId::PhosphorDream,
+        SceneId::Clawd,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -147,6 +151,7 @@ impl SceneId {
             SceneId::Loom => "Loom",
             SceneId::Pentagram => "Pentagram Orbits",
             SceneId::PhosphorDream => "Phosphor Dream",
+            SceneId::Clawd => "Clawd",
         }
     }
 
@@ -170,6 +175,10 @@ impl SceneId {
             // copyrighted track, and a persisted token is forever. "phosphor" is
             // what the scene actually is.
             SceneId::PhosphorDream => "phosphor",
+            // The character's community spelling, not "claude": the token is a
+            // persisted identifier and a scene is not the assistant. "clawd" is
+            // the name thebes' flower answers to.
+            SceneId::Clawd => "clawd",
         }
     }
 
@@ -593,6 +602,7 @@ mod tests {
         // Appended, not inserted: every C-era id above keeps its value, which is
         // what lets a .musi written before 2026-08-08 still resolve its scenes.
         assert_eq!(SceneId::PhosphorDream as u32, 10);
+        assert_eq!(SceneId::Clawd as u32, 11);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
         assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
         assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);
@@ -600,6 +610,7 @@ mod tests {
             assert!(id.exists_in_oracle());
         }
         assert!(!SceneId::PhosphorDream.exists_in_oracle());
+        assert!(!SceneId::Clawd.exists_in_oracle());
         for (index, id) in SceneId::ALL.into_iter().enumerate() {
             assert_eq!(id.index(), index);
             assert_eq!(SceneId::from_index(index), Some(id));
@@ -621,6 +632,7 @@ mod tests {
             "loom",
             "pentagram",
             "phosphor",
+            "clawd",
         ];
         for (id, name) in SceneId::ALL.into_iter().zip(expected) {
             assert_eq!(id.stable_name(), name);

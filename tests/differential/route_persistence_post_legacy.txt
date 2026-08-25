@@ -1,4 +1,4 @@
-post-constant-count 12
+post-constant-count 24
 post-constant 0 settings.phosphor.field 0 0 0 1 0 0 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.phosphor.motion 0 0 0 1 1 1 1 1
@@ -23,7 +23,31 @@ post-constant 10 settings.phosphor.dwell 0 0 0 1 10 10 1 1
 post-constant-is-constant 10 1
 post-constant 11 settings.phosphor.titles 0 0 0 1 0 0 1 1
 post-constant-is-constant 11 1
-post-routed-count 12
+post-constant 12 settings.clawd.petals 0 0 0 1 1 1 1 1
+post-constant-is-constant 12 1
+post-constant 13 settings.clawd.bounce 0 0 0 1 1 1 1 1
+post-constant-is-constant 13 1
+post-constant 14 settings.clawd.spin 0 0 0 1 0.349999994 0.349999994 1 1
+post-constant-is-constant 14 1
+post-constant 15 settings.clawd.mood 0 0 0 1 1 1 1 1
+post-constant-is-constant 15 1
+post-constant 16 settings.clawd.cats 0 0 0 1 3 3 1 1
+post-constant-is-constant 16 1
+post-constant 17 settings.clawd.smoke 0 0 0 1 1 1 1 1
+post-constant-is-constant 17 1
+post-constant 18 settings.clawd.terminal 0 0 0 1 0 0 1 1
+post-constant-is-constant 18 1
+post-constant 19 settings.clawd.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 19 1
+post-constant 20 settings.clawd.daylight 0 0 0 1 0.850000024 0.850000024 1 1
+post-constant-is-constant 20 1
+post-constant 21 settings.clawd.ink 0 0 0 1 1 1 1 1
+post-constant-is-constant 21 1
+post-constant 22 settings.clawd.glow 0 0 0 1 1 1 1 1
+post-constant-is-constant 22 1
+post-constant 23 settings.clawd.wiggle 0 0 0 1 1 1 1 1
+post-constant-is-constant 23 1
+post-routed-count 24
 post-routed 0 settings.phosphor.field 0 0 0 1 0 0 1 1
 post-routed 1 settings.phosphor.motion 0 0 0 1 1 1 1 1
 post-routed 2 settings.phosphor.breathe 0 0 0 1 1 1 1 1
@@ -36,6 +60,18 @@ post-routed 8 settings.phosphor.hue 0 0 0 1 0 0 1 1
 post-routed 9 settings.phosphor.reactivity 0 0 0 1 1 1 1 1
 post-routed 10 settings.phosphor.dwell 0 0 0 1 10 10 1 1
 post-routed 11 settings.phosphor.titles 0 0 0 1 0 0 1 1
+post-routed 12 settings.clawd.petals 0 0 0 1 1 1 1 1
+post-routed 13 settings.clawd.bounce 0 0 0 1 1 1 1 1
+post-routed 14 settings.clawd.spin 0 0 0 1 0.349999994 0.349999994 1 1
+post-routed 15 settings.clawd.mood 0 0 0 1 1 1 1 1
+post-routed 16 settings.clawd.cats 0 0 0 1 3 3 1 1
+post-routed 17 settings.clawd.smoke 0 0 0 1 1 1 1 1
+post-routed 18 settings.clawd.terminal 0 0 0 1 0 0 1 1
+post-routed 19 settings.clawd.hue 0 0 0 1 0 0 1 1
+post-routed 20 settings.clawd.daylight 0 0 0 1 0.850000024 0.850000024 1 1
+post-routed 21 settings.clawd.ink 0 0 0 1 1 1 1 1
+post-routed 22 settings.clawd.glow 0 0 0 1 1 1 1 1
+post-routed 23 settings.clawd.wiggle 0 0 0 1 1 1 1 1
 post-import-value 10 0 0
 post-import-value 10 1 1
 post-import-value 10 2 1
@@ -48,3 +84,15 @@ post-import-value 10 8 0
 post-import-value 10 9 1
 post-import-value 10 10 10
 post-import-value 10 11 0
+post-import-value 11 0 1
+post-import-value 11 1 1
+post-import-value 11 2 0.349999994
+post-import-value 11 3 1
+post-import-value 11 4 3
+post-import-value 11 5 1
+post-import-value 11 6 0
+post-import-value 11 7 0
+post-import-value 11 8 0.850000024
+post-import-value 11 9 1
+post-import-value 11 10 1
+post-import-value 11 11 1
