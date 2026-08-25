@@ -13,8 +13,8 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 41 | 61,858 | 450 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 94 | 60,736 | 979 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 41 | 61,866 | 450 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 95 | 61,134 | 982 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 26 | 14,914 | 177 |
 | [`raylib-5-5-link`](../crates/raylib-5-5-link/Cargo.toml) | Builds and links raylib 5.5 from vendored source, for raylib-sys nobuild mode | `raylib_5_5_link` (lib), `build-script-build` (custom-build) | 2 | 126 | 0 |
 
@@ -33,6 +33,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | `ascii_art_dump` | `example` | [crates/musializer-core/examples/ascii_art_dump.rs](../crates/musializer-core/examples/ascii_art_dump.rs) |
 | `assist_ui_dump` | `example` | [crates/musializer-core/examples/assist_ui_dump.rs](../crates/musializer-core/examples/assist_ui_dump.rs) |
 | `beat_tracker_dump` | `example` | [crates/musializer-core/examples/beat_tracker_dump.rs](../crates/musializer-core/examples/beat_tracker_dump.rs) |
+| `cat_probe` | `example` | [crates/musializer-core/examples/cat_probe.rs](../crates/musializer-core/examples/cat_probe.rs) |
 | `cx4_surprise_protocol` | `example` | [crates/musializer-core/examples/cx4_surprise_protocol.rs](../crates/musializer-core/examples/cx4_surprise_protocol.rs) |
 | `event_merge_dump` | `example` | [crates/musializer-core/examples/event_merge_dump.rs](../crates/musializer-core/examples/event_merge_dump.rs) |
 | `layout_dump` | `example` | [crates/musializer-core/examples/layout_dump.rs](../crates/musializer-core/examples/layout_dump.rs) |
@@ -65,7 +66,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/ascii_field.rs`](../crates/musializer-app/src/scenes/ascii_field.rs) | 471 | 0 | ASCII Field: the drawing half. |
 | [`src/scenes/cadence.rs`](../crates/musializer-app/src/scenes/cadence.rs) | 649 | 0 | Cadence: the drawing half. |
 | [`src/scenes/caption.rs`](../crates/musializer-app/src/scenes/caption.rs) | 683 | 6 | Shared project lyric captions, drawn after every scene except Cadence. |
-| [`src/scenes/clawd.rs`](../crates/musializer-app/src/scenes/clawd.rs) | 936 | 10 | Clawd: the drawing half. |
+| [`src/scenes/clawd.rs`](../crates/musializer-app/src/scenes/clawd.rs) | 944 | 10 | Clawd: the drawing half. |
 | [`src/scenes/constellation.rs`](../crates/musializer-app/src/scenes/constellation.rs) | 270 | 0 | Constellation: the drawing half. |
 | [`src/scenes/loom.rs`](../crates/musializer-app/src/scenes/loom.rs) | 372 | 0 | Loom: the drawing half. |
 | [`src/scenes/mod.rs`](../crates/musializer-app/src/scenes/mod.rs) | 20 | 0 | The drawing halves of the scenes. |
@@ -107,6 +108,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`examples/ascii_art_dump.rs`](../crates/musializer-core/examples/ascii_art_dump.rs) | 516 | 0 | Dumps the Rust `ascii_art` module's output for a set of deterministic synthetic pixel buffers, in the same format as `tests/differential/ascii_art_oracle.c`. |
 | [`examples/assist_ui_dump.rs`](../crates/musializer-core/examples/assist_ui_dump.rs) | 210 | 0 | Dumps the Rust Assist panel policy in the same format as `tests/differential/assist_ui_oracle.c`, so a hand-transcribed module that carries the whole panel's copy, geometry and guard ladder can be checked against the frozen C mechanically rather than by eye. |
 | [`examples/beat_tracker_dump.rs`](../crates/musializer-core/examples/beat_tracker_dump.rs) | 418 | 0 | Differential harness, Rust side: dumps [`BeatTracker`] over the same grid of tick rates and onset patterns, and the same boundary cases, as `tests/differential/beat_tracker_oracle.c`. |
+| [`examples/cat_probe.rs`](../crates/musializer-core/examples/cat_probe.rs) | 147 | 0 | Replays a decoded track through the export's exact per-frame cadence and prints what Clawd's beat-driven choreography saw — one CSV row per frame. |
 | [`examples/cx4_surprise_protocol.rs`](../crates/musializer-core/examples/cx4_surprise_protocol.rs) | 398 | 0 | Emit the CX-4 Surprise keepability protocol (HX ∘ CX-4). |
 | [`examples/event_merge_dump.rs`](../crates/musializer-core/examples/event_merge_dump.rs) | 132 | 0 | Dumps the Rust merged event view for the same lane pairs as `tests/differential/event_merge_oracle.c`. |
 | [`examples/layout_dump.rs`](../crates/musializer-core/examples/layout_dump.rs) | 676 | 0 | Dumps the Rust workspace and timeline layout decisions over a dense sweep of window sizes, in the same format as `tests/differential/layout_oracle.c`. |
@@ -158,7 +160,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/ascii_field.rs`](../crates/musializer-core/src/scenes/ascii_field.rs) | 465 | 10 | ASCII Field: deterministic state, update, and the pure colour pipeline. |
 | [`src/scenes/cadence/timing.rs`](../crates/musializer-core/src/scenes/cadence/timing.rs) | 218 | 6 | Cadence's word timing, raylib-free. |
 | [`src/scenes/cadence.rs`](../crates/musializer-core/src/scenes/cadence.rs) | 404 | 11 | Cadence: deterministic word splitting, timing, and focus envelopes. |
-| [`src/scenes/clawd.rs`](../crates/musializer-core/src/scenes/clawd.rs) | 1,479 | 19 | Clawd: deterministic state for the flower who listens. |
+| [`src/scenes/clawd.rs`](../crates/musializer-core/src/scenes/clawd.rs) | 1,730 | 22 | Clawd: deterministic state for the flower who listens. |
 | [`src/scenes/constellation/motion.rs`](../crates/musializer-core/src/scenes/constellation/motion.rs) | 221 | 4 | Constellation's audio envelopes, raylib-free. |
 | [`src/scenes/constellation.rs`](../crates/musializer-core/src/scenes/constellation.rs) | 520 | 8 | Constellation: deterministic state, node geometry, and the authored-event lane. |
 | [`src/scenes/loom/weave.rs`](../crates/musializer-core/src/scenes/loom/weave.rs) | 495 | 6 | Loom's woven record of the song, raylib-free. |

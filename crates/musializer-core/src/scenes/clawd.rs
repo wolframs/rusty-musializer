@@ -69,7 +69,7 @@ use crate::ui::tune_explore::{RandomSource, SplitMix64};
 /// Bumped when the state layout changes so a rebind discards stale state.
 /// 2 (2026-08-24): the senses wave — semantic warmth, the sing-along mouth,
 /// and the seeded blink schedule.
-pub const STATE_VERSION: u32 = 2;
+pub const STATE_VERSION: u32 = 3;
 
 /// The petal count is the character's anatomy, not a tunable: thebes draws the
 /// flower with twelve petals, and twelve conveniently divides any analyzer band
@@ -110,9 +110,50 @@ const PETAL_RELEASE_PER_SECOND: f32 = 0.000_8;
 /// visually over ~0.3 s after the beat — a bob, not a wobble.
 const BOUNCE_RELEASE_PER_SECOND: f32 = 0.002;
 
-/// Cat hops decay a little slower than the head bounce; a cat is smaller and a
-/// snappier arc reads as popping rather than jumping.
-const HOP_RELEASE_PER_SECOND: f32 = 0.004;
+/// The bass-transient ("kick") gate, on the mean positive excursion of the
+/// lowest quarter of the bands over their own trails — the same shape as
+/// spectral flux, scoped to the region `bass_from_trails` calls bass.
+///
+/// **Measured, not guessed** (2026-08-25, `examples/cat_probe.rs` against the
+/// operator's *Parameter People*): at 0.05 the detector finds the track's real
+/// bass groove (~0.33 s spacing where one exists) and stays honestly quiet
+/// through its pad sections, where 0.03 chatters and 0.08 misses all but the
+/// section hits. The first version hopped the cats on beat-tracker phase wraps
+/// instead, and on that track the tracker anchors only at four section
+/// transitions in ten seconds and freewheels between them — a metronome nobody
+/// is conducting, which is exactly the "jumps that never land" the operator
+/// reported.
+pub const KICK_THRESHOLD: f32 = 0.05;
+
+/// Minimum seconds between kicks. A sustained excursion is one push, not a
+/// drumroll; 0.25 s admits a 16th-note groove at 60 BPM and nothing sillier.
+const KICK_REFRACTORY_SECONDS: f32 = 0.25;
+
+/// A hop is a fixed ballistic arc — `sin(pi * age / HOP_SECONDS)` — not a
+/// decaying envelope. The first version teleported to apex and oozed down
+/// asymptotically, which reads as floating; an arc has a takeoff and, more to
+/// the point, a landing.
+pub const HOP_SECONDS: f32 = 0.34;
+
+/// Widest per-cat seeded takeoff stagger. Even a party hop is not robotic
+/// unison; 60 ms is audible tightness, visible individuality.
+const HOP_STAGGER_MAX_SECONDS: f32 = 0.06;
+
+/// A kick at least this strong, with [`PARTY_AMPLITUDE`], sends every cat up.
+const PARTY_KICK: f32 = 0.10;
+
+/// The loudness gate on the party rule. The first version partied on
+/// `amplitude > 0.75` at every beat wrap, which on any loud track meant the
+/// take-turns choreography never appeared at all — three cats pogoing in
+/// lockstep to a freewheeling clock.
+const PARTY_AMPLITUDE: f32 = 0.85;
+
+/// What a tracker phase wrap is still worth: a soft head bob, never a cat.
+/// The tracker freewheels between anchors (see [`KICK_THRESHOLD`]), and a
+/// character slamming to an extrapolated grid is the defect this replaced —
+/// but a gentle nod keeps the flower breathing on tracks where the grid is
+/// real, and on those the kicks land on top of it anyway.
+const WRAP_BOUNCE: f32 = 0.35;
 
 /// Amplitude below which the frame counts toward "quiet" for the pleading face.
 const QUIET_AMPLITUDE: f32 = 0.06;
@@ -287,10 +328,19 @@ pub struct ClawdState {
     // Atmosphere.
     smoke: f32,
 
+    // The bass-transient detector (STATE_VERSION 3).
+    kick_refractory: f32,
+    kick_count: u64,
+    last_kick: f32,
+
     // Cats. The jitter tables are seed-derived at construction so a cat keeps
-    // its personality across the whole track.
+    // its personality across the whole track. A hop is a clock, not an
+    // envelope: `hop_age` runs from `-stagger` through [`HOP_SECONDS`] and the
+    // pose derives the arc from it.
     cat_count: usize,
-    cat_hops: [f32; MAX_CATS],
+    hop_age: [f32; MAX_CATS],
+    hop_power: [f32; MAX_CATS],
+    hop_stagger: [f32; MAX_CATS],
     cat_lane_jitter: [f32; MAX_CATS],
     cat_scale_jitter: [f32; MAX_CATS],
     cat_flip: [bool; MAX_CATS],
@@ -315,6 +365,12 @@ impl ClawdState {
             cat_flip[i] = random.chance(0.5);
         }
         let curious_cat = (random.next_u64() % MAX_CATS as u64) as usize;
+        // Drawn after the tables above so their values are unchanged from
+        // STATE_VERSION 2 — the stagger is a new draw appended to the stream.
+        let mut hop_stagger = [0.0f32; MAX_CATS];
+        for stagger in &mut hop_stagger {
+            *stagger = random.next_range(0.0, f64::from(HOP_STAGGER_MAX_SECONDS)) as f32;
+        }
         // Blinks get their own generator and domain constant rather than
         // sharing `random`: a shared stream would make the blink schedule move
         // whenever the cat tables gain or lose a draw, which is exactly the
@@ -349,8 +405,14 @@ impl ClawdState {
             // No blink in flight: the age starts past the envelope's end.
             blink_age: BLINK_SECONDS,
             smoke: 0.0,
+            kick_refractory: 0.0,
+            kick_count: 0,
+            last_kick: 0.0,
             cat_count: 0,
-            cat_hops: [0.0; MAX_CATS],
+            // Landed: every age starts past the arc's end.
+            hop_age: [HOP_SECONDS; MAX_CATS],
+            hop_power: [0.0; MAX_CATS],
+            hop_stagger,
             cat_lane_jitter,
             cat_scale_jitter,
             cat_flip,
@@ -517,13 +579,38 @@ impl ClawdState {
         } else {
             CatFace::Content
         };
+        // The ballistic arc: zero before takeoff (a staggered cat is still
+        // crouched), a half-sine through the air, exactly zero at and after
+        // touchdown. The landing is a point in time, which is what an
+        // exponential envelope never gave it.
+        let age = self.hop_age[index];
+        let hop = if age <= 0.0 || age >= HOP_SECONDS {
+            0.0
+        } else {
+            (self.hop_power[index] * (std::f32::consts::PI * age / HOP_SECONDS).sin())
+                .clamp(0.0, 1.0)
+        };
         Some(CatPose {
             lane,
-            hop: self.cat_hops[index].clamp(0.0, 1.0),
+            hop,
             scale: self.cat_scale_jitter[index],
             flip: self.cat_flip[index],
             face,
         })
+    }
+
+    /// Bass transients heard so far. The report line prints it beside
+    /// `beats=`: a track with an audible groove and `kicks=0` means the
+    /// detector is deaf to this mix, which is a tuning fact, not a crash.
+    #[must_use]
+    pub fn kick_count(&self) -> u64 {
+        self.kick_count
+    }
+
+    /// Strength of the last kick, `0.0` before the first.
+    #[must_use]
+    pub fn last_kick(&self) -> f32 {
+        self.last_kick
     }
 
     /// How many characters of the current cue the terminal has typed.
@@ -570,6 +657,25 @@ impl ClawdState {
 
     fn raw_bass(audio: &SceneAudioFrame<'_>) -> f32 {
         Self::clamp01(bass_from_trails(audio.trails))
+    }
+
+    /// The bass-transient signal: mean positive excursion of the lowest
+    /// quarter of the bands over their own trails. The same shape as
+    /// [`SceneAudioFrame::spectral_flux`], scoped to the region
+    /// [`bass_from_trails`] calls bass, so "the bass level" and "the bass
+    /// moved" are measured over the same bands.
+    fn raw_kick(audio: &SceneAudioFrame<'_>) -> f32 {
+        let count = audio.bands.len().min(audio.trails.len());
+        if count == 0 {
+            return 0.0;
+        }
+        let low = (count / 4).max(1);
+        audio.bands[..low]
+            .iter()
+            .zip(&audio.trails[..low])
+            .map(|(band, trail)| (band - trail).max(0.0))
+            .sum::<f32>()
+            / low as f32
     }
 
     fn raw_flux(audio: &SceneAudioFrame<'_>) -> f32 {
@@ -720,26 +826,57 @@ impl SceneState for ClawdState {
         self.petal_angle += delta * spin * (0.45 + 0.55 * self.amplitude);
         self.sway_phase += delta * (0.9 + 0.8 * self.amplitude);
 
-        // The beat. `beat_phase` saws 0→1 per beat; a wrap is a beat landing.
-        let phase = audio.beat_phase;
-        if phase.is_finite() && phase < self.previous_beat_phase - 0.5 {
-            self.beat_count = self.beat_count.wrapping_add(1);
+        // The cat count resolves before anything reads it. It used to resolve
+        // at the end of the update, which left the kick block one frame stale —
+        // harmless every frame except the first, where a transient on frame
+        // zero met a count of 0 and hopped nobody.
+        let cats = frame.setting(SceneId::Clawd, setting::CATS);
+        self.cat_count = (cats.round().max(0.0) as usize).min(MAX_CATS);
+
+        // The bass transient: what the choreography actually dances to. See
+        // [`KICK_THRESHOLD`] for why this replaced the tracker's phase wraps —
+        // the cat_probe run on real material is the whole argument.
+        let kick = Self::raw_kick(audio);
+        self.kick_refractory = (self.kick_refractory - delta).max(0.0);
+        if kick >= KICK_THRESHOLD && self.kick_refractory <= 0.0 {
+            self.kick_refractory = KICK_REFRACTORY_SECONDS;
+            self.kick_count = self.kick_count.wrapping_add(1);
+            self.last_kick = kick;
             self.bounce = 1.0;
             if self.cat_count > 0 {
-                // Cats take turns rather than pogoing in unison — a row of
-                // synchronized cats reads as one texture, not six characters.
-                let hopper = (self.beat_count % self.cat_count as u64) as usize;
-                self.cat_hops[hopper] = 1.0;
-                if self.amplitude > 0.75 {
-                    // Party rule: everybody up.
-                    self.cat_hops = [1.0; MAX_CATS];
+                // Height follows how hard the track hit, floored so a hop that
+                // fires is a hop a viewer can see.
+                let power = (kick / (2.0 * KICK_THRESHOLD)).clamp(0.55, 1.0);
+                if kick >= PARTY_KICK && self.amplitude >= PARTY_AMPLITUDE {
+                    // A genuinely big moment: everybody up, each on their own
+                    // seeded stagger so the row reads as six cats, not one.
+                    for index in 0..MAX_CATS {
+                        self.hop_age[index] = -self.hop_stagger[index];
+                        self.hop_power[index] = power;
+                    }
+                } else {
+                    // Cats take turns rather than pogoing in unison.
+                    let hopper = (self.kick_count % self.cat_count as u64) as usize;
+                    self.hop_age[hopper] = -self.hop_stagger[hopper];
+                    self.hop_power[hopper] = power;
                 }
             }
         }
+
+        // The tracker. `beat_phase` saws 0→1 per beat; a wrap is a beat as the
+        // tracker believes it. Worth a soft nod of the head and the count the
+        // report prints — never a cat (see [`WRAP_BOUNCE`]).
+        let phase = audio.beat_phase;
+        if phase.is_finite() && phase < self.previous_beat_phase - 0.5 {
+            self.beat_count = self.beat_count.wrapping_add(1);
+            self.bounce = self.bounce.max(WRAP_BOUNCE);
+        }
         self.previous_beat_phase = if phase.is_finite() { phase } else { 0.0 };
         self.bounce = Self::follow(self.bounce, 0.0, delta, BOUNCE_RELEASE_PER_SECOND);
-        for hop in &mut self.cat_hops {
-            *hop = Self::follow(*hop, 0.0, delta, HOP_RELEASE_PER_SECOND);
+        for age in &mut self.hop_age {
+            if *age < HOP_SECONDS {
+                *age += delta;
+            }
         }
 
         // Sustained-condition clocks for the face.
@@ -818,8 +955,6 @@ impl SceneState for ClawdState {
         self.smoke += (smoke_target - self.smoke) * (1.0 - remain.powf(delta));
 
         // Cats.
-        let cats = frame.setting(SceneId::Clawd, setting::CATS);
-        self.cat_count = (cats.round().max(0.0) as usize).min(MAX_CATS);
 
         // The lyric terminal's typist. Runs regardless of the toggle — see the
         // module docs for why the toggle gates drawing, not time.
@@ -1139,29 +1274,145 @@ mod tests {
     }
 
     #[test]
-    fn a_beat_wrap_bounces_the_head_and_hops_a_cat() {
+    fn a_beat_wrap_soft_bobs_the_head_and_never_hops_a_cat() {
+        // Bands equal to trails: no bass transient anywhere in this fixture,
+        // so anything that moves moved on the tracker's say-so alone — and the
+        // tracker freewheels between anchors on real material (cat_probe,
+        // 2026-08-25), which is why its wraps are worth a nod and not a jump.
         let settings = SceneSettings::new();
         let mut state = ClawdState::new(8);
         let bands = [0.5f32; 24];
         let trails = [0.5f32; 24];
-        let mut hopped = false;
+        let mut bobbed = false;
         for i in 0..120 {
             let mut frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
             // A 1-second beat sawtooth.
             frame.audio.beat_phase = (i as f32 / 60.0) % 1.0;
             state.update(&frame);
-            if state.bounce() > 0.9 {
-                hopped = true;
+            if state.bounce() > 0.3 {
+                bobbed = true;
+            }
+            assert!(
+                state.bounce() <= 0.5,
+                "a wrap is a soft bob, not the kick's full impulse: {}",
+                state.bounce()
+            );
+            let hopping =
+                (0..state.cat_count()).any(|c| state.cat(c).is_some_and(|cat| cat.hop > 0.0));
+            assert!(!hopping, "a freewheeling wrap must never hop a cat");
+        }
+        assert!(bobbed, "a phase wrap should still nod the head");
+        assert_eq!(state.beat_count(), 1);
+        assert_eq!(state.kick_count(), 0);
+    }
+
+    #[test]
+    fn a_bass_transient_hops_one_cat_on_a_ballistic_arc() {
+        let settings = SceneSettings::new();
+        let mut state = ClawdState::new(8);
+        // Moderate kick: lowest quarter well above its trails, quiet enough
+        // overall that the party rule stays out of it.
+        let mut bands = [0.25f32; 24];
+        for band in &mut bands[..6] {
+            *band = 0.45;
+        }
+        let trails = [0.25f32; 24];
+        // One transient frame, then settled audio (bands == trails).
+        let frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
+        state.update(&frame);
+        assert_eq!(state.kick_count(), 1);
+        assert!(state.last_kick() > 0.0);
+        assert!(
+            (state.bounce() - 1.0).abs() < 0.2,
+            "a kick is the full impulse"
+        );
+        let settled = [0.25f32; 24];
+        let mut peak = 0.0f32;
+        let mut airborne_frames = 0u32;
+        for _ in 0..60 {
+            let frame = frame_with(&settings, &settled, &settled, 1.0 / 60.0);
+            state.update(&frame);
+            let hop = (0..state.cat_count())
+                .filter_map(|c| state.cat(c))
+                .map(|cat| cat.hop)
+                .fold(0.0f32, f32::max);
+            if hop > 0.0 {
+                airborne_frames += 1;
+            }
+            peak = peak.max(hop);
+        }
+        assert!(peak >= 0.5, "the arc must reach a visible apex, got {peak}");
+        // Ballistic, not asymptotic: with stagger the flight is bounded well
+        // under half a second, and it *ends* — the landing is a frame, not a
+        // limit.
+        assert!(
+            airborne_frames > 0 && (airborne_frames as f32) < 30.0,
+            "the hop should be airborne briefly and then land: {airborne_frames} frames"
+        );
+        let grounded =
+            (0..state.cat_count()).all(|c| state.cat(c).is_some_and(|cat| cat.hop == 0.0));
+        assert!(grounded, "every cat is exactly on the floor after landing");
+    }
+
+    #[test]
+    fn a_sustained_excursion_is_metered_by_the_refractory() {
+        let settings = SceneSettings::new();
+        let mut state = ClawdState::new(8);
+        // Two seconds of continuous strong bass excursion.
+        let mut bands = [0.3f32; 24];
+        for band in &mut bands[..6] {
+            *band = 0.8;
+        }
+        let trails = [0.3f32; 24];
+        for _ in 0..120 {
+            let frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
+            state.update(&frame);
+        }
+        // 2 s / 0.25 s refractory = at most 8, and at least half that — a
+        // drumroll is pushes, not a blur.
+        let kicks = state.kick_count();
+        assert!((4..=8).contains(&kicks), "got {kicks} kicks in 2 s");
+    }
+
+    #[test]
+    fn a_big_kick_on_a_loud_track_parties_every_cat_with_stagger() {
+        let mut settings = SceneSettings::new();
+        assert!(settings.set(SCENE, setting::CATS, 6.0));
+        let mut state = ClawdState::new(8);
+        // Saturate the amplitude envelope first (bands == trails: no kick).
+        let loud = [0.9f32; 24];
+        for _ in 0..30 {
+            let frame = frame_with(&settings, &loud, &loud, 1.0 / 60.0);
+            state.update(&frame);
+        }
+        assert_eq!(state.kick_count(), 0, "settled loudness alone is no kick");
+        // Now a heavy bass transient.
+        let mut bands = [0.9f32; 24];
+        for band in &mut bands[..6] {
+            *band = 1.0;
+        }
+        let trails = [0.55f32; 24];
+        let frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
+        state.update(&frame);
+        assert_eq!(state.kick_count(), 1);
+        // Every cat takes off, each on its own seeded stagger: within a few
+        // frames all six are airborne, but not from the identical instant.
+        let settled = [0.9f32; 24];
+        let mut all_up_at_once = false;
+        for _ in 0..12 {
+            let frame = frame_with(&settings, &settled, &settled, 1.0 / 60.0);
+            state.update(&frame);
+            let up = (0..MAX_CATS)
+                .filter(|&c| state.cat(c).is_some_and(|cat| cat.hop > 0.0))
+                .count();
+            if up == MAX_CATS {
+                all_up_at_once = true;
             }
         }
-        assert!(hopped, "a phase wrap should kick the bounce impulse");
-        assert_eq!(state.beat_count(), 1);
-        assert!(
-            state.bounce() < 0.9,
-            "the impulse must decay after the beat"
-        );
-        let any_hop = (0..state.cat_count()).any(|i| state.cat(i).is_some_and(|c| c.hop > 0.0));
-        assert!(any_hop, "some cat should still be landing");
+        assert!(all_up_at_once, "a party should get every cat airborne");
+        let staggers_differ =
+            (1..MAX_CATS).any(|i| (state.hop_stagger[i] - state.hop_stagger[0]).abs() > 1.0e-4);
+        assert!(staggers_differ, "seeded staggers must not be uniform");
     }
 
     #[test]

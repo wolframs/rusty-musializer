@@ -683,9 +683,16 @@ pub fn draw(
         let Some(cat) = state.cat(index) else { break };
         let rows = cat_rows(cat.face);
         let size = cat_size * cat.scale;
-        // The hop is an impulse; the arc reads best as a straight lift on the
-        // decaying envelope.
-        let lift = cat.hop * size * 1.1;
+        // The hop is a ballistic arc from core (`CatPose::hop` is the
+        // half-sine); the idle bob under it keeps the floor alive through
+        // sections with no bass transients at all — a row of statues waiting
+        // for a kick reads as broken, a row of gently breathing cats reads as
+        // listening. Amplitude scales the bob so silence stills them.
+        let bob = (sway * 1.15 + index as f32 * 2.1).sin()
+            * size
+            * 0.05
+            * (0.3 + 0.7 * state.amplitude());
+        let lift = cat.hop * size * 1.1 + bob;
         let x = boundary.x + cat.lane * boundary.width;
         let tail = if cat.flip { "~ " } else { " ~" };
         let face_row = if cat.flip {
@@ -761,13 +768,14 @@ pub fn draw(
     // cue. Blink is deliberately not reported: a 0.24 s event sampled at one
     // frame is noise.
     resources.last = format!(
-        "face={} amp={:.2} bass={:.2} petal-peak={:.2}@{} beats={} bounce={:.2} cats={} smoke={:.2} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
+        "face={} amp={:.2} bass={:.2} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} smoke={:.2} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
         expression.name(),
         state.amplitude(),
         state.bass(),
         petal_peak,
         petal_peak_index,
         state.beat_count(),
+        state.kick_count(),
         state.bounce(),
         drawn_cats,
         smoke_level,

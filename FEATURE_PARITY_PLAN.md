@@ -4087,6 +4087,56 @@ and the gate asserts `semantic=off` on the fixture — the plumbing must print
 even when its inputs are absent. Core tests 14 → 19 in the module (979 total),
 app-side file tests 3 → 10.
 
+### The choreography rework (2026-08-25) — hops land on the music now
+
+The operator reported the cat jumps as "tied to something in the PCM that
+doesn't really want to land", watching the first ten seconds of a real track.
+Diagnosed with a new instrument, `crates/musializer-core/examples/cat_probe.rs`:
+raw f32 PCM (ffmpeg-decoded, no raylib, no audio device) replayed through the
+export's exact per-frame cadence, one CSV row per frame of every link in the
+chain — flux, onset, tracker phase, wraps, hops, envelopes.
+
+What the probe showed on *Parameter People* (48 kHz, first 10 s):
+
+- The analyzer's onset lane fired on 29 of 300 frames, **all in four bursts at
+  section transitions**; the track's audible beat never crosses the 0.08 flux
+  threshold on this mix. The beat tracker (`learned_intervals=1`) anchored at
+  those bursts and **freewheeled a ~116 BPM assumption through up to 4.3 s of
+  silence between them** — wraps every 15–16 frames like a metronome that
+  heard the song once, four seconds ago, snapping on each re-anchor.
+- The party rule (`amplitude > 0.75`) fired on every wrap, so the take-turns
+  choreography never appeared: three cats in lockstep on a ghost grid.
+- The hop envelope was instant-attack/exponential-release: no takeoff, no
+  landing frame — floaty even when correctly timed.
+
+The fix, tuned against the same probe (thresholds measured, not guessed —
+0.03 chatters, 0.08 misses everything but section hits):
+
+- **Hops fire on bass transients** — `raw_kick`, the mean positive excursion
+  of the lowest quarter of the bands over their own trails (flux's shape,
+  scoped to the bands `bass_from_trails` calls bass), gated at
+  `KICK_THRESHOLD 0.05` with a 0.25 s refractory. On this track that finds
+  the real groove (~0.33 s spacing where one exists) and stays honestly quiet
+  through the pad sections: the track offers no landable pulse there, so the
+  cats stop pretending there is one and idle-bob instead (app-side, on the
+  sway clock, amplitude-scaled).
+- **Tracker wraps are demoted to a soft head bob** (`WRAP_BOUNCE 0.35`),
+  never a cat. `beats=` stays on the report beside the new `kicks=`.
+- **Hops are ballistic**: a fixed 0.34 s half-sine with per-cat seeded
+  takeoff stagger (≤60 ms) and height scaled by transient strength. The
+  landing is a frame, not an asymptote.
+- **Party demoted to genuinely big moments** (kick ≥ 2x threshold AND
+  amplitude ≥ 0.85), turn-taking otherwise.
+- One latent bug fixed on the way: `cat_count` resolved at the end of the
+  update, one frame stale for the choreography — harmless except on frame
+  zero, where a transient met a count of 0.
+
+`STATE_VERSION` 2 → 3. Verified end to end: the probe shows six flights in
+10 s landing on the track's real accents (0.30, 2.77, 5.23, the 7.2–8.0
+groove at full party, 8.83, 9.63); a re-rendered clip measured by per-frame
+ink centroid shows the three cats trading those exact flights in pixels,
+`kicks=9` on the report line. Core tests 19 → 22 in the module (982 total).
+
 ### Attribution
 
 An homage to the flower character drawn by **thebes**
