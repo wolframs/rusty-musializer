@@ -619,7 +619,29 @@ pub fn export_mappings(
 ///
 /// All-or-nothing: a mapping that is neither refuses the whole import, so nothing
 /// is silently dropped. Settings for routed parameters keep their scene defaults.
+///
+/// This is also the one boundary where [`settings::LEGACY_KEYS`] applies: a
+/// key this application once wrote under an older spelling is rewritten to its
+/// canonical one *before* validation, so the file still opens and the next
+/// save emits the new key. Rewriting here rather than aliasing in
+/// `descriptor_by_key` keeps every other surface — dumps, preset store, the
+/// duplicate check below — single-named.
 pub fn import_mappings(mappings: &[ParameterMapping]) -> Option<(SceneSettings, RouteTable)> {
+    let canonicalized: Vec<ParameterMapping> = mappings
+        .iter()
+        .map(|mapping| {
+            let canonical = settings::canonical_key(&mapping.parameter);
+            if canonical == mapping.parameter {
+                mapping.clone()
+            } else {
+                ParameterMapping {
+                    parameter: canonical.to_string(),
+                    ..mapping.clone()
+                }
+            }
+        })
+        .collect();
+    let mappings = canonicalized.as_slice();
     if !mappings_supported(mappings) {
         return None;
     }
@@ -987,6 +1009,42 @@ mod tests {
         mappings.push(constant("settings.not.a.control"));
         assert!(!mappings_supported(&mappings));
         assert!(import_mappings(&mappings).is_none());
+    }
+
+    #[test]
+    fn a_legacy_key_imports_under_its_canonical_name() {
+        // A `.musi` written while Clawd's slot 5 was `smoke` (2026-08-24/25)
+        // must still open, land its value on `show`, and — the half that
+        // makes the rename converge rather than persist — re-export under the
+        // canonical key.
+        let mut mappings = export_mappings(&SceneSettings::new(), None).unwrap();
+        let slot = mappings
+            .iter_mut()
+            .find(|mapping| mapping.parameter == "settings.clawd.show")
+            .expect("the clawd.show constant slot");
+        slot.parameter = "settings.clawd.smoke".to_string();
+        slot.output_min = 1.75;
+        slot.output_max = 1.75;
+        // The raw list is *not* supported — `mappings_supported` stays strict
+        // and canonical-only, which is what keeps the C-parity dumps exact.
+        assert!(!mappings_supported(&mappings));
+        let (imported, routes) = import_mappings(&mappings).expect("legacy key imports");
+        assert_eq!(
+            imported.get(SceneId::Clawd, settings::index::clawd::SHOW),
+            1.75
+        );
+        let re_exported = export_mappings(&imported, Some(&routes)).unwrap();
+        assert!(re_exported
+            .iter()
+            .any(|m| m.parameter == "settings.clawd.show" && m.output_min == 1.75));
+        assert!(!re_exported
+            .iter()
+            .any(|m| m.parameter == "settings.clawd.smoke"));
+        // Both spellings in one file collapse to a duplicate and refuse —
+        // strictness the canonicalization must not soften.
+        let mut doubled = export_mappings(&SceneSettings::new(), None).unwrap();
+        doubled.push(constant("settings.clawd.smoke"));
+        assert!(import_mappings(&doubled).is_none());
     }
 
     #[test]

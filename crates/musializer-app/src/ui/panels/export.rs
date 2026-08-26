@@ -1661,6 +1661,9 @@ fn with_export_frame<R>(
         },
         audio_frame,
         effective,
+        app.workspace
+            .current()
+            .and_then(|track| track.track_dynamics),
     );
     draw(app, &frame, lane_status)
 }

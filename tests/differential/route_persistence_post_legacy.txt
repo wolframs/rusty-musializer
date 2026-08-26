@@ -33,7 +33,7 @@ post-constant 15 settings.clawd.mood 0 0 0 1 1 1 1 1
 post-constant-is-constant 15 1
 post-constant 16 settings.clawd.cats 0 0 0 1 3 3 1 1
 post-constant-is-constant 16 1
-post-constant 17 settings.clawd.smoke 0 0 0 1 1 1 1 1
+post-constant 17 settings.clawd.show 0 0 0 1 1 1 1 1
 post-constant-is-constant 17 1
 post-constant 18 settings.clawd.terminal 0 0 0 1 0 0 1 1
 post-constant-is-constant 18 1
@@ -65,7 +65,7 @@ post-routed 13 settings.clawd.bounce 0 0 0 1 1 1 1 1
 post-routed 14 settings.clawd.spin 0 0 0 1 0.349999994 0.349999994 1 1
 post-routed 15 settings.clawd.mood 0 0 0 1 1 1 1 1
 post-routed 16 settings.clawd.cats 0 0 0 1 3 3 1 1
-post-routed 17 settings.clawd.smoke 0 0 0 1 1 1 1 1
+post-routed 17 settings.clawd.show 0 0 0 1 1 1 1 1
 post-routed 18 settings.clawd.terminal 0 0 0 1 0 0 1 1
 post-routed 19 settings.clawd.hue 0 0 0 1 0 0 1 1
 post-routed 20 settings.clawd.daylight 0 0 0 1 0.850000024 0.850000024 1 1

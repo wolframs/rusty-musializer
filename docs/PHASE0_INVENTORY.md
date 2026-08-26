@@ -680,7 +680,7 @@ like Phosphor Dream's, and for the same reason.
 | 2 | `settings.clawd.spin` | Petal spin | -2.00 | 2.00 | **0.35** | 2 | slider |
 | 3 | `settings.clawd.mood` | Mood swings | 0.00 | 2.00 | **1.00** | 2 | slider |
 | 4 | `settings.clawd.cats` | Cats | 0.00 | 6.00 | **3.00** | 0 | slider |
-| 5 | `settings.clawd.smoke` | Smoke | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 5 | `settings.clawd.show` | Petal show | 0.00 | 2.00 | **1.00** | 2 | slider |
 | 6 | `settings.clawd.terminal` | Lyric terminal | 0.00 | 1.00 | **0.00** | 0 | toggle |
 | 7 | `settings.clawd.hue` | Hue shift (deg) | -180.0 | 180.0 | **0.0** | 0 | slider |
 | 8 | `settings.clawd.daylight` | Daylight | 0.00 | 1.00 | **0.85** | 2 | slider |
@@ -690,10 +690,19 @@ like Phosphor Dream's, and for the same reason.
 
 `mood` 0 pins the face to its resting smile — a designed calm, distinguishable
 from a dead expression machine because the `clawd:` report line names the face
-either way. `cats` 0 and `smoke` 0 are likewise designed states ("an empty
-floor", "the smoke put out"), not degenerates. `terminal` defaults off for the
-same reason phosphor's `titles` does: the caption layer already draws authored
-lyrics, and two word layers fighting for one frame is the wrong default.
+either way. `cats` 0 and `show` 0 are likewise designed states ("an empty
+floor", "the light show disabled"), not degenerates. `terminal` defaults off
+for the same reason phosphor's `titles` does: the caption layer already draws
+authored lyrics, and two word layers fighting for one frame is the wrong
+default.
+
+**Slot 5 was `settings.clawd.smoke` (Smoke) from 2026-08-24 to 2026-08-26.**
+The smoke ribbon was replaced by the petal-show mode, and the key renamed with
+it — the one post-legacy key rename so far. A `.musi` written in that window
+still opens: `settings::LEGACY_KEYS` canonicalizes the old spelling at the
+`import_mappings` boundary and the next save emits `show`. The frozen C can
+read neither spelling; the compatibility contract this serves is against our
+own releases.
 
 Twelve controls is exactly `MAX_CONTROLS`, which Song Atlas already set. The
 scene meets that ceiling rather than raising it, because the value store is a

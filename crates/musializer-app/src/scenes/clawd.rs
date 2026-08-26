@@ -1,7 +1,7 @@
 //! Clawd: the drawing half.
 //!
 //! **No oracle.** The character's state — envelopes, the expression machine,
-//! cat choreography, the smoke follower, the lyric typist — lives in
+//! cat choreography, the petal show, the lyric typist — lives in
 //! [`musializer_core::scenes::clawd`]; only the raylib calls are here, which is
 //! the same split every other scene uses. See that module for what this scene
 //! is and who it is an homage to (thebes, <https://x.com/voooooogel>).
@@ -10,8 +10,8 @@
 //!
 //! Everything is procedural geometry: petals are rotated ellipses filled with a
 //! triangle fan and outlined segment-by-segment, the face is stroked polylines
-//! with round joints, the cats are ASCII kaomoji through the built-in monospace
-//! face, and the smoke is a chain of translucent discs. No bitmap is imported —
+//! with round joints, and the cats are ASCII kaomoji through the built-in
+//! monospace face. No bitmap is imported —
 //! partly because thebes' artwork is thebes', and partly for the reason the
 //! caption work already paid for: a bitmap magnified under export supersampling
 //! is a blur, while an ellipse is exact at 12 px and at 1200.
@@ -44,6 +44,15 @@
 //!   yet. The report line prints `warmth`/`semantic` even when the lane is
 //!   off, so a run with an Assist analysis attached is distinguishable from
 //!   one without.
+//! - **The petal show recolours only the petals.** At full level the twelve
+//!   petals take the hue wheel — 30° apart, drifting on the sway clock, each
+//!   brightened by its own band — while the face, ink, ground and cats stay
+//!   exactly themselves, so Clawd in show mode is still unmistakably Clawd.
+//!   The blend is an RGB lerp from the terracotta fill, which makes level 0
+//!   *equal* to the resting palette rather than close to it. (Replaced the
+//!   smoke ribbon, 2026-08-26: translucent grey discs with none of the
+//!   reference image's framing read as anonymous fog, not a joke — a control
+//!   slot at the 12-descriptor ceiling has to buy something legible.)
 
 use musializer_core::scene::settings::index::clawd as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
@@ -299,12 +308,20 @@ pub fn draw(
     let glow_setting = frame.setting(scene, setting::GLOW);
     let bounce_depth = frame.setting(scene, setting::BOUNCE);
     let wiggle = frame.setting(scene, setting::WIGGLE);
-    let smoke_setting = frame.setting(scene, setting::SMOKE);
+    let show_setting = frame.setting(scene, setting::SHOW);
     let terminal_on = frame.setting(scene, setting::TERMINAL) >= 0.5;
 
     let min_dim = boundary.width.min(boundary.height);
     let ink = ink_color(daylight);
     let petal_hue = (PETAL_HUE + hue_shift).rem_euclid(360.0);
+
+    // The petal show: core's eased state-machine level, scaled by the
+    // strength control. Above 1.0 the control cannot push the lerp past the
+    // full wheel — it just gets there at a lower machine level.
+    let show = (state.show_level() * show_setting).clamp(0.0, 1.0);
+    // The colour wave's drift, on the sway clock like every other idle motion,
+    // so it is deterministic in an export.
+    let show_drift = state.sway_phase() * 40.0;
 
     // -- the senses ------------------------------------------------------------
     let warmth = state.warmth();
@@ -432,7 +449,18 @@ pub fn draw(
             * squash_y.mul_add(0.5, 0.5);
         let width = head_radius * (0.36 + 0.16 * energy) * (1.0 + organic(3) * 0.08) * squash_x;
         let outline = petal_outline(centre, angle, inner, length, width);
-        let fill = draw::color_from_hsv(petal_hue, petal_saturation, 0.70 + 0.22 * energy);
+        let mut fill = draw::color_from_hsv(petal_hue, petal_saturation, 0.70 + 0.22 * energy);
+        if show > 0.0 {
+            // The light show: this petal's own slice of the hue wheel, phase-
+            // shifted 30° per petal and drifting, brilliance from its own
+            // band. RGB-lerped from the terracotta fill so `show == 0.0`
+            // returns the resting palette as an equality.
+            let wheel_hue = (petal_hue + index as f32 * (360.0 / PETAL_COUNT as f32) + show_drift)
+                .rem_euclid(360.0);
+            let brilliance = 0.55 + 0.45 * energy;
+            let lit = draw::color_from_hsv(wheel_hue, 0.85, brilliance);
+            fill = lerp_color(fill, lit, show);
+        }
         // Scatter alpha fades a blown-out petal; at 1.0 `ColorAlpha` returns
         // the colour byte-for-byte, so this is free on a non-boom frame.
         fill_convex(d, &outline, draw::color_alpha(fill, scatter_alpha));
@@ -651,28 +679,6 @@ pub fn draw(
         }
     }
 
-    // -- smoke -----------------------------------------------------------------
-    let smoke_level = (state.smoke() * smoke_setting).clamp(0.0, 1.5);
-    if smoke_level > 0.02 {
-        let grey = lerp_color(
-            Color::new(210, 210, 212, 255),
-            Color::new(110, 108, 106, 255),
-            daylight,
-        );
-        let base = Vector2::new(centre.x + head_radius * 0.9, centre.y - head_radius * 0.7);
-        let reach = boundary.height * 0.5;
-        let steps = 22;
-        for k in 0..steps {
-            let s = k as f32 / steps as f32;
-            let lift = s * reach;
-            let wobble = ((sway * 1.3 + s * 5.2).sin()) * head_radius * (0.25 + s * 0.9);
-            let at = Vector2::new(base.x + wobble + s * head_radius * 0.8, base.y - lift);
-            let radius = head_radius * (0.10 + s * 0.55);
-            let alpha = (1.0 - s) * 0.16 * smoke_level;
-            d.draw_circle_v(at, radius, draw::color_alpha(grey, alpha));
-        }
-    }
-
     // -- cats ------------------------------------------------------------------
     let font = DefaultFont::get();
     let cat_size = (min_dim * 0.045).max(10.0 * pixel_scale);
@@ -765,20 +771,27 @@ pub fn draw(
     // Assist analysis attached shows `semantic=on` and a moving warmth, one
     // without shows `off` at the 0.60 neutral, so the plumbing is checkable
     // either way. `mouth` proves the sing-along oscillator coupled to a live
-    // cue. Blink is deliberately not reported: a 0.24 s event sampled at one
-    // frame is noise.
+    // cue. `dyn` names which loudness gates were live — `track` (profiled) or
+    // `none` (absolute fallback) — because the two draw the same picture on a
+    // loud track, and a scene quietly running fallback gates on real material
+    // is the unwired-feature trap. `show` prints phase *and* level: `on` at
+    // 0.00 and a dead machine both photograph as terracotta. Blink is
+    // deliberately not reported: a 0.24 s event sampled at one frame is noise.
     resources.last = format!(
-        "face={} amp={:.2} bass={:.2} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} smoke={:.2} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
+        "face={} amp={:.2} bass={:.2} energy={:.2} dyn={} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} show={}@{:.2} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
         expression.name(),
         state.amplitude(),
         state.bass(),
+        state.energy(),
+        if state.dynamics_present() { "track" } else { "none" },
         petal_peak,
         petal_peak_index,
         state.beat_count(),
         state.kick_count(),
         state.bounce(),
         drawn_cats,
-        smoke_level,
+        state.show_phase().name(),
+        show,
         terminal_status,
         typed_report,
         daylight,

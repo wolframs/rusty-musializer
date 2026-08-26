@@ -122,13 +122,18 @@ impl ProjectFrameLanes {
         }
     }
 
-    /// Attaches these project lanes to the audio, clock and effective settings.
+    /// Attaches these project lanes to the audio, clock, effective settings and
+    /// the track's loudness profile. `dynamics` is a parameter rather than a
+    /// lane field so both frame builders — preview and export — are forced to
+    /// decide it explicitly; a defaulted `None` here would be the silent
+    /// fallback the profile's own doc warns about.
     #[must_use]
     pub fn scene_frame<'frame>(
         &'frame self,
         timing: SceneFrameTiming,
         audio: SceneAudioFrame<'frame>,
         settings: &'frame SceneSettings,
+        dynamics: Option<crate::audio::track_dynamics::TrackDynamics>,
     ) -> SceneFrame<'frame> {
         SceneFrame {
             time_seconds: timing.time_seconds,
@@ -140,6 +145,7 @@ impl ProjectFrameLanes {
             lyric: self.lyric.as_ref(),
             events: self.events.view(),
             settings,
+            dynamics,
         }
     }
 }

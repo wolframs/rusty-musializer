@@ -33,7 +33,9 @@ pub enum SettingKind {
 #[derive(Clone, Copy, Debug)]
 pub struct SettingDescriptor {
     /// The persisted parameter key, e.g. `"settings.loom.weight"`. A `.musi`
-    /// compatibility surface — never rename one.
+    /// compatibility surface — never rename one without a [`LEGACY_KEYS`] row,
+    /// because `import_mappings` is all-or-nothing and an orphaned key refuses
+    /// the whole project open.
     pub key: &'static str,
     /// The label the inspector shows.
     pub label: &'static str,
@@ -234,8 +236,13 @@ pub mod index {
         pub const MOOD: usize = 3;
         /// Kaomoji cat count. `0` clears the floor.
         pub const CATS: usize = 4;
-        /// Smoke ribbon density. `0` puts the smoke out.
-        pub const SMOKE: usize = 5;
+        /// Petal show strength: how far the hue-wheel light show may take the
+        /// petals when the track earns it. `0` disables the mode. Replaced
+        /// `settings.clawd.smoke` (2026-08-26) — see [`LEGACY_KEYS`] for how a
+        /// `.musi` written in the two days smoke existed still opens.
+        ///
+        /// [`LEGACY_KEYS`]: super::super::LEGACY_KEYS
+        pub const SHOW: usize = 5;
         /// Types the current lyric cue as a terminal prompt line.
         pub const TERMINAL: usize = 6;
         pub const HUE: usize = 7;
@@ -439,7 +446,7 @@ const CLAWD: &[SettingDescriptor] = &[
     D::slider("settings.clawd.spin", "Petal spin", -2.00, 2.00, 0.35, 2),
     D::slider("settings.clawd.mood", "Mood swings", 0.00, 2.00, 1.00, 2),
     D::slider("settings.clawd.cats", "Cats", 0.00, 6.00, 3.00, 0),
-    D::slider("settings.clawd.smoke", "Smoke", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.clawd.show", "Petal show", 0.00, 2.00, 1.00, 2),
     D::toggle("settings.clawd.terminal", "Lyric terminal", 0.0),
     D::slider("settings.clawd.hue", "Hue shift (deg)", -180.0, 180.0, 0.0, 0),
     D::slider("settings.clawd.daylight", "Daylight", 0.00, 1.00, 0.85, 2),
@@ -481,6 +488,33 @@ pub fn count(scene: SceneId) -> usize {
 #[must_use]
 pub fn descriptor(scene: SceneId, index: usize) -> Option<&'static SettingDescriptor> {
     TABLES[scene.index()].get(index)
+}
+
+/// Keys this application once wrote and later renamed, oldest spelling first.
+/// Post-legacy only — a C-era key may never appear here, because the C-era
+/// tables are pinned byte-for-byte by `differential_settings.sh` and renaming
+/// one is a parity bug, not a migration.
+///
+/// Applied at exactly one boundary: `routes::import_mappings`, the `.musi`
+/// hydration path, which rewrites the mapping to the canonical key so the next
+/// save emits the new spelling. Everything else — the dumps, the route
+/// persistence grammar, the preset store, the UI — sees only canonical keys,
+/// so the alias cannot leak into a surface as a second name for one control.
+///
+/// - `settings.clawd.smoke` → `settings.clawd.show` (2026-08-26): the smoke
+///   ribbon was cut for the petal show; the scene was two days old and the
+///   contract to keep opening every file *this* application ever wrote still
+///   covers those two days.
+pub const LEGACY_KEYS: &[(&str, &str)] = &[("settings.clawd.smoke", "settings.clawd.show")];
+
+/// The canonical spelling of a persisted parameter key: the key itself, unless
+/// a [`LEGACY_KEYS`] row renames it.
+#[must_use]
+pub fn canonical_key(key: &str) -> &str {
+    LEGACY_KEYS
+        .iter()
+        .find(|(legacy, _)| *legacy == key)
+        .map_or(key, |(_, canonical)| canonical)
 }
 
 /// Resolves a persisted parameter key like `"settings.loom.weight"`

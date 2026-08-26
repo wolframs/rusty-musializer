@@ -69,7 +69,10 @@ use crate::ui::tune_explore::{RandomSource, SplitMix64};
 /// Bumped when the state layout changes so a rebind discards stale state.
 /// 2 (2026-08-24): the senses wave — semantic warmth, the sing-along mouth,
 /// and the seeded blink schedule.
-pub const STATE_VERSION: u32 = 3;
+/// 3 (2026-08-25): the bass-transient choreography.
+/// 4 (2026-08-26): track-relative dynamics, the finite bounce pose, and the
+/// petal show; the smoke follower is gone with its setting.
+pub const STATE_VERSION: u32 = 4;
 
 /// The petal count is the character's anatomy, not a tunable: thebes draws the
 /// flower with twelve petals, and twelve conveniently divides any analyzer band
@@ -106,9 +109,17 @@ const ENVELOPE_RELEASE_PER_SECOND: f32 = 0.010_69;
 /// measurement.
 const PETAL_RELEASE_PER_SECOND: f32 = 0.000_8;
 
-/// Retention of the beat-bounce impulse. `0.002^0.3 ≈ 0.15`, so a bounce is
-/// visually over ~0.3 s after the beat — a bob, not a wobble.
-const BOUNCE_RELEASE_PER_SECOND: f32 = 0.002;
+/// A head bounce is a fixed pose playout, like the cats' hop and for the same
+/// reason (operator, 2026-08-26): the first version set an impulse and let an
+/// exponential ooze it away, which has a takeoff and no landing. The pose is
+/// [`bounce_pose`] — squash, rebound slightly past neutral, exact rest at the
+/// end of the clock.
+pub const BOUNCE_SECONDS: f32 = 0.32;
+
+/// Peak of the raw `sin(1.5·π·u)·(1−u)` curve, used to normalize
+/// [`bounce_pose`] so a full-power bounce reads `1.0` at its deepest squash.
+/// Verified by a test that sweeps the curve rather than trusted.
+const BOUNCE_POSE_PEAK: f32 = 0.697_814;
 
 /// The bass-transient ("kick") gate, on the mean positive excursion of the
 /// lowest quarter of the bands over their own trails — the same shape as
@@ -142,30 +153,123 @@ const HOP_STAGGER_MAX_SECONDS: f32 = 0.06;
 /// A kick at least this strong, with [`PARTY_AMPLITUDE`], sends every cat up.
 const PARTY_KICK: f32 = 0.10;
 
-/// The loudness gate on the party rule. The first version partied on
-/// `amplitude > 0.75` at every beat wrap, which on any loud track meant the
-/// take-turns choreography never appeared at all — three cats pogoing in
-/// lockstep to a freewheeling clock.
-const PARTY_AMPLITUDE: f32 = 0.85;
+/// The loudness gate on the party rule, on the track-relative [`ClawdState::energy`].
+/// The first version gated on the raw amplitude envelope at 0.85, and the
+/// full-track probe (2026-08-26, *Parameter People*) showed that envelope's
+/// *median* is 0.94 — the "special" gate was open more than half the track.
+/// 0.8 of the track's own range means the top of *its* dynamics, whatever the
+/// mix's absolute level.
+const PARTY_ENERGY: f32 = 0.80;
 
-/// What a tracker phase wrap is still worth: a soft head bob, never a cat.
-/// The tracker freewheels between anchors (see [`KICK_THRESHOLD`]), and a
-/// character slamming to an extrapolated grid is the defect this replaced —
-/// but a gentle nod keeps the flower breathing on tracks where the grid is
-/// real, and on those the kicks land on top of it anyway.
-const WRAP_BOUNCE: f32 = 0.35;
+/// Track-relative energy below which the frame counts toward "quiet" for the
+/// pleading face. The absolute predecessor (amplitude < 0.06) was met on
+/// **8 of 5736 frames** across a whole real track — a face that existed only
+/// in the synthetic fixtures.
+const QUIET_ENERGY: f32 = 0.10;
 
-/// Amplitude below which the frame counts toward "quiet" for the pleading face.
-const QUIET_AMPLITUDE: f32 = 0.06;
+/// Track-relative energy that ends a pleading spell. Above [`QUIET_ENERGY`]
+/// so the boundary has hysteresis instead of a flicker.
+const RECOVER_ENERGY: f32 = 0.22;
 
-/// Amplitude that ends a pleading spell.
-const RECOVER_AMPLITUDE: f32 = 0.12;
+/// Symmetric retention for the energy follower: `e^-4` per second, a ~0.25 s
+/// time constant. Slower than the raw level (which flickers with the analyzer
+/// frame) and much faster than the section-scale swings it exists to measure.
+const ENERGY_RETENTION_PER_SECOND: f32 = 0.018_3;
+
+/// Per-second retention of the kick-density estimator — a leaky integrator
+/// with a two-second half-life (`0.5^(1/2)`, which clippy correctly notices is
+/// `1/√2`), incremented by 1.0 per kick. A steady groove at 2 kicks/s settles
+/// near 5.8; silence halves it every two seconds. This is the "is the track
+/// pulsing" half of the show's arm condition; loudness alone would light the
+/// petals on a swelling pad.
+const KICK_RATE_RETENTION_PER_SECOND: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+// -- the petal show ------------------------------------------------------------
+//
+// A temporary mode, not a setting: when the track sustains a genuinely big,
+// pulsing moment, the twelve petals leave terracotta and take the full hue
+// wheel, each brightened by its own band. Hysteresis and dwell keep it an
+// event — arm briefly, hold at least a few seconds, fade out slowly, then
+// cool down — rather than rainbow flicker at every loud bar.
+
+/// Track-relative energy the arm condition requires, sustained with the kick
+/// rate for [`SHOW_ARM_SECONDS`].
+const SHOW_ENERGY_ON: f32 = 0.78;
+
+/// The energy bar while *already arming* — hysteresis on the arm boundary
+/// itself. The probe showed the energy oscillating 0.74..0.80 through a
+/// heavily pulsing 12-second section: with a single bar the arm clock kept
+/// resetting a tenth of a second in and the show never ignited there. Enter
+/// high, keep lower; ignition still requires the full [`SHOW_ARM_SECONDS`].
+const SHOW_ENERGY_KEEP: f32 = 0.65;
+
+/// Energy below which a running show (past its minimum hold) begins fading.
+/// Far under [`SHOW_ENERGY_ON`], so an on-the-line chorus does not strobe.
+const SHOW_ENERGY_OFF: f32 = 0.50;
+
+/// Kick-rate floor to arm: ~0.7 kicks/s sustained against the two-second
+/// half-life. A chorus has this; a pad crescendo does not.
+const SHOW_KICK_RATE_ON: f32 = 2.0;
+
+/// Kick-rate floor to sustain a running show.
+const SHOW_KICK_RATE_OFF: f32 = 0.8;
+
+/// How long the arm condition must hold before the show ignites.
+const SHOW_ARM_SECONDS: f32 = 1.2;
+
+/// Minimum seconds a show runs once ignited, whatever the track does.
+const SHOW_HOLD_MIN_SECONDS: f32 = 4.0;
+
+/// Fade-in and fade-out rates. In fast (an ignition is theatrical), out slow
+/// (terracotta returns like house lights, not a cut).
+const SHOW_FADE_IN_SECONDS: f32 = 0.8;
+const SHOW_FADE_OUT_SECONDS: f32 = 2.5;
+
+/// Seconds after a show fully fades before the next may arm.
+const SHOW_COOLDOWN_SECONDS: f32 = 6.0;
 
 /// Flux envelope above which the frame counts toward "busy" for the dizzy face.
 const BUSY_FLUX: f32 = 0.5;
 
 /// Flux envelope below which a dizzy spell ends.
 const CALM_FLUX: f32 = 0.3;
+
+/// Kick-rate above which the frame also counts toward "busy": a relentless
+/// bass groove makes Clawd dizzy even when broadband flux stays low — which
+/// on real material it does; the full-track probe (2026-08-26) put raw flux's
+/// 95th percentile at 0.06 against the 0.083 the [`BUSY_FLUX`] path needs, so
+/// the spiral eyes had never once fired on music. 6.5 sits just under the
+/// probe's sustained-groove plateau (~7.4) and above its verse level.
+const DIZZY_KICK_RATE_ON: f32 = 6.5;
+
+/// Kick-rate below which (with calm flux) a dizzy spell ends.
+const DIZZY_KICK_RATE_OFF: f32 = 5.0;
+
+/// The shortest a dizzy spell may run before its calm exit is allowed. A
+/// spell entered the frame its cooldown expired and calm-exited 0.2 s later
+/// on the probe — spirals for six frames read as a glitch, not a feeling.
+/// The dwell cap still overrides.
+const DIZZY_MIN_SECONDS: f32 = 2.0;
+
+/// The longest a single dizzy spell may run. Without a cap the first probe
+/// of the kick-rate lane spiralled the eyes for 26 unbroken seconds through a
+/// relentless section — a sustained condition honestly read, and wallpaper on
+/// screen. Eight seconds reads as "the groove got to him"; the character
+/// comes back before he stops being a character.
+const DIZZY_MAX_SECONDS: f32 = 8.0;
+
+/// Seconds after a dizzy spell (however it ended) before the next may begin.
+/// Shorter than the boom's cooldown — dizziness recurring in a long groove is
+/// right, strobing at the dwell period is not.
+const DIZZY_COOLDOWN_SECONDS: f32 = 12.0;
+
+/// The strong-kick floor for a head-explode. The boom used to require
+/// `audio.onset`, which is a fixed threshold on broadband flux — the same
+/// dead lane as dizzy's, and the probe showed zero booms across a whole real
+/// track. A kick is already bass-scoped and per-track meaningful; at 0.12
+/// (the track's ~99th-percentile excursion) with the energy gate and the
+/// cooldown, *Parameter People* measures exactly two booms — an event.
+const BOOM_KICK: f32 = 0.12;
 
 /// A stalled frame must not advance the character by a whole phrase — the same
 /// cap and the same reasoning as Phosphor Dream's cycle clock.
@@ -259,6 +363,49 @@ impl Expression {
     }
 }
 
+/// Where the petal show's state machine stands. The report line prints the
+/// name: `on` at level 0.0 and a dead machine both photograph as terracotta,
+/// so the phase has to say which the frame was.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShowPhase {
+    #[default]
+    Off,
+    /// The arm condition is holding; not yet visible.
+    Arming,
+    /// Ignited: the level rises to and holds at 1.
+    On,
+    /// The moment passed: the level is easing back to terracotta.
+    Fading,
+    /// Fully faded; the next show may not arm yet.
+    Cooldown,
+}
+
+impl ShowPhase {
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            ShowPhase::Off => "off",
+            ShowPhase::Arming => "arming",
+            ShowPhase::On => "on",
+            ShowPhase::Fading => "fading",
+            ShowPhase::Cooldown => "cooldown",
+        }
+    }
+}
+
+/// The head's squash-and-stretch playout at `u = age / BOUNCE_SECONDS`:
+/// `sin(1.5·π·u)·(1−u)`, normalized to peak at `1.0` near `u ≈ 0.27`,
+/// crossing zero at `u = 2/3`, a ~17 % rebound *stretch* (negative lobe)
+/// around `u ≈ 0.82`, and exactly `0.0` at both ends. Finite and landed, like
+/// the cats' arc — an exponential has a takeoff and no landing.
+#[must_use]
+fn bounce_pose(u: f32) -> f32 {
+    if u <= 0.0 || u >= 1.0 {
+        return 0.0;
+    }
+    (1.5 * std::f32::consts::PI * u).sin() * (1.0 - u) / BOUNCE_POSE_PEAK
+}
+
 // -- cats ----------------------------------------------------------------------
 
 /// What a cat's face is doing. Derived, not stored: a cat has no memory.
@@ -302,12 +449,29 @@ pub struct ClawdState {
     flux: f32,
     petals: [f32; PETAL_COUNT],
 
-    // Motion.
+    // Motion. The bounce is a pose clock like the cats' hops: `bounce_age`
+    // runs `0..BOUNCE_SECONDS`, `bounce_power` scales the playout.
     petal_angle: f32,
     sway_phase: f32,
-    bounce: f32,
+    bounce_age: f32,
+    bounce_power: f32,
     beat_count: u64,
     previous_beat_phase: f32,
+
+    // Track-relative dynamics (STATE_VERSION 4). `energy` is this frame's
+    // loudness inside the track's own profiled range; when no profile rode the
+    // frame it falls back to the amplitude envelope, and `dynamics_present`
+    // records which, because the two are indistinguishable on a loud track.
+    energy: f32,
+    dynamics_present: bool,
+
+    // The petal show (STATE_VERSION 4).
+    show_phase: ShowPhase,
+    show_level: f32,
+    show_arm_seconds: f32,
+    show_hold_seconds: f32,
+    show_cooldown: f32,
+    kick_rate: f32,
 
     // The face.
     expression: Expression,
@@ -315,6 +479,7 @@ pub struct ClawdState {
     quiet_seconds: f32,
     busy_seconds: f32,
     boom_cooldown: f32,
+    dizzy_cooldown: f32,
 
     // The senses wave (STATE_VERSION 2).
     warmth: f32,
@@ -324,9 +489,6 @@ pub struct ClawdState {
     blink_rng: SplitMix64,
     blink_countdown: f32,
     blink_age: f32,
-
-    // Atmosphere.
-    smoke: f32,
 
     // The bass-transient detector (STATE_VERSION 3).
     kick_refractory: f32,
@@ -388,14 +550,25 @@ impl ClawdState {
             petals: [0.0; PETAL_COUNT],
             petal_angle: 0.0,
             sway_phase: 0.0,
-            bounce: 0.0,
+            // Landed, like the cats: the age starts past the playout's end.
+            bounce_age: BOUNCE_SECONDS,
+            bounce_power: 0.0,
             beat_count: 0,
             previous_beat_phase: 0.0,
+            energy: 0.0,
+            dynamics_present: false,
+            show_phase: ShowPhase::Off,
+            show_level: 0.0,
+            show_arm_seconds: 0.0,
+            show_hold_seconds: 0.0,
+            show_cooldown: 0.0,
+            kick_rate: 0.0,
             expression: Expression::Happy,
             expression_age: 0.0,
             quiet_seconds: 0.0,
             busy_seconds: 0.0,
             boom_cooldown: 0.0,
+            dizzy_cooldown: 0.0,
             warmth: NEUTRAL_WARMTH,
             semantic_active: false,
             mouth_open: 0.0,
@@ -404,7 +577,6 @@ impl ClawdState {
             blink_countdown,
             // No blink in flight: the age starts past the envelope's end.
             blink_age: BLINK_SECONDS,
-            smoke: 0.0,
             kick_refractory: 0.0,
             kick_count: 0,
             last_kick: 0.0,
@@ -468,10 +640,49 @@ impl ClawdState {
         self.sway_phase
     }
 
-    /// Beat squash-and-stretch impulse, `1.0` at the beat decaying to `0`.
+    /// The head's squash-and-stretch pose, signed: positive is the squash
+    /// (wider, shorter, dipped), the small negative tail is the rebound
+    /// stretch, and exactly `0.0` is at rest. Scaled by the strength of the
+    /// kick that launched it. See [`bounce_pose`].
     #[must_use]
     pub fn bounce(&self) -> f32 {
-        self.bounce
+        self.bounce_power * bounce_pose(self.bounce_age / BOUNCE_SECONDS)
+    }
+
+    /// This frame's loudness inside the track's own range, `0..1` — the
+    /// quantity every "how loud is this moment" gate reads. Falls back to the
+    /// amplitude envelope when no profile rode the frame; see
+    /// [`Self::dynamics_present`].
+    #[must_use]
+    pub fn energy(&self) -> f32 {
+        self.energy
+    }
+
+    /// Whether the last update carried a [`TrackDynamics`] profile. The report
+    /// line prints it as `dyn=track`/`dyn=none`: a scene falling back to
+    /// absolute gates on a real track is a wiring fact a capture cannot show.
+    ///
+    /// [`TrackDynamics`]: crate::audio::track_dynamics::TrackDynamics
+    #[must_use]
+    pub fn dynamics_present(&self) -> bool {
+        self.dynamics_present
+    }
+
+    /// The petal show's intensity, `0..1`, eased by the state machine.
+    #[must_use]
+    pub fn show_level(&self) -> f32 {
+        self.show_level
+    }
+
+    #[must_use]
+    pub fn show_phase(&self) -> ShowPhase {
+        self.show_phase
+    }
+
+    /// The kick-density estimate the show's arm condition reads.
+    #[must_use]
+    pub fn kick_rate(&self) -> f32 {
+        self.kick_rate
     }
 
     /// Beats seen so far. The report line prints it: a track with music and a
@@ -501,12 +712,6 @@ impl ClawdState {
         } else {
             0.0
         }
-    }
-
-    /// Audio-derived smoke level, `0..1`, before the `smoke` setting scales it.
-    #[must_use]
-    pub fn smoke(&self) -> f32 {
-        self.smoke
     }
 
     /// Semantic warmth, `0..1`: a ~2 s follower over the Assist lane's valence,
@@ -709,9 +914,21 @@ impl ClawdState {
     /// The face's transition table. Priorities, top first: an active boom plays
     /// out untouchable; a new boom beats everything; pleading and dizzy are
     /// sustained conditions; a scrunch is an event; everything relaxes to happy.
-    fn step_expression(&mut self, audio: &SceneAudioFrame<'_>, mood: f32, delta: f32) {
+    ///
+    /// `kick_fired`/`kick` are this frame's transient-detector outcome: the
+    /// boom triggers on a *strong kick* rather than on `audio.onset`, so the
+    /// head-explode lands on the same push the cats hop on.
+    fn step_expression(
+        &mut self,
+        audio: &SceneAudioFrame<'_>,
+        mood: f32,
+        delta: f32,
+        kick_fired: bool,
+        kick: f32,
+    ) {
         self.expression_age += delta;
         self.boom_cooldown = (self.boom_cooldown - delta).max(0.0);
+        self.dizzy_cooldown = (self.dizzy_cooldown - delta).max(0.0);
 
         if mood <= f32::EPSILON {
             // Pinned calm — a designed state, not a dead machine; the report
@@ -730,20 +947,18 @@ impl ClawdState {
         // Entry thresholds scale down as mood scales up. The clamps keep a
         // maximal mood from making every frame an event and a minimal one from
         // needing physically impossible input.
-        // The bass gate reads [`bass_from_trails`] — the mean of the lowest
-        // *quarter* of the smoothed bands — which tops out well under 1.0 on
-        // real material because the quarter spans more than the kick. 0.6 at
-        // neutral mood is "the low end is genuinely full", measured against the
-        // synthetic fixtures; 0.72 was never reached at all.
-        let boom_amplitude = (0.88 / mood).clamp(0.70, 0.98);
-        let boom_bass = (0.60 / mood).clamp(0.45, 0.90);
+        // The boom's loudness gate reads the track-relative energy: "one of
+        // this track's biggest moments", not an absolute the mix may never
+        // reach or may sit on all day. Its trigger is a strong kick — see
+        // [`BOOM_KICK`] for why `audio.onset` was retired here.
+        let boom_energy = (0.88 / mood).clamp(0.72, 0.96);
         let scrunch_flux = (0.11 / mood).clamp(0.06, 0.40);
         let plead_after = (3.0 / mood).clamp(1.5, 10.0);
         let dizzy_after = (2.8 / mood).clamp(1.2, 8.0);
 
-        if audio.onset
-            && self.amplitude >= boom_amplitude
-            && self.bass >= boom_bass
+        if kick_fired
+            && kick >= BOOM_KICK
+            && self.energy >= boom_energy
             && self.boom_cooldown <= 0.0
         {
             self.set_expression(Expression::Boom);
@@ -754,7 +969,30 @@ impl ClawdState {
             self.set_expression(Expression::Pleading);
             return;
         }
-        if self.busy_seconds >= dizzy_after {
+        // A running dizzy spell is held here, like a boom's playout: only its
+        // own exits (calm, or the dwell cap) end it, so a scrunch cannot
+        // overwrite the spirals mid-spell — and, the bug the cap surfaced,
+        // the entry branch below cannot keep re-asserting the spell past the
+        // cap while `busy_seconds` stays high.
+        if self.expression == Expression::Dizzy {
+            if (self.expression_age >= DIZZY_MIN_SECONDS
+                && self.flux < CALM_FLUX
+                && self.kick_rate < DIZZY_KICK_RATE_OFF)
+                || self.expression_age >= DIZZY_MAX_SECONDS
+            {
+                self.set_expression(Expression::Happy);
+                // Reset the accumulator on exit, or a still-high `busy_seconds`
+                // re-enters Dizzy on the next frame and the face strobes
+                // between spiral and smile while it drains — a latent flap the
+                // flux-only lane had too, just never on inputs that reached it.
+                // The cooldown keeps a relentless groove from cycling the
+                // spell at exactly the dwell period.
+                self.busy_seconds = 0.0;
+                self.dizzy_cooldown = DIZZY_COOLDOWN_SECONDS;
+            }
+            return;
+        }
+        if self.busy_seconds >= dizzy_after && self.dizzy_cooldown <= 0.0 {
             self.set_expression(Expression::Dizzy);
             return;
         }
@@ -767,13 +1005,82 @@ impl ClawdState {
             Expression::Scrunch if self.expression_age >= SCRUNCH_SECONDS => {
                 self.set_expression(Expression::Happy);
             }
-            Expression::Pleading if self.amplitude > RECOVER_AMPLITUDE => {
-                self.set_expression(Expression::Happy);
-            }
-            Expression::Dizzy if self.flux < CALM_FLUX => {
+            Expression::Pleading if self.energy > RECOVER_ENERGY => {
                 self.set_expression(Expression::Happy);
             }
             _ => {}
+        }
+    }
+
+    /// The petal show's state machine. Hysteresis at both ends and a minimum
+    /// hold are what make it an *event*: a mode that flickered with the meter
+    /// would be rainbow noise, which is worse than no mode at all.
+    fn step_show(&mut self, show_setting: f32, delta: f32) {
+        // Enter/keep hysteresis on the energy bar — see [`SHOW_ENERGY_KEEP`].
+        let energy_bar = if self.show_phase == ShowPhase::Arming {
+            SHOW_ENERGY_KEEP
+        } else {
+            SHOW_ENERGY_ON
+        };
+        let armable = show_setting > f32::EPSILON
+            && self.energy >= energy_bar
+            && self.kick_rate >= SHOW_KICK_RATE_ON;
+        let sustains = show_setting > f32::EPSILON
+            && self.energy >= SHOW_ENERGY_OFF
+            && self.kick_rate >= SHOW_KICK_RATE_OFF;
+        match self.show_phase {
+            ShowPhase::Off => {
+                if armable {
+                    self.show_phase = ShowPhase::Arming;
+                    self.show_arm_seconds = 0.0;
+                }
+            }
+            ShowPhase::Arming => {
+                if !armable {
+                    self.show_phase = ShowPhase::Off;
+                } else {
+                    self.show_arm_seconds += delta;
+                    if self.show_arm_seconds >= SHOW_ARM_SECONDS {
+                        self.show_phase = ShowPhase::On;
+                        self.show_hold_seconds = 0.0;
+                    }
+                }
+            }
+            ShowPhase::On => {
+                self.show_level = (self.show_level + delta / SHOW_FADE_IN_SECONDS).min(1.0);
+                self.show_hold_seconds += delta;
+                if self.show_hold_seconds >= SHOW_HOLD_MIN_SECONDS && !sustains {
+                    self.show_phase = ShowPhase::Fading;
+                }
+            }
+            ShowPhase::Fading => {
+                if armable {
+                    // The chorus came back mid-fade: rejoin it rather than
+                    // finishing the fade and sitting out the cooldown.
+                    self.show_phase = ShowPhase::On;
+                    self.show_hold_seconds = 0.0;
+                } else {
+                    self.show_level = (self.show_level - delta / SHOW_FADE_OUT_SECONDS).max(0.0);
+                    if self.show_level <= 0.0 {
+                        self.show_phase = ShowPhase::Cooldown;
+                        self.show_cooldown = SHOW_COOLDOWN_SECONDS;
+                    }
+                }
+            }
+            ShowPhase::Cooldown => {
+                self.show_cooldown -= delta;
+                if self.show_cooldown <= 0.0 {
+                    self.show_phase = ShowPhase::Off;
+                }
+            }
+        }
+        // Pulling the control to zero mid-show fades out rather than snapping:
+        // `armable`/`sustains` are already false, so On past its hold and
+        // Arming resolve on their own — but On *inside* its hold needs the
+        // override, or the mode would honour a dwell for a control that asked
+        // it to stop.
+        if show_setting <= f32::EPSILON && self.show_phase == ShowPhase::On {
+            self.show_phase = ShowPhase::Fading;
         }
     }
 }
@@ -811,6 +1118,26 @@ impl SceneState for ClawdState {
             frame.delta_seconds,
             ENVELOPE_RELEASE_PER_SECOND,
         );
+        // Track-relative energy: where this frame sits inside the track's own
+        // loudness range. The raw level flickers with the analyzer frame, so a
+        // symmetric ~0.25 s follower smooths it; with no profile the amplitude
+        // envelope stands in, and the report records which was live.
+        match frame.dynamics {
+            Some(dynamics) => {
+                self.dynamics_present = true;
+                self.energy = Self::approach(
+                    self.energy,
+                    dynamics.level(audio.rms),
+                    delta,
+                    ENERGY_RETENTION_PER_SECOND,
+                );
+            }
+            None => {
+                self.dynamics_present = false;
+                self.energy = self.amplitude;
+            }
+        }
+
         let coupling = frame.setting(SceneId::Clawd, setting::PETALS);
         for index in 0..PETAL_COUNT {
             self.petals[index] = Self::follow(
@@ -838,16 +1165,20 @@ impl SceneState for ClawdState {
         // the cat_probe run on real material is the whole argument.
         let kick = Self::raw_kick(audio);
         self.kick_refractory = (self.kick_refractory - delta).max(0.0);
-        if kick >= KICK_THRESHOLD && self.kick_refractory <= 0.0 {
+        self.kick_rate *= KICK_RATE_RETENTION_PER_SECOND.powf(delta);
+        let kick_fired = kick >= KICK_THRESHOLD && self.kick_refractory <= 0.0;
+        if kick_fired {
             self.kick_refractory = KICK_REFRACTORY_SECONDS;
             self.kick_count = self.kick_count.wrapping_add(1);
+            self.kick_rate += 1.0;
             self.last_kick = kick;
-            self.bounce = 1.0;
+            // The head bounces on the same transient the cats hop on — a
+            // finite pose (see [`bounce_pose`]), strength-scaled like a hop.
+            let power = (kick / (2.0 * KICK_THRESHOLD)).clamp(0.55, 1.0);
+            self.bounce_age = 0.0;
+            self.bounce_power = power;
             if self.cat_count > 0 {
-                // Height follows how hard the track hit, floored so a hop that
-                // fires is a hop a viewer can see.
-                let power = (kick / (2.0 * KICK_THRESHOLD)).clamp(0.55, 1.0);
-                if kick >= PARTY_KICK && self.amplitude >= PARTY_AMPLITUDE {
+                if kick >= PARTY_KICK && self.energy >= PARTY_ENERGY {
                     // A genuinely big moment: everybody up, each on their own
                     // seeded stagger so the row reads as six cats, not one.
                     for index in 0..MAX_CATS {
@@ -864,28 +1195,37 @@ impl SceneState for ClawdState {
         }
 
         // The tracker. `beat_phase` saws 0→1 per beat; a wrap is a beat as the
-        // tracker believes it. Worth a soft nod of the head and the count the
-        // report prints — never a cat (see [`WRAP_BOUNCE`]).
+        // tracker believes it — worth exactly the count the report prints, and
+        // **no motion at all**. The first fix demoted a wrap from a cat hop to
+        // a soft head nod; the full-track probe then showed the tracker
+        // freewheeling 371 wraps off a single learned interval on real
+        // material, so a nod to that clock was still 371 nods to nothing
+        // (operator + second opinion, 2026-08-26). Sway breathes the idle
+        // body; kicks own every displacement.
         let phase = audio.beat_phase;
         if phase.is_finite() && phase < self.previous_beat_phase - 0.5 {
             self.beat_count = self.beat_count.wrapping_add(1);
-            self.bounce = self.bounce.max(WRAP_BOUNCE);
         }
         self.previous_beat_phase = if phase.is_finite() { phase } else { 0.0 };
-        self.bounce = Self::follow(self.bounce, 0.0, delta, BOUNCE_RELEASE_PER_SECOND);
+        if self.bounce_age < BOUNCE_SECONDS {
+            self.bounce_age += delta;
+        }
         for age in &mut self.hop_age {
             if *age < HOP_SECONDS {
                 *age += delta;
             }
         }
 
-        // Sustained-condition clocks for the face.
-        if self.amplitude < QUIET_AMPLITUDE {
+        // Sustained-condition clocks for the face. Quiet is *this track's*
+        // quiet — the energy level, not the absolute envelope.
+        if self.energy < QUIET_ENERGY {
             self.quiet_seconds += delta;
         } else {
             self.quiet_seconds = 0.0;
         }
-        if self.flux > BUSY_FLUX {
+        // Busy has two lanes: broadband flux (the synthetic fixtures' lane)
+        // and a relentless kick groove (the one real material reaches).
+        if self.flux > BUSY_FLUX || self.kick_rate >= DIZZY_KICK_RATE_ON {
             self.busy_seconds += delta;
         } else {
             self.busy_seconds = (self.busy_seconds - delta * 2.0).max(0.0);
@@ -924,7 +1264,7 @@ impl SceneState for ClawdState {
         } else {
             mood
         };
-        self.step_expression(audio, mood, delta);
+        self.step_expression(audio, mood, delta, kick_fired, kick);
 
         // Blinks. The countdown runs unconditionally — through scrunches and
         // booms too — but only starts an eyelid when the face can take one;
@@ -943,18 +1283,10 @@ impl SceneState for ClawdState {
             self.blink_age += delta;
         }
 
-        // Smoke: rises when the track sustains, thins slowly when it stops.
-        // Asymmetric on purpose — smoke that vanished on the first quiet bar
-        // would read as a rendering fault, not weather.
-        let smoke_target = Self::clamp01((self.amplitude - 0.22) * 1.5);
-        let remain = if smoke_target > self.smoke {
-            0.15f32
-        } else {
-            0.75f32
-        };
-        self.smoke += (smoke_target - self.smoke) * (1.0 - remain.powf(delta));
-
-        // Cats.
+        // The petal show, after the kick and energy updates so its arm
+        // condition reads this frame's values.
+        let show_setting = frame.setting(SceneId::Clawd, setting::SHOW);
+        self.step_show(show_setting, delta);
 
         // The lyric terminal's typist. Runs regardless of the toggle — see the
         // module docs for why the toggle gates drawing, not time.
@@ -1059,6 +1391,23 @@ mod tests {
         }
     }
 
+    /// Loud *and* kicking: the lowest quarter rides well above its trails, so
+    /// the transient detector fires at its refractory rate. `feed_loud`'s
+    /// 0.05 excursion rounds just under [`KICK_THRESHOLD`] in f32 and never
+    /// kicks — deliberate there (envelope tests want no choreography), fatal
+    /// for a show test.
+    fn feed_pulsing(state: &mut ClawdState, settings: &SceneSettings, frames: usize) {
+        let mut bands = [0.9f32; 24];
+        for band in &mut bands[..6] {
+            *band = 0.95;
+        }
+        let trails = [0.7f32; 24];
+        for _ in 0..frames {
+            let frame = frame_with(settings, &bands, &trails, 1.0 / 60.0);
+            state.update(&frame);
+        }
+    }
+
     fn feed_silence(state: &mut ClawdState, settings: &SceneSettings, frames: usize) {
         let bands = [0.0f32; 24];
         let trails = [0.0f32; 24];
@@ -1128,6 +1477,9 @@ mod tests {
         assert_eq!(a.warmth(), b.warmth());
         assert_eq!(a.mouth_open(), b.mouth_open());
         assert_eq!(a.blink(), b.blink());
+        assert_eq!(a.energy(), b.energy());
+        assert_eq!(a.show_phase(), b.show_phase());
+        assert_eq!(a.show_level(), b.show_level());
         for i in 0..a.cat_count() {
             assert_eq!(a.cat(i), b.cat(i));
         }
@@ -1180,8 +1532,14 @@ mod tests {
             state.update(&frame);
         }
         assert_eq!(state.expression(), Expression::Happy);
-        // One frame of strong flux: bands well above their trails.
-        let spike = [0.6f32; 24];
+        // One frame of strong *treble* flux: the upper bands spike while the
+        // lowest quarter stays flat, so this is an accent (onset) with no
+        // kick — the scrunch's own territory, out of the boom's reach now the
+        // boom triggers on strong kicks rather than on `onset`.
+        let mut spike = [0.3f32; 24];
+        for band in &mut spike[6..] {
+            *band = 0.65;
+        }
         let low_trails = [0.3f32; 24];
         let frame = frame_with(&settings, &spike, &low_trails, 1.0 / 60.0);
         assert!(frame.audio.onset, "the fixture must actually onset");
@@ -1227,12 +1585,51 @@ mod tests {
     }
 
     #[test]
+    fn a_dizzy_spell_is_capped_and_cools_down() {
+        // Busy input that never lets up. The first kick-rate probe on real
+        // material spiralled the eyes for 26 unbroken seconds; the cap and the
+        // cooldown are what keep dizzy an event in a relentless groove.
+        let settings = SceneSettings::new();
+        let mut state = ClawdState::new(9);
+        let bands = [0.8f32; 24];
+        let low_trails = [0.2f32; 24];
+        let mut dizzy_run = 0.0f32;
+        let mut longest = 0.0f32;
+        let mut spells = 0u32;
+        let mut was_dizzy = false;
+        for _ in 0..60 * 40 {
+            let frame = frame_with(&settings, &bands, &low_trails, 1.0 / 60.0);
+            state.update(&frame);
+            let dizzy = state.expression() == Expression::Dizzy;
+            if dizzy {
+                if !was_dizzy {
+                    spells += 1;
+                }
+                dizzy_run += 1.0 / 60.0;
+                longest = longest.max(dizzy_run);
+            } else {
+                dizzy_run = 0.0;
+            }
+            was_dizzy = dizzy;
+        }
+        assert!(spells >= 1, "the fixture must reach dizzy at all");
+        assert!(
+            longest <= DIZZY_MAX_SECONDS + 0.1,
+            "a spell must end at the cap: longest ran {longest}"
+        );
+        // 40 s of unbroken busyness admits at most cap+cooldown+re-accrual
+        // cycles — three spells, not a strobe.
+        assert!(spells <= 3, "cooldown must pace the spells: {spells}");
+    }
+
+    #[test]
     fn the_boom_fires_once_and_respects_its_cooldown() {
         let settings = SceneSettings::new();
         let mut state = ClawdState::new(6);
-        // Saturate every envelope, then onset. Trails at 0.7 keep the flux well
-        // above the onset threshold while `bass_from_trails` reads 0.7 — past
-        // the 0.6 boom gate but not an unphysical 1.0.
+        // Saturate the energy envelope and hand the detector a strong kick:
+        // the lowest quarter rides 0.3 above its trails, well past
+        // [`BOOM_KICK`], which since the choreography rework is the boom's
+        // trigger — the head explodes on the same push the cats hop on.
         let bands = [1.0f32; 24];
         let low_trails = [0.7f32; 24];
         for _ in 0..60 {
@@ -1274,36 +1671,54 @@ mod tests {
     }
 
     #[test]
-    fn a_beat_wrap_soft_bobs_the_head_and_never_hops_a_cat() {
+    fn a_beat_wrap_counts_and_moves_nothing() {
         // Bands equal to trails: no bass transient anywhere in this fixture,
         // so anything that moves moved on the tracker's say-so alone — and the
-        // tracker freewheels between anchors on real material (cat_probe,
-        // 2026-08-25), which is why its wraps are worth a nod and not a jump.
+        // full-track probe showed the tracker freewheeling 371 wraps off a
+        // single learned interval on real material (2026-08-26). A wrap is
+        // worth the count the report prints, and no displacement at all: not a
+        // cat, and since the choreography rework not even a head nod.
         let settings = SceneSettings::new();
         let mut state = ClawdState::new(8);
         let bands = [0.5f32; 24];
         let trails = [0.5f32; 24];
-        let mut bobbed = false;
         for i in 0..120 {
             let mut frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
             // A 1-second beat sawtooth.
             frame.audio.beat_phase = (i as f32 / 60.0) % 1.0;
             state.update(&frame);
-            if state.bounce() > 0.3 {
-                bobbed = true;
-            }
-            assert!(
-                state.bounce() <= 0.5,
-                "a wrap is a soft bob, not the kick's full impulse: {}",
-                state.bounce()
+            assert_eq!(
+                state.bounce(),
+                0.0,
+                "a freewheeling wrap must not move the head"
             );
             let hopping =
                 (0..state.cat_count()).any(|c| state.cat(c).is_some_and(|cat| cat.hop > 0.0));
             assert!(!hopping, "a freewheeling wrap must never hop a cat");
         }
-        assert!(bobbed, "a phase wrap should still nod the head");
         assert_eq!(state.beat_count(), 1);
         assert_eq!(state.kick_count(), 0);
+    }
+
+    #[test]
+    fn the_bounce_pose_is_normalized_finite_and_lands_exactly() {
+        assert_eq!(bounce_pose(0.0), 0.0);
+        assert_eq!(bounce_pose(1.0), 0.0);
+        assert_eq!(bounce_pose(-0.5), 0.0);
+        assert_eq!(bounce_pose(1.5), 0.0);
+        let mut peak = 0.0f32;
+        let mut trough = 0.0f32;
+        for i in 1..1000 {
+            let value = bounce_pose(i as f32 / 1000.0);
+            peak = peak.max(value);
+            trough = trough.min(value);
+        }
+        assert!((peak - 1.0).abs() < 1e-3, "normalized peak, got {peak}");
+        // The rebound stretch: a small negative lobe, ~17 % of the squash.
+        assert!(
+            trough < -0.15 && trough > -0.20,
+            "rebound lobe out of shape: {trough}"
+        );
     }
 
     #[test]
@@ -1322,16 +1737,16 @@ mod tests {
         state.update(&frame);
         assert_eq!(state.kick_count(), 1);
         assert!(state.last_kick() > 0.0);
-        assert!(
-            (state.bounce() - 1.0).abs() < 0.2,
-            "a kick is the full impulse"
-        );
         let settled = [0.25f32; 24];
         let mut peak = 0.0f32;
         let mut airborne_frames = 0u32;
+        let mut bounce_peak = 0.0f32;
+        let mut bounce_rebound = 0.0f32;
         for _ in 0..60 {
             let frame = frame_with(&settings, &settled, &settled, 1.0 / 60.0);
             state.update(&frame);
+            bounce_peak = bounce_peak.max(state.bounce());
+            bounce_rebound = bounce_rebound.min(state.bounce());
             let hop = (0..state.cat_count())
                 .filter_map(|c| state.cat(c))
                 .map(|cat| cat.hop)
@@ -1341,6 +1756,17 @@ mod tests {
             }
             peak = peak.max(hop);
         }
+        // The head bounced through its full finite pose — deep squash, a
+        // small rebound stretch — and is at exact rest again by now.
+        assert!(
+            bounce_peak > 0.85,
+            "a full-power kick should reach near the pose's peak: {bounce_peak}"
+        );
+        assert!(
+            bounce_rebound < -0.05,
+            "the pose rebounds past neutral before it lands: {bounce_rebound}"
+        );
+        assert_eq!(state.bounce(), 0.0, "the bounce lands at exact rest");
         assert!(peak >= 0.5, "the arc must reach a visible apex, got {peak}");
         // Ballistic, not asymptotic: with stagger the flight is bounded well
         // under half a second, and it *ends* — the landing is a frame, not a
@@ -1488,28 +1914,93 @@ mod tests {
     }
 
     #[test]
-    fn smoke_rises_under_sustained_energy_and_thins_slower_than_it_rose() {
+    fn the_show_arms_on_a_sustained_pulsing_peak_and_fades_home() {
+        // A loud, kicking fixture: energy saturates and the transient
+        // detector fires at its refractory rate — the arm condition.
         let settings = SceneSettings::new();
         let mut state = ClawdState::new(11);
-        feed_loud(&mut state, &settings, 60 * 3);
-        let risen = state.smoke();
+        feed_pulsing(&mut state, &settings, 60 * 4);
+        assert_eq!(state.show_phase(), ShowPhase::On);
+        assert_eq!(state.show_level(), 1.0, "ignited and fully faded in");
+        assert!(state.kick_rate() >= SHOW_KICK_RATE_ON);
+        // The moment passes: past the minimum hold the show fades, reaches
+        // exactly zero (terracotta returns as an equality, not a limit), and
+        // cools down into Off.
+        feed_silence(&mut state, &settings, 60 * 10);
+        assert_eq!(state.show_level(), 0.0);
+        assert!(matches!(
+            state.show_phase(),
+            ShowPhase::Cooldown | ShowPhase::Off
+        ));
+        feed_silence(&mut state, &settings, 60 * 8);
+        assert_eq!(state.show_phase(), ShowPhase::Off);
+    }
+
+    #[test]
+    fn the_show_holds_its_minimum_even_when_the_peak_collapses() {
+        let settings = SceneSettings::new();
+        let mut state = ClawdState::new(11);
+        feed_pulsing(&mut state, &settings, 60 * 4);
+        assert_eq!(state.show_phase(), ShowPhase::On);
+        // Half a second of silence: far under the minimum hold, so the show
+        // must still be running — hysteresis is what keeps it an event.
+        feed_silence(&mut state, &settings, 30);
+        assert_eq!(state.show_phase(), ShowPhase::On);
+    }
+
+    #[test]
+    fn show_setting_zero_keeps_the_mode_off_and_stops_a_running_one() {
+        let mut settings = SceneSettings::new();
+        assert!(settings.set(SCENE, setting::SHOW, 0.0));
+        let mut state = ClawdState::new(11);
+        feed_pulsing(&mut state, &settings, 60 * 6);
+        assert_eq!(state.show_phase(), ShowPhase::Off);
+        assert_eq!(state.show_level(), 0.0);
+        // Ignite under a live control, then pull it to zero mid-hold: the
+        // show fades out rather than honouring the dwell.
+        let live = SceneSettings::new();
+        let mut state = ClawdState::new(11);
+        feed_pulsing(&mut state, &live, 60 * 4);
+        assert_eq!(state.show_phase(), ShowPhase::On);
+        feed_pulsing(&mut state, &settings, 30);
+        assert!(matches!(
+            state.show_phase(),
+            ShowPhase::Fading | ShowPhase::Cooldown
+        ));
+    }
+
+    #[test]
+    fn energy_reads_the_tracks_own_range_when_a_profile_rides_the_frame() {
+        use crate::audio::track_dynamics::TrackDynamics;
+        let settings = SceneSettings::new();
+        let mut state = ClawdState::new(13);
+        let profile = TrackDynamics::from_bounds(0.2, 0.6).expect("bounds");
+        // Bands at 0.5 give a band-rms of 0.5 — comfortably loud inside a
+        // 0.2..0.6 profile, while the amplitude fallback would read it the
+        // same as any half-loud absolute frame.
+        let bands = [0.5f32; 24];
+        let trails = [0.5f32; 24];
+        for _ in 0..120 {
+            let mut frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
+            frame.dynamics = Some(profile);
+            state.update(&frame);
+        }
+        assert!(state.dynamics_present());
+        let expected = profile.level(0.5);
         assert!(
-            risen > 0.5,
-            "three loud seconds should build smoke, got {risen}"
+            (state.energy() - expected).abs() < 0.02,
+            "energy should settle at the profiled level {expected}, got {}",
+            state.energy()
         );
-        feed_silence(&mut state, &settings, 60);
-        assert!(
-            state.smoke() > risen * 0.4,
-            "one quiet second must not clear the smoke: {} -> {}",
-            risen,
-            state.smoke()
-        );
-        feed_silence(&mut state, &settings, 60 * 30);
-        assert!(
-            state.smoke() < 0.05,
-            "smoke eventually clears, got {}",
-            state.smoke()
-        );
+        // The same frames with no profile fall back to the amplitude envelope
+        // and say so.
+        let mut fallback = ClawdState::new(13);
+        for _ in 0..120 {
+            let frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
+            fallback.update(&frame);
+        }
+        assert!(!fallback.dynamics_present());
+        assert_eq!(fallback.energy(), fallback.amplitude());
     }
 
     #[test]

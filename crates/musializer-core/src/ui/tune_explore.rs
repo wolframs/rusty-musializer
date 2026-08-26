@@ -310,7 +310,7 @@ const CYCLIC_KEYS: &[&str] = &[
 /// as "an empty floor", which is an authored look, not a broken one. All four
 /// are precision-0 controls — the membership test requires the exact minimum to
 /// be *drawn* within a few hundred presses, which a fine-grained slider cannot
-/// satisfy, so a continuous control with a designed zero (`clawd.smoke`) takes
+/// satisfy, so a continuous control with a designed zero (`clawd.show`) takes
 /// the ordinary 5 % inset instead. (No descriptor currently has a drawable
 /// *high* end; when one appears it gets the mirror table, not a relaxation of
 /// this one.)

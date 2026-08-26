@@ -20,6 +20,7 @@ use std::fs;
 
 use musializer_core::audio::analyzer::{AudioAnalyzer, AudioAnalyzerConfig};
 use musializer_core::audio::beat_tracker::BeatTracker;
+use musializer_core::audio::track_dynamics::TrackDynamics;
 use musializer_core::scene::{
     events::EventTimelineView, SceneAudioFrame, SceneFrame, SceneSettings, SceneState,
     SemanticFrame,
@@ -59,9 +60,24 @@ fn main() {
     let settings = SceneSettings::new();
     let mut state = ClawdState::new(0);
 
+    // The same profile the application builds at track load, from the same
+    // samples this replay will hear — so `energy` and the show phases below
+    // are exactly what a preview or export of this track computes.
+    let dynamics = TrackDynamics::profile(&samples, channels, sample_rate);
+    match dynamics {
+        Some(profile) => eprintln!(
+            "dynamics: floor={:.4} ceiling={:.4}",
+            profile.floor(),
+            profile.ceiling()
+        ),
+        None => eprintln!("dynamics: none (fallback gates)"),
+    }
+
     let total_frames = (seconds * f64::from(fps)).ceil() as u64;
     let mut cursor = 0u64;
-    println!("frame,t,rms,flux,onset,phase,wrap,beats,bounce,hop0,hop1,hop2,amp,bassflux");
+    println!(
+        "frame,t,rms,flux,onset,phase,wrap,beats,bounce,hop0,hop1,hop2,amp,bassflux,energy,kickrate,show,showlvl,expr"
+    );
     let mut previous_phase = 0.0f32;
     for index in 0..total_frames {
         // `RenderJob::take_samples`: frame zero hears nothing, every later
@@ -118,11 +134,12 @@ fn main() {
             lyric: None,
             events: EventTimelineView::EMPTY,
             settings: &settings,
+            dynamics,
         };
         state.update(&frame);
 
         println!(
-            "{},{:.3},{:.4},{:.4},{},{:.4},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4}",
+            "{},{:.3},{:.4},{:.4},{},{:.4},{},{},{:.3},{:.3},{:.3},{:.3},{:.3},{:.4},{:.3},{:.2},{},{:.2},{}",
             index,
             time_seconds,
             frame.audio.rms,
@@ -137,6 +154,11 @@ fn main() {
             state.cat(2).map_or(-1.0, |c| c.hop),
             state.amplitude(),
             bass_flux,
+            state.energy(),
+            state.kick_rate(),
+            state.show_phase().name(),
+            state.show_level(),
+            state.expression().name(),
         );
     }
     eprintln!(

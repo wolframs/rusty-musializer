@@ -224,6 +224,7 @@ fn dump_frame_lanes(project: &Project) {
             },
             SceneAudioFrame::default(),
             &settings,
+            None,
         );
         dump_real(&format!("{prefix}.time"), time_seconds);
         dump_uint(&format!("{prefix}.lyric_id"), status.lyric_id.unwrap_or(0));

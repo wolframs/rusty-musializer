@@ -1387,6 +1387,9 @@ fn run(
             },
             audio_frame,
             effective,
+            app.workspace
+                .current()
+                .and_then(|track| track.track_dynamics),
         );
         app.scene.update(&frame);
 
@@ -2718,6 +2721,7 @@ impl App {
 /// flat line that would read as silence.
 fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
     track.timeline_waveform = None;
+    track.track_dynamics = None;
     let Some(decoded) = musializer_runtime::decode::whole_track(audio, &track.file_path) else {
         eprintln!(
             "warning: waveform preview could not decode {}",
@@ -2725,6 +2729,16 @@ fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
         );
         return;
     };
+    // The loudness profile shares this decode — the samples are already in
+    // hand, and the analyzer pass at the profiling cadence measures ~0.4 s
+    // per track minute (debug build, this machine), a fraction of the decode
+    // itself. `None` for a near-silent file is a supported state: scenes fall
+    // back to absolute gates and their report lines say so.
+    track.track_dynamics = musializer_core::audio::track_dynamics::TrackDynamics::profile(
+        &decoded.samples,
+        decoded.channels,
+        decoded.sample_rate,
+    );
     // C4: every track gets its audio format here, whether or not it is ever the
     // current one. `bind_audio` also caches it from the opened stream, but only
     // the *bound* track goes through that — a second track added with "Add audio"

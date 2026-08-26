@@ -17,7 +17,7 @@ scene 11 count 12
 11 2 settings.clawd.spin|Petal spin|-2|2|0.349999994|2|0
 11 3 settings.clawd.mood|Mood swings|0|2|1|2|0
 11 4 settings.clawd.cats|Cats|0|6|3|0|0
-11 5 settings.clawd.smoke|Smoke|0|2|1|2|0
+11 5 settings.clawd.show|Petal show|0|2|1|2|0
 11 6 settings.clawd.terminal|Lyric terminal|0|1|0|0|1
 11 7 settings.clawd.hue|Hue shift (deg)|-180|180|0|0|0
 11 8 settings.clawd.daylight|Daylight|0|1|0.850000024|2|0

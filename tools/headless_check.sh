@@ -590,6 +590,23 @@ case "$CLAWD_LINE" in
     *) echo "FAIL: Clawd's semantic-lane field is absent or wrongly 'on' with no analysis: ${CLAWD_LINE:-<absent>}" >&2
        SWEEP_FAILED=1 ;;
 esac
+# The track-relative dynamics profile must actually ride the frames: the
+# fixture decodes, so `dyn=none` here means the eager profile build or the
+# SceneFrame plumbing silently died — and on a loud track the fallback gates
+# draw the same picture, which is exactly why the line has to say which ran.
+case "$CLAWD_LINE" in
+    *"dyn=track"*) : ;;
+    *) echo "FAIL: Clawd ran on fallback gates against a decodable fixture: ${CLAWD_LINE:-<absent>}" >&2
+       SWEEP_FAILED=1 ;;
+esac
+# The petal show's state machine must report its phase. Any phase is a valid
+# frame (the fixture may or may not earn an ignition); a line with no show=
+# token means the mode fell off the report and can die unphotographed.
+case "$CLAWD_LINE" in
+    *"show="*) : ;;
+    *) echo "FAIL: Clawd's petal-show phase is absent from its report line: ${CLAWD_LINE:-<absent>}" >&2
+       SWEEP_FAILED=1 ;;
+esac
 # At the default daylight (0.85) the backdrop is cream, the face plate is
 # near-white and the petals are saturated — a nearly black frame here means the
 # gradient or the geometry did not draw at all.

@@ -4137,6 +4137,85 @@ groove at full party, 8.83, 9.63); a re-rendered clip measured by per-frame
 ink centroid shows the three cats trading those exact flights in pixels,
 `kicks=9` on the report line. Core tests 19 → 22 in the module (982 total).
 
+### The dynamics rework: track-relative gates, the petal show, smoke retired (2026-08-26)
+
+Operator question ("is the smoke pulling its weight?") plus a second-opinion
+design pass (gpt-5.6-sol), both verified by measurement before anything moved.
+The full-track `cat_probe` run on *Parameter People* reproduced the second
+opinion's numbers exactly: amplitude-envelope median **0.942**, p90 **1.0**,
+371 tracker wraps off one learned interval — and the damning one, the pleading
+face's absolute `amplitude < 0.06` gate met on **8 of 5736 frames**. Every
+absolute loudness gate in the scene was the cats' defect one level up:
+constants tuned on synthetic fixtures, applied to tracks that live in a
+different range.
+
+What changed, all in one stream (`STATE_VERSION` 3 → 4):
+
+- **`core::audio::track_dynamics::TrackDynamics`** — robust per-track loudness
+  bounds (10th/95th percentiles of the band-space rms scenes actually read,
+  profiled by running the real analyzer over the decoded track at 30 steps/s;
+  ~0.4 s per track minute, measured). Percentiles not extrema (one freak
+  transient must not flatten the range), a minimum-span guard (a compressed
+  track must not amplify noise into a full swing), `None` for near-silence.
+  Built eagerly in `load_timeline_waveform` beside the timeline envelope,
+  stored on `Track`, and riding every `SceneFrame` as a new `dynamics` field —
+  threaded through `ProjectFrameLanes::scene_frame` as a *parameter* so both
+  frame builders (preview `main.rs`, export `with_export_frame`) had to decide
+  it explicitly. Clawd reports `dyn=track`/`none`, and the headless gate
+  asserts `track` against the fixture, because fallback gates draw the same
+  picture on a loud track.
+- **Track-relative expression gates.** Pleading quiet/recover, the party
+  loudness gate and the boom's loudness gate read `energy` (the profiled
+  level through a ~0.25 s follower). The boom and dizzy also left the
+  absolute broadband lanes entirely: the probe showed raw flux p95 at 0.06
+  against the 0.083 the `onset`/`BUSY_FLUX` paths need, so **the boom now
+  triggers on a strong kick** (`kick ≥ 0.12`, the track's ~p99 excursion —
+  the head explodes on the push the cats hop on) and **dizzy accrues on
+  sustained kick-rate** (leaky integrator, 2 s half-life) alongside the flux
+  lane the synthetic fixtures still exercise. Dizzy gained a minimum dwell
+  (2 s — a six-frame spiral reads as a glitch), a dwell cap (8 s — the first
+  probe spiralled 26 unbroken seconds through one section, wallpaper) and a
+  12 s cooldown; writing the cap surfaced a real machine bug (the entry
+  branch re-asserted the spell every frame ahead of the exit arm, so the cap
+  was unreachable — dizzy is now held like the boom's playout).
+- **The finite head bounce.** The impulse+exponential ooze became a pose
+  playout like the cats' arc: `sin(1.5πu)(1−u)` normalized, 0.32 s — squash,
+  a ~17 % rebound *stretch* past neutral, exact `0.0` at rest. Tracker wraps
+  now move **nothing** (the "soft nod" kept 371 nods to a freewheeling
+  clock); kicks own every displacement, strength-scaled.
+- **Smoke retired; slot 5 is `settings.clawd.show` ("Petal show").** The
+  ribbon was 22 grey discs with none of the reference's framing — anonymous
+  fog occupying a slot at the `MAX_CONTROLS` ceiling. The show is a temporary
+  mode with a real state machine: arm when energy ≥ 0.78 *and* the kick-rate
+  says the track is pulsing (loudness alone would light a swelling pad),
+  sustained 1.2 s — with an enter/keep hysteresis (0.78/0.65) because the
+  probe showed energy oscillating 0.74..0.80 through a 12-second chorus that
+  never ignited on a single bar; hold ≥ 4 s; fade out over 2.5 s; 6 s
+  cooldown. At full level the twelve petals take the hue wheel (30° apart,
+  drifting on the sway clock, per-band brilliance) while face, ink, ground
+  and cats stay exactly themselves; the RGB lerp from terracotta makes
+  level 0 the resting palette *as an equality*. Measured on the track: five
+  ignitions, each on a real section peak, terracotta back in the breakdowns —
+  and a pixel sweep of the rendered clip shows all twelve 30° hue bins live
+  mid-show and every saturated pixel back in terracotta's bin after cooldown.
+- **The first post-legacy key rename, done as a migration.**
+  `settings.clawd.smoke` → `settings.clawd.show` via `settings::LEGACY_KEYS`,
+  applied at exactly one boundary (`routes::import_mappings`, which is
+  all-or-nothing and would otherwise refuse the whole project open). The raw
+  legacy list still fails `mappings_supported` — the strict C-parity surface
+  is untouched — but the import rewrites to canonical and the next save emits
+  `show`; a file carrying both spellings collapses to a duplicate and refuses.
+  Pinned by a routes test either way. Both post-legacy dumps regenerated;
+  negative controls re-run both ways (C-era `spectrum.trail` bound vs the
+  frozen C, `clawd.show` bound vs the pinned file), reverted byte-for-byte.
+
+Verified end to end on the real track: expression timeline now reads
+`3 intro scrunches, boom @26.4, dizzy 52.7–57.7, pleading 82.7–84.0,
+dizzy @141+@161, boom @154.1` — a character with an emotional life instead of
+a permanent smile; the windowed NVENC render's report line agrees with the
+probe (`dyn=track`, `kicks=50` over 14 s, `show=cooldown@0.00` exactly where
+the probe fades). Core tests 982 → 994.
+
 ### Attribution
 
 An homage to the flower character drawn by **thebes**
@@ -4145,11 +4224,15 @@ theirs is bundled or traced.
 
 ### Open
 
-- The boom's bass gate (0.60 against `bass_from_trails`) is tuned against the
-  synthetic fixtures; a listening pass on real material may want it moved. The
-  lever is `boom_bass` in `step_expression`.
-- The smoke is a single ribbon; the reference's hatched texture was skipped as
-  a first pass (a flat translucent ribbon reads fine at preview size).
 - No HX protocol run yet on the expression thresholds; if the face feels numb
   or twitchy on real tracks, `mood`'s threshold scaling in `step_expression`
-  is one knob and the dwell constants are the other.
+  is one knob and the dwell constants are the other. *Parameter People* is
+  the obvious protocol track — it is what every constant here was measured
+  against.
+- The show's arm thresholds are measured against one track. `cat_probe` now
+  prints `energy`, `kickrate`, `show` phase and `expr` per frame, so the
+  first "the show never fires on X" report starts with one probe run, not
+  with theory.
+- Only Clawd consumes `TrackDynamics` so far. Any scene with an absolute
+  loudness gate has the same latent defect; the profile is on every
+  `SceneFrame` already.

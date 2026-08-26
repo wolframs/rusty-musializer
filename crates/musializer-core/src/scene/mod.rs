@@ -397,6 +397,13 @@ pub struct SceneFrame<'a> {
     /// what keeps routed parameters identical between them
     /// (`../musializer/src/plug.c:1147-1166`).
     pub settings: &'a SceneSettings,
+    /// The track's own loudness range (post-legacy, 2026-08-26), profiled once
+    /// from the whole decoded file. `None` before the profile exists — idle,
+    /// a failed decode, a near-silent file — and a scene that gates behaviour
+    /// on it must fall back to absolute constants *and report which it used*:
+    /// an absent profile is indistinguishable from a wired one on a loud track,
+    /// which is the fallback-that-looks-like-content trap.
+    pub dynamics: Option<crate::audio::track_dynamics::TrackDynamics>,
 }
 
 impl<'a> SceneFrame<'a> {
@@ -414,6 +421,7 @@ impl<'a> SceneFrame<'a> {
             lyric: None,
             events: events::EventTimelineView::EMPTY,
             settings,
+            dynamics: None,
         }
     }
 
