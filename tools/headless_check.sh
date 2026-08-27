@@ -618,9 +618,25 @@ case "$CLAWD_LINE" in
     *) echo "FAIL: Clawd's frame-persistence trail did not build: ${CLAWD_LINE:-<absent>}" >&2
        SWEEP_FAILED=1 ;;
 esac
+# The air. The corner vignette and the temperature lean are both under the
+# threshold a luma probe can see (a 12/255 warm shift on a cream gradient), and
+# a grain field that laid down nothing photographs as exactly the clean frame
+# this scene had before the pass existed — the fallback-that-looks-like-content
+# shape, once more. So the speck count is asserted rather than admired: the
+# 1280x720 sweep frame's scene panel is ~470 px on its short axis, which is
+# ~7000 specks at the 0.17 density, and anything at all above zero proves the
+# cell grid reached the boundary and the mesh was submitted.
+CLAWD_GRAIN="$(printf '%s' "$CLAWD_LINE" | sed -n 's/.*air=[+-][0-9.]*\/\([0-9]*\).*/\1/p')"
+if ! awk -v g="${CLAWD_GRAIN:-0}" 'BEGIN { exit !(g >= 500) }'; then
+    echo "FAIL: Clawd's film grain drew ${CLAWD_GRAIN:-no} specks: ${CLAWD_LINE:-<absent>}" >&2
+    SWEEP_FAILED=1
+fi
 # At the default daylight (0.85) the backdrop is cream, the face plate is
 # near-white and the petals are saturated — a nearly black frame here means the
-# gradient or the geometry did not draw at all.
+# gradient or the geometry did not draw at all. The corner vignette is drawn
+# *under* the subject and reaches its peak only at the corners, so this crop —
+# 640x300 at the top centre — keeps the same margin it had before the air pass:
+# it measured 248 against the 150 floor on this fixture.
 CLAWD_LUMA="$(ffprobe -v error -f lavfi \
     -i "movie=$OUT_DIR/scene-clawd.png,crop=640:300:460:40,signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"

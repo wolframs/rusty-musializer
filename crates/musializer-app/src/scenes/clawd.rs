@@ -108,6 +108,36 @@
 //! *over* it (a colour smear, which is what a ghost on paper looks like) and a
 //! dark ground takes it as added light.
 //!
+//! ## The air (2026-08-27)
+//!
+//! The backdrop was one vertical gradient — a studio sweep, and the flower a
+//! sticker on it. Three things now season it, and all three are drawn **under**
+//! the subject rather than over the finished frame, which is the difference
+//! between atmosphere and a filter:
+//!
+//! - **A corner vignette**, in an *elliptical* radius so the corners are the
+//!   only thing that reaches full strength. A plain distance falloff on a 16:9
+//!   panel darkens the sides almost to the corner value and leaves the top and
+//!   bottom clean — a letterbox rather than air. Drawn as a Gouraud grid through
+//!   [`draw::shaded_triangles`]; the smoothstep exists because a linear ramp's
+//!   start line is visible as a ring on flat cream. Its strength follows
+//!   `daylight` and opens back up a little as the track gets loud.
+//! - **Film grain**: sparse specks on a cell grid, each one hashed from its own
+//!   coordinates and a **time** tick ([`GRAIN_HZ`]). Never a frame counter and
+//!   never ambient randomness — grain that resamples per frame crawls at 60 fps
+//!   and strobes at 24, and two renders of the same moment have to produce the
+//!   same specks or the export determinism contract is gone. Their *sign*
+//!   follows `daylight`, because a white speck on cream and a black one on the
+//!   night ground are both invisible.
+//! - **A temperature lean** on the gradient itself, from `state.energy()` — the
+//!   track-relative envelope core already smooths — with a smaller extra lean
+//!   while the petal show burns. The top of the sky moves nearly twice as far as
+//!   the bottom, so it reads as the light in the room changing rather than as a
+//!   grade over the whole picture.
+//!
+//! The excursions are all small on purpose. The character is the subject; if
+//! any of this is the first thing you notice in a frame, it is wrong.
+//!
 //! **The strengths are constants, not controls.** The descriptor table is full
 //! at `MAX_CONTROLS` (twelve), and no slot here is worth less than what it
 //! already buys. The tuning that matters is coupled to the music anyway: the
@@ -247,6 +277,97 @@ const SHADOW_SEGMENTS: usize = 48;
 /// transparent rim is a linear cone and photographs as a hard-edged lens flare,
 /// which is the opposite of grounding anything.
 const SHADOW_CORE: f32 = 0.52;
+
+// ---------------------------------------------------------------------------
+// The air (2026-08-27). See the module docs.
+// ---------------------------------------------------------------------------
+
+/// How the backdrop's temperature is mixed: mostly the track-relative loudness,
+/// with a smaller extra lean while the petal show burns.
+///
+/// `state.energy()` is already the smoothed, track-relative envelope every other
+/// "how loud is this moment" gate reads (`TrackDynamics`, 2026-08-26). A second
+/// follower here would be a second opinion about the same question, and the two
+/// would disagree during exactly the transitions worth looking at.
+const AIR_ENERGY: f32 = 0.88;
+const AIR_SHOW: f32 = 0.28;
+
+/// Where on that mix the sky sits at its own neutral — deliberately below the
+/// middle, so the lean is **asymmetric**.
+///
+/// Centred at 0.5 the quiet end of a real track pushes the full cool excursion
+/// and the tiki cream turns grey; two frames of the same scene 90 seconds apart
+/// then read as two different palettes rather than as one room at two moments,
+/// which is competing with the character rather than seasoning it. Low at 0.35
+/// the loud end has the whole warm swing and the quiet end gives up about half
+/// of the cool one, so the ground stays recognisably cream everywhere.
+const AIR_NEUTRAL: f32 = 0.35;
+
+/// How far the top and the bottom of the sky may lean, in 0..255 channel units
+/// at a full excursion.
+///
+/// The top moves nearly twice as far as the bottom on purpose: a lean applied
+/// evenly to both is a colour grade over the whole picture, which is the one
+/// thing this pass is not allowed to be. Moving the top alone reads as the
+/// light in the room changing while the ground stays where it was.
+const AIR_TEMPER_TOP: f32 = 12.0;
+const AIR_TEMPER_BOTTOM: f32 = 6.0;
+
+/// The vignette's peak alpha at the corners, dark backdrop and daylight.
+///
+/// Stronger on the dark ground because the falloff has less room there: the
+/// bottom of the night gradient is already at value 14, so the same alpha buys
+/// a fraction of the contrast it buys on cream.
+const VIGNETTE_DARK: f32 = 0.34;
+const VIGNETTE_DAY: f32 = 0.21;
+
+/// Where the falloff starts, as an elliptical radius: 1.0 is the middle of an
+/// edge and √2 is a corner. Below this the frame is untouched, which is what
+/// keeps the flower — and the trail's streamers — out of it entirely.
+const VIGNETTE_INNER: f32 = 0.70;
+
+/// How far the vignette opens back up at full loudness. The room brightening
+/// as the track lifts is a small thing, and it is the difference between an
+/// atmosphere and a frame decoration.
+const VIGNETTE_OPEN: f32 = 0.25;
+
+/// Grid cells per side of the vignette mesh.
+///
+/// The falloff is smoothstepped and the mesh interpolates it linearly, so this
+/// only has to be fine enough that the chord error falls under one alpha step.
+/// At 28 the worst-case error is ~1/255 of the peak, and the grain drawn on top
+/// dithers what is left — which is the other reason these two arrived together.
+const VIGNETTE_CELLS: usize = 28;
+
+/// The grain cell edge as a fraction of the frame's **short** axis, so grain is
+/// the same size relative to the picture in a 480 px preview panel and in a
+/// supersampled 1080p export. Grain that gets finer with resolution is grain
+/// that disappears in the thing you were going to post.
+const GRAIN_DIVISOR: f32 = 152.0;
+
+/// The fraction of cells that carry a speck. Sparse by construction rather than
+/// by a low alpha over everything: a full-coverage noise field at any strength
+/// reads as video static, and specks with gaps between them read as film.
+const GRAIN_DENSITY: f32 = 0.17;
+
+/// Peak speck alpha on the dark backdrop and in daylight.
+const GRAIN_ALPHA_DARK: f32 = 0.042;
+const GRAIN_ALPHA_DAY: f32 = 0.026;
+
+/// How many times a second the grain is redrawn from a fresh hash.
+///
+/// A tick derived from `frame.time_seconds`, not from a frame counter: preview
+/// and export run at different rates, and grain that resamples once per *frame*
+/// would crawl at 60 fps and strobe at 24. 15 Hz is slow enough to read as
+/// emulsion rather than as noise, and — because the tick is a function of the
+/// scene clock alone — two renders of the same moment get the same specks,
+/// which is what keeps the export determinism contract intact.
+const GRAIN_HZ: f64 = 15.0;
+
+/// Below this many pixels a cell cannot hold a speck without landing on the
+/// same pixel as its neighbours, which is static rather than grain. Same guard,
+/// same reason, as Phosphor Dream's dither.
+const GRAIN_MIN_CELL: f32 = 2.0;
 
 /// The two cat rows, per face. ASCII only — see the module docs and the test.
 fn cat_rows(face: CatFace) -> [&'static str; 2] {
@@ -650,6 +771,197 @@ fn shadow_mesh(centre: Vector2, rx: f32, ry: f32, alpha: f32, out: &mut Vec<(Vec
     }
 }
 
+/// Appends one axis-aligned quad, wound the way [`draw::shaded_triangles`]
+/// wants it: counter-clockwise on screen, with y growing downward.
+///
+/// Every mesh here otherwise comes off a `-k/N * TAU` sweep, which gets the
+/// winding right by construction. A rectangle has to be written out, and a
+/// mistake is silent — rlgl culls the back face and draws nothing at all, which
+/// for a vignette or a grain field is indistinguishable from "the effect is
+/// subtle". The winding test walks both.
+fn push_quad(
+    top_left: (Vector2, Color),
+    top_right: (Vector2, Color),
+    bottom_right: (Vector2, Color),
+    bottom_left: (Vector2, Color),
+    out: &mut Vec<(Vector2, Color)>,
+) {
+    out.extend_from_slice(&[top_right, top_left, bottom_left]);
+    out.extend_from_slice(&[top_right, bottom_left, bottom_right]);
+}
+
+/// The vignette's alpha profile at elliptical radius `q`, where 1.0 is the
+/// middle of an edge and √2 is a corner.
+///
+/// An *elliptical* metric rather than the plain distance, which is what makes
+/// this a corner vignette rather than a pair of side bars. On a 16:9 panel the
+/// true radius at the left edge is 1.8x the radius at the top, so a distance
+/// falloff darkens the sides almost to the corner value and leaves the top and
+/// bottom clean — a letterbox, not an atmosphere. Normalising each axis by its
+/// own half-extent puts every edge midpoint at exactly 1.0 and every corner at
+/// √2, so the corners are the only thing that reaches full strength.
+fn vignette_falloff(q: f32) -> f32 {
+    let outer = std::f32::consts::SQRT_2;
+    let t = ((q - VIGNETTE_INNER) / (outer - VIGNETTE_INNER)).clamp(0.0, 1.0);
+    // Smoothstep: a linear ramp is C0 and its start line is visible as a ring
+    // on a flat cream ground, which is the one place a vignette must not have
+    // an edge.
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Appends the corner vignette as a Gouraud grid over the whole boundary.
+///
+/// **Premultiplied**, and the caller composites it with
+/// `BLEND_ALPHA_PREMULTIPLY`. Straight alpha over `BLEND_ALPHA` gives the same
+/// colour and a *different alpha channel*: raylib's alpha blend applies
+/// `glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` to all four channels, so an
+/// opaque destination comes out at `1 - a(1 - a)` — 0.84 where the vignette
+/// paints at 0.2. Nothing on screen can see that, and a *saved still* can: the
+/// PNG carries the framebuffer's alpha, so the corners would be translucent in
+/// the file. It cost 11 dB on the still-versus-video-frame comparison and every
+/// one of them was in the alpha plane.
+fn vignette_mesh(boundary: Rectangle, strength: f32, tone: Color, out: &mut Vec<(Vector2, Color)>) {
+    if strength <= 0.002 || boundary.width <= 1.0 || boundary.height <= 1.0 {
+        return;
+    }
+    let node = |i: usize, j: usize| {
+        let u = i as f32 / VIGNETTE_CELLS as f32;
+        let v = j as f32 / VIGNETTE_CELLS as f32;
+        let x = boundary.x + boundary.width * u;
+        let y = boundary.y + boundary.height * v;
+        // In half-extent units, so an edge midpoint is 1.0 whatever the aspect.
+        let dx = u * 2.0 - 1.0;
+        let dy = v * 2.0 - 1.0;
+        let alpha = strength * vignette_falloff(dx.hypot(dy));
+        (Vector2::new(x, y), premultiplied(tone, alpha))
+    };
+    for j in 0..VIGNETTE_CELLS {
+        for i in 0..VIGNETTE_CELLS {
+            push_quad(
+                node(i, j),
+                node(i + 1, j),
+                node(i + 1, j + 1),
+                node(i, j + 1),
+                out,
+            );
+        }
+    }
+}
+
+/// A 32-bit avalanche mix (Murmur3's finalizer, with Degski's constants).
+fn mix_u32(mut x: u32) -> u32 {
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    x
+}
+
+/// One grain cell's hash. A pure function of the cell and the time tick, which
+/// is the whole determinism argument: no ambient RNG, no frame counter, nothing
+/// a second render of the same moment could disagree about.
+fn grain_hash(column: u32, row: u32, tick: u32) -> u32 {
+    mix_u32(
+        column
+            .wrapping_mul(0x9E37_79B9)
+            .wrapping_add(row.wrapping_mul(0x85EB_CA6B))
+            ^ mix_u32(tick),
+    )
+}
+
+/// Which way one speck goes, from its own hash and the backdrop.
+///
+/// `daylight` biases the sign rather than a fixed half-and-half: a white speck
+/// on a 250-value cream ground is invisible and a black one on the near-black
+/// night ground is too, so half the specks would be wasted at both ends. `>=`
+/// rather than `>`, so a fully dark backdrop gets *every* speck as light instead
+/// of 255 in 256 of them — one in 256 reads as a stuck pixel.
+fn grain_tone(detail: u32, daylight: f32) -> Color {
+    if f32::from(((detail >> 16) & 0xFF) as u8) / 255.0 >= daylight {
+        // Warm off-white and warm near-black: the same argument the contact
+        // shadow's colour makes. A neutral speck on a warm ground reads blue.
+        Color::new(255, 252, 244, 255)
+    } else {
+        Color::new(24, 16, 12, 255)
+    }
+}
+
+/// Appends the film grain and returns how many specks it laid down.
+///
+/// **Premultiplied**, for the reason [`vignette_mesh`] documents at length: over
+/// `BLEND_ALPHA` these would also eat the framebuffer's alpha channel, which a
+/// saved still PNG carries out to disk.
+fn grain_mesh(
+    boundary: Rectangle,
+    cell: f32,
+    tick: u32,
+    alpha: f32,
+    daylight: f32,
+    out: &mut Vec<(Vector2, Color)>,
+) -> usize {
+    if cell < GRAIN_MIN_CELL || alpha <= 0.002 || boundary.width <= 1.0 || boundary.height <= 1.0 {
+        return 0;
+    }
+    let columns = (boundary.width / cell).ceil() as u32;
+    let rows = (boundary.height / cell).ceil() as u32;
+    let right = boundary.x + boundary.width;
+    let bottom = boundary.y + boundary.height;
+    let mut drawn = 0usize;
+    for row in 0..rows {
+        for column in 0..columns {
+            let hash = grain_hash(column, row, tick);
+            if (hash & 0xFFF) as f32 >= GRAIN_DENSITY * 4096.0 {
+                continue;
+            }
+            // A second avalanche rather than a second bit field of the same
+            // word. Disjoint fields *look* independent and are not quite: the
+            // finalizer ends on `x ^= x >> 16`, so constraining the low 12 bits
+            // — which is exactly what the density test above does — leaves a
+            // residual correlation with bits 16..28. Re-mixing the survivors
+            // costs two multiplies on the fifth of cells that got this far and
+            // makes the sign and the strength unconditionally uniform.
+            let detail = mix_u32(hash);
+            let weight = 0.35 + 0.65 * f32::from((detail & 0xFF) as u8) / 255.0;
+            let speck = alpha * weight;
+            if (speck * 255.0) as u8 == 0 {
+                continue;
+            }
+            let colour = premultiplied(grain_tone(detail, daylight), speck);
+            let x0 = boundary.x + column as f32 * cell;
+            let y0 = boundary.y + row as f32 * cell;
+            let x1 = (x0 + cell).min(right);
+            let y1 = (y0 + cell).min(bottom);
+            push_quad(
+                (Vector2::new(x0, y0), colour),
+                (Vector2::new(x1, y0), colour),
+                (Vector2::new(x1, y1), colour),
+                (Vector2::new(x0, y1), colour),
+                out,
+            );
+            drawn += 1;
+        }
+    }
+    drawn
+}
+
+/// Leans a backdrop colour warm (`lean > 0`) or cool (`lean < 0`) by up to
+/// `amount` channel units.
+///
+/// Red and blue move opposite each other and green moves a third as far, which
+/// is a colour *temperature* rather than a tint toward one hue: the cool end
+/// stays a believable overcast rather than turning the sky blue.
+fn tempered(base: Color, lean: f32, amount: f32) -> Color {
+    let shift = lean.clamp(-1.0, 1.0) * amount;
+    let channel = |value: u8, delta: f32| (f32::from(value) + delta).clamp(0.0, 255.0) as u8;
+    Color::new(
+        channel(base.r, shift),
+        channel(base.g, shift * 0.30),
+        channel(base.b, -shift),
+        base.a,
+    )
+}
+
 /// One petal, resolved: where it is and what colour it is this frame.
 struct Petal {
     shape: PetalShape,
@@ -995,15 +1307,30 @@ pub fn draw(
     let eyelids_down = state.blink() > 0.5;
 
     // -- backdrop --------------------------------------------------------------
-    let top = lerp_color(
-        Color::new(40, 42, 48, 255),
-        Color::new(243, 234, 202, 255),
-        daylight,
+    // The sky's temperature leans with how loud this moment is *for this track*,
+    // and a touch further while the petal show burns. One number, read from the
+    // envelope core already smooths — never a second follower of the same
+    // quantity, which would disagree with the petals on exactly the transitions
+    // worth watching.
+    let air = (state.energy() * AIR_ENERGY + show * AIR_SHOW).clamp(0.0, 1.0);
+    let air_lean = ((air - AIR_NEUTRAL) / (1.0 - AIR_NEUTRAL)).clamp(-1.0, 1.0);
+    let top = tempered(
+        lerp_color(
+            Color::new(40, 42, 48, 255),
+            Color::new(243, 234, 202, 255),
+            daylight,
+        ),
+        air_lean,
+        AIR_TEMPER_TOP,
     );
-    let bottom = lerp_color(
-        Color::new(14, 15, 18, 255),
-        Color::new(252, 250, 244, 255),
-        daylight,
+    let bottom = tempered(
+        lerp_color(
+            Color::new(14, 15, 18, 255),
+            Color::new(252, 250, 244, 255),
+            daylight,
+        ),
+        air_lean,
+        AIR_TEMPER_BOTTOM,
     );
     d.draw_rectangle_gradient_v(
         boundary.x as i32,
@@ -1018,6 +1345,70 @@ pub fn draw(
     // rather than reallocated: at 24 segments a petal is 216 vertices and there
     // are twelve of them plus the head, every frame.
     let mut mesh: Vec<(Vector2, Color)> = Vec::new();
+
+    // -- the air ---------------------------------------------------------------
+    // Both of these are seasoning on the *background* and are drawn here, before
+    // the shadow, the glow, the trail and the flower. That placement is the
+    // whole design: a vignette over the finished frame is a filter, it dims the
+    // trail's streamers at the edges where they are already faintest, and it
+    // darkens a corner of the character on a portrait export. Under everything
+    // it is air the subject stands in front of, which is what the brief asked
+    // for and what the luma the headless gate measures at the centre is
+    // unaffected by.
+    //
+    // The vignette opens back up a little as the track gets loud — the room
+    // brightening on the chorus — which is a small enough excursion to be felt
+    // rather than seen. Its tone follows the ground: warm near-black over cream
+    // lit by a warm light, cool near-black over the night sky, because a neutral
+    // black over either reads as a hole rather than as shade.
+    //
+    // Both meshes composite **premultiplied**, which is a correctness
+    // requirement rather than a taste: `BLEND_ALPHA` writes the destination's
+    // alpha as well as its colour, so a translucent wash over an opaque frame
+    // leaves it at `1 - a(1 - a)`. Invisible on screen, and a `Save still` PNG
+    // carries the framebuffer's alpha straight to disk — it cost 11 dB against
+    // the video frame the still is supposed to *be*, all of it in the alpha
+    // plane. `BLEND_ALPHA_PREMULTIPLY` is `glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`
+    // and leaves an opaque destination opaque, for identical colour.
+    let vignette_strength =
+        lerp(VIGNETTE_DARK, VIGNETTE_DAY, daylight) * VIGNETTE_OPEN.mul_add(-air, 1.0);
+    let grain_cell = min_dim / GRAIN_DIVISOR;
+    // A tick from the scene clock, never a frame counter — see [`GRAIN_HZ`].
+    let grain_tick = (frame.time_seconds.max(0.0) * GRAIN_HZ) as u64 as u32;
+    // A touch more grain as the track lifts, on the same one number the sky
+    // reads. Bounded well under the point where it stops being texture.
+    let grain_alpha = lerp(GRAIN_ALPHA_DARK, GRAIN_ALPHA_DAY, daylight) * air.mul_add(0.30, 0.85);
+    let grain_cells = {
+        let mut air_pass = d.begin_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY);
+        mesh.clear();
+        vignette_mesh(
+            boundary,
+            vignette_strength,
+            lerp_color(
+                Color::new(4, 6, 12, 255),
+                Color::new(38, 26, 20, 255),
+                daylight,
+            ),
+            &mut mesh,
+        );
+        draw::shaded_triangles(&mut air_pass, &mesh);
+
+        // Film grain, over the vignette and under everything else. Two jobs: it
+        // is texture at posting size, and it dithers the vignette's own Gouraud
+        // steps, which on a flat cream field are the one place a linear
+        // interpolation of an 8-bit alpha shows as contour rings.
+        mesh.clear();
+        let cells = grain_mesh(
+            boundary,
+            grain_cell,
+            grain_tick,
+            grain_alpha,
+            daylight,
+            &mut mesh,
+        );
+        draw::shaded_triangles(&mut air_pass, &mesh);
+        cells
+    };
 
     // -- the ground ------------------------------------------------------------
     // The cats' floor line, hoisted here because the contact shadow lands on it:
@@ -1433,10 +1824,13 @@ pub fn draw(
         }
     }
 
-    // A touch of vignette as the light goes down, like the reference's clouds.
-    if daylight < 0.6 {
-        draw::vignette(d, boundary, (0.6 - daylight) * 0.5);
-    }
+    // There is deliberately no second vignette here. Until the air pass existed
+    // this is where `draw::vignette` darkened the *finished* frame on the dark
+    // backdrop only — four edge bars, over the character and the cats. Two
+    // vignettes of different shapes stacked on the night ground is a picture
+    // nobody chose, and the one that stayed is the one drawn under the subject:
+    // the bars also cut across the bottom of the frame, which is exactly where
+    // the cats stand.
 
     // -- the report ------------------------------------------------------------
     // Every claim a capture cannot make on its own: which face (a dead machine
@@ -1457,8 +1851,16 @@ pub fn draw(
     // accumulated light and a frame whose buffer was refused by the driver are
     // the same picture, and `on@` carries the composite strength so a show's
     // streamers are a number rather than an impression.
+    //
+    // `air` is the same argument once more, and it is the reason this pass gets
+    // a token where the lighting pass deliberately did not: the sky's lean is a
+    // *number a capture cannot recover* (a 15/255 temperature shift on a cream
+    // gradient is under the noise floor of any luma probe), and a grain field
+    // that drew nothing — a sub-pixel cell, a boundary the mesh never reached —
+    // photographs as the perfectly clean frame this scene had yesterday. So the
+    // line prints the signed lean and the number of specks actually laid down.
     resources.last = format!(
-        "face={} amp={:.2} bass={:.2} energy={:.2} dyn={} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} show={}@{:.2} trail={} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
+        "face={} amp={:.2} bass={:.2} energy={:.2} dyn={} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} show={}@{:.2} trail={} air={:+.2}/{} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
         expression.name(),
         state.amplitude(),
         state.bass(),
@@ -1473,6 +1875,8 @@ pub fn draw(
         state.show_phase().name(),
         show,
         resources.trail_status,
+        air_lean,
+        grain_cells,
         terminal_status,
         typed_report,
         daylight,
@@ -1598,6 +2002,13 @@ mod tests {
         petal_mesh(&shape, Color::new(200, 100, 60, 255), 1.0, &mut mesh);
         face_mesh(Vector2::new(0.0, 0.0), 40.0, &mut mesh);
         shadow_mesh(Vector2::new(0.0, 120.0), 60.0, 14.0, 0.25, &mut mesh);
+        // The air's two meshes are written out as rectangles rather than swept
+        // off a `-k/N * TAU` circle, so they are the ones that can get this
+        // wrong by hand — and a culled vignette or grain field is exactly the
+        // "the effect is just subtle" picture nothing else here would notice.
+        let air = Rectangle::new(12.0, 34.0, 1280.0, 470.0);
+        vignette_mesh(air, 0.3, Color::new(38, 26, 20, 255), &mut mesh);
+        grain_mesh(air, 6.0, 7, 0.06, 0.85, &mut mesh);
         assert_eq!(mesh.len() % 3, 0, "a partial triangle would be dropped");
         let mut sign = 0.0f32;
         for (index, tri) in mesh.chunks_exact(3).enumerate() {
@@ -1790,6 +2201,191 @@ mod tests {
         ] {
             assert!(!same_rect(a, other), "{other:?} matched");
         }
+    }
+
+    /// The vignette must be *flat* where the subject stands and reach full
+    /// strength only in the corners. If the middle is not exactly zero the
+    /// flower is sitting in a wash, and if the edge midpoints match the corners
+    /// this is a box, not a vignette.
+    #[test]
+    fn the_vignette_darkens_corners_and_leaves_the_middle_alone() {
+        assert_eq!(vignette_falloff(0.0), 0.0);
+        assert_eq!(vignette_falloff(VIGNETTE_INNER), 0.0);
+        // A corner is √2 in this metric, which is the profile's own outer edge.
+        assert_eq!(vignette_falloff(std::f32::consts::SQRT_2), 1.0);
+        // Past the corner (a rounding overshoot) it clamps rather than climbing.
+        assert_eq!(vignette_falloff(3.0), 1.0);
+        let edge = vignette_falloff(1.0);
+        assert!(
+            (0.2..0.7).contains(&edge),
+            "edge midpoints at {edge} are either a box or nothing"
+        );
+        // Monotone, so the falloff cannot double back into a visible ring.
+        let mut previous = 0.0;
+        for k in 0..=200 {
+            let q = k as f32 / 200.0 * std::f32::consts::SQRT_2;
+            let value = vignette_falloff(q);
+            assert!(value >= previous - 1.0e-6, "fell back at q={q}");
+            previous = value;
+        }
+    }
+
+    /// The centre of the drawn grid must carry alpha 0 and the four corners the
+    /// full strength — the mesh's own version of the profile test, since a
+    /// transposed `u`/`v` or a half-extent mistake passes the profile and still
+    /// paints the wrong shape.
+    #[test]
+    fn the_vignette_mesh_puts_its_darkness_in_the_corners() {
+        let boundary = Rectangle::new(40.0, 60.0, 1200.0, 480.0);
+        let mut mesh = Vec::new();
+        vignette_mesh(boundary, 0.4, Color::new(38, 26, 20, 255), &mut mesh);
+        assert!(!mesh.is_empty());
+        let alpha_at = |x: f32, y: f32| {
+            mesh.iter()
+                .filter(|(p, _)| (p.x - x).abs() < 0.5 && (p.y - y).abs() < 0.5)
+                .map(|(_, c)| c.a)
+                .max()
+                .unwrap_or_else(|| panic!("no vertex at {x},{y}"))
+        };
+        let centre_x = boundary.x + boundary.width * 0.5;
+        let centre_y = boundary.y + boundary.height * 0.5;
+        assert_eq!(alpha_at(centre_x, centre_y), 0);
+        // Premultiplied, so a corner's colour is the tone scaled by its own
+        // alpha — the composite that keeps an opaque frame opaque.
+        let corner = mesh
+            .iter()
+            .find(|(p, _)| (p.x - boundary.x).abs() < 0.5 && (p.y - boundary.y).abs() < 0.5)
+            .expect("no top-left vertex")
+            .1;
+        assert_eq!(corner.r, (38.0 * 0.4) as u8);
+        let full = (0.4 * 255.0) as u8;
+        for (x, y) in [
+            (boundary.x, boundary.y),
+            (boundary.x + boundary.width, boundary.y),
+            (boundary.x, boundary.y + boundary.height),
+            (boundary.x + boundary.width, boundary.y + boundary.height),
+        ] {
+            assert_eq!(alpha_at(x, y), full, "corner {x},{y} is not fully dark");
+        }
+        // The middle of the long edge is darker than the centre and lighter
+        // than a corner: that ordering *is* "corner vignette".
+        let edge = alpha_at(centre_x, boundary.y);
+        assert!(edge > 0 && edge < full, "edge alpha {edge} of {full}");
+        // Nothing is drawn at all below the threshold, so a zero-strength frame
+        // costs no vertices rather than a grid of invisible ones.
+        let mut none = Vec::new();
+        vignette_mesh(boundary, 0.0, Color::new(38, 26, 20, 255), &mut none);
+        assert!(none.is_empty());
+    }
+
+    /// The whole determinism claim in one assertion: the same cell and the same
+    /// tick give the same speck, and a different tick gives a different field.
+    /// Nothing here may consult a clock, a counter or an RNG.
+    #[test]
+    fn grain_is_a_pure_function_of_its_cell_and_tick() {
+        let boundary = Rectangle::new(0.0, 0.0, 1280.0, 480.0);
+        let field = |tick: u32| {
+            let mut mesh = Vec::new();
+            let count = grain_mesh(boundary, 6.0, tick, 0.05, 0.85, &mut mesh);
+            (count, mesh)
+        };
+        let (count_a, mesh_a) = field(42);
+        let (count_b, mesh_b) = field(42);
+        assert_eq!(count_a, count_b);
+        assert_eq!(mesh_a, mesh_b);
+        let (_, moved) = field(43);
+        assert_ne!(mesh_a, moved, "the tick does not resample the field");
+    }
+
+    /// Sparse, not a coverage field: a grain that fills every cell is video
+    /// static, and one that fills none is the clean frame this pass replaced.
+    #[test]
+    fn grain_stays_sparse_faint_and_signed_by_the_backdrop() {
+        let boundary = Rectangle::new(0.0, 0.0, 1200.0, 600.0);
+        let cell = 6.0;
+        let cells = (1200.0f32 / cell).ceil() * (600.0f32 / cell).ceil();
+        let mut mesh = Vec::new();
+        let drawn = grain_mesh(boundary, cell, 9, 0.05, 0.85, &mut mesh);
+        let fraction = drawn as f32 / cells;
+        assert!(
+            (GRAIN_DENSITY * 0.8..GRAIN_DENSITY * 1.2).contains(&fraction),
+            "{fraction} of cells carried a speck"
+        );
+        assert_eq!(mesh.len(), drawn * 6, "six vertices per speck quad");
+        // Faint: no speck may reach an alpha a viewer would read as a dot.
+        for (_, colour) in &mesh {
+            assert!(colour.a <= 13, "a speck at alpha {}", colour.a);
+        }
+        // In daylight most specks are dark, on the night ground all are light —
+        // a white speck on cream and a black one on near-black are both wasted.
+        // One speck is six vertices of one colour, so the specks are counted in
+        // quads — a vertex count reads six times too many and makes this
+        // assertion say something it does not mean. And the colours are
+        // premultiplied, so "light" is `r == a` (255·α over 255·α) against a
+        // dark speck's `r ≈ 0.09·a`; the raw `r > 128` test that reads naturally
+        // here is true of neither.
+        let light = |colour: &Color| colour.r * 2 >= colour.a;
+        let day_light_count = mesh.chunks_exact(6).filter(|q| light(&q[0].1)).count();
+        assert!(
+            day_light_count * 3 < drawn,
+            "{day_light_count} of {drawn} daylight specks were white"
+        );
+        let mut night = Vec::new();
+        let night_count = grain_mesh(boundary, cell, 9, 0.05, 0.0, &mut night);
+        assert_eq!(night_count, drawn, "the sign must not move the cell picks");
+        assert!(night.iter().all(|(_, c)| light(c)), "a dark speck at night");
+        // And the sign decision itself, at both ends, over the whole byte.
+        for byte in 0..=255u32 {
+            let detail = byte << 16;
+            assert_eq!(grain_tone(detail, 0.0).r, 255, "a dark speck at midnight");
+            assert!(
+                grain_tone(detail, 1.01).r < 128,
+                "a white speck in full sun"
+            );
+        }
+    }
+
+    /// Below the guard a cell cannot hold a speck without landing on its
+    /// neighbour's pixel, which is static rather than grain.
+    #[test]
+    fn grain_refuses_a_subpixel_cell() {
+        let boundary = Rectangle::new(0.0, 0.0, 1200.0, 600.0);
+        let mut mesh = Vec::new();
+        assert_eq!(
+            grain_mesh(boundary, GRAIN_MIN_CELL - 0.01, 3, 0.05, 0.85, &mut mesh),
+            0
+        );
+        assert!(mesh.is_empty());
+        assert_eq!(grain_mesh(boundary, 6.0, 3, 0.0, 0.85, &mut mesh), 0);
+        assert!(mesh.is_empty());
+    }
+
+    /// The temperature lean is a *temperature*: red up and blue down together,
+    /// neutral exactly at zero, and clamped rather than wrapped through `as u8`.
+    #[test]
+    fn the_air_lean_is_a_temperature_and_is_neutral_at_zero() {
+        let cream = Color::new(243, 234, 202, 255);
+        assert_eq!(tempered(cream, 0.0, AIR_TEMPER_TOP), cream);
+        let warm = tempered(cream, 1.0, AIR_TEMPER_TOP);
+        let cool = tempered(cream, -1.0, AIR_TEMPER_TOP);
+        assert!(
+            warm.r > cream.r && warm.b < cream.b,
+            "{warm:?} is not warmer"
+        );
+        assert!(
+            cool.r < cream.r && cool.b > cream.b,
+            "{cool:?} is not cooler"
+        );
+        // Green moves least, which is what stops this becoming a hue rotation.
+        assert!(i32::from(warm.g) - i32::from(cream.g) < i32::from(warm.r) - i32::from(cream.r));
+        // Alpha is never touched, and a channel already at the rail clamps.
+        assert_eq!(warm.a, 255);
+        assert_eq!(tempered(Color::new(252, 4, 250, 255), 1.0, 40.0).r, 255);
+        assert_eq!(tempered(Color::new(252, 4, 250, 255), 1.0, 40.0).b, 210);
+        assert_eq!(tempered(Color::new(4, 4, 4, 255), -1.0, 40.0).r, 0);
+        // The excursion is small enough to be felt rather than seen: the top of
+        // the sky may not move by more than ~6 % of full scale either way.
+        assert!(i32::from(warm.r) - i32::from(cool.r) <= 32);
     }
 
     #[test]
