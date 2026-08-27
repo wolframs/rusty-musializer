@@ -155,6 +155,42 @@ pub fn draw_texture_ex<D: RaylibDraw>(
     }
 }
 
+/// Submits a 2D triangle list with **one colour per vertex**.
+///
+/// Every 2D fill raylib exposes — `DrawTriangleFan`, `DrawPoly`, `DrawCircleV` —
+/// takes a single colour for the whole shape, so a value ramp *across* a filled
+/// polygon has no safe expression at all. That ramp is the difference between a
+/// diagram and a lit object: a flat fill reads as clip-art at any resolution,
+/// and shading it with stacked translucent copies costs a draw call per step and
+/// bands visibly where the copies meet. Gouraud interpolation across the
+/// triangles that are already being submitted costs nothing extra.
+///
+/// `vertices` is a flat triangle list — three entries per triangle, and any
+/// trailing partial triangle is dropped rather than half-drawn. Wind each
+/// triangle **counter-clockwise in screen coordinates** (y grows downward):
+/// rlgl culls back faces, so a clockwise triangle silently draws nothing.
+pub fn shaded_triangles<D: RaylibDraw>(_d: &mut D, vertices: &[(Vector2, Color)]) {
+    if vertices.len() < 3 {
+        return;
+    }
+    // SAFETY: one immediate-mode batch, opened and closed in the same
+    // expression. The `_d` borrow proves a drawing context is active, which is
+    // rlgl's only precondition here; `rlBegin` resets the draw call's texture to
+    // rlgl's own default (`rlgl.h:1479`) whenever the primitive mode changes, and
+    // that default is the 1x1 white texture every colour here is multiplied by.
+    // Nothing between the `rlBegin` and the `rlEnd` can panic or allocate —
+    // `chunks_exact` and `flatten` are infallible over a slice — so the batch
+    // cannot be left open, which is why this needs no RAII guard.
+    unsafe {
+        raylib_sys::rlBegin(raylib_sys::RL_TRIANGLES as i32);
+        for (point, color) in vertices.chunks_exact(3).flatten() {
+            raylib_sys::rlColor4ub(color.r, color.g, color.b, color.a);
+            raylib_sys::rlVertex2f(point.x, point.y);
+        }
+        raylib_sys::rlEnd();
+    }
+}
+
 /// HSV to RGB, matching raylib's `ColorFromHSV` bit for bit.
 ///
 /// Scenes compute hue per band and must agree with the C renderer, so this calls

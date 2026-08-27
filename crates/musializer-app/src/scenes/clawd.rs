@@ -9,9 +9,9 @@
 //! ## How it is drawn, and why this way
 //!
 //! Everything is procedural geometry: petals are rotated ellipses filled with a
-//! triangle fan and outlined segment-by-segment, the face is stroked polylines
-//! with round joints, and the cats are ASCII kaomoji through the built-in
-//! monospace face. No bitmap is imported —
+//! Gouraud-shaded triangle mesh and outlined segment-by-segment, the face is
+//! stroked polylines with round joints, and the cats are ASCII kaomoji through
+//! the built-in monospace face. No bitmap is imported —
 //! partly because thebes' artwork is thebes', and partly for the reason the
 //! caption work already paid for: a bitmap magnified under export supersampling
 //! is a blur, while an ellipse is exact at 12 px and at 1200.
@@ -53,6 +53,40 @@
 //!   smoke ribbon, 2026-08-26: translucent grey discs with none of the
 //!   reference image's framing read as anonymous fog, not a joke — a control
 //!   slot at the 12-descriptor ceiling has to buy something legible.)
+//!
+//! ## One light, three consumers (2026-08-27)
+//!
+//! Before this the frame was a diagram: twelve flat triangle fans, one flat
+//! white disc, and nothing casting anything. Every colour in it was correct and
+//! the whole thing read as clip-art, because a flat fill carries no information
+//! about *form* — it is the same picture at 12 px and at 1200, which is exactly
+//! what the procedural geometry was chosen to avoid.
+//!
+//! So the scene now has a light: [`LIGHT`], upper-left, one unit vector that
+//! three separate things read.
+//!
+//! - **Petals** get a base-to-tip value ramp along their own axis and a rim
+//!   highlight on the side facing the light. The ramp is *axial*, not
+//!   screen-space, because the ring spins: a fixed gradient in frame
+//!   coordinates would slide across the flower as it turns and read as a
+//!   rendering fault rather than as shape.
+//! - **The head disc** darkens on the side facing away, and only in that
+//!   direction — see [`FACE_SHADE`] for why the symmetric version was wrong.
+//! - **A contact shadow** sits on the cats' own floor line, offset away from
+//!   the light, breathing with the beat. It is what turns "a flower on a
+//!   gradient" into "a flower above a floor", and it is the reason `cat_size`
+//!   and `floor` are resolved before the flower is drawn instead of beside the
+//!   cats.
+//!
+//! All three go through [`draw::shaded_triangles`], which is the one thing
+//! raylib's 2D API cannot express: every fill it offers takes a single colour.
+//!
+//! **The shading composes on top of everything else, and the order is the whole
+//! point.** A petal's colour has already been through the `hue` rotation, the
+//! warmth tint, the energy-driven brilliance and the petal show's lerp toward
+//! the hue wheel by the time [`lit`] sees it. Shading last keeps a show vivid
+//! *and* gives it shape; shading first would be overwritten by the show and the
+//! effect would vanish exactly on the frames worth looking at.
 //!
 //! ## The trail, and what deliberately does not have one (2026-08-27)
 //!
@@ -141,12 +175,78 @@ const TRAIL_STRENGTH_FLARE: f32 = 0.92;
 /// frame comparable.
 const TRAIL_BUFFER_EDGE: i32 = 1024;
 
-/// Points along half an ellipse outline. 18 segments keeps a fist-sized petal
-/// visually round and costs nothing that matters.
-const PETAL_SEGMENTS: usize = 18;
+/// Points along a petal's ellipse outline. 24 rather than 18 since the fill
+/// became Gouraud-shaded: the value ramp is interpolated *between* these
+/// samples, so the segment count now sets the smoothness of the light as well
+/// as the roundness of the silhouette, and 18 left faint facets on a tip.
+const PETAL_SEGMENTS: usize = 24;
 
 /// The petal base hue before the `hue` setting rotates it — thebes' terracotta.
 const PETAL_HUE: f32 = 14.0;
+
+/// The scene's one light, as a unit vector *toward* the source in screen
+/// coordinates — so `y` negative is up. Upper-left, and every lit thing here
+/// reads the same constant: the petals' rim, the head's top-light and the side
+/// the contact shadow falls to. One light with three consumers is what makes a
+/// frame read as an object in a room; three plausible lights read as none.
+const LIGHT: (f32, f32) = (-0.5547, -0.8321);
+
+/// A petal is darkest where it meets the head and brightest at the tip.
+///
+/// A ramp along the petal's own axis rather than along the frame: the ring
+/// spins, and a fixed screen-space gradient would slide across the flower as it
+/// turns, which reads as a lighting fault rather than as form. The spread is
+/// ~24 % of the base value — enough to give each petal a body, gentle enough
+/// that the twelve still read as one flower.
+const PETAL_SHADE_BASE: f32 = 0.82;
+const PETAL_SHADE_TIP: f32 = 1.06;
+
+/// The outline pass covers the perimeter, so the rim highlight sits on an inset
+/// ring — this far in, as a fraction of the way to the petal's centre.
+///
+/// Putting it on the outline's own vertices is the obvious thing and it is
+/// invisible: `stroke` is ~6 px at 1080p and the highlight lands under it.
+const PETAL_RIM_INSET: f32 = 0.30;
+
+/// How far a fully-lit rim vertex lerps toward [`HIGHLIGHT`], and how much of
+/// that the covered perimeter ring keeps.
+const PETAL_RIM: f32 = 0.38;
+const PETAL_RIM_EDGE: f32 = 0.45;
+
+/// The perimeter is a shade darker than the body, which is what keeps a lit
+/// petal from reading as a flat brighter petal.
+const PETAL_EDGE_SHADE: f32 = 0.93;
+
+/// The colour a lit surface tends toward: warm, because the light in this scene
+/// is the same one making the backdrop cream.
+const HIGHLIGHT: Color = Color::new(255, 246, 226, 255);
+
+/// The head disc's own cream, and how far the side facing away from the light
+/// darkens.
+///
+/// The ramp only ever goes **down** from this colour, which is why there are two
+/// constants and not a symmetric swing. The cream is already at 250, so a
+/// brightening term clips within a few degrees of the light and leaves a flat
+/// white cap with a hard edge where it stops — the first version did exactly
+/// that. Darkening only keeps the lit side byte-identical to the flat disc this
+/// replaced, and lets the shading be strong enough to see (250 down to ~208)
+/// without touching the value the face's strokes are read against.
+const FACE_CREAM: Color = Color::new(250, 248, 242, 255);
+const FACE_SHADE: f32 = 0.17;
+const FACE_SEGMENTS: usize = 72;
+
+/// The contact shadow: its ellipse in head radii, its opacity on the cream
+/// ground, and how far it slides away from the light.
+const SHADOW_RX: f32 = 1.55;
+const SHADOW_RY: f32 = 0.30;
+const SHADOW_ALPHA: f32 = 0.24;
+const SHADOW_OFFSET: f32 = 0.55;
+const SHADOW_SEGMENTS: usize = 48;
+/// Where the shadow's core ends and its penumbra begins, as a fraction of the
+/// ellipse. Two rings rather than one: a single fan from a solid centre to a
+/// transparent rim is a linear cone and photographs as a hard-edged lens flare,
+/// which is the opposite of grounding anything.
+const SHADOW_CORE: f32 = 0.52;
 
 /// The two cat rows, per face. ASCII only — see the module docs and the test.
 fn cat_rows(face: CatFace) -> [&'static str; 2] {
@@ -248,11 +348,26 @@ fn stroke_polyline<D: RaylibDraw>(d: &mut D, points: &[Vector2], thickness: f32,
     }
 }
 
-/// The outline of one petal: a rotated ellipse.
+/// One petal's geometry: a rotated ellipse, plus what shading it needs.
+struct PetalShape {
+    /// The outline, counter-clockwise in screen coordinates.
+    points: Vec<Vector2>,
+    /// The **true** outward unit normal at each point, not the radial direction
+    /// from the centre. On a petal this thin the two differ by tens of degrees
+    /// everywhere but the four extremes, and the radial approximation puts the
+    /// rim highlight visibly off the edge it is supposed to trace.
+    normals: Vec<Vector2>,
+    /// 0 where the petal meets the head, 1 at its tip.
+    axial: Vec<f32>,
+    /// The ellipse's own centre — the fan's pivot.
+    centre: Vector2,
+}
+
+/// Builds one petal.
 ///
 /// `origin` is the flower centre, `angle` the petal's axis, `inner`/`length`
 /// where it starts and how far it reaches, `width` the full minor axis.
-fn petal_outline(origin: Vector2, angle: f32, inner: f32, length: f32, width: f32) -> Vec<Vector2> {
+fn petal_shape(origin: Vector2, angle: f32, inner: f32, length: f32, width: f32) -> PetalShape {
     let dir = Vector2::new(angle.cos(), angle.sin());
     let normal = Vector2::new(-dir.y, dir.x);
     let centre = Vector2::new(
@@ -261,20 +376,70 @@ fn petal_outline(origin: Vector2, angle: f32, inner: f32, length: f32, width: f3
     );
     let a = length * 0.5;
     let b = width * 0.5;
-    (0..PETAL_SEGMENTS)
-        .map(|k| {
-            // Negated so the sweep runs counter-clockwise *in screen
-            // coordinates* (y grows downward). raylib culls back faces, and the
-            // first capture proved it: a clockwise fan draws nothing, and the
-            // flower photographed as a colouring-book page of outlines with the
-            // terracotta silently missing.
-            let theta = -(k as f32) / PETAL_SEGMENTS as f32 * TAU;
-            Vector2::new(
-                centre.x + dir.x * a * theta.cos() + normal.x * b * theta.sin(),
-                centre.y + dir.y * a * theta.cos() + normal.y * b * theta.sin(),
-            )
-        })
-        .collect()
+    let mut points = Vec::with_capacity(PETAL_SEGMENTS);
+    let mut normals = Vec::with_capacity(PETAL_SEGMENTS);
+    let mut axial = Vec::with_capacity(PETAL_SEGMENTS);
+    for k in 0..PETAL_SEGMENTS {
+        // Negated so the sweep runs counter-clockwise *in screen coordinates*
+        // (y grows downward). raylib culls back faces, and the first capture
+        // proved it: a clockwise fan draws nothing, and the flower photographed
+        // as a colouring-book page of outlines with the terracotta silently
+        // missing.
+        let theta = -(k as f32) / PETAL_SEGMENTS as f32 * TAU;
+        let (sin, cos) = theta.sin_cos();
+        points.push(Vector2::new(
+            centre.x + dir.x * a * cos + normal.x * b * sin,
+            centre.y + dir.y * a * cos + normal.y * b * sin,
+        ));
+        // For `P(θ) = C + dir·a·cosθ + nrm·b·sinθ` the outward normal is
+        // proportional to `dir·b·cosθ + nrm·a·sinθ` — the semi-axes swap, which
+        // is exactly what the radial approximation gets wrong.
+        let nx = dir.x * b * cos + normal.x * a * sin;
+        let ny = dir.y * b * cos + normal.y * a * sin;
+        let len = (nx * nx + ny * ny).sqrt();
+        normals.push(if len > 1.0e-6 {
+            Vector2::new(nx / len, ny / len)
+        } else {
+            dir
+        });
+        // `dot(P - C, dir) = a·cosθ`, so the base-to-tip fraction is just this.
+        axial.push((1.0 + cos) * 0.5);
+    }
+    PetalShape {
+        points,
+        normals,
+        axial,
+        centre,
+    }
+}
+
+/// How strongly a surface with this outward normal faces [`LIGHT`], `0..=1`.
+fn lambert(normal: Vector2) -> f32 {
+    (normal.x * LIGHT.0 + normal.y * LIGHT.1).max(0.0)
+}
+
+/// Applies the scene's light to a base colour: a value multiplier, then a rim
+/// term lerping toward [`HIGHLIGHT`].
+///
+/// The order matters and it is the one thing this whole pass had to get right:
+/// `base` already carries the petal show's lerp toward the hue wheel, the
+/// energy-driven brilliance, the `hue` rotation and the warmth tint. Shading
+/// *after* all of that keeps a show vivid and gives it shape; shading before it
+/// would be overwritten by the show's own colour and the whole effect would
+/// disappear exactly when the frame is at its most interesting.
+fn lit(base: Color, value: f32, rim: f32, alpha: f32) -> Color {
+    let value = value.max(0.0);
+    let rim = rim.clamp(0.0, 1.0);
+    let channel = |base: u8, highlight: u8| {
+        let shaded = f32::from(base) * value;
+        lerp(shaded, f32::from(highlight), rim).clamp(0.0, 255.0) as u8
+    };
+    Color::new(
+        channel(base.r, HIGHLIGHT.r),
+        channel(base.g, HIGHLIGHT.g),
+        channel(base.b, HIGHLIGHT.b),
+        (f32::from(base.a) * alpha.clamp(0.0, 1.0)) as u8,
+    )
 }
 
 /// The boom petal scatter envelope: `(radial_offset_fraction, alpha)` over the
@@ -382,9 +547,112 @@ fn outline_loop<D: RaylibDraw>(d: &mut D, outline: &[Vector2], thickness: f32, c
     }
 }
 
+/// Appends one petal's shaded mesh.
+///
+/// Three rings rather than a plain fan: the ellipse's centre, an inset ring
+/// carrying the rim highlight, and the outline itself. The middle ring is the
+/// whole reason this is not a one-ring fan — the outline pass draws a ~6 px
+/// stroke over the perimeter at 1080p, so a highlight placed on the perimeter's
+/// own vertices is drawn and then immediately painted over. It was, and the
+/// first capture of this pass looked exactly like the flat one.
+fn petal_mesh(shape: &PetalShape, fill: Color, alpha: f32, out: &mut Vec<(Vector2, Color)>) {
+    let count = shape.points.len();
+    if count < 3 {
+        return;
+    }
+    let body = |axial: f32| lerp(PETAL_SHADE_BASE, PETAL_SHADE_TIP, axial);
+    let pivot = (shape.centre, lit(fill, body(0.5), 0.0, alpha));
+    let ring = |k: usize| {
+        let point = shape.points[k];
+        let axial = shape.axial[k];
+        let facing = lambert(shape.normals[k]);
+        // Cubed: a bare lambert term wraps most of the way round the petal and
+        // reads as a second flat colour rather than as light on one side.
+        let rim = facing * facing * facing;
+        let inner = Vector2::new(
+            lerp(point.x, shape.centre.x, PETAL_RIM_INSET),
+            lerp(point.y, shape.centre.y, PETAL_RIM_INSET),
+        );
+        (
+            (
+                inner,
+                lit(
+                    fill,
+                    body(lerp(axial, 0.5, PETAL_RIM_INSET)),
+                    rim * PETAL_RIM,
+                    alpha,
+                ),
+            ),
+            (
+                point,
+                lit(
+                    fill,
+                    body(axial) * PETAL_EDGE_SHADE,
+                    rim * PETAL_RIM * PETAL_RIM_EDGE,
+                    alpha,
+                ),
+            ),
+        )
+    };
+    for k in 0..count {
+        let (inner_a, outer_a) = ring(k);
+        let (inner_b, outer_b) = ring((k + 1) % count);
+        out.extend_from_slice(&[pivot, inner_a, inner_b]);
+        out.extend_from_slice(&[inner_a, outer_a, outer_b]);
+        out.extend_from_slice(&[inner_a, outer_b, inner_b]);
+    }
+}
+
+/// Appends the head disc as a top-lit sphere rather than a flat circle.
+fn face_mesh(centre: Vector2, radius: f32, out: &mut Vec<(Vector2, Color)>) {
+    let pivot = (centre, FACE_CREAM);
+    let at = |k: usize| {
+        let theta = -(k as f32) / FACE_SEGMENTS as f32 * TAU;
+        let (sin, cos) = theta.sin_cos();
+        // How far this point faces *away* from the light, smoothstepped so the
+        // terminator has no crease in it — a linear ramp off `max(0, -dot)` is
+        // only C0, and on a disc this large the kink reads as a seam.
+        let away = (-(cos * LIGHT.0 + sin * LIGHT.1)).clamp(0.0, 1.0);
+        let value = 1.0 - FACE_SHADE * away * away * (3.0 - 2.0 * away);
+        (
+            Vector2::new(centre.x + cos * radius, centre.y + sin * radius),
+            lit(FACE_CREAM, value, 0.0, 1.0),
+        )
+    };
+    for k in 0..FACE_SEGMENTS {
+        out.extend_from_slice(&[pivot, at(k), at((k + 1) % FACE_SEGMENTS)]);
+    }
+}
+
+/// Appends the contact shadow: a soft ellipse with a core and a penumbra.
+fn shadow_mesh(centre: Vector2, rx: f32, ry: f32, alpha: f32, out: &mut Vec<(Vector2, Color)>) {
+    // A warm near-black rather than pure black: the ground it falls on is cream
+    // lit by a warm light, and a neutral shadow on it reads as a cut-out hole.
+    let shade = |a: f32| Color::new(38, 26, 20, (a.clamp(0.0, 1.0) * 255.0) as u8);
+    let pivot = (centre, shade(alpha));
+    let at = |k: usize, scale: f32, a: f32| {
+        let theta = -(k as f32) / SHADOW_SEGMENTS as f32 * TAU;
+        let (sin, cos) = theta.sin_cos();
+        (
+            Vector2::new(centre.x + cos * rx * scale, centre.y + sin * ry * scale),
+            shade(a),
+        )
+    };
+    for k in 0..SHADOW_SEGMENTS {
+        let next = (k + 1) % SHADOW_SEGMENTS;
+        let core_a = at(k, SHADOW_CORE, alpha * 0.70);
+        let core_b = at(next, SHADOW_CORE, alpha * 0.70);
+        let rim_a = at(k, 1.0, 0.0);
+        let rim_b = at(next, 1.0, 0.0);
+        out.extend_from_slice(&[pivot, core_a, core_b]);
+        out.extend_from_slice(&[core_a, rim_a, rim_b]);
+        out.extend_from_slice(&[core_a, rim_b, core_b]);
+    }
+}
+
 /// One petal, resolved: where it is and what colour it is this frame.
 struct Petal {
-    outline: Vec<Vector2>,
+    shape: PetalShape,
     fill: Color,
     energy: f32,
 }
@@ -406,6 +674,9 @@ struct Flower {
     petal_peak_index: usize,
     /// Fades a blown-out petal during a boom; exactly 1.0 otherwise.
     scatter_alpha: f32,
+    /// The beat impulse after the `bounce` control — the head's squash, and
+    /// what the contact shadow breathes on.
+    bounce: f32,
     /// The petal show's level after the strength control, `0..=1`.
     show: f32,
     /// `boom_progress()`, carried so the trail and the face agree about it.
@@ -505,7 +776,7 @@ impl Flower {
                 * (1.0 + organic(2) * 0.07)
                 * squash_y.mul_add(0.5, 0.5);
             let width = head_radius * (0.36 + 0.16 * energy) * (1.0 + organic(3) * 0.08) * squash_x;
-            let outline = petal_outline(centre, angle, inner, length, width);
+            let shape = petal_shape(centre, angle, inner, length, width);
             let mut fill = draw::color_from_hsv(petal_hue, petal_saturation, 0.70 + 0.22 * energy);
             if show > 0.0 {
                 // The light show: this petal's own slice of the hue wheel,
@@ -520,7 +791,7 @@ impl Flower {
                 fill = lerp_color(fill, lit, show);
             }
             petals.push(Petal {
-                outline,
+                shape,
                 fill,
                 energy,
             });
@@ -544,6 +815,7 @@ impl Flower {
             petal_peak,
             petal_peak_index,
             scatter_alpha,
+            bounce,
             show,
             boom,
             flare: show.max(boom_flare),
@@ -658,7 +930,11 @@ pub fn prepare(
                 if alpha <= 0.0 {
                     continue;
                 }
-                let outline: Vec<Vector2> = petal.outline.iter().map(|p| to_buffer(*p)).collect();
+                // Flat, not shaded: the trail is diffuse light that has already
+                // been faded, crept and swirled, so a value ramp inside it is a
+                // detail no ghost can carry.
+                let outline: Vec<Vector2> =
+                    petal.shape.points.iter().map(|p| to_buffer(*p)).collect();
                 fill_convex(&mut pass, &outline, premultiplied(petal.fill, alpha));
             }
         });
@@ -738,6 +1014,45 @@ pub fn draw(
         bottom,
     );
 
+    // The mesh scratch every shaded fill is built into, cleared and refilled
+    // rather than reallocated: at 24 segments a petal is 216 vertices and there
+    // are twelve of them plus the head, every frame.
+    let mut mesh: Vec<(Vector2, Color)> = Vec::new();
+
+    // -- the ground ------------------------------------------------------------
+    // The cats' floor line, hoisted here because the contact shadow lands on it:
+    // the flower and the cats share one ground plane, which is what stops the
+    // flower reading as a sticker on a gradient.
+    let cat_size = (min_dim * 0.045).max(10.0 * pixel_scale);
+    let floor = boundary.y + boundary.height - cat_size * 0.6;
+
+    // A soft ellipse under the head, offset away from the light. It breathes
+    // with the beat in the direction physics asks for: `bounce` drops the head
+    // toward the floor, so the shadow tightens and darkens as it lands rather
+    // than pulsing in step with the squash for its own sake.
+    //
+    // Scaled by daylight because a shadow is the absence of a light that has to
+    // be there first — on the dark backdrop there is nothing casting one, and a
+    // dark ellipse on near-black would be a smudge with no cause.
+    let shadow_alpha = SHADOW_ALPHA * (0.18 + 0.82 * daylight) * (1.0 + flower.bounce * 0.30);
+    if shadow_alpha > 0.004 {
+        let spread = 1.0 + flower.bounce * 0.14;
+        // Sat *on* the floor line rather than centred on it: the ellipse's own
+        // bottom touches where the cats stand. Centring it there put a third of
+        // the penumbra past the frame edge, and a shadow cut off by the bottom
+        // of the picture reads as a dark band, not as ground.
+        let ry = head_radius * SHADOW_RY;
+        mesh.clear();
+        shadow_mesh(
+            Vector2::new(centre.x - LIGHT.0 * head_radius * SHADOW_OFFSET, floor - ry),
+            head_radius * SHADOW_RX * spread,
+            ry / spread,
+            shadow_alpha,
+            &mut mesh,
+        );
+        draw::shaded_triangles(d, &mesh);
+    }
+
     // -- the flower ------------------------------------------------------------
     let sway = state.sway_phase();
 
@@ -808,16 +1123,14 @@ pub fn draw(
 
     // Petals, painted far-to-near is meaningless for a flat ring; order by index.
     for petal in &flower.petals {
-        // Scatter alpha fades a blown-out petal; at 1.0 `ColorAlpha` returns
-        // the colour byte-for-byte, so this is free on a non-boom frame.
-        fill_convex(
-            d,
-            &petal.outline,
-            draw::color_alpha(petal.fill, flower.scatter_alpha),
-        );
+        // Scatter alpha fades a blown-out petal; at 1.0 `lit` and `ColorAlpha`
+        // both leave the colour alone, so this is free on a non-boom frame.
+        mesh.clear();
+        petal_mesh(&petal.shape, petal.fill, flower.scatter_alpha, &mut mesh);
+        draw::shaded_triangles(d, &mesh);
         outline_loop(
             d,
-            &petal.outline,
+            &petal.shape.points,
             stroke,
             draw::color_alpha(ink, flower.scatter_alpha),
         );
@@ -825,9 +1138,13 @@ pub fn draw(
     let (petal_peak, petal_peak_index) = (flower.petal_peak, flower.petal_peak_index);
     let boom = flower.boom;
 
-    // The face disc. Slightly cream rather than pure white, like the art.
+    // The face disc. Slightly cream rather than pure white, like the art, and
+    // top-lit on the same light as the petals so the head reads as a ball
+    // rather than as a hole cut in the flower.
     let face_radius = flower.face_radius;
-    d.draw_circle_v(centre, face_radius, Color::new(250, 248, 242, 255));
+    mesh.clear();
+    face_mesh(centre, face_radius, &mut mesh);
+    draw::shaded_triangles(d, &mesh);
     d.draw_ring(
         centre,
         face_radius - stroke * 0.5,
@@ -1038,10 +1355,11 @@ pub fn draw(
     }
 
     // -- cats ------------------------------------------------------------------
+    // `cat_size` and `floor` are resolved above, with the contact shadow: the
+    // shadow lands on the same line the cats stand on, and two definitions of
+    // one ground plane is exactly how they come apart.
     let font = DefaultFont::get();
-    let cat_size = (min_dim * 0.045).max(10.0 * pixel_scale);
     let spacing = cat_size * 0.1;
-    let floor = boundary.y + boundary.height - cat_size * 0.6;
     let drawn_cats = state.cat_count();
     for index in 0..drawn_cats {
         let Some(cat) = state.cat(index) else { break };
@@ -1189,15 +1507,115 @@ mod tests {
 
     #[test]
     fn petal_outlines_are_closed_and_finite() {
-        let outline = petal_outline(Vector2::new(100.0, 100.0), 1.2, 20.0, 60.0, 24.0);
-        assert_eq!(outline.len(), PETAL_SEGMENTS);
-        for p in &outline {
+        let shape = petal_shape(Vector2::new(100.0, 100.0), 1.2, 20.0, 60.0, 24.0);
+        assert_eq!(shape.points.len(), PETAL_SEGMENTS);
+        for p in &shape.points {
             assert!(p.x.is_finite() && p.y.is_finite());
             // Everything stays within the reach the parameters describe.
             let dx = p.x - 100.0;
             let dy = p.y - 100.0;
             assert!((dx * dx + dy * dy).sqrt() <= 20.0 + 60.0 + 1.0e-3);
         }
+    }
+
+    /// The rim highlight is only ever as good as the normal it is computed
+    /// from, and a normal that is subtly wrong still draws a plausible picture —
+    /// a highlight sitting a few degrees off the edge reads as "shaded", not as
+    /// "shaded wrongly". So pin it against the geometry instead: every normal is
+    /// a unit vector, points *away* from the ellipse's centre, and is
+    /// perpendicular to the outline's own local direction.
+    #[test]
+    fn petal_normals_are_outward_unit_and_perpendicular() {
+        // A long thin petal, which is where the radial approximation is worst.
+        let shape = petal_shape(Vector2::new(0.0, 0.0), 0.7, 30.0, 120.0, 34.0);
+        let count = shape.points.len();
+        for k in 0..count {
+            let n = shape.normals[k];
+            assert!(
+                ((n.x * n.x + n.y * n.y).sqrt() - 1.0).abs() < 1.0e-4,
+                "normal {k} is not a unit vector"
+            );
+            let out = Vector2::new(
+                shape.points[k].x - shape.centre.x,
+                shape.points[k].y - shape.centre.y,
+            );
+            assert!(
+                n.x * out.x + n.y * out.y > 0.0,
+                "normal {k} points into the petal"
+            );
+            let next = shape.points[(k + 1) % count];
+            let prev = shape.points[(k + count - 1) % count];
+            let tangent = Vector2::new(next.x - prev.x, next.y - prev.y);
+            let len = (tangent.x * tangent.x + tangent.y * tangent.y).sqrt();
+            let cosine = (n.x * tangent.x + n.y * tangent.y) / len;
+            // The central difference is a chord, so it is only perpendicular to
+            // within the segment's own curvature — 24 segments buys this bound.
+            assert!(cosine.abs() < 0.02, "normal {k} is off by {cosine}");
+        }
+    }
+
+    /// The base-to-tip ramp is the shading's whole claim, so pin both ends and
+    /// its monotonicity. `axial` is a pure function of the ellipse parameter,
+    /// which means it holds at every angle, size and aspect.
+    #[test]
+    fn petal_axial_runs_base_to_tip() {
+        let shape = petal_shape(Vector2::new(40.0, -12.0), -2.1, 18.0, 70.0, 26.0);
+        // Vertex 0 is θ = 0, which is the tip.
+        assert!((shape.axial[0] - 1.0).abs() < 1.0e-6);
+        // Half way round is the base.
+        assert!(shape.axial[PETAL_SEGMENTS / 2] < 1.0e-6);
+        for t in &shape.axial {
+            assert!((0.0..=1.0).contains(t), "axial {t} outside the petal");
+        }
+    }
+
+    /// `lit` must be transparent at its neutral, or every non-shaded caller
+    /// (and the boom's `scatter_alpha == 1.0` frames) would drift.
+    #[test]
+    fn lit_is_the_identity_at_its_neutral() {
+        let terracotta = Color::new(200, 100, 60, 255);
+        assert_eq!(lit(terracotta, 1.0, 0.0, 1.0), terracotta);
+        // A full rim lands exactly on the highlight, whatever the base was.
+        assert_eq!(lit(terracotta, 1.0, 1.0, 1.0).r, HIGHLIGHT.r);
+        // Value clamps at the top rather than wrapping through `as u8`.
+        assert_eq!(
+            lit(terracotta, 9.0, 0.0, 1.0),
+            Color::new(255, 255, 255, 255)
+        );
+        assert_eq!(lit(terracotta, -1.0, 0.0, 1.0), Color::new(0, 0, 0, 255));
+        // Alpha is the only channel the scatter touches.
+        assert_eq!(lit(terracotta, 1.0, 0.0, 0.5).a, 127);
+    }
+
+    /// The one thing that would make every shaded fill silently draw nothing:
+    /// raylib culls back faces, so each emitted triangle has to wind the same
+    /// way the working flat fan did. Signed area in screen coordinates, over
+    /// all three meshes, because they share one primitive and one mistake.
+    #[test]
+    fn every_shaded_triangle_winds_the_same_way() {
+        let mut mesh = Vec::new();
+        let shape = petal_shape(Vector2::new(0.0, 0.0), 0.4, 20.0, 80.0, 30.0);
+        petal_mesh(&shape, Color::new(200, 100, 60, 255), 1.0, &mut mesh);
+        face_mesh(Vector2::new(0.0, 0.0), 40.0, &mut mesh);
+        shadow_mesh(Vector2::new(0.0, 120.0), 60.0, 14.0, 0.25, &mut mesh);
+        assert_eq!(mesh.len() % 3, 0, "a partial triangle would be dropped");
+        let mut sign = 0.0f32;
+        for (index, tri) in mesh.chunks_exact(3).enumerate() {
+            let (a, b, c) = (tri[0].0, tri[1].0, tri[2].0);
+            let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if area.abs() < 1.0e-4 {
+                continue;
+            }
+            if sign == 0.0 {
+                sign = area.signum();
+            }
+            assert_eq!(
+                area.signum(),
+                sign,
+                "triangle {index} winds against the rest and would be culled"
+            );
+        }
+        assert!(sign != 0.0, "the meshes are entirely degenerate");
     }
 
     /// The endpoints are the byte-identity contract: `boom_progress()` is 0 on
