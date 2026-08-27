@@ -85,7 +85,21 @@ def measure(path, lanes, ui_scale=100):
     image = np.array(Image.open(path).convert("RGB")).astype(int)
     height, width, _ = image.shape
 
-    trough = _match(image, TROUGH, 4)
+    # EXACT match, tolerance zero, and the margin is measured rather than
+    # chosen. The trough is an opaque fill, and an opaque fill is bit-exact on
+    # every renderer this gate supports -- verified at 905/1995/1249 exact
+    # pixels per seam row on NVIDIA-via-VirtualGL at 100%, the same at 150%,
+    # and llvmpipe. The chrome's translucent rule strokes are the reason no
+    # tolerance survives: UI_RULE blends over UI_SURFACE at 50% to
+    # (228.5, 228.5, 231) and at 40% to (232.2, 232.2, 234.4), and blend
+    # rounding is renderer-dependent, so those land anywhere from distance 1
+    # to 3 of the trough tone -- under a 4-window every sufficiently empty
+    # chrome row became a phantom seam on the GPU path (7 at 1280x720, 31 at
+    # 150%), under a 2-window the 40% strokes still did. No rounding of
+    # either blend can reach the exact trough tuple (the R channel is 2+
+    # away for every alpha in the chrome), which is what makes exactness the
+    # one robust classifier rather than the strictest one.
+    trough = _match(image, TROUGH, 0)
     # **Total** trough pixels in the row, not the longest contiguous run.
     #
     # The run version is the obvious way to write this and it is wrong, which
@@ -137,16 +151,28 @@ def measure(path, lanes, ui_scale=100):
     search_lo = max(0, seam_start - 4)
     search_hi = min(width, seam_end + 4)
 
-    rule = _match(image, RULE, 6)
     accent = _match(image, ACCENT, 30)
+    # Border columns by a DARKNESS CEILING, not by a colour window around
+    # UI_RULE. The border is a 1px stroke, and a 1px stroke at a fractional x
+    # is rasterized as one full-dark column by llvmpipe and as two partially
+    # covered neighbours by the NVIDIA path through VirtualGL -- measured at
+    # (244,244,245)+(219,219,222) where the CPU wrote a single exact
+    # (210,210,214), so RULE+-6 simply loses the column. Every split leaves at
+    # least one column carrying the stroke's majority coverage, and that
+    # column is far darker than any chrome fill (worst case, a 50/50 split
+    # blends to ~232 against UI_SURFACE's 247), so "every row of the band at
+    # or below 238 on its brightest channel" finds the same border on both
+    # renderers. The split is a function of x alone, so every lane sees the
+    # identical column and the cross-lane equality this check exists for is
+    # unaffected. Ticks and the playhead qualify too, exactly as they did
+    # under the colour match -- only the outermost two columns are taken.
+    RULE_CEILING = 238
+    darkish = image.max(axis=-1) <= RULE_CEILING
     measured = []
     for name, y0, y1 in bands:
         if y0 < 0 or y1 > height:
             return None, f"{name} probe band {y0}..{y1} falls outside the frame"
-        # A column that is the rule colour on every row of the band is a
-        # vertical border. Ticks qualify too, which is why only the outermost
-        # two are taken: those are the lane's own edges.
-        columns = [x for x in range(search_lo, search_hi) if rule[y0:y1, x].all()]
+        columns = [x for x in range(search_lo, search_hi) if darkish[y0:y1, x].all()]
         if not columns:
             return None, f"{name} has no vertical border at all"
         # Only inside the lane, which is the same restriction the border search

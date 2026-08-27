@@ -852,6 +852,45 @@ path, which is how the two are compared); `MZ_VGL_DEVICE` picks the VirtualGL
 device, default `egl0` — the EGL back end, which is the one that needs no X
 server on the GPU side.
 
+**Installed and measured 2026-08-27: 6 min 55 s against ~45 min on llvmpipe**
+— and "nothing else changes" above turned out to have been written before
+anyone had run the GPU path, because the first complete run took four attempts.
+Three defects, all in the gate's own instruments, none in the application, and
+each one is a template for the next capture check somebody writes:
+
+- **The launcher must be an absolute path.** Three probe families launch with
+  `PATH` stripped to the no-dialog guard directory (the kdialog/zenity
+  isolation), and a bare `vglrun` under that `PATH` is exit 127 — which
+  photographed as three unrelated sections failing. `MZ_GL` now resolves
+  through `command -v` at detection time; the guard's job is hiding dialog
+  binaries from the app, not hiding the launcher from the shell.
+- **Blends round renderer-dependently; opaque fills do not.** The chrome's
+  translucent rule strokes (`UI_RULE` at 40–50 % over `UI_SURFACE`) land
+  anywhere from distance 1 to 3 of `UI_LANE_TROUGH` depending on who rounds
+  the blend, so the lane-seam detector's ±4 colour window filled the frame
+  with phantom seams on NVIDIA (7 at 1280x720, **31** at 150 %) while every
+  real seam is an opaque fill both rasterizers write **bit-exactly** —
+  verified at 905/1995/1249 exact pixels per seam row across GPU, GPU@150 %
+  and llvmpipe. The detector now matches the trough exactly, tolerance zero:
+  exactness is the one classifier blend rounding cannot reach.
+- **A 1px stroke at a fractional x splits its coverage.** llvmpipe snaps it
+  into one full-dark column; NVIDIA splits it across two partial ones — the
+  AI dialog's divider became 228/228 where the CPU wrote one 210 (the rail
+  scan gained 1px of slack against its 14-vs-0 defect), and a lane border
+  became (244,244,245)+(219,219,222), which no colour window around
+  `UI_RULE`±6 can catch without swallowing the trough at distance 20. Border
+  columns are now found by a **darkness ceiling** (every band row ≤ 238 on
+  the brightest channel): every split leaves its majority column far below
+  it, and the split is a function of x alone, so all lanes still see the
+  identical column and the cross-lane equality keeps its teeth.
+
+The general rule the three add up to: **a capture check calibrated on
+bit-exact llvmpipe output is calibrated to an accident.** Fills may be
+compared exactly; anything a hairline or a blend touches needs a classifier
+that is invariant under ±1 rounding and coverage splitting, and the two
+renderers must both be in the negative-control loop when such a check is
+written (`MZ_GL_LAUNCH=""` forces the CPU path for exactly this).
+
 ## Rules for this repository
 
 - Preserve unrelated work in both repositories.

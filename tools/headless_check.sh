@@ -71,7 +71,13 @@ export MZ_NO_WAYLAND
 MZ_GL="${MZ_GL_LAUNCH-}"
 if [ -z "${MZ_GL_LAUNCH+set}" ]; then
     if command -v vglrun >/dev/null 2>&1; then
-        MZ_GL="vglrun -d ${MZ_VGL_DEVICE:-egl0}"
+        # The ABSOLUTE path, not the bare name: three probe families launch
+        # with PATH stripped to the no-dialog guard directory (the kdialog/
+        # zenity isolation), and a bare `vglrun` under that PATH is exit 127 —
+        # which took the GPU path's first full run to find. The guard's job is
+        # hiding dialog binaries from the app, not hiding the launcher from
+        # the shell.
+        MZ_GL="$(command -v vglrun) -d ${MZ_VGL_DEVICE:-egl0}"
     else
         MZ_GL=""
     fi
@@ -4321,7 +4327,16 @@ gap_left = button_left - dialog_x
 gap_right = divider - (button_right + 1)
 print(f"  ai-routing pixels: dialog-border={dialog_x} button={button_left}..{button_right} "
       f"divider={divider} gap-left={gap_left}px gap-right={gap_right}px")
-if gap_left != gap_right:
+# 1px of slack on both comparisons, and it is a measured rasterizer fact, not
+# a loosened contract: the divider is a 1px stroke, and llvmpipe rasterizes it
+# as one full-dark column (luma 210 at x=288) where the NVIDIA path through
+# VirtualGL splits the same line's coverage across two half-dark columns
+# (228/228 at x=287-288) -- so the first-column-below-threshold classifier
+# lands one pixel apart between the two renderers the gate supports, with the
+# dialog's own reported geometry byte-identical. Defect A was a rail drawn
+# *flush* against the divider (a 14-vs-0 asymmetry); 1px of classification
+# jitter cannot hide it coming back.
+if abs(gap_left - gap_right) > 1:
     print(f"FAIL: the rail is inset {gap_left}px on the left and {gap_right}px on the right")
     raise SystemExit(1)
 if gap_left < 4:
@@ -4329,7 +4344,7 @@ if gap_left < 4:
     raise SystemExit(1)
 # And the capture agrees with what the dialog said it drew.
 for name, measured in (("gap-left", gap_left), ("gap-right", gap_right)):
-    if abs(float(fields[name]) - measured) > 0.5:
+    if abs(float(fields[name]) - measured) > 1.0:
         print(f"FAIL: reported {name}={fields[name]} against {measured} in the picture")
         raise SystemExit(1)
 PYRAIL
