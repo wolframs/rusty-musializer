@@ -261,6 +261,9 @@ pub struct SceneRenderer {
     /// empty floor that should have cats), so its evidence lives here like
     /// phosphor's.
     clawd: scenes::clawd::ClawdResources,
+    /// Which `(scene, seed)` the feedback buffer's accumulated light belongs to.
+    /// See the reset in [`SceneRenderer::draw`].
+    feedback_identity: Option<(SceneId, u64)>,
     /// What the glow did on the last caption frame — `off`, `blurred`, or
     /// `unavailable` — because a frame with no halo and a frame whose halo
     /// silently failed to build are the same picture.
@@ -301,7 +304,21 @@ impl SceneRenderer {
             caption_halo_last: "none",
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
             clawd: scenes::clawd::ClawdResources::new(),
+            feedback_identity: None,
         })
+    }
+
+    /// Throws away every scene's accumulated frame-persistence light.
+    ///
+    /// **Export determinism, not housekeeping.** The preview and an export share
+    /// one renderer, so without this an export of the track already on screen
+    /// would open with a picture of whatever the user was looking at smeared
+    /// across frame zero, and two exports of the same project would differ. Both
+    /// callers are in the export panel: the encoder's session start, and a
+    /// still's replay.
+    pub fn reset_feedback(&mut self) {
+        self.clawd.trail.reset();
+        self.feedback_identity = None;
     }
 
     /// One line naming the scene-text path, for the slice report.
@@ -401,6 +418,25 @@ impl SceneRenderer {
         if id == SceneId::PhosphorDream {
             if let Some(state) = state_of(instance, id) {
                 scenes::phosphor_dream::prepare(d, &mut self.phosphor, state, frame, boundary);
+            }
+        }
+        // Clawd's trail accumulates offscreen for the same reason, and drops
+        // its accumulated light whenever the drawn scene or the track changes.
+        //
+        // Keyed on `(id, seed)` rather than on a call from every place a track
+        // is opened: the seed comes from the track, so a switch moves it, and
+        // one check on the path every frame takes beats a call four places have
+        // to remember to make. The explicit [`SceneRenderer::reset_feedback`]
+        // covers the case this cannot see — an export of the *same* track and
+        // scene the preview was just showing, where nothing in the pair moves.
+        if id == SceneId::Clawd {
+            let identity = (id, instance.seed());
+            if self.feedback_identity != Some(identity) {
+                self.clawd.trail.reset();
+                self.feedback_identity = Some(identity);
+            }
+            if let Some(state) = state_of(instance, id) {
+                scenes::clawd::prepare(d, &mut self.clawd, state, frame, boundary, pixel_scale);
             }
         }
         // The scene clip lives here rather than at the call site, because the
@@ -581,6 +617,27 @@ impl SceneRenderer {
                 );
             }
         }
+    }
+}
+
+/// How long a scene's frame-persistence buffer needs to fill before a frame
+/// drawn from it is the frame an export would have encoded, in seconds.
+///
+/// Zero for every scene that keeps no light between frames, which is all of
+/// them but Clawd.
+///
+/// **This is what keeps "a still is the video frame" true** (UX0-C10). A still
+/// replays every frame from zero to get the analyzer, the beat tracker and the
+/// scene state right, but it only ever *drew* the target frame — and a trail
+/// buffer is drawing state, so a cold one would publish a Clawd still with no
+/// ghosts under a video frame full of them. Three seconds is roughly nine
+/// half-lives of the resting trail and three and a half of the show's, so what
+/// is left of the difference is far below the still gate's floor.
+#[must_use]
+pub fn feedback_warmup_seconds(id: SceneId) -> f64 {
+    match id {
+        SceneId::Clawd => 3.0,
+        _ => 0.0,
     }
 }
 

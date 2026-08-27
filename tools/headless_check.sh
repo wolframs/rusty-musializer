@@ -607,6 +607,17 @@ case "$CLAWD_LINE" in
     *) echo "FAIL: Clawd's petal-show phase is absent from its report line: ${CLAWD_LINE:-<absent>}" >&2
        SWEEP_FAILED=1 ;;
 esac
+# The trail buffer must actually build. A driver that refuses the render
+# textures, a boundary that never reaches the accumulate, and a working trail
+# all draw a recognisable flower — the ghosts are the faintest thing in the
+# frame and the first thing a luma check stops noticing. `on@` is the whole
+# assertion: `off` and `unavailable` are the two states that photograph the
+# same.
+case "$CLAWD_LINE" in
+    *"trail=on@"*) : ;;
+    *) echo "FAIL: Clawd's frame-persistence trail did not build: ${CLAWD_LINE:-<absent>}" >&2
+       SWEEP_FAILED=1 ;;
+esac
 # At the default daylight (0.85) the backdrop is cream, the face plate is
 # near-white and the petals are saturated — a nearly black frame here means the
 # gradient or the geometry did not draw at all.
@@ -617,6 +628,42 @@ echo "clawd peak luma: ${CLAWD_LUMA:-?}"
 if [ "${CLAWD_LUMA%%.*}" -lt 150 ] 2>/dev/null; then
     echo "FAIL: Clawd drew an almost-dark frame at daylight 0.85 (peak luma $CLAWD_LUMA)" >&2
     SWEEP_FAILED=1
+fi
+
+# A scene that keeps light between frames shares its buffer with the preview,
+# and export determinism is a contract — so an export started from the button
+# after the preview has been running must equal a cold one of the same window,
+# byte for byte. Nothing else in this gate can see a missing reset: the smear
+# of wherever the playhead had been is a *plausible* first frame, it decays
+# within a second, and every other assertion about the file still passes. Two
+# launches, one comparison, and the encoder is held fixed on both sides because
+# that is what makes an md5 comparison mean anything.
+echo "=== an export cannot inherit the preview's trails ==="
+CLAWD_WARM="$OUT_DIR/clawd-warm-export.mp4"
+CLAWD_COLD="$OUT_DIR/clawd-cold-export.mp4"
+rm -f "$CLAWD_WARM" "$CLAWD_COLD"
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        --scene clawd --render-window 2 3 --probe-frames 40 \
+        --ui-probe "panel=export,click=1153x683,save-to=$CLAWD_WARM" \
+    >"$OUT_DIR/clawd-warm-export.txt" 2>&1 || true
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+        --scene clawd --render-window 2 3 --render "$CLAWD_COLD" \
+    >"$OUT_DIR/clawd-cold-export.txt" 2>&1 || true
+if [ ! -f "$CLAWD_WARM" ] || [ ! -f "$CLAWD_COLD" ]; then
+    echo "FAIL: the Clawd trail-reset check could not produce both exports" >&2
+    SWEEP_FAILED=1
+else
+    CLAWD_WARM_HASH="$(md5sum "$CLAWD_WARM" | cut -d' ' -f1)"
+    CLAWD_COLD_HASH="$(md5sum "$CLAWD_COLD" | cut -d' ' -f1)"
+    echo "clawd export after 40 preview frames / from cold: $CLAWD_WARM_HASH / $CLAWD_COLD_HASH"
+    if [ "$CLAWD_WARM_HASH" != "$CLAWD_COLD_HASH" ]; then
+        echo "FAIL: a Clawd export inherited the preview's frame-persistence buffer" >&2
+        SWEEP_FAILED=1
+    fi
 fi
 
 echo "=== long scene aliases ==="

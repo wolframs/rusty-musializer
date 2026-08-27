@@ -17,6 +17,7 @@ pub mod assist;
 pub mod audio_bridge;
 pub mod decode;
 pub mod draw;
+pub mod feedback;
 pub mod font;
 pub mod halo;
 pub mod preset_files;

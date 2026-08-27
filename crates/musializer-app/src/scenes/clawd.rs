@@ -53,11 +53,40 @@
 //!   smoke ribbon, 2026-08-26: translucent grey discs with none of the
 //!   reference image's framing read as anonymous fog, not a joke — a control
 //!   slot at the 12-descriptor ceiling has to buy something legible.)
+//!
+//! ## The trail, and what deliberately does not have one (2026-08-27)
+//!
+//! The petals leave light behind them, through a
+//! [`FeedbackBuffer`](musializer_runtime::feedback::FeedbackBuffer): last
+//! frame's trail, faded on a half-life and crept outward from the head, plus
+//! this frame's petal fills, composited **under** the flower. That "under" is
+//! structural rather than a setting — the face, its ink and the cats are drawn
+//! after the composite and never deposit into the buffer, so smeared light is
+//! reachable and a smeared face is not statable. The one thing the flower does
+//! that the old frame could not show is *move*: the ring spins, the petals
+//! breathe with their bands, and a boom throws them outward at speed. A ghost
+//! is what makes that motion visible in a still frame, which is what a poster
+//! or a paused video is.
+//!
+//! The composite mode follows the backdrop for the reason the bass glow already
+//! documents: additive light over the cream daylight ground saturates toward
+//! white and vanishes. So a light ground takes the trail as premultiplied paint
+//! *over* it (a colour smear, which is what a ghost on paper looks like) and a
+//! dark ground takes it as added light.
+//!
+//! **The strengths are constants, not controls.** The descriptor table is full
+//! at `MAX_CONTROLS` (twelve), and no slot here is worth less than what it
+//! already buys. The tuning that matters is coupled to the music anyway: the
+//! trail's half-life, its outward creep, its swirl and its strength all lerp up
+//! with the petal show's level and with a boom's first moments, so it is a
+//! whisper in ordinary playback and streamers when the track earns them. The
+//! `.musi` surface does not change.
 
 use musializer_core::scene::settings::index::clawd as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::clawd::{CatFace, ClawdState, Expression, PETAL_COUNT};
 use musializer_runtime::draw;
+use musializer_runtime::feedback::{self, Carry, FeedbackBuffer};
 use raylib::prelude::{
     BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, Rectangle, Vector2,
 };
@@ -66,6 +95,51 @@ use raylib::text::RaylibFont;
 use super::ascii_field::DefaultFont;
 
 const TAU: f32 = std::f32::consts::TAU;
+
+/// How long the trail keeps half its light, at rest and at a full petal show.
+///
+/// At rest it is short enough to read as motion blur on a spinning ring rather
+/// than as a stain; at show level the streamers have to survive a whole turn of
+/// the hue wheel or the effect reads as smudging rather than as light.
+const TRAIL_HALF_LIFE_REST: f32 = 0.30;
+const TRAIL_HALF_LIFE_FLARE: f32 = 0.85;
+
+/// How fast the trail creeps outward from the head, as a scale per second.
+///
+/// Outward rather than inward: a flower's light belongs radiating away from it,
+/// and an inward zoom pulls the ghosts into the face — the one place this scene
+/// is not allowed to smear.
+const TRAIL_ZOOM_REST: f32 = 1.09;
+const TRAIL_ZOOM_FLARE: f32 = 1.16;
+
+/// Degrees per second the trail turns about the head at a full show, for swirl.
+/// Zero at rest: a resting flower that quietly rotates its own aura reads as a
+/// rendering fault, not as an effect.
+const TRAIL_SWIRL_DEGREES: f32 = 16.0;
+
+/// How much light a petal lays down per **second** — turned into this frame's
+/// alpha by [`feedback::deposit`], never used as a per-frame constant.
+///
+/// It rises with the flare like everything else here, and that is what the two
+/// values are for rather than one: a resting deposit high enough to make a show
+/// blaze piles up behind a slow-turning ring as a muddy drop shadow, and a
+/// deposit low enough to keep the resting flower clean leaves the show looking
+/// like a smudge instead of a light.
+const TRAIL_DEPOSIT_REST: f32 = 5.0;
+const TRAIL_DEPOSIT_FLARE: f32 = 9.0;
+
+/// How strongly the accumulated trail is composited, at rest and at flare.
+const TRAIL_STRENGTH_REST: f32 = 0.40;
+const TRAIL_STRENGTH_FLARE: f32 = 0.92;
+
+/// The trail buffer's longest edge in texels.
+///
+/// A trail has no high frequencies by construction — it is the blurred history
+/// of big filled shapes — so it is accumulated at a fixed working size and
+/// upscaled by the composite. That also makes it *the same buffer* at 1x and
+/// under a 2x supersampled export, which is what keeps a still and its video
+/// frame comparable.
+const TRAIL_BUFFER_EDGE: i32 = 1024;
 
 /// Points along half an ellipse outline. 18 segments keeps a fist-sized petal
 /// visually round and costs nothing that matters.
@@ -84,7 +158,8 @@ fn cat_rows(face: CatFace) -> [&'static str; 2] {
     }
 }
 
-/// Everything the draw needs that is not the frame: the report string.
+/// Everything the draw needs that is not the frame: the trail buffer, the
+/// frame's resolved flower, and the report string.
 ///
 /// This scene draws a plausible frame in several wrong states — a dead
 /// expression machine is a permanent smile, petals uncoupled from their bands
@@ -92,6 +167,24 @@ fn cat_rows(face: CatFace) -> [&'static str; 2] {
 /// one of them photographs as "a cute picture, looks fine". The report line is
 /// where those states become distinguishable, so the renderer owns it.
 pub struct ClawdResources {
+    /// The accumulated light behind the flower.
+    ///
+    /// **No `load(rl, thread)`**, unlike `PhosphorResources`: the pair of render
+    /// textures is sized from the scene boundary, which is one thing under the
+    /// preview panel and another under a supersampled export target, so there is
+    /// nothing to allocate before the first frame. Constructing it eagerly would
+    /// mean allocating a guess and throwing it away.
+    pub trail: FeedbackBuffer,
+    /// This frame's flower, resolved by [`prepare`] and consumed by [`draw`].
+    ///
+    /// Carried rather than recomputed because the two must agree exactly: the
+    /// trail is a ghost of the petals, and half a degree of disagreement between
+    /// the deposit and the drawn petal reads as a badly registered effect. The
+    /// boundary travels with it so a stale resolve can never be used against a
+    /// different rectangle.
+    flower: Option<(Rectangle, Flower)>,
+    /// What the trail did on the last frame, for the report line.
+    trail_status: String,
     /// The last drawn frame's report, or `"none"` before the scene ever drew.
     pub last: String,
 }
@@ -100,6 +193,9 @@ impl ClawdResources {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            trail: FeedbackBuffer::new(),
+            flower: None,
+            trail_status: "off".to_string(),
             last: "none".to_string(),
         }
     }
@@ -143,7 +239,7 @@ fn ink_color(daylight: f32) -> Color {
 /// A stroked polyline with round joints, the primitive every facial feature is
 /// built from. Bare `draw_line_ex` butts leave notches at direction changes at
 /// export scale; a disc at each vertex is the cheap round join.
-fn stroke_polyline(d: &mut RaylibDrawHandle<'_>, points: &[Vector2], thickness: f32, color: Color) {
+fn stroke_polyline<D: RaylibDraw>(d: &mut D, points: &[Vector2], thickness: f32, color: Color) {
     for pair in points.windows(2) {
         d.draw_line_ex(pair[0], pair[1], thickness, color);
     }
@@ -254,7 +350,7 @@ fn closed_eye_points(cx: f32, cy: f32, half_width: f32) -> [(f32, f32); 3] {
     ]
 }
 
-fn fill_convex(d: &mut RaylibDrawHandle<'_>, outline: &[Vector2], color: Color) {
+fn fill_convex<D: RaylibDraw>(d: &mut D, outline: &[Vector2], color: Color) {
     if outline.len() < 3 {
         return;
     }
@@ -273,7 +369,7 @@ fn fill_convex(d: &mut RaylibDrawHandle<'_>, outline: &[Vector2], color: Color) 
     d.draw_triangle_fan(&fan, color);
 }
 
-fn outline_loop(d: &mut RaylibDrawHandle<'_>, outline: &[Vector2], thickness: f32, color: Color) {
+fn outline_loop<D: RaylibDraw>(d: &mut D, outline: &[Vector2], thickness: f32, color: Color) {
     if outline.len() < 2 {
         return;
     }
@@ -284,6 +380,296 @@ fn outline_loop(d: &mut RaylibDrawHandle<'_>, outline: &[Vector2], thickness: f3
     for point in outline {
         d.draw_circle_v(*point, thickness * 0.5, color);
     }
+}
+
+/// One petal, resolved: where it is and what colour it is this frame.
+struct Petal {
+    outline: Vec<Vector2>,
+    fill: Color,
+    energy: f32,
+}
+
+/// The frame's flower, resolved once for both the trail deposit and the draw.
+///
+/// One resolve rather than two, because the trail is a *ghost of these exact
+/// petals*: a second computation that drifted by a degree would read as a badly
+/// registered effect rather than as a bug, which is the failure mode this
+/// repository keeps paying for.
+struct Flower {
+    centre: Vector2,
+    head_radius: f32,
+    face_radius: f32,
+    stroke: f32,
+    ink: Color,
+    petals: Vec<Petal>,
+    petal_peak: f32,
+    petal_peak_index: usize,
+    /// Fades a blown-out petal during a boom; exactly 1.0 otherwise.
+    scatter_alpha: f32,
+    /// The petal show's level after the strength control, `0..=1`.
+    show: f32,
+    /// `boom_progress()`, carried so the trail and the face agree about it.
+    boom: f32,
+    /// How hard the trail should be pushed this frame, `0..=1`: the show's
+    /// level, or a boom's opening moments, whichever is higher. One number so
+    /// half-life, creep, swirl and composite strength cannot disagree about
+    /// whether something is happening.
+    flare: f32,
+}
+
+impl Flower {
+    fn resolve(
+        state: &ClawdState,
+        frame: &SceneFrame<'_>,
+        boundary: Rectangle,
+        pixel_scale: f32,
+    ) -> Self {
+        let scene = SceneId::Clawd;
+        let hue_shift = frame.setting(scene, setting::HUE);
+        let daylight = frame.setting(scene, setting::DAYLIGHT);
+        let ink_weight = frame.setting(scene, setting::INK);
+        let bounce_depth = frame.setting(scene, setting::BOUNCE);
+        let wiggle = frame.setting(scene, setting::WIGGLE);
+        let show_setting = frame.setting(scene, setting::SHOW);
+
+        let min_dim = boundary.width.min(boundary.height);
+        let ink = ink_color(daylight);
+        let petal_hue = (PETAL_HUE + hue_shift).rem_euclid(360.0);
+
+        // The petal show: core's eased state-machine level, scaled by the
+        // strength control. Above 1.0 the control cannot push the lerp past the
+        // full wheel — it just gets there at a lower machine level.
+        let show = (state.show_level() * show_setting).clamp(0.0, 1.0);
+        // The colour wave's drift, on the sway clock like every other idle
+        // motion, so it is deterministic in an export.
+        let show_drift = state.sway_phase() * 40.0;
+        // Petal saturation leans with the semantic lane's valence. Subtle on
+        // purpose: warmth is a tint, and 0.48..0.66 brackets the old constant.
+        let petal_saturation = lerp(0.48, 0.66, state.warmth());
+
+        let sway = state.sway_phase();
+        let bounce = state.bounce() * bounce_depth;
+        let head_radius = min_dim * 0.150;
+        let centre = Vector2::new(
+            boundary.x + boundary.width * 0.5 + (sway * 0.7).sin() * min_dim * 0.012 * wiggle,
+            boundary.y
+                + boundary.height * 0.42
+                + (sway * 0.53).sin() * min_dim * 0.008 * wiggle
+                + bounce * head_radius * 0.16,
+        );
+        // Squash on the beat: wider and shorter, recovering as the impulse decays.
+        let squash_x = 1.0 + bounce * 0.10;
+        let squash_y = 1.0 - bounce * 0.12;
+        let stroke = (ink_weight * head_radius * 0.055).max(pixel_scale);
+
+        // During a boom the whole flower trembles, and the petals blow outward
+        // and regrow through the scatter envelope. Both are `(0.0, 1.0)`-neutral
+        // on a non-boom frame.
+        let boom = state.boom_progress();
+        let (scatter_offset, scatter_alpha) = scatter(boom);
+        let tremble = if boom > 0.0 {
+            (state.expression_age() * 43.0).sin() * 0.05 * (1.0 - boom)
+        } else {
+            0.0
+        };
+
+        let mut petal_peak = 0.0f32;
+        let mut petal_peak_index = 0usize;
+        let mut petals = Vec::with_capacity(PETAL_COUNT);
+        for (index, &energy) in state.petals().iter().enumerate() {
+            if energy > petal_peak {
+                petal_peak = energy;
+                petal_peak_index = index;
+            }
+            // Hand-drawn irregularity: thebes' petals are all slightly
+            // different, and a mathematically perfect ring reads as clip-art.
+            // Pure functions of the index, so the jitter is stable across frames
+            // and identical in preview and export.
+            let organic = |salt: u32| {
+                let hash = (index as u32)
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(salt.wrapping_mul(0x9E37_79B9));
+                let hash = (hash ^ (hash >> 15)).wrapping_mul(0x85EB_CA6B);
+                (hash >> 8) as f32 / ((1u32 << 24) as f32) * 2.0 - 1.0
+            };
+            let angle = state.petal_angle()
+                + tremble
+                + index as f32 / PETAL_COUNT as f32 * TAU
+                + organic(1) * 0.03
+                - TAU * 0.25;
+            // The boom scatter pushes the whole petal outward from the head; on
+            // a non-boom frame the offset is exactly 0.0 and `x + 0.0 == x`.
+            let inner = head_radius * 0.55 + head_radius * scatter_offset;
+            let length = head_radius
+                * (0.95 + 0.85 * energy)
+                * (1.0 + organic(2) * 0.07)
+                * squash_y.mul_add(0.5, 0.5);
+            let width = head_radius * (0.36 + 0.16 * energy) * (1.0 + organic(3) * 0.08) * squash_x;
+            let outline = petal_outline(centre, angle, inner, length, width);
+            let mut fill = draw::color_from_hsv(petal_hue, petal_saturation, 0.70 + 0.22 * energy);
+            if show > 0.0 {
+                // The light show: this petal's own slice of the hue wheel,
+                // phase-shifted 30° per petal and drifting, brilliance from its
+                // own band. RGB-lerped from the terracotta fill so `show == 0.0`
+                // returns the resting palette as an equality.
+                let wheel_hue =
+                    (petal_hue + index as f32 * (360.0 / PETAL_COUNT as f32) + show_drift)
+                        .rem_euclid(360.0);
+                let brilliance = 0.55 + 0.45 * energy;
+                let lit = draw::color_from_hsv(wheel_hue, 0.85, brilliance);
+                fill = lerp_color(fill, lit, show);
+            }
+            petals.push(Petal {
+                outline,
+                fill,
+                energy,
+            });
+        }
+
+        // A boom's flare is its opening, not its whole playout: the shockwave is
+        // the moment the petals leave, and holding the trail wide open for the
+        // full 1.6 s would still be smearing while they are calmly regrowing.
+        let boom_flare = if boom > 0.0 {
+            (1.0 - boom * 2.0).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        Self {
+            centre,
+            head_radius,
+            face_radius: head_radius * squash_x.mul_add(0.5, 0.5),
+            stroke,
+            ink,
+            petals,
+            petal_peak,
+            petal_peak_index,
+            scatter_alpha,
+            show,
+            boom,
+            flare: show.max(boom_flare),
+        }
+    }
+
+    /// How strongly the accumulated trail is painted this frame.
+    fn trail_strength(&self) -> f32 {
+        lerp(TRAIL_STRENGTH_REST, TRAIL_STRENGTH_FLARE, self.flare)
+    }
+}
+
+/// Whether a carried resolve belongs to the rectangle being drawn.
+///
+/// Exact equality, deliberately: the boundary is computed the same way twice in
+/// one frame, so anything but equality means a *different* rectangle and the
+/// carried flower must be thrown away rather than stretched onto it.
+fn same_rect(a: Rectangle, b: Rectangle) -> bool {
+    a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height
+}
+
+/// A premultiplied colour: what the feedback buffer's blending expects.
+fn premultiplied(color: Color, alpha: f32) -> Color {
+    let alpha = alpha.clamp(0.0, 1.0);
+    Color::new(
+        (f32::from(color.r) * alpha) as u8,
+        (f32::from(color.g) * alpha) as u8,
+        (f32::from(color.b) * alpha) as u8,
+        (alpha * 255.0) as u8,
+    )
+}
+
+/// The trail buffer's texel dimensions for a boundary, aspect preserved.
+fn trail_buffer_size(boundary: Rectangle) -> (i32, i32) {
+    let aspect = boundary.width / boundary.height.max(1.0);
+    if aspect >= 1.0 {
+        (
+            TRAIL_BUFFER_EDGE,
+            (TRAIL_BUFFER_EDGE as f32 / aspect)
+                .round()
+                .clamp(16.0, 8192.0) as i32,
+        )
+    } else {
+        (
+            (TRAIL_BUFFER_EDGE as f32 * aspect)
+                .round()
+                .clamp(16.0, 8192.0) as i32,
+            TRAIL_BUFFER_EDGE,
+        )
+    }
+}
+
+/// Resolves the flower and lays this frame's light into the trail buffer.
+///
+/// Called from `scene_host` **before** the scene's clip is opened, for the same
+/// reason Phosphor Dream's `prepare` is: the accumulation redirects the
+/// framebuffer, and a scissor rect is global GL state in framebuffer
+/// coordinates that would crop the offscreen pass with a rectangle meant for
+/// the preview panel.
+pub fn prepare(
+    d: &mut RaylibDrawHandle<'_>,
+    resources: &mut ClawdResources,
+    state: &ClawdState,
+    frame: &SceneFrame<'_>,
+    boundary: Rectangle,
+    pixel_scale: f32,
+) {
+    resources.flower = None;
+    if boundary.width < 16.0 || boundary.height < 16.0 {
+        resources.trail_status = "off".to_string();
+        return;
+    }
+    let flower = Flower::resolve(state, frame, boundary, pixel_scale);
+    let (buffer_width, buffer_height) = trail_buffer_size(boundary);
+    let scale_x = buffer_width as f32 / boundary.width;
+    let scale_y = buffer_height as f32 / boundary.height;
+    let to_buffer = |point: Vector2| {
+        Vector2::new(
+            (point.x - boundary.x) * scale_x,
+            (point.y - boundary.y) * scale_y,
+        )
+    };
+
+    // Every one of these is per second, raised to this frame's delta. A
+    // per-frame constant here is exactly the freewheeling-clock bug the cats
+    // were fixed for: a 30 fps export would smear half as far as the 60 fps
+    // preview it was authored against.
+    let delta = frame.delta_seconds;
+    let half_life = lerp(TRAIL_HALF_LIFE_REST, TRAIL_HALF_LIFE_FLARE, flower.flare);
+    let zoom_rate = lerp(TRAIL_ZOOM_REST, TRAIL_ZOOM_FLARE, flower.flare);
+    let carry = Carry {
+        retain: feedback::retention(half_life, delta),
+        zoom: zoom_rate.powf(delta.clamp(0.0, 0.5)),
+        rotation_degrees: TRAIL_SWIRL_DEGREES * flower.flare * delta,
+        centre: to_buffer(flower.centre),
+    };
+
+    let built = resources
+        .trail
+        .accumulate(d, buffer_width, buffer_height, carry, |target| {
+            // Petals only. The face, its ink and the cats are drawn after the
+            // composite and deposit nothing, which is what makes "smeared light,
+            // crisp character" structural rather than a value somebody has to
+            // keep tuned.
+            let rate = lerp(TRAIL_DEPOSIT_REST, TRAIL_DEPOSIT_FLARE, flower.flare);
+            let mut pass = target.begin_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY);
+            for petal in &flower.petals {
+                let alpha = feedback::deposit(
+                    rate * (0.45 + 0.55 * petal.energy) * flower.scatter_alpha,
+                    delta,
+                );
+                if alpha <= 0.0 {
+                    continue;
+                }
+                let outline: Vec<Vector2> = petal.outline.iter().map(|p| to_buffer(*p)).collect();
+                fill_convex(&mut pass, &outline, premultiplied(petal.fill, alpha));
+            }
+        });
+    resources.trail_status = if built {
+        format!("on@{:.2}", flower.trail_strength())
+    } else if resources.trail.refused() {
+        "unavailable".to_string()
+    } else {
+        "off".to_string()
+    };
+    resources.flower = Some((boundary, flower));
 }
 
 /// Draws one frame. Sets `resources.last` on every path, including refusals,
@@ -302,32 +688,30 @@ pub fn draw(
         return;
     }
     let scene = SceneId::Clawd;
-    let hue_shift = frame.setting(scene, setting::HUE);
     let daylight = frame.setting(scene, setting::DAYLIGHT);
-    let ink_weight = frame.setting(scene, setting::INK);
     let glow_setting = frame.setting(scene, setting::GLOW);
-    let bounce_depth = frame.setting(scene, setting::BOUNCE);
-    let wiggle = frame.setting(scene, setting::WIGGLE);
-    let show_setting = frame.setting(scene, setting::SHOW);
     let terminal_on = frame.setting(scene, setting::TERMINAL) >= 0.5;
 
     let min_dim = boundary.width.min(boundary.height);
-    let ink = ink_color(daylight);
-    let petal_hue = (PETAL_HUE + hue_shift).rem_euclid(360.0);
+    let petal_hue = (PETAL_HUE + frame.setting(scene, setting::HUE)).rem_euclid(360.0);
 
-    // The petal show: core's eased state-machine level, scaled by the
-    // strength control. Above 1.0 the control cannot push the lerp past the
-    // full wheel — it just gets there at a lower machine level.
-    let show = (state.show_level() * show_setting).clamp(0.0, 1.0);
-    // The colour wave's drift, on the sway clock like every other idle motion,
-    // so it is deterministic in an export.
-    let show_drift = state.sway_phase() * 40.0;
+    // The flower [`prepare`] resolved and deposited into the trail, so the
+    // ghost and the petal it belongs to cannot part ways. The fallback resolve
+    // is not dead code: it is what keeps the scene drawable from a call site
+    // that has not run `prepare` — a probe, or a future host — rather than
+    // silently drawing nothing.
+    let flower = match resources.flower.take() {
+        Some((rect, flower)) if same_rect(rect, boundary) => flower,
+        _ => Flower::resolve(state, frame, boundary, pixel_scale),
+    };
+    let ink = flower.ink;
+    let stroke = flower.stroke;
+    let centre = flower.centre;
+    let head_radius = flower.head_radius;
+    let show = flower.show;
 
     // -- the senses ------------------------------------------------------------
     let warmth = state.warmth();
-    // Petal saturation leans with the semantic lane's valence. Subtle on
-    // purpose: warmth is a tint, and 0.48..0.66 brackets the old constant 0.60.
-    let petal_saturation = lerp(0.48, 0.66, warmth);
     // Below 0.05 the sing-along oscillator is noise off the flux floor; treat
     // it as shut so the resting smile does not tremble between cues.
     let mouth_open = state.mouth_open();
@@ -356,19 +740,6 @@ pub fn draw(
 
     // -- the flower ------------------------------------------------------------
     let sway = state.sway_phase();
-    let bounce = state.bounce() * bounce_depth;
-    let head_radius = min_dim * 0.150;
-    let centre = Vector2::new(
-        boundary.x + boundary.width * 0.5 + (sway * 0.7).sin() * min_dim * 0.012 * wiggle,
-        boundary.y
-            + boundary.height * 0.42
-            + (sway * 0.53).sin() * min_dim * 0.008 * wiggle
-            + bounce * head_radius * 0.16,
-    );
-    // Squash on the beat: wider and shorter, recovering as the impulse decays.
-    let squash_x = 1.0 + bounce * 0.10;
-    let squash_y = 1.0 - bounce * 0.12;
-    let stroke = (ink_weight * head_radius * 0.055).max(pixel_scale);
 
     // Bass glow behind everything of the flower's own. Two composites, one
     // choice: additive light saturates toward white, so over the near-white
@@ -404,71 +775,58 @@ pub fn draw(
         }
     }
 
-    // During a boom the whole flower trembles, and the petals blow outward and
-    // regrow through the scatter envelope. Both are `(0.0, 1.0)`-neutral on a
-    // non-boom frame.
-    let boom = state.boom_progress();
-    let (scatter_offset, scatter_alpha) = scatter(boom);
-    let tremble = if boom > 0.0 {
-        (state.expression_age() * 43.0).sin() * 0.05 * (1.0 - boom)
-    } else {
-        0.0
-    };
-
-    // Petals, painted far-to-near is meaningless for a flat ring; order by index.
-    let petals = state.petals();
-    let mut petal_peak = 0.0f32;
-    let mut petal_peak_index = 0usize;
-    for (index, &energy) in petals.iter().enumerate() {
-        if energy > petal_peak {
-            petal_peak = energy;
-            petal_peak_index = index;
-        }
-        // Hand-drawn irregularity: thebes' petals are all slightly different,
-        // and a mathematically perfect ring reads as clip-art. Pure functions
-        // of the index, so the jitter is stable across frames and identical in
-        // preview and export.
-        let organic = |salt: u32| {
-            let hash = (index as u32)
-                .wrapping_mul(2_654_435_761)
-                .wrapping_add(salt.wrapping_mul(0x9E37_79B9));
-            let hash = (hash ^ (hash >> 15)).wrapping_mul(0x85EB_CA6B);
-            (hash >> 8) as f32 / ((1u32 << 24) as f32) * 2.0 - 1.0
+    // -- the trail -------------------------------------------------------------
+    // Under the flower, over the backdrop and the bass glow. The composite mode
+    // follows the ground for the same reason the glow's does: additive light on
+    // cream saturates toward white and disappears, so a light ground takes the
+    // trail as premultiplied paint *over* it — a colour ghost, which is what a
+    // smear on paper looks like — and a dark one takes it as added light.
+    if let Some(texture) = resources.trail.result() {
+        let strength = (flower.trail_strength().clamp(0.0, 1.0) * 255.0) as u8;
+        let tint = Color::new(strength, strength, strength, strength);
+        // A render texture's rows are stored bottom-up.
+        let source = Rectangle::new(0.0, 0.0, texture.width as f32, -(texture.height as f32));
+        let mode = if daylight >= 0.5 {
+            BlendMode::BLEND_ALPHA_PREMULTIPLY
+        } else {
+            // `ADD_COLORS`, not `ADDITIVE`: the buffer is premultiplied, so its
+            // colour already carries its own alpha and multiplying by `srcA` a
+            // second time would square the coverage.
+            BlendMode::BLEND_ADD_COLORS
         };
-        let angle = state.petal_angle()
-            + tremble
-            + index as f32 / PETAL_COUNT as f32 * TAU
-            + organic(1) * 0.03
-            - TAU * 0.25;
-        // The boom scatter pushes the whole petal outward from the head; on a
-        // non-boom frame the offset is exactly 0.0 and `x + 0.0 == x`.
-        let inner = head_radius * 0.55 + head_radius * scatter_offset;
-        let length = head_radius
-            * (0.95 + 0.85 * energy)
-            * (1.0 + organic(2) * 0.07)
-            * squash_y.mul_add(0.5, 0.5);
-        let width = head_radius * (0.36 + 0.16 * energy) * (1.0 + organic(3) * 0.08) * squash_x;
-        let outline = petal_outline(centre, angle, inner, length, width);
-        let mut fill = draw::color_from_hsv(petal_hue, petal_saturation, 0.70 + 0.22 * energy);
-        if show > 0.0 {
-            // The light show: this petal's own slice of the hue wheel, phase-
-            // shifted 30° per petal and drifting, brilliance from its own
-            // band. RGB-lerped from the terracotta fill so `show == 0.0`
-            // returns the resting palette as an equality.
-            let wheel_hue = (petal_hue + index as f32 * (360.0 / PETAL_COUNT as f32) + show_drift)
-                .rem_euclid(360.0);
-            let brilliance = 0.55 + 0.45 * energy;
-            let lit = draw::color_from_hsv(wheel_hue, 0.85, brilliance);
-            fill = lerp_color(fill, lit, show);
-        }
-        // Scatter alpha fades a blown-out petal; at 1.0 `ColorAlpha` returns
-        // the colour byte-for-byte, so this is free on a non-boom frame.
-        fill_convex(d, &outline, draw::color_alpha(fill, scatter_alpha));
-        outline_loop(d, &outline, stroke, draw::color_alpha(ink, scatter_alpha));
+        let mut blend = d.begin_blend_mode(mode);
+        draw::draw_texture_pro(
+            &mut blend,
+            texture,
+            source,
+            boundary,
+            Vector2::zero(),
+            0.0,
+            tint,
+        );
     }
 
+    // Petals, painted far-to-near is meaningless for a flat ring; order by index.
+    for petal in &flower.petals {
+        // Scatter alpha fades a blown-out petal; at 1.0 `ColorAlpha` returns
+        // the colour byte-for-byte, so this is free on a non-boom frame.
+        fill_convex(
+            d,
+            &petal.outline,
+            draw::color_alpha(petal.fill, flower.scatter_alpha),
+        );
+        outline_loop(
+            d,
+            &petal.outline,
+            stroke,
+            draw::color_alpha(ink, flower.scatter_alpha),
+        );
+    }
+    let (petal_peak, petal_peak_index) = (flower.petal_peak, flower.petal_peak_index);
+    let boom = flower.boom;
+
     // The face disc. Slightly cream rather than pure white, like the art.
-    let face_radius = head_radius * squash_x.mul_add(0.5, 0.5);
+    let face_radius = flower.face_radius;
     d.draw_circle_v(centre, face_radius, Color::new(250, 248, 242, 255));
     d.draw_ring(
         centre,
@@ -777,8 +1135,12 @@ pub fn draw(
     // is the unwired-feature trap. `show` prints phase *and* level: `on` at
     // 0.00 and a dead machine both photograph as terracotta. Blink is
     // deliberately not reported: a 0.24 s event sampled at one frame is noise.
+    // `trail` is the same argument one layer down: a frame drawn with no
+    // accumulated light and a frame whose buffer was refused by the driver are
+    // the same picture, and `on@` carries the composite strength so a show's
+    // streamers are a number rather than an impression.
     resources.last = format!(
-        "face={} amp={:.2} bass={:.2} energy={:.2} dyn={} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} show={}@{:.2} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
+        "face={} amp={:.2} bass={:.2} energy={:.2} dyn={} petal-peak={:.2}@{} beats={} kicks={} bounce={:.2} cats={} show={}@{:.2} trail={} terminal={}{} daylight={:.2} warmth={:.2} mouth={:.2} semantic={}",
         expression.name(),
         state.amplitude(),
         state.bass(),
@@ -792,6 +1154,7 @@ pub fn draw(
         drawn_cats,
         state.show_phase().name(),
         show,
+        resources.trail_status,
         terminal_status,
         typed_report,
         daylight,
@@ -945,6 +1308,70 @@ mod tests {
             assert_eq!(end.1, lid[1].1 - 0.02, "ends must sit 0.02 higher");
         }
         assert_eq!(lid[1].0 - lid[0].0, lid[2].0 - lid[1].0);
+    }
+
+    /// The buffer keeps the boundary's aspect and its long edge, both ways
+    /// round. A stretched trail is a ghost that does not line up with the petal
+    /// it came from, and a 9:16 export is exactly where a hard-coded landscape
+    /// assumption would show up.
+    #[test]
+    fn the_trail_buffer_keeps_its_boundarys_aspect() {
+        let (w, h) = trail_buffer_size(Rectangle::new(0.0, 0.0, 1920.0, 1080.0));
+        assert_eq!((w, h), (TRAIL_BUFFER_EDGE, 576));
+        let (w, h) = trail_buffer_size(Rectangle::new(0.0, 0.0, 1080.0, 1920.0));
+        assert_eq!((w, h), (576, TRAIL_BUFFER_EDGE));
+        // Square, and a degenerate sliver that must still be allocatable.
+        assert_eq!(
+            trail_buffer_size(Rectangle::new(0.0, 0.0, 700.0, 700.0)),
+            (TRAIL_BUFFER_EDGE, TRAIL_BUFFER_EDGE)
+        );
+        let (w, h) = trail_buffer_size(Rectangle::new(0.0, 0.0, 4000.0, 20.0));
+        assert!(w >= 16 && h >= 16, "{w}x{h} cannot be allocated");
+        // Supersampling must not change the grid: the composite scales it, so a
+        // 2x export accumulates in the same buffer a 1x preview does, which is
+        // what lets a still and its video frame be compared at all.
+        assert_eq!(
+            trail_buffer_size(Rectangle::new(0.0, 0.0, 3840.0, 2160.0)),
+            trail_buffer_size(Rectangle::new(0.0, 0.0, 1920.0, 1080.0))
+        );
+    }
+
+    /// Premultiplication is the buffer's contract, and its two endpoints are
+    /// the ones a blend can be wrong about: nothing at all, and full paint.
+    #[test]
+    fn premultiplied_endpoints_are_exact() {
+        let terracotta = Color::new(200, 100, 60, 255);
+        assert_eq!(premultiplied(terracotta, 0.0), Color::new(0, 0, 0, 0));
+        assert_eq!(
+            premultiplied(terracotta, 1.0),
+            Color::new(200, 100, 60, 255)
+        );
+        // And in between, every channel carries the same factor — the property
+        // the fade's single-tint multiply depends on.
+        let half = premultiplied(terracotta, 0.5);
+        assert_eq!(half.r, 100);
+        assert_eq!(half.g, 50);
+        assert_eq!(half.b, 30);
+        assert_eq!(half.a, 127);
+        // Out-of-range alpha is clamped rather than wrapped: a `as u8` cast of
+        // 300.0 is 255 on some paths and a surprise on others.
+        assert_eq!(
+            premultiplied(terracotta, 2.0),
+            Color::new(200, 100, 60, 255)
+        );
+        assert_eq!(premultiplied(terracotta, -1.0), Color::new(0, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_carried_flower_only_matches_its_own_rectangle() {
+        let a = Rectangle::new(10.0, 20.0, 300.0, 200.0);
+        assert!(same_rect(a, a));
+        for other in [
+            Rectangle::new(10.5, 20.0, 300.0, 200.0),
+            Rectangle::new(10.0, 20.0, 300.0, 200.5),
+        ] {
+            assert!(!same_rect(a, other), "{other:?} matched");
+        }
     }
 
     #[test]

@@ -1372,6 +1372,11 @@ fn prepare_frame_pixels(
         })
         .map_err(|error| format!("the analyzer could not be configured: {error}"))?;
     app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+    // Every other stateful lane is reset from zero here; frame-persistence
+    // light is one of them. A still that inherited the preview's trail would be
+    // a picture of where the playhead has been rather than of the frame asked
+    // for, and two stills of the same moment would differ.
+    renderer.reset_feedback();
     if let Some(track) = app.workspace.current_mut() {
         track.scene_switches.reset();
         track.cue_settings_active = false;
@@ -1424,7 +1429,6 @@ fn prepare_frame_pixels(
                 sample_cursor = next;
                 samples.get(from..to).unwrap_or(&[])
             };
-            let draws = index == frame_index;
             let pixel_scale = config
                 .target_scale(target.width() as u32, target.height() as u32)
                 .unwrap_or(1.0);
@@ -1436,6 +1440,18 @@ fn prepare_frame_pixels(
                 duration_seconds,
                 slice,
                 |app, frame, _status| {
+                    // The target frame always draws; the frames before it draw
+                    // only for a scene that keeps light between frames, and only
+                    // for as long as that light lasts. Read from `app.scene`
+                    // *inside* the closure, after `with_export_frame` has applied
+                    // the automatic plan, so a still taken inside a Clawd segment
+                    // warms up even when the track's base scene is something
+                    // else. Without this the buffer is cold and the still is a
+                    // ghost-free picture of a frame the video drew with ghosts —
+                    // the "a still is the video frame" invariant, broken by
+                    // drawing state rather than by scene state.
+                    let warmup = warmup_frames(app.scene.id(), config.fps);
+                    let draws = index == frame_index || frame_index - index <= warmup;
                     if draws {
                         draw_offline_frame(
                             &mut d,
@@ -1916,6 +1932,12 @@ impl ExportSession {
             }
         }
         app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+        // The same reset, one layer down: frame-persistence light is drawing
+        // state the preview shares with the encoder, so leaving it would put a
+        // smear of whatever was on screen into frame zero — and export
+        // determinism is a contract, not a preference. Runs after the share
+        // frame's own replay above, which resets it again on its way in.
+        renderer.reset_feedback();
         if let Some(track) = app.workspace.current_mut() {
             track.scene_switches.reset();
             track.cue_settings_active = false;
@@ -2089,6 +2111,7 @@ impl ExportSession {
             .current()
             .map_or(0.0, |track| track.duration_seconds);
         let draws = self.job().draws_this_frame();
+        let window_start = self.job().plan().frames.start;
         let reported = self.reported_frame_lanes;
         let pixel_scale = self
             .job()
@@ -2127,8 +2150,35 @@ impl ExportSession {
                 }
                 if !draws {
                     // Prepared, not drawn: this is what makes a windowed export
-                    // bit-identical to the same frames of a full one.
-                    app.scene.update(frame);
+                    // bit-identical to the same frames of a full one — for every
+                    // scene whose picture is a function of its state.
+                    //
+                    // A scene that keeps *light* between frames breaks that, and
+                    // not subtly: a clip of Clawd would open with no trails and
+                    // grow them over the first second, so "post from the drop
+                    // onward" would publish a different picture from the same
+                    // seconds of a full render. So the last few seconds before
+                    // the window are drawn as well — into the target, never read
+                    // back and never encoded, purely to fill the buffer. The
+                    // window's own first frame is still the first *encoded* one,
+                    // which is what the `export frame lanes:` line reports and
+                    // the gate asserts.
+                    let warmup = warmup_frames(app.scene.id(), fps);
+                    if warmup > 0 && window_start.saturating_sub(frame_index) <= warmup {
+                        // Updates the scene itself, so this is not a second one.
+                        draw_offline_frame(
+                            d,
+                            thread,
+                            target,
+                            app,
+                            renderer,
+                            fonts,
+                            frame,
+                            pixel_scale,
+                        );
+                    } else {
+                        app.scene.update(frame);
+                    }
                     return Ok(false);
                 }
                 draw_offline_frame(d, thread, target, app, renderer, fonts, frame, pixel_scale);
@@ -2291,6 +2341,18 @@ impl ExportSession {
         );
         true
     }
+}
+
+/// Frames of run-up a scene's frame-persistence buffer needs before a drawn
+/// frame is the frame a full render would have produced.
+///
+/// One definition for both paths — the still's replay and the windowed export's
+/// fast-forward — because the *equality between them* is the invariant: a still
+/// and the clip that starts at the same moment warm up over exactly the same
+/// frames from exactly the same cold buffer, so they agree by construction
+/// rather than by both being close to a full render.
+fn warmup_frames(id: musializer_core::scene::SceneId, fps: u32) -> u64 {
+    (scene_host::feedback_warmup_seconds(id) * f64::from(fps)).ceil() as u64
 }
 
 /// Draws one frame into the offline target, exactly as an encoded frame is
