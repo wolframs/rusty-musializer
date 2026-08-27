@@ -4236,3 +4236,118 @@ theirs is bundled or traced.
 - Only Clawd consumes `TrackDynamics` so far. Any scene with an absolute
   loudness gate has the same latent defect; the profile is on every
   `SceneFrame` already.
+
+## SX3 — the Clawd depth rework: trails, light and air (operator request, 2026-08-27)
+
+Operator brief, in their words: the scene was **flat** — "clear lines, flat
+background, flat textures". Correct in every colour and reading as clip-art. The
+diagnosis behind the three stages is one sentence: a *single frame* of the old
+scene carried no information about motion, no information about form and no
+information about the space the character stood in, and a single frame is what a
+poster, a paused video and a `Save still` PNG are.
+
+Shipped as three commits on `master`, each judged from rendered frames of
+*Parameter People* before it was called done:
+
+- **`cd00d80` — trails (motion).** `crates/musializer-runtime/src/feedback.rs`
+  (`FeedbackBuffer`): a ping-pong render-texture pair carrying the previous frame
+  faded on a half-life, crept outward from the head centre, swirled during a
+  show, with this frame's petal fills laid over it, composited **under** the
+  crisp character. Petals deposit; face, ink and cats do not, so "smeared light,
+  crisp face" is structural. Composite mode follows the backdrop
+  (premultiplied-over on cream, `ADD_COLORS` on the dark ground) for the reason
+  the bass glow already documents. `scenes/clawd.rs` gained a `prepare` called
+  from `scene_host.rs` before the scissor, and a shared `Flower::resolve` so a
+  ghost and the petal it came from cannot drift.
+- **`50affce` — one light, three consumers (form).** A fixed upper-left `LIGHT`
+  read by an axial base-to-tip value ramp plus an inset rim highlight on each
+  petal (`PetalShape` carries the true ellipse normal), a one-sided darkening on
+  the head disc, and a soft two-ring contact shadow on the cats' own floor line.
+  Shading composes **last**, after the show's hue-wheel lerp, so a show stays
+  vivid and gains shape. New primitive `runtime::draw::shaded_triangles`, because
+  every 2D fill raylib exposes takes one colour for the whole shape.
+- **`5982618` — air (space).** A corner vignette in an *elliptical* radius, film
+  grain hashed from `(cell, cell, tick)` on a **time** tick, and a temperature
+  lean on the gradient driven by `state.energy()`. All three drawn under the
+  subject rather than over the finished frame — atmosphere, not a filter. The old
+  end-of-frame `draw::vignette` on dark backdrops is gone with it.
+
+### What it cost, and what it moved
+
+No `core` change, no `.musi` surface change, no new setting (the descriptor table
+is full at 12), no new dependency. Two new `unsafe` islands, both with
+`SAFETY:` comments and rows in `AGENTS.md`: `runtime::feedback` (four blocks, the
+same four `halo.rs` has, in the same order) and `runtime::draw::shaded_triangles`
+(one block, no RAII guard needed because nothing between `rlBegin` and `rlEnd`
+can panic or allocate). Ten divergence rows and one new trap entry in `AGENTS.md`.
+`clawd:` gained `trail=on@LEVEL` and `air=±LEAN/SPECKS`; the lighting pass
+deliberately gained no token, because a culled mesh loses the petals outright and
+the shading is otherwise a constant.
+
+### Three invariants the rework threatened, and how they are held
+
+- **Export determinism.** `SceneRenderer::reset_feedback()` at
+  `ExportSession::begin` and `prepare_frame_pixels`, plus a `(scene, seed)`
+  identity reset in `SceneRenderer::draw`. Verified: the same 8 s window rendered
+  twice under NVENC is byte-identical (`fd7f2653ac646ca47b6f0d9ab845cfc7`), and
+  the gate's own check — an export driven from the button after 40 preview
+  frames against a cold CLI export of the same window — matches at
+  `666b40e562a6c2c0c9cdb8c23cb920d0`. Nothing else in the gate can see a missing
+  reset: a smear of wherever the playhead had been is a *plausible* first frame.
+- **"The still is the video frame" (UX0-C10), and `render_job`'s windowed-equals-full
+  rule.** A trail buffer is drawing state, and both a still's replay and a windowed
+  export were starting it cold. Both now draw the 3 s before their first frame
+  without encoding them (`warmup_frames` / `scene_host::feedback_warmup_seconds`).
+  The gate reads **45.64 dB** still-versus-own-video-frame against a **21.53 dB**
+  neighbouring-frame control.
+- **The `EndTextureMode` trap.** `runtime::feedback` follows `halo.rs`'s restore
+  discipline exactly. `gl framebuffer: gl=1280x720 render=1280x720
+  mismatched-frames=0 of 240`.
+
+One defect was found by *measuring* rather than looking, and it is the
+transferable part: `BLEND_ALPHA` applies to all four channels, so a translucent
+full-frame wash over an opaque frame leaves alpha at `1 - a(1 - a)`. Invisible on
+screen and to the encoder, but `Save still` writes framebuffer RGBA into the PNG,
+and the still comparison dropped 11 dB with r/g/b unmoved — every decibel in the
+`a:` plane, which `ffmpeg -lavfi psnr` prints per-plane and hides in `average:`.
+Both air meshes now composite premultiplied. Recorded as an `AGENTS.md` trap.
+
+### Verification (final stage, 2026-08-27)
+
+`cargo test --workspace` 1638 passed / 0 failed; `cargo clippy --all-targets`
+clean; `cargo fmt --check` clean; `cargo build --release`. `tools/verify.sh
+--quick` 8/8 — it failed once on `code map is current`, which was a stale
+`docs/CODE_MAP.md` (the three stages moved `clawd.rs` and `export.rs` up the
+size table); regenerated with `tools/code_map.py`. The **full**
+`tools/headless_check.sh` exits 0, with
+
+```
+clawd: face=happy amp=0.42 bass=0.32 energy=0.85 dyn=track petal-peak=0.73@3
+beats=0 kicks=2 bounce=-0.14 cats=3 show=off@0.00 trail=on@0.40
+air=+0.61/7071 terminal=off daylight=0.85 warmth=0.60 mouth=0.00 semantic=off
+```
+
+Six judgment frames were rendered from *Parameter People* (NVENC, private Xvfb,
+`--mute`, unresolvable Wayland and PulseAudio names) and looked at, under the
+gitignored `build/flat-rework/`: `final-1-quiet.png` (t≈100 s, the cool end of
+the temperature lean), `final-2-resting-wide.png`, `final-3-show-ignition.png`
+(the hue wheel emerging out of terracotta), `final-4-show-full.png`,
+`final-5-boom.png` (t≈26.6 s) and `final-6-cooldown.png`.
+
+### Open
+
+- **The resting trail is the weakest of the three effects.** At rest it is a
+  faint warm smudge behind the flower that can read as a soft drop shadow rather
+  than as motion — the first stage already split the deposit rate rest/flare to
+  fix a muddier version of exactly this. It is honest and it is not wrong; it is
+  simply doing less work than the light and the air are. If a listening pass
+  says the rest frames still feel static, the rest-side deposit and creep are the
+  two constants, and the frames above are the before.
+- The contact shadow lives on the cats' floor line, well below a flower that
+  hovers, so it reads as "there is a ground" rather than as the flower's own cast
+  shadow. Deliberate (one ground plane, one definition), and worth a second look
+  if the operator reads it as disconnected.
+- No HX protocol has been run on any of the three passes. The blinded A/B
+  machinery exists (`--protocol`) and each stage has an obvious pair — trails
+  on/off, shading on/off, air on/off — but a variant switch for them does not
+  exist yet, since none of the three is a setting.
