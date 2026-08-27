@@ -1585,9 +1585,15 @@ pub fn draw(
                 // with `open` (a fixed-width slit at a tiny open fraction
                 // would read as a moustache), and the capsule beats a single
                 // circle because a round hole at full width reads as Boom's
-                // shock `O` rather than a note being held.
-                let ry = open * 0.16 * face_radius;
-                let rx = open * 0.11 * face_radius;
+                // shock `O` rather than a note being held. The scale is set
+                // to the aperture the state can actually reach, not to 1.0:
+                // the ~80 ms attack follower tops out near 0.63 against the
+                // syllable carrier's ~150 ms period, so drawing 0.63 as the
+                // full mouth is what makes a real track read as singing —
+                // scaled for a theoretical 1.0, mid-track singing (~0.4)
+                // photographed as a tongue-sized speck.
+                let ry = open * 0.24 * face_radius;
+                let rx = open * 0.16 * face_radius;
                 let mouth_centre = f(0.0, 0.32);
                 let spread = (ry - rx).max(0.0);
                 d.draw_circle_v(

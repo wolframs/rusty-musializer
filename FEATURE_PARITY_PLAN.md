@@ -4334,6 +4334,38 @@ the temperature lean), `final-2-resting-wide.png`, `final-3-show-ignition.png`
 (the hue wheel emerging out of terracotta), `final-4-show-full.png`,
 `final-5-boom.png` (t≈26.6 s) and `final-6-cooldown.png`.
 
+### Follow-up: the mouth sang into a void (2026-08-27)
+
+The operator screenshotted a live caption over a motionless `w` and a speck.
+The sing-along aperture was `flux * 1.6` — scaled for the saturated test
+fixture (flux ~0.5) when the SX2 probe had already measured the flux
+envelope's 95th percentile on real mixes at ~0.06, so on any real track the
+mouth opened a few percent and sat under the drawing threshold. The one flux
+consumer SX2 missed. Two changes, one commit:
+
+- **Core**: the aperture now rides track-relative `energy` with a 0.35 floor
+  (`MOUTH_ENERGY_FLOOR`) — a whispered line visibly mouths, a belted line
+  opens wide. The regression anchor is a new test that sings from a
+  *real-shaped* frame (0.02 band-over-trail excursion plus a
+  `TrackDynamics::from_bounds` profile): it fails against the flux drive and
+  pins quiet-vs-loud monotonicity. The saturated-fixture test that stayed
+  green through the whole defect is still there, re-commented, as the
+  carrier-shape check it actually is.
+- **Drawing**: the capsule's radii were scaled for a theoretical `open == 1.0`
+  the state cannot produce — the ~80 ms attack follower tops out near 0.63
+  against the ~150 ms syllable carrier, so "fully open" drew at 0.63 x 0.16 x
+  face_radius: a tongue-sized dot. The scale is now set to the reachable
+  ceiling (0.24/0.16), which draws the real singing range (~0.4–0.6) as a
+  mouth and the follower's ceiling at the size the old code reserved for 1.0.
+
+Verified by rendering the operator's own project (`Ctrl+Z The Apocalypse2
+.musi`, the exact screenshot: clawd for the whole track, cue 2 live at 12 s)
+and tiling twelve consecutive frames of the face: the `w` flattens and a round
+`o` opens and closes on the syllable carrier, `mouth=0.43` on the report line
+where the screenshot's state printed a value under the draw threshold. No
+`.musi` surface, no report-line format, and no gate change; the gate fixture
+has no cues, so its `mouth=0.00` stays the correct reading.
+
 ### Open
 
 - **The resting trail is the weakest of the three effects.** At rest it is a

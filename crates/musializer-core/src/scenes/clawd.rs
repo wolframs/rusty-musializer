@@ -52,9 +52,11 @@
 //!   not wall-clock jittered, because export determinism is a hard contract —
 //!   the same seed and frames must render the same eyelids in every export.
 //! - **The mouth sings the captions.** While a cue is live the resting `w`
-//!   interpolates toward an `o` on a flux-driven, syllable-rate oscillator, so
-//!   the character visibly sings its own lyric line rather than mouthing a
-//!   static smile under moving text.
+//!   interpolates toward an `o` on an energy-driven, syllable-rate oscillator,
+//!   so the character visibly sings its own lyric line rather than mouthing a
+//!   static smile under moving text. Energy rather than flux, measured, not
+//!   preferred: real mixes never reach the flux the original drive was scaled
+//!   for, and the mouth spent its first days as a permanent smile.
 //!
 //! Everything here is pure: no clock, no I/O, and the only randomness is derived
 //! from the instance seed.
@@ -316,9 +318,14 @@ const BLINK_INTERVAL_MAX_SECONDS: f32 = 6.5;
 /// sung speech, so the mouth flaps at lyric speed rather than at frame rate.
 const SING_RATE_HZ: f32 = 5.5;
 
-/// Flux-to-mouth gain: a clear onset (flux env ~0.5) opens the mouth most of
-/// the way before the carrier modulates it.
-const MOUTH_FLUX_GAIN: f32 = 1.6;
+/// The mouth's aperture floor while a cue is live. The aperture rides the
+/// track-relative `energy`, not flux: flux was the original drive, and it is
+/// dead on real mixes — the flux envelope's 95th percentile on real material
+/// is ~0.06 (the SX2 probe), so the old `flux * 1.6` opened the mouth a few
+/// percent and the sing-along photographed as a permanent smile with a speck
+/// under it. The floor keeps a whispered line visibly mouthing, because a cue
+/// on screen over motionless lips reads as broken rather than quiet.
+const MOUTH_ENERGY_FLOOR: f32 = 0.35;
 
 /// Mouth attack retention: `e^-12.5` per second, a ~80 ms time constant —
 /// fast enough to track the syllable carrier, slow enough not to alias it.
@@ -1308,8 +1315,9 @@ impl SceneState for ClawdState {
         }
 
         // The sing-along mouth, after the typist so `typed_cue` reflects this
-        // frame. Flux sets how far the mouth can open; the syllable-rate
-        // carrier flaps it; the fast follower keeps the flap from aliasing.
+        // frame. Track-relative energy sets how far the mouth can open; the
+        // syllable-rate carrier flaps it; the fast follower keeps the flap
+        // from aliasing.
         // The carrier only advances while singing — a phase that ran between
         // cues would reopen each line at an arbitrary point of the flap.
         let singing = frame.lyric.is_some() && self.typed_cue.is_some();
@@ -1317,7 +1325,7 @@ impl SceneState for ClawdState {
             self.sing_phase +=
                 delta * SING_RATE_HZ * std::f32::consts::TAU * (0.6 + 0.8 * self.amplitude);
             let carrier = 0.5 + 0.5 * self.sing_phase.sin();
-            let target = Self::clamp01(self.flux * MOUTH_FLUX_GAIN) * carrier;
+            let target = (MOUTH_ENERGY_FLOOR + (1.0 - MOUTH_ENERGY_FLOOR) * self.energy) * carrier;
             self.mouth_open = Self::approach(
                 self.mouth_open,
                 target,
@@ -1352,6 +1360,7 @@ pub fn descriptor() -> SceneDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::track_dynamics::TrackDynamics;
     use crate::scene::settings::{descriptor as setting_descriptor, SceneSettings};
     use crate::scene::{LyricCue, SemanticFrame};
 
@@ -2134,8 +2143,8 @@ mod tests {
             end_seconds: 8.0,
             text: "open wide and mean it".to_string(),
         };
-        // Strong flux: bands well above trails, so the flux envelope saturates
-        // and the carrier is what shapes the mouth.
+        // Loud bands with no profile: the amplitude fallback stands in for
+        // energy, and the carrier is what shapes the mouth.
         let bands = [0.5f32; 24];
         let trails = [0.05f32; 24];
         let mut widest = 0.0f32;
@@ -2170,6 +2179,56 @@ mod tests {
             state.update(&frame);
         }
         assert_eq!(state.mouth_open(), 0.0);
+    }
+
+    /// The regression the first mouth shipped with: realistic numbers. On real
+    /// mixes the flux envelope tops out around 0.06 (the SX2 probe), so a
+    /// drive scaled for flux ~0.5 held the mouth under the drawing threshold
+    /// on every real track while the saturated fixture above stayed green.
+    /// This test sings from a real-shaped frame — a 0.02 band-over-trail
+    /// excursion and a track profile — where a loud line must open the mouth
+    /// wide and a quiet line must still visibly mouth.
+    #[test]
+    fn the_mouth_opens_on_real_shaped_frames_and_scales_with_energy() {
+        let settings = SceneSettings::new();
+        let dynamics = TrackDynamics::from_bounds(0.2, 0.6).expect("ordered bounds");
+        let cue = LyricCue {
+            id: 9,
+            start_seconds: 0.0,
+            end_seconds: 8.0,
+            text: "sing it like the mix actually sounds".to_string(),
+        };
+
+        let sing = |bands: [f32; 24], trails: [f32; 24]| {
+            let mut state = ClawdState::new(16);
+            let mut widest = 0.0f32;
+            for _ in 0..120 {
+                let mut frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
+                frame.dynamics = Some(dynamics);
+                frame.lyric = Some(&cue);
+                state.update(&frame);
+                widest = widest.max(state.mouth_open());
+            }
+            widest
+        };
+
+        // The ~80 ms attack follower cannot fully reach the peak of the
+        // ~150 ms-period carrier, so "wide" is ~0.63, not 1.0.
+        let loud = sing([0.62f32; 24], [0.60f32; 24]);
+        assert!(
+            loud > 0.55,
+            "a loud line over a real-shaped frame must open the mouth wide, got {loud}"
+        );
+
+        let quiet = sing([0.22f32; 24], [0.21f32; 24]);
+        assert!(
+            quiet > 0.15,
+            "the aperture floor must keep a quiet line visibly mouthing, got {quiet}"
+        );
+        assert!(
+            quiet < loud,
+            "the aperture must scale with track-relative energy: quiet {quiet} vs loud {loud}"
+        );
     }
 
     #[test]
