@@ -2,8 +2,11 @@
 
 This guide answers two maintenance questions: where does a responsibility live,
 and what path does data take before it reaches a visible frame or a saved project?
-It describes the current Rust implementation, not the historical order in which
-it was ported.
+
+It describes **boundaries and ownership rules**, which change rarely, rather than
+an inventory of what is built, which the tree answers better and more currently.
+[`CODE_MAP.md`](CODE_MAP.md) is the generated inventory; when this guide and the
+source disagree about a feature, the source wins and this guide has drifted.
 
 ## Dependency direction
 
@@ -30,7 +33,7 @@ on either one.
 | Area | Owns | Does not own |
 | --- | --- | --- |
 | [`musializer-core`](../crates/musializer-core/src/lib.rs) | Audio analysis, project model and schemas, scene contracts and deterministic state, timing, routes, UI policy and layout | Windows, GPU resources, files, child processes |
-| [`musializer-runtime`](../crates/musializer-runtime/src/lib.rs) | raylib adapters, decoded media, the audio callback bridge, fonts, project filesystem edges, dialogs, FFmpeg and helper supervision | Editor policy or top-level application state |
+| [`musializer-runtime`](../crates/musializer-runtime/src/lib.rs) | raylib adapters, decoded media, the audio callback bridge, fonts, offscreen render targets and mid-frame GL state, project filesystem edges, dialogs, FFmpeg and helper supervision | Editor policy or top-level application state |
 | [`musializer-app`](../crates/musializer-app/src/main.rs) | Composition root, active playback, workspace, command dispatch, scene drawing, panels, preview and export orchestration | Reusable pure policy that can live in core |
 | [`raylib-5-5-link`](../crates/raylib-5-5-link/build.rs) | Building and linking the vendored raylib 5.5 source | Application behavior |
 | [`tools`](../tools) | Independent measured/model evidence, adapters, verification drivers, support checks | Direct mutation of a live project |
@@ -39,6 +42,18 @@ The important distinction is not “backend versus frontend.” It is determinis
 state versus effects. Geometry belongs in core even though pixels are drawn in
 the app. Process lifecycle belongs in runtime even though the app decides when a
 button requests it.
+
+Anything that manipulates GL state a scene cannot restore by itself belongs in
+runtime, not in an `app::scenes` module — an offscreen blur or a persistence
+buffer has to capture and restore the caller's framebuffer, and getting that
+wrong corrupts the rest of the frame globally rather than locally. `AGENTS.md`'s
+`unsafe` inventory carries the invariant each such adapter must hold.
+
+**Two unrelated modules are called `feedback`.**
+[`core::feedback`](../crates/musializer-core/src/feedback.rs) is the human A/B
+protocol schema (blinded variants, the append-only answer log);
+[`runtime::feedback`](../crates/musializer-runtime/src/feedback.rs) is visual
+frame persistence. They share a word and nothing else.
 
 ## State ownership
 
@@ -96,7 +111,13 @@ events, scene plan, settings, routes      |        |
    to sample the active lyric and semantic cue and merge semantic/manual events.
 4. Scene-plan selection, its settings snapshot, and routes are resolved before
    drawing. [`SceneFrame`](../crates/musializer-core/src/scene/mod.rs) is the
-   complete per-frame contract passed to a scene.
+   complete per-frame contract passed to a scene. It carries whole-track context
+   as well as this frame's:
+   [`TrackDynamics`](../crates/musializer-core/src/audio/track_dynamics.rs) is a
+   robust loudness floor/ceiling profiled once over the decoded track, so a scene
+   can gate on "quiet for *this* track" instead of an absolute constant that a
+   real mix never reaches. A scene that can fall back to absolute gates must say
+   which it used in its report line — the fallback draws a plausible picture.
 5. [`scene_host`](../crates/musializer-app/src/scene_host.rs) owns the scene
    registry and dispatch. Pure scene state and formulas live under
    [`core::scenes`](../crates/musializer-core/src/scenes); raylib drawing lives
@@ -127,9 +148,11 @@ large audio. Dirty lyric and route forms travel beside the project payload as
 drafts. Restart verifies every asset before rehydrating an unnamed recovery
 session, which must be saved with Save As to gain a user-chosen home.
 
-This separation is part of the parity argument: the format can be compared
-value-by-value with the frozen C without opening a window or relying on a local
-directory layout.
+Keeping the codec free of filesystem work is what makes the format testable
+value-by-value without opening a window or relying on a local directory layout.
+The compatibility contract runs against this application's own releases: every
+`.musi` any earlier build wrote must still open, and a deliberate schema change
+bumps `schema_version` and updates its pinned expectation.
 
 ## External analysis
 
@@ -169,6 +192,7 @@ effectful work into three concerns:
 | A scene's raylib drawing | `musializer-app/src/scenes/<scene>.rs` and `scene_host.rs` |
 | Panel policy or geometry | `musializer-core/src/ui`, then the corresponding `app/src/ui/panels` renderer |
 | Top-level interaction or resource lifetime | `musializer-app/src/main.rs`, `workspace.rs`, or `ui/shell.rs` |
+| CLI flags, `--ui-probe` keys, exit status | `musializer-app/src/cli.rs`, whose doc comments are the authoritative grammar; the flag table in `PHASE0_INVENTORY.md` §3 is a contract this must not break by accident |
 | Child process, dialog, or filesystem effect | `musializer-runtime/src/process` or another runtime adapter |
 | Assist evidence or model integration | `tools/external_analysis.py` and the focused helper; keep the bridge boundary stable |
 | Assist provider settings, credentials, discovery or route resolution | `musializer-core/src/assist` (settings, credentials, models_dir, execution snapshot), `musializer-runtime/src/assist` (files, discovery, env import) and `app/src/ui/assist_settings.rs`; see `ASSIST_PROVIDER_CONTRACTS.md` |
@@ -176,19 +200,41 @@ effectful work into three concerns:
 
 ## Correctness layers
 
-No one check proves the whole application. The repository uses overlapping
-layers:
+No one check proves the whole application, and they do not all run in one place.
+Read [`tools/verify.sh`](../tools/verify.sh) for what the gate actually composes
+today rather than trusting a list here; the layers and what each is *for* are:
 
-1. Core unit tests pin local invariants and rejection paths.
-2. Differential harnesses compare pure Rust behavior with the frozen C over
-   large generated grids. Every new harness needs a perturb-and-revert negative
-   control.
-3. Python regression tests pin external-analysis parsing and timing policy.
-4. `tools/support_bundle_check.sh` verifies that the distributable support tools
-   work together without requiring a network request.
-5. `tools/headless_check.sh` runs the real application under private Xvfb with an
-   unreachable Pulse server and `--mute`, then inspects captures and report lines.
-6. `tools/verify.sh` composes the repository-wide gate.
+1. **Core unit tests** pin local invariants and rejection paths. They cannot pin
+   a formula: `assert!(x >= MIN)` and `assert!(rect.contains(inner))` are
+   satisfied by wrong arithmetic, and a layout error moves everything together
+   and still photographs as a self-coherent picture.
+2. **Differential harnesses** (`tools/differential_*.sh`) compare a pure module
+   against the frozen C over large generated grids. They are regression anchors
+   for behavior this application chose to keep, not a completion gate — see
+   [`archive/C_PORT_HISTORY.md`](archive/C_PORT_HISTORY.md) for the boundary.
+   Diverging from one is a decision: update the harness and record why, never
+   let it drift. Every harness needs a perturb-and-revert negative control, and
+   several now compare in two sections because the tree has behavior the frozen
+   C cannot express. They are run deliberately, not by `verify.sh`.
+3. **Python regression tests** (`tests/test_*.py`) pin external-analysis parsing
+   and timing policy. `tools/support_bundle_check.sh` runs the support-tool
+   subset; the rest are run deliberately.
+4. **`tools/support_bundle_check.sh`** verifies that the distributable support
+   tools work together without requiring a network request.
+5. **`tools/headless_check.sh`** runs the real application against a private
+   Xvfb display with an unreachable Pulse server and `--mute`, then inspects
+   captures and report lines. Rendering goes through VirtualGL to the GPU when
+   `vglrun` is installed — the normal path on this machine, and roughly six
+   times faster than Mesa's `llvmpipe`. It falls back to the CPU when VirtualGL
+   is absent and prints which path it took, and `MZ_GL_LAUNCH=""` forces the CPU
+   path, which is how a capture check gets its second rasterizer. A check
+   calibrated only on `llvmpipe` is calibrated to an accident: opaque fills are
+   bit-exact on both, but hairlines split their coverage and blends round
+   differently. Encoder selection (NVENC vs x264) autodetects the same way.
+6. **`tools/verify.sh`** composes the gate that must stay green: the generated
+   code map, formatting, build, clippy, the Rust tests, the support bundle, the
+   secret canary, the capture-isolation lint, and the headless gate. `--quick`
+   drops the last of those.
 
-The [`AGENTS`](../AGENTS.md) guide is authoritative for silence, oracle, unsafe,
+The [`AGENTS`](../AGENTS.md) guide is authoritative for silence, unsafe, GPU-path
 and negative-control requirements.

@@ -5,16 +5,18 @@ authority. The earlier C implementation is archived migration history; see
 `docs/archive/C_PORT_HISTORY.md`. Do not consult it for current behavior, make
 new work depend on its checkout, or preserve one of its defects for parity.
 
-**The application is built and runs.** All twelve scenes draw, `.musi` projects open
-and save, video exports through FFmpeg, every bottom panel is real, and
-`tools/verify.sh` covers the Rust checks, a headless capture gate, and the
-assist-era gates (secret canary scan among them). The sole live completion queue
-is `FEATURE_PARITY_PLAN.md`. It records the application-boundary gaps those gates
-do not cover — currently the durable-edit guarantees (complete dirty marking,
-all-track autosave, draft guards), the missing C entry points (file drop, ASCII
-image import, lyrics TSV, timeline pan/markers), proving the copied support
-bundle actually runs (Assist end-to-end, Google Fonts, doctor/dist), and the
-UX0-B/UX0-C workflow-friction and product-opportunity backlog.
+**This is a shipped application that is still growing, not a port in progress.**
+The C was declared legacy on 2026-08-03 and the tree passed its capability
+ceiling well before that decision aged: twelve scenes against its ten, two of
+them with no oracle at all, plus track-relative dynamics, frame-persistence
+trails, aspect-aware export, clip and still output, an undo-backed lyric timing
+loop and a human-feedback protocol runner the C has no equivalent of. Frame work
+here as "what should this application do", not as "what did the C do".
+
+**What is built is answered by the code, `cargo test` and `tools/verify.sh` — not
+by an inventory in this file.** Every list of "currently supported X" written here
+has gone stale within weeks; the code cannot. `FEATURE_PARITY_PLAN.md` is the one
+live queue and carries only what is still open.
 
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
 
@@ -224,10 +226,17 @@ notice. The `ascii_art` harness asserts those as four named pairs — including
 past the end — rather than quietly excluding the cases. An untested rejection path
 is where a difference hides.
 
+**These run on demand, not in `tools/verify.sh`.** Since 2026-08-16 the gate no
+longer reads the sibling C checkout, pins its commit or offers a differential mode
+(`docs/archive/C_PORT_HISTORY.md`), because a green tree must not depend on a
+read-only clone somebody else's machine may not have. Run
+`tools/differential_*.sh` directly when you touch a module one of them pins, or
+when the row above is the evidence you are relying on. A harness failing is still
+a contract broken; it is just no longer a build break.
+
 Adding one: put the C harness in `tests/differential/`, the Rust side in
 `crates/musializer-core/examples/` (examples need no manifest entry, so they
-never collide with a parallel agent), and the driver in `tools/`. Add the name to
-`tools/verify.sh`'s loop and a row above.
+never collide with a parallel agent), and the driver in `tools/`. Add a row above.
 
 `tools/headless_check.sh` is how this project checks its own work without
 occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`
@@ -474,15 +483,24 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
 ## Before implementation work
 
-Read `FEATURE_PARITY_PLAN.md` first. It is the only current task list and carries
-the dependency order, acceptance evidence and complete C-to-Rust feature ledger.
-Claim and update work there; do not create another completion plan.
+Read `FEATURE_PARITY_PLAN.md` first. It is the only live queue: what is open, in
+the order a session should pick it up. Claim and update work there; do not create
+another completion plan.
 
-Read `REWRITE_PLAN.md` only for historical design reasoning and NOTE ENTRIES about
-work that already happened. Its phase sketches, source-ownership map and agent
-handoffs describe the completed fan-out and are not current instructions. Add
-historical investigation detail there only when a later session would otherwise
-rediscover it; add every live task to `FEATURE_PARITY_PLAN.md`.
+Everything else with "plan" in its name is history, and reading it as instructions
+is the mistake this repository keeps making:
+
+- `docs/archive/FEATURE_PARITY_HISTORY.md` — the closed waves, with their
+  evidence, their negative controls and the operator quotes that opened them.
+  This is where a "why is it like that" answer lives.
+- `REWRITE_PLAN.md` — the 2026-07 rewrite's design record and NOTE ENTRIES. Its
+  phase sketches, source-ownership map and agent handoffs describe a fan-out that
+  is over. It stays at the root only because ~20 source doc comments cite it by
+  that path.
+- `docs/archive/` generally, including the 2026-08-03 UX perspective review.
+
+Add historical investigation detail to those when a later session would otherwise
+rediscover it expensively; add every live task to `FEATURE_PARITY_PLAN.md`.
 
 ## The behavioral oracle
 
@@ -542,27 +560,28 @@ what it does not:
   (features a user would otherwise lose in the switch). New features beyond the
   C's ceiling need no parity justification at all.
 
-## Parity is the goal. A line-by-line port is not the method
+## The work is invention now, and this is the rule that bounds it
 
-The target is **feature parity with the frozen C**, judged by what a user or a
-file can observe. It is not fidelity to the C's structure, and there is no
-requirement that a feature arrive as a 1:1 translation.
+Parity was the target and the tree went past it. What happens here is invention,
+and the rule that governed the port outlives it because it was never really about
+the C: **judge a change by what a user or a file can observe**, never by fidelity
+to any structure.
 
-This matters more the further the rewrite goes, and the shape is familiar to
-anyone who has done a language migration by hand: **the oracle gets less
-informative as you go.** It is at its most useful for pure logic — analysis,
-layout policy, settings tables, file formats — which is exactly the part that
-went first. What is left is what is most entangled with the things this rewrite
-deliberately does not reproduce: `plug.c`'s single global `Plug *p`, hot reload,
-tinyfiledialogs, and C idioms with no good Rust shape. Expect the last stretch to
-be substantially invention rather than translation.
+Two facts from the migration explain the shape of the tree. The oracle was most
+useful for pure logic — analysis, layout policy, settings tables, file formats —
+which is exactly the part that went first, so what the C can still tell you is
+thin. And what was left at the end is what is most entangled with the things this
+rewrite deliberately does not reproduce: `plug.c`'s single global `Plug *p`, hot
+reload, tinyfiledialogs, and C idioms with no good Rust shape.
 
 **So when a faithful port is impossible, unavailable, or would be bad Rust: find
 the alternative and implement it.** Do not stall, do not leave a stub that
 explains what the oracle does instead, and do not stop to ask. Decide, build it,
 and record the divergence and its reason. This repository has been agent-driven
 since the fork, and the operator's standing instruction is that the agent does
-what it must to reach parity.
+what it must. The table below is that record, and it is the most useful thing in
+this file — a divergence with no recorded reason gets "fixed" back into a defect
+by the next session.
 
 ### What is negotiable, and what is not
 
@@ -804,11 +823,13 @@ encoder:` report line names what a run would use.
 | file size | 26.8 MB | 25.9 MB |
 | a real 20 s export, end to end | 59.0 s | 56.6 s |
 
-Read the last row before reaching for this expecting a transformation. The
-encoder is about 4 % of an export's wall clock right now; the other 54 seconds is
-**rendering through Mesa's `llvmpipe` on the CPU**, because Xvfb has no GPU. Put
-the *rendering* on the GPU (VirtualGL — see below) and the encoder's share, and
-this rule, start to matter.
+Read the last row before reaching for this expecting a transformation. Those
+three rows were measured **on the CPU rendering path**, before VirtualGL: the
+encoder was about 4 % of an export's wall clock and the other 54 seconds was
+rendering through Mesa's `llvmpipe`, because Xvfb has no GPU of its own. With the
+rendering on the GPU as well (next section) that ratio inverts and the encoder
+choice is a real share of the clock — which is why this rule exists. The end-to-end
+row has not been re-measured under VirtualGL; do not quote it as a current number.
 
 Two things not to get wrong:
 
@@ -829,34 +850,36 @@ encoder is fed byte-identical frames, and the determinism contract is about
 frames — but it does change the *file*, so a check that compares two exports by
 md5 must hold the encoder fixed.
 
-## Put the headless gate on the GPU
+## The headless gate runs on the GPU
 
-`tools/headless_check.sh` launches the application 46 times, several in loops,
-and every frame is rasterized by `llvmpipe` on the CPU: 23 s of CPU for a
-240-frame Spectrum capture, 50 s for Phosphor Dream, across five to eight
-threads. That is where the gate's wall clock goes. It is not the differential
-harnesses (about a minute, and opt-in since 2026-08-08) and it is not the Rust —
-`[profile.dev] opt-level = 1` moved it by a quarter and no further.
+**This is the normal state on this machine.** VirtualGL 3.1.4 is installed and
+`tools/headless_check.sh` resolves `vglrun` at detection time and uses it, printing
+which path it took on its `gpu:` line. Read a gate run assuming the GPU path; a
+`gpu:` line saying otherwise is the thing that needs explaining, not the default.
 
-The gate uses `vglrun` automatically when it is installed and prints which path
-it took (`gpu:` line). Nothing else changes: no application change, no raylib
-change, no capture change, and a machine without it still passes, just slowly.
+**Measured 2026-08-27: 6 min 55 s, against ~45 min on `llvmpipe`.** The gate
+launches the application dozens of times, several in loops, and on the CPU path
+every frame is rasterized by Mesa — 23 s for a 240-frame Spectrum capture, 50 s
+for Phosphor Dream. That was the whole of the gate's wall clock. It was never the
+Rust (`[profile.dev] opt-level = 1` moved it by a quarter and no further) and it
+is not the differential harnesses, which have not run inside the gate since
+2026-08-16.
+
+`MZ_GL_LAUNCH` overrides the detection either way (set it empty to force the CPU
+path, which is how the two are compared and how a new capture check gets its
+second renderer); `MZ_VGL_DEVICE` picks the VirtualGL device, default `egl0` — the
+EGL back end, which is the one that needs no X server on the GPU side. A machine
+without `vglrun` still passes, just slowly:
 
 ```sh
 curl -LO https://github.com/VirtualGL/virtualgl/releases/download/3.1.4/virtualgl_3.1.4_amd64.deb
 sudo dpkg -i virtualgl_3.1.4_amd64.deb
 ```
 
-`MZ_GL_LAUNCH` overrides the detection either way (set it empty to force the CPU
-path, which is how the two are compared); `MZ_VGL_DEVICE` picks the VirtualGL
-device, default `egl0` — the EGL back end, which is the one that needs no X
-server on the GPU side.
-
-**Installed and measured 2026-08-27: 6 min 55 s against ~45 min on llvmpipe**
-— and "nothing else changes" above turned out to have been written before
-anyone had run the GPU path, because the first complete run took four attempts.
-Three defects, all in the gate's own instruments, none in the application, and
-each one is a template for the next capture check somebody writes:
+**"Nothing else changes" was written before anyone had run the GPU path**, and
+the first complete run took four attempts. Three defects, all in the gate's own
+instruments, none in the application, and each one is a template for the next
+capture check somebody writes:
 
 - **The launcher must be an absolute path.** Three probe families launch with
   `PATH` stripped to the no-dialog guard directory (the kdialog/zenity
@@ -931,11 +954,7 @@ look for the difference list. Parity is declared *with* these, not despite them.
 
 ## Still to be filled in
 
-`FEATURE_PARITY_PLAN.md` is the authoritative ordered list. In short, the critical
-path is: feed persisted project lanes into preview/export frames; drive automatic
-scene plans and cue settings; complete dirty/draft/autosave behavior; restore the
-remaining image, lyric-document and timeline workflows; package the full Python,
-schema and prompt support bundle; then run the expanded integration gate.
-
-Do not duplicate that checklist here. The deliberate exclusions immediately
-above and the rules throughout this guide remain authoritative.
+`FEATURE_PARITY_PLAN.md`'s **Open work** table is the authoritative ordered list,
+and it is deliberately not restated here — the summary that used to sit in this
+spot outlived the work it described by weeks. The deliberate exclusions
+immediately above and the rules throughout this guide remain authoritative.

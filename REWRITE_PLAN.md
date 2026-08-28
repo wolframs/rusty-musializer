@@ -1,11 +1,26 @@
 # Rusty Musializer Rewrite Plan
 
-## Status
+## Status: archived history
 
-The C repository is feature frozen. **The rewrite is built and runs**; current
-work is tracked only in `FEATURE_PARITY_PLAN.md`.
+**This file is history. Nothing in it is an instruction.** It is the design record
+and session log of the 2026-07 rewrite, from the freeze of the C repository
+through the agent fan-out that produced the current tree. The rewrite finished
+and the application has since gone well past what the C could do; live work is
+tracked only in `FEATURE_PARITY_PLAN.md`.
 
-Source reference:
+It stays at the repository root rather than moving under `docs/archive/` because
+roughly twenty Rust doc comments and two `Cargo.toml` files cite `REWRITE_PLAN.md`
+by this path for the reasoning behind a specific divergence — the Agent D, Agent I
+and Agent K notes, "Shared contracts land first", "The raylib linking choice".
+Moving it would break those citations for no gain.
+
+What is still worth reading here: the **NOTE ENTRIES** (what actually happened,
+and why a defect was where it was), the raylib linking decision, and the divergence
+rationale the source comments point at. What is not: the phase sketches, the parity
+ladder, the fleet layout, the source-ownership map, the completion plan, and every
+"still to do" in them. Those describe a fan-out that is over.
+
+Source reference for the freeze:
 
 - Repository: `../musializer`
 - Frozen branch: `master` (not `main`)
@@ -22,38 +37,21 @@ describe behaviour and which describe intent.
 This is a rewrite powered by coding-agent parallelism and abundant token budget.
 The objective is a fun, usable Rust Musializer, based on the hobby-C-project.
 
-## Where this actually stands
+### How this file is organised
 
-**Historical document.** The one current, ordered task list is now
-[`FEATURE_PARITY_PLAN.md`](FEATURE_PARITY_PLAN.md). It consolidates every live
-feature gap, inherited handoff, deliberate exclusion and final gate against the
-frozen C oracle. Do not treat the phase sketches or completion plan below as an
-active queue.
-
-At the 2026-07-31 audit baseline, Bands 0, 1 and 2 were landed, the Rust head was
-`e32705c`, and `tools/verify.sh` was **19 passed, 0 failed**. The audit nevertheless
-found application-boundary gaps not covered by those gates: project lyrics,
-semantic data and merged events do not reach preview/export frames; automatic
-scene plans are persisted but not driven; and several C workflows and durability
-guards remain incomplete. Those findings and their dependency order live only in
-the feature-parity plan.
-
-The NOTE ENTRIES below remain the record of what actually happened. Keep them as
-history and evidence; add or close current work in `FEATURE_PARITY_PLAN.md`.
-
-### Handoff: how this historical file was originally organised
-
-The rest of this document is the plan as written at the start, kept because the
+The rest of the document is the plan as written at the start, kept because the
 reasoning in it is still the reasoning the code follows. Two navigation notes:
 
 - **"COMPLETION PLAN (session 3 onward)"** superseded the original phase sketches
-  during session 3. It is now itself superseded by `FEATURE_PARITY_PLAN.md`.
+  during session 3, and was itself superseded by `FEATURE_PARITY_PLAN.md`. Both
+  layers are here; neither is live.
 - The **source ownership map** and the fleet layout describe a fan-out that has
-  already happened. They are history, not instructions.
+  already happened.
 
-Do not start by auditing the C architecture again. The map exists: this file for
-the plan, `../musializer/CURRENT_FILE_POINTERS.md` for the documents, and the
-ownership table below for the files.
+Do not start by auditing the C architecture again. The map exists:
+`docs/CODE_ARCHITECTURE.md` for the current tree, `docs/CODE_MAP.md` for where a
+symbol lives, and `../musializer/CURRENT_FILE_POINTERS.md` for the C's own
+documents.
 
 ## The vibe contract
 

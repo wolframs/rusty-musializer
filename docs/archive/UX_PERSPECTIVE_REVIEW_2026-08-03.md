@@ -1,4 +1,20 @@
-# UX perspective review
+# UX perspective review, 2026-08-03 (archived)
+
+**Archived 2026-08-29.** This is a point-in-time review of commit `d22f9de`, kept
+for its evidence and its method, not as a to-do list. Every finding was normalized
+into **UX0** in `FEATURE_PARITY_PLAN.md`, and that file — not this one — is
+authoritative about what is still open. Most of §3's ranked opportunities have
+since shipped (clip export and still export as PX3, vertical/square output as EX2,
+the lyric tap loop as PX2, preset audition and Surprise/Nudge as PX6, recent files
+as UX0-C06), so read a claim here as "what was true at `d22f9de`" and check the
+code before acting on it.
+
+Its lasting value is the method: nine parallel review agents, every bug claim
+adversarially re-verified against the code by an independent agent, and §4's list
+of *how* each defect passed a green gate — which is where the "measure ink, not
+report lines" rule came from.
+
+---
 
 A code and UX/UI review of rusty-musializer **as seen by its user** — a musician
 or hobbyist who opens a song, tunes scenes, times lyrics, leans on Assist, and

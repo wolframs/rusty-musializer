@@ -1,91 +1,62 @@
-# Phase 0 inventory of the frozen C oracle
+# Formats, CLI, schemas and environment contracts
 
-Every citation is `path:line` **relative to `../musializer`**, the read-only C
-repository frozen at commit `9300af942bd00d8c85fc4e3c8c02cf2b6356764f`
-(`9300af9`) on branch `master`. Nothing in that tree was modified, built, or
-executed to produce this document; it was read and grepped only.
+**This file is a live contract inventory, not migration history.** Sections 3,
+5, 6 and 9 pin surfaces a user or a file can observe — the CLI grammar, the
+scene settings descriptors, the `.musi` and ancillary JSON schemas, and the
+environment overrides. `AGENTS.md` names them among the things that may change
+only *deliberately*, with a schema bump and an updated expectation; an unplanned
+difference in any of them is a bug. Do not delete a table here to tidy up.
 
-Sections 3, 5, and 6 are contract tables. Other agents will code against them.
-Where the code and a document in the C repository disagree, the code wins and
-this file records the code.
+**How to read the citations.** These contracts began life as an inventory of the
+frozen C implementation, and most tables still cite it: a citation of the form
+`path:line` with no repository prefix is **relative to `../musializer`**, the
+read-only C tree frozen at commit
+`9300af942bd00d8c85fc4e3c8c02cf2b6356764f` (`9300af9`) on branch `master`.
+Those citations are *provenance* — they say where a number came from and let a
+reader check a bound against the implementation that first defined it. They are
+not an authority over current behavior. This application has been past the C's
+ceiling since the 2026-08-03 legacy decision, and the surfaces that grew beyond
+it are marked **post-legacy** in place: extra scenes, extra route sources,
+caption effects, the assist schemas, the encoder and protocol flags.
 
----
+Where this file and the source disagree about what is implemented, the source
+wins and this file has drifted. Where they disagree about a **bound, a default,
+a key or a grammar**, treat it as a defect until one of them is deliberately
+changed — that is what these tables are for.
 
-## 1. Build profile and version
-
-`build/config.h` is the configured feature set of the binary that produced the
-test baseline:
-
-| Macro | State | `build/config.h` line |
-| --- | --- | --- |
-| `MUSIALIZER_TARGET_LINUX` | **defined** | `build/config.h:2` |
-| `MUSIALIZER_TARGET_WIN64_MINGW` | commented out | `build/config.h:3` |
-| `MUSIALIZER_TARGET_WIN64_MSVC` | commented out | `build/config.h:4` |
-| `MUSIALIZER_TARGET_MACOS` | commented out | `build/config.h:5` |
-| `MUSIALIZER_TARGET_OPENBSD` | commented out | `build/config.h:6` |
-| `MUSIALIZER_HOTRELOAD` | **off** | `build/config.h:9` |
-| `MUSIALIZER_UNBUNDLE` | **off** (resources are bundled into the executable) | `build/config.h:12` |
-| `MUSIALIZER_MICROPHONE` | **off** | `build/config.h:15` |
-
-So the Rust vertical slice targets: Linux, no hot-reload DLL split, resources
-bundled, no microphone capture.
-
-`./build/musializer --version` prints exactly `musializer 2026.07`.
-
-Version string sites — there are **three separate literals, not one constant**,
-which is a parity trap worth fixing on the Rust side by making it one constant:
-
-- `src/musializer.c:323` — `puts("musializer 2026.07");` — the `--version`
-  output. Lowercase `m`, no `v` prefix, single space.
-- `src/musializer.c:255` — `"Musializer 2026.07 - deterministic music
-  visualization workspace\n"` — the first line of `--help`. Capital `M`.
-- `src/plug.c:4293` — writes `"musializer-2026.07"` into
-  `project->metadata.application_version` (hyphen, not space). This is the
-  string that lands in every saved `.musi`.
-
-There is no `MUSIALIZER_VERSION` macro anywhere in `src/`.
+**Section numbers are stable and are cited from source comments, `AGENTS.md`,
+`FEATURE_PARITY_PLAN.md` and `fixtures/README.md`** (`grep -rn PHASE0_INVENTORY`
+finds them). A gap in the sequence means a section was retired, not that one is
+missing; do not renumber to close it. Section 2 was a snapshot of the C suite's
+pass counts and is gone — `cargo test` and `tools/verify.sh` answer that live.
 
 ---
 
-## 2. Test baseline
+## 1. The version string
 
-Recorded from the run already performed; the binaries were not re-executed here.
+`--version` prints `musializer 2026.07`, and `musializer-2026.07` (hyphen, not
+space) is what lands in `project.metadata.application_version` of every saved
+`.musi`.
 
-**C: 327 of 327 assertions pass.**
-
-- `tests/` holds 42 `.c` files: **41 named `test_*.c`** plus the shared
-  `tests/audio_fixtures.c`. Note that `tests/test_main.c` is the harness entry
-  point *and* itself a test file (it self-tests the audio fixture generators,
-  `tests/test_main.c:6-37`), and `tests/test_support.c` /
-  `tests/test_support.h` is the assertion framework.
-- One test binary. `src_build/nob_stage2.c:319` compiles
-  `./tests/test_support.c` and `./tests/audio_fixtures.c` alongside the test
-  translation units with `-std=c11 -Wall -Wextra -Wpedantic`, linking `-lm`.
-
-**Python: 137 tests + 15 subtests pass**, across **11 files** in
-`tests/adapters/`:
-
-```
-test_analysis_adapters.py     test_lyric_align.py        test_productization.py
-test_command_line_session.py  test_measured_analysis.py  test_render_product_smoke.py
-test_external_analysis.py     test_musializer_doctor.py  test_scene_quality.py
-test_google_fonts.py          test_nob_windows_job.py
-```
-
-**`tests/e2e/` is manual-only and must never be automated.** It contains
-exactly `tests/e2e/test_lyrics_assist_e2e.py` and `tests/e2e/README.md`. The
-suite gates itself on `MUSIALIZER_WHISPER_BIN` / `MUSIALIZER_WHISPER_MODEL`
-being set (`tests/e2e/test_lyrics_assist_e2e.py:68-69`, skip logic at
-`:100-105`) and drives a real Whisper model. The Rust rewrite must not wire
-this into CI or into any default test target.
+The C carried that string as **three separate literals in three spellings**,
+with no `MUSIALIZER_VERSION` macro anywhere — `musializer 2026.07`
+(`src/musializer.c:323`, `--version`), `Musializer 2026.07 - deterministic music
+visualization workspace` (`:255`, the first line of `--help`, capital `M`), and
+`musializer-2026.07` (`src/plug.c:4293`, the `.musi` field). Recorded because
+the three spellings are load-bearing in different places and only one of them is
+a file-format value: keep it one constant with three formatters, and never let
+the `.musi` spelling drift to match a help banner.
 
 ---
 
 ## 3. CLI surface
 
-Source of truth: `src/musializer.c`. The whole parser is `main()` at
-`src/musializer.c:315-662` plus four value parsers at `:19-250`. No other file
-consumes `argv`.
+The CLI grammar is a documented contract: flag order effects and exit status are
+observable and may not move by accident. `crates/musializer-app/src/cli.rs` is
+the implementation and its doc comments are authoritative for the keys this
+application added; the tables below pin the grammar's shape and the semantics
+inherited from `src/musializer.c` (parser at `:315-662`, four value parsers at
+`:19-250`).
 
 ### 3.1 Pre-pass: help and version short-circuit
 
@@ -95,18 +66,19 @@ before `reload_libplug()`, before `InitWindow`, before `plug_init`.
 - `-h`, `--help` → print help to **stdout**, `return 0`.
 - `--version` → `puts("musializer 2026.07")`, `return 0`.
 
-Consequences the Rust port must reproduce: these win from **any** position,
-they win **even when other arguments are invalid**, they open no window, and
-they exit `0`. `--help` before `--version` in the same scan iteration means for
+The contract: these win from **any** position, they win **even when other
+arguments are invalid**, they open no window, and they exit `0`. `--help`
+before `--version` in the same scan iteration means for
 `musializer --version --help` the loop hits `-h/--help` check first at index 1
 only if index 1 *is* the help flag — the scan is per-index, both checks per
 index, so whichever flag comes **first in argv** wins.
 
 ### 3.2 Complete flag table
 
-Order below is the order of the `if` chain in the main loop
-(`src/musializer.c:398-551`), which is also the order a Rust parser should
-match arms in to be behaviourally identical.
+Order below is the arm order, which is itself observable: a flag applied
+"immediately" sees only the state earlier flags established, so moving one arm
+changes what a command line does. `--encoder` and `--protocol` are post-legacy
+additions with no row here; see 3.4.
 
 | Flag | Values | Applied | Failure | Line |
 | --- | --- | --- | --- | --- |
@@ -130,36 +102,20 @@ match arms in to be behaviourally identical.
 
 The three pre-pass flags (`-h`, `--help`, `--version`) never reach this loop.
 
-### 3.3 Verdict on the plan's claims
+### 3.3 Order effects the table above does not show
 
-| Plan claim | Verdict |
-| --- | --- |
-| `--project` | correct, `:500` |
-| `--render` | correct, `:453` |
-| `--render-window` | correct **but takes two values**, `:462` |
-| `--scene` | correct, `:406` |
-| `--ascii-image` | correct, `:413` |
-| `--event` | correct, `:423` |
-| `--route` | correct, `:433` |
-| `--mute` | correct, `:399` |
-| `--version` | correct, `:322` |
-| `-h` / `--help` | correct, `:318` |
-| positional audio path | correct, and it also accepts `.musi`, `:546` |
-| routes applied after every positional and `--project` | **correct**, `:553-561`, rationale comment at `:446-448` |
+Three interactions between flags, each observable and each easy to break by
+reordering an arm:
 
-**Eight flags the plan missed**, all real and all reachable:
-
-1. `--save-project FILE` (`:507`) — headless save; sets
-   `exit_after_save`, which **skips the main loop entirely** unless `--render`
-   is also present (`:617`).
-2. `--analysis-bridge FILE` (`:516`) — imports a verified analysis bridge TSV.
-3. `--auto-scenes` (`:525`) — enables imported scene suggestions.
-4. `--resolution WIDTHxHEIGHT` (`:476`).
-5. `--fps N` (`:484`).
-6. `--quality NAME` (`:491`) — `balanced` | `high` | `master`.
-7. `--reload-once` (`:529`) — exercises exactly one hot-reload handoff.
-8. `--ui-probe SPEC` (`:533`) — the headless UI capture hook. This is the
-   largest missed surface; see 3.6.
+- **A positional argument accepts `.musi` as well as audio** (`:546`), so
+  "the file to open" and "the project to open" are one slot, not two.
+- **`--save-project` skips the main loop entirely** unless `--render` is also
+  present (`exit_after_save`, `:507`/`:617`). It is a headless save, not a
+  window that happens to write a file on the way up.
+- **Routes are applied after every positional and after `--project`**
+  (`:553-561`, rationale comment at `:446-448`), because a route names a
+  setting on a scene the project has to have loaded first. `--route` is the one
+  flag in the table deferred past the parse loop for this reason.
 
 ### 3.4 Value grammars
 
@@ -196,12 +152,12 @@ The three pre-pass flags (`-h`, `--help`, `--version`) never reach this loop.
   `scene_settings_descriptor_by_key`; the scene is **derived from the key**, not
   from the currently selected scene (`:184-188`).
 - `SOURCE`: `rms` | `peak` | `spectral_flux` | `beat_phase` | `band`
-  (`:140-149`, matched against `musi_analysis_source_name`). *Post-legacy
-  (UX0-C15, 2026-08-04): the Rust rewrite additionally accepts `time`, an
-  eight-second triangle clock. The Rust rewrite now also accepts `bass`, `mids`,
-  `treble`, and `balance` (treble's share of bass-plus-treble), all derived from
-  the shared smoothed spectrum. This inventory documents the frozen C only; the
-  C cannot parse any of these post-legacy sources.*
+  (`:140-149`, matched against `musi_analysis_source_name`), **plus five
+  post-legacy sources**: `time` (an eight-second triangle clock, UX0-C15,
+  2026-08-04) and `bass` | `mids` | `treble` | `balance` (treble's share of
+  bass-plus-treble), all derived from the shared smoothed spectrum. Every token
+  is additive — each C-era name keeps its exact meaning — and a `.musi` naming
+  one of the five is simply not readable by the frozen C.
 - `BAND`: `strtoul`, must consume the whole field, `<= 0xFFFF` (`:152-153`).
   Then `scene_route_valid` (`src/scene_routes.c:45-49`) requires: if
   `SOURCE == band` then `BAND < 256` (`AUDIO_ANALYZER_MAX_BANDS`,
@@ -339,6 +295,20 @@ still active or has failed at loop exit forces `1` (`:653-655`).
 
 ### 3.6 `--ui-probe` grammar
 
+**The key table below is the inherited set. This application's probe grammar is
+a strict superset and its authoritative list is
+`crates/musializer-app/src/cli.rs`'s own doc comments** — deliberately not
+duplicated here, because a headless probe key is added in the same commit as the
+surface it drives and a copy in this file would be stale before it was read.
+Keys invented here so far include `hover`, `click`, `wheel`, `wheel-shift`,
+`middle-drag`, `drop`, `scene-pick`, `save-to`, `lyric-tap`, `lyric-undo`,
+`tune-seed`, `tune-explore`, `tune-type`, `protocol-flip`, `protocol-answer`,
+`sidebar`, `inspector`, `timeline-height`, `audio-stall`, `route`, `picker`,
+`tune` and `assist`. What is *not* negotiable is the shape and the refusal
+rules in this section — one argv word, at most one occurrence of each key, an
+unknown key is an error rather than last-wins — because a capture script's typo
+must not quietly photograph the wrong state.
+
 `parse_ui_probe`, `src/musializer.c:131-250`. One argv word:
 `key=value[,key=value...]`.
 
@@ -416,11 +386,12 @@ need `panel=lyrics`; `lyric=N` needs `panel=assist`; audio-reactive scenes need
 
 ## 4. Scene registry
 
-Registry array: `src/scene.c:17-28`, `scene_registry[COUNT_SCENES]` with
-designated initializers, so the array index **is** the `Scene_Id` and the order
-below is normative. Enum: `src/scene.h:17-29`. Stable CLI/persistence names:
-`scene_stable_name`, `src/scene.c:47-63`. Display names: the `.name` field of
-each descriptor.
+**The ids are the contract.** A `.musi` stores a scene by id and a command line
+selects one by stable name, so id 3 must mean ASCII Field forever and a scene
+may only ever be **appended**. The table below is the inherited block, ids 0-9,
+each id fixed by the array index in `src/scene.c:17-28`. Post-legacy scenes are
+listed under it; `musializer_core::scene::SCENE_COUNT` is the live count and
+`ORACLE_SCENE_COUNT` is 10, which is what the differential harnesses read.
 
 | # | Enum (`src/scene.h`) | Stable name (`src/scene.c:50-59`) | UI display name | `state_version` | Implementing file |
 | --- | --- | --- | --- | --- | --- |
@@ -435,37 +406,25 @@ each descriptor.
 | 8 | `SCENE_LOOM` | `loom` | `Loom` | 2 | `src/scene_loom.c:391-398` (+ `src/scene_loom_weave.c`) |
 | 9 | `SCENE_PENTAGRAM` | `pentagram` | `Pentagram Orbits` | 1 | `src/scene_pentagram.c:436-443` |
 
-**Since 2026-08-08 the Rust registry has entries the table above does not
-list, because this table describes the frozen C.** Phosphor Dream — id 10,
-stable name `phosphor`, display name `Phosphor Dream`, 12 controls, no C
-source — is a post-legacy addition under the rule that features past the C's
-ceiling need no parity justification, and Clawd — id 11, stable name `clawd`,
-display name `Clawd`, 12 controls, no C source — followed on 2026-08-24. Both
-are **appended**, so every id above keeps its value and a `.musi` written
-before those dates resolves its scenes unchanged. The C simply cannot read a
-project that names either, which is the same statement already recorded for
-the `time` route source. `musializer_core::scene::SCENE_COUNT` is therefore 12
-and `ORACLE_SCENE_COUNT` is 10; the differential harnesses read the second.
+**Post-legacy scenes, appended.** Phosphor Dream — id 10, stable name
+`phosphor`, display name `Phosphor Dream`, 12 controls — landed 2026-08-08, and
+Clawd — id 11, stable name `clawd`, display name `Clawd`, 12 controls —
+followed on 2026-08-24. Neither has an oracle, so their evidence is their own
+tests and pinned expectation files rather than a diff. Because both are
+appended, every id above keeps its value and a `.musi` written before those
+dates resolves its scenes unchanged. Their descriptor tables are in 5.
 
-`COUNT_SCENES == 10` (`src/scene.h:28`) and
-`SCENE_SETTINGS_SCENE_COUNT == 10` (`src/scene_settings_values.h:8`). These two
-constants are independent in the C and must be kept in lockstep; the Rust side
-should derive one from the other.
+Two behaviours of the registry that are still contract, whatever the count is:
 
-Notes for the port:
-
-- `scene_stable_name` falls back to `"spectrum"` for an out-of-range id
-  (`src/scene.c:62`), and `scene_name` falls back to the literal `"Unknown"`
-  (`src/scene.c:44`). Neither ever returns NULL.
-- Only `SCENE_SPECTRUM` has `state_size == 0` and no `init`/`update`/`unload` —
-  it is a pure draw function (`src/scene_spectrum.c:149-155`).
-- `state_version` is the hot-reload / rebind compatibility key.
-  `scene_instance_rebind` (`src/scene.c:105-124`) reallocates state whenever
-  version or size changed, and deliberately does **not** call the old `unload`
-  because the old descriptor may have vanished during reload
-  (`src/scene.c:118-120`). Scene state may therefore own only plain memory or
-  resources released by the plug's pre-reload hook. That invariant survives the
-  rewrite.
+- **A name lookup never fails into nothing.** An out-of-range id resolves to the
+  `spectrum` stable name (`src/scene.c:62`) and the display name `Unknown`
+  (`:44`); neither ever returns NULL. A project naming a scene this build does
+  not have must resolve to something drawable rather than a blank frame.
+- **`state_version` is the state-compatibility key.** Reallocate scene state
+  whenever version or size changed (`scene_instance_rebind`,
+  `src/scene.c:105-124`). Scene state may own only plain memory or resources
+  released through the host's own teardown, never a handle it frees itself on a
+  descriptor that may already be gone (`:118-120`).
 
 ---
 
@@ -754,12 +713,12 @@ get wrong.
 | `analysis-cache-v1.schema.json` | Envelope for cached remote analysis responses (`$id` `.../analysis-cache-v1`, title "Musializer remote analysis cache envelope v1"). |
 | `analysis-provenance-v1.schema.json` | Which adapter, version, model, provider, and prompt produced an analysis artifact. Mirrors the `provenance` block embedded in `.musi`. |
 | `codex-lyric-review-output-v1.schema.json` | Output contract for the Codex-driven lyric review tool. The only schema in the directory with **no `$id` and no `title`**. |
-| `font-import-v1.schema.json` | What `tools/google_fonts.py` writes after retrieving one caption face. **Rewrite must satisfy this** — see 6.4. |
+| `font-import-v1.schema.json` | What `tools/google_fonts.py` writes after retrieving one caption face — see 6.4. |
 | `lyric-review-v1.schema.json` | Evidence-preserving lyric review records. |
 | `lyric-sync-v1.schema.json` | Deterministic localization of authored reference lyrics; display text is authored truth, timing is acoustic evidence, and an unlocatable line is flagged, never absent. Governs both `lyrics.sync.json` and `lyrics.aligned.json` — see 6.5 for the tranche-LT1 additions. |
 | `lyric-timing-v1.schema.json` | Imported lyric timing (the `lyric_timing` analysis lane artifact). |
 | `measured-analysis-v1.schema.json` | Offline measured-audio analysis output (the `measured_signal` lane artifact). Largest of the ancillary schemas at 7.1 KB. |
-| `project-v1.schema.json` | **Canonical `.musi` project contract.** Rewrite must satisfy this — see 6.2/6.3. 24 KB. |
+| `project-v1.schema.json` | **Canonical `.musi` project contract** — see 6.2/6.3. |
 | `scene-plan-v1.schema.json` | Deterministic scene-switch plan (the imported suggestion sequence behind `--auto-scenes`). |
 | `semantic-notes-v1.schema.json` | Imported free-form MiMo interpretation notes. |
 | `semantic-score-v1.schema.json` | MiMo SemanticScore (the `semantic_score` lane artifact: energy / tension / valence / confidence). |
@@ -767,9 +726,8 @@ get wrong.
 All except `codex-lyric-review-output-v1` use `$id`
 `https://musializer.local/schemas/...` — **except** `font-import-v1`, which
 uses `https://musializer.invalid/schemas/...`
-(`schemas/font-import-v1.schema.json:3`). That inconsistency is in the frozen
-tree; the port should not "fix" it without a decision, because tooling may
-match on the string.
+(`schemas/font-import-v1.schema.json:3`). Do not "fix" that inconsistency
+without a decision: `$id` is a matchable string and tooling may key on it.
 
 ### 6.2 `project-v1.schema.json` — top level
 
@@ -1044,9 +1002,10 @@ Bundle failure modes are a named enum, `Musi_Project_Bundle_Result`
 `ERROR_DIRECTORY`, `ERROR_SOURCE`, `ERROR_COPY`, `ERROR_SYNC`,
 `ERROR_IDENTITY`, `ERROR_COLLISION`, `ERROR_PUBLISH`. Durable-write failures
 are a separate enum, `Musi_Project_File_Result` (`src/project_io.h:41-52`),
-which distinguishes `ERROR_SYNC`, `ERROR_PUBLISH`, and `ERROR_DURABILITY` —
-the rewrite must keep that granularity or lose the atomic-save guarantees the
-tests assert.
+which distinguishes `ERROR_SYNC`, `ERROR_PUBLISH`, and `ERROR_DURABILITY`.
+Keep that granularity: collapsing the three into one "save failed" loses the
+atomic-save guarantee, because "the bytes are on disk but not yet durable" and
+"the publish rename never happened" need different recovery.
 
 ### 6.6 `lyric-sync-v1` after tranche LT1
 
@@ -1315,9 +1274,13 @@ SIL OFL 1.1. The UI chrome face is Space Grotesk (`ui_font()`,
 `resources/fonts/SpaceGrotesk-OFL.txt:1` "Copyright 2020 The Space Grotesk
 Project Authors (https://github.com/floriankarsten/space-grotesk)".
 
-Both licence texts must be carried into the Rust repository alongside the font
-binaries if the fonts are carried; they are not synthetic fixtures and are not
-copied by this Phase 0 pass.
+**Every bundled font carries its own licence file beside it, and that is an
+obligation, not a convention.** `resources/fonts/` holds Alegreya, Space
+Grotesk and Font Awesome with `OFL.txt`, `SpaceGrotesk-OFL.txt` and
+`FontAwesome-OFL.txt`; adding a fourth face means adding its licence text in the
+same commit. The faces are embedded with `include_bytes!` rather than read from
+`./resources/` at runtime — see `AGENTS.md`, which records why the C's relative
+paths (and the `cd`-first launcher they forced) were not reproduced.
 
 ---
 
@@ -1338,10 +1301,10 @@ copied by this Phase 0 pass.
   `build/`. The repository is deliberately structured so no audio and no
   generated project is ever committed.
 
-Consequence: **nothing to copy, and no risk of leaking private audio via a
-checked-in fixture.** `fixtures/musi/` in this repository is intentionally
-empty; regenerate with `tools/ui_fixture.sh` in the C tree if a real `.musi` is
-ever needed.
+That is the provenance behind `fixtures/musi/` here being intentionally empty,
+and the policy this repository keeps: **no `.musi`, no audio and no generated
+video is ever committed**, so a fixture can never leak private material. A real
+`.musi` is produced at runtime under the gitignored `build/`, never checked in.
 
 ### 8.1 The only `.musi` "fixture" is generated at runtime under `build/`
 
@@ -1357,12 +1320,15 @@ never saw." `tools/ui_capture.sh:37` then consumes `$FIXTURE_DIR/demo.musi`.
 Lyrics and sections in the fixture are original authored placeholder text
 (`tools/ui_fixture.sh:40-54`).
 
-### 8.2 Compatibility fixtures are built inline in C
+### 8.2 Compatibility properties a `.musi` codec must hold
 
-`tests/test_project_io.c` is the compatibility suite, and its technique is the
-thing to port, not any file. It builds a maximal in-memory project, serializes
-it with the **real** serializer, then **textually deletes** blocks from the
-resulting JSON to synthesize an older document, then deserializes.
+The table below is a catalogue of compatibility *properties*, and it outlives
+the suite it was read from: this application's own contract is that every
+`.musi` any earlier build wrote still opens, so each row names a way that can
+fail. The technique is worth keeping too — build a maximal in-memory project,
+serialize it with the **real** serializer, **textually delete** blocks from the
+resulting JSON to synthesize an older document, then deserialize. A hand-written
+"old" fixture only proves the codec can read a file the codec never wrote.
 
 - `tests/test_project_io.c:25-76` — `static Musi_Project fixture(void)`: one
   struct literal with **every field non-default**, with the comment at `:34-35`
@@ -1419,9 +1385,13 @@ asset-bundle escape checks:
 
 ### 8.4 Synthetic audio generators — regeneration spec
 
-`tests/audio_fixtures.h` (35 lines) and `tests/audio_fixtures.c` (150 lines).
-No C code was copied into this repository; this section is the spec so the Rust
-side can regenerate the same waveforms.
+Spelled out precisely enough to regenerate bit-identically, because no fixture
+audio is copied anywhere — a synthetic waveform is a **recipe** here, never a
+file. `cargo run --bin make-fixture-wav` is the generator this repository
+actually uses; the spec below is what any generator has to reproduce for a
+harness to keep comparing against recorded numbers. Read `src/audio_fixtures.c`
+for provenance only; the rounding details are called out because they are
+observable in the last bits.
 
 Struct, `tests/audio_fixtures.h`:
 
@@ -1592,8 +1562,9 @@ porting deliberately because they differ:
    `write_stereo_wav` writes standard 44-byte RIFF/WAVE via Python's `wave`
    module: 2 channels, 16-bit, `struct.pack("<h", round(value * 32767))`, right
    channel `= -0.5 * left`. **Python's `round()` is banker's rounding
-   (half-to-even), which differs from C `llround`** — relevant if a Rust port
-   ever needs to match these bytes. Callers use 16000 Hz / 440 Hz @ 0.25
+   (half-to-even), which differs from C `llround` and from Rust's `round()`** —
+   so two generators of "the same" fixture disagree in the last bit unless the
+   rounding mode is chosen on purpose. Callers use 16000 Hz / 440 Hz @ 0.25
    (`:122-126`), 8000 Hz `click_track` (`:139`), and 8000 Hz / 220 Hz @ 0.2 for
    half a second (`:179-181`).
 
@@ -1601,7 +1572,16 @@ porting deliberately because they differ:
 
 ## 9. Environment overrides
 
-### 9.1 Read by the C application
+An environment variable is a documented interface like a flag is: something a
+launcher, a packaging script or an operator's shell profile already sets. The
+tables below say what each one means, what happens when it is **unset**, and how
+its value is parsed — that last column is where the surprises live.
+
+### 9.1 Application overrides
+
+`MUSIALIZER_PRESET_STORE`, `MUSIALIZER_RENDER_SUPERSAMPLE`,
+`MUSIALIZER_FONT_HELPER` and `MUSIALIZER_ASSIST_HELPER` are read by this
+application; the `Site` column cites where each first got its semantics.
 
 | Variable | Site | Purpose | Default when unset | Parsing |
 | --- | --- | --- | --- | --- |
@@ -1619,8 +1599,10 @@ Test-only: `tests/test_preset_store.c:86-104` sets and unsets
 resolution order.
 
 **`MUSIALIZER_CAPTURE_DISPLAY` and `MUSIALIZER_CAPTURE_SETTLE` are shell-only.**
-No C code reads either one; they are consumed by `tools/ui_capture.sh` and
-`tools/ui_fixture.sh`.
+No application code reads either one; they belong to capture scripts. The
+headless gate's own knobs — `MZ_NO_WAYLAND`, `MZ_GL_LAUNCH`, `MZ_VGL_DEVICE`,
+`MZ_ENCODER` — are likewise shell-only and are documented in `AGENTS.md` and in
+`tools/headless_check.sh`'s header, not here.
 
 ### 9.2 Read by the shell tooling
 
@@ -1652,10 +1634,10 @@ No C code reads either one; they are consumed by `tools/ui_capture.sh` and
 | `MUSIALIZER_ASSIST_ENV_DUMP` | `tools/external_analysis.py`, `_dump_environment_for_probe()` | **Probe seam, tranche P4.** Writes this child's whole environment to the named path so `tools/secret_canary_check.sh` can prove a *local-only* job's helper never received the provider credential. A boolean would check one variable name; the dump catches a key smuggled under any other | nothing is written, and the dry-run report's `environment_dump` is `null` | `.strip()`ed path; **`--dry-run` only**, and a dry run opens no socket and produces no artifact a user keeps |
 | `MUSIALIZER_ASSIST_DRY_RUN_REPORT` | `tools/external_analysis.py::main` | **Probe seam, tranche P4.** Setting it to a path implies `--dry-run` and writes the report there. It exists because `AssistSpec` builds the *production* argv and deliberately has no `--dry-run` — a flag the application can pass is a flag a job can accidentally run under — while the canary gate has to exercise the real spawn path, credential decision included, without contacting a model | the command line decides, as before | `.strip()`ed path |
 
-### 9.4 Read by the Rust rewrite
+### 9.4 Read by this application only (post-legacy)
 
-Not in the frozen C: the AI settings dialog (tranche AP3) has no oracle at all,
-and the surfaces below have no other way to be driven from a headless run.
+The AI settings dialog (tranche AP3) has no C counterpart at all, and the
+surfaces below have no other way to be driven from a headless run.
 
 Two are real configuration a user may set; the rest are **probe seams**, each
 inert when unset, each read once in `AssistSettingsDialog::open`. They are
@@ -1726,11 +1708,29 @@ variables.
 
 ---
 
-## 10. Headless capture harness
+## 10. Headless capture harness (historical; see `tools/headless_check.sh`)
 
-Two scripts. `tools/ui_fixture.sh` builds a reusable fixture once;
-`tools/ui_capture.sh` photographs a catalogue of UI states against it.
-`tools/UI_REVIEW.md:52-53` documents the conventional invocation:
+**This application's gate is `tools/headless_check.sh`, and this section does
+not describe it.** What follows is the C tree's two-script harness
+(`tools/ui_fixture.sh`, `tools/ui_capture.sh`, `tools/ui_states.txt`), kept for
+one reason: `fixtures/README.md` cites 10.1 as the provenance of the synthetic
+capture fixture. Nothing here is a current instruction.
+
+Two differences matter enough to state before anyone reads on:
+
+- **`WAYLAND_DISPLAY` must be set to a name that cannot resolve, never unset.**
+  10.4 below says "unset", and that is wrong: `wl_display_connect(NULL)` falls
+  back to a hardcoded `"wayland-0"`, which is this operator's real socket, so
+  unsetting the variable is *no isolation at all*. `AGENTS.md` records how that
+  was proven and what it cost. Use `MZ_NO_WAYLAND`.
+- **The gate renders on the GPU.** `tools/headless_check.sh` launches through
+  VirtualGL (`vglrun -d egl0`) whenever it is installed — the normal path here,
+  and around six times faster than Mesa's `llvmpipe`. It falls back to the CPU,
+  prints which path it took, and `MZ_GL_LAUNCH=""` forces the CPU path so a
+  capture check can be calibrated against both rasterizers. The fixture audio
+  is `cargo run --bin make-fixture-wav`, not the `ffmpeg aevalsrc` recipe below.
+
+`tools/UI_REVIEW.md:52-53` documents the C's conventional invocation:
 `tools/ui_fixture.sh` then `tools/ui_capture.sh build/ui-review/shots`, with a
 blessed reference set kept in `build/ui-review/reference/`
 (`tools/UI_REVIEW.md:56`).
@@ -1868,41 +1868,55 @@ The application-side surface is `--ui-probe` (keys used: `size`, `panel`,
 `time`, `play`, `fullscreen`, `lyric`, `assist`, `lyrics-file`, `zoom`,
 `style`, `fonts`) plus `--project`, `--scene`, and `--mute`.
 
-### 10.4 Reimplementation notes for Rust, and this machine's missing tools
+### 10.4 What a capture harness has to hold, whatever it is built from
 
-- **`import` (ImageMagick) and `xdotool` are not installed on this machine, and
-  neither is used by these scripts.** The only external binaries the harness
-  needs are **`Xvfb`** and **`ffmpeg`**. No substitute is required for the
-  frame grab: `ffmpeg -f x11grab -video_size WxH -i :NN.0 -frames:v 1 out.png`
-  is the actual mechanism.
-- The one genuinely fragile part is the blind `sleep`. A Rust reimplementation
-  can improve on it without changing observable output by having the
-  application signal readiness — for example a line on stdout after
-  `plug_apply_ui_probe` succeeds — and having the harness wait for that line
-  with a timeout instead of a fixed 6 seconds. That would remove the
-  `MUSIALIZER_CAPTURE_SETTLE` guesswork and the `time + SETTLE` playhead drift
-  documented at `tools/ui_capture.sh:26-28`. Keep the env var as an override so
-  existing scripts still work.
-- Reproduce these invariants exactly or the captures stop being comparable:
-  one Xvfb per state at depth 24 sized to the state; `WAYLAND_DISPLAY` unset;
-  `PULSE_SERVER` pointed at a nonexistent path; the project copied per state
-  and the master's digest verified before and after the whole run; the window
-  parked at `(0, 0)`; and `--mute` on every launch.
+The invariants below are why the C's harness worked, and `headless_check.sh`
+keeps all of them. **One of them is stated wrongly here on purpose, so the
+correction is not lost:** the C unset `WAYLAND_DISPLAY`, and that is not weaker
+isolation, it is none — see the warning at the head of section 10.
+
+- One display per state, at depth 24, sized to the state.
+- `WAYLAND_DISPLAY` **set to a name that cannot resolve** (`MZ_NO_WAYLAND`),
+  never unset. The C's `unset WAYLAND_DISPLAY` at `tools/ui_capture.sh:56` is
+  the defect this line exists to flag.
+- `PULSE_SERVER` pointed at a nonexistent path, and `--mute` on every launch —
+  two independent guarantees that no test audio reaches a real sink.
+- `PATH` stripped of `kdialog` and `zenity` for any probe that presses a control
+  which could open a picker. This guard is per-call-site and is the one that was
+  actually holding while the Wayland guard was dead for months.
+- The project copied per state, and the master fixture's digest verified before
+  and after the whole run, so a state that writes cannot silently invalidate the
+  ones after it.
+- The window parked at `(0, 0)`, so a capture needs no guesswork about
+  compositor placement.
+- A frame grab that does not need a window manager: the C used
+  `ffmpeg -f x11grab -video_size WxH -i :NN.0 -frames:v 1 out.png`, needing only
+  `Xvfb` and `ffmpeg` — no ImageMagick `import`, no `xdotool`.
+
+The C's one genuinely fragile part was a blind `sleep` before the grab
+(`MUSIALIZER_CAPTURE_SETTLE`, default 6 s, which also drifted the captured
+playhead to `time + SETTLE`). A harness should wait on a readiness line from the
+application instead.
 
 ---
 
-## Appendix: things that surprised me, for the integration owner
+## Appendix: sharp edges behind the tables above
 
-1. **The version string exists three times in three spellings** —
+Sixteen observations from reading the implementation these contracts came from.
+They are here as why-records: each one is a place where the obvious reading of a
+table is wrong, or where a tidy-looking change would break a file somebody
+saved. Several have already been paid for once.
+
+1. **The version string existed three times in three spellings** —
    `musializer 2026.07`, `Musializer 2026.07`, `musializer-2026.07`
-   (`src/musializer.c:323`, `:255`, `src/plug.c:4293`). Make it one constant
-   with three formatters.
+   (`src/musializer.c:323`, `:255`, `src/plug.c:4293`). One constant, three
+   formatters; only the third is a file-format value. See section 1.
 2. **There is no unknown-flag diagnostic.** Every unrecognized `--flag` is
-   treated as a file path to load (`src/musializer.c:546-550`). A Rust
-   `clap`-style parser will *diverge* here by default, and the Python adapter
-   tests may depend on the current behaviour.
+   treated as a file path to load (`src/musializer.c:546-550`). An off-the-shelf
+   argument parser diverges here by default, and the exit status is observable.
 3. **`--render-window` takes two argv words**, and its index-advance expression
-   (`src/musializer.c:473`) is unusual enough to deserve a comment in the port.
+   (`src/musializer.c:473`) is unusual enough to deserve a comment wherever it
+   is reimplemented.
 4. **`settings.pentagram.hue` defaults to `-91.0`.** Every other hue control
    defaults to `0.0`.
 5. **`settings.terrarium.density` and `settings.constellation.density` default
@@ -1929,11 +1943,12 @@ The application-side surface is `--ui-probe` (keys used: `size`, `panel`,
 14. **The project codec is strict, not forward-compatible**: unknown fields are
     a hard error (`schemas/project-v1.schema.json:8`,
     `tests/test_project_io.c:200`). Compatibility comes from *optional* fields
-    with documented defaults, not from ignoring extras. The Rust port must not
-    reach for a permissive `serde` default here.
+    with documented defaults, not from ignoring extras. Do not reach for a
+    permissive `serde` default here.
 15. **Every `maxLength` in `project-v1` is a UTF-8 byte count, not a code point
-    count** (`schemas/project-v1.schema.json:6`). A naive
-    `String::chars().count()` check will accept documents the C rejects.
+    count** (`schemas/project-v1.schema.json:6`). A `String::chars().count()`
+    check accepts documents the codec must reject.
 16. **`plug_mark_command_line_state_clean()`** (`src/musializer.c:597`) exists
     because a one-off `--resolution` once got autosaved permanently into a
-    project. Any Rust dirty-tracking design must have an equivalent.
+    project. Any dirty-tracking design needs an equivalent: a flag that only
+    ever applied to this run must not be able to become file content.

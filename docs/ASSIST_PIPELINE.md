@@ -1,10 +1,14 @@
 # Assist and lyrics pipeline
 
-This document explains the current automatic-analysis path as a maintainable
-system. For installation, dependency discovery, commands, and privacy details,
-use [`tools/ANALYSIS_ADAPTERS.md`](../tools/ANALYSIS_ADAPTERS.md). For the dated
+This document explains the automatic-analysis path as a maintainable system: its
+control flow, its trust boundaries, and the reasons its lyric policy is
+deliberately more conservative than the code alone suggests. For installation,
+dependency discovery, commands, and privacy details, use
+[`tools/ANALYSIS_ADAPTERS.md`](../tools/ANALYSIS_ADAPTERS.md). For the dated
 experiment log and acceptance evidence behind the lyrics policy, use
-[`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md). For provider
+[`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md) and
+[`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md).
+For provider
 task contracts, credential storage, the codex discovery ladder, and the
 execution-snapshot schema recorded in every job's provenance, use
 [`ASSIST_PROVIDER_CONTRACTS.md`](ASSIST_PROVIDER_CONTRACTS.md) and
@@ -322,7 +326,7 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Timestamp-token parsing, cluster selection, alignment policy | [`tests/test_lyrics_timing.py`](../tests/test_lyrics_timing.py) |
 | Coverage invariant, section/coarse windows, occurrence/order abstention, source provenance, review flags, Whisper flags, localization cache identity | [`tests/test_lyric_anchor_block.py`](../tests/test_lyric_anchor_block.py) |
 | Four-track localization coverage through the production path | `tools/lyrics_research/run.py --method baseline` plus `scoreboard.py`; gitignored `build/lyrics-research-v2` artifacts |
-| Assist state and mode authority parity | `tools/differential_assist_ui.sh` and core tests |
+| Assist state and mode authority | core tests, anchored by `tools/differential_assist_ui.sh` (341 policy decisions; run deliberately, not part of `verify.sh`) |
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |
 | Bridge bounds, identity, coverage, and staging | core bridge/candidate tests and app panel tests |
 | Execution snapshot: route resolution at Start, provenance, mid-job settings immutability | [`tests/test_assist_execution.py`](../tests/test_assist_execution.py), `core::assist::execution` tests, [`crates/musializer-runtime/examples/assist_canary_probe.rs`](../crates/musializer-runtime/examples/assist_canary_probe.rs) |

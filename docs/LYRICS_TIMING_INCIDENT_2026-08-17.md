@@ -5,6 +5,11 @@ This is the durable forensic record for the failure reported against
 repository. Reproducible local artifacts live under gitignored
 `build/groyper-idol/`.
 
+One artifact was preserved in-tree because it is the evidence the numbers below
+were read from and it cannot be regenerated without the failed job's inputs:
+[`archive/LYRICS_TIMING_INCIDENT_2026-08-17.bridge.tsv`](archive/LYRICS_TIMING_INCIDENT_2026-08-17.bridge.tsv),
+the shipped-v1 bridge with all 18 cues at their wrong placements.
+
 ## What actually failed
 
 Two independent failures landed on top of each other.

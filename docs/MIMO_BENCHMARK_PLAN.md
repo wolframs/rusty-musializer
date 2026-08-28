@@ -12,7 +12,7 @@ harness is dry-run by default and needs two separate gates to send anything.
 | | |
 | --- | --- |
 | harness | `tools/mimo_bench/`, driver `tools/mimo_bench/run.py` |
-| tests | `tests/test_mimo_bench.py` (108 offline tests) |
+| tests | `tests/test_mimo_bench.py` — offline, no socket; run it for the current count |
 | model under test | `xiaomi/mimo-v2.5`, temperature 0.2 |
 | reformatter (arm S3 only) | `openai/gpt-4o-mini`, text only — **confirm slug and price before the live run** |
 | output schema | `musializer.mimo-bench-description/v1`, sha256 `7837e23afb77fcfb…` |

@@ -12,20 +12,22 @@
 </p>
 
 Musializer listens to an audio track, extracts its changing shape, and gives you
-ten reactive scenes to direct. You can tune a scene by hand, route parts of the
-sound into its controls, arrange scene changes on a timeline, author timed
+a set of reactive scenes to direct. You can tune a scene by hand, route parts of
+the sound into its controls, arrange scene changes on a timeline, author timed
 lyrics, and render the result to video.
 
-This is the canonical, actively developed Musializer. It began as a careful Rust
-port of an earlier C application; that codebase is now frozen history and serves
-only as a provenance oracle for behavior worth preserving. The product, file
-format, and creative direction live here.
+This is the canonical, actively developed Musializer. It began as a Rust port of
+an earlier C application; that codebase has been frozen since 2026-07-26 and the
+product has long since moved past it. The C survives only as a provenance oracle
+for behavior worth pinning. The product, file format, and creative direction live
+here.
 
 ## What can you make with it?
 
 - **Shape sound into motion.** Spectrum, Pulse Field, Orbital Lattice, ASCII
-  Field, Song Atlas, Spectral Terrarium, Constellation, Cadence, Loom, and
-  Pentagram Orbits each respond to the same track in a different visual language.
+  Field, Song Atlas, Spectral Terrarium, Constellation, Cadence, Loom, Pentagram
+  Orbits, Phosphor Dream, and Clawd each respond to the same track in a different
+  visual language. (`SceneId::ALL` is the list that cannot go stale.)
 - **Direct the arrangement.** Split a song into scene segments, retarget them,
   capture per-segment tuning, place events, and keep the whole performance
   aligned on one zoomable timeline.
@@ -118,13 +120,14 @@ concrete:
 - **One frame contract.** Preview and offline export consume the same project
   lanes, scene plan, routes, settings, and timestamps rather than maintaining two
   interpretations of a song.
-- **Measured compatibility.** Thirteen differential harnesses compare retained
-  behavior against the frozen C oracle over roughly 1.2 million values. The
-  oracle is evidence, not the roadmap.
+- **Measured compatibility.** `tools/differential_*.sh` compare retained behavior
+  against the frozen C oracle value by value, and each one carries a recorded
+  negative control. They are regression anchors run on demand, not a roadmap —
+  the oracle stopped being the target years of features ago.
 - **Real rendering gates.** A private Xvfb run exercises the application, captures
-  consequential UI states, and checks report lines and pixels. Test playback is
-  process-muted and isolated from the operator's audio session without changing
-  the PCM being analyzed.
+  consequential UI states, and checks report lines and pixels — on the GPU through
+  VirtualGL where it is installed. Test playback is process-muted and isolated
+  from the operator's audio session without changing the PCM being analyzed.
 - **No cwd-shaped runtime.** First-party shaders and fonts are embedded. Project
   assets are content-addressed and verified.
 
@@ -148,10 +151,14 @@ tools/verify.sh --quick    # repository gate without visual capture
 tools/verify.sh            # full gate, including private-Xvfb evidence
 ```
 
+The full gate runs on the GPU through VirtualGL when `vglrun` is installed, and
+falls back to CPU rasterization otherwise; `AGENTS.md` has the install line and
+the classifier rules that difference imposes on capture checks.
+
 Read [`AGENTS.md`](AGENTS.md) before changing rendering, audio, `unsafe` code, or
 the verification harnesses. It records the safety invariants and the negative-
 control method behind the tests. [`FEATURE_PARITY_PLAN.md`](FEATURE_PARITY_PLAN.md)
-is the sole live product/completion queue; `REWRITE_PLAN.md` is historical
+is the live product queue; `REWRITE_PLAN.md` and `docs/archive/` are historical
 evidence, not a second backlog.
 
 Agent-authored human listening checks can use the local
@@ -167,13 +174,13 @@ For navigation:
 - [`docs/PHASE0_INVENTORY.md`](docs/PHASE0_INVENTORY.md) — formats, CLI, schemas, and environment contracts
 - [`tools/ANALYSIS_ADAPTERS.md`](tools/ANALYSIS_ADAPTERS.md) — optional analysis dependencies and privacy boundaries
 
-## Scope and status
+## Scope
 
-The application builds and runs; all ten scenes, project open/save, timeline
-editing, caption authoring, Assist staging, and FFmpeg export are real. It remains
-a Linux-first project. Microphone capture, hot reload, and non-Linux platforms
-are deliberate exclusions for now; current product gaps are tracked openly in
-the [feature-parity plan](FEATURE_PARITY_PLAN.md).
+Linux-first, and deliberately so. Microphone capture, hot reload, and non-Linux
+platforms are excluded on purpose — `AGENTS.md`'s "Not built, and not going to
+be" says why for each. Open product work lives in the
+[feature-parity plan](FEATURE_PARITY_PLAN.md); everything else is answered by
+`cargo test` and `tools/verify.sh` rather than by a status paragraph here.
 
 ## License
 

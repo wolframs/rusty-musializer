@@ -53,26 +53,25 @@ Rules that follow from the table and are not negotiable per-route:
   `Full assist`) resolves to a set of these ids. Confirmation shows the resolved
   set, per-contract, before any process starts.
 
-### Implemented adapters in this build
+### Eligible is not the same as implemented
 
-The contract table above is the durable settings/schema capability envelope; it
-is not a claim that every listed adapter exists today. The executable currently
-dispatches exactly these identities:
+The contract table above is the durable settings/schema capability envelope. It
+is deliberately **wider than what dispatches today**, so a route can be added
+without a schema bump. Which identities actually exist is code, not prose:
+`ContractId::implemented_route_types` in
+`crates/musializer-core/src/assist/contracts.rs`, with a test asserting the
+implemented set is a subset of the schema-eligible one.
 
-| Contract | Implemented route |
-| --- | --- |
-| `TC-MEASURED` | `builtin/builtin-analyzer` |
-| `TC-COARSE` | `local-proc/whisper.cpp` |
-| `TC-ALIGN` | `local-proc/mms-ctc` |
-| `TC-WORDING` | `codex/codex` |
-| `TC-SEMANTIC` | `openrouter/openrouter` |
-| `TC-PLAN` | `builtin/builtin-planner` |
-| `TC-VERIFY` | not implemented or composed by any workflow |
+Three rules follow, and none of them may erode:
 
-A schema-legal future route is retained in a saved profile, but the UI marks it
-unimplemented and preflight refuses it. The helper repeats the same check before
-reading or writing caches. It is never acceptable to execute one adapter while
-recording another in provenance.
+- A schema-legal but unimplemented route is **retained** in a saved profile —
+  never silently rewritten — but the UI marks it unimplemented and preflight
+  refuses it. The helper repeats the check before reading or writing caches.
+- **It is never acceptable to execute one adapter while recording another in
+  provenance.** A snapshot that names a route that did not run is worse than no
+  snapshot, because it looks reproducible.
+- An unimplemented contract must say so where its control would be, rather than
+  offering a picker that resolves to nothing.
 
 The four workflow buttons map to output lanes and stages as follows:
 
