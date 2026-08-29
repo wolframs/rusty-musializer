@@ -205,6 +205,41 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+/// The refusal message for a launch with no reachable windowing path, or `None`.
+///
+/// `DISPLAY` alone decides it, and `WAYLAND_DISPLAY` is deliberately not consulted,
+/// because this binary has no Wayland backend to consult it for: raylib is built
+/// here with `_GLFW_X11` and nothing else (`raylib-5-5-link/build.rs:78`, mirroring
+/// `nob_linux.c`), so GLFW's only path to a window is X11. A launch with
+/// `WAYLAND_DISPLAY` set and `DISPLAY` unset dies in exactly the same place as one
+/// with neither — treating the Wayland name as an offer would let through the case
+/// this guard exists for.
+///
+/// It also stays clear of the trap in AGENTS.md from the other side: the project's
+/// isolation sets `WAYLAND_DISPLAY` to a name that *cannot* resolve, on purpose, and
+/// always beside a real Xvfb `DISPLAY`. Reading only `DISPLAY` can neither refuse
+/// that pairing nor be fooled by it.
+///
+/// Presence, not reachability — connecting for real would mean linking Xlib. A
+/// `DISPLAY` that is set but dead still fails inside GLFW, which at least *reports*
+/// (`X11: Failed to open display`) rather than walking on into a null dereference.
+/// Empty counts as unset: `DISPLAY=` is what a stripped environment leaves behind
+/// and it is no more connectable than a missing variable.
+fn display_refusal(display: Option<&str>) -> Option<String> {
+    if display.is_some_and(|value| !value.trim().is_empty()) {
+        return None;
+    }
+    Some(
+        "no display: DISPLAY is unset or empty, so there is no X server to open a \
+         window on. This application needs a window even to render or export \
+         offline. Run it under a desktop session, or under a virtual one — \
+         `xvfb-run --auto-servernum musializer ...`, or `tools/headless_check.sh` \
+         for the project's own isolated setup. (Wayland-only sessions need \
+         `DISPLAY` from Xwayland: this build links GLFW's X11 backend only.)"
+            .into(),
+    )
+}
+
 fn run(
     session_credentials: musializer_runtime::assist::env::SessionCredentials,
 ) -> Result<std::process::ExitCode, String> {
@@ -260,6 +295,18 @@ fn run(
     // stage succeeds. Starting at that size here would make a failed command line
     // mutate the window even though the C suppresses the probe whole.
     let (width, height) = options.window;
+
+    // Refuse before raylib, because raylib does not refuse at all: with no display
+    // to open, `InitWindow` logs GLFW's failure, carries on, and dereferences a
+    // null window handle. Eleven coredumps in one wave, nearly all of them an
+    // agent launching without `DISPLAY` — a segfault says nothing about what is
+    // missing, and on Ubuntu it summons the crash reporter for a fault that is
+    // really a misconfigured command line.
+    //
+    // After `cli::parse`, so `--help` and `--version` still answer displayless.
+    if let Some(refusal) = display_refusal(std::env::var("DISPLAY").ok().as_deref()) {
+        return Err(refusal);
+    }
 
     let (mut rl, thread) = raylib::init()
         .size(width, height)
@@ -5266,7 +5313,29 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
+    use super::display_refusal;
     use super::scene_clock_delta;
+
+    #[test]
+    fn a_launch_with_no_display_is_refused_by_name() {
+        let refusal = display_refusal(None).expect("no DISPLAY offered");
+        assert!(refusal.contains("DISPLAY"), "{refusal}");
+        assert!(refusal.contains("xvfb-run"), "{refusal}");
+        // Empty is what a stripped environment leaves behind, and it connects to
+        // nothing; a blank value must not read as an offer.
+        assert!(display_refusal(Some("")).is_some());
+        assert!(display_refusal(Some("  ")).is_some());
+    }
+
+    #[test]
+    fn the_projects_own_isolation_pairing_is_never_refused() {
+        // The headless gate's environment is a real Xvfb display beside a Wayland
+        // name chosen so it cannot resolve (AGENTS.md's `MZ_NO_WAYLAND`). Reading
+        // only `DISPLAY` is what makes that pairing unrefusable — and refusing it
+        // would break every capture in the tree.
+        assert_eq!(display_refusal(Some(":77")), None);
+        assert_eq!(display_refusal(Some(":0")), None);
+    }
 
     #[test]
     fn scene_clock_turns_transport_discontinuities_into_zero_delta() {
