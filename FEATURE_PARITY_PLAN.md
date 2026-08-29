@@ -209,6 +209,39 @@ endpoint list, `prefer_gpu`/`stem_separation`, the staged-snapshot field move.
 They are deferrals with reasons, in the archive; promote one here before building
 it.
 
+**AX — the 2026-08-29 assist audit** (full evidence:
+`docs/archive/ASSIST_AUDIT_2026-08-29.md`; findings keyed A1-A12, B1-B12, plus
+a protocol map). The diagnosis is one sentence: the core is excellent and the
+seams answer the same question twice. The load-bearing shortlist, in order:
+
+- **AX-1** — unify the dialog's `readiness()` and `execution::preflight` into
+  one function with Codex/doctor/local-binary arms, and gate the Start button
+  on it (A1, A2, A6, B6 collapse together). The snapshot becomes the only
+  authority on what is sent, which also retires A4's dishonest ZDR toggle
+  (draw it disabled-not-wired until direction-off is real) and A5's
+  overlay-vs-boundary `audio_scope` contradiction.
+- **AX-2** — the doctor must measure the installation a job uses: forward the
+  `assist.json` runtime paths and the credential mode to
+  `musializer_doctor.py`, check its `schema_version` in both Rust readers,
+  and put the five missing helpers in its asset checklist by calling
+  `missing_support_files()` (B1, B5, B7).
+- **AX-3** — read the helper's last stderr line back into the failure toast,
+  and toast deadline/cancel outcomes (B2, B11); give the dialog's own
+  doctor/catalog children a deadline (B10).
+- **AX-4** — gate the live-catalog test behind an env opt-in so `verify.sh`
+  stops calling openrouter.ai on every run (B3). Small and should go first.
+- **AX-5** — cross-language pins: a Python test for `.bridge.tsv`, a Rust test
+  for the observed `execution_snapshot`, version checks for the Codex cache
+  and doctor report, argv accepted by the real helper's argparse, and one
+  shared-fixture or constant-comparison mechanism for the hand-duplicated
+  schema strings and route tables (A9, B4, B9, protocol map rows 1/2b/6/7/9).
+- **AX-6** — orchestrator tests: pin `_cache_matches` on `accept=` and
+  `audio.sha256` (both gutting perturbations left 241 green), and the credential
+  refusal distinct from absence (A3, B8, B12's `cache_dir` drift).
+- Deliberately not queued: A8 (env strip at six more spawn sites) is an E1
+  contract decision for the operator; A7's login-shell strip and A10-A12 ride
+  along with AX-1's consolidation or stay latent.
+
 **HX-4** — the `claude -p` generate/digest buttons for protocol authoring. The MVP
 loop works without them; the agent writing a protocol reads the JSONL directly.
 

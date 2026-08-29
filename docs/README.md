@@ -100,6 +100,7 @@ method, not as instructions, and each carries its own archived-on header.
   `PHASE0_INVENTORY.md` is **not** archived material — it is the live contract
   inventory listed under "Start here" above.
 - [`archive/FEATURE_PARITY_HISTORY.md`](archive/FEATURE_PARITY_HISTORY.md) — the
+- [`archive/ASSIST_AUDIT_2026-08-29.md`](archive/ASSIST_AUDIT_2026-08-29.md) — the assist-area audit: 24 findings, a Rust↔Python protocol map, and the solid-areas record; the live queue's AX section is its shortlist.
   completed parity and operator waves.
 - [`archive/UX_PERSPECTIVE_REVIEW_2026-08-03.md`](archive/UX_PERSPECTIVE_REVIEW_2026-08-03.md)
   — the point-in-time user-perspective review whose findings became UX0.
