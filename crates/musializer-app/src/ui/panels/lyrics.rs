@@ -934,6 +934,13 @@ pub struct LyricEditor {
     /// The instant a tap run last stamped, for the readout, so the status line
     /// can show *where* the last press landed rather than only how many landed.
     tap_last_seconds: Option<f64>,
+    /// A calibration the user just changed, waiting to be written to the
+    /// per-user preference file (PXF-2).
+    ///
+    /// Deferred like [`Self::seek_request`], and for the same structural
+    /// reason: `[`/`]` are read by `lyric_timing_keys`, which is handed no
+    /// command vector, and the store is a side effect only the shell can have.
+    tap_offset_request: Option<f64>,
     /// A seek the panel wants the transport to make (UX0-B02).
     ///
     /// Selecting a cue moves the playhead to its start, which is the single
@@ -1077,6 +1084,7 @@ impl LyricEditor {
             history_request: None,
             tap: LyricTap::default(),
             tap_last_seconds: None,
+            tap_offset_request: None,
             seek_request: None,
             time_edit: None,
             nudge_repeat: HoldRepeat::default(),
@@ -1416,6 +1424,30 @@ impl LyricEditor {
 
     pub fn adjust_tap_offset(&mut self, steps: i32) {
         self.tap.adjust_offset(steps);
+        // Requested on every press rather than on the run ending: a calibration
+        // is usually dialled in *during* playback and the run may end by the
+        // user quitting, which is exactly the launch that must remember it. The
+        // saturating case still requests, because it is one file write for a key
+        // a hand can only press so fast, not sixty a second of a drag.
+        self.tap_offset_request = Some(self.tap.offset_seconds());
+    }
+
+    /// Restores a calibration measured in an earlier session (PXF-2).
+    ///
+    /// The offset is per-user, not per-project, so this is fed from
+    /// `UiPreferences` rather than from the track. `None` leaves
+    /// [`LyricTap`]'s own default in place — "never calibrated" is a different
+    /// fact from "calibrated to zero", and only the first should follow a later
+    /// change to that default.
+    pub fn set_tap_offset(&mut self, seconds: Option<f64>) {
+        if let Some(seconds) = seconds {
+            self.tap.set_offset_seconds(seconds);
+        }
+    }
+
+    /// A calibration the shell has not written to the preference file yet.
+    pub fn take_tap_offset_request(&mut self) -> Option<f64> {
+        self.tap_offset_request.take()
     }
 
     #[must_use]
@@ -1995,7 +2027,9 @@ impl Shell {
         // The keys come with the lane. Ctrl+Z on a cue you can see and cannot
         // reach any other way is the whole point, and `lyric_lane_keys` already
         // refuses everything that needs the form.
+        self.load_tap_calibration(&mut editor);
         self.lyric_lane_keys(d, input, &mut editor, track);
+        self.store_tap_calibration(&mut editor, commands);
         self.lyric_lane(d, input, &mut editor, track, lane, commands);
         if let Some(seconds) = editor.take_seek_request() {
             commands.push(ShellCommand::Seek(seconds));
@@ -2103,7 +2137,9 @@ impl Shell {
                 - lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM)
                 .max(ORACLE_LANE_HEIGHT),
         );
+        self.load_tap_calibration(editor);
         self.lyric_lane_keys(d, input, editor, track);
+        self.store_tap_calibration(editor, commands);
 
         let lane = UiRect::new(panel.x, panel.y, panel.width, editor.lane_drawn);
         // The zoom row's band sits between the lane and the editor, and this
@@ -2713,6 +2749,35 @@ impl Shell {
     /// panes are excluded too: there is no lane on screen in any of them, and a
     /// shortcut that acts on an invisible selection is the interface doing
     /// something the user cannot see.
+    /// Hands the editor the calibration this user measured last time (PXF-2).
+    ///
+    /// Run before the timing keys on every frame that has a lane, rather than
+    /// once at startup, because the editor is reachable from two draw paths and
+    /// a load that only one of them performed would leave the offset depending
+    /// on which panel the user opened first.
+    fn load_tap_calibration(&mut self, editor: &mut LyricEditor) {
+        editor.set_tap_offset(self.ui_preferences.lyric_tap_offset.map(f64::from));
+    }
+
+    /// Writes a calibration the user just changed back to the preference file.
+    ///
+    /// Immediately, not on the run ending: the offset is dialled in while the
+    /// track plays and the session that follows may end with the window being
+    /// closed, which is precisely the launch that has to remember it. One
+    /// atomic replace per keypress is affordable in a way the lane drag's sixty
+    /// a second was not.
+    fn store_tap_calibration(
+        &mut self,
+        editor: &mut LyricEditor,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        let Some(offset) = editor.take_tap_offset_request() else {
+            return;
+        };
+        self.ui_preferences.lyric_tap_offset = Some(offset as f32);
+        commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+    }
+
     fn lyric_lane_keys(
         &mut self,
         d: &RaylibDrawHandle<'_>,

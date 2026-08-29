@@ -27,6 +27,13 @@ const MAX_FILE_SIZE: u64 = 64 * 1024;
 /// only has to exclude values that are not a lane at all.
 const LANE_HEIGHT_RANGE: std::ops::RangeInclusive<f32> = 8.0..=256.0;
 
+/// What a persisted lyric tap offset may be (PXF-2).
+///
+/// The control's own bound, read from `core` rather than restated, so a file
+/// can never carry a calibration the `[`/`]` keys could not have produced.
+const TAP_OFFSET_LIMIT: f32 =
+    musializer_core::ui::lyric_lane_edit::LYRIC_TAP_OFFSET_LIMIT_SECONDS as f32;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiPreferences {
     pub scale: UiScalePreference,
@@ -39,6 +46,19 @@ pub struct UiPreferences {
     /// describes the operator's screen, not the music. A resize the user has to
     /// redo every launch is the friction the resize was asked for to remove.
     pub lyric_lane_height: Option<f32>,
+    /// The lyric tap run's calibration offset, in seconds (PXF-2).
+    ///
+    /// Here for the same reason the lane height is, and more strongly: this
+    /// number describes *this person tapping on this machine* — their timing
+    /// bias plus the display and audio latency of the workstation — which is
+    /// exactly the thing a `.musi` file must not carry to another machine. A
+    /// calibration control that forgets its calibration every launch is one
+    /// nobody calibrates.
+    ///
+    /// `None` is "never calibrated", which draws as `LyricTap`'s own default
+    /// rather than as a stored zero — so a later change to that default reaches
+    /// every user who has not dialled one in.
+    pub lyric_tap_offset: Option<f32>,
 }
 
 impl UiPreferences {
@@ -58,6 +78,10 @@ impl UiPreferences {
                 .lyric_lane_height
                 .into_iter()
                 .all(|value| value.is_finite() && LANE_HEIGHT_RANGE.contains(&value))
+            && self
+                .lyric_tap_offset
+                .into_iter()
+                .all(|value| value.is_finite() && value.abs() <= TAP_OFFSET_LIMIT)
     }
 }
 
@@ -89,6 +113,11 @@ struct Document {
     /// *and* be told the file is broken.
     #[serde(default)]
     lyric_lane_height: Option<f32>,
+    /// `default` for the reason above, one field later: a `ui.json` written
+    /// before PXF-2 carries five fields, and a sixth required one would make
+    /// every one of those files parse as corruption.
+    #[serde(default)]
+    lyric_tap_offset: Option<f32>,
 }
 
 #[must_use]
@@ -130,6 +159,7 @@ pub fn load(path: &Path) -> Result<Option<UiPreferences>, UiPreferencesError> {
         inspector_width: document.inspector_width,
         timeline_height: document.timeline_height,
         lyric_lane_height: document.lyric_lane_height,
+        lyric_tap_offset: document.lyric_tap_offset,
     };
     preferences
         .sane()
@@ -151,6 +181,7 @@ pub fn save(path: &Path, preferences: UiPreferences) -> Result<(), UiPreferences
         inspector_width: preferences.inspector_width,
         timeline_height: preferences.timeline_height,
         lyric_lane_height: preferences.lyric_lane_height,
+        lyric_tap_offset: preferences.lyric_tap_offset,
     };
     let bytes = serde_json::to_vec_pretty(&document).map_err(|_| UiPreferencesError::Format)?;
     if let Some(parent) = path.parent() {
@@ -183,9 +214,62 @@ mod tests {
             inspector_width: Some(420.0),
             timeline_height: Some(460.0),
             lyric_lane_height: Some(48.0),
+            lyric_tap_offset: Some(-0.1),
         };
         save(&path, preferences).unwrap();
         assert_eq!(load(&path).unwrap(), Some(preferences));
+    }
+
+    #[test]
+    fn a_tap_calibration_survives_the_launch_it_was_measured_in() {
+        // PXF-2's whole point, stated as the round trip: the number a user
+        // dialled in with `[`/`]` comes back byte-identical, at both ends of the
+        // control's range and at the zero in the middle.
+        let path = scratch("tap-offset").join("ui.json");
+        for offset in [0.0f32, -0.1, 0.07, TAP_OFFSET_LIMIT, -TAP_OFFSET_LIMIT] {
+            let preferences = UiPreferences {
+                lyric_tap_offset: Some(offset),
+                ..UiPreferences::default()
+            };
+            assert!(preferences.sane(), "{offset} is a calibration");
+            save(&path, preferences).unwrap();
+            assert_eq!(load(&path).unwrap(), Some(preferences));
+        }
+    }
+
+    #[test]
+    fn a_tap_calibration_the_control_could_not_produce_is_refused() {
+        // The `[`/`]` keys saturate at ±0.25 s, so a larger value in the file is
+        // something this application never wrote. Refusing it keeps the store's
+        // rule — a file we do not understand is left alone, not overwritten.
+        let path = scratch("tap-offset-range").join("ui.json");
+        for refused in [0.26f32, -0.26, 5.0, f32::NAN, f32::INFINITY] {
+            let preferences = UiPreferences {
+                lyric_tap_offset: Some(refused),
+                ..UiPreferences::default()
+            };
+            assert!(!preferences.sane(), "{refused} is not a calibration");
+            assert_eq!(save(&path, preferences), Err(UiPreferencesError::Format));
+        }
+    }
+
+    #[test]
+    fn a_file_written_before_the_tap_offset_was_persisted_still_opens() {
+        // The exact document a build between LX1-d and PXF-2 wrote: five fields,
+        // no calibration. It must parse, and the missing field must read as "not
+        // calibrated" rather than as a stored zero, so the tap's own default is
+        // what the user gets.
+        let path = scratch("pre-tap-offset").join("ui.json");
+        std::fs::write(
+            &path,
+            br#"{"schema":"musializer.ui-preferences/v1","scale":"auto",
+                 "sidebar_width":300.0,"inspector_width":null,"timeline_height":null,
+                 "lyric_lane_height":50.0}"#,
+        )
+        .unwrap();
+        let loaded = load(&path).unwrap().expect("an older file still parses");
+        assert_eq!(loaded.lyric_lane_height, Some(50.0));
+        assert_eq!(loaded.lyric_tap_offset, None);
     }
 
     #[test]

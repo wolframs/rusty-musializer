@@ -847,6 +847,24 @@ impl LyricTap {
         self.open_start = 0.0;
     }
 
+    /// Restores a calibration measured in an earlier session (PXF-2).
+    ///
+    /// Clamped rather than refused, and non-finite reads as no calibration at
+    /// all: the caller is a per-user preference file, so the value has already
+    /// survived that store's own bound check, and a restore that silently kept
+    /// the run at a *different* offset from the one on disk would be a
+    /// calibration control lying about its own state.
+    pub fn set_offset_seconds(&mut self, seconds: f64) {
+        self.offset_seconds = if seconds.is_finite() {
+            seconds.clamp(
+                -LYRIC_TAP_OFFSET_LIMIT_SECONDS,
+                LYRIC_TAP_OFFSET_LIMIT_SECONDS,
+            )
+        } else {
+            0.0
+        };
+    }
+
     /// Moves the offset by `steps` of [`LYRIC_TAP_OFFSET_STEP_SECONDS`],
     /// saturating at [`LYRIC_TAP_OFFSET_LIMIT_SECONDS`].
     pub fn adjust_offset(&mut self, steps: i32) {
@@ -1789,6 +1807,23 @@ mod tests {
         // The calibration is a property of the person and the machine, not of
         // the run.
         expect_near(tap.offset_seconds(), -0.08, 1e-9);
+    }
+
+    #[test]
+    fn a_restored_calibration_lands_inside_the_control_that_could_have_made_it() {
+        // PXF-2 restores this from the per-user preference file, which is a file
+        // a user can edit. Anything the `[`/`]` keys could not have produced is
+        // clamped to what they could, and a non-finite one reads as no
+        // calibration rather than as a poisoned offset every later tap carries.
+        let mut tap = LyricTap::default();
+        tap.set_offset_seconds(-0.1);
+        expect_near(tap.offset_seconds(), -0.1, 1e-9);
+        tap.set_offset_seconds(9.0);
+        expect_near(tap.offset_seconds(), LYRIC_TAP_OFFSET_LIMIT_SECONDS, 1e-9);
+        tap.set_offset_seconds(-9.0);
+        expect_near(tap.offset_seconds(), -LYRIC_TAP_OFFSET_LIMIT_SECONDS, 1e-9);
+        tap.set_offset_seconds(f64::NAN);
+        expect_near(tap.offset_seconds(), 0.0, 1e-9);
     }
 
     #[test]
