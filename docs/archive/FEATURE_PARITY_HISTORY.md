@@ -4410,3 +4410,45 @@ has no cues, so its `mouth=0.00` stays the correct reading.
   machinery exists (`--protocol`) and each stage has an obvious pair — trails
   on/off, shading on/off, air on/off — but a variant switch for them does not
   exist yet, since none of the three is a setting.
+
+
+## 2026-08-29 small wave: PXF-2, PXF-10, DX8, AP5-a (four parallel Opus agents)
+
+Picked as budget-shaped small items from the live queue; each landed alone,
+committed by its own agent, verified green on the final tree (1467 workspace
+tests) with `verify.sh --quick` and the release build refreshed.
+
+- **PXF-10** (`38eb280`) — a displayless launch exits 1 with a message naming
+  the fix instead of segfaulting in raylib's `InitWindow` (was exit 139, 11
+  coredumps in one wave). The guard reads `DISPLAY` alone, deliberately: this
+  build links GLFW's X11 backend only (`raylib-5-5-link/build.rs:78`), so a set
+  `WAYLAND_DISPLAY` offers nothing — the two-variable guard first proposed
+  still segfaulted under the exact repro. `--help`/`--version` stay displayless.
+- **PXF-2** (`07e96f5`) — the lyric-tap calibration offset persists in
+  `ui.json` (`UiPreferences::lyric_tap_offset: Option<f32>`, missing field →
+  `LyricTap::default()` so a future default change still reaches uncalibrated
+  users). Saved on every press because sessions end by closing the window.
+  Loading happens at both `lyric_lane_keys` call sites — one would make the
+  offset depend on which panel opened first. Four tests incl. a pre-PXF-2
+  five-field document. **Found while landing it: CX-4's -100 ms default was
+  never actually landed** — recorded back in the live queue under CX-4.
+- **DX8** (`451a326`) — the support manifest
+  (`runtime::support::DISTRIBUTION_SUPPORT_FILES`) gained the six helpers the
+  plan named, and the durable fix is
+  `assist_helper_closure_matches_the_manifest`: the helper closure is derived
+  from the Rust sources (spawn sites → Python imports, transitively) and
+  compared to the manifest both ways. Both directions have negative controls
+  (6/6 dropped entries fail by name; an unreached `code_map.py` fails the
+  reverse). A second hand-list in `tools/support_bundle_check.sh` was deleted —
+  it smoke-tested a bundle that was not the bundle. First closure attempt was
+  seeded from the manifest itself, which made every entry reachable by
+  construction; seeding purely from the Rust is the fix worth remembering.
+- **AP5-a** (`90603b3`) — `preflight` refuses a model that lost its required
+  input modality in a refreshed catalog (`ExecutionBlock::ModalityLost`,
+  named model + modality + route guidance) instead of reading Ready and
+  failing at submit. `ContractId::required_input_modality()` encodes §1's
+  inputs column; contracts doc §5 invariant 5 already stated the rule.
+  Deliberate: an *empty* modality list means "not reported", not refusal —
+  `provider_catalog.py` normalizes a missing `architecture` block to empty,
+  and refusing there would block every job against an older cache. Pinned by
+  test.

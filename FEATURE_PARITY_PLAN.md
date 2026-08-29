@@ -64,10 +64,10 @@ a CX ruling, not a preference.
 | 0 | **The fifteen-minute listening session.** The only item in the whole queue a human has to do: validate the tap offset (4 min), compare 80/120/200 ms tap flashes (2 min), blind-compare five current against five revised Surprise seeds on two tracks (9 min), against CX-4's stated pass condition. Blind protocol files are written and waiting — `build/protocols/cx4-surprise-{a,b}.protocol.json`, driven by `tools/cx4_surprise_session.sh`, with the browser counterpart in `tools/listening-lab/protocols/`. Unblind through the matching `.key.json` **only after** answering | CX-4 | 15 min, operator |
 | 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`). **Needs an explicit operator go-ahead**: it sends audio to OpenRouter and spends credits | — | one session |
 | 2 | **The remaining CX rulings, in their stated order.** CX-5 scene thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
-| 3 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-2, PXF-3, PXF-5, PXF-10, PXF-12 | medium |
+| 3 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-5, PXF-12 | medium |
 | 4 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D7, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2 | large |
-| 5 | **Dev-ex and infrastructure**, DX8 first — it is an E2/E4 blocker, not a tidy-up | DX1–DX9 | small each |
-| 6 | **Assist provider remainder** | AP5-a/b/c/d, AP6-e | small each; AP5-c is a feature |
+| 5 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
+| 6 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 7 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 
 ### The items, in one line each
@@ -83,9 +83,12 @@ prefix.
 - **CX-2** — the clip window belongs in `.musi`, as one of a **list** of named
   export variants. Schema v2. Prerequisite: PXF-4.
 - **CX-4** — the operator listening session above. The rulings it already made
-  (tap offset default **-100 ms**, visual-only tap feedback with no stamp click,
-  revised Surprise constants) are landed; only the nine-minute blind seed
-  comparison is outstanding.
+  (visual-only tap feedback with no stamp click, revised Surprise constants) are
+  landed; only the nine-minute blind seed comparison is outstanding — **and the
+  -100 ms tap-offset default is NOT landed** (found 2026-08-29: `LyricTap`
+  derives `Default`, 0.0, and core tests pin it). Since PXF-2 the persistence
+  path defers to `LyricTap::default()`, so the ruling is one constant plus
+  `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
 - **CX-5** — scene thumbnails, but only the **track-specific** kind. Prerequisite:
   PXF-7.
 
@@ -93,8 +96,6 @@ prefix.
 separate work: they are the *questions* CX-5, CX-1, CX-2 and CX-4 answered, and
 the answers are the rows above. The rest are still open as written.
 
-- **PXF-2** — persist the tap offset. A calibration control that resets every
-  launch is exactly wrong. Needs a `UiPreferences` field.
 - **PXF-3** — a tap should flash its block in the lane. The only feedback today is
   an 11 px counter the player is not looking at.
 - **PXF-4** — the clip is invisible on the timeline. In/Out are set against a
@@ -104,9 +105,6 @@ the answers are the rows above. The rest are still open as written.
   frame". The export's own progress screen is the model.
 - **PXF-7** — resume position: `Metadata` has no playhead field, so reopening a
   recent project starts at 0:00.
-- **PXF-10** — the app **segfaults** rather than exiting with a message when the
-  display has no GL (11 coredumps during one wave). raylib's `InitWindow`
-  dereferences null; guard before init and say what happened.
 - **PXF-12** — the route editor's 104-band stepper still has no typed value or
   wheel nudge. Keyboard nudge conflicts with the transport's arrow keys and needs
   a decision rather than a silent resolution.
@@ -151,7 +149,7 @@ here.
   from a real installed layout with re-probed helper discovery, Google Fonts
   import (transactional, once-per-run consent, offline fixture), and a
   distribution/doctor path tested from **outside** the repository root with no
-  Cargo invocation. **DX8 blocks these.**
+  Cargo invocation. DX8, which blocked these, closed 2026-08-29.
 - **F1/F2** — remove the remaining false "not implemented" status text (including
   Cadence's empty preview-only frame, which reads as a broken renderer) and the
   stale agent-era handoff comments and `allow(dead_code)`. Overlaps DX7; close
@@ -196,17 +194,12 @@ per-slot map is the follow-up.
 policy; DX3 shared scrolling policy (before D6); DX4 text-field input split from
 rendering; DX5 centralized XDG resolution; DX6 collision-safe test scratch
 directories; DX7 purge agent-era ownership language and enable strict rustdoc (17
-broken links); **DX8 the support manifest is wrong** — it omits
-`lyric_anchor_block.py`, `anchor_block_align.py`, `runtime_inventory.py`,
-`provider_catalog.py`, `codex_model_discovery.py` and `atomic_cache.py`, so an
-extracted distribution built from it does not run Assist; DX9 verification speed,
+broken links); DX9 verification speed,
 whose largest term was answered by putting the gate on the GPU (`AGENTS.md`), and
 whose remainder is cached C harness executables and prebuilt Rust differential
 examples.
 
-**AP — assist providers.** AP5-a modality-loss invalidation (`preflight()` checks
-catalog membership by id only, so a model that loses its required modality in a
-refreshed catalog still reads Ready); AP5-b a structural no-network-hang
+**AP — assist providers.** AP5-b a structural no-network-hang
 regression test; AP5-c a diagnostics/crash bundle collector (a feature, and it
 must strip credential name-markers with a canary test); AP5-d the clipboard copy
 path; AP6-e deferred discovery for `ffmpeg`, `whisper-cli` and the alignment venv
