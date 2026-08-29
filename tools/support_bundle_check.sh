@@ -8,18 +8,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-for helper in \
-    tools/analysis_io.py \
-    tools/analyze_audio.py \
-    tools/external_analysis.py \
-    tools/force_align_lyrics.py \
-    tools/anchor_block_align.py \
-    tools/lyric_anchor_block.py \
-    tools/google_fonts.py \
-    tools/import_whisper.py \
-    tools/lyric_align.py \
-    tools/mimo_openrouter.py \
-    tools/musializer_doctor.py; do
+# The helper list is read out of the manifest rather than repeated here. A
+# second hand-maintained copy is what DX8 was: this script already compiled two
+# helpers the manifest omitted, so the bundle it smoke-tested was not the bundle
+# a distribution would contain.
+MANIFEST=crates/musializer-runtime/src/support.rs
+mapfile -t HELPERS < <(sed -n 's|^\s*"\(tools/[a-z0-9_]*\.py\)",$|\1|p' "$MANIFEST")
+if [ "${#HELPERS[@]}" -lt 10 ]; then
+    printf '%s\n' "no Python helpers were read from $MANIFEST" >&2
+    exit 1
+fi
+for helper in "${HELPERS[@]}"; do
     python3 -m py_compile "$helper"
 done
 
