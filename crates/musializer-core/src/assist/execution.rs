@@ -55,6 +55,9 @@ pub const CODEX_DEFAULT_LABEL: &str = "Codex default";
 pub const NO_KEY: &str = "No key";
 pub const NO_MODEL: &str = "No model chosen";
 pub const NO_ENDPOINT: &str = "No eligible endpoint";
+/// The fourth: the model is still there and can no longer do the job (§5
+/// invariant 5).
+pub const MODALITY_LOST: &str = "Model lost a required modality";
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for a Unix timestamp.
 ///
@@ -734,14 +737,40 @@ fn snapshot_contract(
 // dependency and does not want one, and these are pure byte→value functions
 // with edge cases worth a test. `runtime::assist::plan` supplies the bytes.
 
-/// `(revision, model ids)` from an OpenRouter catalog cache document, or `None`
+/// One model row of the normalized catalog cache, as much of it as preflight
+/// needs.
+///
+/// The modalities ride along with the id because membership alone cannot answer
+/// §5 invariant 5: a refreshed catalog that still lists a model but no longer
+/// says it takes audio has invalidated the route just as surely as dropping it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatalogModelFacts {
+    pub id: String,
+    /// The modalities the catalog reported. **Empty means "not reported"**, not
+    /// "none" — `tools/provider_catalog.py` normalizes a missing
+    /// `architecture` block to an empty list, and refusing a job over an
+    /// unreported field would be inventing the fact this side does not have.
+    pub input_modalities: Vec<String>,
+}
+
+impl CatalogModelFacts {
+    /// Whether this row contradicts a required modality. An unreported list
+    /// never contradicts anything (see [`Self::input_modalities`]).
+    #[must_use]
+    pub fn refuses_input(&self, modality: &str) -> bool {
+        !self.input_modalities.is_empty()
+            && !self.input_modalities.iter().any(|entry| entry == modality)
+    }
+}
+
+/// `(revision, models)` from an OpenRouter catalog cache document, or `None`
 /// when it is absent, unreadable or declares another schema.
 ///
 /// **`None` is "we have not looked", not "there are no models".** The
 /// distinction is what stops [`preflight`] refusing a job for a catalog nobody
 /// ever fetched.
 #[must_use]
-pub fn parse_catalog_facts(bytes: &[u8]) -> Option<(String, Vec<String>)> {
+pub fn parse_catalog_facts(bytes: &[u8]) -> Option<(String, Vec<CatalogModelFacts>)> {
     let document: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     let schema = document.get("schema_version")?.as_str()?;
     if schema != "musializer.openrouter-catalog/v1" {
@@ -751,18 +780,32 @@ pub fn parse_catalog_facts(bytes: &[u8]) -> Option<(String, Vec<String>)> {
         .get("fetched_at_utc")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown");
-    let ids = document
+    let models = document
         .get("models")
         .and_then(serde_json::Value::as_array)
         .map(|models| {
             models
                 .iter()
-                .filter_map(|model| model.get("id").and_then(serde_json::Value::as_str))
-                .map(str::to_string)
+                .filter_map(|model| {
+                    let id = model.get("id").and_then(serde_json::Value::as_str)?;
+                    Some(CatalogModelFacts {
+                        id: id.to_string(),
+                        input_modalities: model
+                            .get("input_modalities")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|list| {
+                                list.iter()
+                                    .filter_map(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
-    Some((format!("{schema}@{fetched}"), ids))
+    Some((format!("{schema}@{fetched}"), models))
 }
 
 /// `(runtime versions, model digests)` from a doctor report, both sorted.
@@ -829,6 +872,15 @@ pub enum ExecutionBlock {
         contract: ContractId,
         constraint: String,
     },
+    /// The model is still in the catalog, but the catalog no longer reports the
+    /// modality this contract needs (§5 invariant 5). Distinct from
+    /// [`Self::NoEndpoint`] because the repair is different: the model exists
+    /// and is reachable, it just cannot do this job any more.
+    ModalityLost {
+        contract: ContractId,
+        model_id: String,
+        modality: &'static str,
+    },
 }
 
 impl ExecutionBlock {
@@ -842,6 +894,7 @@ impl ExecutionBlock {
             Self::NoModel(_) => NO_MODEL,
             Self::NoCredential(_) => NO_KEY,
             Self::NoEndpoint { .. } => NO_ENDPOINT,
+            Self::ModalityLost { .. } => MODALITY_LOST,
         }
     }
 
@@ -851,7 +904,8 @@ impl ExecutionBlock {
             Self::Unrouted(contract)
             | Self::NoModel(contract)
             | Self::NoCredential(contract)
-            | Self::NoEndpoint { contract, .. } => *contract,
+            | Self::NoEndpoint { contract, .. }
+            | Self::ModalityLost { contract, .. } => *contract,
             Self::UnsupportedRoute { contract, .. } => *contract,
         }
     }
@@ -899,6 +953,18 @@ impl ExecutionBlock {
                 contract.human_label(),
                 contract.token(),
             ),
+            Self::ModalityLost {
+                contract,
+                model_id,
+                modality,
+            } => format!(
+                "{} ({}) is routed to {model_id}, and the last catalog refresh no longer reports \
+                 that model as accepting {modality} input. Choose a model that does in AI \
+                 settings \u{2192} Routing, or route this task locally. It is never re-pointed at \
+                 another model for you.",
+                contract.human_label(),
+                contract.token(),
+            ),
         }
     }
 }
@@ -907,10 +973,10 @@ impl ExecutionBlock {
 #[derive(Clone, Debug, Default)]
 pub struct PreflightFacts {
     pub credential_present: bool,
-    /// The model ids the last catalog fetch reported, or `None` when the
-    /// catalog was never fetched. `None` is "we have not looked", which is not
-    /// grounds to refuse a job.
-    pub catalog_model_ids: Option<Vec<String>>,
+    /// The models the last catalog fetch reported, or `None` when the catalog
+    /// was never fetched. `None` is "we have not looked", which is not grounds
+    /// to refuse a job.
+    pub catalog_models: Option<Vec<CatalogModelFacts>>,
 }
 
 /// Everything that must be true before a process is spawned (§5 invariant 4).
@@ -923,6 +989,15 @@ pub struct PreflightFacts {
 /// normalized catalog (`tools/provider_catalog.py`) carries modalities, context
 /// and price and no endpoint list at all, so claiming "no ZDR endpoint" from it
 /// would be an invented fact.
+///
+/// What *is* decidable from the catalog is both halves of the model's identity,
+/// and the second half used to be missing: §5 invariant 5 says "a route that
+/// loses its required modality is invalid", and checking membership by id alone
+/// reads Ready for a model that a refreshed catalog still lists but no longer
+/// says takes audio. That job then failed at submit time, which is exactly the
+/// late failure this function exists to prevent. Membership and
+/// [`ContractId::required_input_modality`] are now both checked, and they are
+/// separate blocks because they are separate repairs.
 ///
 /// So the ZDR rule is enforced in two places rather than pretended in one.
 /// Here, a `zdr_required` route whose provider allow-list is emptied by
@@ -972,12 +1047,27 @@ pub fn preflight(snapshot: &ExecutionSnapshot, facts: &PreflightFacts) -> Vec<Ex
                 continue;
             }
         }
-        if let Some(catalog) = &facts.catalog_model_ids {
-            if !catalog.iter().any(|id| id == &entry.model_id) {
+        if let Some(catalog) = &facts.catalog_models {
+            let Some(model) = catalog.iter().find(|model| model.id == entry.model_id) else {
                 blocks.push(ExecutionBlock::NoEndpoint {
                     contract: entry.contract,
                     constraint: format!("the last catalog fetch does not list {}", entry.model_id),
                 });
+                continue;
+            };
+            // §5 invariant 5: membership is not capability. A model that is
+            // still listed but no longer reports the modality this contract
+            // sends has invalidated the route, and saying so here is the whole
+            // point of a preflight — the alternative is a job that spawns,
+            // uploads and fails at submit time.
+            if let Some(modality) = entry.contract.required_input_modality() {
+                if model.refuses_input(modality) {
+                    blocks.push(ExecutionBlock::ModalityLost {
+                        contract: entry.contract,
+                        model_id: entry.model_id.clone(),
+                        modality,
+                    });
+                }
             }
         }
     }
@@ -1110,7 +1200,7 @@ mod tests {
             &snapshot,
             &PreflightFacts {
                 credential_present: false,
-                catalog_model_ids: None,
+                catalog_models: None,
             }
         )
         .is_empty());
@@ -1312,7 +1402,7 @@ mod tests {
             &snapshot,
             &PreflightFacts {
                 credential_present: false,
-                catalog_model_ids: None,
+                catalog_models: None,
             },
         );
         assert_eq!(
@@ -1348,7 +1438,7 @@ mod tests {
             &snapshot,
             &PreflightFacts {
                 credential_present: true,
-                catalog_model_ids: None,
+                catalog_models: None,
             },
         );
         assert_eq!(
@@ -1389,7 +1479,7 @@ mod tests {
             &snapshot,
             &PreflightFacts {
                 credential_present: true,
-                catalog_model_ids: None,
+                catalog_models: None,
             },
         );
         assert_eq!(blocks.len(), 1);
@@ -1424,17 +1514,27 @@ mod tests {
 
     #[test]
     fn the_catalog_parser_separates_absent_from_empty() {
-        let (revision, ids) = parse_catalog_facts(
+        let (revision, models) = parse_catalog_facts(
             br#"{"schema_version":"musializer.openrouter-catalog/v1",
                  "fetched_at_utc":"2026-08-05T10:00:00Z",
-                 "models":[{"id":"xiaomi/mimo-v2.5"},{"id":"openai/gpt-4o"},{"name":"no id"}]}"#,
+                 "models":[{"id":"xiaomi/mimo-v2.5","input_modalities":["audio","text"]},
+                           {"id":"openai/gpt-4o"},{"name":"no id"}]}"#,
         )
         .expect("a well-formed catalog");
         assert_eq!(
             revision,
             "musializer.openrouter-catalog/v1@2026-08-05T10:00:00Z"
         );
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
         assert_eq!(ids, vec!["xiaomi/mimo-v2.5", "openai/gpt-4o"]);
+        assert_eq!(models[0].input_modalities, vec!["audio", "text"]);
+        // A row that reports no modalities at all is "not reported", and must
+        // never be read as a refusal: `tools/provider_catalog.py` normalizes a
+        // missing `architecture` block to an empty list.
+        assert!(models[1].input_modalities.is_empty());
+        assert!(!models[1].refuses_input("audio"));
+        assert!(!models[0].refuses_input("audio"));
+        assert!(models[0].refuses_input("image"));
         // A fetched catalog with no models is a real answer and parses.
         let (_, empty) = parse_catalog_facts(
             br#"{"schema_version":"musializer.openrouter-catalog/v1","models":[]}"#,
@@ -1477,20 +1577,113 @@ mod tests {
             &snapshot,
             &PreflightFacts {
                 credential_present: true,
-                catalog_model_ids: None,
+                catalog_models: None,
             }
         )
         .is_empty());
         // But a catalog that *was* fetched and does not list the model does.
+        // This case used to be the *only* catalog check — membership by id —
+        // which is what let a model that lost its modality read Ready; the two
+        // tests below are the other half (§5 invariant 5).
         let blocks = preflight(
             &snapshot,
             &PreflightFacts {
                 credential_present: true,
-                catalog_model_ids: Some(vec!["openai/gpt-4o-audio-preview".to_string()]),
+                catalog_models: Some(vec![catalog_row(
+                    "openai/gpt-4o-audio-preview",
+                    &["audio", "text"],
+                )]),
             },
         );
         assert_eq!(blocks.len(), 1);
+        assert!(matches!(blocks[0], ExecutionBlock::NoEndpoint { .. }));
         assert!(blocks[0].sentence().contains("xiaomi/mimo-v2.5"));
+    }
+
+    fn catalog_row(id: &str, inputs: &[&str]) -> CatalogModelFacts {
+        CatalogModelFacts {
+            id: id.to_string(),
+            input_modalities: inputs.iter().map(|entry| (*entry).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_listed_model_that_still_takes_audio_is_ready() {
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Mimo,
+            true,
+            &facts(),
+        );
+        assert!(preflight(
+            &snapshot,
+            &PreflightFacts {
+                credential_present: true,
+                catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &["audio", "text"])]),
+            },
+        )
+        .is_empty());
+        // And a row whose modalities were never reported is not evidence of
+        // loss, so it does not refuse either.
+        assert!(preflight(
+            &snapshot,
+            &PreflightFacts {
+                credential_present: true,
+                catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &[])]),
+            },
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn a_model_that_lost_its_required_modality_refuses_by_name() {
+        // The defect this test exists for: the model is still in the catalog,
+        // so an id-only membership check reads Ready and the job fails at
+        // submit time instead of at preflight (§5 invariant 5).
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Mimo,
+            true,
+            &facts(),
+        );
+        let blocks = preflight(
+            &snapshot,
+            &PreflightFacts {
+                credential_present: true,
+                catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &["text"])]),
+            },
+        );
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0],
+            ExecutionBlock::ModalityLost {
+                contract: ContractId::Semantic,
+                model_id: "xiaomi/mimo-v2.5".to_string(),
+                modality: "audio",
+            }
+        );
+        // A distinct, actionable sentence: not "not found", and it names both
+        // the model and what it stopped being able to do.
+        let sentence = blocks[0].sentence();
+        assert!(sentence.contains("xiaomi/mimo-v2.5"), "{sentence}");
+        assert!(sentence.contains("accepting audio input"), "{sentence}");
+        assert!(!sentence.contains("does not list"), "{sentence}");
+        assert_eq!(blocks[0].label(), MODALITY_LOST);
+        assert_eq!(blocks[0].contract(), ContractId::Semantic);
+    }
+
+    #[test]
+    fn a_text_only_contract_does_not_require_audio() {
+        // TC-WORDING and TC-PLAN send derived JSON, so a text-only model is
+        // correct for them and must not be refused by the audio rule.
+        assert_eq!(ContractId::Wording.required_input_modality(), None);
+        assert_eq!(ContractId::Plan.required_input_modality(), None);
+        assert_eq!(
+            ContractId::Semantic.required_input_modality(),
+            Some("audio")
+        );
+        assert_eq!(ContractId::Coarse.required_input_modality(), Some("audio"));
+        assert_eq!(ContractId::Verify.required_input_modality(), Some("audio"));
     }
 
     #[test]

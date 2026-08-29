@@ -162,14 +162,15 @@ fn cache_dir() -> Option<PathBuf> {
         .map(|home| PathBuf::from(home).join(".cache/musializer"))
 }
 
-/// `(revision, model ids)` from the OpenRouter catalog cache, or `None` when it
+/// `(revision, models)` from the OpenRouter catalog cache, or `None` when it
 /// was never fetched.
 ///
 /// **Absent is "we have not looked", not "there are no models".** That is the
 /// same distinction the dialog's `never fetched` badge makes and it is why
 /// [`execution::preflight`] refuses a job only when a catalog *was* fetched and
-/// does not list the model.
-fn catalog_facts() -> Option<(String, Vec<String>)> {
+/// either does not list the model or no longer credits it with the modality the
+/// contract needs (§5 invariant 5).
+fn catalog_facts() -> Option<(String, Vec<execution::CatalogModelFacts>)> {
     let path = cache_dir()?.join("openrouter-models-v1.json");
     let metadata = std::fs::metadata(&path).ok()?;
     if metadata.len() > MAX_CACHE_BYTES {
@@ -313,7 +314,7 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
         &snapshot,
         &PreflightFacts {
             credential_present: facts.credential_present,
-            catalog_model_ids: catalog.map(|(_, ids)| ids),
+            catalog_models: catalog.map(|(_, models)| models),
         },
     );
     ExecutionPlan {

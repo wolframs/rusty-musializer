@@ -302,6 +302,29 @@ impl ContractId {
         }
     }
 
+    /// The input modality a remote model must accept to serve this contract, or
+    /// `None` where any text model will do.
+    ///
+    /// §1's "inputs" column, read as a capability requirement: `TC-COARSE`,
+    /// `TC-SEMANTIC` and `TC-VERIFY` all send audio bytes, so a model that
+    /// cannot take audio cannot run them at all. `TC-WORDING` and `TC-PLAN` send
+    /// derived JSON, and `TC-MEASURED`/`TC-ALIGN` are `local-only` by contract
+    /// and never reach a catalog.
+    ///
+    /// This is the requirement half of §5 invariant 5 ("a route that loses its
+    /// required modality is invalid"); `execution::preflight` is where it is
+    /// enforced. The picker's own filter,
+    /// `musializer_app::ui::assist_settings::modalities_fit`, answers the wider
+    /// question of what may be *offered* (it also checks the output side); this
+    /// answers the narrower one of what a configured route may not lose.
+    #[must_use]
+    pub const fn required_input_modality(self) -> Option<&'static str> {
+        match self {
+            Self::Coarse | Self::Semantic | Self::Verify => Some("audio"),
+            Self::Measured | Self::Align | Self::Wording | Self::Plan => None,
+        }
+    }
+
     /// Which fallback policies may be stored for this contract.
     #[must_use]
     pub const fn allowed_fallbacks(self) -> &'static [FallbackPolicy] {
