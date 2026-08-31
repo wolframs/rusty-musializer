@@ -25,10 +25,22 @@ from typing import Any, Mapping, Optional
 
 
 def cache_dir(environ: Optional[Mapping[str, str]] = None) -> Path:
-    """Resolve `$XDG_CACHE_HOME/musializer`, falling back to `~/.cache/musializer`."""
+    """Resolve `$XDG_CACHE_HOME/musializer`, falling back to `~/.cache/musializer`.
+
+    A **non-absolute** `XDG_CACHE_HOME` is ignored rather than expanded or
+    resolved against the working directory. That is what the XDG base
+    directory specification requires ("if an implementation encounters a
+    relative path in any of these variables it should consider the path
+    invalid and ignore it"), and it is also the only reading the Rust twins
+    can share: neither `ui/assist_settings.rs::cache_dir` nor
+    `assist/plan.rs::cache_dir` strips or expands, so this function's former
+    `.strip().expanduser()` made `XDG_CACHE_HOME="~/c"` name two different
+    directories in the two languages -- the app looking for a catalog the
+    helper had just written somewhere else.
+    """
     environ = environ if environ is not None else os.environ
-    base = environ.get("XDG_CACHE_HOME", "").strip()
-    root = Path(base).expanduser() if base else Path.home() / ".cache"
+    base = Path(environ.get("XDG_CACHE_HOME", ""))
+    root = base if base.is_absolute() else Path.home() / ".cache"
     return root / "musializer"
 
 
