@@ -1143,16 +1143,42 @@ def build_bridge(
     return result
 
 
+def _bridge_int(value: str, field: str) -> int:
+    """A bridge integer field, refused rather than raised through.
+
+    `AnalysisValidationError` is what every caller of this module catches, and a
+    bare `ValueError` from `int()` is not one — it escapes as a traceback. The
+    fields are all written by this file, so the raw crash was unreachable in a
+    real run; it is the *reader* contract that has to hold for a hand-edited or
+    truncated artifact, which is exactly what the shell gate feeds it.
+    """
+    try:
+        return int(value)
+    except ValueError as error:
+        raise AnalysisValidationError(f"bridge {field} is not an integer") from error
+
+
+def _bridge_payload(value: str) -> bytes:
+    """A bridge base64 field. `binascii.Error` is the same escape as above."""
+    try:
+        return base64.b64decode(value, validate=True)
+    except ValueError as error:
+        raise AnalysisValidationError("bridge payload is not base64") from error
+
+
 def parse_bridge(value: str) -> list[list[str]]:
     rows = [line.split("\t") for line in value.splitlines()]
     if not rows or rows[0] != ["MUSIALIZER_BRIDGE", "1"]:
         raise AnalysisValidationError("invalid bridge header")
     expected = {"AUDIO": 3, "LYRIC": 7, "SECTION": 7, "SEMANTIC": 9, "SEMANTIC_NOTE": 3}
-    if len(rows) < 2 or rows[1][0] != "AUDIO":
+    # The arity is checked here as well as in the loop below, because these two
+    # lines index into the record before the loop reaches it: a two-field AUDIO
+    # row was an `IndexError` rather than a refusal.
+    if len(rows) < 2 or rows[1][0] != "AUDIO" or len(rows[1]) != expected["AUDIO"]:
         raise AnalysisValidationError("bridge lacks AUDIO record")
     if len(rows[1][1]) != 64 or any(char not in "0123456789abcdef" for char in rows[1][1]):
         raise AnalysisValidationError("bridge AUDIO hash is invalid")
-    audio_duration_ms = int(rows[1][2])
+    audio_duration_ms = _bridge_int(rows[1][2], "AUDIO duration")
     if audio_duration_ms <= 0: raise AnalysisValidationError("bridge AUDIO duration is invalid")
     ids: set[int] = set()
     previous_time: dict[str, int] = {}
@@ -1160,29 +1186,32 @@ def parse_bridge(value: str) -> list[list[str]]:
         if row[0] not in expected or len(row) != expected[row[0]]:
             raise AnalysisValidationError("invalid bridge record shape")
         if row[0] in {"LYRIC", "SECTION", "SEMANTIC"}:
-            stable_id, start, end = int(row[1]), int(row[2]), int(row[3])
+            stable_id, start, end = (_bridge_int(row[1], "record id"),
+                                     _bridge_int(row[2], "record start"),
+                                     _bridge_int(row[3], "record end"))
             if stable_id == 0 or stable_id in ids or start < 0 or end <= start or end > audio_duration_ms:
                 raise AnalysisValidationError("bridge record id/timing is invalid")
             if start < previous_time.get(row[0], -1):
                 raise AnalysisValidationError("bridge records are not time ordered")
             ids.add(stable_id); previous_time[row[0]] = start
-            decoded = base64.b64decode(row[-1], validate=True)
+            decoded = _bridge_payload(row[-1])
             if len(decoded) > 1024*1024: raise AnalysisValidationError("bridge decoded field is too large")
             if row[0] == "LYRIC":
-                confidence = int(row[4])
+                confidence = _bridge_int(row[4], "lyric confidence")
                 if confidence < -1 or confidence > 1000 or row[5] not in {"none", "uncertain"}:
                     raise AnalysisValidationError("bridge lyric metadata is invalid")
             elif row[0] == "SECTION":
-                if row[4] not in SCENES or not 0 <= int(row[5]) <= 1000:
+                if row[4] not in SCENES or not 0 <= _bridge_int(row[5], "transition strength") <= 1000:
                     raise AnalysisValidationError("bridge section metadata is invalid")
             else:
-                energy, tension, valence, confidence = map(int, row[4:8])
+                energy, tension, valence, confidence = [
+                    _bridge_int(field, "semantic metadata") for field in row[4:8]]
                 if not (0 <= energy <= 1000 and 0 <= tension <= 1000 and
                         -1000 <= valence <= 1000 and 0 <= confidence <= 1000):
                     raise AnalysisValidationError("bridge semantic metadata is invalid")
         elif row[0] == "SEMANTIC_NOTE":
-            stable_id = int(row[1])
-            decoded = base64.b64decode(row[2], validate=True)
+            stable_id = _bridge_int(row[1], "record id")
+            decoded = _bridge_payload(row[2])
             if stable_id == 0 or stable_id in ids or len(decoded) > 1024*1024:
                 raise AnalysisValidationError("bridge semantic note is invalid")
             ids.add(stable_id)
@@ -2286,7 +2315,18 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
     return manifest
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The command grammar, separated from `main` so it can be checked.
+
+    `crates/musializer-runtime/src/process/assist.rs` composes an argv for the
+    `assist` subcommand and its own test pins that composition against a **fake
+    helper** — a script that records what it was handed. Nothing on either side
+    established that the real parser accepts it: the Rust test would stay green
+    against a helper that had dropped a flag, and the failure would surface as a
+    job that dies at startup behind a generic toast (audit protocol-map row 9).
+    Parsing an argv is the whole of what this function does, so a test can now
+    ask it.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -2341,7 +2381,11 @@ def main(argv: list[str] | None = None) -> int:
     assist.add_argument("--new-process-group", action="store_true", help=argparse.SUPPRESS)
     assist.add_argument("--dry-run", action="store_true"); assist.add_argument("--request-dump", type=Path)
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     try:
         if args.command == "whisper":
             if args.whisper_bin is None or args.model is None:

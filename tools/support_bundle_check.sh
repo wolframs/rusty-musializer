@@ -31,20 +31,29 @@ trap 'rm -rf -- "$SUPPORT_CHECK_DIR"' EXIT HUP INT TERM
 
 FIXTURE="$SUPPORT_CHECK_DIR/fixture.wav"
 BRIDGE="$SUPPORT_CHECK_DIR/analysis/analysis.bridge.tsv"
+FIXTURE_SECONDS=2
 
 if [ -x target/debug/make-fixture-wav ]; then
-    target/debug/make-fixture-wav "$FIXTURE" 2
+    target/debug/make-fixture-wav "$FIXTURE" "$FIXTURE_SECONDS"
 else
-    cargo run --quiet --bin make-fixture-wav -- "$FIXTURE" 2
+    cargo run --quiet --bin make-fixture-wav -- "$FIXTURE" "$FIXTURE_SECONDS"
 fi
 
 # Scene changes is the fully local Assist path: real FFmpeg decode, NumPy
 # measured analysis, deterministic planning, and bridge publication.
 python3 tools/external_analysis.py assist \
     "$FIXTURE" "$SUPPORT_CHECK_DIR/analysis" \
-    --duration 2 --mode sections --bridge "$BRIDGE"
+    --duration "$FIXTURE_SECONDS" --mode sections --bridge "$BRIDGE"
 
-cargo run --quiet -p musializer-core --example analysis_bridge_check -- "$BRIDGE"
+# Both identity arguments are derived here, from the fixture rather than from
+# the artifact under test: the digest with sha256sum and the duration from the
+# length this script asked for. Passing `(None, None)` — which this step did
+# until audit finding B9 — imports the bridge without ever comparing the AUDIO
+# record, so a helper that stamped the wrong track's digest, or a duration
+# every later cue is placed against, produced a green gate.
+FIXTURE_SHA256=$(sha256sum "$FIXTURE" | cut -d' ' -f1)
+cargo run --quiet -p musializer-core --example analysis_bridge_check -- \
+    "$BRIDGE" "$FIXTURE_SHA256" "$((FIXTURE_SECONDS * 1000))"
 
 # The other authority boundaries must build their plans without starting a
 # model or making a network request.
@@ -66,6 +75,22 @@ tail -n +2 "$BRIDGE" >"$SUPPORT_CHECK_DIR/missing-header.tsv"
 if cargo run --quiet -p musializer-core --example analysis_bridge_check -- \
     "$SUPPORT_CHECK_DIR/missing-header.tsv" >/dev/null 2>&1; then
     printf '%s\n' "negative control failed: headerless bridge was accepted" >&2
+    exit 1
+fi
+
+# Negative control for the identity arguments themselves: a check that only
+# ever runs against matching values cannot say whether it compares anything.
+WRONG_SHA256=$(printf '' | sha256sum | cut -d' ' -f1)   # the empty file's
+if cargo run --quiet -p musializer-core --example analysis_bridge_check -- \
+    "$BRIDGE" "$WRONG_SHA256" "$((FIXTURE_SECONDS * 1000))" \
+    >/dev/null 2>&1; then
+    printf '%s\n' "negative control failed: a wrong audio digest was accepted" >&2
+    exit 1
+fi
+if cargo run --quiet -p musializer-core --example analysis_bridge_check -- \
+    "$BRIDGE" "$FIXTURE_SHA256" "$((FIXTURE_SECONDS * 1000 + 1))" \
+    >/dev/null 2>&1; then
+    printf '%s\n' "negative control failed: a wrong audio duration was accepted" >&2
     exit 1
 fi
 
