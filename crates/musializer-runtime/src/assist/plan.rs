@@ -438,10 +438,21 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
         boundary_confirmed: inputs.boundary_confirmed,
     };
     let snapshot = execution::resolve(&settings, kind, inputs.has_lyric_reference, &facts);
-    // Discovery is a login-shell spawn, so it runs only for a graph that
-    // actually has a Codex route in it — but it *does* run, which is the other
-    // half of audit A1: this gate had no Codex arm at all, and the Routing
-    // tab's `Blocked — codex not found` sat next to a Start that was accepted.
+    // Discovery runs only for a graph that actually has a Codex route in it —
+    // but it *does* run, which is the other half of audit A1: this gate had no
+    // Codex arm at all, and the Routing tab's `Blocked — codex not found` sat
+    // next to a Start that was accepted.
+    //
+    // `thorough()` allows the login-shell rung, which `discover`'s own docs
+    // say not to call from the UI thread, and this function is called from it.
+    // Three things bound it, and they are why the rung stays rather than the
+    // preview and the spawn disagreeing about where codex is: the shell is
+    // reached only when the three cheap rungs all miss, `resolve_cached` keeps
+    // even a `NotFound` for the life of the process once a subprocess was
+    // consulted, and the child has a 2.5 s deadline. So the worst case is one
+    // hitch, once, on a machine that is about to be told codex is missing —
+    // and it is the same hitch `AssistController::start` already took at the
+    // press, moved to where the answer is shown.
     let codex = snapshot
         .contracts
         .iter()
