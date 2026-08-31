@@ -4452,3 +4452,129 @@ tests) with `verify.sh --quick` and the release build refreshed.
   `provider_catalog.py` normalizes a missing `architecture` block to empty,
   and refusing there would block every job against an older cache. Pinned by
   test.
+
+## AX — the 2026-08-29 assist audit, closed (2026-08-31, seven parallel agents)
+
+The audit (`docs/archive/ASSIST_AUDIT_2026-08-29.md`) reached one diagnosis from
+two independent halves: **the pure core is among the most carefully built code
+in the repository, and every hole is a seam where the same question is answered
+twice by different code and one copy drifted.** AX-1 through AX-6 all landed.
+Final tree: 1692 workspace tests (483 app / 1023 core / 186 runtime, 1 ignored),
+331 Python (1 skipped — the opt-in live catalog), `verify.sh --quick` 8/8, the
+full headless gate green on the GPU path.
+
+- **AX-4** (`46d1426`, B3) — `tools/verify.sh` stopped calling openrouter.ai on
+  every run. The gate is a module-level `live_catalog_skip_reason(environ)`
+  rather than an inline `os.environ` read, precisely so it can be pinned in
+  **both** directions offline: `{}`/`""`/`"0"`/`"yes"` all return a reason
+  naming the variable, `"1"` returns `None`. Zero network is now proven rather
+  than asserted — `strace -f -e trace=connect` over the whole suite records two
+  `AF_UNIX` calls to a nonexistent nscd socket and **no `AF_INET` at all**, and
+  the suite also passes under `unshare -r -n`. The sibling audit found no other
+  test that opens a socket.
+- **AX-6** (`16b5ecb`, B8 + B12's Python half) — 21 tests for the orchestrator's
+  reuse decision, driving `_cache_matches` against a **real temp file** rather
+  than a dict so the on-disk read and the `normalized` envelope unwrap are
+  pinned too. The audit's two gutting perturbations now bite: dropping `accept=`
+  fails 4 tests, dropping the `audio.sha256` comparison fails 2. `cache_dir` in
+  `atomic_cache.py` now ignores a non-absolute `XDG_CACHE_HOME` per the XDG
+  spec, and dropped `.strip()` — Rust would take a leading space literally, so
+  `" /tmp/x"` is not absolute on either side.
+- **AX-1** (`1333258`, `694cce3`; A1, A2, A3, A4, A5, A6, A10, A11, B6) — the
+  centrepiece. `core::assist::execution::evaluate_route(&RouteFacts,
+  &PreflightFacts) -> RouteVerdict` is now **the** evaluator; `preflight()` is a
+  `filter_map` fold of it over a frozen graph, and the dialog's `readiness()` is
+  the same call through the new `preflight_facts(contract)`. The ~90 lines of
+  independent badge logic are gone, leaving two presentation arms. `PreflightFacts`
+  grew `CredentialFact` (Absent/Present/**Refused**), `CodexFact`
+  (Unknown/Found/NotFound/**OverrideMissing**), `local_runtimes` and
+  `eligible_models`; `plan::openrouter_credential` returns a `CredentialLookup`
+  instead of the `.ok()??` collapse — the `beat_tracker` shape, which had made
+  "your key file is `0644`" and "you have no key" the same sentence.
+  `ExecutionPlan` now carries the codex `Discovery` it judged and `start` uses
+  **that**, so a set-but-missing `codex_bin` blocks instead of silently running
+  a different codex. `--zdr` follows `ExecutionSnapshot::requires_zdr()` rather
+  than `mode.uses_model()`; `audio_scope` is clamped by boundary rank so the
+  overlay may only narrow; `PlanInputs.kind` is a `WorkflowKind` so A11's
+  widening `unwrap_or(All)` is a type error rather than a default.
+  Eight negative controls, each reverted byte-for-byte. **Method note worth
+  keeping: `cargo test --workspace` stops at the first failing target**, so a
+  control that should bite in two crates needs `--no-fail-fast` — that hid a
+  core failure on the first pass.
+  **Behaviour change, deliberate and audit-literal:** a missing `codex` now
+  blocks the whole job whenever TC-WORDING is composed, not just the badge. On a
+  codex-less machine a Timed-lyrics run that previously started and died inside
+  the helper now refuses up front with both repairs named.
+- **AX-2** (`eae5376`; B1, B5, B7) — the doctor measures the installation a job
+  would actually run. It takes `--whisper-bin`/`--whisper-model`/`--align-python`/
+  `--no-dotenv` in the helper's own spellings, with precedence mirroring
+  `run_assist` exactly — **no `expanduser` on either side**, which is the point:
+  a `~` the job would not expand is not expanded here either. Every check detail
+  now reads `<path> (configured|discovered)`. B7 was proved in a scratch tree
+  rather than argued: delete `tools/lyric_align.py` and the pre-fix doctor exits
+  1 with **zero bytes of stdout**, while the fixed one prints a parsing report
+  naming the file twice. `parse_doctor_facts`/`parse_doctor_runtimes` collapsed
+  into one version-checked `parse_doctor_reading -> DoctorReading`, whose four
+  states get a `doctor=` token on `describe()` because three of them hand
+  preflight the same empty list. A foreign schema is **visible, not blocking** —
+  unmeasured has never blocked.
+- **AX-3** (`d2e4995`; B2, B10, B11) — the diagnosis the helper already wrote
+  reaches the user. `core::assist::diagnosis` reads the **last**
+  `External analysis failed: ` line from a 64 KiB tail, sanitizes it (bidi
+  formats dropped, control runs collapsed) and classifies on the helper's own
+  format strings into four causes with four headlines. The 160-**byte** bound on
+  the detail is load-bearing rather than tidy: `NoticeQueue::push` *refuses* an
+  over-long detail and `Shell::notify` drops the result, so the previous
+  `"…validated result. Log: {log}"` composition would have silently dropped the
+  toast for a ~260-char path. The path is clipped from the **left**, because the
+  run's folder is at the end. Cancel/deadline/teardown now toast at all (B11),
+  and the dialog's background children get `run_bounded` with TERM→2 s→KILL
+  (B10) — where **`process_group(0)` is load-bearing**: `sh -c 'sleep 30'` runs
+  `sleep` as its own child inheriting the pipes, so signalling only the direct
+  child left the drain blocked 30 s; with the group it is 350 ms.
+  **Method note:** `cargo fmt` had already reflowed one target string onto a
+  single line, so a multi-line perturbation applied as a silent no-op and read
+  as a *green* control. Every later control in that stage asserts the old text
+  is present before replacing it.
+- **AX-5** (`d05a552` Python, `b7558e8` Rust; A9, B4, B9, protocol map rows
+  1/2b/6/7/9) — 55 Python tests across three new files plus the Rust half. The
+  cross-language pins read the **Rust sources as text** (the method
+  `support_bundle_check.sh` already used) rather than transcribing: bridge
+  header and schema, seven `TC-*` tokens, four `RouteType` tokens, each
+  contract's `(route_type, runtime_id)` row extracted from
+  `runtime_is_implemented`'s own match arms, and six schema strings. B4's own
+  negative control — the `/v2` bump that left 241 green — now fails. Row 2b got
+  `ExecutionSnapshot::parse_observed`, a **pruning** tolerant reader: the
+  written snapshot keeps `deny_unknown_fields` untouched, and pruning rather
+  than accepting is what keeps the canary property, so a planted `api_key`
+  reaches no field and no `Debug` output. B9's `analysis_bridge_check` now takes
+  and echoes the digest and duration, derived by the shell from the fixture and
+  never from the artifact.
+  Two findings from writing the tests rather than from the audit: a two-field
+  AUDIO record raised `IndexError` and a malformed payload `binascii.Error`,
+  neither of which is `AnalysisValidationError` — the only thing callers catch —
+  so a truncated artifact was a traceback instead of a message. And the helper's
+  own literals have **no** leading space where Rust's do, so a naive
+  source-substring pin fails; the three failure sentences are obtained by
+  driving `_run` with an injected runner instead, because each is composed from
+  two format strings in different places and a check reading either half alone
+  passes while the composition drifts.
+  Real asymmetry found and **pinned as a named pair rather than fixed**: the
+  helper accepts `model_id == ""` for TC-COARSE/TC-ALIGN where Rust's
+  `Some("") => false` refuses it. The direction is safe (the app resolves
+  routes, so a row Rust will not compose never reaches the helper).
+
+**Two things the wave caught in the gate's own instruments, not in the
+application.** `headless_check.sh:2554` passed a *relative* `XDG_CACHE_HOME`
+(`build/headless`), which under AX-6's new rule would have pointed the
+assist-routes probe at the operator's real `~/.cache/musializer`; it is now an
+absolute `ROUTE_CACHE`. And a perturb/revert that keeps a Python file's byte
+length and lands inside one second leaves a stale `__pycache__` `.pyc` valid
+(mtime-seconds + size validation), which reads as phantom extra failures —
+`find tools tests -name __pycache__ -type d -exec rm -rf {} +` between cases.
+
+**Left open, in the live queue as AX-7/AX-8:** A7's two
+`strip_credential_variables` copies and the unfiltered `$SHELL -lc` (which AX-1
+made hotter, since `plan::resolve` now reaches the login-shell rung at Start),
+and B12's `find_tool` override rung. A12 was skipped with a recorded reason (a
+schema decision, not a defect), A8 stays an operator contract decision.

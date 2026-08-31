@@ -209,38 +209,44 @@ endpoint list, `prefer_gpu`/`stem_separation`, the staged-snapshot field move.
 They are deferrals with reasons, in the archive; promote one here before building
 it.
 
-**AX — the 2026-08-29 assist audit** (full evidence:
-`docs/archive/ASSIST_AUDIT_2026-08-29.md`; findings keyed A1-A12, B1-B12, plus
-a protocol map). The diagnosis is one sentence: the core is excellent and the
-seams answer the same question twice. The load-bearing shortlist, in order:
+**AX — the 2026-08-29 assist audit.** AX-1 through AX-6 all landed 2026-08-31
+across seven commits; the wave and its negative controls are in
+`docs/archive/FEATURE_PARITY_HISTORY.md`, the findings themselves in
+`docs/archive/ASSIST_AUDIT_2026-08-29.md`. What the wave left open:
 
-- **AX-1** — unify the dialog's `readiness()` and `execution::preflight` into
-  one function with Codex/doctor/local-binary arms, and gate the Start button
-  on it (A1, A2, A6, B6 collapse together). The snapshot becomes the only
-  authority on what is sent, which also retires A4's dishonest ZDR toggle
-  (draw it disabled-not-wired until direction-off is real) and A5's
-  overlay-vs-boundary `audio_scope` contradiction.
-- **AX-2** — the doctor must measure the installation a job uses: forward the
-  `assist.json` runtime paths and the credential mode to
-  `musializer_doctor.py`, check its `schema_version` in both Rust readers,
-  and put the five missing helpers in its asset checklist by calling
-  `missing_support_files()` (B1, B5, B7).
-- **AX-3** — read the helper's last stderr line back into the failure toast,
-  and toast deadline/cancel outcomes (B2, B11); give the dialog's own
-  doctor/catalog children a deadline (B10).
-- **AX-4** — gate the live-catalog test behind an env opt-in so `verify.sh`
-  stops calling openrouter.ai on every run (B3). Small and should go first.
-- **AX-5** — cross-language pins: a Python test for `.bridge.tsv`, a Rust test
-  for the observed `execution_snapshot`, version checks for the Codex cache
-  and doctor report, argv accepted by the real helper's argparse, and one
-  shared-fixture or constant-comparison mechanism for the hand-duplicated
-  schema strings and route tables (A9, B4, B9, protocol map rows 1/2b/6/7/9).
-- **AX-6** — orchestrator tests: pin `_cache_matches` on `accept=` and
-  `audio.sha256` (both gutting perturbations left 241 green), and the credential
-  refusal distinct from absence (A3, B8, B12's `cache_dir` drift).
-- Deliberately not queued: A8 (env strip at six more spawn sites) is an E1
-  contract decision for the operator; A7's login-shell strip and A10-A12 ride
-  along with AX-1's consolidation or stay latent.
+- **AX-7 — A7's two `strip_credential_variables` copies, and the login shell
+  that gets neither.** `runtime/assist/discover.rs:338` and
+  `app/ui/assist_settings.rs:3176` are the same function in two crates, and
+  `discover::login_shell_lookup` (`discover.rs:270-295`) spawns `$SHELL -lc`
+  with an unfiltered environment — the one spawn in the discovery path that
+  runs a user's rc files. AX-1 made this *hotter*, not cooler: `plan::resolve`
+  now reaches the `thorough()` rung on the UI thread for every graph carrying a
+  Codex route (documented at `plan.rs:438-452`), so the login shell runs at
+  Start, not only from the dialog. One copy in `runtime`, called by both, plus
+  the strip applied to the shell child. `env.rs:43-45`'s doc comment still
+  forbids the blanket strip both copies perform, so the fix has to reconcile
+  the comment with the callers rather than pick one.
+- **AX-8 — B12's remaining two duplications.** `cache_dir` was unified
+  (`runtime::assist::files::cache_dir`, matching Python's XDG rule), but
+  `assist_settings::find_tool` (`:3197`) still has no `MUSIALIZER_*_HELPER`
+  override rung while its own doc comment says it resolves "the way
+  `find_assist_helper` resolves the analysis helper" — and that function
+  (`process/font_import.rs:603-626`) honours the override and fails hard on a
+  set-but-missing one. So the doctor and both catalog helpers cannot be
+  redirected the way the analysis helper can, and the comment is wrong about it.
+- **A12** — skipped by AX-1 on purpose, and the reason is worth keeping:
+  `CredentialState::Session` is only ever set from the env import today, so the
+  display fix is cosmetic. The real question is whether the app should persist a
+  `mode: env-import` record for a key it deliberately does not store, which is a
+  schema decision, not a defect fix. Promote it only with that decision made.
+- **A8** — still deliberately not queued: the E1 strip at six more spawn sites
+  (`ffmpeg`, `kdialog`/`zenity`, `xdg-open`, the font-import Python, `curl`) is
+  a contract decision for the operator, not an agent's call.
+- **Noted, not queued** (from the audit, and AX-1 raised its stakes): a
+  thorough-probe `NotFound` is cached by `discover::resolve_cached` for the
+  process lifetime, so installing codex mid-session needs a restart — and since
+  AX-1 that stale `NotFound` blocks the whole job rather than only the badge.
+  Adjacent to AP6-e.
 
 **HX-4** — the `claude -p` generate/digest buttons for protocol authoring. The MVP
 loop works without them; the agent writing a protocol reads the JSONL directly.

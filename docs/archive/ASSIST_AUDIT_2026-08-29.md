@@ -8,6 +8,16 @@ B17, AP5-b/c/d, AP6-e, C2, E2/E3/E4, F3) were excluded by brief and confirmed
 still-open; every finding below is new. The live queue's **AX** section carries
 the ranked shortlist; this file is the evidence.
 
+**Status, 2026-08-31: closed except A7, A8, A12 and B12's `find_tool` rung.**
+AX-1 through AX-6 landed in seven commits (`46d1426`, `16b5ecb`, `d05a552`,
+`1333258`, `694cce3`, `eae5376`, `d2e4995`, `b7558e8`), fixing A1-A6, A9-A11,
+B1-B5 and B7-B11 plus protocol-map rows 1/2b/6/7/9 and B12's `cache_dir` half.
+The wave's evidence — what each stage changed, its negative controls and what
+they caught — is the **AX** section at the end of
+`docs/archive/FEATURE_PARITY_HISTORY.md`; what is still open is **AX-7** and
+**AX-8** in `FEATURE_PARITY_PLAN.md`, with A8 and A12 recorded there as
+decisions rather than defects.
+
 The verdict, reached by both halves independently: **the pure core — contracts,
 snapshot freezing, credential storage — is among the most carefully built code
 in the repository. The holes are seams where the same question is answered
