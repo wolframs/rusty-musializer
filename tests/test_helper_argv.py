@@ -34,9 +34,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import external_analysis  # noqa: E402
+import musializer_doctor  # noqa: E402
 
 
 ASSIST_RS = ROOT / "crates" / "musializer-runtime" / "src" / "process" / "assist.rs"
+DIALOG_RS = ROOT / "crates" / "musializer-app" / "src" / "ui" / "assist_settings.rs"
 
 # Every flag `AssistJob::start` can put on the command line, with a value this
 # parser must take for it. The unconditional ones first, then the conditional
@@ -163,6 +165,75 @@ class HelperArgv(unittest.TestCase):
         composed = set(re.findall(r'"(--[a-z-]+)"', source[start:end]))
         listed = {flag for flag, _ in UNCONDITIONAL + CONDITIONAL}
         self.assertEqual(composed, listed)
+
+
+# --- The doctor's argv, by the same argument (audit B1) ---------------------
+
+DOCTOR_UNCONDITIONAL = [
+    ("--json", None),
+    # The desktop never lets the repository `.env` authorize a job, so a doctor
+    # that read it would report a credential nothing would ever send.
+    ("--no-dotenv", None),
+]
+DOCTOR_CONDITIONAL = [
+    ("--codex-bin", "/home/example/.local/npm-global/bin/codex"),
+    ("--whisper-bin", "/opt/whisper/whisper-cli"),
+    ("--whisper-model", "/opt/whisper/ggml-large.bin"),
+    ("--align-python", "/opt/align/bin/python3"),
+]
+
+
+class DoctorArgvTests(unittest.TestCase):
+    """`AssistSettingsDialog::start_doctor` against the doctor's real parser.
+
+    Audit B1: the doctor called the discovery defaults with no arguments while
+    a job passes `assist.json`'s configured paths as flags that beat them, so
+    the verdict was about a different installation than the one that would run
+    -- wrong in both directions at once. The flags exist now, which makes their
+    spellings a fourth hand-duplicated copy of the same four strings.
+    """
+
+    def parse(self, line: list[str]):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return musializer_doctor.build_parser().parse_args(line)
+
+    def test_the_widest_doctor_argv_is_accepted(self) -> None:
+        flags: list[str] = []
+        for flag, value in DOCTOR_UNCONDITIONAL + DOCTOR_CONDITIONAL:
+            flags.append(flag)
+            if value is not None:
+                flags.append(value)
+        args = self.parse(flags)
+        self.assertTrue(args.json)
+        self.assertTrue(args.no_dotenv)
+        self.assertEqual(str(args.whisper_bin), "/opt/whisper/whisper-cli")
+        self.assertEqual(str(args.align_python), "/opt/align/bin/python3")
+
+    def test_every_flag_the_dialog_sends_is_listed(self) -> None:
+        source = DIALOG_RS.read_text(encoding="utf-8")
+        start = source.index("fn start_doctor(&mut self)")
+        end = source.index("fn refresh_support_manifest", start)
+        composed = set(re.findall(r'"(--[a-z-]+)"', source[start:end]))
+        listed = {flag for flag, _ in DOCTOR_UNCONDITIONAL + DOCTOR_CONDITIONAL}
+        self.assertEqual(composed, listed)
+
+    def test_the_doctor_and_a_job_spell_the_runtime_paths_identically(self) -> None:
+        """The whole point of B1: two probes of one installation.
+
+        A doctor taking `--whisper` where the helper takes `--whisper-bin`
+        would pass every test above and still be measuring nothing the job
+        uses.
+        """
+        shared = {"--whisper-bin", "--whisper-model", "--align-python",
+                  "--codex-bin", "--no-dotenv"}
+        doctor_options = {name
+                          for action in musializer_doctor.build_parser()._actions
+                          for name in action.option_strings}
+        self.assertTrue(shared <= doctor_options,
+                        f"the doctor does not take {sorted(shared - doctor_options)}")
+        job_options = {flag for flag, _ in UNCONDITIONAL + CONDITIONAL}
+        self.assertTrue(shared <= job_options,
+                        f"the helper is no longer sent {sorted(shared - job_options)}")
 
 
 if __name__ == "__main__":

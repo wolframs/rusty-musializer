@@ -650,6 +650,58 @@ fn runtime_is_available(state: &str) -> bool {
     matches!(state, "ok" | "available")
 }
 
+/// Reads a doctor report, or says why it will not.
+///
+/// Audit B5: this used to be a bare `serde_json::from_slice`, and with every
+/// field `#[serde(default)]` **any** JSON object parsed. A `musializer.doctor/v2`
+/// report, or a v1 one whose `runtimes` key was renamed, produced a green
+/// "Doctor finished; runtime identities updated." over an empty list — the
+/// fallback-that-looks-like-content shape, in the one instrument whose whole
+/// job is telling a user what their installation is. `read_cache` checks its
+/// schema for both catalogs in this same file; this is the reader that did not.
+fn parse_doctor_report(bytes: &[u8]) -> Result<DoctorReport, String> {
+    let report: DoctorReport = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if report.schema_version != execution::DOCTOR_SCHEMA {
+        return Err(format!(
+            "it declares schema {}, and this build reads {}",
+            if report.schema_version.is_empty() {
+                "nothing".to_string()
+            } else {
+                sanitize_display(&report.schema_version)
+            },
+            execution::DOCTOR_SCHEMA
+        ));
+    }
+    Ok(report)
+}
+
+/// Which support-bundle files an installation rooted at `root` is missing.
+///
+/// Takes the root rather than finding it, so the answer is testable without
+/// depending on where the calling binary happens to sit — under `cargo test`
+/// that is `target/debug/deps`, which is not an installation at all.
+fn support_manifest_answer(root: Option<&Path>) -> Vec<String> {
+    match root {
+        Some(root) => musializer_runtime::support::missing_support_files(root)
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        // `musializer_doctor.py` is itself a manifest entry, so a root that
+        // could not be found at all is the manifest's answer as much as any
+        // single absent file is.
+        None => vec!["tools/musializer_doctor.py".to_string()],
+    }
+}
+
+/// The last non-empty line of a child's output, which is where a Python
+/// traceback puts the sentence a user can act on.
+fn last_output_line(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
 /// The three runtimes the Local models section names, in display order.
 pub const RUNTIME_ROWS: [(&str, &str); 3] = [
     ("whisper", "Whisper"),
@@ -1570,6 +1622,17 @@ pub struct AssistSettingsDialog {
     codex_probe_done: bool,
     doctor: Option<DoctorReport>,
     doctor_error: Option<String>,
+    /// Support-bundle files this installation is missing, from
+    /// `musializer_runtime::support::missing_support_files`.
+    ///
+    /// Audit B7: the manifest and the checker both existed, and **nothing in
+    /// the application called them** — the one caller was a test. A deleted
+    /// helper was therefore only ever visible as whatever failure it caused
+    /// next, which for `lyric_align.py` was the doctor dying at import with
+    /// empty stdout. Answered here beside the doctor because it is the same
+    /// question ("is this installation whole"), and because this list is
+    /// available even when the doctor cannot run at all.
+    support_missing: Vec<String>,
 
     /// The Replace field's buffer. **Never drawn.** [`masked_field`] draws a
     /// function of its length instead.
@@ -1690,6 +1753,7 @@ impl AssistSettingsDialog {
             codex_probe_done: false,
             doctor: None,
             doctor_error: None,
+            support_missing: Vec::new(),
             pending_key: None,
             key_test: None,
             key_tested_ok: false,
@@ -1846,21 +1910,17 @@ impl AssistSettingsDialog {
             }
         }
 
-        self.catalog = read_cache("openrouter-models-v1.json", |document: &CatalogCache| {
-            document.schema_version == "musializer.openrouter-catalog/v1"
-        });
-        self.codex = read_cache("codex-models-v1.json", |document: &CodexCache| {
-            document.schema_version == "musializer.codex-model-catalog/v1"
-        });
+        self.catalog = read_cache("openrouter-models-v1.json", catalog_cache_accepts);
+        self.codex = read_cache("codex-models-v1.json", codex_cache_accepts);
         self.resolve_codex();
+        self.refresh_support_manifest();
         if let Ok(path) = std::env::var(PROBE_DOCTOR_VARIABLE) {
             self.doctor = None;
             self.doctor_error = None;
             match std::fs::read(&path)
                 .map_err(|error| error.to_string())
-                .and_then(|bytes| {
-                    serde_json::from_slice::<DoctorReport>(&bytes).map_err(|e| e.to_string())
-                }) {
+                .and_then(|bytes| parse_doctor_report(&bytes))
+            {
                 Ok(report) => self.doctor = Some(report),
                 Err(reason) => self.doctor_error = Some(reason),
             }
@@ -2650,6 +2710,18 @@ impl AssistSettingsDialog {
                 (None, None) => "not run".to_string(),
             },
         ));
+        // Audit B7. A capture cannot tell "the doctor has not run yet" from
+        // "the doctor cannot run because a file it imports is gone", and the
+        // second is the one that makes every other line here meaningless.
+        lines.push(format!(
+            "assist settings support: missing={} {}",
+            self.support_missing.len(),
+            if self.support_missing.is_empty() {
+                "complete".to_string()
+            } else {
+                self.support_missing.join(",")
+            },
+        ));
         // Defect C's evidence. `codex-bin=absent` above cannot distinguish "it
         // is not installed" from "this process's PATH is the desktop entry's",
         // which is the whole defect — so the method, the override state and the
@@ -2889,11 +2961,41 @@ fn read_cache<T: serde::de::DeserializeOwned>(
         Ok(bytes) => bytes,
         Err(error) => return CacheSlot::Unreadable(error.to_string()),
     };
-    match serde_json::from_slice::<T>(&bytes) {
+    classify_cache_bytes(&bytes, accepts)
+}
+
+/// The half of [`read_cache`] that has no filesystem in it: parse, then take
+/// the document only if it declares a schema this build reads.
+///
+/// Split out so both cache readers' version checks are reachable from a test —
+/// the audit's protocol map, row 6: the OpenRouter catalog had a wrong-version
+/// test in `core::assist::execution` and the Codex catalog had none on this
+/// side at all, so the only thing pinning its schema string was the Python that
+/// writes it.
+fn classify_cache_bytes<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    accepts: impl Fn(&T) -> bool,
+) -> CacheSlot<T> {
+    match serde_json::from_slice::<T>(bytes) {
         Ok(document) if accepts(&document) => CacheSlot::Loaded(document),
         Ok(_) => CacheSlot::Unreadable("the cache declares another schema".to_string()),
         Err(error) => CacheSlot::Unreadable(error.to_string()),
     }
+}
+
+/// The one OpenRouter catalog schema this build reads
+/// (`tools/provider_catalog.py`).
+const OPENROUTER_CATALOG_SCHEMA: &str = "musializer.openrouter-catalog/v1";
+/// The one Codex catalog schema this build reads
+/// (`tools/codex_model_discovery.py`).
+const CODEX_CATALOG_SCHEMA: &str = "musializer.codex-model-catalog/v1";
+
+fn catalog_cache_accepts(document: &CatalogCache) -> bool {
+    document.schema_version == OPENROUTER_CATALOG_SCHEMA
+}
+
+fn codex_cache_accepts(document: &CodexCache) -> bool {
+    document.schema_version == CODEX_CATALOG_SCHEMA
 }
 
 /// Removes every credential-named variable from a child's environment (E1).
@@ -4752,6 +4854,30 @@ impl AssistSettingsDialog {
         );
 
         subheading(d, font, body, cursor, "Runtimes");
+        // Before the doctor's own answer, because a missing support file is
+        // upstream of every verdict below it — it is what makes the doctor
+        // unable to answer at all (audit B7).
+        if !self.support_missing.is_empty() {
+            paragraph(
+                d,
+                font,
+                body,
+                cursor,
+                &format!(
+                    "This installation is missing {} support {}: {}. Assisted analysis cannot \
+                     run until they are restored, and the doctor's own answer below may be \
+                     incomplete or absent for the same reason.",
+                    self.support_missing.len(),
+                    if self.support_missing.len() == 1 {
+                        "file"
+                    } else {
+                        "files"
+                    },
+                    sanitize_paragraph(&self.support_missing.join(", ")),
+                ),
+                color::ui_danger(),
+            );
+        }
         match (&self.doctor, &self.doctor_error) {
             (None, None) => paragraph(
                 d,
@@ -6820,6 +6946,9 @@ impl AssistSettingsDialog {
         if self.background.is_some() {
             return;
         }
+        // Answered whether or not the doctor can run, and refreshed here so a
+        // reinstall is one button press away from being believed (audit B7).
+        self.refresh_support_manifest();
         let Some(tool) = find_tool("musializer_doctor.py") else {
             self.doctor_error =
                 Some("tools/musializer_doctor.py is missing from this installation".to_string());
@@ -6833,6 +6962,29 @@ impl AssistSettingsDialog {
         if let Some(path) = self.codex_binary() {
             command.arg("--codex-bin").arg(path);
         }
+        // Audit B1: the doctor's verdict has to be about the installation a
+        // job would use. A job passes these three as flags that beat the
+        // helper's own discovery, so a doctor calling the bare defaults
+        // answered about a different installation in both directions — a
+        // working configured path read `not ready`, and a typo'd one got a
+        // green tick and a job that died inside the helper.
+        //
+        // The **draft**, not the saved settings: this pane is where those paths
+        // are typed, and a doctor answering about the value the user just
+        // replaced is the same defect one edit earlier.
+        for (flag, value) in [
+            ("--whisper-bin", &self.draft.local_runtimes.whisper_bin),
+            ("--whisper-model", &self.draft.local_runtimes.whisper_model),
+            ("--align-python", &self.draft.local_runtimes.align_python),
+        ] {
+            if let Some(path) = value {
+                command.arg(flag).arg(path);
+            }
+        }
+        // And the same credential rule the spawn uses: the application never
+        // lets the repository `.env` authorize a job, so a doctor that read it
+        // would report a key nothing would ever send.
+        command.arg("--no-dotenv");
         strip_credential_variables(&mut command);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
@@ -6840,13 +6992,37 @@ impl AssistSettingsDialog {
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let outcome = match command.output() {
-                Ok(output) => serde_json::from_slice::<DoctorReport>(&output.stdout)
-                    .map_err(|error| error.to_string()),
+                Ok(output) => parse_doctor_report(&output.stdout).map_err(|reason| {
+                    // The child's own last line first, because that is the
+                    // actionable half. The doctor dying at import prints a
+                    // traceback ending in `ModuleNotFoundError: No module named
+                    // 'lyric_align'` and **nothing** on stdout, so throwing
+                    // stderr away left the user with "EOF while parsing a value
+                    // at line 1 column 0" — a sentence about JSON, for a
+                    // missing file (audit B7).
+                    match last_output_line(&String::from_utf8_lossy(&output.stderr)) {
+                        Some(line) => format!("{line} (the report could not be read: {reason})"),
+                        None => reason,
+                    }
+                }),
                 Err(error) => Err(error.to_string()),
             };
             let _ = sender.send(outcome);
         });
         self.background = Some(Background::Doctor(receiver));
+    }
+
+    /// Re-answers "is this installation whole" from the support manifest.
+    fn refresh_support_manifest(&mut self) {
+        // The manifest is repository-relative, and `find_tool` already knows
+        // how to walk from the executable to `tools/`. Anchoring on the doctor
+        // itself means one ladder rather than two that can disagree.
+        self.support_missing = support_manifest_answer(
+            find_tool("musializer_doctor.py")
+                .as_deref()
+                .and_then(Path::parent)
+                .and_then(Path::parent),
+        );
     }
 
     /// Collects whatever a background job finished. Never blocks: a settings
@@ -6899,13 +7075,8 @@ impl AssistSettingsDialog {
                 self.key_test = Some(outcome);
             }
             Finished::Refresh(Ok(())) => {
-                self.catalog =
-                    read_cache("openrouter-models-v1.json", |document: &CatalogCache| {
-                        document.schema_version == "musializer.openrouter-catalog/v1"
-                    });
-                self.codex = read_cache("codex-models-v1.json", |document: &CodexCache| {
-                    document.schema_version == "musializer.codex-model-catalog/v1"
-                });
+                self.catalog = read_cache("openrouter-models-v1.json", catalog_cache_accepts);
+                self.codex = read_cache("codex-models-v1.json", codex_cache_accepts);
                 self.now = now_utc();
                 self.status = Some((
                     "Discovery cache refreshed.".to_string(),
@@ -7535,6 +7706,147 @@ mod tests {
             .is_some_and(|profile| profile.routes.is_empty()));
     }
 
+    // -- the three documents this dialog reads across the boundary ---------
+
+    /// Audit B5. Every field of `DoctorReport` is `#[serde(default)]`, so the
+    /// bare `from_slice` this replaced accepted any JSON object at all — and
+    /// the two states it could not tell apart are "a report with no runtimes"
+    /// and "a document from a version whose runtimes live somewhere else".
+    #[test]
+    fn a_doctor_report_from_another_schema_is_refused_by_name() {
+        let good = parse_doctor_report(
+            br#"{"schema_version":"musializer.doctor/v1",
+                 "runtimes":{"whisper":{"state":"available"}}}"#,
+        )
+        .expect("a v1 report is read");
+        assert_eq!(good.runtimes.len(), 1);
+
+        for (bytes, expected) in [
+            (
+                &br#"{"schema_version":"musializer.doctor/v2","runtimes":{}}"#[..],
+                "musializer.doctor/v2",
+            ),
+            // The renamed-key case: this is what a green "Doctor finished;
+            // runtime identities updated." used to be drawn over.
+            (&br#"{"runtime_identities":{"whisper":{}}}"#[..], "nothing"),
+        ] {
+            let refusal = parse_doctor_report(bytes).expect_err("a foreign report is refused");
+            assert!(
+                refusal.contains(expected) && refusal.contains(execution::DOCTOR_SCHEMA),
+                "the refusal must name what it got and what it reads: {refusal}"
+            );
+        }
+        assert!(parse_doctor_report(b"").is_err());
+    }
+
+    /// The audit's protocol map, row 6: the OpenRouter catalog had a
+    /// wrong-version test and its Codex twin had none, in a reader whose only
+    /// difference is the schema string.
+    #[test]
+    fn a_catalog_cache_from_another_schema_is_unreadable_rather_than_empty() {
+        let codex = classify_cache_bytes::<CodexCache>(
+            br#"{"schema_version":"musializer.codex-model-catalog/v1",
+                 "models":[{"id":"gpt-5.3-codex"}]}"#,
+            codex_cache_accepts,
+        );
+        assert!(matches!(codex, CacheSlot::Loaded(ref cache) if cache.models.len() == 1));
+
+        // A `/v2` document parses perfectly into these `#[serde(default)]`
+        // structs — which is exactly why the version has to be checked. The
+        // user-visible difference is a picker that reads "never fetched"
+        // instead of one that says the cache could not be read.
+        let bumped = classify_cache_bytes::<CodexCache>(
+            br#"{"schema_version":"musializer.codex-model-catalog/v2",
+                 "models":[{"id":"gpt-5.3-codex"}]}"#,
+            codex_cache_accepts,
+        );
+        assert!(matches!(bumped, CacheSlot::Unreadable(_)));
+        assert!(bumped.document().is_none());
+        assert_eq!(bumped.badge(None, None).0, CacheBadge::Unreadable);
+
+        // And the twin it was missing beside.
+        assert!(matches!(
+            classify_cache_bytes::<CatalogCache>(
+                br#"{"schema_version":"musializer.openrouter-catalog/v2","models":[]}"#,
+                catalog_cache_accepts,
+            ),
+            CacheSlot::Unreadable(_)
+        ));
+        assert!(matches!(
+            classify_cache_bytes::<CatalogCache>(
+                br#"{"schema_version":"musializer.openrouter-catalog/v1","models":[]}"#,
+                catalog_cache_accepts,
+            ),
+            CacheSlot::Loaded(_)
+        ));
+    }
+
+    /// Audit B7. The manifest and its checker both existed; nothing in the
+    /// application called them, so a support file deleted from an installation
+    /// was only ever visible as whatever broke next.
+    #[test]
+    fn the_dialog_answers_whether_this_installation_is_whole() {
+        let mut dialog = dialog();
+        // Deliberately not asserted against *this* checkout: `find_tool`
+        // anchors on `current_exe`, which under `cargo test` is
+        // `target/debug/deps`, so the answer here is a property of the test
+        // binary's location rather than of the tree.
+        dialog.refresh_support_manifest();
+        assert!(
+            dialog
+                .describe()
+                .join("\n")
+                .contains("assist settings support: missing="),
+            "the report line must state the manifest's answer"
+        );
+
+        dialog.support_missing = vec!["tools/lyric_align.py".to_string()];
+        assert!(dialog
+            .describe()
+            .join("\n")
+            .contains("assist settings support: missing=1 tools/lyric_align.py"));
+        dialog.support_missing.clear();
+        assert!(dialog
+            .describe()
+            .join("\n")
+            .contains("assist settings support: missing=0 complete"));
+
+        // The answer itself, driven with a root instead of a binary location:
+        // this checkout is whole, an empty directory is missing everything by
+        // name, and an unresolvable root still says something actionable.
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert_eq!(
+            support_manifest_answer(Some(&checkout)),
+            Vec::<String>::new()
+        );
+
+        let absent = support_manifest_answer(Some(Path::new("/definitely-not-an-installation")));
+        assert!(absent.iter().any(|path| path == "tools/lyric_align.py"));
+        assert_eq!(
+            absent.len(),
+            musializer_runtime::support::DISTRIBUTION_SUPPORT_FILES.len()
+        );
+
+        assert_eq!(
+            support_manifest_answer(None),
+            vec!["tools/musializer_doctor.py".to_string()]
+        );
+    }
+
+    /// The doctor's own stderr is the only place a missing import says its
+    /// name: stdout is empty, and the JSON error is a sentence about JSON.
+    #[test]
+    fn a_child_that_printed_only_a_traceback_is_reported_by_its_last_line() {
+        let traceback = "Traceback (most recent call last):\n  File \"x.py\", line 39\n    \
+             import lyric_align\nModuleNotFoundError: No module named 'lyric_align'\n\n";
+        assert_eq!(
+            last_output_line(traceback).as_deref(),
+            Some("ModuleNotFoundError: No module named 'lyric_align'")
+        );
+        assert_eq!(last_output_line("   \n\n  "), None);
+        assert_eq!(last_output_line(""), None);
+    }
+
     /// A whole profile of overrides survives a write and a read, which is the
     /// only thing that makes the dialog's Save meaningful.
     #[test]
@@ -7790,7 +8102,7 @@ mod tests {
         ] {
             assert!(joined.contains(key), "the report has no {key:?}:\n{joined}");
         }
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 7);
         // Defect A: the chrome line appears once a frame has been drawn, and
         // carries the two gaps in pixels.
         dialog.last_geometry = Some(DialogLayout::of((1280.0, 720.0)));

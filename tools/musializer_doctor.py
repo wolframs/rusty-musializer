@@ -20,16 +20,43 @@ import sys
 import tempfile
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from analysis_io import sha256_file
-import runtime_inventory
+# Every sibling helper is imported through the guard below, and none of them is
+# imported at module scope any more.
+#
+# Audit B7: `external_analysis` imports `lyric_align` at *its* top level, so
+# deleting one support file killed the doctor at import — empty stdout, and a
+# dialog reading "The doctor report could not be read: EOF while parsing a value
+# at line 1 column 0". The one instrument that exists to name a broken
+# installation was the instrument the breakage silenced. A doctor that cannot
+# survive its own missing imports cannot report them, so an import failure is
+# now a named failing check (`support_imports`) inside a report that still
+# parses.
+_IMPORT_FAILURES: dict[str, str] = {}
+
+
+def _import_helper(name: str) -> Any:
+    """Import a sibling helper, or record why it could not be imported.
+
+    Deliberately catches every exception, not only `ImportError`: a helper with
+    a syntax error, a missing third-party dependency, or a module-level `raise`
+    breaks the doctor in exactly the same way and needs the same sentence.
+    """
+    try:
+        return importlib.import_module(name)
+    except BaseException as error:  # noqa: BLE001 - see the docstring
+        _IMPORT_FAILURES[name] = f"{type(error).__name__}: {error}"
+        return None
+
+
+analysis_io = _import_helper("analysis_io")
+runtime_inventory = _import_helper("runtime_inventory")
 
 external_analysis = None
 if sys.version_info >= (3, 10):
     # The adapters themselves require Python 3.10 syntax. Keep this import lazy
     # enough that an older interpreter can still run the doctor and explain the
     # version failure instead of dying while parsing an adapter.
-    import external_analysis as _external_analysis
-    external_analysis = _external_analysis
+    external_analysis = _import_helper("external_analysis")
 
 
 SCHEMA_VERSION = "musializer.doctor/v1"
@@ -50,6 +77,11 @@ ASSIST_SETTINGS_MAX_BYTES = 256 * 1024  # musializer_core::assist::settings::MAX
 Which = Callable[[str], Optional[str]]
 FindSpec = Callable[[str], Any]
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+# The three runtime keys a report always carries, so a doctor that lost
+# `runtime_inventory` still answers the question the dialog asks rather than
+# omitting the section.
+RUNTIME_KEYS = ("whisper", "mms_ctc_aligner", "stem_separator")
 
 
 def _check(identifier: str, ok: bool, summary: str, *,
@@ -249,9 +281,57 @@ def _codex_executable(explicit: Optional[Path], which: Which) -> tuple[Optional[
     return discovered, discovered or "install Codex or select its executable in AI settings"
 
 
+def _unmeasured_runtimes(reason: str) -> dict[str, dict[str, Any]]:
+    """The `runtimes` section when `runtime_inventory` could not be imported.
+
+    "Unavailable, and here is why" rather than an omitted section: an absent key
+    reads to the Rust side as *unmeasured*, which is deliberately not a refusal
+    (`PreflightFacts::runtime`), so a doctor that lost its inventory module
+    would clear every local lane it can no longer see.
+    """
+    return {
+        key: {
+            "state": "unavailable", "path": None, "version": None,
+            "model_path": None, "model_sha256": None, "language_support": None,
+            "gpu_ready": None, "remediation": reason,
+        }
+        for key in RUNTIME_KEYS
+    }
+
+
+def _resolved_path(configured: Optional[Path],
+                   discovered: Optional[Path]) -> tuple[Optional[Path], str]:
+    """A runtime path and where it came from, by the job's own precedence.
+
+    `external_analysis.run_assist` is `configured or discovered` -- a flag beats
+    everything, present or not. Mirrored exactly, expansion included (there is
+    none on either side): the doctor's job is to measure the installation a job
+    would use, so a `~` that the job would not expand must not be expanded here
+    either. Audit B1.
+    """
+    if configured is not None:
+        return configured, "configured"
+    if discovered is not None:
+        return discovered, "discovered"
+    return None, "none"
+
+
+def _path_fact(value: Optional[Path], source: str) -> dict[str, Any]:
+    return {"value": str(value) if value else None, "source": source}
+
+
+def _path_detail(value: Optional[Path], source: str, remedy: str) -> str:
+    """A check detail that says which path was probed and who chose it."""
+    return f"{value} ({source})" if value else remedy
+
+
 def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
           output_dir: Optional[Path] = None,
           codex_bin: Optional[Path] = None,
+          whisper_bin: Optional[Path] = None,
+          whisper_model: Optional[Path] = None,
+          align_python: Optional[Path] = None,
+          allow_dotenv: bool = True,
           environ: Optional[Mapping[str, str]] = None,
           which: Which = shutil.which, find_spec: FindSpec = importlib.util.find_spec,
           runner: Runner = subprocess.run) -> dict[str, Any]:
@@ -297,6 +377,10 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
 
     shared_assets = (
         "tools/external_analysis.py", "tools/analysis_io.py",
+        # `external_analysis` imports this at its own top level, so its absence
+        # kills every job -- remote as well as local -- and killed the doctor
+        # with them until the guarded imports above (audit B7).
+        "tools/lyric_align.py",
         "tools/analyze_audio.py", "schemas/analysis-cache-v1.schema.json",
         "schemas/analysis-provenance-v1.schema.json",
         "schemas/measured-analysis-v1.schema.json",
@@ -358,35 +442,45 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
         detail=codex_detail,
     ))
 
+    # The configured path wins, exactly as it does in a job -- and it wins even
+    # when it is wrong, which is the half of audit B1 a doctor calling the bare
+    # discovery defaults could never see. A typo'd `whisper_bin` in `assist.json`
+    # used to get a green doctor and a job that died at
+    # `external_analysis.py`'s own file check.
     if external_analysis is not None:
-        whisper_bin, whisper_model = external_analysis._default_whisper_paths()
+        discovered_bin, discovered_model = external_analysis._default_whisper_paths()
+        discovered_align = external_analysis._default_alignment_python()
+        align_model = external_analysis._default_alignment_model()
     else:
-        whisper_bin, whisper_model = None, None
+        discovered_bin = discovered_model = discovered_align = align_model = None
+    whisper_bin, whisper_bin_source = _resolved_path(whisper_bin, discovered_bin)
+    whisper_model, whisper_model_source = _resolved_path(whisper_model, discovered_model)
+    align_python, align_python_source = _resolved_path(align_python, discovered_align)
+
     whisper_bin_ok = bool(whisper_bin and whisper_bin.is_file() and
                           (os.name == "nt" or os.access(whisper_bin, os.X_OK)))
     whisper_model_ok = bool(whisper_model and whisper_model.is_file())
     checks.append(_check(
         "whisper_binary", whisper_bin_ok, "Whisper executable",
         required_for=("local_lyrics",),
-        detail=str(whisper_bin) if whisper_bin_ok else
-               "set MUSIALIZER_WHISPER_BIN or install the discovered whisper.cpp build",
+        detail=_path_detail(
+            whisper_bin, whisper_bin_source,
+            "set MUSIALIZER_WHISPER_BIN or install the discovered whisper.cpp build"),
     ))
     checks.append(_check(
         "whisper_model", whisper_model_ok, "Whisper model",
         required_for=("local_lyrics",),
-        detail=str(whisper_model) if whisper_model_ok else
-               "set MUSIALIZER_WHISPER_MODEL or install ggml-medium.en.bin",
+        detail=_path_detail(
+            whisper_model, whisper_model_source,
+            "set MUSIALIZER_WHISPER_MODEL or install ggml-medium.en.bin"),
     ))
-    align_python = (external_analysis._default_alignment_python()
-                    if external_analysis is not None else None)
-    align_model = (external_analysis._default_alignment_model()
-                   if external_analysis is not None else None)
     checks.append(_check(
         "alignment_python", align_python is not None,
         "MMS forced-alignment Python runtime",
         required_for=("local_lyrics",),
-        detail=(str(align_python) if align_python else
-                "set MUSIALIZER_ALIGN_PYTHON or install the lyrics-align runtime"),
+        detail=_path_detail(
+            align_python, align_python_source,
+            "set MUSIALIZER_ALIGN_PYTHON or install the lyrics-align runtime"),
     ))
     checks.append(_check(
         "alignment_model", bool(align_model and align_model.is_file()),
@@ -397,15 +491,38 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
     ))
 
     # This is the sole credential read. Membership is checked, never the value.
+    #
+    # `allow_dotenv` is the desktop's reality, not a convenience: the
+    # application always spawns the helper with `--no-dotenv`, so a key living
+    # only in the repository `.env` authorizes nothing there. A doctor that read
+    # it anyway answered "configured" about a credential no job would use
+    # (audit B1). The dotenv rung stays for the command line, which is the only
+    # place it was ever meant to serve.
     openrouter_ok = False
     if external_analysis is not None:
-        openrouter_environment = external_analysis._openrouter_env(root / ".env")
+        openrouter_environment = external_analysis._openrouter_env(
+            root / ".env", allow_dotenv=allow_dotenv)
         openrouter_ok = "OPENROUTER_API_KEY" in openrouter_environment
     checks.append(_check(
         "openrouter", openrouter_ok, "OpenRouter credential for remote MiMo",
         required_for=("remote_mimo",),
-        detail="configured" if openrouter_ok else
-               "set OPENROUTER_API_KEY or add only that key to the repository .env",
+        detail="configured in the environment" if openrouter_ok else (
+            "no OPENROUTER_API_KEY in this environment; the repository .env was "
+            "not consulted, because the application never does (--no-dotenv). "
+            "The desktop supplies its own key from the credentials store, which "
+            "this doctor deliberately does not read"
+            if not allow_dotenv else
+            "set OPENROUTER_API_KEY or add only that key to the repository .env"),
+    ))
+
+    # Audit B7. A helper that failed to import is named here, with the
+    # exception that named it, instead of taking the whole report down.
+    checks.append(_check(
+        "support_imports", not _IMPORT_FAILURES,
+        "Sibling helper modules import cleanly",
+        required_for=("local_lyrics", "remote_mimo"),
+        detail="present" if not _IMPORT_FAILURES else "; ".join(
+            f"{name}: {reason}" for name, reason in sorted(_IMPORT_FAILURES.items())),
     ))
 
     analysis_ok, analysis_detail = _probe_directory(analysis_dir)
@@ -429,11 +546,19 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
     # never a reason the overall run fails -- a missing optional runtime is
     # this dict's own "unavailable" entry, not a raised exception. See
     # runtime_inventory.py for what each field means and how it is probed.
-    runtimes = runtime_inventory.collect(
-        whisper_binary=whisper_bin, whisper_model=whisper_model,
-        align_python=align_python, align_model=align_model,
-        which=which, runner=runner, environ=environ, sha256_file=sha256_file,
-    )
+    if runtime_inventory is None or analysis_io is None:
+        missing_module = "runtime_inventory" if runtime_inventory is None else "analysis_io"
+        runtimes = _unmeasured_runtimes(
+            f"tools/{missing_module}.py could not be imported "
+            f"({_IMPORT_FAILURES.get(missing_module, 'unknown error')}), so no runtime "
+            "could be probed; reinstall the Musializer support files")
+    else:
+        runtimes = runtime_inventory.collect(
+            whisper_binary=whisper_bin, whisper_model=whisper_model,
+            align_python=align_python, align_model=align_model,
+            which=which, runner=runner, environ=environ,
+            sha256_file=analysis_io.sha256_file,
+        )
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -443,6 +568,25 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
         "checks": checks,
         "capabilities": capabilities,
         "runtimes": runtimes,
+        # Which installation this verdict is about. Every path above is either
+        # one the caller configured or one discovery found, and the two produce
+        # the same green tick from opposite facts -- so the report says which,
+        # and an audit of a wrong verdict has somewhere to start (B1).
+        "paths": {
+            "whisper_bin": _path_fact(whisper_bin, whisper_bin_source),
+            "whisper_model": _path_fact(whisper_model, whisper_model_source),
+            "align_python": _path_fact(align_python, align_python_source),
+            "align_model": _path_fact(align_model, "discovered" if align_model else "none"),
+            "codex": _path_fact(
+                Path(codex) if codex else None,
+                "configured" if codex_bin is not None else
+                ("discovered" if codex else "none")),
+            "openrouter": {
+                "dotenv_consulted": bool(allow_dotenv),
+                "dotenv_path": str(root / ".env"),
+            },
+        },
+        "import_failures": dict(sorted(_IMPORT_FAILURES.items())),
         "models_directory": _models_directory(
             root=root, application=application, environ=environ),
         "gpu": _gpu_hint(which, runner, environ),
@@ -493,6 +637,18 @@ def render_human(report: Mapping[str, Any]) -> str:
         if runtime["model_path"]:
             hash_bits = f" ({runtime['model_sha256']})" if runtime["model_sha256"] else " (hash skipped)"
             lines.append(f"    model: {runtime['model_path']}{hash_bits}")
+    paths = report.get("paths", {})
+    if paths:
+        lines.extend(("", "Probed paths:"))
+        for key in ("whisper_bin", "whisper_model", "align_python", "align_model", "codex"):
+            fact = paths.get(key, {})
+            value = fact.get("value") or "none found"
+            lines.append(f"  {key}: {value} ({fact.get('source', 'none')})")
+        openrouter = paths.get("openrouter", {})
+        lines.append(
+            "  openrouter: environment only"
+            if not openrouter.get("dotenv_consulted")
+            else f"  openrouter: environment, then {openrouter.get('dotenv_path')}")
     models = report["models_directory"]
     lines.extend(("", "Models directory:"))
     if models["resolved"]:
@@ -530,6 +686,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="video output directory to probe (default: current directory)")
     parser.add_argument("--codex-bin", type=Path,
                         help="resolved Codex executable from the desktop discovery ladder")
+    # The same four spellings `external_analysis.py assist` takes, so the
+    # desktop can hand the doctor the identical installation a job would run
+    # (audit B1). A flag beats discovery here exactly as it does there.
+    parser.add_argument("--whisper-bin", type=Path,
+                        help="configured whisper.cpp executable (as a job receives it)")
+    parser.add_argument("--whisper-model", type=Path,
+                        help="configured whisper.cpp model (as a job receives it)")
+    parser.add_argument("--align-python", type=Path,
+                        help="configured forced-alignment interpreter (as a job receives it)")
+    parser.add_argument("--no-dotenv", action="store_true",
+                        help="do not consult the repository .env for OPENROUTER_API_KEY, "
+                             "which is what the desktop always does")
     parser.add_argument("--require", action="append", choices=CAPABILITIES,
                         default=[], help="exit nonzero unless this capability is ready")
     return parser
@@ -538,7 +706,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     report = audit(root=args.root, analysis_dir=args.analysis_dir,
-                   output_dir=args.output_dir, codex_bin=args.codex_bin)
+                   output_dir=args.output_dir, codex_bin=args.codex_bin,
+                   whisper_bin=args.whisper_bin, whisper_model=args.whisper_model,
+                   align_python=args.align_python, allow_dotenv=not args.no_dotenv)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
     else:

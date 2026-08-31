@@ -231,24 +231,25 @@ class SchemaStrings(unittest.TestCase):
         # Audit finding B4: two readers, each pinned only to its own copy.
         schema = provider_catalog.SCHEMA_VERSION
         self.assertIn(f'schema != "{schema}"', rust_source(EXECUTION_RS))
-        self.assertIn(f'document.schema_version == "{schema}"',
-                      rust_source(ASSIST_SETTINGS_RS))
+        self.assertEqual(schema,
+                         rust_str_const(ASSIST_SETTINGS_RS, "OPENROUTER_CATALOG_SCHEMA"))
 
     def test_codex_catalog(self) -> None:
-        self.assertIn(
-            f'document.schema_version == "{codex_model_discovery.SCHEMA_VERSION}"',
-            rust_source(ASSIST_SETTINGS_RS))
+        # Protocol-map row 6. The dialog's two catalog readers used to spell
+        # their schemas as inline literals inside a closure, which is why the
+        # Codex one had no Rust test of its own for a wrong version.
+        self.assertEqual(codex_model_discovery.SCHEMA_VERSION,
+                         rust_str_const(ASSIST_SETTINGS_RS, "CODEX_CATALOG_SCHEMA"))
 
     def test_doctor_report(self) -> None:
-        # Audit finding B5: no Rust reader checks this one, so the only place
-        # the Rust side states it is its own fixtures. That makes this pin
-        # weaker than the five above by exactly the amount B5 describes — and
-        # it is still the thing that fails if the helper renames the schema
-        # while every Rust test keeps parsing a document nobody writes.
+        # Audit finding B5, now closed: both Rust readers check this string
+        # rather than accepting any JSON object, so it is pinned here the same
+        # way the five above are instead of only appearing in fixtures.
         schema = musializer_doctor.SCHEMA_VERSION
-        self.assertIn(f'"schema_version":"{schema}"', rust_source(EXECUTION_RS))
-        self.assertIn(f'schema_version: "{schema}".to_string()',
-                      rust_source(ASSIST_SETTINGS_RS))
+        self.assertEqual(schema, rust_str_const(EXECUTION_RS, "DOCTOR_SCHEMA"))
+        # The dialog reads the core's constant rather than declaring a second
+        # one; what it must not do is go back to spelling it inline.
+        self.assertIn("execution::DOCTOR_SCHEMA", rust_source(ASSIST_SETTINGS_RS))
 
     def test_every_schema_string_is_versioned(self) -> None:
         for name, value in (

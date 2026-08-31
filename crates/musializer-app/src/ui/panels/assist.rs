@@ -4258,6 +4258,7 @@ mod tests {
             credential_lookup: "default".to_string(),
             ask_resolved_to_none: Vec::new(),
             local_runtimes: musializer_core::assist::settings::LocalRuntimes::default(),
+            doctor: execution::DoctorReading::NotTaken,
         };
         let clear = plan(Vec::new());
         assert_eq!(start_refusal(true, Some(&clear)), None);

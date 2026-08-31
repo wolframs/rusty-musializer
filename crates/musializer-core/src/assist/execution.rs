@@ -874,66 +874,118 @@ pub fn parse_catalog_facts(bytes: &[u8]) -> Option<(String, Vec<CatalogModelFact
     Some((format!("{schema}@{fetched}"), models))
 }
 
-/// `(runtime versions, model digests)` from a doctor report, both sorted.
+/// The one doctor-report schema this build reads (`tools/musializer_doctor.py`).
+pub const DOCTOR_SCHEMA: &str = "musializer.doctor/v1";
+
+/// Everything a `musializer.doctor/v1` report contributes, read once.
 ///
-/// A runtime the report knows nothing about contributes nothing, so the
-/// snapshot records `null` rather than a guessed version.
+/// The provenance half and the readiness half used to be two public parsers
+/// over the same bytes — that one fills the snapshot's `runtime_versions` and
+/// `model_digests`, this one decides whether a job may start (audit A1) — which
+/// meant two independent schema policies over one document. They are fields of
+/// one reading now, so the version is checked in one place.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DoctorFacts {
+    /// Sorted `(runtime key, version)`. A runtime the report knows nothing
+    /// about contributes nothing, so the snapshot records `null` rather than a
+    /// guessed version.
+    pub runtime_versions: Vec<(String, String)>,
+    /// Sorted `(runtime key, model sha256)`.
+    pub model_digests: Vec<(String, String)>,
+    /// Sorted `(runtime key, state)`. A runtime the report does not mention is
+    /// absent from the list, which [`PreflightFacts::runtime`] reads as
+    /// `Unmeasured` rather than as a refusal.
+    pub runtimes: Vec<(String, RuntimeFact)>,
+}
+
+/// What a doctor report yielded, or why it yielded nothing.
+///
+/// Audit B5: both readers used to take *any* JSON object, with every field
+/// `#[serde(default)]` and the report's own `schema_version` never looked at —
+/// so a renamed `runtimes` key, or a future `musializer.doctor/v2` whose
+/// identities are shaped differently, produced a cheerful "Doctor finished;
+/// runtime identities updated." over an empty list and a snapshot with no
+/// runtime provenance at all. `parse_catalog_facts`, ten lines up in the same
+/// file, checked its schema: one file, two policies. This is the other one.
+///
+/// A mismatch is deliberately **not** a refusal to start a job: an unmeasured
+/// runtime has never been grounds to block (`PreflightFacts::runtime`), and a
+/// foreign report is exactly as unmeasured as no report. It has to be *visible*,
+/// which is what the variants are for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DoctorReading {
+    /// No report was named. The ordinary case: nothing runs the doctor for a
+    /// job.
+    NotTaken,
+    /// The bytes are not JSON, or not a JSON object.
+    Unreadable(String),
+    /// A JSON object declaring a schema this build does not read. Carries what
+    /// it declared, because "which version" is the whole repair.
+    ForeignSchema(String),
+    Report(DoctorFacts),
+}
+
+impl DoctorReading {
+    /// The facts, or the empty set for every non-report state.
+    #[must_use]
+    pub fn facts(&self) -> DoctorFacts {
+        match self {
+            DoctorReading::Report(facts) => facts.clone(),
+            _ => DoctorFacts::default(),
+        }
+    }
+
+    /// One greppable token, so a report line can say which of the four
+    /// happened. Three of them show the same empty runtime list.
+    #[must_use]
+    pub fn token(&self) -> String {
+        match self {
+            DoctorReading::NotTaken => "not-taken".to_string(),
+            DoctorReading::Unreadable(reason) => format!("unreadable({reason})"),
+            DoctorReading::ForeignSchema(schema) => format!("foreign({schema})"),
+            DoctorReading::Report(facts) => format!("v1({})", facts.runtimes.len()),
+        }
+    }
+}
+
+/// Reads a doctor report, checking the schema it declares.
 #[must_use]
-#[allow(
-    clippy::type_complexity,
-    reason = "two sorted association lists, named at every call site"
-)]
-pub fn parse_doctor_facts(bytes: &[u8]) -> (Vec<(String, String)>, Vec<(String, String)>) {
+pub fn parse_doctor_reading(bytes: &[u8]) -> DoctorReading {
     let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return (Vec::new(), Vec::new());
+        return DoctorReading::Unreadable("not JSON".to_string());
     };
-    let Some(runtimes) = document
+    let Some(object) = document.as_object() else {
+        return DoctorReading::Unreadable("not a JSON object".to_string());
+    };
+    match object
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some(DOCTOR_SCHEMA) => {}
+        Some(other) => return DoctorReading::ForeignSchema(other.to_string()),
+        None => return DoctorReading::ForeignSchema("none declared".to_string()),
+    }
+    let Some(runtimes) = object
         .get("runtimes")
         .and_then(serde_json::Value::as_object)
     else {
-        return (Vec::new(), Vec::new());
+        return DoctorReading::Report(DoctorFacts::default());
     };
-    let mut versions = Vec::new();
-    let mut digests = Vec::new();
+    let mut facts = DoctorFacts::default();
     for (key, identity) in runtimes {
         if let Some(version) = identity.get("version").and_then(serde_json::Value::as_str) {
-            versions.push((key.clone(), version.to_string()));
+            facts
+                .runtime_versions
+                .push((key.clone(), version.to_string()));
         }
         if let Some(digest) = identity
             .get("model_sha256")
             .and_then(serde_json::Value::as_str)
         {
-            digests.push((key.clone(), digest.to_string()));
+            facts.model_digests.push((key.clone(), digest.to_string()));
         }
-    }
-    versions.sort();
-    digests.sort();
-    (versions, digests)
-}
-
-/// The state half of the same report: one [`RuntimeFact`] per runtime key.
-///
-/// Separate from [`parse_doctor_facts`] because the two answers are read for
-/// different questions — that one fills the snapshot's provenance, this one
-/// decides whether a job may start (audit A1). A runtime the report does not
-/// mention is absent from the list, which [`PreflightFacts::runtime`] reads as
-/// `Unmeasured` rather than as a refusal.
-#[must_use]
-pub fn parse_doctor_runtimes(bytes: &[u8]) -> Vec<(String, RuntimeFact)> {
-    let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return Vec::new();
-    };
-    let Some(runtimes) = document
-        .get("runtimes")
-        .and_then(serde_json::Value::as_object)
-    else {
-        return Vec::new();
-    };
-    let mut states: Vec<(String, RuntimeFact)> = runtimes
-        .iter()
-        .filter_map(|(key, identity)| {
-            let state = identity.get("state").and_then(serde_json::Value::as_str)?;
-            Some((
+        if let Some(state) = identity.get("state").and_then(serde_json::Value::as_str) {
+            facts.runtimes.push((
                 key.clone(),
                 if runtime_state_is_available(state) {
                     RuntimeFact::Available
@@ -946,11 +998,13 @@ pub fn parse_doctor_runtimes(bytes: &[u8]) -> Vec<(String, RuntimeFact)> {
                             .to_string(),
                     }
                 },
-            ))
-        })
-        .collect();
-    states.sort_by(|left, right| left.0.cmp(&right.0));
-    states
+            ));
+        }
+    }
+    facts.runtime_versions.sort();
+    facts.model_digests.sort();
+    facts.runtimes.sort_by(|left, right| left.0.cmp(&right.0));
+    DoctorReading::Report(facts)
 }
 
 /// The two doctor states that mean "usable". Named here so the dialog's badge
@@ -2232,10 +2286,13 @@ mod tests {
         // version.
         assert_eq!(doctor_key("whisper.cpp"), Some("whisper"));
         assert_eq!(
-            parse_doctor_runtimes(
-                br#"{"runtimes":{"whisper":{"state":"missing","remediation":"install it"},
+            parse_doctor_reading(
+                br#"{"schema_version":"musializer.doctor/v1",
+                     "runtimes":{"whisper":{"state":"missing","remediation":"install it"},
                      "mms_ctc_aligner":{"state":"ok"}}}"#
-            ),
+            )
+            .facts()
+            .runtimes,
             vec![
                 ("mms_ctc_aligner".to_string(), RuntimeFact::Available),
                 (
@@ -2248,7 +2305,12 @@ mod tests {
         );
         // A report that mentions no state at all contributes nothing rather
         // than an invented refusal.
-        assert!(parse_doctor_runtimes(br#"{"runtimes":{"whisper":{}}}"#).is_empty());
+        assert!(parse_doctor_reading(
+            br#"{"schema_version":"musializer.doctor/v1","runtimes":{"whisper":{}}}"#
+        )
+        .facts()
+        .runtimes
+        .is_empty());
     }
 
     /// Every block spells out a repair. A block whose sentence does not name
@@ -2440,18 +2502,82 @@ mod tests {
 
     #[test]
     fn the_doctor_parser_reports_only_what_the_report_measured() {
-        let (versions, digests) = parse_doctor_facts(
+        let facts = parse_doctor_reading(
             br#"{"schema_version":"musializer.doctor/v1","runtimes":{
                 "whisper":{"state":"available","version":"whisper.cpp 1.8.6","model_sha256":"beef"},
                 "mms_ctc_aligner":{"state":"missing"}}}"#,
-        );
+        )
+        .facts();
         assert_eq!(
-            versions,
+            facts.runtime_versions,
             vec![("whisper".to_string(), "whisper.cpp 1.8.6".to_string())]
         );
-        assert_eq!(digests, vec![("whisper".to_string(), "beef".to_string())]);
-        assert_eq!(parse_doctor_facts(b"{ broken"), (Vec::new(), Vec::new()));
-        assert_eq!(parse_doctor_facts(b"{}"), (Vec::new(), Vec::new()));
+        assert_eq!(
+            facts.model_digests,
+            vec![("whisper".to_string(), "beef".to_string())]
+        );
+        // A v1 report with no runtimes block is still a v1 report.
+        assert_eq!(
+            parse_doctor_reading(br#"{"schema_version":"musializer.doctor/v1"}"#),
+            DoctorReading::Report(DoctorFacts::default())
+        );
+    }
+
+    /// Audit B5, and the reason it is a whole enum rather than an empty list:
+    /// a report from another version, a report whose `runtimes` key was
+    /// renamed, and a report nobody took are three different facts that used to
+    /// produce one picture — an empty runtime list under "Doctor finished;
+    /// runtime identities updated."
+    #[test]
+    fn a_foreign_doctor_schema_is_a_named_state_and_not_a_silent_parse() {
+        assert_eq!(
+            parse_doctor_reading(
+                br#"{"schema_version":"musializer.doctor/v2","runtimes":{
+                     "whisper":{"state":"available","version":"1.8.6"}}}"#
+            ),
+            DoctorReading::ForeignSchema("musializer.doctor/v2".to_string())
+        );
+        // Nothing from a foreign document reaches the snapshot's provenance.
+        assert_eq!(
+            parse_doctor_reading(
+                br#"{"schema_version":"musializer.doctor/v2","runtimes":{
+                     "whisper":{"state":"available","version":"1.8.6"}}}"#
+            )
+            .facts(),
+            DoctorFacts::default()
+        );
+        // A JSON object with no schema at all is the renamed-key case, and it
+        // is the one that used to read as a clean empty report.
+        assert_eq!(
+            parse_doctor_reading(br#"{"runtimes":{"whisper":{"state":"available"}}}"#),
+            DoctorReading::ForeignSchema("none declared".to_string())
+        );
+        assert!(matches!(
+            parse_doctor_reading(b"{ broken"),
+            DoctorReading::Unreadable(_)
+        ));
+        assert!(matches!(
+            parse_doctor_reading(b"[]"),
+            DoctorReading::Unreadable(_)
+        ));
+        // Every state says which it is, in one greppable token.
+        let tokens: Vec<String> = [
+            DoctorReading::NotTaken,
+            DoctorReading::Unreadable("not JSON".to_string()),
+            DoctorReading::ForeignSchema("musializer.doctor/v2".to_string()),
+            DoctorReading::Report(DoctorFacts::default()),
+        ]
+        .iter()
+        .map(DoctorReading::token)
+        .collect();
+        assert_eq!(
+            tokens
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            4
+        );
+        assert!(tokens[2].contains("musializer.doctor/v2"));
     }
 
     #[test]

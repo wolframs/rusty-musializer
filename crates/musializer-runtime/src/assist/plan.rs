@@ -137,6 +137,14 @@ pub struct ExecutionPlan {
     /// flags. Carried on the plan so the panel does not read the settings file
     /// a second time to build the spec.
     pub local_runtimes: LocalRuntimes,
+    /// What the doctor report this resolution read turned out to be.
+    ///
+    /// Carried rather than discarded because three of its four states hand the
+    /// preflight the same empty runtime list, and an empty list is not a
+    /// refusal — so a `v2` report, a report whose `runtimes` key was renamed,
+    /// and no report at all were one picture (audit B5). `describe()` prints
+    /// which, so a capture can tell them apart.
+    pub doctor: execution::DoctorReading,
 }
 
 impl ExecutionPlan {
@@ -157,7 +165,7 @@ impl ExecutionPlan {
     pub fn describe(&self) -> String {
         format!(
             "profile={} contracts={} remote={} audio-leaves={} credential={} ask-as-none={} \
-             blocks={} snapshot={}",
+             blocks={} doctor={} snapshot={}",
             self.snapshot.profile_id,
             self.snapshot
                 .contracts
@@ -186,6 +194,7 @@ impl ExecutionPlan {
                     .collect::<Vec<_>>()
                     .join(",")
             },
+            self.doctor.token(),
             self.snapshot.snapshot_schema,
         )
     }
@@ -227,32 +236,26 @@ fn catalog_facts() -> Option<(String, Vec<execution::CatalogModelFacts>)> {
     execution::parse_catalog_facts(&std::fs::read(&path).ok()?)
 }
 
-/// `(runtime versions, model digests)` from a doctor report, when one has been
-/// taken. Nothing runs the doctor here: an unmeasured runtime records `null`
-/// rather than a guessed version.
-#[allow(
-    clippy::type_complexity,
-    reason = "two sorted association lists; the core parser names them the same way"
-)]
-fn doctor_facts(report_path: Option<&Path>) -> (Vec<(String, String)>, Vec<(String, String)>) {
-    match doctor_bytes(report_path) {
-        Some(bytes) => execution::parse_doctor_facts(&bytes),
-        None => (Vec::new(), Vec::new()),
+/// A doctor report, read **once** per resolution, schema and all.
+///
+/// Nothing runs the doctor here: an unmeasured runtime records `null` rather
+/// than a guessed version. The two halves this feeds — the snapshot's
+/// provenance and the pre-spawn runtime states — used to be two parses of the
+/// same file with no version check between them (audit B5).
+fn doctor_reading(report_path: Option<&Path>) -> execution::DoctorReading {
+    let Some(path) = report_path else {
+        return execution::DoctorReading::NotTaken;
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return execution::DoctorReading::Unreadable(format!("{} is unreadable", path.display()));
+    };
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        return execution::DoctorReading::Unreadable(format!(
+            "{} bytes, over the {MAX_CACHE_BYTES} byte cap",
+            bytes.len()
+        ));
     }
-}
-
-/// The same report's runtime **states**, which decide whether a job may start.
-fn doctor_runtimes(report_path: Option<&Path>) -> Vec<(String, execution::RuntimeFact)> {
-    match doctor_bytes(report_path) {
-        Some(bytes) => execution::parse_doctor_runtimes(&bytes),
-        None => Vec::new(),
-    }
-}
-
-fn doctor_bytes(report_path: Option<&Path>) -> Option<Vec<u8>> {
-    let path = report_path?;
-    let bytes = std::fs::read(path).ok()?;
-    (bytes.len() as u64 <= MAX_CACHE_BYTES).then_some(bytes)
+    execution::parse_doctor_reading(&bytes)
 }
 
 /// The account label a profile's credential is stored under.
@@ -427,7 +430,12 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
     drop(stored);
 
     let catalog = catalog_facts();
-    let (runtime_versions, model_digests) = doctor_facts(inputs.doctor_report);
+    let doctor = doctor_reading(inputs.doctor_report);
+    let execution::DoctorFacts {
+        runtime_versions,
+        model_digests,
+        runtimes: doctor_runtimes,
+    } = doctor.facts();
     let facts = ExecutionFacts {
         resolved_at_utc: execution::format_rfc3339_utc(now_seconds()),
         credential_present: credential_source.is_usable(),
@@ -472,7 +480,7 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
             codex: codex
                 .as_ref()
                 .map_or(execution::CodexFact::Unknown, codex_fact),
-            local_runtimes: doctor_runtimes(inputs.doctor_report),
+            local_runtimes: doctor_runtimes,
             // The picker's filters are the dialog's; this side has no way to
             // count what they would leave, and inventing a zero would refuse a
             // job for a fact nobody measured.
@@ -493,6 +501,7 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
             inputs.has_lyric_reference,
         ),
         local_runtimes: settings.local_runtimes.clone(),
+        doctor,
     }
 }
 
@@ -569,17 +578,47 @@ mod tests {
                 "mms_ctc_aligner":{"state":"available"}}}"#,
         )
         .unwrap();
-        let (versions, digests) = doctor_facts(Some(&report));
+        let facts = doctor_reading(Some(&report)).facts();
         assert_eq!(
-            versions,
+            facts.runtime_versions,
             vec![("whisper".to_string(), "whisper.cpp 1.8.6".to_string())]
         );
-        assert_eq!(digests, vec![("whisper".to_string(), "beef".to_string())]);
-        assert_eq!(doctor_facts(None), (Vec::new(), Vec::new()));
         assert_eq!(
-            doctor_facts(Some(&root.join("absent.json"))),
-            (Vec::new(), Vec::new())
+            facts.model_digests,
+            vec![("whisper".to_string(), "beef".to_string())]
         );
+        assert_eq!(doctor_reading(None), execution::DoctorReading::NotTaken);
+        assert!(matches!(
+            doctor_reading(Some(&root.join("absent.json"))),
+            execution::DoctorReading::Unreadable(_)
+        ));
+    }
+
+    /// Audit B5 at this seam: a report from a version this build does not read
+    /// contributes no provenance and says so, rather than parsing into silence.
+    ///
+    /// The four states are distinguishable in `describe()`, which is the only
+    /// place a capture can see them — an empty runtime list is not a refusal,
+    /// so nothing else about the frame changes.
+    #[test]
+    fn a_foreign_doctor_report_is_visible_rather_than_silently_empty() {
+        let root = scratch("doctor-v2");
+        let report = root.join("doctor.json");
+        std::fs::write(
+            &report,
+            br#"{"schema_version":"musializer.doctor/v2","runtimes":{
+                "whisper":{"state":"available","version":"whisper.cpp 9.9.9",
+                           "model_sha256":"beef"}}}"#,
+        )
+        .unwrap();
+        let reading = doctor_reading(Some(&report));
+        assert_eq!(
+            reading,
+            execution::DoctorReading::ForeignSchema("musializer.doctor/v2".to_string())
+        );
+        assert_eq!(reading.facts(), execution::DoctorFacts::default());
+        assert!(reading.token().contains("musializer.doctor/v2"));
+        assert_ne!(reading.token(), execution::DoctorReading::NotTaken.token());
     }
 
     /// The invariant the whole tranche turns on, at the level this module owns:

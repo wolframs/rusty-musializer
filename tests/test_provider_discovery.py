@@ -303,6 +303,183 @@ class DoctorExecutableDiscoveryTests(unittest.TestCase):
         self.assertIn(str(missing), detail)
 
 
+# --- The doctor measures the installation a job uses (audit B1) -------------
+
+
+def _doctor_support_tree(destination: Path) -> Path:
+    """A minimal support bundle: every `tools/*.py`, the schemas, the prompts.
+
+    Deliberately not `cp -r tools`, which is 130 MB of listening-lab material
+    here; the doctor only ever reads Python siblings and the two asset trees.
+    """
+    (destination / "tools").mkdir(parents=True)
+    for helper in sorted((ROOT / "tools").glob("*.py")):
+        (destination / "tools" / helper.name).write_bytes(helper.read_bytes())
+    for tree in ("schemas", "prompts"):
+        (destination / tree).mkdir()
+        for asset in sorted((ROOT / tree).iterdir()):
+            if asset.is_file():
+                (destination / tree / asset.name).write_bytes(asset.read_bytes())
+    return destination
+
+
+class DoctorProbedInstallationTests(unittest.TestCase):
+    """Audit B1: the verdict must be about the installation a job would run.
+
+    The doctor called the discovery defaults with no arguments while jobs pass
+    `assist.json`'s configured paths as flags that beat everything, so both
+    directions were wrong at once -- a working dialog-set path read `not ready`,
+    and a typo'd one got a green doctor and a job that died inside the helper.
+    """
+
+    def test_a_configured_path_beats_discovery_and_is_named_as_configured(self) -> None:
+        self.assertEqual(
+            musializer_doctor._resolved_path(Path("/configured"), Path("/discovered")),
+            (Path("/configured"), "configured"))
+        self.assertEqual(
+            musializer_doctor._resolved_path(None, Path("/discovered")),
+            (Path("/discovered"), "discovered"))
+        self.assertEqual(musializer_doctor._resolved_path(None, None), (None, "none"))
+
+    def test_a_configured_path_that_is_missing_fails_rather_than_falling_back(self) -> None:
+        """The green-doctor-dead-job direction, which is the dangerous one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "whisper-cli"
+            real.write_text("#!/bin/sh\n")
+            real.chmod(0o755)
+            typo = Path(tmp) / "whisper-cIi"
+
+            report = musializer_doctor.audit(
+                root=ROOT, analysis_dir=Path(tmp), output_dir=Path(tmp),
+                whisper_bin=typo, environ={"HOME": tmp},
+                which=lambda _name: None,
+                runner=lambda *a, **k: _completed(),
+            )
+
+        binary = next(item for item in report["checks"] if item["id"] == "whisper_binary")
+        self.assertFalse(binary["ok"])
+        self.assertIn(str(typo), binary["detail"])
+        self.assertIn("configured", binary["detail"])
+        self.assertEqual(report["paths"]["whisper_bin"],
+                         {"value": str(typo), "source": "configured"})
+        # ...and the discovery that would have said "ready" is not consulted.
+        self.assertNotIn(str(real), json.dumps(report))
+
+    def test_the_report_names_the_source_of_every_probed_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report = musializer_doctor.audit(
+                root=ROOT, analysis_dir=Path(tmp), output_dir=Path(tmp),
+                whisper_bin=Path("/w/bin"), whisper_model=Path("/w/model"),
+                align_python=Path("/a/python"), environ={"HOME": tmp},
+                which=lambda _name: None, runner=lambda *a, **k: _completed(),
+            )
+        for key in ("whisper_bin", "whisper_model", "align_python"):
+            self.assertEqual(report["paths"][key]["source"], "configured", key)
+        rendered = musializer_doctor.render_human(report)
+        self.assertIn("Probed paths:", rendered)
+        self.assertIn("whisper_bin: /w/bin (configured)", rendered)
+
+    def test_no_dotenv_keeps_the_repository_env_out_of_the_credential_verdict(self) -> None:
+        """The desktop always passes `--no-dotenv`; the doctor must agree.
+
+        A key living only in the repository `.env` authorizes nothing in the
+        application, so a doctor that reads it answers "configured" about a
+        credential no job would ever use.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            root.mkdir()
+            (root / ".env").write_text("OPENROUTER_API_KEY=sk-or-v1-doctor-fixture\n")
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "OPENROUTER_API_KEY"}
+            previous = os.environ.pop("OPENROUTER_API_KEY", None)
+            try:
+                strict = musializer_doctor.audit(
+                    root=root, analysis_dir=Path(tmp), output_dir=Path(tmp),
+                    allow_dotenv=False, environ=environment,
+                    which=lambda _name: None, runner=lambda *a, **k: _completed())
+                loose = musializer_doctor.audit(
+                    root=root, analysis_dir=Path(tmp), output_dir=Path(tmp),
+                    allow_dotenv=True, environ=environment,
+                    which=lambda _name: None, runner=lambda *a, **k: _completed())
+            finally:
+                if previous is not None:
+                    os.environ["OPENROUTER_API_KEY"] = previous
+
+        def verdict(report):
+            return next(item for item in report["checks"] if item["id"] == "openrouter")
+
+        self.assertFalse(verdict(strict)["ok"])
+        self.assertIn("--no-dotenv", verdict(strict)["detail"])
+        self.assertFalse(strict["paths"]["openrouter"]["dotenv_consulted"])
+        # The command line keeps the fallback it was written for.
+        self.assertTrue(verdict(loose)["ok"])
+        self.assertTrue(loose["paths"]["openrouter"]["dotenv_consulted"])
+        # Neither report carries the value, only the membership answer.
+        self.assertNotIn("sk-or-v1-doctor-fixture", json.dumps(strict))
+        self.assertNotIn("sk-or-v1-doctor-fixture", json.dumps(loose))
+
+    def test_the_parser_takes_the_same_flag_spellings_a_job_does(self) -> None:
+        """These four names are duplicated across the boundary by hand."""
+        args = musializer_doctor.build_parser().parse_args([
+            "--whisper-bin", "/w/bin", "--whisper-model", "/w/model",
+            "--align-python", "/a/python", "--codex-bin", "/c/codex", "--no-dotenv",
+        ])
+        self.assertEqual(args.whisper_bin, Path("/w/bin"))
+        self.assertEqual(args.whisper_model, Path("/w/model"))
+        self.assertEqual(args.align_python, Path("/a/python"))
+        self.assertEqual(args.codex_bin, Path("/c/codex"))
+        self.assertTrue(args.no_dotenv)
+
+
+class DoctorSurvivesItsOwnInstallationTests(unittest.TestCase):
+    """Audit B7: the doctor must be able to report the breakage that kills it.
+
+    Proved by deleting a support file rather than by mocking an import: the
+    failure mode was `external_analysis` importing `lyric_align` at *its* top
+    level, which no in-process patch of this module reproduces.
+    """
+
+    def test_a_deleted_support_helper_becomes_a_named_check_not_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = _doctor_support_tree(Path(tmp) / "install")
+            (tree / "tools/lyric_align.py").unlink()
+
+            finished = subprocess.run(
+                [sys.executable, str(tree / "tools/musializer_doctor.py"),
+                 "--json", "--no-dotenv", "--root", str(tree),
+                 "--analysis-dir", tmp, "--output-dir", tmp],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
+
+        self.assertNotEqual(finished.stdout, "", "the doctor died before printing a report")
+        report = json.loads(finished.stdout)
+        self.assertEqual(report["schema_version"], musializer_doctor.SCHEMA_VERSION)
+
+        imports = next(item for item in report["checks"] if item["id"] == "support_imports")
+        self.assertFalse(imports["ok"])
+        self.assertIn("lyric_align", imports["detail"])
+        self.assertIn("external_analysis", report["import_failures"])
+
+        # And the asset checklist names the file itself, so the report is
+        # actionable without reading a Python exception.
+        assets = next(item for item in report["checks"] if item["id"] == "analysis_assets")
+        self.assertFalse(assets["ok"])
+        self.assertIn("tools/lyric_align.py", assets["detail"])
+
+        # The runtimes section still answers, and answers "unavailable" -- an
+        # omitted key reads to the Rust side as *unmeasured*, which is not a
+        # refusal, so a doctor that lost its inventory would clear every lane.
+        self.assertEqual(set(report["runtimes"]), set(musializer_doctor.RUNTIME_KEYS))
+
+    def test_a_lost_inventory_module_reports_unavailable_runtimes_with_a_repair(self) -> None:
+        section = musializer_doctor._unmeasured_runtimes("tools/runtime_inventory.py is absent")
+        self.assertEqual(set(section), set(musializer_doctor.RUNTIME_KEYS))
+        for runtime in section.values():
+            self.assertEqual(runtime["state"], "unavailable")
+            self.assertIn("runtime_inventory", runtime["remediation"])
+
+
 # --- Models directory resolution (AP2-b) ------------------------------------
 
 def _assist_settings(models_dir: str, **extra) -> str:
