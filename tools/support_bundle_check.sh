@@ -22,6 +22,8 @@ for helper in "${HELPERS[@]}"; do
     python3 -m py_compile "$helper"
 done
 
+# Offline by construction: the one test in tests/ that opens a socket is gated
+# behind MUSIALIZER_LIVE_CATALOG_TEST=1 and skips here (assist audit B3).
 python3 -m unittest discover -s tests -p 'test_*.py'
 
 SUPPORT_CHECK_DIR=$(mktemp -d)

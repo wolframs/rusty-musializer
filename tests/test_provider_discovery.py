@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -35,6 +36,31 @@ import runtime_inventory  # noqa: E402
 
 def _completed(stdout: str = "", returncode: int = 0) -> "subprocess.CompletedProcess[str]":
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
+
+
+# Opt-in gate for the one test in this file that talks to the network.
+#
+# Assist audit 2026-08-29, finding B3: this suite runs from
+# `tools/support_bundle_check.sh` inside `tools/verify.sh`, so an ungated live
+# catalog fetch made **every gate run** send an outbound HTTPS request to
+# openrouter.ai. The model dialog that performs the same fetch warns in its own
+# tooltip that it "still discloses your IP"; the gate did it silently, with no
+# way to say no. The old guard skipped only when the network was already down,
+# which is the opposite of consent.
+#
+# The condition is a function rather than an inline `os.environ` read so it can
+# be pinned from a test in both directions without anything opening a socket.
+LIVE_CATALOG_ENV = "MUSIALIZER_LIVE_CATALOG_TEST"
+
+
+def live_catalog_skip_reason(environ: Mapping[str, str]) -> str | None:
+    """Return why the live catalog fetch must be skipped, or `None` to run it."""
+    if environ.get(LIVE_CATALOG_ENV) == "1":
+        return None
+    return (
+        f"live OpenRouter catalog fetch is opt-in: set {LIVE_CATALOG_ENV}=1 to run it "
+        "(it sends an outbound HTTPS request and discloses this machine's IP)"
+    )
 
 
 class AtomicCacheTests(unittest.TestCase):
@@ -902,9 +928,28 @@ class ProviderCatalogTests(unittest.TestCase):
             self.assertEqual(reloaded["filters"], {"output_modalities": "text"})
             self.assertEqual(len(reloaded["models"]), 2)
 
+    def test_live_catalog_gate_is_closed_unless_the_variable_says_otherwise(self) -> None:
+        # Pins the gate itself, offline and in both directions: the live test
+        # below can only be proven to stay closed by asking the condition, since
+        # running it with the variable set is the thing being avoided.
+        for environ in ({}, {LIVE_CATALOG_ENV: ""}, {LIVE_CATALOG_ENV: "0"},
+                        {LIVE_CATALOG_ENV: "yes"}):
+            reason = live_catalog_skip_reason(environ)
+            self.assertIsNotNone(reason, f"gate must stay closed for {environ!r}")
+            self.assertIn(LIVE_CATALOG_ENV, reason or "")
+        self.assertIsNone(live_catalog_skip_reason({LIVE_CATALOG_ENV: "1"}))
+        # And the real environment this suite runs under must have it closed,
+        # or `tools/verify.sh` is back to fetching openrouter.ai silently.
+        self.assertEqual(
+            live_catalog_skip_reason(os.environ) is None,
+            os.environ.get(LIVE_CATALOG_ENV) == "1")
+
     def test_live_fetch_normalizes_and_caches_the_real_catalog(self) -> None:
-        # The task brief permits one live call to verify shape; every
+        # The one live call in this file, opt-in since audit finding B3; every
         # refusal-path test above uses local fixtures instead.
+        reason = live_catalog_skip_reason(os.environ)
+        if reason is not None:
+            self.skipTest(reason)
         with tempfile.TemporaryDirectory() as tmp:
             cache_file = Path(tmp) / "openrouter-models-v1.json"
             result = provider_catalog.refresh(
