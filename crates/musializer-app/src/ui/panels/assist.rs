@@ -645,7 +645,34 @@ impl AssistController {
                 // was asked for. Read back from the manifest for exactly that
                 // reason — `running_snapshot` holds what was resolved, and the
                 // difference between the two is the whole point of the field.
-                self.staged_snapshot = staged_execution_snapshot(&output_dir)
+                //
+                // Three outcomes, not two: a job whose manifest embedded no
+                // snapshot and one whose snapshot this build could not read are
+                // different facts, and the fall back to `running_snapshot` shows
+                // the *resolved* graph either way — requested model ids labelled
+                // as observed ones. So the unreadable case says so, in the report
+                // line and in a notice, rather than reading as a clean run
+                // (`ASSIST_AUDIT_2026-08-29.md`, protocol map row 2b).
+                let read_back = staged_execution_snapshot(&output_dir);
+                let observed_token = match &read_back {
+                    Ok(Some(_)) => "yes".to_string(),
+                    Ok(None) => "absent".to_string(),
+                    Err(reason) => format!("unreadable[{reason}]"),
+                };
+                let provenance_notice = read_back.as_ref().err().map(|reason| {
+                    AssistNotice::new(
+                        Severity::Warning,
+                        "Result provenance unavailable",
+                        format!(
+                            "The finished job's manifest carries an execution record this build \
+                             cannot read ({reason}). The suggestions are unaffected; the routing \
+                             shown is the one resolved at Start, not the one the helper observed."
+                        ),
+                    )
+                });
+                self.staged_snapshot = read_back
+                    .ok()
+                    .flatten()
                     .or_else(|| self.running_snapshot.clone());
                 report_routing(&format!(
                     "staged mode={} contracts={} observed={}",
@@ -659,7 +686,7 @@ impl AssistController {
                             .collect::<Vec<_>>()
                             .join(",")
                     ),
-                    staged_execution_snapshot(&output_dir).is_some(),
+                    observed_token,
                 ));
                 // Written back exactly as C does (`plug.c:3446-3450`), so the
                 // next run does not hash the whole file again.
@@ -688,7 +715,10 @@ impl AssistController {
                         Severity::Info,
                         "No analysis changes found",
                         mode.empty_result(),
-                    )];
+                    )]
+                    .into_iter()
+                    .chain(provenance_notice)
+                    .collect();
                 }
                 session.candidate = Some(loaded.candidate);
                 session.candidate_mode = mode;
@@ -699,6 +729,9 @@ impl AssistController {
                     "Analysis ready for review",
                     format!("Validated suggestions for {name} are staged in the Assist panel."),
                 )]
+                .into_iter()
+                .chain(provenance_notice)
+                .collect()
             }
         }
     }
@@ -1273,14 +1306,35 @@ fn report_routing(line: &str) {
 /// **resolved**, and the manifest's copy carries the model ids the helper
 /// **observed** (§6). Bounded and schema-checked like every other document this
 /// panel reads from a job folder.
-fn staged_execution_snapshot(output_dir: &str) -> Option<ExecutionSnapshot> {
+///
+/// `Ok(None)` is "this run embedded no snapshot" — the pre-P4 helper, and the
+/// command line. `Err` is "there is one and it is not one this build can read",
+/// which the caller must not confuse with the first: the fall back to the
+/// resolved graph looks identical in both, and in the second case it presents
+/// requested model ids as observed ones. Through
+/// [`ExecutionSnapshot::parse_observed`], not the strict reader, because the
+/// writer is the helper and additive annotation is a thing it is allowed to do.
+fn staged_execution_snapshot(output_dir: &str) -> Result<Option<ExecutionSnapshot>, String> {
     if output_dir.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let bytes = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))?;
-    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let embedded = manifest.get("execution_snapshot")?;
-    serde_json::from_value(embedded.clone()).ok()
+    // No manifest, an empty one, or one past the shared size cap — the same
+    // three the review surface beside this treats as "nothing to show", and the
+    // cap is the reason a hostile folder cannot make this allocate.
+    let Some(bytes) = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME)) else {
+        return Ok(None);
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("the manifest is not readable as JSON: {error}"))?;
+    let Some(embedded) = manifest
+        .get("execution_snapshot")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(None);
+    };
+    ExecutionSnapshot::parse_observed(embedded)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// A doctor report to read runtime identity from, when one has been taken.
@@ -6192,5 +6246,125 @@ mod tests {
             RevealState::Probe
         );
         assert!(!RevealState::Probe.is_ready());
+    }
+
+    // -----------------------------------------------------------------------
+    // The observed execution snapshot (audit protocol map row 2b)
+    // -----------------------------------------------------------------------
+
+    /// The manifest `external_analysis.py` writes when a routed job finishes:
+    /// the frozen snapshot, deep-copied and annotated with what ran
+    /// (`observe_execution`). `extra` is spliced in at both levels to stand for
+    /// an annotation key a later helper adds.
+    fn manifest_with_observed_snapshot(extra: &str, contract_extra: &str) -> String {
+        format!(
+            r#"{{"schema_version":"musializer.assist-manifest/v1",
+                "audio":{{"sha256":"{digest}","duration_seconds":180.0}},
+                "execution_snapshot":{{
+                    "snapshot_schema":"musializer.assist-execution/v1",
+                    "settings_schema":"musializer.assist/v1",
+                    "profile_id":"recommended",
+                    "resolved_at_utc":"2026-08-29T09:00:00Z",
+                    "contracts":[{{"contract":"TC-WORDING","route_type":"codex",
+                        "runtime_id":"codex","runtime_version":null,
+                        "model_id":"gpt-5-codex","model_sha256":null,
+                        "reasoning_effort":"medium",
+                        "boundary_applied":"text-leaves-machine","boundary_confirmed":true,
+                        "audio_scope":null,"excerpt_spans":[],
+                        "provider_constraints":null,"provider_served":null,
+                        "prompt_version":"wording/v2","prompt_sha256":null,
+                        "schema_version":"musializer.lyrics-review/v1",
+                        "fallback_policy":"none","fallback_taken":false,
+                        "fallback_from":null{contract_extra}}}],
+                    "catalog_revision":null,"suitability_revision":null,
+                    "credential_present":false,"credential_fingerprint":null{extra}}}}}"#,
+            digest = "a".repeat(64),
+        )
+    }
+
+    fn snapshot_job_folder(scratch: &Scratch, name: &str, manifest: &str) -> PathBuf {
+        let folder = scratch.join(name);
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(folder.join(ASSIST_MANIFEST_NAME), manifest).expect("manifest");
+        folder
+    }
+
+    #[test]
+    fn the_observed_snapshot_survives_an_annotation_key_the_helper_adds() {
+        let scratch = Scratch::new("observed-snapshot");
+        let plain =
+            snapshot_job_folder(&scratch, "plain", &manifest_with_observed_snapshot("", ""));
+        let annotated = snapshot_job_folder(
+            &scratch,
+            "annotated",
+            &manifest_with_observed_snapshot(
+                r#","observed_at_utc":"2026-08-29T09:14:00Z""#,
+                r#","attempts":2,"latency_seconds":4.25"#,
+            ),
+        );
+
+        let read = |folder: &PathBuf| {
+            staged_execution_snapshot(folder.to_str().expect("utf-8")).expect("readable")
+        };
+        let expected = read(&plain).expect("a snapshot");
+        assert_eq!(
+            expected
+                .contract(musializer_core::assist::contracts::ContractId::Wording)
+                .unwrap()
+                .model_id,
+            "gpt-5-codex"
+        );
+        // The defect this pins: with the strict reader, the annotated folder
+        // returned `None` and the panel silently showed the resolved graph.
+        assert_eq!(read(&annotated).as_ref(), Some(&expected));
+    }
+
+    #[test]
+    fn a_job_that_embedded_no_snapshot_is_not_the_same_as_one_this_build_cannot_read() {
+        let scratch = Scratch::new("observed-absent");
+        // Absent: a pre-P4 helper, or a run started from the command line.
+        let none = snapshot_job_folder(
+            &scratch,
+            "none",
+            r#"{"schema_version":"musializer.assist-manifest/v1"}"#,
+        );
+        assert_eq!(
+            staged_execution_snapshot(none.to_str().expect("utf-8")),
+            Ok(None)
+        );
+        // `observe_execution` returns `None` for an unrouted run and the
+        // manifest carries the key as JSON `null`; that is absent too.
+        let null = snapshot_job_folder(
+            &scratch,
+            "null",
+            r#"{"schema_version":"musializer.assist-manifest/v1","execution_snapshot":null}"#,
+        );
+        assert_eq!(
+            staged_execution_snapshot(null.to_str().expect("utf-8")),
+            Ok(None)
+        );
+        // A folder with no manifest at all, and the no-folder case.
+        assert_eq!(
+            staged_execution_snapshot(scratch.join("missing").to_str().expect("utf-8")),
+            Ok(None)
+        );
+        assert_eq!(staged_execution_snapshot(""), Ok(None));
+
+        // Mangled: an error, so the caller can say the provenance is gone
+        // instead of presenting the resolved graph as the observed one.
+        let mangled = snapshot_job_folder(
+            &scratch,
+            "mangled",
+            &manifest_with_observed_snapshot("", "")
+                .replace(r#""route_type":"codex""#, r#""route_type":"open-router""#),
+        );
+        let error = staged_execution_snapshot(mangled.to_str().expect("utf-8"))
+            .expect_err("a route type this build does not know");
+        assert!(error.contains("open-router"), "got {error}");
+
+        let torn = snapshot_job_folder(&scratch, "torn", r#"{"schema_version":"musial"#);
+        assert!(staged_execution_snapshot(torn.to_str().expect("utf-8"))
+            .expect_err("half a manifest")
+            .contains("JSON"));
     }
 }

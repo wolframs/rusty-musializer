@@ -455,6 +455,87 @@ mod tests {
             .contains(&FallbackPolicy::Ask));
     }
 
+    /// The implemented-route table, swept rather than sampled (audit A9).
+    ///
+    /// It is maintained twice — here and as the `implemented` dict inside
+    /// `read_execution_snapshot` (`tools/external_analysis.py`) — and
+    /// `tests/test_cross_language_pins.py::ContractTokens` pins the two
+    /// *texts* to each other. This pins the Rust side's *behaviour*, which that
+    /// one cannot see: the early return that makes `route_is_implemented`
+    /// answer `runtime_is_implemented` first, and the two model gates. A route
+    /// wrongly implemented here composes a job the helper then refuses; a route
+    /// wrongly refused makes a configured lane unroutable with no file changed.
+    #[test]
+    fn only_six_contract_runtime_pairs_are_implemented_and_two_gate_their_model() {
+        const IMPLEMENTED: [(ContractId, RouteType, &str); 6] = [
+            (ContractId::Measured, RouteType::Builtin, "builtin-analyzer"),
+            (ContractId::Coarse, RouteType::LocalProc, "whisper.cpp"),
+            (ContractId::Align, RouteType::LocalProc, "mms-ctc"),
+            (ContractId::Wording, RouteType::Codex, "codex"),
+            (ContractId::Semantic, RouteType::OpenRouter, "openrouter"),
+            (ContractId::Plan, RouteType::Builtin, "builtin-planner"),
+        ];
+        let runtimes = [
+            "builtin-analyzer",
+            "builtin-planner",
+            "whisper.cpp",
+            "mms-ctc",
+            "codex",
+            "openrouter",
+            "whisper",
+            "",
+        ];
+        for contract in ALL_CONTRACTS {
+            for route_type in [
+                RouteType::Builtin,
+                RouteType::LocalProc,
+                RouteType::Codex,
+                RouteType::OpenRouter,
+            ] {
+                for runtime_id in runtimes {
+                    let expected = IMPLEMENTED.contains(&(contract, route_type, runtime_id));
+                    assert_eq!(
+                        contract.runtime_is_implemented(route_type, runtime_id),
+                        expected,
+                        "{} / {} / {runtime_id:?}",
+                        contract.token(),
+                        route_type.token(),
+                    );
+                    // With no model named, the two answers are the same one:
+                    // `route_is_implemented` refuses an unimplemented runtime
+                    // before it looks at a model at all.
+                    assert_eq!(
+                        contract.route_is_implemented(route_type, runtime_id, None),
+                        expected,
+                        "{} / {} / {runtime_id:?}",
+                        contract.token(),
+                        route_type.token(),
+                    );
+                }
+            }
+        }
+        // The gates, on the two lanes that have one. `""` is refused here and
+        // accepted by the helper; that asymmetry is named and pinned in
+        // `test_cross_language_pins.py`, and the direction is safe because this
+        // side is the one that composes the row.
+        for (contract, model) in [
+            (ContractId::Coarse, "whisper.cpp"),
+            (ContractId::Align, "mms-ctc"),
+        ] {
+            let route_type = RouteType::LocalProc;
+            assert!(contract.route_is_implemented(route_type, model, Some(model)));
+            assert!(!contract.route_is_implemented(route_type, model, Some("large-v3")));
+            assert!(!contract.route_is_implemented(route_type, model, Some("")));
+        }
+        // And a lane with no gate takes whatever model it is given, because the
+        // catalog is what decides there.
+        assert!(ContractId::Semantic.route_is_implemented(
+            RouteType::OpenRouter,
+            "openrouter",
+            Some("google/gemini-2.5-flash")
+        ));
+    }
+
     #[test]
     fn implemented_routes_are_a_subset_of_schema_eligible_routes() {
         for contract in ALL_CONTRACTS {

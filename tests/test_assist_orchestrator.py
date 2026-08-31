@@ -251,12 +251,18 @@ class XdgCacheDirectoryTests(unittest.TestCase):
     """Finding B12: the cache directory must resolve the same in both languages.
 
     The XDG base directory spec says a non-absolute value in `XDG_CACHE_HOME`
-    is invalid and must be ignored. The Rust twins
-    (`ui/assist_settings.rs::cache_dir`, `assist/plan.rs::cache_dir`) neither
-    strip nor expand, so `XDG_CACHE_HOME="~/c"` used to resolve to two
-    different directories -- Python's expanded home, Rust's literal `~/c`
-    relative to the process's working directory. Ignoring it is the answer that
+    is invalid and must be ignored. There were three copies of this rule and
+    they had drifted: Python expanded `~` where the two Rust copies took it
+    literally, so `XDG_CACHE_HOME="~/c"` named two different directories --
+    Python's expanded home, Rust's literal `~/c` relative to whatever the
+    process's working directory happened to be. Ignoring it is the answer that
     is both spec-correct and reachable from Rust.
+
+    Rust is now one function,
+    `musializer-runtime/src/assist/files.rs::cache_dir` (the two former copies
+    call it), pinned by
+    `a_non_absolute_xdg_cache_home_is_ignored_rather_than_resolved` over the
+    same vectors as below.
     """
 
     def test_an_absolute_value_is_used(self) -> None:

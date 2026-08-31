@@ -596,6 +596,121 @@ impl ExecutionSnapshot {
         }
         remote
     }
+
+    /// The **observed** copy, as a finished job's `assist-manifest.json` embeds
+    /// it (protocol map row 2b), read forgivingly rather than strictly.
+    ///
+    /// # Two readers, on purpose
+    ///
+    /// [`Self::parse`] reads the file *this* side wrote, and it is
+    /// `deny_unknown_fields` because that is the credential canary: a key
+    /// planted in the record Rust hands the helper must be refused loudly, and
+    /// `no_snapshot_field_can_hold_a_credential` pins it. Do not weaken it.
+    ///
+    /// This reads a document the **helper** wrote — `observe_execution` in
+    /// `tools/external_analysis.py` deep-copies the snapshot and annotates it
+    /// with what actually ran. Under the strict reader, one annotation key
+    /// added on the Python side would make the whole provenance display vanish
+    /// with no error anywhere: the audit (`ASSIST_AUDIT_2026-08-29.md`, row 2b)
+    /// found this had no test at all, and the caller's `.ok()?` then falls back
+    /// to the *resolved* graph, which would present requested model ids as
+    /// observed ones. Additive annotation is a thing the writer is allowed to
+    /// do; silently losing §6's whole point over it is not.
+    ///
+    /// So an unknown key is **dropped**, at both levels, rather than accepted
+    /// into any field — which keeps the canary's property on this path too: a
+    /// credential smuggled into the manifest reaches no field of the result
+    /// (`a_credential_planted_in_the_observed_copy_reaches_no_field`). Anything
+    /// structural — a missing field, a token this build does not know, a
+    /// `contracts` that is not an array — is still an error, so a mangled
+    /// snapshot degrades visibly instead of silently.
+    pub fn parse_observed(embedded: &serde_json::Value) -> Result<Self, ObservedSnapshotError> {
+        let object = embedded
+            .as_object()
+            .ok_or(ObservedSnapshotError::NotAnObject)?;
+        let mut pruned = serde_json::Map::new();
+        for (key, value) in object {
+            if key == "contracts" {
+                pruned.insert(key.clone(), prune_contracts(value));
+            } else if SNAPSHOT_FIELDS.contains(&key.as_str()) {
+                pruned.insert(key.clone(), value.clone());
+            }
+        }
+        serde_json::from_value(serde_json::Value::Object(pruned))
+            .map_err(|error| ObservedSnapshotError::Malformed(error.to_string()))
+    }
+}
+
+/// Why an embedded observed snapshot could not be read as one.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ObservedSnapshotError {
+    #[error("it is not a JSON object")]
+    NotAnObject,
+    #[error("{0}")]
+    Malformed(String),
+}
+
+/// The keys [`ExecutionSnapshot`] itself writes. Pinned against the serializer
+/// by `the_tolerant_reader_knows_every_field_the_writer_emits`, because a table
+/// of field names maintained by hand beside the struct it describes is the
+/// widget-id-namespace trap in miniature — a new field missing from here would
+/// be pruned out of every observed snapshot.
+const SNAPSHOT_FIELDS: &[&str] = &[
+    "snapshot_schema",
+    "settings_schema",
+    "profile_id",
+    "resolved_at_utc",
+    "contracts",
+    "catalog_revision",
+    "suitability_revision",
+    "credential_present",
+    "credential_fingerprint",
+];
+
+/// The same table for [`ContractSnapshot`], and the one that matters in
+/// practice: every field `observe_execution` writes is a row field.
+const CONTRACT_FIELDS: &[&str] = &[
+    "contract",
+    "route_type",
+    "runtime_id",
+    "runtime_version",
+    "model_id",
+    "model_sha256",
+    "reasoning_effort",
+    "boundary_applied",
+    "boundary_confirmed",
+    "audio_scope",
+    "excerpt_spans",
+    "provider_constraints",
+    "provider_served",
+    "prompt_version",
+    "prompt_sha256",
+    "schema_version",
+    "fallback_policy",
+    "fallback_taken",
+    "fallback_from",
+];
+
+/// Drops unknown keys from each row, and leaves anything that is not a row
+/// alone so the strict deserializer reports it rather than this function.
+fn prune_contracts(value: &serde_json::Value) -> serde_json::Value {
+    let Some(rows) = value.as_array() else {
+        return value.clone();
+    };
+    serde_json::Value::Array(
+        rows.iter()
+            .map(|row| match row.as_object() {
+                None => row.clone(),
+                Some(fields) => serde_json::Value::Object(
+                    fields
+                        .iter()
+                        .filter(|(key, _)| CONTRACT_FIELDS.contains(&key.as_str()))
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                ),
+            })
+            .collect(),
+    )
 }
 
 /// The impure facts [`resolve`] needs, gathered by the runtime and handed in.
@@ -2869,5 +2984,174 @@ mod tests {
             "suitability_revision":null,"credential_present":true,"credential_fingerprint":null,
             "api_key":"sk-or-v1-MUSICANARY7Q4X2ZK9"}"#;
         assert!(ExecutionSnapshot::parse(planted.as_bytes()).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // The observed copy (protocol map row 2b)
+    // -----------------------------------------------------------------------
+
+    /// One row in the shape `observe_execution` writes: the resolved fields the
+    /// application froze, plus the annotation the helper adds once a stage has
+    /// actually run (`model_id` replaced, `provider_served`, the three
+    /// `prompt_*`/`schema_version` strings).
+    fn observed_manifest_snapshot() -> serde_json::Value {
+        serde_json::json!({
+            "snapshot_schema": "musializer.assist-execution/v1",
+            "settings_schema": SETTINGS_SCHEMA,
+            "profile_id": "recommended",
+            "resolved_at_utc": "2026-08-29T09:00:00Z",
+            "contracts": [{
+                "contract": "TC-SEMANTIC",
+                "route_type": "openrouter",
+                "runtime_id": "openrouter",
+                "runtime_version": null,
+                "model_id": "google/gemini-2.5-flash-preview-09-2025",
+                "model_sha256": null,
+                "reasoning_effort": null,
+                "boundary_applied": "audio-leaves-machine",
+                "boundary_confirmed": true,
+                "audio_scope": "excerpts",
+                "excerpt_spans": [[12.5, 30.0]],
+                "provider_constraints": {
+                    "allow_fallbacks": false,
+                    "zdr_required": true
+                },
+                "provider_served": "Google AI Studio",
+                "prompt_version": "semantic/v3",
+                "prompt_sha256": "b".repeat(64),
+                "schema_version": "musializer.semantic-events/v1",
+                "fallback_policy": "none",
+                "fallback_taken": false,
+                "fallback_from": null
+            }],
+            "catalog_revision": "musializer.openrouter-catalog/v1@2026-08-29T08:00:00Z",
+            "suitability_revision": null,
+            "credential_present": true,
+            "credential_fingerprint": "0a1b2c3d"
+        })
+    }
+
+    #[test]
+    fn a_python_shaped_observed_snapshot_parses() {
+        let snapshot = ExecutionSnapshot::parse_observed(&observed_manifest_snapshot()).unwrap();
+        let row = snapshot.contract(ContractId::Semantic).unwrap();
+        // The whole point of the field: what ran, not what was asked for.
+        assert_eq!(row.model_id, "google/gemini-2.5-flash-preview-09-2025");
+        assert_eq!(row.provider_served.as_deref(), Some("Google AI Studio"));
+        assert_eq!(row.audio_scope, Some(AudioScope::Excerpts));
+        assert_eq!(row.excerpt_spans, vec![[12.5, 30.0]]);
+        assert!(snapshot.sends_audio_off_machine());
+    }
+
+    /// The fragility the audit found: under the strict reader one added Python
+    /// annotation key drops the entire provenance display, with no error and no
+    /// report line saying so.
+    #[test]
+    fn an_added_python_key_no_longer_drops_the_provenance() {
+        let mut document = observed_manifest_snapshot();
+        document["observed_at_utc"] = serde_json::json!("2026-08-29T09:14:00Z");
+        document["contracts"][0]["attempts"] = serde_json::json!(2);
+        document["contracts"][0]["latency_seconds"] = serde_json::json!(4.25);
+
+        // The strict reader — the one the written file keeps — refuses it, which
+        // is what made this a defect rather than a hypothetical.
+        let bytes = serde_json::to_vec(&document).unwrap();
+        assert!(ExecutionSnapshot::parse(&bytes).is_err());
+
+        let observed = ExecutionSnapshot::parse_observed(&document).unwrap();
+        assert_eq!(
+            observed,
+            ExecutionSnapshot::parse_observed(&observed_manifest_snapshot()).unwrap(),
+            "an annotation key must not change a single field this side reads"
+        );
+    }
+
+    #[test]
+    fn a_mangled_observed_snapshot_is_an_error_rather_than_a_shrug() {
+        // A row that lost a required field.
+        let mut missing = observed_manifest_snapshot();
+        missing["contracts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("boundary_applied");
+        assert!(matches!(
+            ExecutionSnapshot::parse_observed(&missing),
+            Err(ObservedSnapshotError::Malformed(_))
+        ));
+
+        // A token this build does not know — a renamed route type, which is the
+        // drift `tests/test_cross_language_pins.py` watches for on the way out.
+        let mut renamed = observed_manifest_snapshot();
+        renamed["contracts"][0]["route_type"] = serde_json::json!("open-router");
+        assert!(ExecutionSnapshot::parse_observed(&renamed).is_err());
+
+        // `contracts` that is not an array is reported, not pruned into one.
+        let mut scalar = observed_manifest_snapshot();
+        scalar["contracts"] = serde_json::json!("TC-SEMANTIC");
+        assert!(ExecutionSnapshot::parse_observed(&scalar).is_err());
+
+        assert_eq!(
+            ExecutionSnapshot::parse_observed(&serde_json::json!(["TC-SEMANTIC"])),
+            Err(ObservedSnapshotError::NotAnObject)
+        );
+    }
+
+    /// The canary's property, kept on the tolerant path: an unknown key is
+    /// dropped, never accepted into a field. So the observed copy cannot become
+    /// a place a credential is carried into the interface.
+    #[test]
+    fn a_credential_planted_in_the_observed_copy_reaches_no_field() {
+        let mut document = observed_manifest_snapshot();
+        document["api_key"] = serde_json::json!("sk-or-v1-MUSICANARY7Q4X2ZK9");
+        document["contracts"][0]["authorization"] =
+            serde_json::json!("Bearer sk-or-v1-MUSICANARY7Q4X2ZK9");
+        let observed = ExecutionSnapshot::parse_observed(&document).unwrap();
+        let text = String::from_utf8(observed.to_bytes().unwrap()).unwrap();
+        assert!(!text.contains("MUSICANARY"));
+        assert!(!text.contains("sk-or"));
+        assert!(!format!("{observed:?}").contains("MUSICANARY"));
+    }
+
+    /// The two field tables above are hand-written beside the structs they
+    /// describe, and a field missing from one would be pruned out of every
+    /// observed snapshot — silently, which is the failure mode this whole
+    /// section exists to remove. So they are compared against what the
+    /// serializer actually emits rather than trusted.
+    #[test]
+    fn the_tolerant_reader_knows_every_field_the_writer_emits() {
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::All,
+            true,
+            &facts(),
+        );
+        assert!(!snapshot.contracts.is_empty());
+        let value = serde_json::to_value(&snapshot).unwrap();
+
+        let mut top: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut known = SNAPSHOT_FIELDS.to_vec();
+        top.sort_unstable();
+        known.sort_unstable();
+        assert_eq!(top, known);
+
+        let mut row: Vec<&str> = value["contracts"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut known_row = CONTRACT_FIELDS.to_vec();
+        row.sort_unstable();
+        known_row.sort_unstable();
+        assert_eq!(row, known_row);
+
+        // And the pair, end to end: everything this side writes survives the
+        // tolerant read unchanged.
+        assert_eq!(ExecutionSnapshot::parse_observed(&value).unwrap(), snapshot);
     }
 }

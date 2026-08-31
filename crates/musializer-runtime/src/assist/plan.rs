@@ -35,7 +35,7 @@ use musializer_core::assist::secret::Secret;
 use musializer_core::assist::settings::{AssistSettings, LocalRuntimes};
 
 use super::discover;
-use super::files::{self, AssistFileError};
+use super::files::{self, cache_dir, AssistFileError};
 
 /// The file a job's snapshot is written to, inside its own output directory.
 pub const SNAPSHOT_FILE_NAME: &str = "assist-execution.json";
@@ -206,17 +206,6 @@ fn now_seconds() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
         .unwrap_or_default()
-}
-
-fn cache_dir() -> Option<PathBuf> {
-    if let Some(base) = std::env::var_os("XDG_CACHE_HOME") {
-        if !base.is_empty() {
-            return Some(PathBuf::from(base).join("musializer"));
-        }
-    }
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".cache/musializer"))
 }
 
 /// `(revision, models)` from the OpenRouter catalog cache, or `None` when it

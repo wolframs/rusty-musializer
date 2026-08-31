@@ -21,6 +21,7 @@
 //! an existing file's mode and creates a new one `0666 & ~umask`, which is
 //! exactly wrong for a key, so the private write is spelled out below.
 
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -81,6 +82,47 @@ pub fn settings_path() -> Option<PathBuf> {
 #[must_use]
 pub fn credentials_path() -> Option<PathBuf> {
     resolve_path("MUSIALIZER_ASSIST_CREDENTIALS", "credentials.json")
+}
+
+/// `$XDG_CACHE_HOME/musializer`, else `$HOME/.cache/musializer` — the directory
+/// `tools/atomic_cache.py::cache_dir` resolves, and now the only Rust spelling
+/// of it.
+///
+/// **A non-absolute `XDG_CACHE_HOME` is ignored**, which is what the XDG base
+/// directory specification requires ("if an implementation encounters a
+/// relative path in any of these variables it should consider the path invalid
+/// and ignore it"). Audit B12: this was written twice in Rust and once in
+/// Python, and the copies had already drifted in both directions — Python
+/// expanded `~` where Rust took it literally, and Rust resolved a relative
+/// value against whatever the working directory happened to be where Python
+/// (since AX-6) ignores it. Either way the application looks for a catalog the
+/// helper wrote somewhere else, and a cache that silently misses reads as
+/// "never fetched", which disengages the modality guard.
+///
+/// One function rather than three: the two callers here are the dialog's cache
+/// reader (`ui/assist_settings.rs`) and the plan's (`assist/plan.rs`), and the
+/// Python twin is pinned to this one by name in its own doc comment.
+#[must_use]
+pub fn cache_dir() -> Option<PathBuf> {
+    resolve_cache_dir(
+        std::env::var_os("XDG_CACHE_HOME").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// The decision itself, with the environment handed in.
+///
+/// Split out so the rule above is testable without `set_var` — which is
+/// `unsafe` in edition 2024 and, worse, would race every other test in the
+/// process against a global this crate reads all over.
+fn resolve_cache_dir(xdg_cache_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    if let Some(base) = xdg_cache_home.map(PathBuf::from) {
+        if base.is_absolute() {
+            return Some(base.join("musializer"));
+        }
+    }
+    home.filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(".cache/musializer"))
 }
 
 fn resolve_path(override_variable: &str, file_name: &str) -> Option<PathBuf> {
@@ -297,6 +339,38 @@ mod tests {
             None,
         );
         store
+    }
+
+    /// Audit B12: three copies of this rule, drifted. The Python twin
+    /// (`tools/atomic_cache.py::cache_dir`) resolves the same way, and
+    /// `tests/test_assist_orchestrator.py::XdgCacheDirectoryTests` pins that
+    /// side; a disagreement means the application looks for a catalog the
+    /// helper wrote somewhere else, and a cache that misses reads as "never
+    /// fetched" rather than as an error.
+    #[test]
+    fn a_non_absolute_xdg_cache_home_is_ignored_rather_than_resolved() {
+        let home = Some(OsStr::new("/home/someone"));
+        let fallback = PathBuf::from("/home/someone/.cache/musializer");
+
+        assert_eq!(
+            resolve_cache_dir(Some(OsStr::new("/var/tmp/cache")), home),
+            Some(PathBuf::from("/var/tmp/cache/musializer"))
+        );
+        // The three the specification calls invalid. A tilde is **not**
+        // expanded — Python dropped its `.expanduser()` for exactly this, since
+        // taking `~/c` literally and expanding it are two different directories.
+        for relative in ["~/c", "cache", "../cache", " /var/tmp/cache", ""] {
+            assert_eq!(
+                resolve_cache_dir(Some(OsStr::new(relative)), home),
+                Some(fallback.clone()),
+                "{relative:?} is not an absolute path"
+            );
+        }
+        // No usable home either: a caller with nowhere to look is told so
+        // rather than handed a relative path it would resolve against whatever
+        // directory the process happens to be in.
+        assert_eq!(resolve_cache_dir(Some(OsStr::new("cache")), None), None);
+        assert_eq!(resolve_cache_dir(None, Some(OsStr::new(""))), None);
     }
 
     #[test]

@@ -77,7 +77,10 @@ use musializer_core::assist::settings::{
 use musializer_core::assist::suitability::{self, Suitability};
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::assist::discover::{self, Discovery};
-use musializer_runtime::assist::files::{self, AssistFileError};
+// `cache_dir` is imported rather than spelled here: audit B12 found this file
+// carrying a second copy of its body, drifted from both the runtime twin and
+// the Python third copy in `tools/atomic_cache.py`.
+use musializer_runtime::assist::files::{self, cache_dir, AssistFileError};
 use musializer_runtime::assist::models;
 use musializer_runtime::font::Faces;
 use musializer_runtime::process::process_group;
@@ -3088,19 +3091,6 @@ fn credential_lookup(settings: &AssistSettings) -> &str {
     } else {
         stored
     }
-}
-
-/// `$XDG_CACHE_HOME/musializer`, else `$HOME/.cache/musializer` — the directory
-/// `tools/atomic_cache.py` resolves, spelled the same way.
-fn cache_dir() -> Option<PathBuf> {
-    if let Some(base) = std::env::var_os("XDG_CACHE_HOME") {
-        if !base.is_empty() {
-            return Some(PathBuf::from(base).join("musializer"));
-        }
-    }
-    std::env::var_os("HOME")
-        .filter(|home| !home.is_empty())
-        .map(|home| PathBuf::from(home).join(".cache/musializer"))
 }
 
 /// The size cap on a cache document, so a corrupt or hostile file cannot make

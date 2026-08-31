@@ -2535,6 +2535,11 @@ printf '{"schema":"musializer.assist-credentials/v1","entries":{"openrouter/defa
     "$ROUTE_STUB_KEY" >"$ROUTE_CONFIG/keyed/musializer/credentials.json"
 chmod 700 "$ROUTE_CONFIG/keyed/musializer"
 chmod 600 "$ROUTE_CONFIG/keyed/musializer/credentials.json"
+# Absolute on purpose. A non-absolute `XDG_CACHE_HOME` is invalid per the XDG
+# base directory specification and is now ignored by both languages (audit B12),
+# so with the default relative `OUT_DIR` this would silently point the probe at
+# the operator's own `~/.cache/musializer` instead of an empty scratch one.
+ROUTE_CACHE="$(cd "$ROUTE_CONFIG/cache" && pwd)"
 
 assist_routes_capture() {
     # assist_routes_capture NAME LANES CONFIG_HOME
@@ -2546,7 +2551,7 @@ assist_routes_capture() {
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         XDG_CONFIG_HOME="$config" \
-        XDG_CACHE_HOME="$ROUTE_CONFIG/cache" \
+        XDG_CACHE_HOME="$ROUTE_CACHE" \
         MUSIALIZER_ASSIST_PROBE_LANES="$lanes" \
         $MZ_GL ./target/debug/musializer --mute "$FIXTURE" \
             --size 1280x720 \
