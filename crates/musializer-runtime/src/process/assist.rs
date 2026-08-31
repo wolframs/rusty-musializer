@@ -234,6 +234,11 @@ pub struct AssistSpec<'a> {
     /// authorizes one. It goes into the child's **environment** and nowhere
     /// else: never argv (E2), never a log (E3), never the manifest (E4).
     pub credential: Option<AuthorizedCredential<'a>>,
+    /// Whether any route in this job's frozen graph asks for zero data
+    /// retention — [`ExecutionSnapshot::requires_zdr`](musializer_core::assist::execution::ExecutionSnapshot::requires_zdr).
+    /// The snapshot is the sole authority on what is sent (§6), which is what
+    /// makes the Privacy pane's toggle a real control (audit A4).
+    pub zdr_required: bool,
     /// `assist.json`'s `local_runtimes` overrides (§2), each `None` when the
     /// user has not set one and the helper's own discovery should decide.
     ///
@@ -314,7 +319,15 @@ impl AssistJob {
         // dialog never saw, so the helper's repository-`.env` fallback is
         // CLI-only (docs/ASSIST_PROVIDER_CONTRACTS.md §3, AP1-e).
         command.arg("--no-dotenv");
-        if spec.mode.uses_model() {
+        // Zero data retention as the **snapshot** states it, not as the mode
+        // implies it. This flag used to be `spec.mode.uses_model()`, which
+        // meant the Privacy pane's ZDR toggle changed `assist.json` and the
+        // frozen record and not the request — a pressable control that could
+        // not turn the thing off, and a §6 `provider_constraints` block that
+        // said "as sent" while understating what was sent (audit A4). The
+        // helper ORs this with each route's own `zdr_required`, so the
+        // direction stays safe: a route that requires ZDR gets it regardless.
+        if spec.zdr_required {
             command.arg("--zdr");
         }
         // Only an explicitly chosen sheet, and only if it is still there
@@ -606,6 +619,10 @@ mod tests {
             mode,
             lyrics_file: None,
             execution_snapshot: None,
+            // The default is what the recommended graph resolves to for the
+            // mode under test; the argv test sets it explicitly, and the ZDR
+            // test below sets it both ways.
+            zdr_required: mode.uses_model(),
             credential: None,
             local_runtimes: LocalRuntimeOverrides::default(),
         }
@@ -726,7 +743,10 @@ mod tests {
             argv[12], "--no-dotenv",
             "the desktop path must refuse the repository-`.env` fallback"
         );
-        assert_eq!(argv[13], "--zdr", "a model run must be zero-data-retention");
+        assert_eq!(
+            argv[13], "--zdr",
+            "the snapshot said this graph asks for zero data retention"
+        );
         assert!(
             !argv.contains(&"--lyrics-file".to_string()),
             "no sheet was chosen, so none may be passed"
@@ -735,6 +755,38 @@ mod tests {
             !argv.contains(&"--execution-snapshot".to_string()),
             "no snapshot was resolved, so none may be passed"
         );
+    }
+
+    /// Audit A4. The Privacy pane's ZDR toggle used to change `assist.json` and
+    /// the frozen snapshot and **not** the request, because this flag was
+    /// `mode.uses_model()` — a control that could be pressed and could not turn
+    /// the thing off, next to a §6 record that claims to state constraints "as
+    /// sent". Both directions, on the same mode, so the mode cannot be what is
+    /// being measured.
+    #[test]
+    fn the_zdr_flag_follows_the_snapshot_and_not_the_mode() {
+        let scratch = Scratch::new("zdr");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "pathlib.Path(sys.argv[sys.argv.index('--bridge') + 1])\
+             .write_text('\\n'.join(sys.argv[1:]))",
+        );
+        let argv_of = |zdr: bool| {
+            let mut configured = spec(&helper, &scratch.0, AssistMode::Mimo);
+            configured.zdr_required = zdr;
+            let mut job = AssistJob::start(&configured, 0).expect("start");
+            assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
+            std::fs::read_to_string(job.bridge_path()).expect("bridge")
+        };
+        assert!(argv_of(true).contains("--zdr"));
+        assert!(
+            !argv_of(false).contains("--zdr"),
+            "a model mode whose graph asks for no ZDR must not send the flag"
+        );
+        // And the graph really does state it, or the pair above is comparing a
+        // flag against a constant nothing reads.
+        assert!(snapshot(WorkflowKind::Mimo, true).requires_zdr());
+        assert!(!snapshot(WorkflowKind::Lyrics, true).requires_zdr());
     }
 
     #[test]

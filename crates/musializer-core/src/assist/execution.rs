@@ -58,6 +58,18 @@ pub const NO_ENDPOINT: &str = "No eligible endpoint";
 /// The fourth: the model is still there and can no longer do the job (§5
 /// invariant 5).
 pub const MODALITY_LOST: &str = "Model lost a required modality";
+/// The credentials file exists and was refused rather than repaired (§3). A
+/// separate sentence from [`NO_KEY`], because "add a key" is the wrong
+/// instruction for a user who has one (audit A3).
+pub const KEY_REFUSED: &str = "Key file refused";
+/// Codex discovery looked everywhere it knows and found nothing.
+pub const CODEX_NOT_FOUND: &str = "codex not found";
+/// `local_runtimes.codex_bin` names something that is not a runnable file.
+/// `settings.rs`'s rule is that a set-but-missing path is a loud failure and
+/// never a silent fallback, which is what this block is (audit B6).
+pub const CODEX_OVERRIDE_MISSING: &str = "codex_bin path is wrong";
+/// A doctor report measured this local runtime and did not find it usable.
+pub const RUNTIME_UNAVAILABLE: &str = "Runtime not available";
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for a Unix timestamp.
 ///
@@ -187,6 +199,29 @@ impl ResolvedRoute {
             (None, RouteType::Codex) => CODEX_DEFAULT_LABEL.to_string(),
             (None, RouteType::Builtin | RouteType::LocalProc) => route.runtime_id.clone(),
             (None, _) => "not chosen".to_string(),
+        }
+    }
+
+    /// The model identity a snapshot **records**, which is not always the one
+    /// the picker displays.
+    ///
+    /// The difference is one case and it is audit A2: a remote route with no
+    /// model chosen displays as `not chosen` — a phrase, for a column that has
+    /// to say something — and records as the empty string, because a snapshot
+    /// field named `model_id` holding a sentence is a job asking a provider for
+    /// a model literally called "not chosen". Empty is what makes
+    /// [`ExecutionBlock::NoModel`] reachable, which is the block that names the
+    /// actual repair.
+    #[must_use]
+    pub fn model_id_recorded(&self) -> String {
+        let Some(route) = &self.route else {
+            return String::new();
+        };
+        match (&route.model_id, route.route_type) {
+            (Some(id), _) => id.clone(),
+            (None, RouteType::Codex) => CODEX_DEFAULT_LABEL.to_string(),
+            (None, RouteType::Builtin | RouteType::LocalProc) => route.runtime_id.clone(),
+            (None, _) => String::new(),
         }
     }
 
@@ -516,6 +551,28 @@ impl ExecutionSnapshot {
             .any(|entry| entry.boundary_applied.rank() >= 2)
     }
 
+    /// Whether any route in this graph asks for zero data retention.
+    ///
+    /// The snapshot is the authority on what is sent, and §6 defines
+    /// `provider_constraints` as "as sent" — so the request has to be composed
+    /// from this rather than from the workflow's name. Audit A4: `--zdr` was
+    /// passed unconditionally for every model mode, which made the Privacy
+    /// pane's ZDR toggle a control that could be pressed and could not turn
+    /// anything off, and made the frozen record understate the constraint the
+    /// job actually ran under. The helper still ORs this with the route's own
+    /// requirement (`external_analysis.py:1872`), so a contract whose
+    /// constraint says ZDR keeps it whatever this returns; the toggle now
+    /// governs exactly the routes where it is genuinely optional.
+    #[must_use]
+    pub fn requires_zdr(&self) -> bool {
+        self.contracts.iter().any(|entry| {
+            entry
+                .provider_constraints
+                .as_ref()
+                .is_some_and(|provider| provider.zdr_required)
+        })
+    }
+
     /// Whether this job may be handed a provider credential at all.
     ///
     /// Both halves are required and neither is redundant (§4 E1, §5 invariant
@@ -685,8 +742,24 @@ fn snapshot_contract(
             .find(|(name, _)| name == key)
             .map(|(_, value)| value.clone())
     };
-    let model_id = resolved.model_label();
+    let model_id = resolved.model_id_recorded();
     let overlay = suitability::row(&model_id, contract);
+    // §6's `audio_scope` is a statement about **this job**, so it cannot be
+    // wider than the boundary this row applied. The overlay's value is a
+    // property of the (model, contract) pair in the abstract — mms-ctc and
+    // whisper.cpp both carry `whole-track` there — and reading it straight
+    // wrote `boundary_applied: local-only` beside `audio_scope: whole-track`
+    // on every default Timed lyrics job, on lanes that open no socket (audit
+    // A5). The boundary sets the ceiling; the overlay may only narrow it.
+    let scope_ceiling = if boundary.rank() >= 2 {
+        AudioScope::WholeTrack
+    } else {
+        AudioScope::None
+    };
+    let audio_scope = match overlay.map(|row| row.audio_scope) {
+        Some(scope) if scope.rank() < scope_ceiling.rank() => scope,
+        _ => scope_ceiling,
+    };
     ContractSnapshot {
         contract,
         route_type: route.route_type,
@@ -699,14 +772,7 @@ fn snapshot_contract(
         // §5 invariant 2: a confirmation authorizes *this* job, and only a route
         // that actually leaves the machine can be authorized by one.
         boundary_confirmed: boundary.rank() >= 1 && facts.boundary_confirmed,
-        audio_scope: Some(overlay.map_or(
-            if boundary.rank() >= 2 {
-                AudioScope::WholeTrack
-            } else {
-                AudioScope::None
-            },
-            |row| row.audio_scope,
-        )),
+        audio_scope: Some(audio_scope),
         excerpt_spans: Vec::new(),
         provider_constraints: (route.route_type == RouteType::OpenRouter).then(|| {
             route
@@ -845,6 +911,55 @@ pub fn parse_doctor_facts(bytes: &[u8]) -> (Vec<(String, String)>, Vec<(String, 
     (versions, digests)
 }
 
+/// The state half of the same report: one [`RuntimeFact`] per runtime key.
+///
+/// Separate from [`parse_doctor_facts`] because the two answers are read for
+/// different questions — that one fills the snapshot's provenance, this one
+/// decides whether a job may start (audit A1). A runtime the report does not
+/// mention is absent from the list, which [`PreflightFacts::runtime`] reads as
+/// `Unmeasured` rather than as a refusal.
+#[must_use]
+pub fn parse_doctor_runtimes(bytes: &[u8]) -> Vec<(String, RuntimeFact)> {
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return Vec::new();
+    };
+    let Some(runtimes) = document
+        .get("runtimes")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut states: Vec<(String, RuntimeFact)> = runtimes
+        .iter()
+        .filter_map(|(key, identity)| {
+            let state = identity.get("state").and_then(serde_json::Value::as_str)?;
+            Some((
+                key.clone(),
+                if runtime_state_is_available(state) {
+                    RuntimeFact::Available
+                } else {
+                    RuntimeFact::Unavailable {
+                        remediation: identity
+                            .get("remediation")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or(state)
+                            .to_string(),
+                    }
+                },
+            ))
+        })
+        .collect();
+    states.sort_by(|left, right| left.0.cmp(&right.0));
+    states
+}
+
+/// The two doctor states that mean "usable". Named here so the dialog's badge
+/// and the pre-spawn gate cannot spell the vocabulary differently.
+#[must_use]
+pub fn runtime_state_is_available(state: &str) -> bool {
+    matches!(state, "ok" | "available")
+}
+
 // ---------------------------------------------------------------------------
 // Preflight (§5 invariant 4)
 // ---------------------------------------------------------------------------
@@ -867,6 +982,39 @@ pub enum ExecutionBlock {
     NoModel(ContractId),
     /// A remote route with no credential to authorize it.
     NoCredential(ContractId),
+    /// A remote route whose credentials file exists and was **refused** — a
+    /// mode other users can read, or bytes that are not this store (§3, "read
+    /// refusal"). Distinct from [`Self::NoCredential`] because the repair is
+    /// the opposite one: the key is there, and telling the user to add one is
+    /// a dead end (audit A3).
+    CredentialRefused {
+        contract: ContractId,
+        path: String,
+        /// The mode as it stands, so the `chmod` is a command rather than a
+        /// puzzle. `None` when the file was refused for a reason other than
+        /// its permissions.
+        mode: Option<u32>,
+    },
+    /// A Codex route on a machine where discovery found no `codex`.
+    CodexNotFound(ContractId),
+    /// A Codex route whose `local_runtimes.codex_bin` is set and is not a
+    /// runnable file. `settings.rs:196-201` states the rule this enforces: a
+    /// set-but-missing path is a loud failure, never a silent fallback onto
+    /// whatever `codex` happens to be on `PATH` (audit B6).
+    CodexOverrideMissing {
+        contract: ContractId,
+        /// The configured path, named because "wrong path" without the path is
+        /// not a repair.
+        path: String,
+        reason: String,
+    },
+    /// A local runtime a doctor report measured and did not find usable.
+    RuntimeUnavailable {
+        contract: ContractId,
+        runtime_id: String,
+        /// The doctor's own remediation where it gave one, else its state.
+        remediation: String,
+    },
     /// Provider constraints that cannot be satisfied, naming which ones.
     NoEndpoint {
         contract: ContractId,
@@ -893,8 +1041,12 @@ impl ExecutionBlock {
             Self::UnsupportedRoute { .. } => "Route not implemented",
             Self::NoModel(_) => NO_MODEL,
             Self::NoCredential(_) => NO_KEY,
+            Self::CredentialRefused { .. } => KEY_REFUSED,
             Self::NoEndpoint { .. } => NO_ENDPOINT,
             Self::ModalityLost { .. } => MODALITY_LOST,
+            Self::CodexNotFound(_) => CODEX_NOT_FOUND,
+            Self::CodexOverrideMissing { .. } => CODEX_OVERRIDE_MISSING,
+            Self::RuntimeUnavailable { .. } => RUNTIME_UNAVAILABLE,
         }
     }
 
@@ -904,6 +1056,10 @@ impl ExecutionBlock {
             Self::Unrouted(contract)
             | Self::NoModel(contract)
             | Self::NoCredential(contract)
+            | Self::CodexNotFound(contract)
+            | Self::CredentialRefused { contract, .. }
+            | Self::CodexOverrideMissing { contract, .. }
+            | Self::RuntimeUnavailable { contract, .. }
             | Self::NoEndpoint { contract, .. }
             | Self::ModalityLost { contract, .. } => *contract,
             Self::UnsupportedRoute { contract, .. } => *contract,
@@ -944,6 +1100,55 @@ impl ExecutionBlock {
                 contract.human_label(),
                 contract.token(),
             ),
+            Self::CredentialRefused {
+                contract,
+                path,
+                mode,
+            } => match mode {
+                Some(mode) => format!(
+                    "{} ({}) is routed to OpenRouter and the key file was refused, not repaired: \
+                     {path} is readable by other users (mode {mode:04o}). Treat the key as \
+                     exposed, then run `chmod 600 {path}`.",
+                    contract.human_label(),
+                    contract.token(),
+                ),
+                None => format!(
+                    "{} ({}) is routed to OpenRouter and the key file at {path} could not be \
+                     used. Open AI settings \u{2192} OpenRouter, which names the fault and the \
+                     repair; the file is never rewritten for you.",
+                    contract.human_label(),
+                    contract.token(),
+                ),
+            },
+            Self::CodexNotFound(contract) => format!(
+                "{} ({}) is routed to Codex and no codex executable was found on this process's \
+                 PATH, in the common install locations, or on your login shell's PATH. Install \
+                 it, or set local_runtimes.codex_bin in AI settings.",
+                contract.human_label(),
+                contract.token(),
+            ),
+            Self::CodexOverrideMissing {
+                contract,
+                path,
+                reason,
+            } => format!(
+                "{} ({}) is routed to Codex and local_runtimes.codex_bin names {path}, which is \
+                 not a runnable file ({reason}). An explicit setting is never quietly replaced \
+                 by a guess: fix the path in AI settings, or clear it to search again.",
+                contract.human_label(),
+                contract.token(),
+            ),
+            Self::RuntimeUnavailable {
+                contract,
+                runtime_id,
+                remediation,
+            } => format!(
+                "{} ({}) is routed to {runtime_id} and the last runtime check did not find it \
+                 usable \u{2014} {remediation} \u{2014} so run the check again from AI settings \
+                 \u{2192} Local models once that is done.",
+                contract.human_label(),
+                contract.token(),
+            ),
             Self::NoEndpoint {
                 contract,
                 constraint,
@@ -969,14 +1174,321 @@ impl ExecutionBlock {
     }
 }
 
+/// What is known about the credential a remote route would use, as three
+/// answers rather than a `bool`.
+///
+/// The `bool` was audit A3: `plan::openrouter_secret` collapsed every file
+/// error into `None`, so a `0644` credentials file reported as "no key is
+/// configured" and the user was told to add the key they already had. Refused
+/// is its own fact because it has its own repair.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CredentialFact {
+    /// Nothing configured, and nothing imported this session.
+    #[default]
+    Absent,
+    /// A usable key exists — from the `0600` file or from this session's
+    /// environment import.
+    Present,
+    /// A credentials file exists and was refused rather than repaired.
+    Refused {
+        path: String,
+        /// Present when the refusal was about the file's mode.
+        mode: Option<u32>,
+    },
+}
+
+impl CredentialFact {
+    #[must_use]
+    pub const fn is_present(&self) -> bool {
+        matches!(self, Self::Present)
+    }
+}
+
+/// What discovery has to say about `codex`.
+///
+/// `Unknown` is "nothing has looked yet", which is not grounds to refuse a job
+/// — the same distinction the catalog's `None` makes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CodexFact {
+    #[default]
+    Unknown,
+    Found,
+    NotFound,
+    /// `local_runtimes.codex_bin` is set and is not runnable (audit B6).
+    OverrideMissing {
+        path: String,
+        reason: String,
+    },
+}
+
+/// What a doctor report says about one local runtime.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RuntimeFact {
+    /// No report, or a report that does not mention this runtime.
+    #[default]
+    Unmeasured,
+    Available,
+    Unavailable {
+        remediation: String,
+    },
+}
+
 /// Everything the pre-spawn check needs that the snapshot does not carry.
+///
+/// One struct, built once per surface, because audit A1 was two independent
+/// answers to one question: the dialog's readiness badge knew about Codex
+/// discovery and the doctor report and the pre-spawn preflight did not, so
+/// `Blocked — codex not found` sat on the Routing tab while Start was accepted
+/// and the job died inside the helper forty minutes later.
 #[derive(Clone, Debug, Default)]
 pub struct PreflightFacts {
-    pub credential_present: bool,
+    pub credential: CredentialFact,
     /// The models the last catalog fetch reported, or `None` when the catalog
     /// was never fetched. `None` is "we have not looked", which is not grounds
     /// to refuse a job.
     pub catalog_models: Option<Vec<CatalogModelFacts>>,
+    pub codex: CodexFact,
+    /// Doctor verdicts by [`doctor_key`], for the surfaces that have a report.
+    pub local_runtimes: Vec<(String, RuntimeFact)>,
+    /// How many catalog entries this contract could be pointed at under the
+    /// current filters, when the caller computed it. `None` is "not computed"
+    /// — the settings dialog owns the picker's filters and is the only side
+    /// that can answer it.
+    pub eligible_models: Option<usize>,
+}
+
+impl PreflightFacts {
+    /// Facts that know only whether a credential exists. The shape the
+    /// pre-`AX-1` callers had, kept for tests and for callers with nothing
+    /// else to say.
+    #[must_use]
+    pub fn with_credential(present: bool) -> Self {
+        Self {
+            credential: if present {
+                CredentialFact::Present
+            } else {
+                CredentialFact::Absent
+            },
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn runtime(&self, key: &str) -> RuntimeFact {
+        self.local_runtimes
+            .iter()
+            .find(|(name, _)| name == key)
+            .map_or(RuntimeFact::Unmeasured, |(_, fact)| fact.clone())
+    }
+}
+
+/// One route, as much of it as [`evaluate_route`] reads.
+///
+/// Two constructors, because the two surfaces hold the same route in two
+/// shapes: the dialog has a [`ResolvedRoute`] and the pre-spawn gate has the
+/// frozen [`ContractSnapshot`]. Everything after this point is one code path.
+#[derive(Clone, Copy, Debug)]
+pub struct RouteFacts<'a> {
+    pub contract: ContractId,
+    pub route_type: RouteType,
+    pub runtime_id: &'a str,
+    /// `None` where nothing has been chosen. Never the empty string, and never
+    /// a display phrase (audit A2).
+    pub model_id: Option<&'a str>,
+    pub provider: Option<&'a Provider>,
+}
+
+impl<'a> RouteFacts<'a> {
+    /// The row a snapshot froze. `None` for the `unrouted` placeholder, which
+    /// is its own block.
+    #[must_use]
+    pub fn from_snapshot(entry: &'a ContractSnapshot) -> Option<Self> {
+        (entry.runtime_id != "unrouted").then(|| Self {
+            contract: entry.contract,
+            route_type: entry.route_type,
+            runtime_id: &entry.runtime_id,
+            model_id: (!entry.model_id.is_empty()).then_some(entry.model_id.as_str()),
+            provider: entry.provider_constraints.as_ref(),
+        })
+    }
+
+    /// What the dialog is showing. `None` for a contract with no route.
+    #[must_use]
+    pub fn from_resolved(resolved: &'a ResolvedRoute) -> Option<Self> {
+        let route = resolved.route.as_ref()?;
+        Some(Self {
+            contract: resolved.contract,
+            route_type: route.route_type,
+            runtime_id: &route.runtime_id,
+            model_id: route.model_id.as_deref().filter(|id| !id.is_empty()).or(
+                match route.route_type {
+                    // The two route types that resolve their own model, and
+                    // record what they resolved. `model_id_recorded` says the
+                    // same thing about the snapshot side.
+                    RouteType::Codex => Some(CODEX_DEFAULT_LABEL),
+                    RouteType::Builtin | RouteType::LocalProc => Some(&route.runtime_id),
+                    RouteType::OpenRouter => None,
+                },
+            ),
+            provider: route.provider.as_ref(),
+        })
+    }
+}
+
+/// One route's verdict: the third state is the point.
+///
+/// `Unknown` is "nothing has measured this yet", and it is neither a block nor
+/// a promise. Collapsing it into either is how a readiness badge lies — a
+/// confident "not found" for a probe still running, or a green Ready for a
+/// runtime nobody looked at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RouteVerdict {
+    Ready,
+    Unknown(String),
+    Blocked(ExecutionBlock),
+}
+
+impl RouteVerdict {
+    #[must_use]
+    pub fn block(self) -> Option<ExecutionBlock> {
+        match self {
+            Self::Blocked(block) => Some(block),
+            _ => None,
+        }
+    }
+}
+
+/// **The** readiness answer. One function, two call sites: the settings
+/// dialog's badge and the pre-spawn gate (audit A1).
+///
+/// The order is the order the pieces are needed in — an executor, then a
+/// credential where one is required, then something to send, then somewhere
+/// that would take it — and the badge names the first missing one, because
+/// four blocked contracts is still one thing to go and fix first.
+#[must_use]
+pub fn evaluate_route(route: &RouteFacts<'_>, facts: &PreflightFacts) -> RouteVerdict {
+    if !route
+        .contract
+        .route_is_implemented(route.route_type, route.runtime_id, route.model_id)
+    {
+        return RouteVerdict::Blocked(ExecutionBlock::UnsupportedRoute {
+            contract: route.contract,
+            route_type: route.route_type,
+            runtime_id: route.runtime_id.to_string(),
+        });
+    }
+    // 1. The credential, where the route type needs one. Codex authenticates
+    //    itself and the local lanes open no socket, so only OpenRouter does.
+    if route.route_type == RouteType::OpenRouter {
+        match &facts.credential {
+            CredentialFact::Present => {}
+            CredentialFact::Absent => {
+                return RouteVerdict::Blocked(ExecutionBlock::NoCredential(route.contract));
+            }
+            CredentialFact::Refused { path, mode } => {
+                return RouteVerdict::Blocked(ExecutionBlock::CredentialRefused {
+                    contract: route.contract,
+                    path: path.clone(),
+                    mode: *mode,
+                });
+            }
+        }
+    }
+    // 2. Something to send. `RouteFacts` has already applied the rule that a
+    //    Codex or local route resolves its own model.
+    if route.model_id.is_none() {
+        return RouteVerdict::Blocked(ExecutionBlock::NoModel(route.contract));
+    }
+    // 3. Whatever else that route type needs to exist.
+    match route.route_type {
+        RouteType::Builtin => RouteVerdict::Ready,
+        RouteType::Codex => match &facts.codex {
+            CodexFact::Found => RouteVerdict::Ready,
+            CodexFact::Unknown => RouteVerdict::Unknown("Looking for codex".to_string()),
+            CodexFact::NotFound => {
+                RouteVerdict::Blocked(ExecutionBlock::CodexNotFound(route.contract))
+            }
+            CodexFact::OverrideMissing { path, reason } => {
+                RouteVerdict::Blocked(ExecutionBlock::CodexOverrideMissing {
+                    contract: route.contract,
+                    path: path.clone(),
+                    reason: reason.clone(),
+                })
+            }
+        },
+        RouteType::LocalProc => {
+            let Some(key) = doctor_key(route.runtime_id) else {
+                return RouteVerdict::Unknown("Not probed".to_string());
+            };
+            match facts.runtime(key) {
+                RuntimeFact::Available => RouteVerdict::Ready,
+                RuntimeFact::Unmeasured => RouteVerdict::Unknown("Run doctor".to_string()),
+                RuntimeFact::Unavailable { remediation } => {
+                    RouteVerdict::Blocked(ExecutionBlock::RuntimeUnavailable {
+                        contract: route.contract,
+                        runtime_id: route.runtime_id.to_string(),
+                        remediation,
+                    })
+                }
+            }
+        }
+        RouteType::OpenRouter => openrouter_verdict(route, facts),
+    }
+}
+
+/// The remote half of [`evaluate_route`]: constraints, then the catalog.
+fn openrouter_verdict(route: &RouteFacts<'_>, facts: &PreflightFacts) -> RouteVerdict {
+    if let Some(provider) = route.provider {
+        if let Some(constraint) = unsatisfiable_constraint(provider) {
+            return RouteVerdict::Blocked(ExecutionBlock::NoEndpoint {
+                contract: route.contract,
+                constraint,
+            });
+        }
+    }
+    if facts.eligible_models == Some(0) {
+        return RouteVerdict::Blocked(ExecutionBlock::NoEndpoint {
+            contract: route.contract,
+            constraint: "the cached catalog offers no model this contract can use under the \
+                         current filters"
+                .to_string(),
+        });
+    }
+    let model_id = route.model_id.unwrap_or_default();
+    // An absent catalog is "we have not looked", not "there is nothing" — the
+    // same distinction the dialog's never-fetched badge makes. Two facts can
+    // say a fetch happened and they are held by different callers: the gate
+    // parses the cache into rows, the dialog counts what its own filters leave.
+    // Either is evidence that somebody looked; neither being present is the
+    // only state that means nobody has.
+    let Some(catalog) = &facts.catalog_models else {
+        return if facts.eligible_models.is_some() {
+            RouteVerdict::Ready
+        } else {
+            RouteVerdict::Unknown("Catalog never fetched".to_string())
+        };
+    };
+    let Some(model) = catalog.iter().find(|model| model.id == model_id) else {
+        return RouteVerdict::Blocked(ExecutionBlock::NoEndpoint {
+            contract: route.contract,
+            constraint: format!("the last catalog fetch does not list {model_id}"),
+        });
+    };
+    // §5 invariant 5: membership is not capability. A model that is still
+    // listed but no longer reports the modality this contract sends has
+    // invalidated the route, and saying so here is the whole point of a
+    // preflight — the alternative is a job that spawns, uploads and fails at
+    // submit time.
+    if let Some(modality) = route.contract.required_input_modality() {
+        if model.refuses_input(modality) {
+            return RouteVerdict::Blocked(ExecutionBlock::ModalityLost {
+                contract: route.contract,
+                model_id: model_id.to_string(),
+                modality,
+            });
+        }
+    }
+    RouteVerdict::Ready
 }
 
 /// Everything that must be true before a process is spawned (§5 invariant 4).
@@ -1006,72 +1518,84 @@ pub struct PreflightFacts {
 /// the constraint that emptied it. Beyond that, `provider.zdr` is sent on the
 /// request and OpenRouter refuses rather than substituting, and the helper
 /// surfaces that refusal verbatim. Neither path ever weakens the constraint.
+///
+/// ## One evaluator
+///
+/// The decision itself is [`evaluate_route`], and this function is the fold of
+/// it over a frozen graph. The settings dialog's readiness badge calls the same
+/// evaluator on its own resolved routes, which is audit A1's repair: before it,
+/// the badge could say `Blocked — codex not found` while this function had no
+/// Codex arm at all and accepted the Start it was standing next to.
 #[must_use]
 pub fn preflight(snapshot: &ExecutionSnapshot, facts: &PreflightFacts) -> Vec<ExecutionBlock> {
-    let mut blocks = Vec::new();
-    for entry in &snapshot.contracts {
-        if entry.runtime_id == "unrouted" {
-            blocks.push(ExecutionBlock::Unrouted(entry.contract));
-            continue;
-        }
-        if !entry.contract.route_is_implemented(
-            entry.route_type,
-            &entry.runtime_id,
-            (!entry.model_id.is_empty()).then_some(entry.model_id.as_str()),
-        ) {
-            blocks.push(ExecutionBlock::UnsupportedRoute {
-                contract: entry.contract,
-                route_type: entry.route_type,
-                runtime_id: entry.runtime_id.clone(),
-            });
-            continue;
-        }
-        let needs_model = !matches!(entry.route_type, RouteType::Builtin | RouteType::Codex);
-        if needs_model && entry.model_id.is_empty() {
-            blocks.push(ExecutionBlock::NoModel(entry.contract));
-            continue;
-        }
-        if entry.route_type != RouteType::OpenRouter {
-            continue;
-        }
-        if !facts.credential_present {
-            blocks.push(ExecutionBlock::NoCredential(entry.contract));
-            continue;
-        }
-        if let Some(provider) = &entry.provider_constraints {
-            if let Some(constraint) = unsatisfiable_constraint(provider) {
-                blocks.push(ExecutionBlock::NoEndpoint {
-                    contract: entry.contract,
-                    constraint,
-                });
-                continue;
-            }
-        }
-        if let Some(catalog) = &facts.catalog_models {
-            let Some(model) = catalog.iter().find(|model| model.id == entry.model_id) else {
-                blocks.push(ExecutionBlock::NoEndpoint {
-                    contract: entry.contract,
-                    constraint: format!("the last catalog fetch does not list {}", entry.model_id),
-                });
-                continue;
-            };
-            // §5 invariant 5: membership is not capability. A model that is
-            // still listed but no longer reports the modality this contract
-            // sends has invalidated the route, and saying so here is the whole
-            // point of a preflight — the alternative is a job that spawns,
-            // uploads and fails at submit time.
-            if let Some(modality) = entry.contract.required_input_modality() {
-                if model.refuses_input(modality) {
-                    blocks.push(ExecutionBlock::ModalityLost {
-                        contract: entry.contract,
-                        model_id: entry.model_id.clone(),
-                        modality,
-                    });
-                }
-            }
-        }
+    snapshot
+        .contracts
+        .iter()
+        .filter_map(|entry| match RouteFacts::from_snapshot(entry) {
+            None => Some(ExecutionBlock::Unrouted(entry.contract)),
+            Some(route) => evaluate_route(&route, facts).block(),
+        })
+        .collect()
+}
+
+/// The consent sentence for one resolved graph: exactly what leaves this
+/// computer, read off the snapshot rather than off the workflow's name.
+///
+/// Audit A10. `AssistMode::data_boundary()` is a static per-mode string drawn
+/// directly above the resolved route list, so a user who re-pointed a contract
+/// read a sentence about the routes the built-in profile would have used. It
+/// was latent only because `implemented_route_types` happened to block the
+/// contradicting route — and audit A4 made it false outright, because "Zero
+/// Data Retention is requested" is now a property of the snapshot rather than
+/// a constant.
+#[must_use]
+pub fn consent_sentence(snapshot: &ExecutionSnapshot) -> String {
+    let names = |rank: u8| -> Vec<&'static str> {
+        snapshot
+            .contracts
+            .iter()
+            .filter(|entry| entry.boundary_applied.rank() == rank)
+            .map(|entry| entry.contract.human_label())
+            .collect()
+    };
+    let destinations = |rank: u8| -> Vec<String> {
+        let mut ids: Vec<String> = snapshot
+            .contracts
+            .iter()
+            .filter(|entry| entry.boundary_applied.rank() == rank)
+            .map(|entry| entry.runtime_id.clone())
+            .collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    let audio = names(2);
+    let text = names(1);
+    if audio.is_empty() && text.is_empty() {
+        return "Nothing leaves this computer: every task in this job runs locally.".to_string();
     }
-    blocks
+    let mut parts = Vec::new();
+    if !audio.is_empty() {
+        parts.push(format!(
+            "Track audio is sent to {} for {}{}.",
+            destinations(2).join(", "),
+            audio.join(", "),
+            if snapshot.requires_zdr() {
+                ", with zero data retention requested"
+            } else {
+                ", and zero data retention is not requested"
+            },
+        ));
+    }
+    if !text.is_empty() {
+        parts.push(format!(
+            "Derived text is sent to {} for {}; no audio.",
+            destinations(1).join(", "),
+            text.join(", "),
+        ));
+    }
+    parts.push("Nothing else leaves this computer.".to_string());
+    parts.join(" ")
 }
 
 /// Names the constraint that leaves a provider selection with nothing in it, or
@@ -1195,15 +1719,20 @@ mod tests {
             assert_eq!(entry.boundary_applied, Boundary::LocalOnly);
             assert!(!entry.boundary_confirmed);
             assert!(entry.provider_constraints.is_none());
+            // Audit A5. This assertion did not exist, and every row of this
+            // graph carried `audio_scope: whole-track` beside
+            // `boundary_applied: local-only` — because mms-ctc and
+            // whisper.cpp's overlay rows say `whole-track` about the model in
+            // the abstract, and a lane that opens no socket sends nothing
+            // anywhere. A snapshot is read to answer "what left this machine".
+            assert_eq!(
+                entry.audio_scope,
+                Some(AudioScope::None),
+                "{} records audio leaving a local-only lane",
+                entry.contract.token(),
+            );
         }
-        assert!(preflight(
-            &snapshot,
-            &PreflightFacts {
-                credential_present: false,
-                catalog_models: None,
-            }
-        )
-        .is_empty());
+        assert!(preflight(&snapshot, &PreflightFacts::with_credential(false)).is_empty());
     }
 
     #[test]
@@ -1398,13 +1927,7 @@ mod tests {
             true,
             &facts(),
         );
-        let blocks = preflight(
-            &snapshot,
-            &PreflightFacts {
-                credential_present: false,
-                catalog_models: None,
-            },
-        );
+        let blocks = preflight(&snapshot, &PreflightFacts::with_credential(false));
         assert_eq!(
             blocks,
             vec![ExecutionBlock::NoCredential(ContractId::Semantic)]
@@ -1414,6 +1937,384 @@ mod tests {
         assert!(sentence.contains("TC-SEMANTIC"), "{sentence}");
         assert!(sentence.contains("AI settings"), "{sentence}");
         assert!(sentence.contains("route this task locally"), "{sentence}");
+    }
+
+    /// Audit A10 + A4. The consent sentence is a function of the resolved
+    /// graph, so re-pointing a contract changes it — and the ZDR clause is now
+    /// a claim about what will be sent rather than a constant.
+    #[test]
+    fn the_consent_sentence_is_read_off_the_graph_and_moves_with_it() {
+        let local = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Lyrics,
+            true,
+            &facts(),
+        );
+        assert_eq!(
+            consent_sentence(&local),
+            "Nothing leaves this computer: every task in this job runs locally."
+        );
+
+        // The same workflow with no authored sheet composes the Codex wording
+        // review, which sends derived text and no audio.
+        let wording = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Lyrics,
+            false,
+            &facts(),
+        );
+        let sentence = consent_sentence(&wording);
+        assert!(
+            sentence.contains("Derived text is sent to codex"),
+            "{sentence}"
+        );
+        assert!(sentence.contains("no audio"), "{sentence}");
+        assert!(!sentence.contains("Track audio"), "{sentence}");
+
+        let mimo = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Mimo,
+            true,
+            &facts(),
+        );
+        let sentence = consent_sentence(&mimo);
+        assert!(
+            sentence.contains("Track audio is sent to openrouter"),
+            "{sentence}"
+        );
+        assert!(
+            sentence.contains("with zero data retention requested"),
+            "{sentence}"
+        );
+
+        // And with ZDR turned off on the route, the sentence says so rather
+        // than repeating the promise the mode string used to make.
+        let mut settings = AssistSettings::default();
+        let mut route = recommended_route(ContractId::Semantic).unwrap();
+        let mut provider = Provider::defaults_for(ContractId::Semantic);
+        provider.zdr_required = false;
+        route.provider = Some(provider);
+        settings.profiles.push(Profile {
+            id: "studio".to_string(),
+            label: "Studio".to_string(),
+            routes: BTreeMap::from([(ContractId::Semantic, route)]),
+        });
+        settings.active_profile = "studio".to_string();
+        let relaxed = resolve(&settings, WorkflowKind::Mimo, true, &facts());
+        assert!(!relaxed.requires_zdr());
+        let sentence = consent_sentence(&relaxed);
+        assert!(
+            sentence.contains("zero data retention is not requested"),
+            "{sentence}"
+        );
+    }
+
+    /// Audit A5, the general statement: **no** row of **any** workflow may
+    /// record a scope wider than its own boundary admits. The boundary is the
+    /// ceiling and the overlay may only narrow it.
+    #[test]
+    fn no_snapshot_row_records_audio_leaving_a_lane_that_does_not_send_it() {
+        for kind in [
+            WorkflowKind::Lyrics,
+            WorkflowKind::Sections,
+            WorkflowKind::Mimo,
+            WorkflowKind::All,
+        ] {
+            for reference in [true, false] {
+                let snapshot = resolve(&AssistSettings::default(), kind, reference, &facts());
+                let mut audio_rows = 0;
+                for entry in &snapshot.contracts {
+                    let scope = entry.audio_scope.expect("every row states a scope");
+                    let ceiling = if entry.boundary_applied.rank() >= 2 {
+                        AudioScope::WholeTrack
+                    } else {
+                        AudioScope::None
+                    };
+                    assert!(
+                        scope.rank() <= ceiling.rank(),
+                        "{kind:?}/{reference} {}: {} under {}",
+                        entry.contract.token(),
+                        scope.token(),
+                        entry.boundary_applied.token(),
+                    );
+                    audio_rows += usize::from(scope.rank() > 0);
+                }
+                // And the check has teeth: the audio-leaving workflows really
+                // do still record whole-track, so this is not passing because
+                // everything was flattened to `none`.
+                assert_eq!(
+                    audio_rows > 0,
+                    snapshot.sends_audio_off_machine(),
+                    "{kind:?}/{reference}",
+                );
+            }
+        }
+        let mimo = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Mimo,
+            true,
+            &facts(),
+        );
+        assert_eq!(
+            mimo.contract(ContractId::Semantic).unwrap().audio_scope,
+            Some(AudioScope::WholeTrack),
+        );
+    }
+
+    /// Audit A2. `ExecutionBlock::NoModel` was unreachable by construction:
+    /// the snapshot recorded `model_label()`, which for a remote route with no
+    /// model chosen is the phrase `not chosen`, so `model_id.is_empty()` was
+    /// never true. The job then either asked OpenRouter for a model called
+    /// "not chosen" or blocked with a misleading `NoEndpoint`.
+    #[test]
+    fn a_remote_route_with_no_model_blocks_as_no_model_and_records_nothing() {
+        let mut settings = AssistSettings::default();
+        let mut route = recommended_route(ContractId::Semantic).unwrap();
+        route.model_id = None;
+        settings.profiles.push(Profile {
+            id: "studio".to_string(),
+            label: "Studio".to_string(),
+            routes: BTreeMap::from([(ContractId::Semantic, route)]),
+        });
+        settings.active_profile = "studio".to_string();
+        let snapshot = resolve(&settings, WorkflowKind::Mimo, true, &facts());
+        let entry = snapshot.contract(ContractId::Semantic).unwrap();
+        assert_eq!(
+            entry.model_id, "",
+            "a `model_id` field holding a sentence is not an identity"
+        );
+        let blocks = preflight(&snapshot, &PreflightFacts::with_credential(true));
+        assert_eq!(blocks, vec![ExecutionBlock::NoModel(ContractId::Semantic)]);
+        assert_eq!(blocks[0].label(), NO_MODEL);
+
+        // And the picker keeps its own word for the same state, because a
+        // column has to say something.
+        let resolved = resolve_route(&settings, ContractId::Semantic);
+        assert_eq!(resolved.model_label(), "not chosen");
+        assert_eq!(resolved.model_id_recorded(), "");
+        // The two labels that are *not* placeholders still round-trip.
+        let codex = resolve_route(&AssistSettings::default(), ContractId::Wording);
+        assert_eq!(codex.model_id_recorded(), CODEX_DEFAULT_LABEL);
+        let local = resolve_route(&AssistSettings::default(), ContractId::Coarse);
+        assert_eq!(local.model_id_recorded(), "whisper.cpp");
+    }
+
+    /// Audit A3. A `0644` credentials file is not the same fact as no key, and
+    /// the sentence must not tell a user to add the key in front of them.
+    #[test]
+    fn a_refused_credentials_file_blocks_with_the_chmod_rather_than_add_a_key() {
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Mimo,
+            true,
+            &facts(),
+        );
+        let blocks = preflight(
+            &snapshot,
+            &PreflightFacts {
+                credential: CredentialFact::Refused {
+                    path: "/home/x/.config/musializer/credentials.json".to_string(),
+                    mode: Some(0o644),
+                },
+                ..PreflightFacts::default()
+            },
+        );
+        assert_eq!(
+            blocks,
+            vec![ExecutionBlock::CredentialRefused {
+                contract: ContractId::Semantic,
+                path: "/home/x/.config/musializer/credentials.json".to_string(),
+                mode: Some(0o644),
+            }]
+        );
+        assert_eq!(blocks[0].label(), KEY_REFUSED);
+        let sentence = blocks[0].sentence();
+        assert!(sentence.contains("chmod 600"), "{sentence}");
+        assert!(sentence.contains("0644"), "{sentence}");
+        assert!(sentence.contains("credentials.json"), "{sentence}");
+        assert!(
+            !sentence.contains("no key is configured"),
+            "the NoCredential sentence is the wrong repair here: {sentence}"
+        );
+        // A file refused for a reason other than its mode still names itself.
+        let other = ExecutionBlock::CredentialRefused {
+            contract: ContractId::Semantic,
+            path: "/tmp/creds.json".to_string(),
+            mode: None,
+        };
+        assert!(other.sentence().contains("/tmp/creds.json"));
+    }
+
+    /// Audit A1 + B6. Preflight had no Codex arm at all, so the Routing tab's
+    /// `Blocked — codex not found` stood beside a Start that was accepted; and
+    /// a set-but-missing `codex_bin` was omitted from the argv, which sent the
+    /// helper hunting for a different `codex` on `PATH`.
+    #[test]
+    fn the_codex_lane_blocks_for_both_discovery_failures_and_waits_for_neither() {
+        // TC-WORDING is the Codex route, and it is composed when the track has
+        // no authored sheet.
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Lyrics,
+            false,
+            &facts(),
+        );
+        assert!(snapshot.contract(ContractId::Wording).is_some());
+
+        let blocks = |codex: CodexFact| {
+            preflight(
+                &snapshot,
+                &PreflightFacts {
+                    codex,
+                    ..PreflightFacts::default()
+                },
+            )
+        };
+        assert!(
+            blocks(CodexFact::Unknown).is_empty(),
+            "nothing has looked yet, which is not grounds to refuse"
+        );
+        assert!(blocks(CodexFact::Found).is_empty());
+        assert_eq!(
+            blocks(CodexFact::NotFound),
+            vec![ExecutionBlock::CodexNotFound(ContractId::Wording)]
+        );
+        assert_eq!(blocks(CodexFact::NotFound)[0].label(), CODEX_NOT_FOUND);
+
+        let missing = blocks(CodexFact::OverrideMissing {
+            path: "/opt/nowhere/codex".to_string(),
+            reason: "not a runnable file".to_string(),
+        });
+        assert_eq!(missing[0].label(), CODEX_OVERRIDE_MISSING);
+        let sentence = missing[0].sentence();
+        assert!(
+            sentence.contains("/opt/nowhere/codex"),
+            "a wrong path with the path left out is not a repair: {sentence}"
+        );
+        assert!(sentence.contains("codex_bin"), "{sentence}");
+    }
+
+    /// Audit A1. The doctor arm, in both directions: an unmeasured runtime is
+    /// not a refusal, and a measured-and-broken one is.
+    #[test]
+    fn a_doctor_reported_runtime_failure_blocks_the_local_lane() {
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Lyrics,
+            true,
+            &facts(),
+        );
+        assert!(preflight(&snapshot, &PreflightFacts::default()).is_empty());
+        let blocks = preflight(
+            &snapshot,
+            &PreflightFacts {
+                local_runtimes: vec![(
+                    "whisper".to_string(),
+                    RuntimeFact::Unavailable {
+                        remediation: "download the model into models/whisper".to_string(),
+                    },
+                )],
+                ..PreflightFacts::default()
+            },
+        );
+        assert_eq!(
+            blocks,
+            vec![ExecutionBlock::RuntimeUnavailable {
+                contract: ContractId::Coarse,
+                runtime_id: "whisper.cpp".to_string(),
+                remediation: "download the model into models/whisper".to_string(),
+            }]
+        );
+        assert_eq!(blocks[0].label(), RUNTIME_UNAVAILABLE);
+        assert!(blocks[0].sentence().contains("download the model"));
+        // And the report is read through the same key mapping the snapshot's
+        // `runtime_version` uses, or a lane would report Ready beside a blank
+        // version.
+        assert_eq!(doctor_key("whisper.cpp"), Some("whisper"));
+        assert_eq!(
+            parse_doctor_runtimes(
+                br#"{"runtimes":{"whisper":{"state":"missing","remediation":"install it"},
+                     "mms_ctc_aligner":{"state":"ok"}}}"#
+            ),
+            vec![
+                ("mms_ctc_aligner".to_string(), RuntimeFact::Available),
+                (
+                    "whisper".to_string(),
+                    RuntimeFact::Unavailable {
+                        remediation: "install it".to_string()
+                    }
+                ),
+            ]
+        );
+        // A report that mentions no state at all contributes nothing rather
+        // than an invented refusal.
+        assert!(parse_doctor_runtimes(br#"{"runtimes":{"whisper":{}}}"#).is_empty());
+    }
+
+    /// Every block spells out a repair. A block whose sentence does not name
+    /// its own contract, or is short enough to be a label, is a toast nobody
+    /// can act on.
+    #[test]
+    fn every_block_variant_states_a_repair_and_names_its_contract() {
+        let blocks = [
+            ExecutionBlock::Unrouted(ContractId::Align),
+            ExecutionBlock::UnsupportedRoute {
+                contract: ContractId::Coarse,
+                route_type: RouteType::OpenRouter,
+                runtime_id: "openrouter".to_string(),
+            },
+            ExecutionBlock::NoModel(ContractId::Semantic),
+            ExecutionBlock::NoCredential(ContractId::Semantic),
+            ExecutionBlock::CredentialRefused {
+                contract: ContractId::Semantic,
+                path: "/tmp/creds.json".to_string(),
+                mode: Some(0o600),
+            },
+            ExecutionBlock::CredentialRefused {
+                contract: ContractId::Semantic,
+                path: "/tmp/creds.json".to_string(),
+                mode: None,
+            },
+            ExecutionBlock::NoEndpoint {
+                contract: ContractId::Semantic,
+                constraint: "provider.only is empty".to_string(),
+            },
+            ExecutionBlock::ModalityLost {
+                contract: ContractId::Semantic,
+                model_id: "xiaomi/mimo-v2.5".to_string(),
+                modality: "audio",
+            },
+            ExecutionBlock::CodexNotFound(ContractId::Wording),
+            ExecutionBlock::CodexOverrideMissing {
+                contract: ContractId::Wording,
+                path: "/opt/nowhere/codex".to_string(),
+                reason: "not a runnable file".to_string(),
+            },
+            ExecutionBlock::RuntimeUnavailable {
+                contract: ContractId::Coarse,
+                runtime_id: "whisper.cpp".to_string(),
+                remediation: "install whisper.cpp".to_string(),
+            },
+        ];
+        let mut labels = Vec::new();
+        for block in &blocks {
+            let sentence = block.sentence();
+            assert!(
+                sentence.contains(block.contract().token()),
+                "{sentence} does not name its contract"
+            );
+            assert!(sentence.len() > 60, "too short to be a repair: {sentence}");
+            assert!(sentence.ends_with('.'), "{sentence}");
+            assert!(!block.label().is_empty());
+            labels.push(block.label());
+        }
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            10,
+            "two variants sharing one badge is one word for two repairs"
+        );
     }
 
     #[test]
@@ -1434,13 +2335,7 @@ mod tests {
             .validate()
             .expect("future route remains schema-legal");
         let snapshot = resolve(&settings, WorkflowKind::Lyrics, true, &facts());
-        let blocks = preflight(
-            &snapshot,
-            &PreflightFacts {
-                credential_present: true,
-                catalog_models: None,
-            },
-        );
+        let blocks = preflight(&snapshot, &PreflightFacts::with_credential(true));
         assert_eq!(
             blocks,
             vec![ExecutionBlock::UnsupportedRoute {
@@ -1475,13 +2370,7 @@ mod tests {
         });
         settings.active_profile = "studio".to_string();
         let snapshot = resolve(&settings, WorkflowKind::Mimo, true, &facts());
-        let blocks = preflight(
-            &snapshot,
-            &PreflightFacts {
-                credential_present: true,
-                catalog_models: None,
-            },
-        );
+        let blocks = preflight(&snapshot, &PreflightFacts::with_credential(true));
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].label(), NO_ENDPOINT);
         assert!(blocks[0].sentence().contains("zero data retention"));
@@ -1573,14 +2462,7 @@ mod tests {
             true,
             &facts(),
         );
-        assert!(preflight(
-            &snapshot,
-            &PreflightFacts {
-                credential_present: true,
-                catalog_models: None,
-            }
-        )
-        .is_empty());
+        assert!(preflight(&snapshot, &PreflightFacts::with_credential(true)).is_empty());
         // But a catalog that *was* fetched and does not list the model does.
         // This case used to be the *only* catalog check — membership by id —
         // which is what let a model that lost its modality read Ready; the two
@@ -1588,11 +2470,11 @@ mod tests {
         let blocks = preflight(
             &snapshot,
             &PreflightFacts {
-                credential_present: true,
                 catalog_models: Some(vec![catalog_row(
                     "openai/gpt-4o-audio-preview",
                     &["audio", "text"],
                 )]),
+                ..PreflightFacts::with_credential(true)
             },
         );
         assert_eq!(blocks.len(), 1);
@@ -1618,8 +2500,8 @@ mod tests {
         assert!(preflight(
             &snapshot,
             &PreflightFacts {
-                credential_present: true,
                 catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &["audio", "text"])]),
+                ..PreflightFacts::with_credential(true)
             },
         )
         .is_empty());
@@ -1628,8 +2510,8 @@ mod tests {
         assert!(preflight(
             &snapshot,
             &PreflightFacts {
-                credential_present: true,
                 catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &[])]),
+                ..PreflightFacts::with_credential(true)
             },
         )
         .is_empty());
@@ -1649,8 +2531,8 @@ mod tests {
         let blocks = preflight(
             &snapshot,
             &PreflightFacts {
-                credential_present: true,
                 catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &["text"])]),
+                ..PreflightFacts::with_credential(true)
             },
         );
         assert_eq!(blocks.len(), 1);

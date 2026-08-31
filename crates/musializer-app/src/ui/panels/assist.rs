@@ -50,7 +50,9 @@
 
 use std::path::{Path, PathBuf};
 
-use musializer_core::assist::execution::{self, ContractSnapshot, ExecutionSnapshot};
+use musializer_core::assist::execution::{
+    self, ContractSnapshot, ExecutionBlock, ExecutionSnapshot,
+};
 use musializer_core::project::analysis_bridge;
 use musializer_core::project::analysis_candidate::{
     self, AnalysisCandidate, Lanes, LyricReviewEntry, LyricReviewKind, LyricsReview,
@@ -359,7 +361,7 @@ impl AssistController {
             resolve_lyric_reference(workspace.current()).0 != AssistLyricReference::None;
         let session_fingerprint = self.session.openrouter_fingerprint();
         let resolved = plan::resolve(&PlanInputs {
-            kind_token: job_mode(mode).argument(),
+            kind: workflow_kind(mode),
             has_lyric_reference: has_reference,
             boundary_confirmed: true,
             session_fingerprint: session_fingerprint.as_deref(),
@@ -420,17 +422,14 @@ impl AssistController {
             .align_python
             .as_deref()
             .map(Path::new);
-        // Resolve the executable the same way the settings dialog does. This
-        // matters under a desktop launcher: its PATH need not contain an npm
-        // global install even though the documented well-known location does.
+        // The discovery the plan already ran and the preflight already judged,
+        // rather than a second one resolved here. This matters under a desktop
+        // launcher: its PATH need not contain an npm global install even though
+        // the documented well-known location does, and
         // `external_analysis.py` augments this child's PATH for an npm shim's
-        // `#!/usr/bin/env node` dependency.
-        let codex_discovery = discover::resolve_cached(
-            "codex",
-            resolved.local_runtimes.codex_bin.as_deref(),
-            discover::Options::thorough(),
-        );
-        let codex_bin = codex_discovery.path();
+        // `#!/usr/bin/env node` dependency. A set-but-missing `codex_bin` never
+        // reaches this line at all — it is a block above (audit B6).
+        let codex_bin = resolved.codex.as_ref().and_then(discover::Discovery::path);
         let spec = AssistSpec {
             helper: &helper,
             audio: &audio,
@@ -439,6 +438,7 @@ impl AssistController {
             mode: job_mode(mode),
             lyrics_file: sheet.as_deref(),
             execution_snapshot: Some(&snapshot_path),
+            zdr_required: resolved.snapshot.requires_zdr(),
             credential,
             local_runtimes: LocalRuntimeOverrides {
                 whisper_bin,
@@ -859,6 +859,40 @@ fn job_mode(mode: AssistMode) -> JobMode {
     }
 }
 
+/// Why Start cannot be pressed, or `None` when it can.
+///
+/// Audit A6. Start was gated on `helper_available` alone, so a blocked graph
+/// drew an **enabled** button beside its own red refusal sentence — and
+/// pressing it failed the identical preflight one function later, which set
+/// `AssistJobState::Failed` and dropped the user from Confirmation back to
+/// Empty with a toast. A control that cannot work says so where it is, and
+/// says why: this is exactly the string the press would have produced.
+///
+/// A missing helper is checked first because it is the one refusal that is
+/// about the installation rather than about the routes, and no route repair
+/// would clear it.
+fn start_refusal(helper_available: bool, plan: Option<&ExecutionPlan>) -> Option<String> {
+    if !helper_available {
+        return Some("The Assist helper script is missing from this installation.".to_string());
+    }
+    plan.and_then(ExecutionPlan::first_block)
+        .map(ExecutionBlock::sentence)
+}
+
+/// The same mapping onto the resolver's own workflow enum.
+///
+/// Two total functions rather than one total function and a string parse: the
+/// plan used to take the helper's argv token and default an unknown one to
+/// `All`, which is the workflow that sends audio off the machine (audit A11).
+fn workflow_kind(mode: AssistMode) -> execution::WorkflowKind {
+    match mode {
+        AssistMode::Lyrics => execution::WorkflowKind::Lyrics,
+        AssistMode::Sections => execution::WorkflowKind::Sections,
+        AssistMode::Mimo => execution::WorkflowKind::Mimo,
+        AssistMode::All => execution::WorkflowKind::All,
+    }
+}
+
 /// A staged candidate and, when it had to be computed, the audio digest that
 /// verified it.
 #[derive(Debug)]
@@ -1215,7 +1249,7 @@ fn confirmation_plan(
         // true — which is also the resolution that becomes provenance (§5
         // invariant 3).
         let resolved = plan::resolve(&PlanInputs {
-            kind_token: job_mode(mode).argument(),
+            kind: workflow_kind(mode),
             has_lyric_reference,
             boundary_confirmed: false,
             session_fingerprint,
@@ -3351,6 +3385,7 @@ impl Shell {
             panel_content,
             padding,
             gap,
+            routes.as_ref(),
             commands,
         );
         if let Some(routes) = routes.as_ref() {
@@ -3518,6 +3553,7 @@ impl Shell {
         content: AssistPanelContent,
         padding: f32,
         gap: f32,
+        plan: Option<&ExecutionPlan>,
         commands: &mut Vec<ShellCommand>,
     ) {
         let font = input.fonts.ui();
@@ -3529,10 +3565,20 @@ impl Shell {
             AssistPanelContent::Confirmation => {
                 let mode = session.mode();
                 widgets::draw_text(d, font, mode.workflow(), x, action_y, 14.0, color::ui_ink());
+                // The consent sentence comes from the graph this job actually
+                // resolved, not from the workflow's name (audit A10). The
+                // per-mode string stays as the fallback for the one frame a
+                // confirmation arms before its plan exists — it describes the
+                // built-in profile, which is what an unresolved plan would
+                // resolve to anyway.
+                let consent = plan.map_or_else(
+                    || mode.data_boundary().to_string(),
+                    |plan| execution::consent_sentence(&plan.snapshot),
+                );
                 widgets::draw_text(
                     d,
                     font,
-                    mode.data_boundary(),
+                    &consent,
                     x,
                     action_y + 21.0,
                     14.0,
@@ -3548,7 +3594,18 @@ impl Shell {
                 if layout.reference_y > 0.0 {
                     self.assist_lyric_reference(d, input, boundary, layout, &buttons);
                 }
-                if session.helper_available {
+                let refusal = start_refusal(session.helper_available, plan);
+                if let Some(refusal) = refusal {
+                    self.widgets
+                        .disabled_button(d, font, buttons.start, "Start analysis", None);
+                    // `disabled_button` returns no state, so the reason needs a
+                    // hit target of its own — the same shape the Tune panel's
+                    // disabled Apply uses, and it also stops the press falling
+                    // through to whatever is behind it.
+                    let id = widgets::widget_id(ASSIST_WIDGETS, 13);
+                    let hover = self.widgets.button(d, id, buttons.start);
+                    self.widgets.hint(d, hover, id, buttons.start, &refusal);
+                } else {
                     let id = widgets::widget_id(ASSIST_WIDGETS, 10);
                     if self
                         .widgets
@@ -3566,9 +3623,6 @@ impl Shell {
                     {
                         session.request(AssistRequest::Start);
                     }
-                } else {
-                    self.widgets
-                        .disabled_button(d, font, buttons.start, "Start analysis", None);
                 }
                 let id = widgets::widget_id(ASSIST_WIDGETS, 11);
                 if self
@@ -4182,6 +4236,55 @@ mod tests {
     use super::*;
     use musializer_core::project::lyrics::LyricsDocument;
     use musializer_core::project::sha256;
+
+    /// Audit A6. The one state the confirmation must never be in: an enabled
+    /// "Start analysis" standing beside the red sentence that says the job
+    /// cannot start. The refusal on the button is the identical sentence the
+    /// press would have produced, because both come from `first_block`.
+    #[test]
+    fn start_is_refused_by_the_same_sentence_the_press_would_have_produced() {
+        let plan = |blocks: Vec<ExecutionBlock>| ExecutionPlan {
+            snapshot: execution::resolve(
+                &musializer_core::assist::settings::AssistSettings::default(),
+                execution::WorkflowKind::Lyrics,
+                true,
+                &execution::ExecutionFacts::default(),
+            ),
+            blocks,
+            codex: None,
+            credential_source: plan::CredentialSource::None,
+            settings_error: None,
+            settings_path: None,
+            credential_lookup: "default".to_string(),
+            ask_resolved_to_none: Vec::new(),
+            local_runtimes: musializer_core::assist::settings::LocalRuntimes::default(),
+        };
+        let clear = plan(Vec::new());
+        assert_eq!(start_refusal(true, Some(&clear)), None);
+
+        let blocked = plan(vec![ExecutionBlock::NoCredential(
+            musializer_core::assist::contracts::ContractId::Semantic,
+        )]);
+        assert_eq!(
+            start_refusal(true, Some(&blocked)).as_deref(),
+            Some(blocked.first_block().unwrap().sentence().as_str()),
+        );
+        // The route notes under the button draw the *same* string, so the
+        // button and the sentence beside it can never disagree.
+        assert_eq!(
+            route_notes(&blocked)[0].0,
+            blocked.first_block().unwrap().sentence()
+        );
+
+        // A missing helper wins over a route repair, and is still a refusal
+        // when there is no plan at all.
+        assert!(start_refusal(false, Some(&clear))
+            .is_some_and(|reason| reason.contains("helper script is missing")));
+        assert!(start_refusal(false, None).is_some());
+        // No plan yet and a helper present is the one frame a confirmation
+        // arms before its graph resolves; it is not a refusal.
+        assert_eq!(start_refusal(true, None), None);
+    }
 
     struct Scratch(PathBuf);
 

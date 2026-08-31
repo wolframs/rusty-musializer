@@ -99,6 +99,19 @@ pub enum AudioScope {
 }
 
 impl AudioScope {
+    /// How much audio the scope admits, as a ladder. Used to clamp a snapshot
+    /// row's scope against its own boundary: a lane that opens no socket cannot
+    /// record a scope wider than "none", whatever the overlay says about the
+    /// model in the abstract (audit A5).
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Excerpts => 1,
+            Self::WholeTrack => 2,
+        }
+    }
+
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {

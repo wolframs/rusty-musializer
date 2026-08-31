@@ -26,6 +26,7 @@
 
 use std::path::{Path, PathBuf};
 
+use musializer_core::assist::contracts::RouteType;
 use musializer_core::assist::credentials::CredentialStore;
 use musializer_core::assist::execution::{
     self, ExecutionBlock, ExecutionFacts, ExecutionSnapshot, PreflightFacts, WorkflowKind,
@@ -33,6 +34,7 @@ use musializer_core::assist::execution::{
 use musializer_core::assist::secret::Secret;
 use musializer_core::assist::settings::{AssistSettings, LocalRuntimes};
 
+use super::discover;
 use super::files::{self, AssistFileError};
 
 /// The file a job's snapshot is written to, inside its own output directory.
@@ -42,7 +44,7 @@ pub const SNAPSHOT_FILE_NAME: &str = "assist-execution.json";
 const MAX_CACHE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Where the credential that would authorize a remote route comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CredentialSource {
     /// Nothing configured. A remote route blocks.
     None,
@@ -50,17 +52,58 @@ pub enum CredentialSource {
     File,
     /// Imported from the environment at startup, held for this run only.
     Session,
+    /// A credentials file is there and was refused rather than repaired (§3).
+    ///
+    /// This variant is audit A3. [`openrouter_secret`] collapsed every
+    /// `AssistFileError` into `None` with `.ok()??` — the `BeatUpdate` shape —
+    /// so a `0644` file and no file at all were the same fact, and the block
+    /// the user was shown told them to add a key they already had. The mode is
+    /// carried because the repair is `chmod 600` and they need to know what it
+    /// is now.
+    Refused { path: String, mode: Option<u32> },
 }
 
 impl CredentialSource {
     #[must_use]
-    pub const fn token(self) -> &'static str {
+    pub fn token(&self) -> String {
         match self {
-            Self::None => "none",
-            Self::File => "file",
-            Self::Session => "session",
+            Self::None => "none".to_string(),
+            Self::File => "file".to_string(),
+            Self::Session => "session".to_string(),
+            Self::Refused {
+                mode: Some(mode), ..
+            } => format!("refused({mode:04o})"),
+            Self::Refused { mode: None, .. } => "refused".to_string(),
         }
     }
+
+    /// Whether a job could actually authorize a remote route with this.
+    #[must_use]
+    pub fn is_usable(&self) -> bool {
+        matches!(self, Self::File | Self::Session)
+    }
+
+    /// The same fact in the vocabulary the one evaluator reads.
+    #[must_use]
+    pub fn fact(&self) -> execution::CredentialFact {
+        match self {
+            Self::File | Self::Session => execution::CredentialFact::Present,
+            Self::None => execution::CredentialFact::Absent,
+            Self::Refused { path, mode } => execution::CredentialFact::Refused {
+                path: path.clone(),
+                mode: *mode,
+            },
+        }
+    }
+}
+
+/// What the `0600` store had to say, with the refusals kept apart from the
+/// absence (audit A3).
+#[derive(Debug)]
+pub enum CredentialLookup {
+    Found(Secret),
+    Absent,
+    Refused { path: String, mode: Option<u32> },
 }
 
 /// One job's frozen route graph, plus everything the confirmation has to say
@@ -70,6 +113,11 @@ pub struct ExecutionPlan {
     pub snapshot: ExecutionSnapshot,
     /// Empty means the job may start. Every entry names one repair.
     pub blocks: Vec<ExecutionBlock>,
+    /// The codex discovery this resolution ran, when the graph has a Codex
+    /// route. Carried so the spawn uses the **same** answer the preflight
+    /// judged — resolving it a second time at the spawn is how a job ends up
+    /// running a different binary from the one that was cleared (audit B6).
+    pub codex: Option<discover::Discovery>,
     pub credential_source: CredentialSource,
     /// A settings file that failed to load. The plan still resolves — from the
     /// built-in `recommended` profile — but the user is told, because a job
@@ -187,16 +235,24 @@ fn catalog_facts() -> Option<(String, Vec<execution::CatalogModelFacts>)> {
     reason = "two sorted association lists; the core parser names them the same way"
 )]
 fn doctor_facts(report_path: Option<&Path>) -> (Vec<(String, String)>, Vec<(String, String)>) {
-    let Some(path) = report_path else {
-        return (Vec::new(), Vec::new());
-    };
-    let Ok(bytes) = std::fs::read(path) else {
-        return (Vec::new(), Vec::new());
-    };
-    if bytes.len() as u64 > MAX_CACHE_BYTES {
-        return (Vec::new(), Vec::new());
+    match doctor_bytes(report_path) {
+        Some(bytes) => execution::parse_doctor_facts(&bytes),
+        None => (Vec::new(), Vec::new()),
     }
-    execution::parse_doctor_facts(&bytes)
+}
+
+/// The same report's runtime **states**, which decide whether a job may start.
+fn doctor_runtimes(report_path: Option<&Path>) -> Vec<(String, execution::RuntimeFact)> {
+    match doctor_bytes(report_path) {
+        Some(bytes) => execution::parse_doctor_runtimes(&bytes),
+        None => Vec::new(),
+    }
+}
+
+fn doctor_bytes(report_path: Option<&Path>) -> Option<Vec<u8>> {
+    let path = report_path?;
+    let bytes = std::fs::read(path).ok()?;
+    (bytes.len() as u64 <= MAX_CACHE_BYTES).then_some(bytes)
 }
 
 /// The account label a profile's credential is stored under.
@@ -213,20 +269,75 @@ pub fn credential_lookup(settings: &AssistSettings) -> &str {
     }
 }
 
-/// The credential the `0600` file holds for one account, or `None`.
+/// The credential the `0600` file holds for one account, or why it has none.
 ///
 /// Returns an owned [`Secret`] so the caller's copy is the only one that
 /// outlives the call: the store — and with it the store's copy — is dropped and
-/// zeroized before this function returns. A loose-permission file is a refusal
-/// rather than a repair, and it reads here as "no credential", which then blocks
-/// a remote job with the same message a missing key does. The dialog is where
-/// the permission fault is explained.
+/// zeroized before this function returns.
+///
+/// A loose-permission or unparseable file is a **refusal**, not a repair, and
+/// it is reported as one. It used to be `.ok()??` — the shape
+/// `beat_tracker_update` was found in — which made "the key file is `0644`"
+/// and "there is no key" the same answer, and the sentence the user got told
+/// them to add the key sitting in front of them (audit A3).
+#[must_use]
+pub fn openrouter_credential(lookup_id: &str) -> CredentialLookup {
+    let Some(path) = files::credentials_path() else {
+        return CredentialLookup::Absent;
+    };
+    let store: CredentialStore = match files::load_credentials(&path) {
+        Ok(Some(store)) => store,
+        Ok(None) => return CredentialLookup::Absent,
+        Err(AssistFileError::Permissions(path, mode)) => {
+            return CredentialLookup::Refused {
+                path: path.display().to_string(),
+                mode: Some(mode),
+            };
+        }
+        Err(_) => {
+            return CredentialLookup::Refused {
+                path: path.display().to_string(),
+                mode: None,
+            };
+        }
+    };
+    match store.get("openrouter", lookup_id) {
+        // A store that parses but has no entry for this account is an absence,
+        // not a refusal: the repair is to add the key, which is exactly what
+        // `NoCredential` says.
+        None => CredentialLookup::Absent,
+        Some(entry) => CredentialLookup::Found(Secret::new(entry.secret.expose().to_string())),
+    }
+}
+
+/// The credential itself, for the one call site that spawns with it.
 #[must_use]
 pub fn openrouter_secret(lookup_id: &str) -> Option<Secret> {
-    let path = files::credentials_path()?;
-    let store: CredentialStore = files::load_credentials(&path).ok()??;
-    let entry = store.get("openrouter", lookup_id)?;
-    Some(Secret::new(entry.secret.expose().to_string()))
+    match openrouter_credential(lookup_id) {
+        CredentialLookup::Found(secret) => Some(secret),
+        _ => None,
+    }
+}
+
+/// One discovery outcome in the vocabulary the one evaluator reads.
+///
+/// `OverrideMissing` is audit B6: `Discovery::path()` returns `None` for it, so
+/// `--codex-bin` was simply omitted and the helper went hunting for a bare
+/// `codex` on an augmented `PATH` — a set-but-missing path silently replaced by
+/// a guess, which `settings.rs:196-201` states is exactly what must never
+/// happen.
+#[must_use]
+pub fn codex_fact(discovery: &discover::Discovery) -> execution::CodexFact {
+    match &discovery.outcome {
+        discover::Outcome::Found { .. } => execution::CodexFact::Found,
+        discover::Outcome::NotFound => execution::CodexFact::NotFound,
+        discover::Outcome::OverrideMissing { path, reason } => {
+            execution::CodexFact::OverrideMissing {
+                path: path.display().to_string(),
+                reason: reason.clone(),
+            }
+        }
+    }
 }
 
 /// Reads `assist.json`, or reports why it could not be read.
@@ -254,9 +365,19 @@ pub fn load_settings_or_defaults() -> (AssistSettings, Option<String>, Option<Pa
 }
 
 /// Everything the caller has that this module cannot read for itself.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct PlanInputs<'a> {
-    pub kind_token: &'a str,
+    /// The workflow itself, not its token.
+    ///
+    /// Audit A11: this was a `&str` parsed here with
+    /// `unwrap_or(WorkflowKind::All)` — the opposite default from
+    /// `Boundary::parse`, whose doc calls a defaulted boundary "a silent
+    /// widening", and `All` is the workflow that sends audio off the machine.
+    /// Both call sites already held a `WorkflowKind`, so the widening is now
+    /// unstateable rather than defended against. `Default` goes with it: a
+    /// struct default would have to name one workflow, and picking one is the
+    /// same mistake in a different place.
+    pub kind: WorkflowKind,
     /// Whether an authored lyric sheet is known to this side (chosen, or a
     /// sibling `<stem>.lyrics.txt`). Decides whether `TC-WORDING` is composed.
     pub has_lyric_reference: bool,
@@ -277,16 +398,23 @@ pub struct PlanInputs<'a> {
 #[must_use]
 pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
     let (settings, settings_error, settings_path) = load_settings_or_defaults();
-    let kind = WorkflowKind::parse(inputs.kind_token).unwrap_or(WorkflowKind::All);
+    let kind = inputs.kind;
 
     let lookup = credential_lookup(&settings).to_string();
-    let stored = openrouter_secret(&lookup);
-    let credential_source = if stored.is_some() {
-        CredentialSource::File
-    } else if inputs.session_fingerprint.is_some() {
-        CredentialSource::Session
-    } else {
-        CredentialSource::None
+    let (stored, credential_source) = match openrouter_credential(&lookup) {
+        CredentialLookup::Found(secret) => (Some(secret), CredentialSource::File),
+        // A refused file is still a refusal when a session key exists — the
+        // session key is the one the job would use, so it is the honest answer
+        // and the dialog is where the permission fault gets explained.
+        CredentialLookup::Absent | CredentialLookup::Refused { .. }
+            if inputs.session_fingerprint.is_some() =>
+        {
+            (None, CredentialSource::Session)
+        }
+        CredentialLookup::Refused { path, mode } => {
+            (None, CredentialSource::Refused { path, mode })
+        }
+        CredentialLookup::Absent => (None, CredentialSource::None),
     };
     let fingerprint = match &stored {
         Some(secret) => Some(secret.fingerprint()),
@@ -302,7 +430,7 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
     let (runtime_versions, model_digests) = doctor_facts(inputs.doctor_report);
     let facts = ExecutionFacts {
         resolved_at_utc: execution::format_rfc3339_utc(now_seconds()),
-        credential_present: credential_source != CredentialSource::None,
+        credential_present: credential_source.is_usable(),
         credential_fingerprint: fingerprint,
         catalog_revision: catalog.as_ref().map(|(revision, _)| revision.clone()),
         runtime_versions,
@@ -310,16 +438,40 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
         boundary_confirmed: inputs.boundary_confirmed,
     };
     let snapshot = execution::resolve(&settings, kind, inputs.has_lyric_reference, &facts);
+    // Discovery is a login-shell spawn, so it runs only for a graph that
+    // actually has a Codex route in it — but it *does* run, which is the other
+    // half of audit A1: this gate had no Codex arm at all, and the Routing
+    // tab's `Blocked — codex not found` sat next to a Start that was accepted.
+    let codex = snapshot
+        .contracts
+        .iter()
+        .any(|entry| entry.route_type == RouteType::Codex)
+        .then(|| {
+            discover::resolve_cached(
+                "codex",
+                settings.local_runtimes.codex_bin.as_deref(),
+                discover::Options::thorough(),
+            )
+        });
     let blocks = execution::preflight(
         &snapshot,
         &PreflightFacts {
-            credential_present: facts.credential_present,
+            credential: credential_source.fact(),
             catalog_models: catalog.map(|(_, models)| models),
+            codex: codex
+                .as_ref()
+                .map_or(execution::CodexFact::Unknown, codex_fact),
+            local_runtimes: doctor_runtimes(inputs.doctor_report),
+            // The picker's filters are the dialog's; this side has no way to
+            // count what they would leave, and inventing a zero would refuse a
+            // job for a fact nobody measured.
+            eligible_models: None,
         },
     );
     ExecutionPlan {
         snapshot,
         blocks,
+        codex,
         credential_source,
         settings_error,
         settings_path,

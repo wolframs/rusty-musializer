@@ -241,6 +241,7 @@ fn run_execution_probe(output: &Path, helper: &Path, audio: &Path) -> Result<(),
             mode,
             lyrics_file: None,
             execution_snapshot: Some(&snapshot_path),
+            zdr_required: snapshot.requires_zdr(),
             credential,
             local_runtimes: LocalRuntimeOverrides::default(),
         };

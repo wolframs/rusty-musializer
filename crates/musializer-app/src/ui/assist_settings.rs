@@ -57,6 +57,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use musializer_core::assist::contracts::{ContractId, FallbackPolicy, RouteType, ALL_CONTRACTS};
+use musializer_core::assist::execution::{
+    self, CodexFact, CredentialFact, ExecutionBlock, PreflightFacts, RouteFacts, RouteVerdict,
+    RuntimeFact,
+};
 use musializer_core::assist::models_dir::ModelsDirResolution;
 use musializer_core::assist::secret::Secret;
 use musializer_core::assist::settings::{
@@ -1483,8 +1487,11 @@ const CODEX_BINARY: &str = "codex";
 /// carries the *label*, and a gate that matched on a substring of a sentence
 /// would keep passing after the sentence changed meaning. Neither says "not on
 /// PATH" any more, because `PATH` is one rung of four.
-pub const CODEX_NOT_FOUND: &str = "codex not found";
-pub const CODEX_OVERRIDE_MISSING: &str = "codex_bin path is wrong";
+///
+/// They live in `core` since AX-1, beside the block variants that carry them,
+/// so the badge, its tooltip and the pre-spawn refusal cannot spell them
+/// differently (audit A1/B6).
+pub use musializer_core::assist::execution::{CODEX_NOT_FOUND, CODEX_OVERRIDE_MISSING};
 
 // ---------------------------------------------------------------------------
 // Background work
@@ -2400,111 +2407,125 @@ impl AssistSettingsDialog {
         .len()
     }
 
-    /// Readiness for one resolved route.
+    /// Everything this dialog knows that [`execution::evaluate_route`] reads.
+    ///
+    /// Built here, once per question, and handed to the **same** evaluator the
+    /// pre-spawn gate calls. That is audit A1's repair: the badge and the gate
+    /// were two independent implementations of one question, and the gate — the
+    /// one that decides whether forty minutes of whisper happen — was the
+    /// weaker of the two, with no Codex arm and no doctor arm at all.
+    ///
+    /// `eligible_models` is the one fact only this side holds: the picker's
+    /// filters are the draft's, so nothing outside the dialog can count what
+    /// they leave. Every other fact is shared.
+    #[must_use]
+    pub fn preflight_facts(&self, contract: ContractId) -> PreflightFacts {
+        PreflightFacts {
+            credential: match &self.credentials {
+                CredentialState::Session { .. } | CredentialState::File { .. } => {
+                    CredentialFact::Present
+                }
+                CredentialState::None => CredentialFact::Absent,
+                CredentialState::Refused { path, mode } => CredentialFact::Refused {
+                    path: path.clone(),
+                    mode: Some(*mode),
+                },
+                CredentialState::Unusable { path, .. } => CredentialFact::Refused {
+                    path: path.clone(),
+                    mode: None,
+                },
+            },
+            // Not the model rows: this side answers the endpoint question with
+            // the picker's own filters, which is a strictly narrower question
+            // than catalog membership and the one this dialog can act on.
+            catalog_models: None,
+            codex: match self.codex_discovery.as_ref().map(|found| &found.outcome) {
+                Some(discover::Outcome::Found { .. }) => CodexFact::Found,
+                Some(discover::Outcome::OverrideMissing { path, reason }) => {
+                    CodexFact::OverrideMissing {
+                        path: path.display().to_string(),
+                        reason: reason.clone(),
+                    }
+                }
+                // A probe still running has not finished looking, so "not
+                // found" is not yet a claim this dialog can make.
+                Some(discover::Outcome::NotFound) if self.codex_probe.is_some() => {
+                    CodexFact::Unknown
+                }
+                Some(discover::Outcome::NotFound) => CodexFact::NotFound,
+                None => CodexFact::Unknown,
+            },
+            local_runtimes: self.doctor.as_ref().map_or_else(Vec::new, |report| {
+                report
+                    .runtimes
+                    .iter()
+                    .map(|(key, identity)| {
+                        (
+                            key.clone(),
+                            if execution::runtime_state_is_available(&identity.state) {
+                                RuntimeFact::Available
+                            } else {
+                                RuntimeFact::Unavailable {
+                                    remediation: sanitize_display(
+                                        identity
+                                            .remediation
+                                            .as_deref()
+                                            .unwrap_or(identity.state.as_str()),
+                                    ),
+                                }
+                            },
+                        )
+                    })
+                    .collect()
+            }),
+            eligible_models: self
+                .catalog
+                .document()
+                .map(|_| self.openrouter_eligible(contract)),
+        }
+    }
+
+    /// Readiness for one resolved route: [`execution::evaluate_route`]'s answer,
+    /// dressed for a 96 px badge.
     ///
     /// §5 invariant 4: **every** required piece has to be present, and the badge
     /// names the *first* one that is not. Before AP3-R S3 this answered `Ready`
     /// for an OpenRouter route the moment a credential existed — with no model
     /// chosen and no eligible catalog entry — which is the one direction a
-    /// readiness badge must never be wrong in. The order is the order the
-    /// pieces are needed in: a credential, then something to send, then somewhere
-    /// that would accept it.
+    /// readiness badge must never be wrong in.
     ///
-    /// Every "not ready" answer names what to do about it, and every "we have not
-    /// looked" answer says so rather than claiming a failure.
+    /// Everything below this line is presentation. The decision moved into
+    /// `core` so the pre-spawn gate could stop having its own (audit A1); what
+    /// stays here is the two cases a badge says differently from a refusal
+    /// sentence — an unrouted contract, and a doctor's own remediation, which
+    /// is more useful in the pill than the word "unavailable" would be.
     #[must_use]
     pub fn readiness(&self, resolved: &ResolvedRoute) -> Readiness {
-        let Some(route) = &resolved.route else {
+        let Some(route) = RouteFacts::from_resolved(resolved) else {
             return Readiness::Blocked(if resolved.contract == ContractId::Verify {
                 "Not implemented in this build".to_string()
             } else {
                 "No route chosen".to_string()
             });
         };
-        if !resolved.contract.route_is_implemented(
-            route.route_type,
-            &route.runtime_id,
-            route.model_id.as_deref(),
-        ) {
-            return Readiness::Blocked(format!(
-                "{} route is not implemented; select {}",
-                route.route_type.token(),
-                resolved
-                    .contract
-                    .implemented_route_types()
-                    .first()
-                    .map_or("no route is available", |route_type| route_type.token()),
-            ));
-        }
-        // 1. The credential, where the route type needs one. Codex authenticates
-        //    itself and the local lanes open no socket, so only OpenRouter does.
-        if route.route_type == RouteType::OpenRouter && !self.credentials.is_usable() {
-            return Readiness::Blocked(NO_KEY.to_string());
-        }
-        // 2. Something to send. Codex has its documented default, and a local
-        //    runtime can resolve its concrete weights from local_runtimes or
-        //    its installation. The completed job records the exact file/hash.
-        //    Only a remote provider truly has no request without a model id.
-        let has_model = match (route.route_type, &route.model_id) {
-            (RouteType::Builtin | RouteType::Codex | RouteType::LocalProc, _) => true,
-            (_, Some(id)) => !id.is_empty(),
-            (_, None) => false,
-        };
-        if !has_model {
-            return Readiness::Blocked(NO_MODEL.to_string());
-        }
-        match route.route_type {
-            RouteType::Builtin => Readiness::Ready,
-            RouteType::LocalProc => {
-                let key = match route.runtime_id.as_str() {
-                    "whisper.cpp" => "whisper",
-                    "mms-ctc" | "qwen3-fa" => "mms_ctc_aligner",
-                    _ => return Readiness::Unknown("Not probed".to_string()),
-                };
-                match self
-                    .doctor
-                    .as_ref()
-                    .and_then(|report| report.runtimes.get(key))
-                {
-                    None => Readiness::Unknown("Run doctor".to_string()),
-                    Some(identity) if runtime_is_available(&identity.state) => Readiness::Ready,
-                    Some(identity) => Readiness::Blocked(sanitize_display(
-                        identity
-                            .remediation
-                            .as_deref()
-                            .unwrap_or(identity.state.as_str()),
-                    )),
-                }
+        match execution::evaluate_route(&route, &self.preflight_facts(resolved.contract)) {
+            RouteVerdict::Ready => Readiness::Ready,
+            RouteVerdict::Unknown(reason) => Readiness::Unknown(reason),
+            RouteVerdict::Blocked(ExecutionBlock::UnsupportedRoute { route_type, .. }) => {
+                Readiness::Blocked(format!(
+                    "{} route is not implemented; select {}",
+                    route_type.token(),
+                    resolved
+                        .contract
+                        .implemented_route_types()
+                        .first()
+                        .map_or("no route is available", |route_type| route_type.token()),
+                ))
             }
-            // Defect C. "not on PATH" was a claim the dialog could not support:
-            // `PATH` is one rung of four, and it is the rung a desktop-entry
-            // launch is worst at. Each answer now names what actually happened,
-            // and the one that means "we have not finished looking" is `Unknown`
-            // rather than a confident refusal.
-            RouteType::Codex => match self.codex_discovery.as_ref().map(|d| &d.outcome) {
-                Some(discover::Outcome::Found { .. }) => Readiness::Ready,
-                Some(discover::Outcome::OverrideMissing { .. }) => {
-                    Readiness::Blocked(CODEX_OVERRIDE_MISSING.to_string())
-                }
-                Some(discover::Outcome::NotFound) if self.codex_probe.is_some() => {
-                    Readiness::Unknown("Looking for codex".to_string())
-                }
-                Some(discover::Outcome::NotFound) => {
-                    Readiness::Blocked(CODEX_NOT_FOUND.to_string())
-                }
-                None => Readiness::Unknown("Looking for codex".to_string()),
-            },
-            // 3. Somewhere that would accept it. An absent catalog is "we have
-            //    not looked", not "there is nothing" — the same distinction the
-            //    never-fetched badge makes, and the reason this is `Unknown`
-            //    rather than a blocked route with a confident-sounding reason.
-            RouteType::OpenRouter => match self.catalog.document() {
-                None => Readiness::Unknown("Catalog never fetched".to_string()),
-                Some(_) if self.openrouter_eligible(resolved.contract) == 0 => {
-                    Readiness::Blocked(NO_ENDPOINT.to_string())
-                }
-                Some(_) => Readiness::Ready,
-            },
+            RouteVerdict::Blocked(ExecutionBlock::RuntimeUnavailable { remediation, .. }) => {
+                Readiness::Blocked(remediation)
+            }
+            RouteVerdict::Blocked(block) => Readiness::Blocked(block.label().to_string()),
         }
     }
 
@@ -8088,6 +8109,136 @@ mod tests {
         // that emptied it is turned off.
         dialog.draft.catalog.show_experimental = true;
         assert_eq!(dialog.readiness(&semantic), Readiness::Ready);
+    }
+
+    /// Audit A1, stated as the thing the audit actually asked for: the badge on
+    /// the Routing tab and the refusal that stops a spawn are the **same
+    /// answer**, fed the same facts.
+    ///
+    /// Before AX-1 they were two implementations. The scenario in the audit —
+    /// codex not installed, `TC-WORDING` on its recommended Codex route — put
+    /// `Blocked: codex not found` on screen while `preflight` had no Codex arm
+    /// at all and accepted the Start standing beside it; whisper then ran for
+    /// tens of minutes and the wording lane died inside the helper. So this
+    /// sweeps the fact space rather than one case, and asserts agreement per
+    /// contract in **both** directions.
+    #[test]
+    fn the_badge_and_the_pre_spawn_gate_give_one_answer_to_one_question() {
+        let facts = |confirmed: bool| execution::ExecutionFacts {
+            resolved_at_utc: "2026-08-05T12:00:00Z".to_string(),
+            credential_present: confirmed,
+            boundary_confirmed: confirmed,
+            ..execution::ExecutionFacts::default()
+        };
+        let credentials = [
+            CredentialState::None,
+            CredentialState::File {
+                fingerprint: "0a1b2c3d".to_string(),
+                label: None,
+            },
+            CredentialState::Refused {
+                path: "/tmp/creds.json".to_string(),
+                mode: 0o644,
+            },
+        ];
+        let codices = [
+            None,
+            Some(Discovery {
+                name: "codex".to_string(),
+                outcome: discover::Outcome::NotFound,
+                searched: Vec::new(),
+                consulted_subprocess: true,
+            }),
+            Some(Discovery {
+                name: "codex".to_string(),
+                outcome: discover::Outcome::OverrideMissing {
+                    path: PathBuf::from("/opt/nowhere/codex"),
+                    reason: "not a runnable file".to_string(),
+                },
+                searched: Vec::new(),
+                consulted_subprocess: false,
+            }),
+            Some(Discovery {
+                name: "codex".to_string(),
+                outcome: discover::Outcome::Found {
+                    path: PathBuf::from("/usr/bin/codex"),
+                    method: discover::Method::Path,
+                },
+                searched: Vec::new(),
+                consulted_subprocess: false,
+            }),
+        ];
+        let doctors = [
+            None,
+            Some(DoctorReport {
+                schema_version: "musializer.doctor/v1".to_string(),
+                runtimes: BTreeMap::from([(
+                    "whisper".to_string(),
+                    RuntimeIdentity {
+                        state: "missing".to_string(),
+                        remediation: Some("install whisper.cpp".to_string()),
+                        ..RuntimeIdentity::default()
+                    },
+                )]),
+            }),
+        ];
+
+        let mut seen_ready = false;
+        let mut seen_blocked = false;
+        let mut seen_unknown = false;
+        for credential in &credentials {
+            for codex in &codices {
+                for doctor in &doctors {
+                    let mut dialog = dialog();
+                    dialog.credentials = credential.clone();
+                    dialog.codex_discovery = codex.clone();
+                    dialog.doctor = doctor.clone();
+
+                    // `All` with no authored sheet is the widest graph: every
+                    // implemented route type appears in it exactly once.
+                    let snapshot = execution::resolve(
+                        &dialog.draft,
+                        execution::WorkflowKind::All,
+                        false,
+                        &facts(credential.is_usable()),
+                    );
+                    for entry in &snapshot.contracts {
+                        let gate = execution::preflight(
+                            &snapshot,
+                            &dialog.preflight_facts(entry.contract),
+                        )
+                        .into_iter()
+                        .find(|block| block.contract() == entry.contract);
+                        let badge = dialog.readiness(&resolve_route(&dialog.draft, entry.contract));
+                        match (&badge, &gate) {
+                            (Readiness::Ready, None) => seen_ready = true,
+                            (Readiness::Unknown(_), None) => seen_unknown = true,
+                            (Readiness::Blocked(reason), Some(block)) => {
+                                seen_blocked = true;
+                                // The pill may carry a doctor's own remediation
+                                // where the label would say only "unavailable";
+                                // every other answer is the label itself.
+                                if !matches!(block, ExecutionBlock::RuntimeUnavailable { .. }) {
+                                    assert_eq!(
+                                        reason,
+                                        block.label(),
+                                        "{:?} badge and gate disagree on the reason",
+                                        entry.contract,
+                                    );
+                                }
+                            }
+                            _ => panic!(
+                                "{:?}: the badge says {badge:?} and the gate says {gate:?}",
+                                entry.contract,
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        // All three verdicts really occur in the sweep, or the agreement above
+        // is agreement about one state.
+        assert!(seen_ready && seen_blocked && seen_unknown);
     }
 
     /// S3. The eligibility count ignores the selected id, or a route pointed at
