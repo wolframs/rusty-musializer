@@ -14,6 +14,7 @@
 
 pub mod contracts;
 pub mod credentials;
+pub mod diagnosis;
 pub mod execution;
 pub mod models_dir;
 pub mod secret;

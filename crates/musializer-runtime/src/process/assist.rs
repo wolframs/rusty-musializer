@@ -259,6 +259,43 @@ pub struct LocalRuntimeOverrides<'a> {
     pub codex_bin: Option<&'a Path>,
 }
 
+/// How much of a job log is read back to find the helper's cause line.
+///
+/// The helper prints its diagnosis immediately before returning 1
+/// (`tools/external_analysis.py:2469`), so the answer is always at the end. A
+/// cap rather than the whole file because the log is the child's stderr and a
+/// run that spent forty minutes retrying can have written megabytes of it —
+/// none of which is the sentence being looked for.
+pub const LOG_TAIL_BYTES: u64 = 64 * 1024;
+
+/// The last [`LOG_TAIL_BYTES`] of a job log, decoded lossily.
+///
+/// Never fails: a log that is missing, unreadable or empty is the same answer
+/// as one with no cause in it — the caller falls back to the generic sentence.
+/// Seeking into the middle of a UTF-8 sequence is safe here because the lossy
+/// decode replaces the partial leading character and
+/// [`diagnose`](musializer_core::assist::diagnosis::diagnose) works a whole
+/// line at a time.
+#[must_use]
+pub fn read_log_tail(path: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let length = file.metadata().map_or(0, |metadata| metadata.len());
+    if length > LOG_TAIL_BYTES && file.seek(SeekFrom::End(-(LOG_TAIL_BYTES as i64))).is_err() {
+        return String::new();
+    }
+    let mut bytes = Vec::with_capacity(length.min(LOG_TAIL_BYTES) as usize);
+    // `take` rather than trusting the seek: a log the helper is still appending
+    // to can grow between the metadata read and this one.
+    if file.take(LOG_TAIL_BYTES).read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 /// A running `external_analysis.py` child and its artifacts.
 ///
 /// Owning this owns a process tree. [`finalize`](AssistJob::finalize) is the
@@ -972,6 +1009,43 @@ mod tests {
         assert_eq!(poll_until_finished(&mut job), AssistPoll::Failed);
         let log = std::fs::read_to_string(job.log_path()).expect("log");
         assert!(log.contains("whisper is missing"), "log was {log:?}");
+    }
+
+    /// The whole point of the tail: the helper's cause line is the **last**
+    /// thing in the file, and it has to survive a log far larger than the
+    /// window, with the window landing mid-character.
+    #[test]
+    fn the_log_tail_is_bounded_and_keeps_the_end() {
+        let scratch = Scratch::new("tail");
+        let path = scratch.join("assist.log");
+
+        // Absent, empty and short logs are all answerable without a special case.
+        assert_eq!(read_log_tail(&path), "");
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(read_log_tail(&path), "");
+        std::fs::write(
+            &path,
+            "External analysis failed: codex exited with code 1\n",
+        )
+        .unwrap();
+        assert!(read_log_tail(&path).contains("exited with code 1"));
+
+        // A megabyte of multi-byte noise, so the window opens inside a UTF-8
+        // sequence, with the cause line at the very end.
+        let mut noise = "\u{4f60}\u{597d}".repeat(300_000);
+        noise.push_str("\nExternal analysis failed: whisper-cli exceeded its 30s timeout\n");
+        std::fs::write(&path, &noise).unwrap();
+        let tail = read_log_tail(&path);
+        assert!(
+            tail.len() <= LOG_TAIL_BYTES as usize,
+            "{} bytes read",
+            tail.len()
+        );
+        assert!(tail.contains("whisper-cli exceeded its 30s timeout"));
+        assert_eq!(
+            musializer_core::assist::diagnosis::diagnose(&tail).map(|found| found.cause),
+            Some(musializer_core::assist::diagnosis::FailureCause::ToolTimedOut)
+        );
     }
 
     #[test]

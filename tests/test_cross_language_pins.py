@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -47,6 +48,7 @@ SETTINGS_RS = CORE / "assist" / "settings.rs"
 BRIDGE_RS = CORE / "project" / "analysis_bridge.rs"
 CANDIDATE_RS = CORE / "project" / "analysis_candidate.rs"
 ASSIST_SETTINGS_RS = APP / "ui" / "assist_settings.rs"
+DIAGNOSIS_RS = CORE / "assist" / "diagnosis.rs"
 
 
 def rust_source(path: Path) -> str:
@@ -261,6 +263,101 @@ class SchemaStrings(unittest.TestCase):
         ):
             with self.subTest(schema=name):
                 self.assertRegex(value, r"^musializer\.[a-z-]+/v\d+$")
+
+
+class HelperFailureSentence(unittest.TestCase):
+    """Audit finding B2: the one diagnosis the helper prints, read back in Rust.
+
+    `main()` prints `External analysis failed: {error}` to stderr and returns 1;
+    the desktop reads that line out of the job log and turns it into a toast
+    that names the cause. Two seams, not one. The prefix is the first. The
+    second is the three sentences `_run` raises behind it, which
+    `core::assist::diagnosis::classify` tells apart by substring — reword either
+    side and every failure silently collapses back to the single generic toast
+    B2 is about, with nothing failing anywhere.
+
+    The sentences are obtained by **driving `_run`** with an injected runner
+    rather than by matching its source, because each one is composed from two
+    format strings in different places (`f"{name} {detail}"`), and a check that
+    reads either half alone would pass while the composition drifted. The
+    classifier's own fragments are read out of `diagnosis.rs` as text, the
+    method this file already uses.
+    """
+
+    def python_prefix(self) -> str:
+        source = inspect.getsource(external_analysis.main)
+        match = re.search(r'print\(f"([^"{]*)\{error\}", file=sys\.stderr\)', source)
+        if match is None:
+            raise AssertionError("external_analysis.main no longer prints a failure line")
+        return match.group(1)
+
+    def helper_sentences(self) -> dict[str, str]:
+        """The three `RuntimeError` messages `_run` can raise, actually raised."""
+
+        def failing(exception: BaseException):
+            def runner(*args, **kwargs):
+                raise exception
+            return runner
+
+        completed = subprocess.CompletedProcess(["whisper-cli"], 2, "", "")
+        cases = {
+            "missing": failing(OSError(2, "No such file or directory")),
+            "timeout": failing(subprocess.TimeoutExpired(["whisper-cli"], 30.0)),
+            "exit": lambda *args, **kwargs: completed,
+        }
+        sentences = {}
+        for name, runner in cases.items():
+            with self.assertRaises(RuntimeError) as raised:
+                external_analysis._run(["/opt/whisper-cli"], timeout=30.0, runner=runner)
+            sentences[name] = str(raised.exception)
+        return sentences
+
+    def rust_classifier(self) -> str:
+        source = rust_source(DIAGNOSIS_RS)
+        match = re.search(r"fn classify\(reported: &str\) -> FailureCause \{(.*?)\n\}",
+                          source, re.S)
+        if match is None:
+            raise AssertionError("diagnosis.rs no longer declares `fn classify`")
+        return match.group(1)
+
+    def test_the_prefix_is_the_one_rust_looks_for(self) -> None:
+        # The Rust constant carries the trailing space, and the Python literal
+        # ends immediately before the interpolation, so the two are equal
+        # without either side trimming.
+        self.assertEqual(self.python_prefix(),
+                         rust_str_const(DIAGNOSIS_RS, "FAILURE_PREFIX"))
+
+    def test_each_helper_sentence_matches_exactly_one_rust_arm(self) -> None:
+        classifier = self.rust_classifier()
+        arms = {
+            "missing": [("starts", frag) for frag in
+                        re.findall(r'starts_with\("([^"]+)"\)', classifier)],
+            "timeout": [("contains", frag) for frag in
+                        re.findall(r'contains\("([^"]+)"\)', classifier)][:2],
+            "exit": [("contains", frag) for frag in
+                     re.findall(r'contains\("([^"]+)"\)', classifier)][2:],
+        }
+        self.assertEqual([len(tests) for tests in arms.values()], [1, 2, 1],
+                         "diagnosis.rs::classify no longer has the three arms this pins")
+        sentences = self.helper_sentences()
+        for name, sentence in sentences.items():
+            with self.subTest(cause=name):
+                for kind, fragment in arms[name]:
+                    if kind == "starts":
+                        self.assertTrue(sentence.startswith(fragment), sentence)
+                    else:
+                        self.assertIn(fragment, sentence)
+        # And they are three different sentences, so three different toasts.
+        self.assertEqual(len(set(sentences.values())), 3)
+
+    def test_a_helper_sentence_survives_the_prefix_it_is_printed_behind(self) -> None:
+        # What Rust actually reads is the whole log line. The prefix must not
+        # swallow the leading fragment the `missing` arm keys on, which it would
+        # if either side gained or lost the separating space.
+        prefix = self.python_prefix()
+        for sentence in self.helper_sentences().values():
+            line = f"{prefix}{sentence}"
+            self.assertEqual(line.split(prefix, 1)[1], sentence)
 
 
 if __name__ == "__main__":

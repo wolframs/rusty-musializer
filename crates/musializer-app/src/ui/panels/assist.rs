@@ -50,6 +50,7 @@
 
 use std::path::{Path, PathBuf};
 
+use musializer_core::assist::diagnosis;
 use musializer_core::assist::execution::{
     self, ContractSnapshot, ExecutionBlock, ExecutionSnapshot,
 };
@@ -76,8 +77,8 @@ use musializer_runtime::assist::env::SessionCredentials;
 use musializer_runtime::assist::plan::{self, ExecutionPlan, PlanInputs};
 use musializer_runtime::font::UiFonts;
 use musializer_runtime::process::assist::{
-    AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, AuthorizedCredential,
-    LocalRuntimeOverrides, StopReason,
+    read_log_tail, AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, AuthorizedCredential,
+    LocalRuntimeOverrides, StopReason, JOB_TIMEOUT,
 };
 use musializer_runtime::process::font_import::find_assist_helper;
 use musializer_runtime::process::reveal::{self, RevealState};
@@ -132,6 +133,78 @@ impl AssistNotice {
             title: title.to_string(),
             detail: detail.into(),
         }
+    }
+}
+
+/// What a helper that exited non-zero tells the user (audit B2), and the
+/// sentence the panel keeps beside it.
+///
+/// The helper printed exactly why it died — on stderr, into this file, on the
+/// one line before it returned 1 — and the desktop logged it and then reported
+/// **one fixed sentence for every cause**. "whisper.cpp is missing" and "the
+/// model is corrupt" arrived as the same toast, with the log path as the only
+/// way to tell them apart. The diagnosis existed the whole time and stopped one
+/// function short of the user.
+///
+/// A function rather than four lines inside the `poll` arm because those four
+/// lines are the whole finding: the composition is what a test has to be able
+/// to reach, and the arm above it is a call.
+fn failed_notice(log_path: &Path) -> (String, AssistNotice) {
+    let found = diagnosis::diagnose(&read_log_tail(log_path));
+    let sentence = diagnosis::failure_sentence(found.as_ref());
+    let log = log_path.display().to_string();
+    let notice = AssistNotice::new(
+        Severity::Error,
+        found
+            .as_ref()
+            .map_or(diagnosis::UNDIAGNOSED_HEADLINE, |found| {
+                found.cause.headline()
+            }),
+        diagnosis::notice_detail(&sentence, &log),
+    );
+    (sentence, notice)
+}
+
+/// What a supervisor-requested stop tells the user (audit B11).
+///
+/// Every other terminal outcome toasted; these two returned an empty `Vec`, so
+/// a forty-minute deadline and a cancel both ended with the panel quietly
+/// changing state and nothing on screen saying why the run is over. A user who
+/// had walked away came back to a job that had simply stopped.
+///
+/// **A cancel is not an error.** It gets [`Severity::Info`] — six seconds,
+/// non-persistent — because it confirms something the user just did; the two
+/// stops the user did *not* ask for are [`Severity::Error`], which is the one
+/// severity [`Severity::dwell`] keeps on screen until it is dismissed. That
+/// distinction is the whole point: a deadline hit arrives forty minutes in,
+/// which is exactly when nobody is looking.
+fn stopped_notice(reason: StopReason, log_path: &str) -> AssistNotice {
+    let minutes = JOB_TIMEOUT.as_secs() / 60;
+    match reason {
+        StopReason::Cancelled => AssistNotice::new(
+            Severity::Info,
+            "Analysis cancelled",
+            // No log path: a stop the user asked for is not something to go and
+            // read a file about, and the sentence answers the only question a
+            // cancel leaves — whether anything was already applied.
+            "The analysis was stopped at your request. Nothing was applied to this project.",
+        ),
+        StopReason::TimedOut => AssistNotice::new(
+            Severity::Error,
+            "Analysis reached its time limit",
+            diagnosis::notice_detail(
+                &format!("The helper ran for {minutes} minutes without finishing and was stopped."),
+                log_path,
+            ),
+        ),
+        StopReason::Failing => AssistNotice::new(
+            Severity::Error,
+            "Analysis was torn down",
+            diagnosis::notice_detail(
+                "The helper could not be confirmed stopped, so the job was torn down.",
+                log_path,
+            ),
+        ),
     }
 }
 
@@ -511,25 +584,25 @@ impl AssistController {
             AssistPoll::Running => Vec::new(),
             AssistPoll::Stopped(reason) => {
                 self.job = None;
-                workspace.assist.job_state = match reason {
+                let session = &mut workspace.assist;
+                session.job_state = match reason {
                     StopReason::Cancelled => AssistJobState::Cancelled,
                     StopReason::TimedOut => AssistJobState::TimedOut,
                     StopReason::Failing => AssistJobState::Failed,
                 };
-                Vec::new()
+                let notice = stopped_notice(reason, &session.log_path);
+                if reason != StopReason::Cancelled {
+                    session.failure_detail = notice.detail.clone();
+                }
+                vec![notice]
             }
             AssistPoll::Failed => {
                 self.job = None;
                 let session = &mut workspace.assist;
                 session.job_state = AssistJobState::Failed;
-                session.failure_detail =
-                    "The helper exited before producing a validated result.".to_string();
-                let log = session.log_path.clone();
-                vec![AssistNotice::new(
-                    Severity::Error,
-                    "Analysis failed",
-                    format!("The helper exited before producing a validated result. Log: {log}"),
-                )]
+                let (sentence, notice) = failed_notice(Path::new(&session.log_path));
+                session.failure_detail = sentence;
+                vec![notice]
             }
             AssistPoll::Succeeded => {
                 self.job = None;
@@ -4285,6 +4358,106 @@ mod tests {
         // No plan yet and a helper present is the one frame a confirmation
         // arms before its graph resolves; it is not a refusal.
         assert_eq!(start_refusal(true, None), None);
+    }
+
+    /// Audit B11. All three supervisor stops now say something, and a cancel is
+    /// told apart from the two the user did not ask for — by severity, which is
+    /// what decides whether the card stays on screen.
+    #[test]
+    fn every_supervisor_stop_says_something_and_a_cancel_is_not_an_error() {
+        let log = "/tmp/mz/assist-all-000.log";
+        let cancelled = stopped_notice(StopReason::Cancelled, log);
+        let timed_out = stopped_notice(StopReason::TimedOut, log);
+        let failing = stopped_notice(StopReason::Failing, log);
+
+        assert_eq!(cancelled.severity, Severity::Info);
+        assert!(!cancelled.severity.dwell().persistent, "a cancel expires");
+        assert!(!cancelled.detail.contains(log), "no file to go and read");
+
+        for notice in [&timed_out, &failing] {
+            assert_eq!(notice.severity, Severity::Error);
+            assert!(
+                notice.severity.dwell().persistent,
+                "a stop nobody asked for outlives the moment it happened"
+            );
+            assert!(notice.detail.contains(log), "{}", notice.detail);
+        }
+
+        // The deadline is named, and named from the supervisor's own constant
+        // rather than from a literal that can drift away from it.
+        assert!(
+            timed_out
+                .detail
+                .contains(&format!("{} minutes", JOB_TIMEOUT.as_secs() / 60)),
+            "{}",
+            timed_out.detail
+        );
+
+        let titles: std::collections::BTreeSet<&str> = [&cancelled, &timed_out, &failing]
+            .iter()
+            .map(|notice| notice.title.as_str())
+            .collect();
+        assert_eq!(titles.len(), 3, "one sentence per stop");
+        for notice in [&cancelled, &timed_out, &failing] {
+            assert!(!notice.title.is_empty() && !notice.detail.is_empty());
+            assert!(notice.title.len() < musializer_core::ui::notice::TITLE_CAPACITY);
+            assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
+        }
+    }
+
+    /// Audit B2, at the seam the panel actually uses: the log the helper wrote
+    /// reaches a title that names the cause, and the sentence beside it is the
+    /// helper's own words rather than the one fixed line every cause used to
+    /// produce.
+    #[test]
+    fn a_job_log_reaches_a_toast_that_names_the_cause() {
+        let scratch = Scratch::new("diagnosis");
+        let cases = [
+            (
+                "could not start whisper-cli: [Errno 2] No such file or directory",
+                "A tool the analysis needs could not run",
+            ),
+            (
+                "whisper-cli exceeded its 2400s timeout",
+                "A step of the analysis timed out",
+            ),
+            ("codex exited with code 1", "A step of the analysis failed"),
+            (
+                "the bridge names a track this audio is not",
+                "The analysis could not produce a valid result",
+            ),
+        ];
+        let mut titles = std::collections::BTreeSet::new();
+        for (index, (sentence, expected_title)) in cases.iter().enumerate() {
+            let log = scratch.join(&format!("assist-{index}.log"));
+            std::fs::write(
+                &log,
+                format!(
+                    "assist: mode=all\n{}{sentence}\n",
+                    diagnosis::FAILURE_PREFIX
+                ),
+            )
+            .expect("log");
+            let (kept, notice) = failed_notice(&log);
+            assert_eq!(notice.title, *expected_title, "for {sentence:?}");
+            assert_eq!(notice.severity, Severity::Error);
+            assert!(kept.contains(sentence), "{kept}");
+            assert!(notice.detail.contains(sentence), "{}", notice.detail);
+            assert!(notice.detail.contains(&log.display().to_string()));
+            assert!(notice.title.len() < musializer_core::ui::notice::TITLE_CAPACITY);
+            assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
+            titles.insert(notice.title.clone());
+        }
+        assert_eq!(titles.len(), 4, "one toast per cause, not one for all four");
+
+        // A log with nothing to say still reports, with the sentence that was
+        // previously used for every failure.
+        let quiet = scratch.join("quiet.log");
+        std::fs::write(&quiet, "").expect("log");
+        let (kept, notice) = failed_notice(&quiet);
+        assert_eq!(kept, diagnosis::UNDIAGNOSED_SENTENCE);
+        assert_eq!(notice.title, diagnosis::UNDIAGNOSED_HEADLINE);
+        assert!(!titles.contains(&notice.title), "and it is a fifth title");
     }
 
     struct Scratch(PathBuf);

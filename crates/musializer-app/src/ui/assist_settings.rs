@@ -53,10 +53,17 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 use musializer_core::assist::contracts::{ContractId, FallbackPolicy, RouteType, ALL_CONTRACTS};
+// Bidi-format characters reorder a row without drawing anything, and
+// `char::is_control` does not cover them (the reviewer's fixture carries a
+// `\u{202e}` override). The table lives in `core` because the Assist job-log
+// diagnosis needed the same one: two copies of a character table is the drift
+// audit B12 names.
+use musializer_core::assist::diagnosis::is_bidi_control;
 use musializer_core::assist::execution::{
     self, CodexFact, CredentialFact, ExecutionBlock, PreflightFacts, RouteFacts, RouteVerdict,
     RuntimeFact,
@@ -73,6 +80,7 @@ use musializer_runtime::assist::discover::{self, Discovery};
 use musializer_runtime::assist::files::{self, AssistFileError};
 use musializer_runtime::assist::models;
 use musializer_runtime::font::Faces;
+use musializer_runtime::process::process_group;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 use serde::Deserialize;
 
@@ -1551,20 +1559,189 @@ pub use musializer_core::assist::execution::{CODEX_NOT_FOUND, CODEX_OVERRIDE_MIS
 
 /// A job running off the frame thread, so a network round trip or a Python
 /// process never holds a `BeginDrawing`/`EndDrawing` pair open.
-enum Background {
+enum BackgroundChannel {
     KeyTest(Receiver<(KeyTest, Secret)>),
     Refresh(Receiver<Result<(), String>>),
     Doctor(Receiver<Result<DoctorReport, String>>),
 }
 
-impl Background {
+impl BackgroundChannel {
     fn label(&self) -> &'static str {
         match self {
-            Background::KeyTest(_) => "testing the key",
-            Background::Refresh(_) => "refreshing the catalog",
-            Background::Doctor(_) => "running the doctor",
+            BackgroundChannel::KeyTest(_) => "testing the key",
+            BackgroundChannel::Refresh(_) => "refreshing the catalog",
+            BackgroundChannel::Doctor(_) => "running the doctor",
         }
     }
+}
+
+/// A running background job **and its deadline** (audit B10).
+///
+/// `self.background.is_some()` disables every button in this dialog, so a child
+/// that never exits disabled the whole surface for the life of the process,
+/// with no cancel short of restarting the application. The Assist job has owned
+/// a deadline since it was written (`process::assist::JOB_TIMEOUT`); these two
+/// spawns — a Python doctor that probes runtimes, and a discovery tool that
+/// makes a real HTTPS request — had none at all.
+///
+/// The bound is enforced **twice**, and the second one is not belt and braces.
+/// [`run_bounded`] kills the child at `limit`, which is the honest answer; but
+/// a grandchild that inherited the pipe keeps the read alive after its parent
+/// dies, so a worker thread can outlive the process it was supervising. The
+/// dialog therefore abandons the channel at `limit + ABANDON_GRACE` and states
+/// the same outcome, because a wedged worker must not be able to hold the
+/// surface hostage either.
+struct Background {
+    channel: BackgroundChannel,
+    started: Instant,
+    limit: Duration,
+}
+
+impl Background {
+    fn new(channel: BackgroundChannel, limit: Duration) -> Self {
+        Background {
+            channel,
+            started: Instant::now(),
+            limit,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        self.channel.label()
+    }
+
+    /// Whether the dialog should stop waiting for a worker that has not
+    /// answered even though the child it supervises was killed long ago.
+    fn abandoned(&self) -> bool {
+        self.started.elapsed() >= self.limit + ABANDON_GRACE
+    }
+}
+
+/// One HTTPS request with `curl`'s own `max-time = 15` inside it. The bound
+/// here is for a `curl` that never returns despite it.
+const KEY_TEST_LIMIT: Duration = Duration::from_secs(60);
+
+/// A real catalog download, over whatever connection the user has.
+const REFRESH_LIMIT: Duration = Duration::from_secs(180);
+
+/// The doctor runs each local runtime to ask its identity, and a cold model
+/// file comes off a spinning disk.
+const DOCTOR_LIMIT: Duration = Duration::from_secs(120);
+
+/// How long after a child's own deadline the dialog waits for its supervisor
+/// before giving up on it. Long enough for the `SIGTERM`/`SIGKILL` escalation
+/// and the pipe drain that follows it.
+const ABANDON_GRACE: Duration = Duration::from_secs(10);
+
+/// The one sentence a timed-out background child produces, wherever the
+/// timeout was noticed. Both halves of the bound above compose it, so a
+/// killed child and an abandoned supervisor cannot say different things about
+/// the same event.
+fn timed_out_detail(limit: Duration) -> String {
+    format!(
+        "it did not finish within {} seconds and was stopped",
+        limit.as_secs()
+    )
+}
+
+/// The doctor's own timeout sentence. Whole rather than a fragment because
+/// `doctor_error` is drawn as written, and it names the *shape* of the fault:
+/// the doctor is a supervisor itself, and a doctor that hangs is a runtime that
+/// did not answer being probed.
+fn doctor_timed_out(limit: Duration) -> String {
+    format!(
+        "The doctor was still running after {} seconds and was stopped. \
+         A local runtime it probes is not answering.",
+        limit.as_secs()
+    )
+}
+
+/// What [`run_bounded`] found.
+enum BoundedOutcome {
+    Finished(Output),
+    /// The child outlived `limit` and was terminated.
+    TimedOut,
+}
+
+/// Runs `command` to completion, terminating it if it outlives `limit`.
+///
+/// The child is owned by **this** thread for its whole life and reaped here, so
+/// there is no window in which another thread could signal a pid this one has
+/// already collected. That is why the deadline is a `try_wait` poll rather than
+/// a watchdog thread holding the pid: a recycled pid is a signal delivered to
+/// an unrelated process.
+///
+/// The pipes are drained by two reader threads because `try_wait` does not read
+/// them, and a child whose 64 KiB pipe buffer fills would block forever waiting
+/// for a reader that is busy waiting for it.
+///
+/// `SIGTERM` before `SIGKILL`, to the child's **process group**, because
+/// killing only the child leaves its own children holding the inherited pipe —
+/// and a supervisor blocked on a pipe a dead process's grandchild owns is the
+/// wedge this function exists to prevent. The group comes from
+/// [`CommandExt::process_group`] here, which is the one place in this tree that
+/// may do it: `process::process_group`'s module docs forbid it for
+/// `external_analysis.py`, whose `--new-process-group` arm calls `os.setsid()`
+/// and would die with `EPERM` if it were already a group leader. None of the
+/// three tools reached from this dialog — `provider_catalog.py`,
+/// `codex_model_discovery.py`, `musializer_doctor.py` — calls `setsid` at all,
+/// and `curl` does not either. Do not route a helper spawn through here.
+fn run_bounded(mut command: Command, limit: Duration) -> Result<BoundedOutcome, String> {
+    use std::os::unix::process::CommandExt;
+
+    command.process_group(0);
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || drained(out_pipe));
+    let err_reader = std::thread::spawn(move || drained(err_pipe));
+
+    let started = Instant::now();
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if started.elapsed() >= limit {
+            timed_out = true;
+            let _ = process_group::signal_group_or_process(child.id(), process_group::Signal::Term);
+            if !process_group::wait_bounded(&mut child, &process_group::ShutdownPolicy::cancel())
+                .is_ok_and(process_group::WaitOutcome::is_reaped)
+            {
+                let _ = process_group::kill_group_and_reap(&mut child);
+            }
+            break None;
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    match status {
+        Some(status) if !timed_out => Ok(BoundedOutcome::Finished(Output {
+            status,
+            stdout,
+            stderr,
+        })),
+        _ => Ok(BoundedOutcome::TimedOut),
+    }
+}
+
+/// How often [`run_bounded`] looks at its child. The same 20 ms
+/// `process_group::ShutdownPolicy` uses.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Everything a pipe has to give, on a thread of its own. Errors are the same
+/// answer as end-of-file here: the exit status is what decides the outcome, and
+/// a half-read pipe still carries the last line the child managed to print.
+fn drained<R: std::io::Read>(pipe: Option<R>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut bytes);
+    }
+    bytes
 }
 
 // ---------------------------------------------------------------------------
@@ -3903,20 +4080,6 @@ fn wrap(
 /// [`sanitize_display`]'s cost is bounded by its *output*, so a 4000-character
 /// name cannot make a row measurement walk 4000 glyphs on every frame.
 pub const DISPLAY_CAP: usize = 160;
-
-/// Whether a character reorders text without drawing anything.
-///
-/// `char::is_control` does not cover these: they are format characters, so a
-/// right-to-left override survives a control-character strip and silently
-/// reverses everything after it in the row. The reviewer's fixture carries one
-/// (`b/rtl-\u{202e}reversed\u{202c}-and--nul`), which is why they are named here
-/// rather than assumed absent.
-fn is_bidi_control(character: char) -> bool {
-    matches!(
-        character,
-        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
-    )
-}
 
 /// The one filter every catalog-, Codex- and doctor-derived string goes through
 /// before it is measured or drawn (E6, AP3-R S7).
@@ -6678,7 +6841,10 @@ impl AssistSettingsDialog {
         std::thread::spawn(move || {
             let _ = sender.send(run_key_test(secret));
         });
-        self.background = Some(Background::KeyTest(receiver));
+        self.background = Some(Background::new(
+            BackgroundChannel::KeyTest(receiver),
+            KEY_TEST_LIMIT,
+        ));
         self.key_test = None;
     }
 
@@ -6918,27 +7084,25 @@ impl AssistSettingsDialog {
         command.stderr(Stdio::piped());
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let outcome = match command.output() {
-                Ok(output) if output.status.success() => Ok(()),
-                Ok(output) => {
+            let outcome = match run_bounded(command, REFRESH_LIMIT) {
+                Ok(BoundedOutcome::Finished(output)) if output.status.success() => Ok(()),
+                Ok(BoundedOutcome::Finished(output)) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let last_line = |text: &str| -> Option<String> {
-                        text.lines()
-                            .map(str::trim)
-                            .rfind(|line| !line.is_empty())
-                            .map(str::to_string)
-                    };
-                    let detail = last_line(&stderr)
-                        .or_else(|| last_line(&stdout))
+                    let detail = last_output_line(&stderr)
+                        .or_else(|| last_output_line(&stdout))
                         .unwrap_or_else(|| "the discovery tool failed".to_string());
                     Err(detail)
                 }
-                Err(error) => Err(error.to_string()),
+                Ok(BoundedOutcome::TimedOut) => Err(timed_out_detail(REFRESH_LIMIT)),
+                Err(error) => Err(error),
             };
             let _ = sender.send(outcome);
         });
-        self.background = Some(Background::Refresh(receiver));
+        self.background = Some(Background::new(
+            BackgroundChannel::Refresh(receiver),
+            REFRESH_LIMIT,
+        ));
     }
 
     /// Runs the doctor for the runtime identities the Local models section shows.
@@ -6991,25 +7155,32 @@ impl AssistSettingsDialog {
         command.stderr(Stdio::piped());
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let outcome = match command.output() {
-                Ok(output) => parse_doctor_report(&output.stdout).map_err(|reason| {
-                    // The child's own last line first, because that is the
-                    // actionable half. The doctor dying at import prints a
-                    // traceback ending in `ModuleNotFoundError: No module named
-                    // 'lyric_align'` and **nothing** on stdout, so throwing
-                    // stderr away left the user with "EOF while parsing a value
-                    // at line 1 column 0" — a sentence about JSON, for a
-                    // missing file (audit B7).
-                    match last_output_line(&String::from_utf8_lossy(&output.stderr)) {
-                        Some(line) => format!("{line} (the report could not be read: {reason})"),
-                        None => reason,
-                    }
-                }),
-                Err(error) => Err(error.to_string()),
+            let outcome = match run_bounded(command, DOCTOR_LIMIT) {
+                Ok(BoundedOutcome::TimedOut) => Err(doctor_timed_out(DOCTOR_LIMIT)),
+                Ok(BoundedOutcome::Finished(output)) => parse_doctor_report(&output.stdout)
+                    .map_err(|reason| {
+                        // The child's own last line first, because that is the
+                        // actionable half. The doctor dying at import prints a
+                        // traceback ending in `ModuleNotFoundError: No module named
+                        // 'lyric_align'` and **nothing** on stdout, so throwing
+                        // stderr away left the user with "EOF while parsing a value
+                        // at line 1 column 0" — a sentence about JSON, for a
+                        // missing file (audit B7).
+                        match last_output_line(&String::from_utf8_lossy(&output.stderr)) {
+                            Some(line) => {
+                                format!("{line} (the report could not be read: {reason})")
+                            }
+                            None => reason,
+                        }
+                    }),
+                Err(error) => Err(error),
             };
             let _ = sender.send(outcome);
         });
-        self.background = Some(Background::Doctor(receiver));
+        self.background = Some(Background::new(
+            BackgroundChannel::Doctor(receiver),
+            DOCTOR_LIMIT,
+        ));
     }
 
     /// Re-answers "is this installation whole" from the support manifest.
@@ -7038,24 +7209,42 @@ impl AssistSettingsDialog {
             Refresh(Result<(), String>),
             Doctor(Result<DoctorReport, String>),
         }
-        let finished = match job {
-            Background::KeyTest(receiver) => match receiver.try_recv() {
+        // The second half of B10's bound. `run_bounded` has already killed the
+        // child by now; what this catches is a supervisor thread that never got
+        // to say so — a grandchild holding the inherited pipe open keeps the
+        // drain alive after its parent is gone. Abandoning the channel is safe
+        // because nothing is shared with it but the sender, which is dropped
+        // when the thread eventually ends.
+        let abandoned = job.abandoned();
+        let limit = job.limit;
+        let finished = match &job.channel {
+            BackgroundChannel::KeyTest(receiver) => match receiver.try_recv() {
                 Ok((outcome, secret)) => Some(Finished::KeyTest(outcome, secret)),
+                Err(TryRecvError::Empty) if abandoned => Some(Finished::KeyTest(
+                    KeyTest::NoNetwork(timed_out_detail(limit)),
+                    Secret::new(String::new()),
+                )),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => Some(Finished::KeyTest(
                     KeyTest::NoNetwork("the check ended without an answer".to_string()),
                     Secret::new(String::new()),
                 )),
             },
-            Background::Refresh(receiver) => match receiver.try_recv() {
+            BackgroundChannel::Refresh(receiver) => match receiver.try_recv() {
                 Ok(result) => Some(Finished::Refresh(result)),
+                Err(TryRecvError::Empty) if abandoned => {
+                    Some(Finished::Refresh(Err(timed_out_detail(limit))))
+                }
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => Some(Finished::Refresh(Err(
                     "the discovery tool ended without an answer".to_string(),
                 ))),
             },
-            Background::Doctor(receiver) => match receiver.try_recv() {
+            BackgroundChannel::Doctor(receiver) => match receiver.try_recv() {
                 Ok(result) => Some(Finished::Doctor(result)),
+                Err(TryRecvError::Empty) if abandoned => {
+                    Some(Finished::Doctor(Err(doctor_timed_out(limit))))
+                }
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => Some(Finished::Doctor(Err(
                     "the doctor ended without an answer".to_string(),
@@ -7125,6 +7314,131 @@ mod tests {
         let mut dialog = AssistSettingsDialog::new();
         dialog.open = true;
         dialog
+    }
+
+    // -- background deadlines (audit B10) -----------------------------------
+
+    fn piped(program: &str, script: &str) -> Command {
+        let mut command = Command::new(program);
+        command.arg("-c").arg(script);
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        command
+    }
+
+    /// A child that answers inside its limit is untouched, and both pipes come
+    /// back whole — the reader threads exist because `try_wait` does not drain
+    /// them, and a child that filled its pipe buffer would deadlock against a
+    /// supervisor waiting for it.
+    #[test]
+    fn a_child_that_answers_in_time_keeps_its_output() {
+        let script = "printf 'x%.0s' $(seq 1 200000); printf 'done\\n' 1>&2";
+        let outcome = run_bounded(piped("sh", script), Duration::from_secs(30)).expect("spawn");
+        let BoundedOutcome::Finished(output) = outcome else {
+            panic!("a prompt child must not read as a timeout");
+        };
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 200_000, "the pipe buffer is 64 KiB");
+        assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "done");
+    }
+
+    /// The finding. Before this, a wedged doctor or refresh child disabled
+    /// every button in the dialog for the life of the process.
+    #[test]
+    fn a_wedged_child_is_terminated_at_its_limit() {
+        let scratch =
+            std::env::temp_dir().join(format!("musializer-bounded-{}.marker", std::process::id()));
+        let _ = std::fs::remove_file(&scratch);
+        let script = format!("sleep 30; : > {}", scratch.display());
+
+        let started = Instant::now();
+        let outcome = run_bounded(piped("sh", &script), Duration::from_millis(300)).expect("spawn");
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(outcome, BoundedOutcome::TimedOut),
+            "a child past its limit is a timeout, not a result"
+        );
+        // This bound is what pins the **group** kill. `sh` runs `sleep` as a
+        // child of its own, which inherits the pipes; signalling only `sh`
+        // leaves the drain blocked until `sleep` finishes on its own, and this
+        // returned in 30 s before `process_group(0)` was set.
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the supervisor returned after {elapsed:?}; a grandchild is holding the pipe"
+        );
+
+        // And it was actually killed, rather than merely abandoned: the marker
+        // the child writes after its sleep never appears.
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(
+            !scratch.exists(),
+            "the child outlived the supervisor that reported it stopped"
+        );
+    }
+
+    /// A child that cannot be spawned at all is an error, not a timeout: the
+    /// dialog must not wait out a limit for a binary that is not there.
+    #[test]
+    fn a_child_that_cannot_start_fails_immediately() {
+        let mut command = Command::new("musializer-no-such-discovery-tool");
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        let started = Instant::now();
+        assert!(run_bounded(command, Duration::from_secs(600)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// The dialog's own half of the bound, and the reason it exists: a
+    /// grandchild holding the inherited pipe open can keep a worker thread
+    /// alive after the child it supervised is gone, and `background.is_some()`
+    /// is what disables every control here.
+    #[test]
+    fn the_dialog_stops_waiting_for_a_supervisor_that_never_answers() {
+        let (_sender, receiver) = mpsc::channel::<Result<(), String>>();
+        let mut job = Background::new(BackgroundChannel::Refresh(receiver), REFRESH_LIMIT);
+        assert!(!job.abandoned(), "a job that just started is not abandoned");
+
+        // The child's own deadline is not enough on its own: the grace after it
+        // is what the supervisor is given to report.
+        job.started = Instant::now() - REFRESH_LIMIT;
+        assert!(!job.abandoned());
+        job.started = Instant::now() - (REFRESH_LIMIT + ABANDON_GRACE);
+        assert!(job.abandoned());
+
+        // Every kind carries a limit, and the label the report line prints is
+        // unchanged by the deadline living beside it.
+        for (channel, limit, label) in [
+            (
+                BackgroundChannel::Doctor(mpsc::channel().1),
+                DOCTOR_LIMIT,
+                "running the doctor",
+            ),
+            (
+                BackgroundChannel::KeyTest(mpsc::channel().1),
+                KEY_TEST_LIMIT,
+                "testing the key",
+            ),
+        ] {
+            let job = Background::new(channel, limit);
+            assert_eq!(job.label(), label);
+            assert!(limit > Duration::ZERO);
+        }
+    }
+
+    /// One event, one sentence, wherever the timeout is noticed — the killed
+    /// child and the abandoned supervisor must not describe it differently.
+    #[test]
+    fn a_timeout_names_the_limit_it_passed() {
+        assert!(timed_out_detail(REFRESH_LIMIT).contains(&REFRESH_LIMIT.as_secs().to_string()));
+        assert!(doctor_timed_out(DOCTOR_LIMIT).contains(&DOCTOR_LIMIT.as_secs().to_string()));
+        assert_ne!(
+            timed_out_detail(REFRESH_LIMIT),
+            doctor_timed_out(DOCTOR_LIMIT)
+        );
+        // The doctor's is drawn as written, so it is a whole sentence.
+        assert!(doctor_timed_out(DOCTOR_LIMIT).ends_with('.'));
     }
 
     // -- the masked field --------------------------------------------------
