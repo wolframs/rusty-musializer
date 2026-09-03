@@ -22,7 +22,10 @@
 #   - every artifact under build/, which .gitignore excludes.
 #
 # Usage:
-#   tools/headless_check.sh [OUTPUT_DIR]
+#   tools/headless_check.sh [--skip-render] [OUTPUT_DIR]
+#
+# `--skip-render` keeps the isolated Assist/routing UI checks and skips scene,
+# export, project-frame and unrelated UI-render suites.
 #
 # Environment:
 #   MUSIALIZER_CAPTURE_DISPLAY   X display to use (default :77)
@@ -31,7 +34,40 @@
 
 set -euo pipefail
 
-OUT_DIR="${1:-build/headless}"
+usage() {
+    echo "usage: tools/headless_check.sh [--skip-render] [OUTPUT_DIR]"
+}
+
+SKIP_RENDER=0
+OUT_DIR="build/headless"
+OUTPUT_DIR_SET=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --skip-render)
+            SKIP_RENDER=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -*)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+        *)
+            if [ "$OUTPUT_DIR_SET" -eq 1 ]; then
+                echo "error: more than one output directory was provided" >&2
+                usage >&2
+                exit 2
+            fi
+            OUT_DIR="$1"
+            OUTPUT_DIR_SET=1
+            ;;
+    esac
+    shift
+done
+
 DISPLAY_NUM="${MUSIALIZER_CAPTURE_DISPLAY:-:77}"
 PROBE_FRAMES="${MUSIALIZER_PROBE_FRAMES:-240}"
 FIXTURE_SECONDS="${MUSIALIZER_FIXTURE_SECONDS:-8}"
@@ -102,8 +138,18 @@ fi
 # matched pair sits ~5 dB above its 40 dB floor either way. If a driver update
 # ever breaks that, the failure names the encoder — the `video encoder:` line
 # is asserted below rather than trusted.
-if [ -n "${MZ_ENCODER+set}" ]; then
+if [ "$SKIP_RENDER" -eq 1 ]; then
+    MZ_ENC_NAME="skipped"
+    MZ_ENC=""
+    echo "encoder: skipped with the render/export suites"
+elif [ -n "${MZ_ENCODER+set}" ]; then
     MZ_ENC_NAME="${MZ_ENCODER:-x264}"
+    if [ "$MZ_ENC_NAME" = "x264" ]; then
+        MZ_ENC=""
+    else
+        MZ_ENC="--encoder $MZ_ENC_NAME"
+    fi
+    echo "encoder: $MZ_ENC_NAME for this script's own renders"
 elif ffmpeg -v error -f lavfi -i color=black:s=256x144:d=0.1 \
         -c:v h264_nvenc -f null - >/dev/null 2>&1; then
     # 256x144, not something smaller: NVENC refuses frames below a minimum
@@ -112,15 +158,13 @@ elif ffmpeg -v error -f lavfi -i color=black:s=256x144:d=0.1 \
     # version of this check shipped. 256x144 is under the gate's smallest real
     # render (640x360), so a pass here transfers.
     MZ_ENC_NAME="nvenc"
+    MZ_ENC="--encoder $MZ_ENC_NAME"
+    echo "encoder: $MZ_ENC_NAME for this script's own renders"
 else
     MZ_ENC_NAME="x264"
-fi
-if [ "$MZ_ENC_NAME" = "x264" ]; then
     MZ_ENC=""     # x264 is the application default; passing nothing proves that path too
-else
-    MZ_ENC="--encoder $MZ_ENC_NAME"
+    echo "encoder: $MZ_ENC_NAME for this script's own renders"
 fi
-echo "encoder: $MZ_ENC_NAME for this script's own renders"
 
 # Prove the isolation before anything is launched, rather than trusting it.
 #
@@ -237,7 +281,9 @@ if [ ! -e "/tmp/.X11-unix/X${DISPLAY_NUM#:}" ]; then
     exit 1
 fi
 
-echo "=== running $PROBE_FRAMES frames ==="
+SWEEP_FAILED=0
+if [ "$SKIP_RENDER" -eq 0 ]; then
+    echo "=== running $PROBE_FRAMES frames ==="
 # The frame-budget verdict far below reads this run's 'frame budget:' line, and
 # GX-2 measured that the verdict tracks the *machine*: the same commit reads
 # worst 33.2ms at load 15 and worst 16.7ms with 0 stalled at load 2. So the
@@ -483,7 +529,6 @@ capture() {
 }
 
 echo "=== scene sweep ==="
-SWEEP_FAILED=0
 for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram phosphor clawd; do
     capture "scene-$scene" 1280x720 --scene "$scene" || SWEEP_FAILED=1
 done
@@ -2368,6 +2413,10 @@ else
 fi
 fi
 
+else
+    echo "=== skipping scene, export, project-frame and unrelated UI-render suites ==="
+fi
+
 # ---------------------------------------------------------------------------
 # The Assist panel.
 #
@@ -2547,7 +2596,8 @@ assist_routes_capture() {
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
     set +e
-    env -u MUSIALIZER_ASSIST_HELPER WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+    env -u MUSIALIZER_ASSIST_HELPER -u OPENROUTER_API_KEY \
+        WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         DISPLAY="$DISPLAY_NUM" \
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         XDG_CONFIG_HOME="$config" \
@@ -2641,6 +2691,7 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     fi
 fi
 
+if [ "$SKIP_RENDER" -eq 0 ]; then
 # ---------------------------------------------------------------------------
 # Tranche LT1: unresolved lines and review flags, by name and time range.
 #
@@ -3592,6 +3643,7 @@ if [ "$MISPLACED_STATUS" -eq 0 ] && [ "$ASSIST_WIRED" -eq 1 ]; then
     echo "FAIL: assist=confirm was honoured outside the Assist panel" >&2
     SWEEP_FAILED=1
 fi
+fi
 
 echo "=== the AI settings dialog (AP3) ==="
 # None of this is in the frozen C either, so a capture and a report line are the
@@ -3621,6 +3673,30 @@ root = pathlib.Path(sys.argv[1])
     "catalog": {"network_allowed": True,
                  "last_filters": {"input_modalities": "audio", "output_modalities": "text"},
                  "last_refresh_utc": "2026-07-20T09:00:00Z"},
+}, indent=2) + "\n")
+# A profile from the period when the durable schema allowed route combinations
+# the task-specific adapters did not execute. Every stale override must remain
+# focusable so activating it can return to inheritance; TC-VERIFY is the sharp
+# case because its inherited state has no route at all.
+def stale_route(contract, route_type, runtime_id, model_id=None):
+    route = {"contract": contract, "route_type": route_type,
+             "runtime_id": runtime_id, "fallback": "none"}
+    if model_id is not None:
+        route["model_id"] = model_id
+    if route_type == "codex":
+        route["reasoning_effort"] = "medium"
+    return route
+(root / "config/assist-stale-routes.json").write_text(json.dumps({
+    "schema": "musializer.assist-settings/v1",
+    "active_profile": "custom",
+    "profiles": [{"id": "custom", "label": "Custom", "routes": {
+        "TC-COARSE": stale_route("TC-COARSE", "openrouter", "openrouter",
+                                  "google/gemini-3.7-flash"),
+        "TC-WORDING": stale_route("TC-WORDING", "codex", "codex"),
+        "TC-PLAN": stale_route("TC-PLAN", "codex", "codex"),
+        "TC-VERIFY": stale_route("TC-VERIFY", "openrouter", "openrouter",
+                                  "google/gemini-3.7-flash"),
+    }}],
 }, indent=2) + "\n")
 (root / "corrupt/assist.json").write_text("{ broken")
 # A credentials file with the loose mode the read path must refuse rather than
@@ -3981,6 +4057,46 @@ case "$FOCUS_NARROW_LINE" in
 esac
 ai_focus_ring ai-focus-narrow ai-focus-narrow ai-routing-narrow \
     "eight Tab steps at the narrow stacked layout" || AI_FAILED=1
+
+# 4d. A durable profile can contain route combinations this build cannot execute.
+# Those overrides must be recoverable through the matrix itself, especially
+# TC-VERIFY: it inherits "no route", so the old disabled "not available" cell
+# stranded the override permanently. The first capture proves its route cell is
+# a visible tabstop; the second presses Enter through the real draw/input path.
+AI_STALE_SETTINGS="$REPO_ROOT/$AI_DIR/config/assist-stale-routes.json"
+ai_capture "ai-stale-routing" 1280x720 \
+    "MUSIALIZER_ASSIST_SETTINGS=$AI_STALE_SETTINGS" \
+    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+ai_capture "ai-stale-verify-focus" 1280x720 \
+    "MUSIALIZER_ASSIST_SETTINGS=$AI_STALE_SETTINGS" \
+    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_TAB=14 \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+STALE_FOCUS_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-stale-verify-focus.txt" | head -1)"
+case "$STALE_FOCUS_LINE" in
+    *"focus=14/15 control=106"*"focus-visible=true"*) ;;
+    *) echo "FAIL: the stale TC-VERIFY route cell was not a visible tabstop: $STALE_FOCUS_LINE" >&2
+       AI_FAILED=1 ;;
+esac
+ai_focus_ring ai-stale-verify-focus ai-stale-verify-focus ai-stale-routing \
+    "the stale TC-VERIFY route repair" || AI_FAILED=1
+ai_capture "ai-stale-verify-repair" 1280x720 \
+    "MUSIALIZER_ASSIST_SETTINGS=$AI_STALE_SETTINGS" \
+    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_TAB=14 \
+    MUSIALIZER_ASSIST_SETTINGS_ACTIVATE=1 \
+    -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
+STALE_REPAIR_STATE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-stale-verify-repair.txt" | head -1)"
+STALE_REPAIR_ROUTES="$(sed -n 's/^assist settings routing: //p' "$OUT_DIR/ai-stale-verify-repair.txt" | head -1)"
+case "$STALE_REPAIR_STATE" in
+    *"dirty=true"*) ;;
+    *) echo "FAIL: activating stale TC-VERIFY did not create a saveable draft: $STALE_REPAIR_STATE" >&2
+       AI_FAILED=1 ;;
+esac
+case "$STALE_REPAIR_ROUTES" in
+    *"TC-WORDING=codex/codex/Codex default[Ready]*"*"TC-VERIFY=no-route/—[Not implemented in this build]"*)
+        echo "  stale route repair: TC-VERIFY inherited no route; valid Codex wording stayed ready" ;;
+    *) echo "FAIL: stale TC-VERIFY repair changed the wrong route: $STALE_REPAIR_ROUTES" >&2
+       AI_FAILED=1 ;;
+esac
 
 # 5. Escape closes. The dialog prints nothing once closed, and the panel behind
 #    it starts drawing again — which is the same seam as check 3, run backwards.
@@ -4601,6 +4717,16 @@ echo "  model fallback: exactly \"Codex default\" in every unresolved run"
 if [ "$AI_FAILED" -ne 0 ]; then
     echo "FAIL: the AI settings dialog checks did not pass" >&2
     exit 1
+fi
+
+if [ "$SKIP_RENDER" -eq 1 ]; then
+    if [ "$SWEEP_FAILED" -ne 0 ]; then
+        echo "FAIL: at least one focused Assist/routing check failed" >&2
+        exit 1
+    fi
+    echo "PASS: focused Assist/routing checks passed; render/export suites skipped"
+    echo "artifacts in $OUT_DIR"
+    exit 0
 fi
 
 echo "=== the analysis bridge importer ==="

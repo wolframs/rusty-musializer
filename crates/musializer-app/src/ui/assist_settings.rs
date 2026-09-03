@@ -965,6 +965,40 @@ pub fn set_override(settings: &mut AssistSettings, route: Route) {
     }
 }
 
+/// Removes one route override from the active user profile.
+///
+/// This is deliberately distinct from [`set_override`]: `TC-VERIFY` has no
+/// recommended route to pass back through that function. A settings file from a
+/// build that offered a route no current workflow executes still needs a direct
+/// way back to inheritance, which means "no route" for that contract.
+pub fn clear_active_override(settings: &mut AssistSettings, contract: ContractId) -> bool {
+    if settings.active_profile == RECOMMENDED_PROFILE {
+        return false;
+    }
+    let active = settings.active_profile.clone();
+    settings
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == active)
+        .and_then(|profile| profile.routes.remove(&contract))
+        .is_some()
+}
+
+/// Whether a stored route is visible but cannot be executed by this build.
+///
+/// The origin check is load-bearing: an inherited route is application policy,
+/// while an override is user data this dialog may remove on request.
+fn override_needs_route_repair(resolved: &ResolvedRoute) -> bool {
+    resolved.origin == RouteOrigin::Override
+        && resolved.route.as_ref().is_some_and(|route| {
+            !resolved.contract.route_is_implemented(
+                route.route_type,
+                &route.runtime_id,
+                route.model_id.as_deref(),
+            )
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Pickers
 // ---------------------------------------------------------------------------
@@ -2285,11 +2319,51 @@ impl AssistSettingsDialog {
         if !self.settings_editable() || contract.is_locked() {
             return false;
         }
+        let resolved = resolve_route(&self.draft, contract);
+        if override_needs_route_repair(&resolved) {
+            return true;
+        }
         let implemented = contract.implemented_route_types();
-        let current = resolve_route(&self.draft, contract)
-            .route
-            .map(|route| route.route_type);
+        let current = resolved.route.map(|route| route.route_type);
         implemented.len() > 1 || (implemented.len() == 1 && current != implemented.first().copied())
+    }
+
+    /// Applies the route cell's one transition.
+    ///
+    /// Unsupported overrides return to inheritance before ordinary route-type
+    /// cycling is considered. This keeps the drawing and keyboard paths on the
+    /// same transition and, crucially, gives `TC-VERIFY` a way back to its
+    /// inherited unrouted state even though it has no implemented type to cycle.
+    fn activate_route_cell(&mut self, contract: ContractId) {
+        let resolved = resolve_route(&self.draft, contract);
+        if override_needs_route_repair(&resolved) {
+            clear_active_override(&mut self.draft, contract);
+            return;
+        }
+        let eligible = contract.implemented_route_types();
+        let current = resolved.route.as_ref().map(|route| route.route_type);
+        let Some(next) = cycle(eligible, current.as_ref()) else {
+            return;
+        };
+        let mut route = resolved.route.unwrap_or(Route {
+            contract,
+            route_type: next,
+            runtime_id: default_runtime_id(contract, next),
+            model_id: None,
+            model_path: None,
+            reasoning_effort: None,
+            fallback: contract.allowed_fallbacks()[0],
+            provider: None,
+        });
+        route.route_type = next;
+        route.runtime_id = default_runtime_id(contract, next);
+        route.model_id = None;
+        route.reasoning_effort = (next == RouteType::Codex).then_some(ReasoningEffort::Medium);
+        route.provider = (next == RouteType::OpenRouter).then(|| Provider::defaults_for(contract));
+        if !contract.allowed_fallbacks().contains(&route.fallback) {
+            route.fallback = contract.allowed_fallbacks()[0];
+        }
+        set_override(&mut self.draft, route);
     }
 
     /// Enabled when the picker can reach a value it is not already showing.
@@ -4577,8 +4651,15 @@ impl AssistSettingsDialog {
     ) {
         let eligible = contract.implemented_route_types();
         let enabled = self.route_cell_enabled(contract);
+        let repairs_override = override_needs_route_repair(resolved);
         let label = if contract.is_locked() {
             "locked".to_string()
+        } else if repairs_override {
+            let configured = resolved
+                .route
+                .as_ref()
+                .map_or("unknown", |route| route.route_type.token());
+            format!("{configured} -> inherit")
         } else if eligible.is_empty() {
             "not available".to_string()
         } else {
@@ -4590,7 +4671,21 @@ impl AssistSettingsDialog {
         // The disabled reasons are as specific as the enabled one, because a
         // disabled control's tooltip is the only place it can explain itself
         // (AP3-R S5).
-        let tip = if enabled {
+        let tip = if enabled && repairs_override {
+            let configured = resolved.route.as_ref().map_or_else(
+                || "the configured route".to_string(),
+                |route| format!("{} / {}", route.route_type.token(), route.runtime_id),
+            );
+            let inherited = recommended_route(contract).map_or_else(
+                || "no route".to_string(),
+                |route| format!("{} / {}", route.route_type.token(), route.runtime_id),
+            );
+            format!(
+                "{configured} has no executor for {} in this build. Activate to remove this \
+                 override and inherit {inherited}.",
+                contract.token()
+            )
+        } else if enabled {
             format!(
                 "{} ({}): {} implemented route type(s) \u{00b7} caps at {}",
                 contract.human_label(),
@@ -4631,30 +4726,7 @@ impl AssistSettingsDialog {
             &tip,
             enabled,
         ) {
-            let current = resolved.route.as_ref().map(|route| route.route_type);
-            if let Some(next) = cycle(eligible, current.as_ref()) {
-                let mut route = resolved.route.clone().unwrap_or(Route {
-                    contract,
-                    route_type: next,
-                    runtime_id: default_runtime_id(contract, next),
-                    model_id: None,
-                    model_path: None,
-                    reasoning_effort: None,
-                    fallback: contract.allowed_fallbacks()[0],
-                    provider: None,
-                });
-                route.route_type = next;
-                route.runtime_id = default_runtime_id(contract, next);
-                route.model_id = None;
-                route.reasoning_effort =
-                    (next == RouteType::Codex).then_some(ReasoningEffort::Medium);
-                route.provider =
-                    (next == RouteType::OpenRouter).then(|| Provider::defaults_for(contract));
-                if !contract.allowed_fallbacks().contains(&route.fallback) {
-                    route.fallback = contract.allowed_fallbacks()[0];
-                }
-                set_override(&mut self.draft, route);
-            }
+            self.activate_route_cell(contract);
         }
     }
 
@@ -8008,6 +8080,113 @@ mod tests {
         assert!(settings
             .profile(OVERRIDE_PROFILE_ID)
             .is_some_and(|profile| profile.routes.is_empty()));
+    }
+
+    /// A profile written by an older build must never strand an unsupported
+    /// route behind a disabled cell. All three shapes from the reported profile
+    /// return to inheritance, while the working Codex wording override survives
+    /// byte-for-byte.
+    #[test]
+    fn stale_route_overrides_are_enabled_for_repair_and_clear_independently() {
+        let route = |contract, route_type, runtime_id: &str, model_id: Option<&str>| Route {
+            contract,
+            route_type,
+            runtime_id: runtime_id.to_string(),
+            model_id: model_id.map(str::to_string),
+            model_path: None,
+            reasoning_effort: (route_type == RouteType::Codex).then_some(ReasoningEffort::Medium),
+            fallback: FallbackPolicy::None,
+            provider: (route_type == RouteType::OpenRouter)
+                .then(|| Provider::defaults_for(contract)),
+        };
+        let wording = route(ContractId::Wording, RouteType::Codex, "codex", None);
+        let mut routes = BTreeMap::from([
+            (
+                ContractId::Coarse,
+                route(
+                    ContractId::Coarse,
+                    RouteType::OpenRouter,
+                    "openrouter",
+                    Some("google/gemini-3.7-flash"),
+                ),
+            ),
+            (ContractId::Wording, wording.clone()),
+            (
+                ContractId::Plan,
+                route(ContractId::Plan, RouteType::Codex, "codex", None),
+            ),
+            (
+                ContractId::Verify,
+                route(
+                    ContractId::Verify,
+                    RouteType::OpenRouter,
+                    "openrouter",
+                    Some("google/gemini-3.7-flash"),
+                ),
+            ),
+        ]);
+        let mut settings = AssistSettings {
+            active_profile: "studio".to_string(),
+            ..AssistSettings::default()
+        };
+        settings.profiles.push(Profile {
+            id: "studio".to_string(),
+            label: "Studio".to_string(),
+            routes: routes.clone(),
+        });
+        settings
+            .validate()
+            .expect("the old profile is durable input");
+
+        let mut dialog = dialog();
+        dialog.draft = settings.clone();
+        for contract in [ContractId::Coarse, ContractId::Plan, ContractId::Verify] {
+            let resolved = resolve_route(&dialog.draft, contract);
+            assert!(override_needs_route_repair(&resolved), "{contract:?}");
+            assert!(
+                dialog.route_cell_enabled(contract),
+                "{contract:?} was stranded behind a disabled route cell"
+            );
+            dialog.activate_route_cell(contract);
+            routes.remove(&contract);
+            assert!(
+                !dialog
+                    .draft
+                    .profile("studio")
+                    .is_some_and(|profile| { profile.routes.contains_key(&contract) }),
+                "{contract:?} activation did not remove its override"
+            );
+        }
+
+        let settings = &dialog.draft;
+        assert_eq!(
+            settings.profile("studio").map(|profile| &profile.routes),
+            Some(&routes)
+        );
+        assert_eq!(
+            settings
+                .profile("studio")
+                .and_then(|profile| profile.routes.get(&ContractId::Wording)),
+            Some(&wording)
+        );
+        assert!(!override_needs_route_repair(&resolve_route(
+            settings,
+            ContractId::Wording
+        )));
+        assert_eq!(
+            resolve_route(settings, ContractId::Coarse).origin,
+            RouteOrigin::Recommended
+        );
+        assert_eq!(
+            resolve_route(settings, ContractId::Plan).origin,
+            RouteOrigin::Recommended
+        );
+        let verify = resolve_route(settings, ContractId::Verify);
+        assert_eq!(verify.origin, RouteOrigin::Unrouted);
+        assert!(verify.route.is_none());
+        settings
+            .validate()
+            .expect("the repaired profile remains writable");
     }
 
     // -- the three documents this dialog reads across the boundary ---------

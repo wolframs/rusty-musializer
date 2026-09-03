@@ -392,15 +392,28 @@ impl AssistJob {
         }
         // The one deliberate credential hand-off in the application (§4 E1).
         //
-        // `Command::env` writes into *this* child's environment block only; the
-        // parent's environment was emptied of the variable at startup, so no
-        // other child — ffmpeg, kdialog, a font import — can inherit it, and a
-        // job whose snapshot did not authorize one could not build the token
-        // this arm needs. `AP1`'s strip and this line are the two halves of the
-        // same rule: nothing gets the key by default, and exactly one thing gets
-        // it on purpose.
-        if let Some(AuthorizedCredential(secret)) = spec.credential {
-            command.env(CREDENTIAL_VARIABLE, secret.expose());
+        // `Command::env` writes into *this* child's environment block only; no
+        // other child — ffmpeg, kdialog, a font import — is touched, and a job
+        // whose snapshot did not authorize one could not build the token this
+        // arm needs. `AP1`'s strip and these two arms are the same rule:
+        // nothing gets the key by default, and exactly one thing gets it on
+        // purpose.
+        //
+        // The removal arm is load-bearing, not belt-and-braces: the startup
+        // scrub belongs to the app binary's `main`, so a library test (or any
+        // other embedder of this crate) runs with an ambient `OPENROUTER_API_KEY`
+        // in its own environment, and plain inheritance would hand it to an
+        // unauthorized child. Stripping here is what makes E1 hold wherever
+        // this function runs, not only under `main` — which is why
+        // `a_local_only_job_cannot_be_handed_a_credential_at_all` passes in a
+        // shell that exports the key.
+        match spec.credential {
+            Some(AuthorizedCredential(secret)) => {
+                command.env(CREDENTIAL_VARIABLE, secret.expose());
+            }
+            None => {
+                command.env_remove(CREDENTIAL_VARIABLE);
+            }
         }
 
         let log_file = std::fs::File::create(&artifacts.log).map_err(AssistError::Workspace)?;
