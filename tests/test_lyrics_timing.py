@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import anchor_block_align  # noqa: E402
 import external_analysis  # noqa: E402
 import force_align_lyrics  # noqa: E402
 import import_whisper  # noqa: E402
@@ -177,12 +178,48 @@ class ReferenceClassificationTests(unittest.TestCase):
             "lyric", "delivery", "lyric",
         ])
 
+    def test_multiline_bracketed_production_notes_are_not_lyrics(self) -> None:
+        lines = lyric_align.classify_reference_lines(
+            "[Intro — guitar tuning,\n"
+            "someone clears their throat.\n"
+            "The fiddle finds the melody.]\n\n"
+            "I typed the flag that read sunset true.\n\n"
+            "[Outro — one human, quietly:\n\n"
+            "\"The weights are kept.\"\n\n"
+            "Guitar case closes. Door. Silence.]\n"
+        )
+        self.assertEqual(
+            [line["kind"] for line in lines],
+            ["section", "delivery", "delivery", "lyric",
+             "section", "lyric", "delivery"],
+        )
+        self.assertEqual(
+            [line["display"] for line in lines if line["kind"] == "lyric"],
+            ["I typed the flag that read sunset true.",
+             "\"The weights are kept.\""],
+        )
+
+    def test_unclosed_square_bracket_does_not_swallow_following_lyrics(self) -> None:
+        lines = lyric_align.classify_reference_lines(
+            "[Maybe this is sung\nDefinitely sung\n[Chorus]\nStill sung\n")
+        self.assertEqual(
+            [line["kind"] for line in lines],
+            ["lyric", "lyric", "section", "lyric"],
+        )
+
 
 class ForcedAlignmentPlanningTests(unittest.TestCase):
     def test_display_text_normalizes_to_the_mms_alphabet(self) -> None:
         self.assertEqual(
             force_align_lyrics.alignment_words("Café & 21 'skys' — WE."),
             ["cafe", "and", "twenty", "one", "skys", "we"],
+        )
+
+    def test_ctc_capacity_includes_consecutive_token_repeats(self) -> None:
+        self.assertEqual(
+            anchor_block_align.ctc_frame_requirement(
+                [[1, 1], [1, 2], [2]]),
+            (8, 5, 3),
         )
 
     def test_every_cue_gets_an_independent_alignment_window(self) -> None:

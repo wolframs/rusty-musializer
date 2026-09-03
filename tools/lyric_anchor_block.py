@@ -63,10 +63,10 @@ import lyric_align
 # `external_analysis` records this in cache provenance, so an artifact written
 # under an older policy is regenerated rather than silently reused.
 LOCALIZATION_POLICY = "anchor-block-mms"
-LOCALIZATION_POLICY_VERSION = "2"
+LOCALIZATION_POLICY_VERSION = "3"
 # Acoustic request identity, shared with the runner and cache reader without
 # importing torch into the orchestration process.
-ALIGNMENT_VERSION = "3"
+ALIGNMENT_VERSION = "4"
 
 # Anchor spotting. An n-gram is only an anchor when it is unique on *both*
 # sides: a phrase repeated in the lyrics cannot say which chorus it belongs to,

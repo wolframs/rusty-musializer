@@ -56,6 +56,20 @@ MINIMUM_COARSE_CONFIDENCE = (
     lyric_anchor_block.MINIMUM_TRUSTED_COARSE_CONFIDENCE)
 
 
+def ctc_frame_requirement(tokens: Sequence[Sequence[int]]) -> tuple[int, int, int]:
+    """Return ``(required, targets, repeats)`` for TorchAudio forced alignment.
+
+    CTC needs one emission frame per target token plus another frame between
+    consecutive equal tokens. TorchAudio enforces that precondition inside its
+    native aligner; checking it here turns an impossible window into explicit
+    unresolved evidence instead of aborting the entire Assist job.
+    """
+    flattened = [token for word in tokens for token in word]
+    repeats = sum(left == right
+                  for left, right in zip(flattened, flattened[1:]))
+    return len(flattened) + repeats, len(flattened), repeats
+
+
 def _load_audio(audio: Path) -> tuple[Any, int]:
     """Mono 16 kHz samples. Decode only — nothing opens an output device."""
     try:
@@ -119,7 +133,22 @@ def align_block(
     with torch.inference_mode():
         emission, _ = model(clip.to(device))
     emission = emission[0].cpu()
-    spans = aligner(emission, tokenizer(transcript))
+    tokens = tokenizer(transcript)
+    required_frames, target_tokens, repeated_tokens = ctc_frame_requirement(tokens)
+    available_frames = int(emission.shape[0])
+    if available_frames < required_frames:
+        return {
+            position: {
+                "status": "ctc_window_too_short",
+                "score": 0.0,
+                "available_frames": available_frames,
+                "required_frames": required_frames,
+                "target_tokens": target_tokens,
+                "repeated_tokens": repeated_tokens,
+            }
+            for position in range(block["first_line"], block["last_line"] + 1)
+        }
+    spans = aligner(emission, tokens)
     seconds_per_frame = (
         (end_sample - start_sample) / sample_rate / emission.shape[0])
 

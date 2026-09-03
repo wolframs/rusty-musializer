@@ -38,7 +38,7 @@ from typing import Any, Sequence
 from analysis_io import AnalysisValidationError, duration
 
 LYRIC_SYNC_VERSION = "musializer.lyric-sync/v1"
-ALIGNER_VERSION = "5"
+ALIGNER_VERSION = "6"
 
 # Hard input bounds. A full-length song is a few hundred lines and well under
 # a thousand words; these caps keep the O(ref * hyp) alignment matrix small
@@ -212,14 +212,49 @@ def classify_reference_lines(text: str) -> list[dict[str, Any]]:
     source_lines = text.replace("﻿", "").splitlines()
     if len(source_lines) > MAX_REFERENCE_LINES:
         raise AnalysisValidationError("reference lyrics exceed the line bound")
+    bracket_block_end: int | None = None
     for index, raw in enumerate(source_lines):
         stripped = raw.strip()
         if not stripped:
+            continue
+        if bracket_block_end is not None:
+            # A fully quoted line inside a production note is authored speech,
+            # not prose about the performance. This preserves constructs such
+            # as an Outro note containing a standalone "last words" cue while
+            # keeping the surrounding multi-line direction out of alignment.
+            quoted_cue = re.fullmatch(r'["\u201c].+["\u201d]', stripped)
+            if quoted_cue:
+                lines.append({"index": index, "kind": "lyric",
+                              "display": stripped,
+                              "tokens": normalize_tokens(stripped)})
+            else:
+                lines.append({"index": index, "kind": "delivery",
+                              "display": stripped, "tokens": []})
+            if index == bracket_block_end:
+                bracket_block_end = None
             continue
         if re.fullmatch(r"\[.*\]", stripped):
             lines.append({"index": index, "kind": "section",
                           "display": stripped, "tokens": []})
             continue
+        if stripped.startswith("["):
+            # Authored generators commonly wrap a production note over several
+            # physical lines. Only enter the stateful form when a later line
+            # really closes it; an unmatched '[' keeps the historical lyric
+            # treatment instead of swallowing the rest of the document.
+            closing = None
+            for future in range(index + 1, len(source_lines)):
+                candidate = source_lines[future].strip()
+                if candidate.startswith("["):
+                    break
+                if candidate.endswith("]"):
+                    closing = future
+                    break
+            if closing is not None:
+                lines.append({"index": index, "kind": "section",
+                              "display": stripped, "tokens": []})
+                bracket_block_end = closing
+                continue
         if re.fullmatch(r"\*.*\*", stripped):
             lines.append({"index": index, "kind": "event",
                           "display": stripped, "tokens": []})
