@@ -1,3 +1,4 @@
+import { LyricComparison } from './LyricComparison'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { listProtocols, loadAnswers, loadProtocol, saveAnswer } from './api'
 import {
@@ -386,6 +387,15 @@ function App() {
           </div>
             </>
           )}
+
+          {question.lyric_comparison && protocol.playback !== 'external' && <LyricComparison
+            comparison={question.lyric_comparison}
+            time={deckState.time}
+            start={Math.max(0, question.at_seconds - question.window.pre)}
+            end={question.at_seconds + question.window.post}
+            onSeek={(time) => deck.current?.seek(time)}
+            onReplay={() => void deck.current?.audition(loop)}
+          />}
 
           <article className="feedback-card">
             <header>

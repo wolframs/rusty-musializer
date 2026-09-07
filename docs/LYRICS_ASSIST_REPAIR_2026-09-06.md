@@ -1381,3 +1381,23 @@ choices and confidence with POSTs intercepted, and showed the second excerpt
 at the correct combined-audition offset. The real answer log remains empty.
 The workspace release build completed (`release-pause-handoff.log`); concurrent
 scene changes remain outside this lyrics commit.
+
+## Listening handoff correction — synchronized lyric alternatives
+
+The initial audio-only form did not show what its “pause” question meant as
+timed lyrics. The browser now renders both grouping proposals against the real
+playhead, with original-track timestamps, cue seek buttons, a marked proposed
+gap and replay. One cue holds the full wording across the interval; two cues
+clear and replace it. Proposal timing and provenance are explicit, not newly
+adjudicated evidence. The session audio, answer ids and prior answers are
+preserved; the portable bundle includes the new browser metadata. The Rust
+protocol remains an audio/question fallback without these caption alternatives.
+Research remains paused.
+
+Validation: the browser production build and four unit tests passed; four
+existing Playwright flows passed, and the new timed-caption test passed after
+waiting for the newly selected audio to be ready. It pins shared playback
+time, the half-open cue boundary, blank split preview during the proposed gap,
+original-time conversion, seek and replay, and unchanged answer progress. Real
+Groyper/Floor previews were captured on desktop and mobile with Chromium muted.
+Audio bytes and answer logs were preserved. Release build completed.

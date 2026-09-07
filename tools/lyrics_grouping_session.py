@@ -20,6 +20,36 @@ CASES = [
 ]
 
 
+# Saved model proposals, not adjudicated vocal boundaries. Use identical outer
+# edges for both interpretations so this audition compares grouping alone.
+TIMING_PROPOSALS = {
+    'groyper': {
+        'parts': [('If shit goes south', 26.5, 28.0), ('take out your gun', 28.22, 29.7)],
+        'evidence': '03/candidate-performed-runtime/lyrics.performance.json',
+        'note': 'Model proposal: the two-line version clears the first line at 28.00 s and starts the second at 28.22 s. Judge these edges too; they are not confirmed.',
+    },
+    'floor': {
+        'parts': [('I am', 101.45, 102.2), ('present', 102.85, 103.55)],
+        'evidence': '07/performed-reference-audio-v3/reference.json',
+        'note': 'Model proposal: the two-line version clears “I am” at 102.20 s and starts “present” at 102.85 s. Judge these edges too; they are not confirmed.',
+    },
+}
+
+
+def lyric_comparison(identifier, title, source_start, audition_start):
+    proposal = TIMING_PROPOSALS[identifier]
+    def cue(text, start, end):
+        return dict(text=text, start_seconds=round(start-source_start+audition_start, 6),
+                    end_seconds=round(end-source_start+audition_start, 6))
+    parts = proposal['parts']
+    split = [cue(*part) for part in parts]
+    return dict(source_title=title.split(' — ')[0], source_offset_seconds=source_start-audition_start,
+        timing_note=proposal['note'],
+        gap=dict(start_seconds=split[0]['end_seconds'], end_seconds=split[1]['start_seconds']),
+        variants=[dict(label='One phrase', cues=[cue(' '.join(part[0] for part in parts), parts[0][1], parts[-1][2])]),
+                  dict(label='Two phrases', cues=split)])
+
+
 def prepare(audio_dir: Path, output: Path):
     if output.exists():
         raise ValueError('Session already exists; choose a new output directory to preserve answers')
@@ -40,13 +70,15 @@ def prepare(audio_dir: Path, output: Path):
         questions.append(dict(id=identifier, at_seconds=offset, window=dict(pre=0, post=6),
                               question=question, kind='choice', options=options))
         browser_questions.append(dict(**questions[-1],
-            detail='Replay the complete excerpt. Judge whether the delivery continues across the pause or begins a distinct phrase.',
+            detail='Compare the synchronized one-line and two-line previews above. Choose the grouping that fits, or not sure if the proposed timing prevents a judgment.',
+            lyric_comparison=lyric_comparison(identifier, title, start, offset),
             tracks=['audition'], loop=True, required=True, feedback='grouping'))
         evidence.append(dict(question_id=identifier, source_audio=str(audio.resolve()),
             source_sha256=hashlib.sha256(audio.read_bytes()).hexdigest(),
             source_start_seconds=start, source_end_seconds=start + 6,
             audition_start_seconds=offset, audition_end_seconds=offset + 6,
-            pcm_sha256=hashlib.sha256(chunk).hexdigest()))
+            pcm_sha256=hashlib.sha256(chunk).hexdigest(),
+            timing_proposal=TIMING_PROPOSALS[identifier]))
         if number + 1 < len(CASES):
             pcm.extend(bytes(2 * 16000 * 2))  # Separate auditions; source samples stay intact.
     output.mkdir(parents=True)
@@ -89,7 +121,10 @@ N advances without answering. Keep the answers file beside the protocol.
 
 For browser playback, point Listening Lab at this bundle's `browser/` folder.
 Choose “Lyrics — two grouping decisions”. It includes waveform seeking,
-looping, playback speed, confidence, and optional second-phrase timestamps.
+looping, playback speed, synchronized one-line/two-line previews, proposed gap
+markers, confidence, and optional second-phrase timestamps. The timed lyric
+comparison is available in the browser; the Rust runner presents the audio and
+question only.
 Browser answers live in the host's Listening Lab answer directory. You may
 use either surface; they share question ids. No answer is preselected.
 

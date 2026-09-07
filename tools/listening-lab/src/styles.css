@@ -861,3 +861,33 @@ button:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+.lyric-comparison { margin: 24px; border: 1px solid #565951; background: #0b0c0a; }
+.lyric-comparison-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px; }
+.lyric-comparison h2 { font-size: 20px; margin: 0 0 8px; }
+.lyric-comparison p { margin: 0; font-size: 12px; color: #a8aaa4; }
+.lyric-comparison .lyric-timing-note { padding: 0 20px 18px; }
+.lyric-comparison-grid { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #565951; }
+.lyric-interpretation { min-width: 0; padding: 18px; }
+.lyric-interpretation + .lyric-interpretation { border-left: 1px solid #565951; }
+.lyric-interpretation h3 { font-size: 14px; color: #ffb800; margin: 0 0 12px; }
+.lyric-live { min-height: 110px; display: flex; flex-direction: column; justify-content: center; font-size: clamp(18px, 2vw, 28px); line-height: 1.4; padding: 12px 0; }
+.lyric-live.is-sung { color: #ffb800; }
+.lyric-empty { font-size: 13px; color: #a8aaa4; }
+.lyric-time-axis { display: flex; justify-content: space-between; gap: 8px; color: #a8aaa4; font-size: 10px; margin-bottom: 8px; }
+.lyric-cue-lane { height: 42px; position: relative; background: #000; border: 1px solid #565951; }
+.lyric-gap { position: absolute; top: 0; height: 100%; background: repeating-linear-gradient(135deg, transparent 0 3px, #ffb80066 3px 4px); border-left: 1px dashed #ffb800; border-right: 1px dashed #ffb800; }
+.lyric-cue { position: absolute; top: 6px; bottom: 6px; min-height: 0; padding: 0; background: #25271f; border: 1px solid #a8aaa4; color: #fff; font-size: 12px; }
+.lyric-cue.is-active { background: #ffb800; color: #000; border-color: #ffb800; }
+.lyric-playhead { position: absolute; top: -5px; bottom: -5px; border-left: 2px solid white; pointer-events: none; }
+.lyric-cue-list { padding: 0; margin: 12px 0 0; list-style: none; }
+.lyric-cue-list button { display: flex; flex-wrap: wrap; justify-content: space-between; text-align: left; gap: 6px 16px; width: 100%; padding: 8px 0; border: 0; font-size: 12px; }
+.lyric-cue-list small { color: #a8aaa4; font-size: 10px; }
+.lyric-gap-description { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 16px 20px; border-top: 1px solid #565951; font-size: 12px; }
+@media (max-width: 700px) {
+  .lyric-comparison { margin: 12px; }
+  .lyric-comparison-header { align-items: flex-start; flex-direction: column; }
+  .lyric-comparison-grid { grid-template-columns: 1fr; }
+  .lyric-interpretation + .lyric-interpretation { border-left: 0; border-top: 1px solid #565951; }
+  .lyric-live { min-height: 72px; }
+}

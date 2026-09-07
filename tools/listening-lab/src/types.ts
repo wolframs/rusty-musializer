@@ -49,6 +49,17 @@ export interface PublicTrack {
   label: string
 }
 
+export interface LyricTimingComparison {
+  source_title: string
+  source_offset_seconds: number
+  timing_note: string
+  gap: { start_seconds: number; end_seconds: number }
+  variants: Array<{
+    label: string
+    cues: Array<{ text: string; start_seconds: number; end_seconds: number }>
+  }>
+}
+
 export interface ListeningQuestion {
   id: string
   at_seconds: number
@@ -61,6 +72,7 @@ export interface ListeningQuestion {
   loop?: boolean
   required?: boolean
   feedback?: FeedbackForm
+  lyric_comparison?: LyricTimingComparison
 }
 
 export interface ListeningProtocol {

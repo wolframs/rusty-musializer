@@ -159,4 +159,20 @@ export default async function setup() {
       2,
     ),
   )
+  await writeFile(resolve(protocols, 'timed-lyrics-e2e.listen.json'), JSON.stringify({
+    schema: 'musializer.listening-test/v1', id: 'timed-lyrics-e2e', title: 'Timed lyrics fixture', blind: false,
+    tracks: [{id: 'source', label: 'Test audio', path: '../candidate-a.wav'}],
+    questions: [{id: 'grouping', at_seconds: 1, window: {pre: 0, post: 1},
+      question: 'Which grouping fits?', kind: 'choice', options: ['one phrase', 'two phrases'], tracks: ['source'],
+      lyric_comparison: {
+        source_title: 'Test source', source_offset_seconds: 25, timing_note: 'Test proposal',
+        gap: {start_seconds: 1.4, end_seconds: 1.6},
+        variants: [
+          {label: 'One phrase', cues: [{text: 'first second', start_seconds: 1.1, end_seconds: 1.9}]},
+          {label: 'Two phrases', cues: [{text: 'first', start_seconds: 1.1, end_seconds: 1.4}, {text: 'second', start_seconds: 1.6, end_seconds: 1.9}]},
+        ],
+      },
+    }],
+  }))
+
 }

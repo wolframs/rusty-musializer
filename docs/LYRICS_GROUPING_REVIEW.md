@@ -7,11 +7,17 @@ phrase grouping decisions remain open; no reference has been changed for them.
 
 On a device connected to the same Tailscale network, open
 [the prepared listening session](http://100.102.37.124:4180/).
-It uses the existing Listening Lab: replay/loop the excerpt, select **one
-phrase**, **two phrases**, or **not sure**, and record confidence. Answers save
+It uses the existing Listening Lab. **Compare the timed lyrics** shows
+synchronized one-phrase and two-phrase caption previews above the answer form.
+Their timelines share the playhead, label cue edges in original-track time, and
+mark the proposed gap. Click a cue to seek, use **Seek before gap**, or
+**Replay comparison**. Then select **one phrase**, **two phrases**, or **not
+sure**, and record confidence. Answers save
 immediately. A second-phrase onset and a note are optional.
 
-The same two questions are available in the existing Musializer protocol runner:
+The same two audio questions are available in the existing Musializer protocol
+runner. The synchronized comparison is currently a browser feature; the Rust
+protocol runner shows the question without timed lyric alternatives:
 
 ```sh
 MUSIALIZER_BINARY="$PWD/target/release/musializer" \
@@ -33,6 +39,14 @@ device with Musializer and point `MUSIALIZER_BINARY` at that device's executable
 The two six-second excerpts are joined with two seconds of silence. Decoded
 source samples remain intact. `evidence.json` maps audition time back to the
 source: add 25 seconds for Groyper; add 92 seconds for Floor Mechanics.
+The preview uses saved, unadjudicated proposals: Groyper's two cues are
+26.50–28.00 and 28.22–29.70 seconds (`03/candidate-performed-runtime/lyrics.performance.json`);
+Floor's are 101.45–102.20 and 102.85–103.55 seconds
+(`07/performed-reference-audio-v3/reference.json`), relative to the private
+research root. Both interpretations use the same outer edges to isolate the
+grouping choice. These are proposed boundaries, not a measured claim of vocal
+silence; music continues underneath. If the timing prevents a judgment, use
+**not sure** and add a note. The original model references remain unchanged.
 Independent model listens disagree about whether each pause separates phrases.
 The established rule remains separate sung echoes, but one continuous chop run.
 

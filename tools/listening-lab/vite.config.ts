@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Connect, Plugin } from 'vite'
 import { defineConfig } from 'vite'
 import type {
+  LyricTimingComparison,
   CompanionWorkflow,
   FeedbackField,
   FeedbackForm,
@@ -50,6 +51,7 @@ interface SourceQuestion {
   loop?: boolean
   required?: boolean
   feedback?: string | FeedbackForm
+  lyric_comparison?: LyricTimingComparison
 }
 
 interface SourceProtocol {
@@ -130,6 +132,21 @@ async function readProtocol(id: string): Promise<SourceProtocol> {
     }
     if (question.kind !== 'text' && (!question.options || question.options.length < 2 || question.options.length > 7)) {
       throw new Error(`question ${question.id} needs 2..7 options`)
+    }
+    if (question.lyric_comparison) {
+      const comparison = question.lyric_comparison
+      const start = Math.max(0, question.at_seconds - question.window.pre)
+      const end = question.at_seconds + question.window.post
+      const validSpan = (span: { start_seconds: number; end_seconds: number }) => span &&
+        Number.isFinite(span.start_seconds) && Number.isFinite(span.end_seconds) &&
+        span.start_seconds >= start && span.end_seconds <= end && span.end_seconds > span.start_seconds
+      if (!comparison.source_title || !comparison.timing_note || !Number.isFinite(comparison.source_offset_seconds) ||
+          !validSpan(comparison.gap) || !Array.isArray(comparison.variants) || comparison.variants.length !== 2 ||
+          comparison.variants.some(variant => !variant.label || !Array.isArray(variant.cues) ||
+            variant.cues.length < 1 || variant.cues.length > 20 ||
+            variant.cues.some(cue => !cue.text || !validSpan(cue)))) {
+        throw new Error(`question ${question.id} has an invalid lyric comparison`)
+      }
     }
     if (typeof question.feedback === 'string') {
       if (!parsed.feedback_templates?.[question.feedback]) {
