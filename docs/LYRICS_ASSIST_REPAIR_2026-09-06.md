@@ -1401,3 +1401,14 @@ time, the half-open cue boundary, blank split preview during the proposed gap,
 original-time conversion, seek and replay, and unchanged answer progress. Real
 Groyper/Floor previews were captured on desktop and mobile with Chromium muted.
 Audio bytes and answer logs were preserved. Release build completed.
+
+## Human grouping judgments received — 2026-09-07
+
+The saved browser feedback selects **two phrases** with **clear** confidence for
+both Groyper and Floor Mechanics. The operator's follow-up approves the displayed
+timing as “spot on”. The four accepted preview intervals and original feedback
+revisions are recorded in `grouping-review/operator-judgments-2026-09-07.json`
+under the private evidence root. This resolves these two grouping disputes; it
+does not establish the ten-track error target. Frozen model references and old
+scores are preserved. Apply this human adjudication overlay when scoring resumes.
+Broader experiments remain paused.

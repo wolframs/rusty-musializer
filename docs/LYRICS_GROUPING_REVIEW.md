@@ -1,7 +1,9 @@
 # Lyrics grouping review — 2026-09-07
 
-The lyrics investigation is paused at the operator's request. Two performed-
-phrase grouping decisions remain open; no reference has been changed for them.
+The lyrics investigation is paused at the operator's request. Both performed-phrase grouping decisions are resolved: the operator selected
+**two phrases** with **clear** confidence for each, and confirmed the displayed
+timing was “spot on”. Frozen model references remain unchanged; the human
+adjudication is recorded separately for the next scoring pass.
 
 ## Listen and score
 
@@ -87,5 +89,17 @@ in `build/lyrics-acceptance-2026-09-06/NORMAL_ASSIST_CHECKPOINT.md` and the
 [investigation record](LYRICS_ASSIST_REPAIR_2026-09-06.md).
 These are model-reference disagreements, not adjudicated accuracy. The ≤3%
 per-track target with ±0.5-second edge tolerance remains unmet/unproven.
-No research helper remains running. Resume after the operator's listening
-judgments; preserve the existing frozen reference until adjudication is recorded.
+No research helper remains running. On resume, apply the recorded human judgments before the next scoring pass.
+Preserve the existing frozen model reference and its original scores.
+
+## Recorded operator judgments
+
+Saved feedback resolves both examples as **two performed phrases**, with clear
+confidence. The operator also approved the displayed timing in the conversation.
+This is qualitative approval of these four cue intervals, not a new precision
+measurement or whole-track acceptance. The exact answer revisions, hashes and
+approved preview cues are retained in
+`build/lyrics-acceptance-2026-09-06/grouping-review/operator-judgments-2026-09-07.json`.
+Groyper's single compound model-reference phrase needs a two-phrase adjudication
+overlay on resume; Floor's reference already uses the approved two-phrase grouping.
+The broader experiments remain paused.
