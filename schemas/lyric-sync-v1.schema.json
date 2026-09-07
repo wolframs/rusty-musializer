@@ -67,15 +67,48 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["start_seconds", "end_seconds", "text", "confidence", "source", "uncertain", "reason"],
+        "required": [
+          "start_seconds",
+          "end_seconds",
+          "text",
+          "confidence",
+          "source",
+          "uncertain",
+          "reason"
+        ],
         "properties": {
-          "start_seconds": {"type": "number", "minimum": 0},
-          "end_seconds": {"type": "number", "exclusiveMinimum": 0},
-          "text": {"type": "string", "minLength": 1, "maxLength": 512},
-          "confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
-          "source": {"const": "whisper-unmatched"},
-          "uncertain": {"const": true},
-          "reason": {"type": "string", "minLength": 1, "maxLength": 128}
+          "start_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source": {
+            "const": "whisper-unmatched"
+          },
+          "uncertain": {
+            "const": true
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
         }
       }
     },
@@ -244,6 +277,14 @@
         "runtime_seconds": {
           "type": "number",
           "minimum": 0
+        },
+        "performed_occurrences": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "phrase_splits": {
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
@@ -361,6 +402,7 @@
             "enum": [
               "coarse_disagreement",
               "global_disagreement_anchor_resolved",
+              "audio_occurrence_recovered",
               "unresolved"
             ]
           },
@@ -424,12 +466,442 @@
       "description": "Input digests this lane was produced from.",
       "type": "object"
     },
+    "audio_occurrence_recovery": {
+      "description": "Missing authored occurrences recovered from distinct original audio crops, with ambiguous alternatives retained unresolved.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "recovered",
+        "declined_ambiguous",
+        "declined_order",
+        "declined_competing"
+      ],
+      "properties": {
+        "version": {
+          "const": "1"
+        },
+        "recovered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "declined_ambiguous": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "declined_order": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "declined_competing": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "audio_boundary_refinement": {
+      "description": "Optional authored-boundary refinement from separately cropped audio observations; indices refer to input cue positions.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "refined",
+        "collisions",
+        "declined_order",
+        "policy"
+      ],
+      "properties": {
+        "version": {
+          "const": "1"
+        },
+        "refined": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "collisions": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "declined_order": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "policy": {
+          "type": "string"
+        }
+      }
+    },
     "timing_refinement": {
       "description": "Acoustic adapter, policy versions and request identity for the aligned artifact.",
       "type": "object"
+    },
+    "performed_occurrences": {
+      "description": "Additional audio-confirmed performances, with authored templates or explicit audio_observed wording; separate from the authored ledger.",
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/performed_occurrence"
+      }
+    },
+    "occurrence_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "proposed",
+        "confirmed",
+        "request_identity",
+        "source_sha256",
+        "observations"
+      ],
+      "properties": {
+        "version": {
+          "enum": [
+            "1",
+            "2"
+          ]
+        },
+        "proposed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "request_identity": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "clip_start_seconds",
+              "clip_duration_seconds",
+              "clip_sha256",
+              "lines"
+            ],
+            "properties": {
+              "clip_start_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "clip_duration_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 30
+              },
+              "clip_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "phrase_splits": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source_kind",
+          "source_index",
+          "source_sha256",
+          "phrases"
+        ],
+        "properties": {
+          "source_kind": {
+            "enum": [
+              "lines",
+              "performed_occurrences"
+            ]
+          },
+          "source_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "phrases": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/$defs/performed_occurrence"
+            }
+          }
+        }
+      }
+    },
+    "phrase_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "proposed",
+        "confirmed",
+        "request_identity",
+        "source_sha256",
+        "observations"
+      ],
+      "properties": {
+        "version": {
+          "enum": [
+            "1",
+            "2"
+          ]
+        },
+        "proposed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "request_identity": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "clip_start_seconds",
+              "clip_duration_seconds",
+              "clip_sha256",
+              "lines"
+            ],
+            "properties": {
+              "clip_start_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "clip_duration_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 30
+              },
+              "clip_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "observed_occurrence_analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "proposed",
+        "confirmed",
+        "request_identity",
+        "source_sha256",
+        "observations"
+      ],
+      "properties": {
+        "version": {
+          "const": "1"
+        },
+        "proposed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "confirmed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "request_identity": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "clip_start_seconds",
+              "clip_duration_seconds",
+              "clip_sha256",
+              "lines"
+            ],
+            "properties": {
+              "clip_start_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "clip_duration_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 30
+              },
+              "clip_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
+    "audio_occurrence_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "previous_alignment",
+        "observations"
+      ],
+      "properties": {
+        "previous_alignment": {
+          "$ref": "#/properties/unresolved/items"
+        },
+        "observations": {
+          "$ref": "#/$defs/audio_boundary_evidence/properties/observations"
+        }
+      }
+    },
+    "boundary_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start_seconds",
+        "end_seconds"
+      ],
+      "properties": {
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "audio_boundary_evidence": {
+      "description": "The prior cue and matching original-crop intervals. Existing word alignments remain the acoustic adapter's diagnostic evidence.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "original",
+        "observations"
+      ],
+      "properties": {
+        "original": {
+          "$ref": "#/$defs/boundary_window"
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "clip_index",
+              "first_row",
+              "last_row",
+              "start_seconds",
+              "end_seconds",
+              "similarity"
+            ],
+            "properties": {
+              "clip_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "first_row": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "last_row": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "start_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "end_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "similarity": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        }
+      }
+    },
     "line": {
       "type": "object",
       "additionalProperties": false,
@@ -444,6 +916,12 @@
         "uncertain"
       ],
       "properties": {
+        "audio_boundary_evidence": {
+          "$ref": "#/$defs/audio_boundary_evidence"
+        },
+        "audio_occurrence_evidence": {
+          "$ref": "#/$defs/audio_occurrence_evidence"
+        },
         "start_seconds": {
           "type": "number",
           "minimum": 0
@@ -567,6 +1045,103 @@
           "type": "object"
         }
       }
+    },
+    "performed_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "start_seconds",
+        "end_seconds",
+        "reference_line_indices",
+        "confidence",
+        "uncertain",
+        "reason",
+        "occurrence_evidence"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "reference_line_indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "confidence": {
+          "type": "null"
+        },
+        "uncertain": {
+          "const": true
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "occurrence_evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "discovery",
+            "confirmation"
+          ],
+          "properties": {
+            "discovery": {
+              "$ref": "#/$defs/audio_boundary_evidence/properties/observations"
+            },
+            "confirmation": {
+              "$ref": "#/$defs/audio_boundary_evidence/properties/observations"
+            }
+          }
+        },
+        "text_scope": {
+          "enum": [
+            "authored_inline_lead",
+            "audio_observed"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "text_scope": {
+                "const": "audio_observed"
+              }
+            },
+            "required": [
+              "text_scope"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reference_line_indices": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "reference_line_indices": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

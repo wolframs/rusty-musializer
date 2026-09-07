@@ -1953,3 +1953,15 @@ saved. Several have already been paid for once.
     because a one-off `--resolution` once got autosaved permanently into a
     project. Any dirty-tracking design needs an equivalent: a flag that only
     ever applied to this run must not be able to become file content.
+
+
+### Performed phrase inventory (Antigravity)
+
+`local_runtimes.performed_lyrics` is a saved boolean, default false, exposed at
+the top of AI settings → Local models. The launcher sends `--performed-lyrics`
+to `external_analysis.py assist`. With an Antigravity coarse route, it selects
+audio-derived inventory plus exact local sheet spelling; otherwise the setting
+has no effect. The selected behavior is described before Start and recorded in
+`assist-manifest.json` as `lyric_inventory`. `lyrics.performance.json` retains
+source audio wording and exact local reference spans. This choice does not
+change the audio-transfer boundary or authorize another provider.

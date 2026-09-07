@@ -28,6 +28,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -290,6 +291,78 @@ class XdgCacheDirectoryTests(unittest.TestCase):
     def test_an_absent_value_falls_back(self) -> None:
         self.assertEqual(atomic_cache.cache_dir({}),
                          Path.home() / ".cache/musializer")
+
+
+class AuthoredRouteTests(unittest.TestCase):
+    def test_explicit_performed_inventory_bypasses_written_line_localizer(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);audio=root/'audio.wav';audio.write_bytes(b'fixture')
+            snapshot=root/'execution.json'
+            snapshot.write_text(json.dumps(coarse_snapshot(route_type='antigravity',
+                runtime_id='antigravity-acp',model_id='gemini-3.8-flash-high',
+                boundary_applied='audio-leaves-machine',boundary_confirmed=True)))
+            reference=dict(text='A written line',source='explicit',sha256='reference')
+            evidence=dict(schema_version='musializer.lyric-review/v1',lane='lyric_review',
+                audio=dict(sha256=external_analysis.sha256_file(audio),duration_seconds=10.),
+                provenance=dict(adapter='test'),source={},lines=[])
+            def cache(path,*args,**kwargs):
+                return dict(audio=dict(duration_seconds=10.)) if path.name=='measured.json' else None
+            def run(command,**kwargs):
+                self.assertTrue(str(command[1]).endswith('/antigravity_lyrics.py'))
+                raise RuntimeError('reached performed phrase aligner')
+            with patch.object(external_analysis,'_cache_matches',side_effect=cache), \
+                 patch.object(external_analysis,'discover_reference_lyrics',return_value=reference), \
+                 patch.object(external_analysis.antigravity_lyrics,'transcribe',new=AsyncMock(return_value=evidence)) as discover, \
+                 patch.object(external_analysis,'run_anchor_block_alignment') as written, \
+                 patch.object(external_analysis,'_run',side_effect=run):
+                with self.assertRaisesRegex(RuntimeError,'performed phrase aligner'):
+                    external_analysis.run_assist(audio,root/'output',audio_duration=10.,mode='lyrics',
+                        execution_snapshot=snapshot,align_python=Path('/unused/python'),
+                        allow_dotenv=False,performed_lyrics=True)
+                self.assertIsNone(discover.call_args.kwargs['reference'])
+                written.assert_not_called()
+
+    def test_antigravity_localizes_supplied_words_instead_of_captioning_asr(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            audio = root / 'audio.wav'; audio.write_bytes(b'fixture identity')
+            snapshot = root / 'execution.json'
+            snapshot.write_text(json.dumps(coarse_snapshot(
+                route_type='antigravity', runtime_id='antigravity-acp',
+                model_id='gemini-3.8-flash-high', boundary_applied='audio-leaves-machine',
+                boundary_confirmed=True)))
+            authored = dict(text='My authored rabbit runs\n', source='explicit', sha256='reference')
+            evidence = dict(schema_version=WHISPER_SCHEMA, lane='lyrics',
+                audio=dict(sha256=external_analysis.sha256_file(audio), duration_seconds=10.),
+                provenance=dict(adapter='test-audio-provider'),
+                lines=[dict(text='An entirely different ASR caption', start_seconds=2.,
+                            end_seconds=4., confidence=.5)], words=[])
+
+            def cache(path, *_args, **_kwargs):
+                if path.name == 'measured.json':
+                    return dict(audio=dict(duration_seconds=10.))
+                return None
+
+            def localize(_audio, coarse_evidence, reference_file, coarse, *_args, **_kwargs):
+                self.assertEqual(reference_file.read_text(), authored['text'])
+                self.assertEqual(json.loads(coarse_evidence.read_text())['lines'][0]['text'],
+                                 evidence['lines'][0]['text'])
+                proposal = json.loads(coarse.read_text())
+                proposed_text = [row['text'] for row in proposal['lines'] + proposal['unmatched']]
+                self.assertEqual(proposed_text, ['My authored rabbit runs'])
+                raise RuntimeError('reached authored localizer')
+
+            with patch.object(external_analysis, '_cache_matches', side_effect=cache), \
+                 patch.object(external_analysis, 'discover_reference_lyrics', return_value=authored), \
+                 patch.object(external_analysis.antigravity_lyrics, 'transcribe', new=AsyncMock(return_value=evidence)) as discover, \
+                 patch.object(external_analysis, 'run_anchor_block_alignment', side_effect=localize), \
+                 patch.object(external_analysis, 'run_codex_review') as wording:
+                with self.assertRaisesRegex(RuntimeError, 'reached authored localizer'):
+                    external_analysis.run_assist(audio, root / 'output', audio_duration=10.,
+                        mode='lyrics', execution_snapshot=snapshot, align_python=Path('/unused/python'),
+                        allow_dotenv=False, runner=Mock(side_effect=AssertionError('Unexpected process')))
+                self.assertEqual(discover.call_args.kwargs['reference'], authored)
+                wording.assert_not_called()
 
 
 if __name__ == "__main__":

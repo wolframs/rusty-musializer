@@ -24,6 +24,7 @@ straight to the model.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import math
 import sys
@@ -34,6 +35,7 @@ from typing import Any, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lyric_anchor_block  # noqa: E402
+import lyric_align  # noqa: E402
 from analysis_io import (  # noqa: E402
     AnalysisValidationError,
     atomic_write_json,
@@ -325,6 +327,15 @@ def align(
         if isinstance(line, dict)
         and isinstance(line.get("reference_line_index"), int)
     }
+    block_decisions = {position: dict(decision)
+                       for position, decision in decisions.items()}
+    block_owners = dict(owning_block)
+    block_phrases = Counter((block_owners.get(position), tuple(line["tokens"]))
+                           for position, line in enumerate(lines))
+    repeated_positions = {
+        position for position, line in enumerate(lines)
+        if block_phrases[(block_owners.get(position), tuple(line["tokens"]))] > 1
+    }
     for position, line in enumerate(lines):
         proposal = coarse_lines.get(int(line["index"]))
         if proposal is None:
@@ -359,6 +370,12 @@ def align(
             "coarse_confidence": float(confidence),
             "split": False,
         }
+        local_block["window_start"], local_block["window_end"] = (
+            lyric_anchor_block.ordered_refinement_window(
+                position, block_decisions, block_owners,
+                local_block["window_start"], local_block["window_end"],
+                repeated_positions=repeated_positions))
+        local_block["boundary_policy"] = "ordered-block-neighbors"
         started_local = time.monotonic()
         local = align_block(
             waveform, sample_rate, lines, local_block, model, tokenizer,
@@ -388,6 +405,23 @@ def align(
     document = lyric_anchor_block.assemble_document(
         plan, decisions, owning_block, coarse, audio_duration=audio_duration,
         trusted_coarse=trusted_coarse)
+
+    if whisper.get("provenance", {}).get("source_kind") == "antigravity_audio":
+        observations = whisper.get("source", {}).get("boundary_observations", [])
+        if observations:
+            import authored_audio_boundaries
+            document = authored_audio_boundaries.refine(document, observations)
+            document = authored_audio_boundaries.recover(
+                document, observations, audio_duration=audio_duration)
+            if document["audio_occurrence_recovery"]["recovered"]:
+                document["performed_candidates"] = lyric_align.find_performed_candidates(
+                    whisper, document["lines"],
+                    [(row["start_seconds"], row["end_seconds"])
+                     for row in document["unreliable_evidence"]],
+                    audio_duration=audio_duration)
+                document["statistics"]["performed_candidates"] = len(
+                    document["performed_candidates"])
+            lyric_anchor_block.validate_full_coverage(document, lines)
 
     settings = {
         "anchor_lengths": list(lyric_anchor_block.ANCHOR_LENGTHS),

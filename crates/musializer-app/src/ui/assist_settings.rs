@@ -713,9 +713,10 @@ fn last_output_line(text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The three runtimes the Local models section names, in display order.
-pub const RUNTIME_ROWS: [(&str, &str); 3] = [
+/// The installed runtimes the Local models section names, in display order.
+pub const RUNTIME_ROWS: [(&str, &str); 4] = [
     ("whisper", "Whisper"),
+    ("antigravity_acp", "Antigravity ACP (opt-in audio)"),
     ("mms_ctc_aligner", "MMS/CTC forced aligner"),
     (
         "stem_separator",
@@ -1074,6 +1075,14 @@ pub fn model_options(
 ) -> Vec<String> {
     let mut options: Vec<String> = match route_type {
         RouteType::Builtin => Vec::new(),
+        RouteType::Antigravity => [
+            "gemini-3.8-flash-high",
+            "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-low",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
         RouteType::LocalProc => local_runtimes_for(contract)
             .iter()
             .map(|id| (*id).to_string())
@@ -1558,6 +1567,7 @@ const FOCUS_MODELS_DOCTOR: ControlId = 501;
 const FOCUS_MODELS_GPU: ControlId = 502;
 const FOCUS_MODELS_STEMS: ControlId = 503;
 const FOCUS_MODELS_COPY: ControlId = 504;
+const FOCUS_MODELS_PERFORMED: ControlId = 505;
 const FOCUS_CODEX_EFFORT_BASE: ControlId = 600;
 const FOCUS_CODEX_REFRESH: ControlId = 610;
 const FOCUS_KEY_FIELD: ControlId = 700;
@@ -2323,7 +2333,14 @@ impl AssistSettingsDialog {
         if override_needs_route_repair(&resolved) {
             return true;
         }
-        let implemented = contract.implemented_route_types();
+        let implemented: Vec<_> = contract
+            .implemented_route_types()
+            .iter()
+            .copied()
+            .filter(|route| {
+                *route != RouteType::Antigravity || self.draft.catalog.show_experimental
+            })
+            .collect();
         let current = resolved.route.map(|route| route.route_type);
         implemented.len() > 1 || (implemented.len() == 1 && current != implemented.first().copied())
     }
@@ -2340,9 +2357,16 @@ impl AssistSettingsDialog {
             clear_active_override(&mut self.draft, contract);
             return;
         }
-        let eligible = contract.implemented_route_types();
+        let eligible: Vec<_> = contract
+            .implemented_route_types()
+            .iter()
+            .copied()
+            .filter(|route| {
+                *route != RouteType::Antigravity || self.draft.catalog.show_experimental
+            })
+            .collect();
         let current = resolved.route.as_ref().map(|route| route.route_type);
-        let Some(next) = cycle(eligible, current.as_ref()) else {
+        let Some(next) = cycle(&eligible, current.as_ref()) else {
             return;
         };
         let mut route = resolved.route.unwrap_or(Route {
@@ -2357,7 +2381,8 @@ impl AssistSettingsDialog {
         });
         route.route_type = next;
         route.runtime_id = default_runtime_id(contract, next);
-        route.model_id = None;
+        route.model_id =
+            (next == RouteType::Antigravity).then(|| "gemini-3.8-flash-high".to_string());
         route.reasoning_effort = (next == RouteType::Codex).then_some(ReasoningEffort::Medium);
         route.provider = (next == RouteType::OpenRouter).then(|| Provider::defaults_for(contract));
         if !contract.allowed_fallbacks().contains(&route.fallback) {
@@ -4945,6 +4970,7 @@ fn default_runtime_id(contract: ContractId, route_type: RouteType) -> String {
         (_, RouteType::Builtin) => "builtin".to_string(),
         (_, RouteType::LocalProc) => "whisper.cpp".to_string(),
         (_, RouteType::Codex) => "codex".to_string(),
+        (_, RouteType::Antigravity) => "antigravity-acp".to_string(),
         (_, RouteType::OpenRouter) => "openrouter".to_string(),
     }
 }
@@ -4970,6 +4996,21 @@ impl AssistSettingsDialog {
             "Where new downloads go, and what the installed runtimes actually use. Existing \
              runtime weights may live elsewhere; their exact paths are listed below.",
         );
+
+        let performed = self.draft.local_runtimes.performed_lyrics;
+        let inventory_box = UiRect::new(body.x, *cursor, body.width, CONTROL_HEIGHT);
+        if self.toggle(
+            d, font, 33, FOCUS_MODELS_PERFORMED, inventory_box,
+            "Antigravity: detect performed phrases", performed,
+            "On: audio determines phrases; the written sheet provides exact local spelling. Off: time the written lyrics. Unrecognized wording remains an audio proposal.",
+            true,
+        ) {
+            self.draft.local_runtimes.performed_lyrics = !performed;
+        }
+        *cursor += CONTROL_HEIGHT + 8.0;
+        paragraph(d, font, body, cursor,
+            "With Antigravity, choose phrases from the recording and use the written sheet for exact spelling. Turn off to time the written sheet instead.",
+            color::ui_muted());
 
         subheading(d, font, body, cursor, "Download destination");
         match (&self.models_dir, &self.models_dir_error) {
@@ -7202,6 +7243,18 @@ impl AssistSettingsDialog {
             ("--whisper-bin", &self.draft.local_runtimes.whisper_bin),
             ("--whisper-model", &self.draft.local_runtimes.whisper_model),
             ("--align-python", &self.draft.local_runtimes.align_python),
+            (
+                "--antigravity-server",
+                &self.draft.local_runtimes.antigravity_server,
+            ),
+            (
+                "--antigravity-harness",
+                &self.draft.local_runtimes.antigravity_harness,
+            ),
+            (
+                "--antigravity-profile",
+                &self.draft.local_runtimes.antigravity_profile,
+            ),
         ] {
             if let Some(path) = value {
                 command.arg(flag).arg(path);

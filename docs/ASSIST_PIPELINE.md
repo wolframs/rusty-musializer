@@ -31,6 +31,149 @@ Assist is an evidence import pipeline, not an in-process model feature.
 These constraints let model integrations change without pulling GPU frameworks,
 network clients, or their failure modes into the renderer.
 
+## Opt-in Antigravity audio transcription
+
+The default lyric route is local. In Assist settings, enable **Show experimental**,
+select the `antigravity` route for coarse lyric localization, and choose Gemini
+3.8 Flash. Starting Timed lyrics or Full assist then confirms audio transfer for
+that job. The complete recording is sent as overlapping clips of at most 30
+seconds. By default, lyric sheets stay local and retain caption authority: feeding the complete
+intended text to the remote model caused hallucinated verses over instrumental passages. Opening settings or
+running the doctor does not authenticate or send audio.
+
+An explicit **Local models → Antigravity: detect performed phrases** choice
+(`local_runtimes.performed_lyrics`, default off; helper `--performed-lyrics`)
+uses corroborated audio to determine the phrase inventory even when a written
+sheet exists. Local occurrence-constrained alignment refines those phrases.
+`tools/local_lyric_spelling.py` then restores only a unique exact normalized-token
+match from the local sheet, preserving the audio wording and reference spans in
+provenance. It never inserts unperformed written lines or substitutes fuzzy
+expected words. Unmatched wording remains an audio proposal. The option affects
+only the Antigravity route; the written-sheet localizer remains available with
+it off. Both choices stage results for review and Apply. The manifest records
+`lyric_inventory` and the sheet's `local_exact_spelling` use, and the projection
+is written separately as `lyrics.performance.json`.
+
+`tools/antigravity_audio.py` uses the official ACP executable and its saved OAuth
+profile. It discovers T3 Code's active Linux runtime and requires exactly one
+signed-in profile, or explicit `local_runtimes.antigravity_server`,
+`antigravity_harness`, and `antigravity_profile` paths. Equivalent helper flags
+and `MUSIALIZER_ANTIGRAVITY_*` environment overrides exist. An explicit missing
+path fails; it never falls back to another account. No OAuth token is read,
+copied into Musializer settings, or exposed to the interface.
+
+Each clip starts a separate ACP session. The adapter checks advertised audio
+support, the exact offered model and the acknowledged selection. Client tools
+and permission requests are denied. Audio is decoded to WAV in a pipe, with no
+playback or original metadata. Responses and clip identities are cached under
+the private job folder; changing the recording, prompt, model, runtime
+or harness invalidates their reuse. Changing a local lyric sheet does not. Invalid responses retain a diagnostic receipt
+and receive one bounded retry. Cancellation stays within the Assist process tree.
+
+With an authored sheet, discovery produces coarse phrase evidence for the same
+anchor/block localizer used by the local route. Every alignable authored line
+reaches that acoustic stage; a single-view phrase is not discarded before it
+can help locate a supplied line. Captions retain authored wording. Unplaced
+lines and unrepresented performed phrases remain visible for review.
+
+Consecutive distinct numbered `Voice N:` labels are treated as source
+structure, retaining their original rows while sending only the words after
+the labels to matching, acoustic alignment and captions. Isolated or quoted
+uses are preserved.
+
+For this opt-in route, the original crop observations also refine boundaries
+after localization. Matching happens locally against supplied words, separately
+within each crop, so a sentence split into two phrases in one observation can
+corroborate a whole sentence in another. Both outer words must bound the observed
+phrase, two complete crops must agree within 0.5 seconds on both edges, and the
+existing cue must already select that occurrence. Their times and the existing
+cue supply a median; no interior word times are invented. Competing uses of one
+performance and new backwards cue ordering decline refinement. Authored text,
+unresolved lines, original acoustic word evidence and review warnings survive.
+
+A separate recovery pass can place an unresolved supplied line when two complete
+crops agree on its occurrence between the existing neighbouring lines. It
+requires both outer words and at least 90% token similarity, with three or more
+words. A competing single-crop occurrence or boundary still makes the result
+ambiguous; sampling one repetition more often must not make it win. Existing
+placements and other missing lines cannot claim the same observation rows, and
+recovery cannot reverse authored order. Recovered cues retain the original
+unresolved acoustic record and stay marked for review. Unmatched performed
+proposals are rebuilt after recovery so the same performance does not remain
+in the Potential lane as well. This does not yet resolve differences between
+the sheet's repetition count and the performed repetition count.
+
+Additional performances are represented separately in `performed_occurrences`.
+Complete authored wording is a reusable local template, so the recording can
+perform it more times than the sheet lists it. Two original crops must propose
+an occurrence outside existing placement coverage. Two fresh short audio-only
+crops must then corroborate its words and both boundaries within 0.5 seconds.
+Competing ownership of source rows declines the addition. The authored ledger
+is preserved; these instances do not resolve or consume its ambiguous lines.
+An unresolved line with a trailing parenthesized reply can also supply its
+main phrase as a template. This requires the same original and fresh audio
+confirmation; it does not assume the reply was performed. A complete authored
+template takes precedence over the same main-phrase wording, and an audible
+complete call-and-response takes precedence over its contained fragment.
+Such additions carry `text_scope: authored_inline_lead`; the full written line
+remains unresolved. Existing placed lines are never shortened by this policy.
+
+Both lists form the rendered lyric lane, scene-plan lyric reentries, bridge and
+manifest counts. Additional instances are uncertain cues with distinct
+"ADDED occurrence" review entries, not non-rendering Potential proposals.
+Unrepresented performed proposals are rebuilt against the combined lane. The
+source artifact retains original and fresh crop evidence and request identity;
+confirmation requests still receive no authored text. Full-lane audit tools
+score both lists.
+
+Confirmed compound cues can additionally have `phrase_splits`: two separately
+performed phrases, each supported by two original and two fresh audio crops.
+The original authored or additional-occurrence record stays intact. Each split
+names its source array, index and canonical digest; rendering refuses a stale
+or duplicate source link. The rendered lane substitutes the component phrases
+for the compound cue, and the bridge, scene reentries, counts and audit tools
+use that same view. Separate `PHRASE` review entries name the components without
+replacing the authored-line review identity. If either reply boundary remains
+uncertain, the original compound cue stays in place. No timestamps are inferred
+by dividing the compound cue's duration.
+The same rule also covers ordinary written sentences containing two performed
+phrases. A complete crop must first identify the existing cue and place a
+supplied-text prefix at a reported phrase boundary. Both components then need
+the same original and fresh crop agreement. A comma alone, one crop's grouping,
+or multiple competing seams cannot split the caption. Authored spelling is
+retained, including balanced quotation marks on quoted components.
+
+Performed wording absent from the authored templates can also enter
+`performed_occurrences`, explicitly marked `text_scope: audio_observed` with
+no authored line indices. Two distinct original crops and two fresh audio-only
+crops must agree on the words and both boundaries within 0.5 seconds. This
+includes isolated short ad-libs. A word already contained in a placed phrase,
+or observations already owned by another placed cue, cannot create an extra
+caption. These uncertain cues have separate `AUDIO` review entries; they do
+not rewrite or resolve an authored line. Their raw confirmation observations
+and request identity remain in `observed_occurrence_analysis`. Resuming this
+stage replaces its own additions while preserving authored occurrences and
+compound split links.
+
+An empty provider response or explicit quota limit stops audio requests with
+a resumable error. It is not treated as malformed lyric JSON and retried as a
+transcription repair. Completed clip receipts remain available for the next
+attempt under their exact audio, model, prompt and runtime identity.
+
+Without a sheet, this route proposes **performed wording** and does not invoke
+Codex wording review. Overlapping observations and fresh short confirmation
+crops support phrase presence; incomplete or unconfirmed phrases stay Potential.
+Local MMS/CTC uses phrase-specific windows to inspect the acoustic boundaries.
+Multiple audio observations and the acoustic result provide a median boundary
+estimate. The observation and acoustic evidence remain separate, and uncertain
+cues appear in review. Only this no-reference result declares audio transcription
+as caption authority. Apply preserves the observed provider model in project
+provenance in both modes.
+
+This route remains experimental. The ten-track investigation and limitations are
+recorded in [the dated repair notes](LYRICS_ASSIST_REPAIR_2026-09-06.md). Agreement
+between model observations is not an adjudicated timing error rate.
+
 ## End-to-end control flow
 
 ```text

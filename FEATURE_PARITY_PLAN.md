@@ -56,6 +56,42 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**LT2 — lyrics Assist repair, paused for operator listening (2026-09-07).** Operator priority: audit
+and iterate the complete production lyrics path on Fence Around, i rly think so,
+Groyper Idol, Resolve to You, Cat Gradient Optimizer (Learn), Eight Thousand
+Tokens, Floor Mechanics I: Load Bearing, Breaking What Remains, The Cage Went
+Deep, and Autoregressive Kitty. Collaborate with Gemini 3.8 Flash through the
+official Antigravity CLI on short audio chunks. Acceptance counts missing/extra
+performed phrases (audible lead and echo count separately; a continuous chop
+run counts once) and either boundary
+exceeding ±0.5 seconds as errors, aiming at ≤3% per
+track. Dependencies: verified audio-capable Antigravity transport, independent
+reference evidence, source classification, acoustic localization, cache
+invalidation, and actual staged/apply/render behavior. Preserve existing SX4
+work; passing model/unit tests alone does not close the acoustic target.
+T3-authenticated `agy_acp_server_1.1.1` audio calls to Gemini 3.8 Flash are now
+verified. The operator approved an **opt-in Antigravity audio route in normal
+Assist**. Investigation and private evidence pointers are in
+[`docs/LYRICS_ASSIST_REPAIR_2026-09-06.md`](docs/LYRICS_ASSIST_REPAIR_2026-09-06.md).
+Authored boundaries and missing-line recovery now use original crop evidence;
+additional performed instances and conditional main phrases now have separate
+fresh audio confirmation. Confirmed lead/echo splits now reach the lyric lane
+with authored review identity preserved. Confirmed audio-observed ad-libs now
+have distinct captions and review entries. All ten current corpus runs and
+independent audio-only reference proposals are complete after the provider
+reset; ordinary-sentence splits also require fresh audio confirmation. Unicode
+apostrophes now preserve equivalent matching and acoustic tokenization. The
+normal track-02 helper completes and its muted staged/apply/playback replay
+passes. Reference grouping and wording conflicts remain unadjudicated;
+complete per-track timing/coverage acceptance remains open. An explicit saved
+Antigravity performed-phrase choice now bypasses written-line localization and
+uses exact local sheet spelling. The actual track-02 helper and muted UI Apply/
+playback pass; all ten normal-mode corpus runs and the final v6 comparison
+are complete. Model-reference disagreements remain substantial and are not
+adjudicated error rates. No research helper remains running. The operator
+requested a pause and prepared listening review for the two unresolved phrase
+groupings; see [the handoff](docs/LYRICS_GROUPING_REVIEW.md).
+
 Ordered as a session should pick it up. Trust outranks delight — that ordering is
 a CX ruling, not a preference.
 

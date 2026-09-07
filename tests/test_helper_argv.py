@@ -49,6 +49,7 @@ DIALOG_RS = ROOT / "crates" / "musializer-app" / "src" / "ui" / "assist_settings
 # hard-codes. Both are here as the exact strings that cross, because a parser
 # that took the flag and refused its value would fail the same way.
 UNCONDITIONAL = [
+    ("--performed-lyrics", None),
     ("--duration", "40.500000000"),
     ("--mode", "mimo"),
     ("--bridge", "/tmp/musializer/analysis.bridge.tsv"),
@@ -63,6 +64,9 @@ CONDITIONAL = [
     ("--whisper-bin", "/opt/whisper/whisper-cli"),          # local runtimes
     ("--whisper-model", "/opt/whisper/ggml-large.bin"),
     ("--align-python", "/opt/align/bin/python3"),
+    ("--antigravity-server", "/opt/agy/agy_acp_server.par"),
+    ("--antigravity-harness", "/opt/agy/localharness_external"),
+    ("--antigravity-profile", "/home/example/.t3/profile"),
     ("--codex-bin", "/home/example/.local/npm-global/bin/codex"),
 ]
 
@@ -180,6 +184,9 @@ DOCTOR_CONDITIONAL = [
     ("--whisper-bin", "/opt/whisper/whisper-cli"),
     ("--whisper-model", "/opt/whisper/ggml-large.bin"),
     ("--align-python", "/opt/align/bin/python3"),
+    ("--antigravity-server", "/opt/agy/agy_acp_server.par"),
+    ("--antigravity-harness", "/opt/agy/localharness_external"),
+    ("--antigravity-profile", "/home/example/.t3/profile"),
 ]
 
 

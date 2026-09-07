@@ -257,6 +257,10 @@ pub struct LocalRuntimeOverrides<'a> {
     pub whisper_model: Option<&'a Path>,
     pub align_python: Option<&'a Path>,
     pub codex_bin: Option<&'a Path>,
+    pub antigravity_server: Option<&'a Path>,
+    pub antigravity_harness: Option<&'a Path>,
+    pub antigravity_profile: Option<&'a Path>,
+    pub performed_lyrics: bool,
 }
 
 /// How much of a job log is read back to find the helper's cause line.
@@ -380,11 +384,26 @@ impl AssistJob {
         if let Some(snapshot) = spec.execution_snapshot {
             command.arg("--execution-snapshot").arg(snapshot);
         }
+        if spec.local_runtimes.performed_lyrics {
+            command.arg("--performed-lyrics");
+        }
         for (flag, path) in [
             ("--whisper-bin", spec.local_runtimes.whisper_bin),
             ("--whisper-model", spec.local_runtimes.whisper_model),
             ("--align-python", spec.local_runtimes.align_python),
             ("--codex-bin", spec.local_runtimes.codex_bin),
+            (
+                "--antigravity-server",
+                spec.local_runtimes.antigravity_server,
+            ),
+            (
+                "--antigravity-harness",
+                spec.local_runtimes.antigravity_harness,
+            ),
+            (
+                "--antigravity-profile",
+                spec.local_runtimes.antigravity_profile,
+            ),
         ] {
             if let Some(path) = path {
                 command.arg(flag).arg(path);
@@ -981,6 +1000,8 @@ mod tests {
         assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
         let argv = std::fs::read_to_string(job.bridge_path()).expect("bridge");
         assert!(argv.contains("--lyrics-file"));
+        assert!(!argv.contains("--performed-lyrics"));
+        chosen.local_runtimes.performed_lyrics = true;
         assert!(argv.contains(&sheet.to_string_lossy().to_string()));
 
         // A chosen sheet that has since been deleted is silently not passed,
@@ -991,6 +1012,7 @@ mod tests {
         assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
         let argv = std::fs::read_to_string(job.bridge_path()).expect("bridge");
         assert!(!argv.contains("--lyrics-file"));
+        assert!(argv.contains("--performed-lyrics"));
     }
 
     #[test]

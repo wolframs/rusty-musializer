@@ -16,6 +16,34 @@ import external_analysis  # noqa: E402
 import force_align_lyrics  # noqa: E402
 import import_whisper  # noqa: E402
 import lyric_align  # noqa: E402
+import lyric_anchor_block  # noqa: E402
+
+
+class NumberedVoiceLabelTests(unittest.TestCase):
+    def test_layered_voice_block_keeps_words_and_original_source(self) -> None:
+        text = "(Layered voices)\nVoice 1: I just want to see the world burn\nVoice 2: I just want to see the world LEARN\nVoice 3: I just want\n"
+        lines = lyric_align.classify_reference_lines(text)
+        self.assertEqual([line['display'] for line in lines[1:]], [
+            'I just want to see the world burn',
+            'I just want to see the world LEARN', 'I just want'])
+        self.assertEqual([line['index'] for line in lines[1:]], [1, 2, 3])
+        self.assertEqual([line['source_display'] for line in lines[1:]], text.splitlines()[1:])
+        self.assertEqual([line['display'] for line in lyric_anchor_block.alignable_lines(text)],
+                         [line['display'] for line in lines[1:]])
+        self.assertEqual(lines[1]['tokens'], ['i', 'just', 'want', 'to', 'see', 'the', 'world', 'burn'])
+
+    def test_lone_quoted_and_ordinary_voice_lyrics_are_preserved(self) -> None:
+        for text in ('Voice 1: I am alone',
+                     '"Voice 1: Listen"\n"Voice 2: Answer"',
+                     'Voice of reason: stay\nVoice of thunder: go',
+                     'Voice 1: First\n\nVoice 2: Second'):
+            self.assertEqual([line['display'] for line in lyric_align.classify_reference_lines(text)],
+                             [line for line in text.splitlines() if line])
+
+    def test_numbered_production_prose_inside_brackets_is_not_promoted(self) -> None:
+        lines = lyric_align.classify_reference_lines(
+            '[Mixing notes\nVoice 1: pitched down\nVoice 2: raised an octave\n]\nActual lyric')
+        self.assertEqual([line['display'] for line in lines if line['tokens']], ['Actual lyric'])
 
 
 class WhisperWordTimingTests(unittest.TestCase):
@@ -130,6 +158,29 @@ class CoherentMatchTests(unittest.TestCase):
         self.assertAlmostEqual(synced["lines"][0]["start_seconds"], 20.70)
         self.assertEqual(synced["statistics"]["recovered_nearby_tokens"], 1)
         self.assertEqual(synced["statistics"]["discarded_outlier_tokens"], 1)
+        # Boundary extension is useful acoustic context, not another word match.
+        self.assertEqual(synced["statistics"]["matched_tokens"], 3)
+        self.assertEqual(synced["lines"][0]["confidence"], 0.6)
+
+    def test_unrelated_words_in_shared_phrase_window_do_not_inflate_confidence(self) -> None:
+        for word_timing in (False, True):
+            with self.subTest(word_timing=word_timing):
+                phrase = {"start_seconds": 15.175, "end_seconds": 16.175,
+                          "text": "I really think so"}
+                evidence = {"schema_version": "musializer.lyric-timing/v1",
+                            "lines": [phrase]}
+                if word_timing:
+                    evidence["words"] = [
+                        {"start_seconds": 15.175 + index * 0.25,
+                         "end_seconds": 15.425 + index * 0.25, "text": word}
+                        for index, word in enumerate(phrase["text"].split())]
+                synced = lyric_align.sync_lyrics(
+                    "I'm turning Neuralese", evidence, audio_duration=30.0)
+                self.assertEqual(synced["statistics"]["matched_tokens"], 1)
+                self.assertEqual(synced["lines"][0]["confidence"], 0.3333)
+                self.assertTrue(synced["lines"][0]["uncertain"])
+                self.assertEqual(lyric_anchor_block.coarse_proposals(
+                    synced, trusted_only=True), {})
 
 
 class PerformedCandidateTests(unittest.TestCase):
@@ -171,6 +222,52 @@ class PerformedCandidateTests(unittest.TestCase):
 
 
 class ReferenceClassificationTests(unittest.TestCase):
+    def test_wrapping_a_vocal_direction_does_not_change_sung_content(self) -> None:
+        for source in ['(voice whispers "we stay" over a fading chord)',
+                       '(voice whispers "we stay"\nover a fading chord)']:
+            lyrics = lyric_anchor_block.alignable_lines(source)
+            self.assertEqual([line['display'] for line in lyrics], ['we stay'])
+
+    def test_wrapped_backing_lyrics_are_not_discarded_as_directions(self) -> None:
+        lines = lyric_anchor_block.alignable_lines(
+            'We return home\n(we return\nhome)\n')
+        self.assertEqual([line['kind'] for line in lines], ['lyric', 'backing'])
+        self.assertEqual(lines[1]['tokens'], ['we', 'return', 'home'])
+
+    def test_wrapped_directions_keep_only_quoted_vocal_words(self) -> None:
+        lines = lyric_align.classify_reference_lines(
+            '[Intro]\n(vocal chop "the stars return" repeating,\n'
+            'pitched lower with each repeat)\n'
+            '(two drums panned left,\nand a bell on the right)\n'
+            '(ad-libs screaming "take me\nhome" over the final chord)\n'
+            'The morning comes\n')
+        lyrics = [row for row in lines if row['kind'] == 'lyric']
+        self.assertEqual([row['display'] for row in lyrics],
+                         ['the stars return', 'take me home', 'The morning comes'])
+        self.assertEqual([row['index'] for row in lyrics], [1, 5, 7])
+        self.assertIn('pitched lower', lyrics[0]['source_display'])
+        self.assertEqual([row['tokens'] for row in lines
+                          if row['kind'] == 'delivery'], [[], [], [], []])
+
+    def test_delivery_prefix_never_reaches_caption_or_acoustic_text(self) -> None:
+        source = '(pitched down to a growl) ...The stars return.'
+        line = lyric_anchor_block.alignable_lines(source)[0]
+        self.assertEqual(line['display'], '...The stars return.')
+        self.assertEqual(line['source_display'], source)
+        self.assertEqual(force_align_lyrics.alignment_words(line['display']),
+                         ['the', 'stars', 'return'])
+
+    def test_adjacent_headings_with_ad_lib_annotation_are_not_lyrics(self) -> None:
+        lines = lyric_align.classify_reference_lines(
+            '[Chorus] [Belted] (ad-libs)\nThe stars return\n')
+        self.assertEqual([row['kind'] for row in lines], ['section', 'lyric'])
+
+    def test_unclosed_parenthetical_does_not_swallow_next_section(self) -> None:
+        lines = lyric_align.classify_reference_lines(
+            '(A broken thought\nStill a lyric\n[Chorus]\nA new day\n')
+        self.assertEqual([row['kind'] for row in lines],
+                         ['lyric', 'lyric', 'section', 'lyric'])
+
     def test_numbered_verse_parenthetical_is_not_timed_as_a_backing_vocal(self) -> None:
         lines = lyric_align.classify_reference_lines(
             "First sung line\n(verse 2)\nSecond sung line\n")
@@ -209,6 +306,16 @@ class ReferenceClassificationTests(unittest.TestCase):
 
 
 class ForcedAlignmentPlanningTests(unittest.TestCase):
+    def test_typographic_apostrophes_preserve_contraction_words_and_display(self) -> None:
+        straight = "I've been waiting; you're here, don't go"
+        for apostrophe in ("’", "‘", "ʼ", "＇"):
+            written = straight.replace("'", apostrophe)
+            self.assertEqual(lyric_align.normalize_tokens(written),
+                             lyric_align.normalize_tokens(straight))
+            self.assertEqual(force_align_lyrics.alignment_words(written),
+                             ["i've", "been", "waiting", "you're", "here", "don't", "go"])
+            self.assertEqual(lyric_align.classify_reference_lines(written)[0]['display'], written)
+
     def test_display_text_normalizes_to_the_mms_alphabet(self) -> None:
         self.assertEqual(
             force_align_lyrics.alignment_words("Café & 21 'skys' — WE."),

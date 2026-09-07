@@ -514,10 +514,26 @@ impl AssistController {
             zdr_required: resolved.snapshot.requires_zdr(),
             credential,
             local_runtimes: LocalRuntimeOverrides {
+                performed_lyrics: resolved.local_runtimes.performed_lyrics,
                 whisper_bin,
                 whisper_model,
                 align_python,
                 codex_bin,
+                antigravity_server: resolved
+                    .local_runtimes
+                    .antigravity_server
+                    .as_deref()
+                    .map(Path::new),
+                antigravity_harness: resolved
+                    .local_runtimes
+                    .antigravity_harness
+                    .as_deref()
+                    .map(Path::new),
+                antigravity_profile: resolved
+                    .local_runtimes
+                    .antigravity_profile
+                    .as_deref()
+                    .map(Path::new),
             },
         };
         match AssistJob::start(&spec, self.nonce) {
@@ -788,7 +804,13 @@ impl AssistController {
         // Provenance is verified *before* anything is replaced: a bridge whose
         // artifact cannot be hashed is not evidence, and applied lanes with no
         // provenance are worse than no lanes (`plug.c:3635-3646`).
-        let Some(staged) = stage_analysis_lanes(track, &candidate, &bridge_path, false) else {
+        let Some(staged) = stage_analysis_lanes(
+            track,
+            &candidate,
+            &bridge_path,
+            false,
+            self.staged_snapshot.as_ref(),
+        ) else {
             return vec![AssistNotice::new(
                 Severity::Error,
                 "Suggestions were not applied",
@@ -870,7 +892,7 @@ impl AssistController {
             );
         }
         let staged =
-            stage_analysis_lanes(track, &loaded.candidate, path, true).ok_or_else(|| {
+            stage_analysis_lanes(track, &loaded.candidate, path, true, None).ok_or_else(|| {
                 "the bridge provenance path or identity is not project-safe".to_string()
             })?;
 
@@ -911,8 +933,7 @@ impl AssistController {
             Severity::Info,
             "Lyrics reference selected",
             format!(
-                "The next timed-lyrics run will synchronize these lines against Whisper \
-                 instead of transcribing: {}",
+                "The next timed-lyrics run will use this sheet with the selected audio route: {}",
                 path.display()
             ),
         )]
@@ -1270,6 +1291,7 @@ thread_local! {
 // ---------------------------------------------------------------------------
 
 thread_local! {
+    static AUDIO_LYRIC_ROUTE: std::cell::RefCell<Option<(bool, bool, bool)>> = const { std::cell::RefCell::new(None) };
     /// `(cache key, plan)` for the confirmation body.
     static CONFIRMATION_PLAN: std::cell::RefCell<Option<(String, ExecutionPlan)>> = const {
         std::cell::RefCell::new(None)
@@ -1279,6 +1301,50 @@ thread_local! {
     static LAST_ROUTING_REPORT: std::cell::RefCell<String> = const {
         std::cell::RefCell::new(String::new())
     };
+}
+
+/// Like the confirmation cache, refresh after the settings dialog changes
+/// state. Entry badges must describe the configured route before it is clicked.
+fn audio_lyric_route(settings_open: bool) -> bool {
+    AUDIO_LYRIC_ROUTE.with(|slot| {
+        let mut cached = slot.borrow_mut();
+        if let Some((opened, audio, _)) = *cached {
+            if opened == settings_open {
+                return audio;
+            }
+        }
+        let (settings, _, _) = plan::load_settings_or_defaults();
+        let audio = execution::resolve_route(
+            &settings,
+            musializer_core::assist::contracts::ContractId::Coarse,
+        )
+        .route
+        .is_some_and(|route| {
+            route.route_type == musializer_core::assist::contracts::RouteType::Antigravity
+        });
+        *cached = Some((
+            settings_open,
+            audio,
+            settings.local_runtimes.performed_lyrics,
+        ));
+        audio
+    })
+}
+
+fn workflow_description(mode: AssistMode, audio: bool) -> &'static str {
+    let performed =
+        AUDIO_LYRIC_ROUTE.with(|slot| slot.borrow().is_some_and(|(_, _, performed)| performed));
+    if audio && performed && mode == AssistMode::Lyrics {
+        "Detects performed phrases from audio; uses written lyrics for exact local spelling."
+    } else if audio && performed && mode == AssistMode::All {
+        "Detects performed lyric phrases, measured scene changes, and MiMo feeling cues."
+    } else if audio && mode == AssistMode::Lyrics {
+        "Times lyrics using short audio clips and local acoustic checks."
+    } else if audio && mode == AssistMode::All {
+        "Creates lyrics from audio clips, scene changes from measured audio, and feeling cues through MiMo."
+    } else {
+        mode.workflow()
+    }
 }
 
 /// Publishes the resolved graph's own evidence.
@@ -1508,6 +1574,8 @@ pub(crate) struct ParkedProposals {
     pub performed: usize,
     /// Proposals now in the staged lane as `Potential` cues.
     pub parked: usize,
+    /// Guesses already represented by a corroborated additional performance.
+    pub represented: usize,
     /// Unresolved lines with no proposed time this side can honour. These stay
     /// review-only, and the panel still names them — a line that vanished from
     /// *both* surfaces would be worse than the state this tranche replaces.
@@ -1529,6 +1597,16 @@ impl ParkedProposals {
     /// things — so the words "also listed below" are load-bearing, not padding.
     #[must_use]
     pub fn summary(&self) -> String {
+        if self.represented > 0 && self.refused == 0 {
+            let mut text = format!(
+                "{} parked as potential cues; {} already in the lyric lane (also listed below)",
+                self.parked, self.represented
+            );
+            if self.unplaceable > 0 {
+                text.push_str(&format!("; {} without usable timing", self.unplaceable));
+            }
+            return text;
+        }
         if self.unresolved == 0 && self.performed == 0 {
             return String::new();
         }
@@ -1618,7 +1696,72 @@ fn proposal_window(entry: &LyricReviewEntry, duration_seconds: f64) -> Option<(f
     Some((start, end))
 }
 
-/// The proposals a candidate's review offers, in review order.
+fn compound_is_rendered(
+    candidate: &AnalysisCandidate,
+    text: &str,
+    begin: f64,
+    finish: f64,
+) -> bool {
+    let Some((lead, reply)) = text.trim().trim_end_matches(['"', '”']).rsplit_once('(') else {
+        return false;
+    };
+    let Some(reply) = reply.trim().strip_suffix(')') else {
+        return false;
+    };
+    let words = |text: &str| {
+        text.split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let lead_words = words(lead);
+    let reply_words = words(reply);
+    if lead_words.is_empty() || reply_words.is_empty() {
+        return false;
+    }
+    let cues = candidate.lyrics().cues();
+    cues.iter().enumerate().any(|(left, first)| {
+        first.origin.is_displayable()
+            && words(&first.text) == lead_words
+            && (first.start_seconds - begin).abs() <= 0.5
+            && cues.iter().enumerate().any(|(right, second)| {
+                right != left
+                    && second.origin.is_displayable()
+                    && words(&second.text) == reply_words
+                    && first.start_seconds < second.start_seconds
+                    && first.end_seconds <= finish + 0.5
+                    && (first.end_seconds.max(second.end_seconds) - finish).abs() <= 0.5
+            })
+    })
+}
+
+/// Whether a guess has the same words and window as an actual additional cue.
+fn proposal_already_placed(candidate: &AnalysisCandidate, entry: &LyricReviewEntry) -> bool {
+    let (Some(start), Some(end)) = (entry.start_seconds, entry.end_seconds) else {
+        return false;
+    };
+    candidate.lyrics_review().is_some_and(|review| {
+        review.entries.iter().any(|occurrence| {
+            let (Some(begin), Some(finish)) = (occurrence.start_seconds, occurrence.end_seconds)
+            else {
+                return false;
+            };
+            matches!(occurrence.kind, LyricReviewKind::Occurrence | LyricReviewKind::AudioOccurrence)
+                && occurrence.text.trim() == entry.text.trim()
+                && (begin - start).abs() <= 0.5
+                && (finish - end).abs() <= 0.5
+                // Review metadata alone must never manufacture a placement.
+                && (candidate.lyrics().cues().iter().any(|cue| {
+                    cue.origin.is_displayable()
+                        && cue.text.trim() == entry.text.trim()
+                        && (cue.start_seconds - begin).abs() <= 0.001
+                        && (cue.end_seconds - finish).abs() <= 0.001
+                }) || compound_is_rendered(candidate, &entry.text, begin, finish))
+        })
+    })
+}
+
+/// The proposals still needing their own non-rendering cue.
 fn proposal_cues(candidate: &AnalysisCandidate) -> Vec<LyricCue> {
     let Some(review) = candidate.lyrics_review() else {
         return Vec::new();
@@ -1628,6 +1771,7 @@ fn proposal_cues(candidate: &AnalysisCandidate) -> Vec<LyricCue> {
         .entries
         .iter()
         .filter(|entry| entry.kind.is_proposal())
+        .filter(|entry| !proposal_already_placed(candidate, entry))
         .filter_map(|entry| {
             let (start_seconds, end_seconds) = proposal_window(entry, duration)?;
             Some(LyricCue {
@@ -1671,11 +1815,17 @@ fn parked_summary(candidate: &AnalysisCandidate) -> ParkedProposals {
         .count();
     let placeable = proposal_cues(candidate).len();
     let parked = candidate.potential_cue_count();
+    let represented = review
+        .entries
+        .iter()
+        .filter(|entry| entry.kind.is_proposal() && proposal_already_placed(candidate, entry))
+        .count();
     ParkedProposals {
         unresolved,
         performed,
         parked,
-        unplaceable: (unresolved + performed).saturating_sub(placeable),
+        represented,
+        unplaceable: (unresolved + performed).saturating_sub(placeable + represented),
         // All or nothing, so the only way a placeable proposal is not in the lane
         // is a whole-run refusal.
         refused: placeable.saturating_sub(parked),
@@ -1739,6 +1889,7 @@ fn stage_analysis_lanes(
     candidate: &AnalysisCandidate,
     path: &Path,
     imported_bridge: bool,
+    snapshot: Option<&ExecutionSnapshot>,
 ) -> Option<StagedLanes> {
     let path_text = path.to_str()?;
     if path_text.is_empty()
@@ -1755,9 +1906,17 @@ fn stage_analysis_lanes(
     let artifact_sha256 = sha256_file_hex(path).ok()?;
 
     let available = candidate.available();
+    let observed_lyrics = snapshot
+        .and_then(|value| value.contract(musializer_core::assist::contracts::ContractId::Coarse))
+        .map(|entry| entry.model_id.as_str());
+    let lyric_model = if imported_bridge {
+        "imported-bridge"
+    } else {
+        observed_lyrics.unwrap_or("whisper-codex")
+    };
     #[rustfmt::skip]
     let requests: [(bool, AnalysisLaneKind, &str); 3] = [
-        (available.lyrics,    AnalysisLaneKind::LyricTiming,   if imported_bridge { "imported-bridge" } else { "whisper-codex" }),
+        (available.lyrics,    AnalysisLaneKind::LyricTiming,   lyric_model),
         (available.sections,  AnalysisLaneKind::MeasuredSignal, if imported_bridge { "imported-bridge" } else { "measured-sections" }),
         (available.semantics, AnalysisLaneKind::SemanticScore,  if imported_bridge { "imported-bridge" } else { "xiaomi-mimo-v2.5" }),
     ];
@@ -2784,6 +2943,12 @@ impl ReviewNavigation {
 fn review_subject(entry: &LyricReviewEntry) -> String {
     if entry.kind == LyricReviewKind::Performed {
         format!("candidate {}", entry.line_number)
+    } else if entry.kind == LyricReviewKind::Occurrence {
+        format!("occurrence {}", entry.line_number)
+    } else if entry.kind == LyricReviewKind::AudioOccurrence {
+        format!("audio phrase {}", entry.line_number)
+    } else if entry.kind == LyricReviewKind::Phrase {
+        format!("phrase {}", entry.line_number)
     } else {
         format!("line {}", entry.line_number)
     }
@@ -3051,7 +3216,11 @@ fn draw_lyrics_review(
     // indistinguishable from a broken one.
     if review.entries.is_empty() {
         let sentence = if review.is_clear() {
-            "All authored lines were placed and none were flagged."
+            if review.audio_proposal {
+                "No detected phrases were flagged. Check the audio for omissions."
+            } else {
+                "All authored lines were placed and none were flagged."
+            }
         } else if review.document_read {
             // Read, and it named nobody. Different problem, different sentence
             // (review LT1-R, R3).
@@ -3408,7 +3577,7 @@ impl Shell {
                 state,
                 id,
                 settings_row,
-                "Routing, local models, Codex, OpenRouter and privacy. Opening it starts nothing.",
+                "Routing, local models, Antigravity, Codex, OpenRouter and privacy. Opening it starts nothing.",
             );
             if input.fonts.icons_available() {
                 // Drawn beside the label rather than through `icon_button`,
@@ -3600,7 +3769,11 @@ impl Shell {
             widgets::draw_text(
                 d,
                 font,
-                mode.badge(),
+                if mode == AssistMode::Lyrics && audio_lyric_route(self.assist_settings.is_open()) {
+                    "LYRICS · SENDS AUDIO"
+                } else {
+                    mode.badge()
+                },
                 button.x + 3.0,
                 button.y + 39.0,
                 11.0,
@@ -3691,7 +3864,15 @@ impl Shell {
         match content {
             AssistPanelContent::Confirmation => {
                 let mode = session.mode();
-                widgets::draw_text(d, font, mode.workflow(), x, action_y, 14.0, color::ui_ink());
+                widgets::draw_text(
+                    d,
+                    font,
+                    workflow_description(mode, audio_lyric_route(self.assist_settings.is_open())),
+                    x,
+                    action_y,
+                    14.0,
+                    color::ui_ink(),
+                );
                 // The consent sentence comes from the graph this job actually
                 // resolved, not from the workflow's name (audit A10). The
                 // per-mode string stays as the fallback for the one frame a
@@ -3773,7 +3954,10 @@ impl Shell {
                 widgets::draw_text(
                     d,
                     font,
-                    session.mode().workflow(),
+                    workflow_description(
+                        session.mode(),
+                        audio_lyric_route(self.assist_settings.is_open()),
+                    ),
                     x,
                     action_y,
                     14.0,
@@ -3888,7 +4072,15 @@ impl Shell {
         widgets::draw_text(
             d,
             font,
-            reference.summary(),
+            if audio_lyric_route(self.assist_settings.is_open())
+                && reference == AssistLyricReference::None
+            {
+                "Uses embedded lyrics when available; otherwise suggests words heard in the audio."
+            } else if audio_lyric_route(self.assist_settings.is_open()) {
+                "Audio helps place sung phrases; your lyric sheet stays local and supplies the caption text."
+            } else {
+                reference.summary()
+            },
             x,
             reference_y + 18.0,
             13.0,
@@ -3991,7 +4183,14 @@ impl Shell {
         } else {
             None
         };
-        let row = candidate_action_row(boundary, action_y, padding, gap, blocked_reason.is_some());
+        // The fixed action row reserves summaries for all three lanes. Return
+        // unused summary rows to the review list for a lyrics-only result.
+        let lane_count = usize::from(available.lyrics)
+            + usize::from(available.sections)
+            + usize::from(available.semantics);
+        let controls_y = action_y - 18.0 * (3 - lane_count.min(3)) as f32;
+        let row =
+            candidate_action_row(boundary, controls_y, padding, gap, blocked_reason.is_some());
 
         if available.lyrics {
             let before = target.map_or(0, |track| track.lyrics.len());
@@ -4175,7 +4374,7 @@ impl Shell {
                 pointer,
                 reveal_state,
                 x,
-                action_y + REVIEW_BLOCK_OFFSET,
+                controls_y + REVIEW_BLOCK_OFFSET,
                 (boundary.width - padding * 2.0).max(0.0),
                 // The scissor's own inner edge, which is what actually cuts a
                 // row. `boundary.height` is `available.min(required)`, so at a
@@ -4797,9 +4996,14 @@ mod tests {
         let loaded = load_candidate(&bridge, &workspace.tracks()[0], Lanes::ALL).expect("stages");
 
         for _ in 0..4 {
-            let staged =
-                stage_analysis_lanes(&workspace.tracks()[0], &loaded.candidate, &bridge, false)
-                    .expect("provenance");
+            let staged = stage_analysis_lanes(
+                &workspace.tracks()[0],
+                &loaded.candidate,
+                &bridge,
+                false,
+                None,
+            )
+            .expect("provenance");
             workspace.get_mut(0).unwrap().analysis_lanes = staged.lanes;
         }
         assert_eq!(workspace.tracks()[0].analysis_lanes.len(), 3);
@@ -5319,10 +5523,38 @@ mod tests {
              parked=0/0/1 counts=document \
              manifest=1/2 policy=anchor-block-mms | \
              UNPLACED line 26 proposed 1:30.6-1:34.2 \"hold the note until it breaks\" ; \
-             CHECK line 1 at 0:12.0-0:16.0 \"we were never meant to stay\"",
+             CHECK line 1 at 0:12.0-0:16.0 \"we were never meant to stay\" (the two views differ by 21.6 s)",
             "the report line carries the names and the windows, not only the counts; this \
-             fixture's flag records no delta, so the CHECK row has no detail to add"
+             fixture's flag records a reason without a numeric delta, so the CHECK row still explains it"
         );
+    }
+
+    #[test]
+    fn performed_review_reads_final_spelling_and_written_review_ignores_stale_projection() {
+        let scratch = Scratch::new("performed-review-source");
+        for inventory in ["performed", "written_when_available"] {
+            let manifest = format!(
+                r#"{{"schema_version":"musializer.assist-manifest/v1",
+                "mode":"lyrics","lyric_inventory":"{inventory}",
+                "result_counts":{{"lyrics_unresolved":1,"lyrics_review_flags":2}},
+                "artifacts":{{"aligned":"/elsewhere/lyrics.aligned.json",
+                             "performance":"/elsewhere/lyrics.performance.json"}}}}"#
+            );
+            let folder = review_job_folder(&scratch, inventory, &manifest, LT1_DOCUMENT);
+            let projected = LT1_DOCUMENT.replace(
+                "we were never meant to stay",
+                "We were never meant to stay!",
+            );
+            std::fs::write(folder.join("lyrics.performance.json"), projected).unwrap();
+            let review = read_lyrics_review(&folder.display().to_string()).unwrap();
+            let expected = if inventory == "performed" {
+                "We were never meant to stay!"
+            } else {
+                "we were never meant to stay"
+            };
+            assert!(review.entries.iter().any(|entry| entry.text == expected));
+            assert_eq!(review.entries.len(), 2);
+        }
     }
 
     #[test]
@@ -5986,10 +6218,86 @@ mod tests {
                 unresolved: 3,
                 performed: 0,
                 parked: 2,
+                represented: 0,
                 unplaceable: 1,
                 refused: 0,
             }
         );
+    }
+
+    #[test]
+    fn a_compound_guess_is_represented_only_when_both_phrases_are_in_the_lane() {
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
+        let first = candidate.lyrics().cues()[0].clone();
+        let second = candidate.lyrics().cues()[1].clone();
+        let text = format!("{} ({})", first.text, second.text);
+        let begin = first.start_seconds;
+        let finish = second.end_seconds;
+        let value = serde_json::json!({
+            "unresolved": [{"reference_line_index": 0, "text": text,
+                "coarse_start_seconds": begin, "coarse_end_seconds": finish}],
+            "review_flags": [],
+            "performed_occurrences": [{"text": text, "start_seconds": begin, "end_seconds": finish}]
+        });
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(&serde_json::to_vec(&value).unwrap()));
+        assert!(candidate.attach_lyrics_review(review));
+        assert!(proposal_cues(&candidate).is_empty());
+        assert_eq!(parked_summary(&candidate).represented, 1);
+        assert!(!compound_is_rendered(
+            &candidate,
+            &format!("{} (missing echo)", first.text),
+            begin,
+            finish
+        ));
+        assert!(!compound_is_rendered(
+            &candidate,
+            &text,
+            begin + 1.0,
+            finish
+        ));
+        assert!(!compound_is_rendered(
+            &candidate,
+            &text,
+            begin,
+            finish + 1.0
+        ));
+    }
+
+    #[test]
+    fn a_confirmed_occurrence_does_not_get_a_duplicate_potential_guess() {
+        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
+        let cue = candidate.lyrics().cues()[0].clone();
+        let value = serde_json::json!({
+            "unresolved": [{"reference_line_index": 0, "text": cue.text,
+                "coarse_start_seconds": cue.start_seconds + 0.1,
+                "coarse_end_seconds": cue.end_seconds + 0.1, "abstained": true}],
+            "review_flags": [],
+            "performed_occurrences": [{"text": cue.text,
+                "start_seconds": cue.start_seconds, "end_seconds": cue.end_seconds}]
+        });
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(&serde_json::to_vec(&value).unwrap()));
+        assert!(candidate.attach_lyrics_review(review));
+        let before = candidate.lyrics().len();
+        let parked = park_unresolved_proposals(&mut candidate);
+        assert_eq!(candidate.lyrics().len(), before);
+        assert_eq!(parked.represented, 1);
+        assert_eq!(parked.unresolved, 1);
+        assert_eq!(parked.unplaceable, 0);
+        assert!(parked.summary().contains("already in the lyric lane"));
+
+        // A metadata claim at a different time cannot suppress the guess.
+        let mut missing = value;
+        missing["performed_occurrences"][0]["start_seconds"] = (cue.start_seconds + 5.0).into();
+        missing["performed_occurrences"][0]["end_seconds"] = (cue.end_seconds + 5.0).into();
+        missing["unresolved"][0]["coarse_start_seconds"] = (cue.start_seconds + 5.0).into();
+        missing["unresolved"][0]["coarse_end_seconds"] = (cue.end_seconds + 5.0).into();
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(&serde_json::to_vec(&missing).unwrap()));
+        assert!(candidate.attach_lyrics_review(review));
+        assert_eq!(proposal_cues(&candidate).len(), 1);
+        assert_eq!(parked_summary(&candidate).represented, 0);
     }
 
     #[test]

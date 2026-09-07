@@ -30,7 +30,7 @@ from analysis_io import (
 )
 
 
-ALIGNMENT_VERSION = "13"
+ALIGNMENT_VERSION = "14"
 MODEL_ID = "torchaudio.pipelines.MMS_FA"
 MAX_CHUNK_SECONDS = 50.0
 CHUNK_LEAD_PADDING_SECONDS = 0.75
@@ -66,6 +66,7 @@ def _number_words(value: int) -> list[str]:
 def alignment_words(value: str) -> list[str]:
     """Normalize display text to the MMS_FA lowercase Roman alphabet."""
     folded = unicodedata.normalize("NFKD", value.casefold())
+    folded = folded.translate(str.maketrans("‘’ʼ", "'''"))
     folded = "".join(character for character in folded
                      if not unicodedata.combining(character))
     folded = folded.replace("&", " and ")

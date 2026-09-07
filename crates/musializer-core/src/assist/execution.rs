@@ -589,7 +589,7 @@ impl ExecutionSnapshot {
             if entry.boundary_applied.rank() == 0 {
                 continue;
             }
-            remote = true;
+            remote |= entry.route_type != RouteType::Antigravity;
             if !entry.boundary_confirmed {
                 return false;
             }
@@ -749,13 +749,29 @@ pub fn stored_ask_contracts(
     kind: WorkflowKind,
     has_lyric_reference: bool,
 ) -> Vec<ContractId> {
-    composed_contracts(kind, has_lyric_reference)
+    configured_contracts(settings, kind, has_lyric_reference)
         .into_iter()
         .filter(|contract| {
             resolve_route(settings, *contract)
                 .route
                 .is_some_and(|route| AppliedFallback::of(route.fallback).was_downgraded())
         })
+        .collect()
+}
+
+/// Audio transcription already decides performed wording. It does not invoke
+/// a second text-only provider, regardless of whether a lyric sheet exists.
+fn configured_contracts(
+    settings: &AssistSettings,
+    kind: WorkflowKind,
+    has_reference: bool,
+) -> Vec<ContractId> {
+    let audio_transcription = resolve_route(settings, ContractId::Coarse)
+        .route
+        .is_some_and(|route| route.route_type == RouteType::Antigravity);
+    composed_contracts(kind, has_reference)
+        .into_iter()
+        .filter(|contract| !audio_transcription || *contract != ContractId::Wording)
         .collect()
 }
 
@@ -769,6 +785,7 @@ pub fn stored_ask_contracts(
 pub fn doctor_key(runtime_id: &str) -> Option<&'static str> {
     match runtime_id {
         "whisper.cpp" => Some("whisper"),
+        "antigravity-acp" => Some("antigravity_acp"),
         "mms-ctc" | "qwen3-fa" => Some("mms_ctc_aligner"),
         _ => None,
     }
@@ -782,10 +799,11 @@ pub fn resolve(
     has_lyric_reference: bool,
     facts: &ExecutionFacts,
 ) -> ExecutionSnapshot {
-    let contracts: Vec<ContractSnapshot> = composed_contracts(kind, has_lyric_reference)
-        .into_iter()
-        .map(|contract| snapshot_contract(settings, contract, facts))
-        .collect();
+    let contracts: Vec<ContractSnapshot> =
+        configured_contracts(settings, kind, has_lyric_reference)
+            .into_iter()
+            .map(|contract| snapshot_contract(settings, contract, facts))
+            .collect();
     // §6's credential pair describes **this job**, not the machine. A graph that
     // opens no socket used no credential, so recording one would say a key was
     // involved in producing these artifacts when none was — and the whole reason
@@ -795,7 +813,7 @@ pub fn resolve(
     let uses_credential = facts.credential_present
         && contracts
             .iter()
-            .any(|entry| entry.boundary_applied.rank() > 0);
+            .any(|entry| entry.route_type == RouteType::OpenRouter);
     ExecutionSnapshot {
         snapshot_schema: SNAPSHOT_SCHEMA.to_string(),
         settings_schema: SETTINGS_SCHEMA.to_string(),
@@ -1496,7 +1514,7 @@ impl<'a> RouteFacts<'a> {
                     // same thing about the snapshot side.
                     RouteType::Codex => Some(CODEX_DEFAULT_LABEL),
                     RouteType::Builtin | RouteType::LocalProc => Some(&route.runtime_id),
-                    RouteType::OpenRouter => None,
+                    RouteType::OpenRouter | RouteType::Antigravity => None,
                 },
             ),
             provider: route.provider.as_ref(),
@@ -1585,7 +1603,7 @@ pub fn evaluate_route(route: &RouteFacts<'_>, facts: &PreflightFacts) -> RouteVe
                 })
             }
         },
-        RouteType::LocalProc => {
+        RouteType::LocalProc | RouteType::Antigravity => {
             let Some(key) = doctor_key(route.runtime_id) else {
                 return RouteVerdict::Unknown("Not probed".to_string());
             };
@@ -1843,6 +1861,54 @@ mod tests {
             model_digests: vec![("whisper".to_string(), "a".repeat(64))],
             boundary_confirmed: true,
         }
+    }
+
+    #[test]
+    fn antigravity_audio_is_explicit_and_omits_text_only_wording() {
+        let mut settings = AssistSettings::default();
+        let route = Route {
+            contract: ContractId::Coarse,
+            route_type: RouteType::Antigravity,
+            runtime_id: "antigravity-acp".to_string(),
+            model_id: Some("gemini-3.8-flash-high".to_string()),
+            model_path: None,
+            reasoning_effort: None,
+            fallback: FallbackPolicy::None,
+            provider: None,
+        };
+        settings.active_profile = "audio".to_string();
+        settings.profiles.push(Profile {
+            id: "audio".to_string(),
+            label: "Audio".to_string(),
+            routes: BTreeMap::from([(ContractId::Coarse, route)]),
+        });
+        for reference in [false, true] {
+            let snapshot = resolve(&settings, WorkflowKind::Lyrics, reference, &facts());
+            let coarse = snapshot.contract(ContractId::Coarse).unwrap();
+            assert_eq!(coarse.boundary_applied, Boundary::AudioLeavesMachine);
+            assert!(coarse.boundary_confirmed);
+            assert_eq!(coarse.audio_scope, Some(AudioScope::WholeTrack));
+            assert!(snapshot.contract(ContractId::Wording).is_none());
+            assert!(
+                !snapshot.authorizes_credential(),
+                "ACP must not receive an OpenRouter key"
+            );
+            assert!(!snapshot.credential_present);
+            assert!(consent_sentence(&snapshot).contains("Track audio is sent to antigravity-acp"));
+            assert_eq!(
+                ExecutionSnapshot::parse(&snapshot.to_bytes().unwrap()).unwrap(),
+                snapshot
+            );
+        }
+        let mut unconfirmed = facts();
+        unconfirmed.boundary_confirmed = false;
+        let snapshot = resolve(&settings, WorkflowKind::Lyrics, true, &unconfirmed);
+        assert!(
+            !snapshot
+                .contract(ContractId::Coarse)
+                .unwrap()
+                .boundary_confirmed
+        );
     }
 
     /// The same vectors `ui/assist_settings.rs`'s parser test pins, read the

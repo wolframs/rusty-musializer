@@ -50,6 +50,7 @@ def _import_helper(name: str) -> Any:
 
 analysis_io = _import_helper("analysis_io")
 runtime_inventory = _import_helper("runtime_inventory")
+antigravity_audio = _import_helper("antigravity_audio")
 
 external_analysis = None
 if sys.version_info >= (3, 10):
@@ -81,7 +82,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 # The three runtime keys a report always carries, so a doctor that lost
 # `runtime_inventory` still answers the question the dialog asks rather than
 # omitting the section.
-RUNTIME_KEYS = ("whisper", "mms_ctc_aligner", "stem_separator")
+RUNTIME_KEYS = ("whisper", "mms_ctc_aligner", "stem_separator", "antigravity_acp")
 
 
 def _check(identifier: str, ok: bool, summary: str, *,
@@ -331,6 +332,9 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
           whisper_bin: Optional[Path] = None,
           whisper_model: Optional[Path] = None,
           align_python: Optional[Path] = None,
+          antigravity_server: Optional[Path] = None,
+          antigravity_harness: Optional[Path] = None,
+          antigravity_profile: Optional[Path] = None,
           allow_dotenv: bool = True,
           environ: Optional[Mapping[str, str]] = None,
           which: Which = shutil.which, find_spec: FindSpec = importlib.util.find_spec,
@@ -560,6 +564,11 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
             sha256_file=analysis_io.sha256_file,
         )
 
+    if antigravity_audio is not None:
+        runtimes["antigravity_acp"] = antigravity_audio.inventory(
+            server=antigravity_server, harness=antigravity_harness,
+            profile=antigravity_profile, environ=environ)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "root": str(root),
@@ -695,6 +704,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="configured whisper.cpp model (as a job receives it)")
     parser.add_argument("--align-python", type=Path,
                         help="configured forced-alignment interpreter (as a job receives it)")
+    parser.add_argument("--antigravity-server", type=Path)
+    parser.add_argument("--antigravity-harness", type=Path)
+    parser.add_argument("--antigravity-profile", type=Path)
     parser.add_argument("--no-dotenv", action="store_true",
                         help="do not consult the repository .env for OPENROUTER_API_KEY, "
                              "which is what the desktop always does")
@@ -708,7 +720,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     report = audit(root=args.root, analysis_dir=args.analysis_dir,
                    output_dir=args.output_dir, codex_bin=args.codex_bin,
                    whisper_bin=args.whisper_bin, whisper_model=args.whisper_model,
-                   align_python=args.align_python, allow_dotenv=not args.no_dotenv)
+                   align_python=args.align_python, allow_dotenv=not args.no_dotenv,
+                   antigravity_server=args.antigravity_server,
+                   antigravity_harness=args.antigravity_harness,
+                   antigravity_profile=args.antigravity_profile)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2))
     else:

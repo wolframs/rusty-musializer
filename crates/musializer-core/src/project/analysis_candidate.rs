@@ -165,6 +165,13 @@ pub enum LyricReviewKind {
     /// The line *is* a cue, but the coarse Whisper proposal and the anchor/block
     /// placement disagree by more than the review tolerance.
     Disagreement,
+    /// An additional performance corroborated by original and fresh audio
+    /// crops. It is a placed cue for review, independent of authored line order.
+    Occurrence,
+    /// Corroborated words heard in the audio, without an authored template.
+    AudioOccurrence,
+    /// A separately timed part of a compound authored cue.
+    Phrase,
     /// Whisper heard a short vocal span outside every authored placement.
     /// This may be a generated ad-lib/repeat or an ASR error; it is offered as
     /// a non-rendering Potential cue and never accepted automatically.
@@ -180,6 +187,9 @@ impl LyricReviewKind {
             LyricReviewKind::Unresolved => "UNPLACED",
             LyricReviewKind::Abstained => "AMBIGUOUS",
             LyricReviewKind::Disagreement => "CHECK",
+            LyricReviewKind::Occurrence => "ADDED",
+            LyricReviewKind::AudioOccurrence => "AUDIO",
+            LyricReviewKind::Phrase => "PHRASE",
             LyricReviewKind::Performed => "HEARD",
         }
     }
@@ -212,8 +222,8 @@ pub const REVIEW_REASON_MAX_CHARS: usize = 48;
 #[derive(Clone, Debug, PartialEq)]
 pub struct LyricReviewEntry {
     pub kind: LyricReviewKind,
-    /// The authored sheet's line number as a human counts them, so 1-based —
-    /// the artifact's `reference_line_index` is 0-based.
+    /// One-based authored line or audio transcript cue number. The artifact
+    /// carries `reference_line_index` or `cue_index`, respectively.
     pub line_number: u64,
     pub text: String,
     /// Where to look. For a placed line this is its own window; for an
@@ -264,11 +274,14 @@ impl LyricReviewEntry {
         match self.kind {
             LyricReviewKind::Disagreement => match self.delta_seconds {
                 Some(delta) if delta.is_finite() => format!("views differ {:.1}s", delta.abs()),
-                _ => String::new(),
+                _ => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
             },
             LyricReviewKind::Abstained => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
             LyricReviewKind::Unresolved => String::new(),
             LyricReviewKind::Performed => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
+            LyricReviewKind::Occurrence => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
+            LyricReviewKind::AudioOccurrence => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
+            LyricReviewKind::Phrase => clipped(&self.reason, REVIEW_REASON_MAX_CHARS),
         }
     }
 
@@ -283,6 +296,12 @@ impl LyricReviewEntry {
         let detail = self.detail();
         let subject = if matches!(self.kind, LyricReviewKind::Performed) {
             format!("candidate {}", self.line_number)
+        } else if matches!(self.kind, LyricReviewKind::Occurrence) {
+            format!("occurrence {}", self.line_number)
+        } else if matches!(self.kind, LyricReviewKind::AudioOccurrence) {
+            format!("audio phrase {}", self.line_number)
+        } else if matches!(self.kind, LyricReviewKind::Phrase) {
+            format!("phrase {}", self.line_number)
         } else {
             format!("line {}", self.line_number)
         };
@@ -315,6 +334,8 @@ fn clock(seconds: f64) -> String {
 /// What `assist-manifest.json` says about the run's review surface.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ReviewManifest {
+    /// Performed wording proposed by the opt-in audio provider.
+    pub audio_proposal: bool,
     /// Whether **this run** had a lyrics lane (review LT1-R, R1).
     ///
     /// The job folder is keyed by audio, not by mode, so a Sections run lands in
@@ -348,6 +369,7 @@ pub struct ReviewManifest {
 /// detail.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LyricsReview {
+    pub audio_proposal: bool,
     /// Authored lines that never became cues.
     pub unresolved: usize,
     /// Lines a human should check. A superset of `unresolved`: every unresolved
@@ -389,6 +411,7 @@ impl LyricsReview {
             omitted: manifest.flagged,
             policy: manifest.policy.clone(),
             policy_version: manifest.policy_version.clone(),
+            audio_proposal: manifest.audio_proposal,
             reference_source: manifest.reference_source.clone(),
             reference_sha256: manifest.reference_sha256.clone(),
             reference_lines: manifest.reference_lines,
@@ -434,7 +457,11 @@ impl LyricsReview {
     #[must_use]
     pub fn summary(&self) -> String {
         let counts = if self.is_clear() {
-            "All lines placed, none flagged".to_string()
+            if self.audio_proposal {
+                "No detected phrases flagged".to_string()
+            } else {
+                "All lines placed, none flagged".to_string()
+            }
         } else {
             format!(
                 "{} unresolved, {} flagged for review",
@@ -456,6 +483,9 @@ impl LyricsReview {
     /// the UI must name which one became immutable display truth.
     #[must_use]
     pub fn source_summary(&self) -> String {
+        if self.audio_proposal {
+            return "Audio transcription proposal; compare it with your lyric sheet.".to_string();
+        }
         if self.reference_source.is_empty() {
             return String::new();
         }
@@ -502,7 +532,14 @@ impl LyricsReview {
         let unresolved = root.get("unresolved").and_then(Value::as_array);
         let flags = root.get("review_flags").and_then(Value::as_array);
         let performed = root.get("performed_candidates").and_then(Value::as_array);
-        if unresolved.is_none() && flags.is_none() && performed.is_none() {
+        let occurrences = root.get("performed_occurrences").and_then(Value::as_array);
+        let splits = root.get("phrase_splits").and_then(Value::as_array);
+        if unresolved.is_none()
+            && flags.is_none()
+            && performed.is_none()
+            && occurrences.is_none()
+            && splits.is_none()
+        {
             // A pre-LT1 document, or the no-reference per-cue lane. The
             // manifest's counts stand; inventing entries from `lines[]` alone
             // would be this side deciding what needs review.
@@ -557,11 +594,39 @@ impl LyricsReview {
                 entries.push(entry);
             }
         }
-        let performed_count = performed.map_or(0, Vec::len);
+        for (index, record) in occurrences
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .enumerate()
+        {
+            if let Some(mut entry) = review_entry_from_performed(record, index) {
+                entry.kind =
+                    if record.get("text_scope").and_then(Value::as_str) == Some("audio_observed") {
+                        LyricReviewKind::AudioOccurrence
+                    } else {
+                        LyricReviewKind::Occurrence
+                    };
+                entries.push(entry);
+            }
+        }
+        let phrases: Vec<_> = splits
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(|split| split.get("phrases").and_then(Value::as_array))
+            .flatten()
+            .collect();
+        for (index, record) in phrases.iter().enumerate() {
+            if let Some(mut entry) = review_entry_from_performed(record, index) {
+                entry.kind = LyricReviewKind::Phrase;
+                entries.push(entry);
+            }
+        }
+        let performed_count = performed.map_or(0, Vec::len) + phrases.len();
+        let occurrence_count = occurrences.map_or(0, Vec::len);
         self.flagged = match flags {
             // Never fewer than the list: a count the panel can visibly
             // contradict is worse than a count that is generous.
-            Some(flags) => (flags.len() + performed_count).max(entries.len()),
+            Some(flags) => (flags.len() + performed_count + occurrence_count).max(entries.len()),
             None => entries.len(),
         };
 
@@ -628,7 +693,14 @@ pub fn parse_review_manifest(bytes: &[u8]) -> Option<ReviewManifest> {
     }
 
     let mut documents = Vec::new();
-    for key in ["aligned", "sync"] {
+    for key in ["performance", "aligned", "sync"] {
+        // The final performed inventory may restore local sheet spelling.
+        // A written-sheet run must ignore a projection left in the same cache.
+        if key == "performance"
+            && root.get("lyric_inventory").and_then(Value::as_str) != Some("performed")
+        {
+            continue;
+        }
         let name = root
             .get("artifacts")
             .and_then(|artifacts| artifacts.get(key))
@@ -642,6 +714,8 @@ pub fn parse_review_manifest(bytes: &[u8]) -> Option<ReviewManifest> {
     }
 
     Some(ReviewManifest {
+        audio_proposal: root.get("lyric_text_authority").and_then(Value::as_str)
+            == Some("audio-model-proposal"),
         lyrics_lane: manifest_has_lyrics_lane(&root),
         unresolved: bounded_count(unresolved),
         flagged: bounded_count(flagged),
@@ -765,7 +839,11 @@ fn text_at(value: &Value, key: &str) -> String {
 /// two things a flag does not carry: whether the line abstained, and the end of
 /// the coarse window.
 fn review_entry_from_flag(flag: &Value, unresolved: &[Value]) -> Option<LyricReviewEntry> {
-    let number = line_number(flag)?;
+    let number = line_number(flag).or_else(|| {
+        flag.get("cue_index")
+            .and_then(Value::as_u64)?
+            .checked_add(1)
+    })?;
     let text = text_at(flag, "text");
     if text.is_empty() {
         return None;
@@ -1250,6 +1328,36 @@ mod tests {
     }
 
     #[test]
+    fn audio_proposal_review_uses_transcript_cues_without_inventing_sheet_indices() {
+        let manifest = parse_review_manifest(
+            br#"{
+            "schema_version":"musializer.assist-manifest/v1","mode":"lyrics",
+            "lyric_text_authority":"audio-model-proposal",
+            "result_counts":{"lyrics_unresolved":0,"lyrics_review_flags":1},
+            "artifacts":{"aligned":"/private/lyrics.antigravity.aligned.json"}}
+        "#,
+        )
+        .unwrap();
+        let mut review = LyricsReview::from_manifest(&manifest);
+        assert!(review.audio_proposal);
+        assert!(review
+            .source_summary()
+            .contains("Audio transcription proposal"));
+        assert_eq!(manifest.documents, vec!["lyrics.antigravity.aligned.json"]);
+        assert!(review.read_document(
+            br#"{"unresolved":[],"review_flags":[
+            {"cue_index":2,"flag":"audio_uncertainty","text":"A performed phrase",
+             "start_seconds":12.0,"end_seconds":14.0,"reason":"Audio observations disagree"}]}
+        "#
+        ));
+        assert_eq!(review.entries.len(), 1);
+        assert_eq!(review.entries[0].line_number, 3);
+        assert_eq!(review.entries[0].detail(), "Audio observations disagree");
+        assert_eq!(review.flagged, 1);
+        assert!(!review.is_clear());
+    }
+
+    #[test]
     fn preparing_stages_every_authorized_lane_and_touches_nothing() {
         let bridge = bridge();
         let candidate = AnalysisCandidate::prepare(&bridge, Lanes::ALL, DURATION, SCENES).unwrap();
@@ -1608,6 +1716,65 @@ mod tests {
         let review = LyricsReview::from_manifest(&manifest);
         assert!(review.is_clear());
         assert_eq!(review.summary(), "All lines placed, none flagged");
+    }
+
+    #[test]
+    fn audio_wording_is_distinct_from_an_authored_additional_occurrence() {
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(br#"{"performed_occurrences":[
+            {"text":"Woo","start_seconds":10,"end_seconds":10.4,"text_scope":"audio_observed",
+             "reference_line_indices":[],"reason":"Audio wording; confirmed in separate short clips"}]}"#));
+        assert_eq!(review.flagged, 1);
+        let entry = &review.entries[0];
+        assert_eq!(entry.kind, LyricReviewKind::AudioOccurrence);
+        assert!(!entry.kind.is_proposal());
+        assert!(entry.describe().contains("AUDIO audio phrase 1"));
+        assert!(entry.detail().contains("Audio wording"));
+    }
+
+    #[test]
+    fn split_phrases_do_not_replace_the_authored_review_identity() {
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(
+            br#"{"unresolved":[{"reference_line_index":0,"text":"lead (echo)"}],
+            "review_flags":[],"phrase_splits":[{"phrases":[
+            {"text":"lead","start_seconds":1,"end_seconds":2,"reason":"Separate phrase"},
+            {"text":"echo","start_seconds":2.2,"end_seconds":3,"reason":"Separate phrase"}]}]}"#
+        ));
+        assert_eq!(review.unresolved, 1);
+        assert_eq!(review.flagged, 3);
+        assert_eq!(review.entries[0].kind, LyricReviewKind::Unresolved);
+        for (index, entry) in review.entries[1..].iter().enumerate() {
+            assert_eq!(entry.kind, LyricReviewKind::Phrase);
+            assert_eq!(entry.line_number, index as u64 + 1);
+            assert!(!entry.kind.is_proposal());
+            assert!(entry.describe().contains("PHRASE phrase"));
+        }
+    }
+
+    #[test]
+    fn an_additional_confirmed_occurrence_has_its_own_review_identity() {
+        let mut review = LyricsReview::default();
+        assert!(review.read_document(
+            br#"{"unresolved":[{"reference_line_index":0,"text":"again","abstained":true}],
+                "review_flags":[],"performed_occurrences":[
+                {"text":"again","start_seconds":20,"end_seconds":22,
+                 "reason":"Separate audio crops confirm this repeat"},
+                {"text":"again","start_seconds":30,"end_seconds":32,
+                 "reason":"Separate audio crops confirm this repeat"}]}"#
+        ));
+        assert_eq!(review.unresolved, 1);
+        assert_eq!(review.flagged, 3);
+        assert_eq!(review.entries.len(), 3);
+        assert_eq!(review.entries[0].kind, LyricReviewKind::Abstained);
+        for entry in &review.entries[1..] {
+            assert_eq!(entry.kind, LyricReviewKind::Occurrence);
+            assert!(!entry.kind.is_proposal());
+            assert!(!entry.kind.is_unresolved());
+            assert!(entry.describe().starts_with("ADDED occurrence "));
+        }
+        assert_eq!(review.entries[1].start_seconds, Some(20.0));
+        assert_eq!(review.entries[2].start_seconds, Some(30.0));
     }
 
     #[test]

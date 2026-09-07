@@ -10,6 +10,7 @@ existing OpenRouter helper.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import hashlib
 import json
@@ -36,6 +37,11 @@ from analysis_io import (
 )
 from import_whisper import normalize_whisper
 import force_align_lyrics
+import antigravity_lyrics
+import local_lyric_spelling
+import authored_audio_occurrences
+import authored_audio_phrases
+import observed_audio_occurrences
 import lyric_align
 import lyric_anchor_block
 import mimo_openrouter as mimo_adapter
@@ -1015,7 +1021,7 @@ def build_scene_plan(
             change += abs(float(segment.get("tension", 0)) - float(previous.get("tension", 0)))*0.5
             candidates.append((float(segment["start_seconds"]), min(0.95, 0.55 + change*0.35), "semantic_change"))
             previous = segment
-    lyric_lines = lyrics.get("lines", []) if isinstance(lyrics, dict) else []
+    lyric_lines = authored_audio_occurrences.rendered_lines(lyrics) if isinstance(lyrics, dict) else []
     for previous, following in zip(lyric_lines, lyric_lines[1:]):
         gap = float(following["start_seconds"]) - float(previous["end_seconds"])
         if gap >= 2.5:
@@ -1109,7 +1115,7 @@ def build_bridge(
     validate_scene_plan(plan)
     audio = plan["audio"]
     lines = [BRIDGE_VERSION, f"AUDIO\t{audio['sha256']}\t{round(float(audio['duration_seconds'])*1000)}"]
-    for index, lyric in enumerate((lyrics or {}).get("lines", [])):
+    for index, lyric in enumerate(authored_audio_occurrences.rendered_lines(lyrics or {})):
         start = round(float(lyric["start_seconds"])*1000)
         end = round(float(lyric["end_seconds"])*1000)
         confidence = lyric.get("confidence")
@@ -1303,7 +1309,9 @@ def read_execution_snapshot(path: Path | None) -> dict[str, Any] | None:
         implemented = {
             "TC-MEASURED": route_type == "builtin" and runtime_id == "builtin-analyzer",
             "TC-COARSE": (route_type == "local-proc" and runtime_id == "whisper.cpp"
-                          and model_id in (None, "", "whisper.cpp")),
+                          and model_id in (None, "", "whisper.cpp")) or (
+                              route_type == "antigravity" and runtime_id == "antigravity-acp"
+                              and model_id in antigravity_lyrics.antigravity_audio.MODELS),
             "TC-WORDING": route_type == "codex" and runtime_id == "codex",
             "TC-ALIGN": (route_type == "local-proc" and runtime_id == "mms-ctc"
                          and model_id in (None, "", "mms-ctc")),
@@ -1311,6 +1319,10 @@ def read_execution_snapshot(path: Path | None) -> dict[str, Any] | None:
             "TC-PLAN": route_type == "builtin" and runtime_id == "builtin-planner",
             "TC-VERIFY": False,
         }.get(contract, False)
+        if route_type == "antigravity" and (
+                entry.get("boundary_applied") != "audio-leaves-machine"
+                or entry.get("boundary_confirmed") is not True):
+            raise AnalysisValidationError("Antigravity requires confirmed audio transfer for this job")
         if not implemented:
             raise AnalysisValidationError(
                 f"execution snapshot asks {contract!r} to use "
@@ -1809,6 +1821,10 @@ def run_assist(
     bridge_path: Path | None = None, whisper_bin: Path | None = None,
     whisper_model: Path | None = None, codex_bin: str = "codex",
     codex_model: str | None = None, align_python: Path | None = None,
+    antigravity_server: Path | None = None,
+    antigravity_harness: Path | None = None,
+    antigravity_profile: Path | None = None,
+    performed_lyrics: bool = False,
     semantic_cache: Path | None = None,
     lyrics_file: Path | None = None,
     zdr: bool = False, external_timeout: float = 2400.0,
@@ -1856,6 +1872,12 @@ def run_assist(
         contract: execution_provenance(snapshot, contract)
         for contract in routes
     }
+    audio_route = execution_route(snapshot, "TC-COARSE") or {}
+    use_antigravity = audio_route.get("route_type") == "antigravity"
+    use_performed_lyrics = use_antigravity and performed_lyrics
+    if use_antigravity:
+        paths["lyrics"] = output_dir / "lyrics.antigravity.json"
+        paths["aligned"] = output_dir / "lyrics.antigravity.aligned.json"
     semantic_route = _semantic_route(execution_route(snapshot, "TC-SEMANTIC"))
     wording_route = execution_route(snapshot, "TC-WORDING") or {}
     # §5 rule 6: `Codex default` is a documented label, not a model id, so it
@@ -1873,9 +1895,10 @@ def run_assist(
 
     actions = ["measured", "plan", "bridge"]
     if mode in {"lyrics", "all"}:
-        actions[1:1] = [
-            "whisper", "lyric_sync_or_codex_review",
-            "anchor_block_localization_or_ctc_forced_alignment"]
+        actions[1:1] = (["antigravity_audio_clips", "local_lyric_alignment"]
+                        if use_antigravity else [
+                            "whisper", "lyric_sync_or_codex_review",
+                            "anchor_block_localization_or_ctc_forced_alignment"])
     if mode in {"mimo", "all"}: actions[1:1] = ["mimo_openrouter"]
     if dry_run:
         return {
@@ -1936,38 +1959,46 @@ def run_assist(
     lyrics: dict[str, Any] | None = None
     lyrics_lane_path: Path | None = None
     if mode in {"lyrics", "all"}:
-        whisper_lane = _cache_matches(
-            paths["lyrics"], "musializer.lyric-timing/v1", audio_sha,
-            accept=lambda value: _whisper_cache_accepts(
-                value, measured_duration=measured_duration, model=whisper_model,
-                execution_route=routes["TC-COARSE"],
-            ),
-        )
-        if whisper_lane is None:
-            if whisper_bin is None or whisper_model is None:
-                raise AnalysisValidationError("GPU Whisper is not configured or autodetectable")
-            whisper_lane = run_whisper(
-                audio, paths["lyrics"], audio_duration=measured_duration,
-                whisper_bin=whisper_bin, model=whisper_model,
-                timeout=external_timeout, runner=runner,
-            )
-            whisper_lane = _attach_execution(
-                paths["lyrics"], whisper_lane, stamps["TC-COARSE"])
-            cache_status["lyrics"] = "generated"
-        else: cache_status["lyrics"] = "reused"
-        source_sha = sha256_file(paths["lyrics"])
         if align_python is None or not FORCED_ALIGNER.is_file():
             raise AnalysisValidationError(
                 "MMS forced alignment is not configured; set "
                 "MUSIALIZER_ALIGN_PYTHON or install the local lyrics-align runtime")
-        reference = discover_reference_lyrics(
-            audio, override=lyrics_file, runner=runner)
-        if reference is not None:
+        reference = discover_reference_lyrics(audio, override=lyrics_file, runner=runner)
+        if use_antigravity:
+            whisper_lane = asyncio.run(antigravity_lyrics.transcribe(
+                audio, paths["lyrics"], length=measured_duration,
+                model=audio_route["model_id"], confirmed=audio_route.get("boundary_confirmed") is True,
+                reference=None if use_performed_lyrics else reference, server=antigravity_server,
+                harness=antigravity_harness, profile=antigravity_profile))
+            whisper_lane = _attach_execution(paths["lyrics"], whisper_lane, stamps["TC-COARSE"])
+            cache_status["lyrics"] = "clip-cache-checked"
+        else:
+            whisper_lane = _cache_matches(
+                paths["lyrics"], "musializer.lyric-timing/v1", audio_sha,
+                accept=lambda value: _whisper_cache_accepts(
+                    value, measured_duration=measured_duration, model=whisper_model,
+                    execution_route=routes["TC-COARSE"],
+                ),
+            )
+            if whisper_lane is None:
+                if whisper_bin is None or whisper_model is None:
+                    raise AnalysisValidationError("GPU Whisper is not configured or autodetectable")
+                whisper_lane = run_whisper(
+                    audio, paths["lyrics"], audio_duration=measured_duration,
+                    whisper_bin=whisper_bin, model=whisper_model,
+                    timeout=external_timeout, runner=runner,
+                )
+                whisper_lane = _attach_execution(
+                    paths["lyrics"], whisper_lane, stamps["TC-COARSE"])
+                cache_status["lyrics"] = "generated"
+            else: cache_status["lyrics"] = "reused"
+        source_sha = sha256_file(paths["lyrics"])
+        if reference is not None and not use_performed_lyrics:
             # Authored lyrics exist: display text is already decided, so the
-            # question is only *where* each line is. Whisper stays evidence and
+            # question is only *where* each line is. Recognition stays evidence and
             # stops being authority — the sync lane becomes a coarse proposal
             # and the anchor/block localizer decides the times, so a line
-            # Whisper missed or looped over still reaches the acoustic stage.
+            # recognition missed or looped over still reaches the acoustic stage.
             if not ANCHOR_BLOCK_ALIGNER.is_file():
                 raise AnalysisValidationError(
                     "the anchor/block localizer is missing from the support "
@@ -2013,8 +2044,53 @@ def run_assist(
                 cache_status["alignment"] = "generated"
             else:
                 cache_status["alignment"] = "reused"
+            if use_antigravity:
+                aligned = asyncio.run(authored_audio_occurrences.extend(
+                    audio, whisper_lane, aligned, output_dir,
+                    model=audio_route["model_id"],
+                    confirmed=audio_route.get("boundary_confirmed") is True,
+                    server=antigravity_server, harness=antigravity_harness,
+                    profile=antigravity_profile))
+                aligned = asyncio.run(authored_audio_phrases.split(
+                    audio, whisper_lane, aligned, output_dir,
+                    model=audio_route["model_id"],
+                    confirmed=audio_route.get("boundary_confirmed") is True,
+                    server=antigravity_server, harness=antigravity_harness,
+                    profile=antigravity_profile))
+                aligned = asyncio.run(observed_audio_occurrences.extend(
+                    audio, whisper_lane, aligned, output_dir,
+                    model=audio_route["model_id"],
+                    confirmed=audio_route.get("boundary_confirmed") is True,
+                    server=antigravity_server, harness=antigravity_harness,
+                    profile=antigravity_profile))
+                atomic_write_json(paths["aligned"], aligned)
             lyrics = aligned
             lyrics_lane_path = paths["aligned"]
+        elif use_antigravity:
+            aligned = _cache_matches(paths["aligned"], LYRIC_REVIEW_VERSION, audio_sha,
+                accept=lambda value: (
+                    value.get("timing_refinement", {}).get("alignment_version") == antigravity_lyrics.ALIGNMENT_VERSION
+                    and value.get("timing_refinement", {}).get("adapter") == "tools/antigravity_lyrics.py"
+                    and value.get("timing_refinement", {}).get("source_sha256") == source_sha
+                    and _execution_route_accepts(value, routes["TC-ALIGN"])))
+            if aligned is None:
+                _run([str(align_python), str(ROOT / "tools/antigravity_lyrics.py"),
+                      str(audio), str(paths["lyrics"]), str(paths["aligned"])],
+                     timeout=external_timeout, env=_safe_local_env(), runner=runner)
+                aligned = read_json(paths["aligned"])
+                force_align_lyrics._validate_lane(aligned, measured_duration)
+                aligned = _attach_execution(paths["aligned"], aligned, stamps["TC-ALIGN"])
+                cache_status["alignment"] = "generated"
+            else:
+                cache_status["alignment"] = "reused"
+            if use_performed_lyrics and reference is not None:
+                aligned = local_lyric_spelling.project(aligned, reference)
+                lyrics_lane_path = output_dir / "lyrics.performance.json"
+                paths["performance"] = lyrics_lane_path
+                atomic_write_json(lyrics_lane_path, aligned)
+            else:
+                lyrics_lane_path = paths["aligned"]
+            lyrics = aligned
         else:
             lyrics = _cache_matches(
                 paths["review"], LYRIC_REVIEW_VERSION, audio_sha,
@@ -2164,6 +2240,7 @@ def run_assist(
     manifest = build_assist_manifest(
         mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
         cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
+        performed_lyrics=use_performed_lyrics,
         execution_snapshot=observe_execution(
             snapshot,
             whisper=whisper_lane if mode in {"lyrics", "all", "sections"} else None,
@@ -2225,6 +2302,9 @@ def observe_execution(
         model = provenance.get("model")
         if isinstance(model, str) and model:
             entry["model_id"] = model
+        agent = provenance.get("agent")
+        if isinstance(agent, dict) and isinstance(agent.get("version"), str):
+            entry["runtime_version"] = agent["version"]
         served = provenance.get("provider")
         if isinstance(served, str) and served:
             entry["provider_served"] = served
@@ -2246,6 +2326,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
                           plan: dict[str, Any], lyrics: dict[str, Any] | None,
                           semantic: dict[str, Any] | None,
                           execution_snapshot: dict[str, Any] | None = None,
+                          performed_lyrics: bool = False,
                           ) -> dict[str, Any]:
     """`assist-manifest.json`, as the Assist panel reads it.
 
@@ -2258,6 +2339,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
         "schema_version": "musializer.assist-manifest/v1", "mode": mode,
         "audio": {"sha256": audio_sha, "duration_seconds": measured_duration},
         "cache_status": cache_status,
+        "lyric_inventory": "performed" if performed_lyrics else "written_when_available",
         "artifacts": {key: str(value) for key, value in paths.items() if key != "manifest"},
         "provenance_streams": [
             "measured_audio", *( ["lyrics", lyric_lane] if lyrics else [] ),
@@ -2266,7 +2348,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
         "lyric_source": (lyrics.get("reference", {}).get("source")
                          if lyric_lane == "lyric_sync" else None),
         "result_counts": {
-            "lyrics": len(lyrics.get("lines", [])) if lyrics else 0,
+            "lyrics": len(authored_audio_occurrences.rendered_rows(lyrics or {})),
             "lyrics_unmatched": len(lyrics.get("unmatched", [])) if lyrics else 0,
             # Additive: unresolved lines and review flags are the LT1 review
             # surface. They are never cues, so they cannot reach the bridge.
@@ -2281,6 +2363,8 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
             # make it.
             **({"lyrics_unresolved": len(lyrics.get("unresolved", [])),
                 "lyrics_review_flags": (len(lyrics.get("review_flags", [])) +
+                                         len(lyrics.get("performed_occurrences", [])) +
+                                         sum(len(row['phrases']) for row in lyrics.get('phrase_splits', [])) +
                                          len(lyrics.get("performed_candidates", []))),
                 "lyrics_performed_candidates": len(
                     lyrics.get("performed_candidates", []))}
@@ -2307,6 +2391,17 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
             "sha256": reference.get("sha256"),
             "alignable_lines": statistics.get("reference_lines"),
         }
+    local_wording = (lyrics or {}).get("source", {}).get("local_wording")
+    if local_wording:
+        reference = local_wording["reference"]
+        manifest["lyric_source"] = reference.get("source")
+        manifest["lyric_reference"] = {
+            "source": reference.get("source"), "sha256": reference.get("sha256"),
+            "use": "local_exact_spelling",
+            "matched_performed_phrases": len(local_wording["matches"]),
+        }
+    if lyrics and lyrics.get("source", {}).get("text_authority") == "audio-model-proposal":
+        manifest["lyric_text_authority"] = "audio-model-proposal"
     # The frozen route graph, with the model ids this run observed (§6). Absent
     # rather than null for an unrouted run: "this job carried no route graph"
     # and "its routes were empty" are different answers.
@@ -2373,6 +2468,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the musializer.assist-execution/v1 record the "
                              "application froze at Start")
     assist.add_argument("--align-python", type=Path)
+    assist.add_argument("--antigravity-server", type=Path)
+    assist.add_argument("--antigravity-harness", type=Path)
+    assist.add_argument("--antigravity-profile", type=Path)
+    assist.add_argument("--performed-lyrics", action="store_true",
+                        help="Antigravity: detect performed phrases; use the written sheet only for exact local spelling")
     assist.add_argument("--semantic-cache", type=Path)
     assist.add_argument("--lyrics-file", type=Path)
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
@@ -2427,6 +2527,10 @@ def main(argv: list[str] | None = None) -> int:
                 bridge_path=args.bridge, whisper_bin=args.whisper_bin,
                 whisper_model=args.whisper_model, codex_bin=args.codex_bin,
                 codex_model=args.codex_model, align_python=args.align_python,
+                antigravity_server=args.antigravity_server,
+                antigravity_harness=args.antigravity_harness,
+                antigravity_profile=args.antigravity_profile,
+                performed_lyrics=args.performed_lyrics,
                 semantic_cache=args.semantic_cache,
                 lyrics_file=args.lyrics_file,
                 zdr=args.zdr, external_timeout=args.timeout,
@@ -2441,7 +2545,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 counts = result["result_counts"]
                 sync_note = ""
-                if result.get("lyric_source"):
+                if result.get("lyric_inventory") == "performed":
+                    matched = result.get("lyric_reference", {}).get("matched_performed_phrases", 0)
+                    sync_note = f" Detected performed phrases; {matched} use exact local sheet spelling."
+                elif result.get("lyric_source"):
                     sync_note = (
                         f" Lyric timing was synchronized to {result['lyric_source']}"
                         f" ({counts.get('lyrics_unmatched', 0)} reference lines"

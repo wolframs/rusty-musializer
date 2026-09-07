@@ -38,7 +38,7 @@ from typing import Any, Sequence
 from analysis_io import AnalysisValidationError, duration
 
 LYRIC_SYNC_VERSION = "musializer.lyric-sync/v1"
-ALIGNER_VERSION = "6"
+ALIGNER_VERSION = "10"
 
 # Hard input bounds. A full-length song is a few hundred lines and well under
 # a thousand words; these caps keep the O(ref * hyp) alignment matrix small
@@ -154,6 +154,8 @@ def _number_words(token: str) -> list[str]:
 def normalize_tokens(text: str) -> list[str]:
     """Pronunciation-oriented tokens for alignment; never shown to users."""
     folded = unicodedata.normalize("NFKC", text).lower()
+    # Typography must not turn a contraction into two different lyric words.
+    folded = folded.translate(str.maketrans("‘’ʼ", "'''"))
     folded = folded.replace("ctrl+z", " control z ")
     folded = re.sub(r"(\d+)\.(\d+)", r"\1 point \2", folded)
     folded = re.sub(r"[-‐‑‒–—―_/+]", " ", folded)
@@ -198,6 +200,60 @@ def token_similarity(a: str, b: str) -> float:
     return similarity if similarity >= 0.6 else 0.0
 
 
+def _parenthetical_blocks(source_lines: Sequence[str]) -> dict[int, tuple[int, str]]:
+    """Find closed multiline directions without consuming the next section.
+
+    Physical wrapping must not turn prose into sung words. An unmatched opener
+    keeps the old treatment; a new section/opener stops recovery.
+    """
+    blocks: dict[int, tuple[int, str]] = {}
+    end = -1
+    for index, raw in enumerate(source_lines):
+        stripped = raw.strip()
+        if index <= end or not stripped.startswith("(") or ")" in stripped:
+            continue
+        for future in range(index + 1, len(source_lines)):
+            candidate = source_lines[future].strip()
+            if candidate.startswith(("[", "(")):
+                break
+            if candidate.endswith(")"):
+                body = " ".join(s.strip() for s in source_lines[index:future + 1])
+                blocks[index] = (future, body[1:-1].strip())
+                end = future
+                break
+    return blocks
+
+
+def _quoted_performance(body: str) -> str | None:
+    """Keep explicitly quoted vocal material, never the instruction around it.
+
+    This supplies authored wording, not evidence that the phrase was performed.
+    Its presence and timing still have to survive the acoustic stage.
+    """
+    if not re.search(r"\b(?:voice|vocal|vocals|spoken|screaming|sings?|"
+                     r"whisper(?:ed)?|chop|sample|ad[ -]libs?)\b", body, re.I):
+        return None
+    quotes = re.findall(r'["\u201c]([^"\u201c\u201d]+)["\u201d]', body)
+    return " ".join(quote.strip() for quote in quotes if quote.strip()) or None
+
+
+def _numbered_voice_bodies(source_lines: Sequence[str]) -> dict[int, str]:
+    """Recognize consecutive numbered speaker labels, retaining their words.
+
+    A multi-voice block is structure, not a demand to sing "Voice one".
+    A lone occurrence or a quoted line is insufficient evidence of a label.
+    """
+    labels = {index: match for index, raw in enumerate(source_lines)
+              if (match := re.fullmatch(r"Voice\s+(\d{1,2}):\s*(\S.*)",
+                                        raw.strip(), flags=re.IGNORECASE))}
+    bodies = {}
+    for index, match in labels.items():
+        if any(neighbour in labels and labels[neighbour].group(1) != match.group(1)
+               for neighbour in (index - 1, index + 1)):
+            bodies[index] = match.group(2).strip()
+    return bodies
+
+
 def classify_reference_lines(text: str) -> list[dict[str, Any]]:
     """Split authored lyrics into classified lines.
 
@@ -213,9 +269,16 @@ def classify_reference_lines(text: str) -> list[dict[str, Any]]:
     if len(source_lines) > MAX_REFERENCE_LINES:
         raise AnalysisValidationError("reference lyrics exceed the line bound")
     bracket_block_end: int | None = None
+    parenthetical_blocks = _parenthetical_blocks(source_lines)
+    numbered_voices = _numbered_voice_bodies(source_lines)
+    parenthetical_end = -1
     for index, raw in enumerate(source_lines):
         stripped = raw.strip()
         if not stripped:
+            continue
+        if index <= parenthetical_end:
+            lines.append({"index": index, "kind": "delivery",
+                          "display": stripped, "tokens": []})
             continue
         if bracket_block_end is not None:
             # A fully quoted line inside a production note is authored speech,
@@ -232,6 +295,23 @@ def classify_reference_lines(text: str) -> list[dict[str, Any]]:
                               "display": stripped, "tokens": []})
             if index == bracket_block_end:
                 bracket_block_end = None
+            continue
+        if index in parenthetical_blocks:
+            parenthetical_end, body = parenthetical_blocks[index]
+            spoken = _quoted_performance(body)
+            lines.append({"index": index,
+                          "kind": "lyric" if spoken else "parenthetical",
+                          "display": spoken or f"({body})",
+                          "source_display": "\n".join(
+                              source_lines[index:parenthetical_end + 1]),
+                          "tokens": normalize_tokens(spoken or body)})
+            continue
+        # Adjacent headings may end with a short delivery annotation. No
+        # leftover prose is a lyric merely because the complete row does not
+        # end in ']' (e.g. '[Chorus] [Belted] (ad-libs)').
+        if re.fullmatch(r"(?:\[[^\]]*\]\s*)+\([^()]*\)", stripped):
+            lines.append({"index": index, "kind": "section",
+                          "display": stripped, "tokens": []})
             continue
         if re.fullmatch(r"\[.*\]", stripped):
             lines.append({"index": index, "kind": "section",
@@ -259,6 +339,11 @@ def classify_reference_lines(text: str) -> list[dict[str, Any]]:
             lines.append({"index": index, "kind": "event",
                           "display": stripped, "tokens": []})
             continue
+        if index in numbered_voices:
+            body = numbered_voices[index]
+            lines.append({"index": index, "kind": "lyric", "display": body,
+                          "source_display": stripped, "tokens": normalize_tokens(body)})
+            continue
         body = stripped
         kind = "lyric"
         enclosed = re.fullmatch(r"\((.*)\)", stripped)
@@ -269,6 +354,13 @@ def classify_reference_lines(text: str) -> list[dict[str, Any]]:
             mixed = re.match(r"^\((.*?)\)\s+(\S.*)$", stripped)
             if mixed:
                 body = mixed.group(2).strip()
+                # The same authored words must reach matching, MMS and the
+                # caption. Previously only coarse tokens omitted the prefix.
+                if set(normalize_tokens(mixed.group(1))) & _DELIVERY_MARKERS:
+                    lines.append({"index": index, "kind": kind,
+                                  "display": body, "source_display": stripped,
+                                  "tokens": normalize_tokens(body)})
+                    continue
         lines.append({"index": index, "kind": kind,
                       "display": stripped, "tokens": normalize_tokens(body)})
     _resolve_parentheticals(lines)
@@ -278,6 +370,13 @@ def classify_reference_lines(text: str) -> list[dict[str, Any]]:
 def _resolve_parentheticals(lines: list[dict[str, Any]]) -> None:
     for position, line in enumerate(lines):
         if line["kind"] != "parenthetical":
+            continue
+        spoken = _quoted_performance(line["display"])
+        if spoken:
+            line.setdefault("source_display", line["display"])
+            line["display"] = spoken
+            line["tokens"] = normalize_tokens(spoken)
+            line["kind"] = "lyric"
             continue
         tokens = line["tokens"]
         token_set = set(tokens)
@@ -533,6 +632,12 @@ def sync_lyrics(
 
         discarded_outlier_tokens += len(discarded) - recovered_for_line
 
+        # Confidence measures lexical support. The boundary context added
+        # below need not match any authored token and must never promote a
+        # weak match into a trusted occurrence. This also matters for phrase
+        # evidence, whose unrelated words can all share one acoustic window.
+        hits[position] = len(cluster)
+
         # A substituted or badly recognized boundary word may have no lexical
         # similarity at all (authored "skys", heard "stars"). If an otherwise
         # unused evidence word directly touches an incomplete matched phrase,
@@ -562,7 +667,6 @@ def sync_lyrics(
             recovered_nearby_tokens += 1
         starts[position] = min(start for start, _ in cluster)
         ends[position] = max(end for _, end in cluster)
-        hits[position] = len(cluster)
 
     # Demote weak direct matches to interpolation candidates.
     for position, line in enumerate(timeable):

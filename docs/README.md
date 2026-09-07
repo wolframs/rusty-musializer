@@ -37,6 +37,11 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 
 ## Operations and evidence
 
+- [`LYRICS_GROUPING_REVIEW.md`](LYRICS_GROUPING_REVIEW.md) — two pending lyric
+  phrase judgments, browser audition, portable protocol bundle and resume state.
+- [`LYRICS_ASSIST_REPAIR_2026-09-06.md`](LYRICS_ASSIST_REPAIR_2026-09-06.md) —
+  ten-track lyrics investigation, production repairs and unadjudicated evidence.
+
 - [`../tools/listening-lab/README.md`](../tools/listening-lab/README.md) — the
   local browser A/B listening workspace: agent-authored audio protocols, precise
   waveform playback, blinding, and append-only feedback logs.

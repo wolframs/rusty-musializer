@@ -69,6 +69,8 @@ pub enum RouteType {
     LocalProc,
     /// The installed `codex exec`.
     Codex,
+    /// Authenticated Antigravity ACP, with explicit audio transfer.
+    Antigravity,
     /// The OpenRouter HTTP API. Spelled as one word, not `open-router`, because
     /// it is the provider's own name and the token reaches a file.
     #[serde(rename = "openrouter")]
@@ -82,6 +84,7 @@ impl RouteType {
             Self::Builtin => "builtin",
             Self::LocalProc => "local-proc",
             Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
             Self::OpenRouter => "openrouter",
         }
     }
@@ -94,6 +97,7 @@ impl RouteType {
         match self {
             Self::Builtin | Self::LocalProc => Boundary::LocalOnly,
             Self::Codex | Self::OpenRouter => Boundary::TextLeavesMachine,
+            Self::Antigravity => Boundary::AudioLeavesMachine,
         }
     }
 }
@@ -229,7 +233,7 @@ impl ContractId {
     pub const fn eligible_route_types(self) -> &'static [RouteType] {
         match self {
             Self::Measured => &[RouteType::Builtin],
-            Self::Coarse   => &[RouteType::LocalProc, RouteType::OpenRouter],
+            Self::Coarse   => &[RouteType::LocalProc, RouteType::Antigravity, RouteType::OpenRouter],
             Self::Align    => &[RouteType::LocalProc],
             Self::Wording  => &[RouteType::Codex, RouteType::OpenRouter],
             Self::Semantic => &[RouteType::OpenRouter],
@@ -249,7 +253,7 @@ impl ContractId {
     pub const fn implemented_route_types(self) -> &'static [RouteType] {
         match self {
             Self::Measured => &[RouteType::Builtin],
-            Self::Coarse => &[RouteType::LocalProc],
+            Self::Coarse => &[RouteType::LocalProc, RouteType::Antigravity],
             Self::Align => &[RouteType::LocalProc],
             Self::Wording => &[RouteType::Codex],
             Self::Semantic => &[RouteType::OpenRouter],
@@ -270,6 +274,8 @@ impl ContractId {
             return false;
         }
         match self {
+            Self::Coarse if route_type == RouteType::Antigravity => model_id.is_some_and(|id|
+                matches!(id, "gemini-3.8-flash-high" | "gemini-3.8-flash-medium" | "gemini-3.8-flash-low")),
             Self::Coarse => match model_id {
                 None | Some("whisper.cpp") => true,
                 Some(_) => false,
@@ -291,7 +297,8 @@ impl ContractId {
             Self::Measured => {
                 route_type == RouteType::Builtin && runtime_id == "builtin-analyzer"
             }
-            Self::Coarse => route_type == RouteType::LocalProc && runtime_id == "whisper.cpp",
+            Self::Coarse => (route_type == RouteType::LocalProc && runtime_id == "whisper.cpp")
+                || (route_type == RouteType::Antigravity && runtime_id == "antigravity-acp"),
             Self::Align => route_type == RouteType::LocalProc && runtime_id == "mms-ctc",
             Self::Wording => route_type == RouteType::Codex && runtime_id == "codex",
             Self::Semantic => route_type == RouteType::OpenRouter && runtime_id == "openrouter",

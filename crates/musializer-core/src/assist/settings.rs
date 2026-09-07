@@ -201,6 +201,16 @@ pub struct LocalRuntimes {
     /// fallback to whatever discovery would have found.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_bin: Option<String>,
+    /// Optional official ACP executable, harness and authenticated profile.
+    /// These are paths only; OAuth credentials remain owned by Antigravity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub antigravity_server: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub antigravity_harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub antigravity_profile: Option<String>,
+    /// Antigravity uses performed phrases, with exact local sheet spelling.
+    pub performed_lyrics: bool,
     pub prefer_gpu: bool,
     pub stem_separation: StemSeparation,
 }
@@ -485,6 +495,9 @@ fn validate_local_runtimes(runtimes: &LocalRuntimes) -> Result<(), SettingsError
         ("whisper_model", &runtimes.whisper_model),
         ("align_python", &runtimes.align_python),
         ("codex_bin", &runtimes.codex_bin),
+        ("antigravity_server", &runtimes.antigravity_server),
+        ("antigravity_harness", &runtimes.antigravity_harness),
+        ("antigravity_profile", &runtimes.antigravity_profile),
     ] {
         if let Some(value) = value {
             check_string(name, value)?;
@@ -658,6 +671,19 @@ mod tests {
             },
             ..AssistSettings::default()
         }
+    }
+
+    #[test]
+    fn performed_lyrics_is_explicit_and_round_trips() {
+        let defaults: LocalRuntimes = serde_json::from_str("{}").unwrap();
+        assert!(!defaults.performed_lyrics);
+        let selected = LocalRuntimes {
+            performed_lyrics: true,
+            ..defaults
+        };
+        let encoded = serde_json::to_string(&selected).unwrap();
+        let restored: LocalRuntimes = serde_json::from_str(&encoded).unwrap();
+        assert!(restored.performed_lyrics);
     }
 
     #[test]

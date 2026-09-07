@@ -63,10 +63,10 @@ import lyric_align
 # `external_analysis` records this in cache provenance, so an artifact written
 # under an older policy is regenerated rather than silently reused.
 LOCALIZATION_POLICY = "anchor-block-mms"
-LOCALIZATION_POLICY_VERSION = "3"
+LOCALIZATION_POLICY_VERSION = "8"
 # Acoustic request identity, shared with the runner and cache reader without
 # importing torch into the orchestration process.
-ALIGNMENT_VERSION = "4"
+ALIGNMENT_VERSION = "7"
 
 # Anchor spotting. An n-gram is only an anchor when it is unique on *both*
 # sides: a phrase repeated in the lyrics cannot say which chorus it belongs to,
@@ -827,6 +827,44 @@ def coarse_local_refinement_allowed(
         and abs(float(start) - proposal_start)
         <= MAXIMUM_ACCEPTED_DISAGREEMENT_SECONDS
     )
+
+
+def ordered_refinement_window(
+    position: int, decisions: dict[int, dict[str, Any]],
+    owners: dict[int, int], start: float, end: float, *,
+    repeated_positions: set[int],
+) -> tuple[float, float]:
+    """Keep a local refinement out of its jointly aligned neighbours.
+
+    Two independent one-line CTC searches can both select the same repetition.
+    A shared block already supplies a monotonic path through both deliveries;
+    local refinement may sharpen that path but must not consume its neighbour.
+    Neighbours from different blocks provide no such joint-order guarantee.
+    Only phrases repeated inside the same block need this occurrence guard;
+    imposing every coarse block boundary on unique lines can freeze an error
+    that the local pass was correctly repairing.
+    Callers supply the frozen block decisions, before any local replacements.
+    """
+    if position not in repeated_positions:
+        return start, end
+    current = decisions.get(position, {})
+    current_start = current.get("acoustic_start_seconds")
+    current_end = current.get("acoustic_end_seconds")
+    if current_start is None or current_end is None or position not in owners:
+        return start, end
+    for neighbour, edge in ((position - 1, "acoustic_end_seconds"),
+                            (position + 1, "acoustic_start_seconds")):
+        candidate = decisions.get(neighbour, {})
+        value = candidate.get(edge)
+        if (owners.get(neighbour) != owners[position]
+                or candidate.get("occurrence_disputed") is True
+                or value is None):
+            continue
+        if neighbour < position and value <= current_start:
+            start = max(start, float(value))
+        elif neighbour > position and value >= current_end:
+            end = min(end, float(value))
+    return start, end
 
 
 def anchor_supports_section_occurrence(

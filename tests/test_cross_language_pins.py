@@ -116,18 +116,18 @@ class ContractTokens(unittest.TestCase):
         written = set(re.findall(r'=> "(TC-[A-Z]+)"', rust_source(CONTRACTS_RS)))
         self.assertEqual(written, self.rust_tokens())
 
-    def test_the_four_route_type_tokens_are_the_same_four(self) -> None:
+    def test_route_type_tokens_agree(self) -> None:
         rust_tokens = set(re.findall(r'Self::\w+ => "([a-z-]+)"',
                                      rust_source(CONTRACTS_RS)))
         # `RouteType::token` is the only `&'static str` match in the file whose
         # arms are all lowercase words; the contract tokens above are upper.
         rust_tokens = {token for token in rust_tokens if "-" in token or token.isalpha()}
         self.assertEqual(
-            rust_tokens & {"builtin", "local-proc", "codex", "openrouter"},
-            {"builtin", "local-proc", "codex", "openrouter"},
+            rust_tokens & {"builtin", "local-proc", "codex", "openrouter", "antigravity"},
+            {"builtin", "local-proc", "codex", "openrouter", "antigravity"},
             "contracts.rs no longer spells the four route types this way")
         python_tokens = set(re.findall(r'route_type == "([a-z-]+)"', self.python_table()))
-        self.assertEqual(python_tokens, {"builtin", "local-proc", "codex", "openrouter"})
+        self.assertEqual(python_tokens, {"builtin", "local-proc", "codex", "openrouter", "antigravity"})
 
     def test_openrouter_is_one_word_on_both_sides(self) -> None:
         # Recorded in `RouteType`'s own doc comment: it is the provider's name
@@ -144,14 +144,14 @@ class ContractTokens(unittest.TestCase):
         """
         body = rust_source(CONTRACTS_RS).split("pub fn runtime_is_implemented", 1)[1]
         body = body.split("\n    /// The input modality", 1)[0]
-        pairs = re.findall(
-            r"Self::(\w+)\s*=>\s*\{?\s*route_type == RouteType::(\w+)\s*"
-            r'&& runtime_id == "([^"]+)"',
-            body)
-        self.assertEqual(len(pairs), 6, "six contracts have an implemented route")
-
+        arms = re.findall(r"Self::(\w+)\s*=>\s*(.*?)(?=\n\s*Self::|\n        \})", body, re.DOTALL)
+        pairs = [(variant, route, runtime) for variant, arm in arms
+                 for route, runtime in re.findall(
+                     r'route_type == RouteType::(\w+)\s*&& runtime_id == "([^"]+)"', arm)]
+        self.assertEqual(len(pairs), 7, "six contracts have seven implemented routes")
+        self.assertEqual(len({variant for variant, _, _ in pairs}), 6)
         route_tokens = {"Builtin": "builtin", "LocalProc": "local-proc",
-                        "Codex": "codex", "OpenRouter": "openrouter"}
+                        "Codex": "codex", "OpenRouter": "openrouter", "Antigravity": "antigravity"}
         table = self.python_table()
         for variant, route_variant, runtime_id in pairs:
             with self.subTest(contract=variant):

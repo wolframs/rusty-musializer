@@ -59,6 +59,33 @@ def _decision(start: float, end: float, score: float = 0.4) -> dict[str, object]
     }
 
 
+class OrderedRefinementTests(unittest.TestCase):
+    def test_adjacent_repetitions_cannot_search_each_others_delivery(self):
+        decisions = {
+            0: {"acoustic_start_seconds": 6.2, "acoustic_end_seconds": 8.6},
+            1: {"acoustic_start_seconds": 8.7, "acoustic_end_seconds": 11.2},
+            2: {"acoustic_start_seconds": 11.3, "acoustic_end_seconds": 16.3},
+        }
+        owners = {0: 4, 1: 4, 2: 4}
+        self.assertEqual(anchor_block.ordered_refinement_window(
+            0, decisions, owners, 4.5, 12.5, repeated_positions={0, 1}), (4.5, 8.7))
+        self.assertEqual(anchor_block.ordered_refinement_window(
+            1, decisions, owners, 7.0, 15.5, repeated_positions={0, 1}), (8.6, 11.3))
+        self.assertEqual(anchor_block.ordered_refinement_window(
+            0, decisions, owners, 4.5, 12.5, repeated_positions=set()), (4.5, 12.5))
+
+    def test_separately_forced_or_disputed_neighbors_cannot_bound_a_line(self):
+        decisions = {
+            0: {"acoustic_start_seconds": 6.2, "acoustic_end_seconds": 8.6},
+            1: {"acoustic_start_seconds": 8.7, "acoustic_end_seconds": 11.2,
+                "occurrence_disputed": True},
+        }
+        self.assertEqual(anchor_block.ordered_refinement_window(
+            0, decisions, {0: 4, 1: 5}, 4.5, 12.5, repeated_positions={0, 1}), (4.5, 12.5))
+        self.assertEqual(anchor_block.ordered_refinement_window(
+            0, decisions, {0: 4, 1: 4}, 4.5, 12.5, repeated_positions={0, 1}), (4.5, 12.5))
+
+
 class CoverageInvariantTests(unittest.TestCase):
     """Invariant 1: an unlocatable line is unresolved, never absent."""
 

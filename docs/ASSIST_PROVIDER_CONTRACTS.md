@@ -27,12 +27,13 @@ whose declared maximum boundary is lower than the route's own.
 | 2 | `audio-leaves-machine` | audio bytes leave; requires per-job confirmation |
 
 Route types: `builtin` (in-process deterministic Rust), `local-proc` (child
-process on this machine), `codex` (installed `codex exec`), `openrouter`.
+process on this machine), `codex` (installed `codex exec`), `openrouter`, and
+`antigravity` (official authenticated ACP, with an audio-transfer boundary).
 
 | id | task | inputs | max boundary | eligible route types | allowed fallback policies |
 | --- | --- | --- | --- | --- | --- |
 | `TC-MEASURED` | measured audio features | decoded PCM, duration | `local-only` | `builtin` | `none` (locked, not user-routable) |
-| `TC-COARSE` | coarse lyric evidence / localization | full audio, optional vocal stem, language hint | `audio-leaves-machine` | `local-proc`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
+| `TC-COARSE` | coarse lyric evidence / localization | full audio, optional vocal stem, language hint | `audio-leaves-machine` | `local-proc`, `antigravity`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
 | `TC-ALIGN` | known-text forced alignment | full audio or block slices + authored lyric text | `local-only` | `local-proc` | `none`, `local-only` |
 | `TC-WORDING` | lyric wording review when no authored text exists | bounded Whisper JSON (`musializer.lyric-timing/v1`) | `text-leaves-machine` | `codex`, `openrouter` | `none`, `ask`, `same-boundary` |
 | `TC-SEMANTIC` | semantic / feeling analysis | complete audio or explicitly shown excerpts | `audio-leaves-machine` | `openrouter` | `none`, `ask` |
@@ -61,6 +62,15 @@ without a schema bump. Which identities actually exist is code, not prose:
 `ContractId::implemented_route_types` in
 `crates/musializer-core/src/assist/contracts.rs`, with a test asserting the
 implemented set is a subset of the schema-eligible one.
+
+The opt-in `antigravity/antigravity-acp` implementation of `TC-COARSE`
+sends the whole track in overlapping short clips. It authenticates through the
+official runtime's own saved profile and receives no OpenRouter credential.
+The model must be one of the acknowledged Gemini 3.8 Flash variants; no automatic
+provider substitution is implemented. `TC-WORDING` is omitted on this route:
+supplied lyrics already decide caption wording, while the no-reference route
+uses reviewed audio transcription proposals. `TC-ALIGN` executes locally in
+both cases. See `ASSIST_PIPELINE.md` for the current data flow.
 
 Three rules follow, and none of them may erode:
 
