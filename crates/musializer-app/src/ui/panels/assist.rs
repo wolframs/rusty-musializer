@@ -548,6 +548,7 @@ impl AssistController {
                 session.job_state = AssistJobState::Running;
                 session.job_track = Some(index);
                 session.started_at = now;
+                session.elapsed_seconds = 0.0;
                 session.set_confirmation_pending(false);
                 self.job = Some(job);
                 Vec::new()
@@ -574,6 +575,7 @@ impl AssistController {
         let Some(job) = self.job.as_mut() else {
             return Vec::new();
         };
+        workspace.assist.elapsed_seconds = job.elapsed().as_secs_f64();
         let poll = match job.poll() {
             Ok(poll) => poll,
             Err(error) => {
@@ -2215,10 +2217,9 @@ fn probe_candidate(mode: AssistMode) -> Result<AnalysisCandidate, String> {
 
 /// Puts the Assist session into one of its four probeable states (review 4.2).
 ///
-/// `now` is the transport clock the panel will read this frame, not a wall
-/// clock: the running body's elapsed counter is drawn from
-/// `time_seconds - started_at`, and a capture with a parked transport must
-/// report the same number every run.
+/// The synthetic running job has a fixed elapsed value. Real jobs get their
+/// elapsed time from the supervisor; deterministic captures must not change
+/// which clock production uses.
 ///
 /// Nothing here spawns a process, reads a file or touches a track. The failure
 /// case returns a sentence for the command line rather than half-applying.
@@ -2267,6 +2268,7 @@ pub(crate) fn apply_probe_state(
             session.job_state = AssistJobState::Running;
             session.job_track = current;
             session.started_at = now - PROBE_ELAPSED_SECONDS;
+            session.elapsed_seconds = PROBE_ELAPSED_SECONDS;
         }
         crate::cli::AssistProbe::Failed => {
             let session = &mut workspace.assist;
@@ -3801,20 +3803,12 @@ impl Shell {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        // The clock is the transport's, not a wall clock: a headless capture
-        // parks the transport, and a status line that ticked would make two runs
-        // of the same probe produce different pixels.
-        let elapsed = if session.job_state == AssistJobState::Running {
-            (input.time_seconds - session.started_at).max(0.0)
-        } else {
-            0.0
-        };
         let (text, tone) = assist_ui_state::status_line(&AssistStatusInputs {
             session_mode: session.mode(),
             job_state: session.job_state,
             confirmation_pending: session.confirmation_pending(),
             helper_available: session.helper_available,
-            elapsed_seconds: elapsed,
+            elapsed_seconds: session.elapsed_seconds,
             candidate_mode: session.candidate.as_ref().map(|_| session.candidate_mode),
             candidate_track_name: name_of(session.candidate_track),
             job_track_name: name_of(session.job_track),
@@ -4763,6 +4757,41 @@ mod tests {
             running_snapshot: None,
             staged_snapshot: None,
         }
+    }
+
+    #[test]
+    fn polling_publishes_the_supervised_job_clock_without_playback() {
+        let scratch = Scratch::new("elapsed-clock");
+        let helper = scratch.join("waiting.py");
+        // No audio device or analysis: only exercise the real process supervisor.
+        std::fs::write(&helper, "import time\ntime.sleep(30)\n").expect("helper");
+        let audio = scratch.join("unused.wav");
+        let spec = AssistSpec {
+            helper: &helper,
+            audio: &audio,
+            output_dir: &scratch.0,
+            duration_seconds: 8.0,
+            mode: job_mode(AssistMode::Lyrics),
+            lyrics_file: None,
+            execution_snapshot: None,
+            credential: None,
+            zdr_required: false,
+            local_runtimes: LocalRuntimeOverrides::default(),
+        };
+        let mut controller = controller();
+        controller.job = Some(AssistJob::start(&spec, 0).expect("job"));
+        let mut workspace = Workspace::new();
+        workspace.assist.job_state = AssistJobState::Running;
+        // The application may have been open for an hour before song playback.
+        workspace.assist.started_at = 3600.0;
+        for _ in 0..2 {
+            let before = controller.job.as_ref().unwrap().elapsed().as_secs_f64();
+            assert!(controller.poll(&mut workspace).is_empty());
+            let after = controller.job.as_ref().unwrap().elapsed().as_secs_f64();
+            assert!(before > 0.0);
+            assert!((before..=after).contains(&workspace.assist.elapsed_seconds));
+        }
+        assert!(controller.job.as_mut().unwrap().cancel_blocking().unwrap());
     }
 
     /// The fixture's own base64, written out rather than borrowed from
@@ -6108,16 +6137,13 @@ mod tests {
     }
 
     #[test]
-    fn the_probed_running_clock_is_the_transport_clock() {
-        // A capture must report the same elapsed time every run, so the clock is
-        // anchored to the parked transport rather than to the wall.
+    fn the_probed_running_clock_is_fixed_independently_of_transport() {
         for now in [0.0, 5.0, 12.5] {
             let mut workspace = Workspace::new();
             apply_probe_state(&mut workspace, crate::cli::AssistProbe::Running, now)
                 .expect("synthesizes");
             assert_eq!(
-                now - workspace.assist.started_at,
-                PROBE_ELAPSED_SECONDS,
+                workspace.assist.elapsed_seconds, PROBE_ELAPSED_SECONDS,
                 "elapsed must not depend on when the probe ran"
             );
         }

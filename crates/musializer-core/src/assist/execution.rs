@@ -142,7 +142,7 @@ pub fn recommended_route(contract: ContractId) -> Option<Route> {
             Some("whisper.cpp"),
         )),
         ContractId::Align => Some(route(RouteType::LocalProc, "mms-ctc", Some("mms-ctc"))),
-        ContractId::Wording => Some(route(RouteType::Codex, "codex", None)),
+        ContractId::Wording => Some(route(RouteType::Builtin, "local-transcript", None)),
         ContractId::Semantic => Some(route(
             RouteType::OpenRouter,
             "openrouter",
@@ -1863,6 +1863,20 @@ mod tests {
         }
     }
 
+    fn codex_settings() -> AssistSettings {
+        let mut settings = AssistSettings::default();
+        let mut route = recommended_route(ContractId::Wording).unwrap();
+        route.route_type = RouteType::Codex;
+        route.runtime_id = "codex".to_string();
+        settings.active_profile = "text-review".to_string();
+        settings.profiles.push(Profile {
+            id: "text-review".to_string(),
+            label: "Text review".to_string(),
+            routes: BTreeMap::from([(ContractId::Wording, route)]),
+        });
+        settings
+    }
+
     #[test]
     fn antigravity_audio_is_explicit_and_omits_text_only_wording() {
         let mut settings = AssistSettings::default();
@@ -2190,8 +2204,7 @@ mod tests {
             "Nothing leaves this computer: every task in this job runs locally."
         );
 
-        // The same workflow with no authored sheet composes the Codex wording
-        // review, which sends derived text and no audio.
+        // A missing authored sheet also stays local under the recommended profile.
         let wording = resolve(
             &AssistSettings::default(),
             WorkflowKind::Lyrics,
@@ -2199,12 +2212,7 @@ mod tests {
             &facts(),
         );
         let sentence = consent_sentence(&wording);
-        assert!(
-            sentence.contains("Derived text is sent to codex"),
-            "{sentence}"
-        );
-        assert!(sentence.contains("no audio"), "{sentence}");
-        assert!(!sentence.contains("Track audio"), "{sentence}");
+        assert_eq!(sentence, consent_sentence(&local));
 
         let mimo = resolve(
             &AssistSettings::default(),
@@ -2328,7 +2336,7 @@ mod tests {
         assert_eq!(resolved.model_label(), "not chosen");
         assert_eq!(resolved.model_id_recorded(), "");
         // The two labels that are *not* placeholders still round-trip.
-        let codex = resolve_route(&AssistSettings::default(), ContractId::Wording);
+        let codex = resolve_route(&codex_settings(), ContractId::Wording);
         assert_eq!(codex.model_id_recorded(), CODEX_DEFAULT_LABEL);
         let local = resolve_route(&AssistSettings::default(), ContractId::Coarse);
         assert_eq!(local.model_id_recorded(), "whisper.cpp");
@@ -2388,12 +2396,7 @@ mod tests {
     fn the_codex_lane_blocks_for_both_discovery_failures_and_waits_for_neither() {
         // TC-WORDING is the Codex route, and it is composed when the track has
         // no authored sheet.
-        let snapshot = resolve(
-            &AssistSettings::default(),
-            WorkflowKind::Lyrics,
-            false,
-            &facts(),
-        );
+        let snapshot = resolve(&codex_settings(), WorkflowKind::Lyrics, false, &facts());
         assert!(snapshot.contract(ContractId::Wording).is_some());
 
         let blocks = |codex: CodexFact| {

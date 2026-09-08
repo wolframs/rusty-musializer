@@ -63,7 +63,7 @@ impl Boundary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RouteType {
-    /// In-process deterministic Rust.
+    /// Bundled deterministic processing in Rust or the local helper.
     Builtin,
     /// A child process on this machine.
     LocalProc,
@@ -235,7 +235,7 @@ impl ContractId {
             Self::Measured => &[RouteType::Builtin],
             Self::Coarse   => &[RouteType::LocalProc, RouteType::Antigravity, RouteType::OpenRouter],
             Self::Align    => &[RouteType::LocalProc],
-            Self::Wording  => &[RouteType::Codex, RouteType::OpenRouter],
+            Self::Wording  => &[RouteType::Builtin, RouteType::Codex, RouteType::OpenRouter],
             Self::Semantic => &[RouteType::OpenRouter],
             Self::Plan     => &[RouteType::Builtin, RouteType::Codex, RouteType::OpenRouter],
             Self::Verify   => &[RouteType::LocalProc, RouteType::OpenRouter],
@@ -255,7 +255,7 @@ impl ContractId {
             Self::Measured => &[RouteType::Builtin],
             Self::Coarse => &[RouteType::LocalProc, RouteType::Antigravity],
             Self::Align => &[RouteType::LocalProc],
-            Self::Wording => &[RouteType::Codex],
+            Self::Wording => &[RouteType::Builtin, RouteType::Codex],
             Self::Semantic => &[RouteType::OpenRouter],
             Self::Plan => &[RouteType::Builtin],
             Self::Verify => &[],
@@ -300,7 +300,8 @@ impl ContractId {
             Self::Coarse => (route_type == RouteType::LocalProc && runtime_id == "whisper.cpp")
                 || (route_type == RouteType::Antigravity && runtime_id == "antigravity-acp"),
             Self::Align => route_type == RouteType::LocalProc && runtime_id == "mms-ctc",
-            Self::Wording => route_type == RouteType::Codex && runtime_id == "codex",
+            Self::Wording => (route_type == RouteType::Builtin && runtime_id == "local-transcript")
+                || (route_type == RouteType::Codex && runtime_id == "codex"),
             Self::Semantic => route_type == RouteType::OpenRouter && runtime_id == "openrouter",
             Self::Plan => {
                 route_type == RouteType::Builtin && runtime_id == "builtin-planner"
@@ -474,17 +475,19 @@ mod tests {
     /// wrongly refused makes a configured lane unroutable with no file changed.
     #[test]
     fn only_six_contract_runtime_pairs_are_implemented_and_two_gate_their_model() {
-        const IMPLEMENTED: [(ContractId, RouteType, &str); 6] = [
+        const IMPLEMENTED: [(ContractId, RouteType, &str); 7] = [
             (ContractId::Measured, RouteType::Builtin, "builtin-analyzer"),
             (ContractId::Coarse, RouteType::LocalProc, "whisper.cpp"),
             (ContractId::Align, RouteType::LocalProc, "mms-ctc"),
             (ContractId::Wording, RouteType::Codex, "codex"),
+            (ContractId::Wording, RouteType::Builtin, "local-transcript"),
             (ContractId::Semantic, RouteType::OpenRouter, "openrouter"),
             (ContractId::Plan, RouteType::Builtin, "builtin-planner"),
         ];
         let runtimes = [
             "builtin-analyzer",
             "builtin-planner",
+            "local-transcript",
             "whisper.cpp",
             "mms-ctc",
             "codex",

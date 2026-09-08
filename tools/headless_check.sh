@@ -2442,8 +2442,8 @@ assist_capture() {
     local name="$1" size="$2" expect="$3" helper="$4" extra="${5:-}"
     local out="$OUT_DIR/$name.png"
     local log="$OUT_DIR/$name.txt"
-    # ASSIST_PLAY=0 parks the transport: the Running body's elapsed clock is
-    # drawn from the transport time, so a deterministic capture needs it still.
+    # ASSIST_PLAY=0 parks scene motion. Synthetic Running probes provide a fixed
+    # job elapsed value; real jobs use the process supervisor's monotonic clock.
     local spec="panel=assist,play=${ASSIST_PLAY:-1}"
     [ -n "$extra" ] && spec="$spec,$extra"
     local helper_env=()
@@ -4069,11 +4069,11 @@ ai_capture "ai-stale-routing" 1280x720 \
     MUSIALIZER_ASSIST_SETTINGS_OPEN=routing -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
 ai_capture "ai-stale-verify-focus" 1280x720 \
     "MUSIALIZER_ASSIST_SETTINGS=$AI_STALE_SETTINGS" \
-    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_TAB=14 \
+    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_TAB=15 \
     -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
 STALE_FOCUS_LINE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-stale-verify-focus.txt" | head -1)"
 case "$STALE_FOCUS_LINE" in
-    *"focus=14/15 control=106"*"focus-visible=true"*) ;;
+    *"focus=15/16 control=106"*"focus-visible=true"*) ;;
     *) echo "FAIL: the stale TC-VERIFY route cell was not a visible tabstop: $STALE_FOCUS_LINE" >&2
        AI_FAILED=1 ;;
 esac
@@ -4081,7 +4081,7 @@ ai_focus_ring ai-stale-verify-focus ai-stale-verify-focus ai-stale-routing \
     "the stale TC-VERIFY route repair" || AI_FAILED=1
 ai_capture "ai-stale-verify-repair" 1280x720 \
     "MUSIALIZER_ASSIST_SETTINGS=$AI_STALE_SETTINGS" \
-    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_TAB=14 \
+    MUSIALIZER_ASSIST_SETTINGS_OPEN=routing MUSIALIZER_ASSIST_SETTINGS_TAB=15 \
     MUSIALIZER_ASSIST_SETTINGS_ACTIVATE=1 \
     -- --ui-probe "panel=assist,play=0" || AI_FAILED=1
 STALE_REPAIR_STATE="$(sed -n 's/^assist settings: //p' "$OUT_DIR/ai-stale-verify-repair.txt" | head -1)"
@@ -4570,17 +4570,17 @@ python3 - "$AI_DIR" "$REPO_ROOT/$CODEX_DIR" <<'PYCODEX'
 import json, pathlib, sys
 root = pathlib.Path(sys.argv[1]) / "codex"
 root.mkdir(parents=True, exist_ok=True)
-# TC-WORDING routes through Codex by default, so its readiness badge is the
-# user-visible consequence of every answer below.
-(root / "assist.json").write_text(json.dumps({
-    "schema": "musializer.assist-settings/v1",
-    "active_profile": "recommended",
-}, indent=2) + "\n")
-(root / "assist-override-missing.json").write_text(json.dumps({
-    "schema": "musializer.assist-settings/v1",
-    "active_profile": "recommended",
-    "local_runtimes": {"codex_bin": f"{sys.argv[2]}/nowhere/codex"},
-}, indent=2) + "\n")
+# Codex discovery is tested with an explicit wording override. The default
+# wording route stays local and must not depend on Codex availability.
+settings = {
+    "schema": "musializer.assist-settings/v1", "active_profile": "text-review",
+    "profiles": [{"id": "text-review", "label": "Text review", "routes": {
+        "TC-WORDING": {"contract": "TC-WORDING", "route_type": "codex",
+                       "runtime_id": "codex", "fallback": "none"}}}],
+}
+(root / "assist.json").write_text(json.dumps(settings, indent=2) + "\n")
+settings["local_runtimes"] = {"codex_bin": f"{sys.argv[2]}/nowhere/codex"}
+(root / "assist-override-missing.json").write_text(json.dumps(settings, indent=2) + "\n")
 PYCODEX
 
 # codex_capture NAME HOME PATH DISCOVERY [VAR=VALUE ...]

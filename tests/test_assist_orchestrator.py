@@ -293,6 +293,37 @@ class XdgCacheDirectoryTests(unittest.TestCase):
                          Path.home() / ".cache/musializer")
 
 
+class LocalDefaultTests(unittest.TestCase):
+    def test_missing_sheet_never_invokes_remote_wording(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            audio = root / 'audio.wav'; audio.write_bytes(b'fixture')
+            evidence = dict(schema_version=WHISPER_SCHEMA, lane='lyrics',
+                audio=dict(sha256=external_analysis.sha256_file(audio), duration_seconds=10.),
+                provenance=dict(adapter='test'),
+                lines=[dict(text='Keep these actual words', start_seconds=2., end_seconds=4., confidence=None)], words=[])
+            def cache(path, *_args, **_kwargs):
+                return dict(audio=dict(duration_seconds=10.)) if path.name == 'measured.json' else None
+            def transcribe(_audio, output, **_kwargs):
+                external_analysis.atomic_write_json(output, evidence)
+                return evidence
+            def align(_audio, source, *_args, **_kwargs):
+                lane = json.loads(source.read_text())
+                self.assertEqual(lane['lines'][0]['text'], 'Keep these actual words')
+                self.assertTrue(lane['lines'][0]['uncertain'])
+                self.assertEqual(lane['provenance']['source_kind'], 'local_transcript')
+                raise RuntimeError('reached local alignment')
+            with patch.object(external_analysis, '_cache_matches', side_effect=cache), \
+                 patch.object(external_analysis, 'discover_reference_lyrics', return_value=None), \
+                 patch.object(external_analysis, 'run_whisper', side_effect=transcribe), \
+                 patch.object(external_analysis, 'run_forced_alignment', side_effect=align), \
+                 patch.object(external_analysis, 'run_codex_review', side_effect=AssertionError('Remote wording')) as remote:
+                with self.assertRaisesRegex(RuntimeError, 'reached local alignment'):
+                    external_analysis.run_assist(audio, root / 'output', audio_duration=10., mode='lyrics',
+                        align_python=Path('/unused/python'), allow_dotenv=False)
+                remote.assert_not_called()
+
+
 class AuthoredRouteTests(unittest.TestCase):
     def test_explicit_performed_inventory_bypasses_written_line_localizer(self):
         with tempfile.TemporaryDirectory() as temporary:

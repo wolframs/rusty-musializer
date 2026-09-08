@@ -148,7 +148,7 @@ class ContractTokens(unittest.TestCase):
         pairs = [(variant, route, runtime) for variant, arm in arms
                  for route, runtime in re.findall(
                      r'route_type == RouteType::(\w+)\s*&& runtime_id == "([^"]+)"', arm)]
-        self.assertEqual(len(pairs), 7, "six contracts have seven implemented routes")
+        self.assertEqual(len(pairs), 8, "six contracts have eight implemented routes")
         self.assertEqual(len({variant for variant, _, _ in pairs}), 6)
         route_tokens = {"Builtin": "builtin", "LocalProc": "local-proc",
                         "Codex": "codex", "OpenRouter": "openrouter", "Antigravity": "antigravity"}

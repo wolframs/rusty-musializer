@@ -4965,6 +4965,7 @@ impl AssistSettingsDialog {
 fn default_runtime_id(contract: ContractId, route_type: RouteType) -> String {
     match (contract, route_type) {
         (ContractId::Measured, RouteType::Builtin) => "builtin-analyzer".to_string(),
+        (ContractId::Wording, RouteType::Builtin) => "local-transcript".to_string(),
         (ContractId::Plan, RouteType::Builtin) => "builtin-planner".to_string(),
         (ContractId::Align, RouteType::LocalProc) => "mms-ctc".to_string(),
         (_, RouteType::Builtin) => "builtin".to_string(),
@@ -8098,7 +8099,12 @@ mod tests {
             None,
         );
         assert_eq!(options, vec![CODEX_DEFAULT_LABEL.to_string()]);
-        let resolved = resolve_route(&AssistSettings::default(), ContractId::Wording);
+        let mut settings = AssistSettings::default();
+        let mut wording = recommended_route(ContractId::Wording).unwrap();
+        wording.route_type = RouteType::Codex;
+        wording.runtime_id = "codex".to_string();
+        set_override(&mut settings, wording);
+        let resolved = resolve_route(&settings, ContractId::Wording);
         assert_eq!(resolved.model_label(), CODEX_DEFAULT_LABEL);
         assert!(resolved
             .route
@@ -8421,7 +8427,7 @@ mod tests {
         assert_eq!(semantic.boundary(), Boundary::AudioLeavesMachine);
         assert_eq!(
             resolve_route(&settings, ContractId::Wording).boundary(),
-            Boundary::TextLeavesMachine
+            Boundary::LocalOnly
         );
         assert_eq!(
             resolve_route(&settings, ContractId::Verify).boundary(),

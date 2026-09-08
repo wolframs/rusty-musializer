@@ -239,7 +239,9 @@ intermediate evidence plus a final TSV bridge. Depending on mode it coordinates:
   metadata;
 - anchor→block localization plus local MMS forced alignment for final lyric
   timing when authored text exists, and per-cue MMS refinement when it does not;
-- optional Codex or explicitly authorized OpenRouter semantic review, routed
+- local transcript retention when no authored sheet is found; Codex wording
+  review requires an explicit route override;
+- optional explicitly authorized OpenRouter semantic review, routed
   through a per-job task-contract graph resolved once at Start (see
   [`ASSIST_PROVIDER_CONTRACTS.md`](ASSIST_PROVIDER_CONTRACTS.md) §1 and §6);
 - scene-plan construction and bridge serialization.
@@ -247,6 +249,36 @@ intermediate evidence plus a final TSV bridge. Depending on mode it coordinates:
 The stable output directory permits reuse, but cache provenance includes source
 and audio identities plus the relevant model, policy, and settings versions.
 Changing a timing policy must invalidate the artifact it changes.
+
+### Local performed-phrase recovery (2026-09-08)
+
+The recommended Timed lyrics workflow stays local, including tracks without
+an authored sheet. Its built-in `TC-WORDING/local-transcript` stage retains
+Whisper text as uncertain evidence; it never calls a text model. Explicit
+Codex and Antigravity overrides remain available.
+
+For authored tracks, `local_lyric_recovery.py` runs after anchor/block alignment.
+It transcribes overlapping 30-second crops, starting at offsets 0 and 5 seconds
+of each 15-second step, then aligns each crop's recognized text with MMS. The
+written sheet supplies phrase templates and spelling, not evidence of presence.
+A caption requires identical normalized words in at least two distinct crops,
+with both acoustic edges agreeing within 350 ms. An ASR interval guard rejects
+CTC words more than one second outside the recognizer's own phrase interval:
+two CTC passes can agree on the same wrong occurrence. Explicit stutters retain
+the first syllable's onset; repeated complete phrases retain distinct times.
+
+Corroborated audio can retime a written cue or replace an incompatible compound
+cue with separate performed phrases. Displaced written lines remain unresolved
+with their original identity and proposed timing. Added captions carry
+`audio_observed`, unknown confidence and review flags. This is a proposal policy,
+not independent acoustic acceptance: shared Whisper/MMS errors remain possible.
+
+Crop receipts are cached by audio, decoder/model settings, model and executable
+hashes, and crop span. Recovery policy version 3 invalidates old aligned results
+while preserving reusable crop evidence. The normal helper invokes no Gemini
+calls for this stage. See [the recording investigation](LYRICS_RECORDING_2026-09-08.md)
+for the measured change and remaining failures. First runs cost additional local
+ASR work; changing only recovery policy can reuse the crop cache.
 
 ### 4. Validation and staging
 

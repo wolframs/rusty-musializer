@@ -89,7 +89,7 @@ impl AssistMode {
     pub fn workflow(self) -> &'static str {
         match self {
             AssistMode::Lyrics => {
-                "Creates timed lyrics: local Whisper + local MMS alignment. Codex reviews wording only when no authored lyric source is found."
+                "Creates timed lyrics with local Whisper and MMS. Without an authored lyric source, keeps the locally transcribed words for review."
             }
             AssistMode::Sections => {
                 "Creates scene changes: measured local audio feeds the deterministic scene planner."
@@ -718,6 +718,9 @@ pub struct AssistSession {
     /// Seconds on the application clock when the job started
     /// (`p->assist_started_at`).
     pub started_at: f64,
+    /// Elapsed job time sampled from the supervisor's monotonic clock.
+    /// Playback position, seeking and pause must not affect this value.
+    pub elapsed_seconds: f64,
 
     /// The staged, inert result (`p->assist_candidate`).
     pub candidate: Option<AnalysisCandidate>,
@@ -752,6 +755,7 @@ impl Default for AssistSession {
             job_state: AssistJobState::Idle,
             job_track: None,
             started_at: 0.0,
+            elapsed_seconds: 0.0,
             candidate: None,
             candidate_mode: AssistMode::Lyrics,
             candidate_track: None,

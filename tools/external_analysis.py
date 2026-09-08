@@ -44,6 +44,7 @@ import authored_audio_phrases
 import observed_audio_occurrences
 import lyric_align
 import lyric_anchor_block
+import local_lyric_recovery
 import mimo_openrouter as mimo_adapter
 
 
@@ -786,6 +787,24 @@ def codex_review_request(source: dict[str, Any]) -> str:
     return f"{prompt}\n\nWhisper evidence JSON follows:\n{json.dumps(evidence, ensure_ascii=False)}\n"
 
 
+def retain_local_transcript(lyrics: Path, output: Path) -> dict[str, Any]:
+    """Keep local ASR wording; do not pretend a text model verified the audio."""
+    source = read_json(lyrics)
+    lines = [dict(row, source_line_indices=[index], uncertain=True)
+             for index, row in enumerate(source["lines"])]
+    result = {
+        "schema_version": LYRIC_REVIEW_VERSION, "lane": "lyric_review",
+        "audio": source["audio"],
+        "source": {"schema_version": source["schema_version"], "sha256": sha256_file(lyrics)},
+        "provenance": {"adapter": "tools/external_analysis.py", "adapter_version": ADAPTER_VERSION,
+                       "source_kind": "local_transcript", "model": None},
+        "lines": lyric_align.split_long_cues(lines, source.get("words") or []),
+        "notes": ["Local transcription retained without remote wording review."],
+    }
+    atomic_write_json(output, result)
+    return result
+
+
 def run_codex_review(
     lyrics: Path, output: Path, *, codex_bin: str = "codex",
     model: str | None = None, reasoning_effort: str | None = None,
@@ -1312,7 +1331,8 @@ def read_execution_snapshot(path: Path | None) -> dict[str, Any] | None:
                           and model_id in (None, "", "whisper.cpp")) or (
                               route_type == "antigravity" and runtime_id == "antigravity-acp"
                               and model_id in antigravity_lyrics.antigravity_audio.MODELS),
-            "TC-WORDING": route_type == "codex" and runtime_id == "codex",
+            "TC-WORDING": (route_type == "builtin" and runtime_id == "local-transcript") or (
+                route_type == "codex" and runtime_id == "codex"),
             "TC-ALIGN": (route_type == "local-proc" and runtime_id == "mms-ctc"
                          and model_id in (None, "", "mms-ctc")),
             "TC-SEMANTIC": route_type == "openrouter" and runtime_id == "openrouter",
@@ -1757,6 +1777,7 @@ def run_anchor_block_alignment(
     output: Path, *, audio_duration: float, align_python: Path, timeout: float,
     reference_sha256: str, reference_source: str = "",
     diagnostic_sink: Path | None = None, runner: Runner = subprocess.run,
+    recovery_whisper_bin: Path | None = None, recovery_whisper_model: Path | None = None,
 ) -> dict[str, Any]:
     """Locate every authored line acoustically, anchors first, blocks second."""
     command = [
@@ -1764,6 +1785,9 @@ def run_anchor_block_alignment(
         str(output), "--duration", f"{audio_duration:.9f}",
         "--reference-file", str(reference_file), "--coarse", str(coarse),
     ]
+    if recovery_whisper_bin is not None and recovery_whisper_model is not None:
+        command.extend(['--recovery-whisper-bin', str(recovery_whisper_bin),
+                        '--recovery-whisper-model', str(recovery_whisper_model)])
     _run(command, timeout=timeout, env=_safe_local_env(), runner=runner,
          diagnostic_sink=diagnostic_sink)
     result = read_json(output)
@@ -1897,7 +1921,8 @@ def run_assist(
     if mode in {"lyrics", "all"}:
         actions[1:1] = (["antigravity_audio_clips", "local_lyric_alignment"]
                         if use_antigravity else [
-                            "whisper", "lyric_sync_or_codex_review",
+                            "whisper", ("lyric_sync_or_codex_review" if wording_route.get("route_type") == "codex"
+                                        else "lyric_sync_or_local_transcript"),
                             "anchor_block_localization_or_ctc_forced_alignment"])
     if mode in {"mimo", "all"}: actions[1:1] = ["mimo_openrouter"]
     if dry_run:
@@ -2027,7 +2052,9 @@ def run_assist(
                     _anchor_block_cache_accepts(
                         value, whisper_sha256=source_sha, coarse_sha256=coarse_sha,
                         reference_sha256=reference["sha256"])
-                    and _execution_route_accepts(value, routes["TC-ALIGN"])),
+                    and _execution_route_accepts(value, routes["TC-ALIGN"])
+                    and (use_antigravity or local_lyric_recovery.cache_accepts(
+                        value, whisper_bin, whisper_model))),
             )
             if aligned is None:
                 aligned = run_anchor_block_alignment(
@@ -2038,6 +2065,8 @@ def run_assist(
                     reference_source=reference["source"],
                     diagnostic_sink=output_dir / "lyrics.aligned.diagnostic.txt",
                     runner=runner,
+                    recovery_whisper_bin=None if use_antigravity else whisper_bin,
+                    recovery_whisper_model=None if use_antigravity else whisper_model,
                 )
                 aligned = _attach_execution(
                     paths["aligned"], aligned, stamps["TC-ALIGN"])
@@ -2092,24 +2121,29 @@ def run_assist(
                 lyrics_lane_path = paths["aligned"]
             lyrics = aligned
         else:
+            # No snapshot (CLI) also defaults to local. A remote wording pass
+            # requires an explicitly selected Codex contract.
+            local_wording = not routes["TC-WORDING"] or routes["TC-WORDING"]["route_type"] == "builtin"
             lyrics = _cache_matches(
                 paths["review"], LYRIC_REVIEW_VERSION, audio_sha,
-                accept=lambda value: _review_cache_accepts(
+                accept=lambda value: (
+                    value.get("source", {}).get("sha256") == source_sha
+                    and value.get("provenance", {}).get("source_kind") == "local_transcript"
+                    and _execution_route_accepts(value, routes["TC-WORDING"])
+                ) if local_wording else _review_cache_accepts(
                     value, source_sha256=source_sha, model=codex_model,
-                    reasoning_effort=codex_reasoning_effort,
-                    execution_route=routes["TC-WORDING"],
-                ),
+                    reasoning_effort=codex_reasoning_effort, execution_route=routes["TC-WORDING"]),
             )
             if lyrics is None:
-                lyrics = run_codex_review(
+                lyrics = retain_local_transcript(paths["lyrics"], paths["review"]) if local_wording else run_codex_review(
                     paths["lyrics"], paths["review"], codex_bin=codex_bin,
                     model=codex_model, reasoning_effort=codex_reasoning_effort,
                     timeout=external_timeout, runner=runner,
                 )
-                lyrics = _attach_execution(
-                    paths["review"], lyrics, stamps["TC-WORDING"])
+                lyrics = _attach_execution(paths["review"], lyrics, stamps["TC-WORDING"])
                 cache_status["review"] = "generated"
-            else: cache_status["review"] = "reused"
+            else:
+                cache_status["review"] = "reused"
 
             # No authored text: there is nothing to localize globally, because
             # the transcription *is* the text. The per-cue MMS refinement is

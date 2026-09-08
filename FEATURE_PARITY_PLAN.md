@@ -66,8 +66,21 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
-**LT2 — lyrics Assist repair, paused for operator listening (2026-09-07).** Operator priority: audit
-and iterate the complete production lyrics path on Fence Around, i rly think so,
+**LT2 — lyrics Assist repair, resumed for the recorded local-route failure (2026-09-08).**
+The frozen elapsed counter is repaired and verified during playback, pause and
+seeking; the release is rebuilt. The recorded local run freshly generated only
+13 placed written lines, 13 unresolved lines and nine unplaced Whisper proposals.
+Three fresh Gemini 3.8 Flash audio reviews succeeded. The route mismatch,
+remaining acoustic defects and prior-session evidence are recorded in
+[the recording investigation](docs/LYRICS_RECORDING_2026-09-08.md).
+The local crop-recovery repair now renders 27 captions for this recording
+(previously 13), including the two opening performances. The recommended
+no-sheet wording stage also stays local. Missing chorus entries and backing
+vocal boundaries remain; this is not whole-track acceptance.
+Detection/timing acceptance remains open. Operator priority: audit
+the normal local Whisper/MMS path; Gemini is for independent research checks
+only (operator choice, 2026-09-08). Do not change normal Assist to a remote route.
+Continue to audit and iterate the complete production lyrics path on Fence Around, i rly think so,
 Groyper Idol, Resolve to You, Cat Gradient Optimizer (Learn), Eight Thousand
 Tokens, Floor Mechanics I: Load Bearing, Breaking What Remains, The Cage Went
 Deep, and Autoregressive Kitty. Collaborate with Gemini 3.8 Flash through the
@@ -99,8 +112,9 @@ uses exact local sheet spelling. The actual track-02 helper and muted UI Apply/
 playback pass; all ten normal-mode corpus runs and the final v6 comparison
 are complete. Model-reference disagreements remain substantial and are not
 adjudicated error rates. No research helper remains running. The operator
-requested a pause and prepared listening review for the two unresolved phrase
-groupings; see [the handoff](docs/LYRICS_GROUPING_REVIEW.md).
+requested a pause on September 7 and accepted both reviewed two-phrase groupings;
+see [the handoff](docs/LYRICS_GROUPING_REVIEW.md). The September 8 recording
+resumes investigation of the normal local workflow.
 
 **SX4 — built, awaiting operator review (2026-09-05).** The operator
 completed CX-4 track A in the Rust runner: ten `reject` and two `neither`

@@ -480,6 +480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="lyrics.sync.json, the independent coarse view "
                              "used for review flags and repeated-phrase "
                              "abstention")
+    parser.add_argument("--recovery-whisper-bin", type=Path)
+    parser.add_argument("--recovery-whisper-model", type=Path)
     parser.add_argument("--max-block-seconds", type=float,
                         default=lyric_anchor_block.MAX_BLOCK_SECONDS)
     parser.add_argument("--no-interior-stars", action="store_true",
@@ -505,6 +507,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             interior_stars=not args.no_interior_stars,
             max_block_seconds=args.max_block_seconds,
         )
+        if args.recovery_whisper_bin is not None or args.recovery_whisper_model is not None:
+            if args.recovery_whisper_bin is None or args.recovery_whisper_model is None:
+                raise ValueError('Local recovery requires both Whisper runtime paths')
+            import local_lyric_recovery
+            result = local_lyric_recovery.run(args.audio, result,
+                args.reference_file.read_text(encoding='utf-8'), args.output.parent / 'local-lyric-crops',
+                args.recovery_whisper_bin, args.recovery_whisper_model)
+            lyric_anchor_block.validate_full_coverage(result, lyric_anchor_block.alignable_lines(
+                args.reference_file.read_text(encoding='utf-8')))
         atomic_write_json(args.output, result)
     except (AnalysisValidationError, OSError, RuntimeError, ValueError,
             json.JSONDecodeError) as error:

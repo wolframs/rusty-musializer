@@ -26,7 +26,7 @@ whose declared maximum boundary is lower than the route's own.
 | 1 | `text-leaves-machine` | derived text/JSON leaves; no audio, no raw PCM |
 | 2 | `audio-leaves-machine` | audio bytes leave; requires per-job confirmation |
 
-Route types: `builtin` (in-process deterministic Rust), `local-proc` (child
+Route types: `builtin` (bundled deterministic processing, in Rust or the local helper), `local-proc` (child
 process on this machine), `codex` (installed `codex exec`), `openrouter`, and
 `antigravity` (official authenticated ACP, with an audio-transfer boundary).
 
@@ -35,10 +35,15 @@ process on this machine), `codex` (installed `codex exec`), `openrouter`, and
 | `TC-MEASURED` | measured audio features | decoded PCM, duration | `local-only` | `builtin` | `none` (locked, not user-routable) |
 | `TC-COARSE` | coarse lyric evidence / localization | full audio, optional vocal stem, language hint | `audio-leaves-machine` | `local-proc`, `antigravity`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
 | `TC-ALIGN` | known-text forced alignment | full audio or block slices + authored lyric text | `local-only` | `local-proc` | `none`, `local-only` |
-| `TC-WORDING` | lyric wording review when no authored text exists | bounded Whisper JSON (`musializer.lyric-timing/v1`) | `text-leaves-machine` | `codex`, `openrouter` | `none`, `ask`, `same-boundary` |
+| `TC-WORDING` | lyric text retention or review when no authored text exists | bounded Whisper JSON (`musializer.lyric-timing/v1`) | `text-leaves-machine` | `builtin`, `codex`, `openrouter` | `none`, `ask`, `same-boundary` |
 | `TC-SEMANTIC` | semantic / feeling analysis | complete audio or explicitly shown excerpts | `audio-leaves-machine` | `openrouter` | `none`, `ask` |
 | `TC-PLAN` | scene-plan reasoning / review | measured-analysis JSON, section artifacts | `text-leaves-machine` | `builtin`, `codex`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
 | `TC-VERIFY` | independent timing verification | named review excerpts only, never the whole song by default | `audio-leaves-machine` | `local-proc`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
+
+The recommended `TC-WORDING` route is `builtin/local-transcript`: preserve local
+Whisper wording as uncertain evidence, without a remote reviewer. The maximum
+boundary above describes eligible overrides; the default's applied boundary is
+`local-only`. Selecting Codex explicitly enables its text-only review.
 
 Rules that follow from the table and are not negotiable per-route:
 

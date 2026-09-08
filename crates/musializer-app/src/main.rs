@@ -942,9 +942,8 @@ fn run(
             // `--ui-probe assist=` puts the panel in one of its four states
             // (review 4.2). Candidate, Running and Failed are synthesized in
             // process -- no helper, no file, no wall clock -- so two runs of the
-            // same probe produce the same pixels. The clock handed over is the
-            // transport's, because the running body's elapsed counter is drawn
-            // from `time_seconds - started_at` and the transport is parked.
+            // same probe produce the same pixels. The synthetic running job
+            // supplies fixed elapsed time; real jobs use the supervisor clock.
             if let Some(state) = probe.assist {
                 if probe.panel != cli::UiPanel::Assist {
                     eprintln!(

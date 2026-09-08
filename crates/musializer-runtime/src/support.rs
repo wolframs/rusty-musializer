@@ -40,6 +40,7 @@ pub const DISTRIBUTION_SUPPORT_FILES: &[&str] = &[
     "tools/authored_audio_phrases.py",
     "tools/observed_audio_occurrences.py",
     "tools/local_lyric_spelling.py",
+    "tools/local_lyric_recovery.py",
     "tools/ctc_window_align.py",
     "tools/atomic_cache.py",
     "tools/codex_model_discovery.py",
