@@ -32,7 +32,9 @@
 //!   part of that expression's read — Boom already sings an `O`, and an open
 //!   mouth inside a scrunch would blur two signals into one — so only the
 //!   resting smile has the slack to animate. The smile flattens as the mouth
-//!   opens: lips part instead of grinning through the note.
+//!   opens into a downward-pointing triangle: the animated `w` is its upper
+//!   mask, so no black wedge leaks above the lip, and the flat 8:3 opening
+//!   belongs with the caret eyes and petal tips instead of a circular `O`.
 //! - **A blink swaps strokes rather than scaling them.** Squashing an eye's
 //!   own geometry vertically works for a caret and collapses a scaled spiral
 //!   polyline into a scribble; one curved lid stroke per eye at the same
@@ -623,6 +625,47 @@ fn happy_mouth_points(warmth: f32, open: f32) -> [(f32, f32); 5] {
     ];
     let scale = (0.55 + 0.45 * warmth) * (1.0 - open);
     REST.map(|(x, y)| (x, 0.24 + (y - 0.24) * scale))
+}
+
+/// Samples the animated `w` at `x`; its five points are sorted by x.
+fn happy_mouth_y_at(mouth: &[(f32, f32); 5], x: f32) -> f32 {
+    for pair in mouth.windows(2) {
+        if x >= pair[0].0 && x <= pair[1].0 {
+            let t = (x - pair[0].0) / (pair[1].0 - pair[0].0);
+            return lerp(pair[0].1, pair[1].1, t);
+        }
+    }
+    mouth[4].1
+}
+
+/// Happy's singing aperture in face coordinates: the upper mask and its tip.
+///
+/// The mask is the actual animated `w`, clipped to the opening's width. A fan
+/// from those points to the tip therefore cannot paint above the lip — unlike
+/// putting a complete triangle over the mouth and hoping the stroke hides it.
+/// This is the user-tuned second pass: width is 80% of the previous masked
+/// shape (`0.416` vs `0.52` per side), while depth is independently 60% of its
+/// former value (`0.312` vs `0.52`). Their caps carry the same reductions, so
+/// the aperture keeps an 8:3 width-to-depth ratio before and after saturation.
+fn happy_singing_mouth_shape(mouth: &[(f32, f32); 5], open: f32) -> (Vec<(f32, f32)>, (f32, f32)) {
+    let open = open.clamp(0.0, 1.0);
+    let half_width = (open * 0.416).min(0.24);
+    let depth = (open * 0.312).min(0.18);
+    let left = -half_width;
+    let right = half_width;
+
+    let mut mask = Vec::with_capacity(mouth.len() + 2);
+    mask.push((left, happy_mouth_y_at(mouth, left)));
+    mask.extend(
+        mouth
+            .iter()
+            .copied()
+            .filter(|&(x, _)| x > left && x < right),
+    );
+    mask.push((right, happy_mouth_y_at(mouth, right)));
+
+    let lip_floor = mask.iter().map(|&(_, y)| y).fold(f32::MIN, f32::max);
+    (mask, (0.0, lip_floor + depth))
 }
 
 /// A closed eyelid in face coordinates: one gently-curved horizontal stroke.
@@ -1574,39 +1617,21 @@ pub fn draw(
                     );
                 }
             }
-            let mouth: Vec<Vector2> = happy_mouth_points(warmth, open)
-                .iter()
-                .map(|&(x, y)| f(x, y))
-                .collect();
-            stroke_polyline(d, &mouth, stroke, ink);
+            let mouth_points = happy_mouth_points(warmth, open);
             if open > 0.0 {
-                // The open mouth: a vertical capsule from two overlapping ink
-                // discs — taller than wide reads as singing. Both radii scale
-                // with `open` (a fixed-width slit at a tiny open fraction
-                // would read as a moustache), and the capsule beats a single
-                // circle because a round hole at full width reads as Boom's
-                // shock `O` rather than a note being held. The scale is set
-                // to the aperture the state can actually reach, not to 1.0:
-                // the ~80 ms attack follower tops out near 0.63 against the
-                // syllable carrier's ~150 ms period, so drawing 0.63 as the
-                // full mouth is what makes a real track read as singing —
-                // scaled for a theoretical 1.0, mid-track singing (~0.4)
-                // photographed as a tongue-sized speck.
-                let ry = open * 0.24 * face_radius;
-                let rx = open * 0.16 * face_radius;
-                let mouth_centre = f(0.0, 0.32);
-                let spread = (ry - rx).max(0.0);
-                d.draw_circle_v(
-                    Vector2::new(mouth_centre.x, mouth_centre.y - spread),
-                    rx,
-                    ink,
-                );
-                d.draw_circle_v(
-                    Vector2::new(mouth_centre.x, mouth_centre.y + spread),
-                    rx,
-                    ink,
-                );
+                // Each fan triangle starts on the `w` itself, making the lip a
+                // geometric mask. The sharp point shares Clawd's caret-and-
+                // petal vocabulary while Boom keeps sole ownership of the O.
+                let (mask, tip) = happy_singing_mouth_shape(&mouth_points, open);
+                let tip = f(tip.0, tip.1);
+                for pair in mask.windows(2) {
+                    d.draw_triangle(f(pair[0].0, pair[0].1), tip, f(pair[1].0, pair[1].1), ink);
+                }
             }
+            // Last, so its rounded joins remain the visible upper lip over the
+            // fan's straight segment edges.
+            let mouth: Vec<Vector2> = mouth_points.iter().map(|&(x, y)| f(x, y)).collect();
+            stroke_polyline(d, &mouth, stroke, ink);
         }
         Expression::Scrunch => {
             // Never blinked: core holds `blink()` at 0 during a scrunch, and
@@ -1871,7 +1896,11 @@ pub fn draw(
         state.amplitude(),
         state.bass(),
         state.energy(),
-        if state.dynamics_present() { "track" } else { "none" },
+        if state.dynamics_present() {
+            "track"
+        } else {
+            "none"
+        },
         petal_peak,
         petal_peak_index,
         state.beat_count(),
@@ -2131,6 +2160,30 @@ mod tests {
             assert!(cur <= prev, "open {k} deepened the smile");
             prev = cur;
         }
+    }
+
+    /// The singing mouth uses the `w` itself as its upper mask; its width is
+    /// 20% smaller and its depth 40% smaller than the preceding masked pass.
+    #[test]
+    fn happy_singing_mouth_is_masked_and_tuned_to_eight_by_three() {
+        let full_mouth = happy_mouth_points(0.6, 1.0);
+        let (full_mask, full_tip) = happy_singing_mouth_shape(&full_mouth, 1.0);
+        assert_eq!(full_mask[0], (-0.24, 0.24));
+        assert_eq!(*full_mask.last().unwrap(), (0.24, 0.24));
+        assert_eq!(full_tip.0, 0.0);
+        assert!((full_tip.1 - 0.42).abs() < 1.0e-6);
+        assert_eq!(full_mask.last().unwrap().0 - full_mask[0].0, 0.48);
+        assert!((full_tip.1 - full_mask[0].1 - 0.18).abs() < 1.0e-6);
+
+        let mouth = happy_mouth_points(0.6, 0.5);
+        let (mask, tip) = happy_singing_mouth_shape(&mouth, 0.5);
+        assert_eq!(mask[0].0, -0.208);
+        assert_eq!(mask.last().unwrap().0, 0.208);
+        assert_eq!(mask[0].1, happy_mouth_y_at(&mouth, -0.208));
+        assert_eq!(mask.last().unwrap().1, happy_mouth_y_at(&mouth, 0.208));
+        let lip_floor = mask.iter().map(|&(_, y)| y).fold(f32::MIN, f32::max);
+        assert_eq!(tip.0, 0.0);
+        assert!((tip.1 - lip_floor - 0.156).abs() < 1.0e-6);
     }
 
     /// The lid stroke's contract: ends exactly 0.02 face-radii above the
