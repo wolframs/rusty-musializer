@@ -228,6 +228,7 @@ pub struct TrackAssets<'a> {
 
 pub struct SceneRenderer {
     circle: scenes::spectrum::CircleShader,
+    atlas: scenes::song_atlas::AtlasRenderer,
     /// The signed-distance-field text shader, for Cadence.
     ///
     /// `None` when it would not compile, and that is a *supported* state rather
@@ -297,6 +298,7 @@ impl SceneRenderer {
         };
         Ok(Self {
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
+            atlas: scenes::song_atlas::AtlasRenderer::default(),
             sdf_text,
             sdf_error,
             cadence_text: "none",
@@ -485,6 +487,7 @@ impl SceneRenderer {
                     if let Some(state) = state_of(instance, id) {
                         scenes::song_atlas::draw(
                             d,
+                            &mut self.atlas,
                             state,
                             frame,
                             boundary,

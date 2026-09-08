@@ -341,7 +341,7 @@ impl Shell {
         let status = format!("PRESETS  {count} / {PRESETS_PER_SCENE}");
 
         if count == 0 {
-            let consumed = 42.0;
+            let consumed = preset_block_height(count);
             if area.height < consumed {
                 return 0.0;
             }
@@ -359,7 +359,7 @@ impl Shell {
             return consumed;
         }
 
-        let consumed = 98.0;
+        let consumed = preset_block_height(count);
         if area.height < consumed {
             return 0.0;
         }
@@ -593,6 +593,15 @@ impl Shell {
                 "Fix or remove the preset library file, then restart Musializer.",
             );
         }
+    }
+}
+
+/// Natural height shared by the drawing block and Tune's scroll measurement.
+pub(crate) fn preset_block_height(count: usize) -> f32 {
+    if count == 0 {
+        42.0
+    } else {
+        98.0
     }
 }
 

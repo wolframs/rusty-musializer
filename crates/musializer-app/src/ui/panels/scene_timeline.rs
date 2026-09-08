@@ -108,7 +108,7 @@ fn scene_text_color(scene: SceneId, enabled: bool) -> Color {
     if contrast::ratio(rgba::WHITE, fill) >= contrast::ratio(rgba::UI_INK, fill) {
         color::white()
     } else {
-        color::ui_ink()
+        Color::get_color(rgba::UI_INK)
     }
 }
 

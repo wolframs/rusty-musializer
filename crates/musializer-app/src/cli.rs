@@ -291,6 +291,8 @@ pub struct UiProbe {
     /// apart. `timeline:` prints the span, which a pan leaves alone and a zoom
     /// does not, and that is what separates them.
     pub wheel_shift: bool,
+    /// `wheel-alt=0|1`: hold Alt for Tune value stepping instead of scrolling.
+    pub wheel_alt: bool,
     /// `middle-drag=FROMxTO`: middle-press at `FROM`, drag to `TO`, release (D4).
     ///
     /// **Invented, and it is to the middle button what `click=` is to the left
@@ -512,6 +514,10 @@ pub struct Cli {
     pub ui_probe: Option<UiProbe>,
     /// Rust-side shell scaling. CLI wins over the per-user preference file.
     pub ui_scale: Option<UiScalePreference>,
+    /// Open the egui editor at launch; useful for the migration audition.
+    pub editor_ui: bool,
+    /// Session-only appearance override.
+    pub ui_theme: Option<crate::ui::theme::UiTheme>,
 
     /// One shared error flag, as in the C (`musializer.c:384`). Once set it
     /// poisons the later stages by short-circuit and the process exits 1.
@@ -759,6 +765,11 @@ where
                 },
             },
 
+            "--editor-ui" => cli.editor_ui = true,
+            "--ui-theme" => match value_of(&argv, i).and_then(crate::ui::theme::UiTheme::parse) {
+                Some(theme) => cli.ui_theme = Some(theme),
+                None => cli.warn("--ui-theme wants light-blue or black-amber"),
+            },
             "--ui-scale" => match value_of(&argv, i).and_then(UiScalePreference::parse) {
                 Some(scale) => cli.ui_scale = Some(scale),
                 None => cli.warn("--ui-scale wants auto, 100, 125, 150, 175, or 200"),
@@ -833,6 +844,7 @@ fn takes_one_value(flag: &str) -> bool {
             | "--protocol"
             | "--ui-probe"
             | "--ui-scale"
+            | "--ui-theme"
             | "--probe-frames"
             | "--probe-shot"
             | "--probe-reopen"
@@ -1124,6 +1136,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // rather than a second count: two keys that both carried notches could
         // ask for a zoom and a pan on the same frame, which no hand can do.
         "wheel-shift" => probe.wheel_shift = parse_probe_flag(value)?,
+        "wheel-alt" => probe.wheel_alt = parse_probe_flag(value)?,
         "middle-drag" => probe.middle_drag = Some(parse_point(value)?),
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
@@ -1276,6 +1289,8 @@ Export:
 
 Diagnostics:
   --mute                  Start with the output volume at zero
+  --editor-ui             Open the Tune / Lyrics editor
+  --ui-theme NAME         Appearance: light-blue or black-amber (this launch)
   --ui-scale VALUE        Shell scale: auto, 100, 125, 150, 175, or 200
                           (Ctrl+- / Ctrl+0 / Ctrl++ also adjust it)
   --hud[=0|1]             Draw the diagnostic readout over the preview (also H)
@@ -1358,6 +1373,9 @@ mod tests {
             parse_ui_probe("wheel=-2.5").expect("valid spec").wheel,
             Some(-2.5)
         );
+        assert!(parse_ui_probe("wheel=1,wheel-alt=1").unwrap().wheel_alt);
+        assert!(!parse_ui_probe("wheel=1,wheel-alt=0").unwrap().wheel_alt);
+        assert_eq!(parse_ui_probe("wheel-alt=yes"), None);
         assert_eq!(parse_ui_probe("wheel=0"), None);
         assert_eq!(parse_ui_probe("wheel=9"), None);
         assert_eq!(parse_ui_probe("wheel=nan"), None);
@@ -1503,6 +1521,19 @@ mod tests {
             Outcome::Parsed(cli) => *cli,
             other => panic!("expected a parse, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn toolkit_editor_flags_preserve_track_and_reject_unknown_theme() {
+        let cli = parsed(&["--editor-ui", "--ui-theme", "black-amber", "song.mp3"]);
+        assert!(cli.editor_ui);
+        assert_eq!(cli.ui_theme, Some(crate::ui::theme::UiTheme::BlackAmber));
+        let invalid = parsed(&["--ui-theme", "unknown"]);
+        assert!(invalid.ui_theme.is_none());
+        assert!(invalid
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("--ui-theme")));
     }
 
     #[test]

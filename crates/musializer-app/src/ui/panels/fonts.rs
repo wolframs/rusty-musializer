@@ -471,7 +471,7 @@ fn draw_family_list(
             boundary.y + 4.0,
             15.0,
             if selected {
-                color::white()
+                color::on_accent()
             } else {
                 color::ui_ink()
             },
@@ -494,7 +494,7 @@ fn draw_family_list(
                 boundary.y + 6.0,
                 12.0,
                 if selected {
-                    color::white()
+                    color::on_accent()
                 } else {
                     color::ui_muted()
                 },

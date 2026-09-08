@@ -62,6 +62,15 @@ pub struct ShellWidths {
     pub tracks_width: f32,
 }
 
+/// Toolkit editor bounds shared by the scene layout and widget renderer.
+pub fn editor_rect(window: (f32, f32)) -> UiRect {
+    let width = (window.0 * 0.44)
+        .clamp(420.0, 600.0)
+        .min((window.0 - 32.0).max(0.0));
+    let height = (window.1 - 90.0).max(300.0).min((window.1 - 32.0).max(0.0));
+    UiRect::new(window.0 - width - 16.0, 16.0, width, height)
+}
+
 /// User-sized split positions in logical UI units. `None` keeps the existing
 /// content-aware automatic policy exactly.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -290,6 +299,20 @@ impl WorkspaceFrame {
         }
     }
 
+    /// Editing gives the complete scene the space beside the toolkit panel.
+    /// Inactive workspace controls are hidden instead of implying they can be used.
+    pub fn editor(window: (f32, f32)) -> Self {
+        let panel = editor_rect(window);
+        let mut frame = Self::fullscreen(window.0, window.1, false);
+        frame.preview = UiRect::new(
+            16.0,
+            16.0,
+            (panel.x - 32.0).max(0.0),
+            (window.1 - 32.0).max(0.0),
+        );
+        frame
+    }
+
     /// The full-screen frame: the preview takes everything and the toolbar
     /// overlays its bottom edge (`plug.c:7624-7666`).
     #[must_use]
@@ -372,6 +395,8 @@ pub struct WelcomeFrame {
     pub open_project: UiRect,
     /// `or drop audio anywhere in this window`.
     pub drop_hint: UiRect,
+    /// Recovery reserves its own message and button row before the steps.
+    pub recovery: Option<WelcomeRecovery>,
     /// The three numbered steps, left to right.
     pub steps: [UiRect; 3],
     /// The rule above the steps.
@@ -386,6 +411,13 @@ pub struct WelcomeFrame {
     pub recent_rows: [UiRect; recent::CAPACITY],
     /// How many of [`Self::recent_rows`] fit above the format strip.
     pub recent_visible: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WelcomeRecovery {
+    pub hint: UiRect,
+    pub recover: UiRect,
+    pub dismiss: UiRect,
 }
 
 impl WelcomeFrame {
@@ -409,7 +441,7 @@ impl WelcomeFrame {
     const RECENT_MINIMUM_WIDTH: f32 = 150.0;
 
     #[must_use]
-    pub fn layout(window_width: f32, window_height: f32) -> Self {
+    pub fn layout(window_width: f32, window_height: f32, recovery_available: bool) -> Self {
         let w = window_width;
         let h = window_height;
         let left = 48.0f32.max(w * 0.10);
@@ -426,7 +458,21 @@ impl WelcomeFrame {
         // `fminf(250, (w*0.60)/3)`: the columns stop spreading at 250 px so the
         // three captions stay a group rather than drifting apart on a wide window.
         let step_stride = 250.0f32.min((w * 0.60) / 3.0);
-        let steps_y = top + 250.0;
+        let drop_hint = UiRect::new(left, top + 216.0, (w * 0.66 - left).max(0.0), 15.0);
+        let recovery = recovery_available.then(|| {
+            let buttons_y = drop_hint.y + drop_hint.height + 10.0;
+            WelcomeRecovery {
+                hint: drop_hint,
+                recover: UiRect::new(left, buttons_y, 286.0, 32.0),
+                dismiss: UiRect::new(left + 294.0, buttons_y, 88.0, 32.0),
+            }
+        });
+        // The recovery row used to be painted into the one-line drop hint,
+        // while this divider stayed fixed and cut through the buttons. Stack
+        // the explanatory steps after the actual action block instead.
+        let steps_y = recovery.map_or(top + 250.0, |row| {
+            row.recover.y + row.recover.height + 28.0 + 16.0
+        });
         let steps = [0usize, 1, 2].map(|index| {
             UiRect::new(
                 left + index as f32 * step_stride,
@@ -482,12 +528,8 @@ impl WelcomeFrame {
             body: UiRect::new(left, top, (w * 0.72 - left).max(0.0), 112.0 + 17.0),
             open_audio,
             open_project,
-            drop_hint: UiRect::new(
-                open_audio.x,
-                open_audio.y + open_audio.height + 14.0,
-                w - open_audio.x - 32.0,
-                15.0,
-            ),
+            recovery,
+            drop_hint,
             steps,
             steps_rule: UiRect::new(left, steps_y - 16.0, (w * 0.66 - left).max(0.0), 1.0),
             formats,
@@ -517,6 +559,26 @@ mod tests {
     /// The minimum supported window (`musializer.c:354`). Every "does it fit"
     /// assertion below is measured against what *this* produces.
     const MIN: (f32, f32) = (960.0, 640.0);
+
+    #[test]
+    fn editor_keeps_complete_preview_clear_of_panel_at_supported_sizes() {
+        for window in [
+            (960.0, 640.0),
+            (1280.0, 900.0),
+            (1920.0, 1080.0),
+            (480.0, 320.0),
+        ] {
+            let panel = editor_rect(window);
+            let frame = WorkspaceFrame::editor(window);
+            assert!(frame.preview.x + frame.preview.width <= panel.x - 16.0);
+            assert!(panel.y + panel.height <= window.1);
+            assert!(
+                frame.toolbar.is_empty() && frame.tracks.is_empty() && frame.timeline.is_empty()
+            );
+        }
+        let frame = WorkspaceFrame::editor((1920.0, 1080.0));
+        assert_eq!(frame.preview, UiRect::new(16.0, 16.0, 1272.0, 1048.0));
+    }
 
     #[test]
     fn a_closed_inspector_gives_the_workspace_the_whole_window() {
@@ -788,6 +850,52 @@ mod tests {
     }
 
     #[test]
+    fn recovery_controls_and_steps_have_separate_space() {
+        let screenshot = WelcomeFrame::layout(1280.0, 720.0, true);
+        let recovery = screenshot.recovery.unwrap();
+        assert_eq!(recovery.hint.y, 360.0);
+        assert_eq!(recovery.recover.y, 385.0);
+        assert_eq!(screenshot.steps_rule.y, 445.0);
+        assert_eq!(screenshot.steps[0].y, 461.0);
+
+        for (w, h) in [(960.0, 640.0), (1280.0, 720.0), (1920.0, 1080.0)] {
+            let frame = WelcomeFrame::layout(w, h, true);
+            let recovery = frame.recovery.unwrap();
+            let regions = [
+                frame.open_audio,
+                frame.open_project,
+                recovery.hint,
+                recovery.recover,
+                recovery.dismiss,
+                frame.steps_rule,
+                frame.steps[0],
+                frame.steps[1],
+                frame.steps[2],
+                frame.formats,
+            ];
+            for (i, region) in regions.iter().enumerate() {
+                assert!(UiRect::new(0.0, 0.0, w, h).contains(*region));
+                for other in &regions[i + 1..] {
+                    assert!(
+                        !region.overlaps(*other),
+                        "{w}x{h}: {region:?} overlaps {other:?}"
+                    );
+                }
+            }
+            assert!(frame.fits(h));
+        }
+
+        let short = WelcomeFrame::layout(960.0, 480.0, true);
+        assert!(
+            !short.fits(480.0),
+            "omit explanatory steps when recovery needs their space"
+        );
+        let recovery = short.recovery.unwrap();
+        assert!(recovery.recover.y + recovery.recover.height < short.formats.y);
+        assert!(WelcomeFrame::layout(960.0, 480.0, false).fits(480.0));
+    }
+
+    #[test]
     fn the_welcome_screen_seats_its_call_to_action_at_the_smallest_permitted_window() {
         // GLFW clamps a smaller request up to 960x640 (`cli::MIN_WINDOW`), so that
         // is the real floor and the one worth asserting. The failure this catches
@@ -795,7 +903,7 @@ mod tests {
         // 158 px below it, so a short window pushes the only control on the screen
         // toward the format strip rather than shrinking anything.
         for (w, h) in [(960.0f32, 640.0f32), (1280.0, 720.0), (1920.0, 1080.0)] {
-            let frame = WelcomeFrame::layout(w, h);
+            let frame = WelcomeFrame::layout(w, h, false);
             let window = UiRect::new(0.0, 0.0, w, h);
             assert!(
                 window.contains(frame.open_audio),
@@ -824,7 +932,7 @@ mod tests {
             (1280.0, 720.0, 8),
             (1920.0, 1080.0, 8),
         ] {
-            let frame = WelcomeFrame::layout(w, h);
+            let frame = WelcomeFrame::layout(w, h, false);
             assert_eq!(
                 frame.recent_visible, expected_rows,
                 "{w}x{h}: wrong number of recent seats"
@@ -866,9 +974,9 @@ mod tests {
         // seat count has to be honest for a caller that narrows the rule, because
         // the alternative is a name and a folder printing through each other and
         // still photographing as text.
-        let frame = WelcomeFrame::layout(400.0, 720.0);
+        let frame = WelcomeFrame::layout(400.0, 720.0, false);
         assert_eq!(frame.recent_visible, 0);
-        let short = WelcomeFrame::layout(1280.0, 320.0);
+        let short = WelcomeFrame::layout(1280.0, 320.0, false);
         assert_eq!(
             short.recent_visible, 0,
             "a window with no room between the number and the strip seats nothing"
@@ -881,7 +989,7 @@ mod tests {
         // `--size` before GLFW clamps, and through a fullscreen probe. `fits`
         // exists so the caller can drop the captions instead of painting them
         // over the format strip.
-        let frame = WelcomeFrame::layout(960.0, 420.0);
+        let frame = WelcomeFrame::layout(960.0, 420.0, false);
         assert!(!frame.fits(420.0));
     }
 
@@ -889,11 +997,11 @@ mod tests {
     fn the_step_columns_stop_spreading_on_a_wide_window() {
         // `fminf(250, (w*0.60)/3)`. Without the cap the three captions drift to
         // the far side of a 4K window and stop reading as one sequence.
-        let wide = WelcomeFrame::layout(3840.0, 2160.0);
+        let wide = WelcomeFrame::layout(3840.0, 2160.0, false);
         let stride = wide.steps[1].x - wide.steps[0].x;
         assert_eq!(stride, 250.0);
         // And below the cap it is proportional, so a narrow window packs them.
-        let narrow = WelcomeFrame::layout(960.0, 640.0);
+        let narrow = WelcomeFrame::layout(960.0, 640.0, false);
         assert!((narrow.steps[1].x - narrow.steps[0].x) < 250.0);
     }
 }

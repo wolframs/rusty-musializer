@@ -209,7 +209,7 @@ fn main() -> std::process::ExitCode {
 ///
 /// `DISPLAY` alone decides it, and `WAYLAND_DISPLAY` is deliberately not consulted,
 /// because this binary has no Wayland backend to consult it for: raylib is built
-/// here with `_GLFW_X11` and nothing else (`raylib-5-5-link/build.rs:78`, mirroring
+/// here with `_GLFW_X11` and nothing else (`raylib-link/build.rs:78`, mirroring
 /// `nob_linux.c`), so GLFW's only path to a window is X11. A launch with
 /// `WAYLAND_DISPLAY` set and `DISPLAY` unset dies in exactly the same place as one
 /// with neither — treating the Wayland name as an offer would let through the case
@@ -244,7 +244,7 @@ fn run(
     session_credentials: musializer_runtime::assist::env::SessionCredentials,
 ) -> Result<std::process::ExitCode, String> {
     let session_fingerprint = session_credentials.openrouter_fingerprint();
-    // Keeps the raylib-5-5-link crate in the link graph; see its build.rs.
+    // Keeps the raylib-link crate in the link graph; see its build.rs.
     let raylib_version = musializer_runtime::ensure_raylib_linked();
 
     // The pre-pass wins from any position and opens no window.
@@ -314,6 +314,9 @@ fn run(
         .msaa_4x()
         .resizable()
         .build();
+    // Escape belongs to focused editors and fullscreen navigation. Raylib's
+    // default would request application exit before those handlers can see it.
+    rl.set_exit_key(None);
     // GLFW clamps a smaller request to this, which is why a deliberately tiny
     // `--ui-probe size=` photographs the smallest layout the app permits
     // (`musializer.c:354`, `:599-601`).
@@ -410,6 +413,12 @@ fn run(
         },
     };
     app.shell.set_ui_scale_override(options.ui_scale);
+    app.shell.editor_open = options.editor_ui;
+    let mut editor_backend = ui::egui_backend::EguiBackend::default();
+    let mut editor = ui::egui_editor::EditorState::default();
+    let mut editor_was_active = false;
+    editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
+    ui::theme::set_current(editor.theme);
     // Batch/probe runs never touch the operator's state directory. Tests that
     // exercise recovery opt into a scratch location explicitly.
     let recovery_enabled = is_session_run(&options)
@@ -924,6 +933,7 @@ fn run(
             // device path uses (D1).
             app.shell.probe_drop = probe.drop_file.clone();
             app.shell.probe_wheel_shift = probe.wheel_shift;
+            app.shell.probe_wheel_alt = probe.wheel_alt;
             middle_drag = probe.middle_drag;
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
@@ -1283,8 +1293,14 @@ fn run(
         if rl.window_should_close() {
             let discards_work = app.workspace.any_unsaved_work()
                 || app.shell.lyric_draft_is_dirty(&app.workspace)
-                || app.shell.route_edit_is_dirty();
-            if confirm_close(&mut app, export.is_some(), &mut close_warned) {
+                || app.shell.route_edit_is_dirty()
+                || editor.has_dirty_drafts();
+            if confirm_close(
+                &mut app,
+                export.is_some(),
+                editor.has_dirty_drafts(),
+                &mut close_warned,
+            ) {
                 if discards_work {
                     if let Err(error) = recovery_store.discard() {
                         eprintln!("warning: explicit discard could not remove recovery: {error}");
@@ -1366,6 +1382,12 @@ fn run(
         let time_seconds = music
             .as_ref()
             .map_or(0.0, |m| f64::from(m.get_time_played()));
+        let audition_gain = app
+            .shell
+            .protocol
+            .as_ref()
+            .map_or(1.0, |session| session.audition_gain(time_seconds));
+        apply_volume(&audio, volume * audition_gain, muted);
         // The track's decoded duration, not the stream's, because that is what
         // the C puts in the frame (`plug.c:1169`) and what every timeline and
         // export length is measured against. They agree, but only one of them
@@ -1453,6 +1475,58 @@ fn run(
             let _ = ensure_song_atlas_map(&audio, &mut app, music.as_ref());
         }
 
+        // Build the toolkit-owned editor before the raylib drawing pair. Legacy
+        // input stays modal-blocked for the whole frame, including a close click.
+        let editor_active = app.shell.editor_open && !app.shell.assist_settings.is_open();
+        let mut editor_output = ui::egui_editor::EditorOutput::default();
+        if editor_active
+            && !editor_was_active
+            && app.shell.lyrics.draft_owner() == app.workspace.current_index()
+        {
+            if let Some(track) = app.workspace.current() {
+                editor.focus_cue(track, app.shell.lyrics.selected_id);
+            }
+        }
+        editor_was_active = editor_active;
+        if editor_active {
+            editor_backend.begin_frame(&mut rl, ui_scale.value(), true);
+            let logical = ui_scale.logical_size(physical_window);
+            let bounds = ui::shell_layout::editor_rect(logical);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(bounds.x, bounds.y),
+                egui::vec2(bounds.width, bounds.height),
+            );
+            editor_output = editor.show(
+                editor_backend.ctx(),
+                rect,
+                app.workspace.current(),
+                app.scene.id(),
+                app.workspace.current_index(),
+                time_seconds,
+                playing,
+            );
+            editor_backend.end_frame(&mut rl);
+            if let Some(theme) = editor_output.theme {
+                editor_output.commands.push(app.shell.set_appearance(theme));
+            }
+        }
+
+        let welcome_theme_active = app.workspace.current().is_none() && !editor_active;
+        let mut welcome_input_blocked = false;
+        if welcome_theme_active {
+            editor_backend.begin_frame(&mut rl, ui_scale.value(), true);
+            let (theme, owns_input) = ui::egui_editor::welcome_theme(
+                editor_backend.ctx(),
+                ui_scale.logical_size(physical_window),
+                &mut editor.theme,
+            );
+            if let Some(theme) = theme {
+                editor_output.commands.push(app.shell.set_appearance(theme));
+            }
+            editor_backend.end_frame(&mut rl);
+            welcome_input_blocked = owns_input;
+        }
+
         // The shape the export will actually be (EX2). Falls back to the default
         // configuration's 16:9 with no track open, which is what the export
         // panel would offer anyway, so the welcome-state preview is unchanged.
@@ -1514,7 +1588,7 @@ fn run(
         // With no track open the C draws the welcome screen instead of the
         // workspace (`preview_screen`, `plug.c:7769`), so the workspace frame is
         // not even computed on that path — there is no preview to lay out around.
-        let commands;
+        let mut commands;
         if app.workspace.current().is_none() {
             // The recent list's "3 days ago" is measured against this, refreshed
             // per frame so a session left on the welcome screen does not keep
@@ -1524,7 +1598,15 @@ fn run(
             let mut d = rl.begin_drawing(&thread);
             d.clear_background(ui::theme::color::ui_surface());
             let mut ui_draw = d.begin_mode2D(ui_scale.camera());
-            commands = app.shell.draw_welcome(&mut ui_draw, &shell_input);
+            commands = app
+                .shell
+                .draw_welcome(&mut ui_draw, &shell_input, welcome_input_blocked);
+            drop(ui_draw);
+            if editor_active || welcome_theme_active {
+                if let Err(error) = editor_backend.draw(&mut d, &thread) {
+                    eprintln!("editor rendering: {error}");
+                }
+            }
         } else {
             let layout = app.shell.layout(&shell_input);
 
@@ -1657,6 +1739,21 @@ fn run(
                     Color::RAYWHITE,
                 );
             }
+            drop(ui_draw);
+            if editor_active {
+                if let Err(error) = editor_backend.draw(&mut d, &thread) {
+                    eprintln!("editor rendering: {error}");
+                }
+            }
+        }
+        // A held legacy gesture may predate opening the editor with F8.
+        // Only the modal owner's commands can cross the application boundary.
+        if editor_active {
+            commands.clear();
+        }
+        commands.append(&mut editor_output.commands);
+        if editor_output.close_requested {
+            app.shell.editor_open = false;
         }
 
         // The lyrics editor writes through the track rather than through a
@@ -1665,7 +1762,11 @@ fn run(
         // Drained against the current slot, not blindly (review 1.3): an edit
         // authored on another track is dropped and reported rather than written
         // through the cue id it happens to share with this one.
-        let edits = app.shell.drain_lyric_edits(app.workspace.current_index());
+        let mut edits = app.shell.drain_lyric_edits(app.workspace.current_index());
+        if editor_active {
+            edits.clear();
+        }
+        edits.append(&mut editor_output.lyric_edits);
         if !edits.is_empty() {
             let now = rl.get_time();
             if let Some(track) = app.workspace.current_mut() {
@@ -1706,6 +1807,19 @@ fn run(
                         "Lyric edit was refused",
                         &error.to_string(),
                     );
+                }
+            }
+        }
+
+        if editor_output.close_requested
+            && app.shell.lyrics.draft_owner() == app.workspace.current_index()
+        {
+            if let Some(track) = app.workspace.current() {
+                // Opening requires a clean legacy draft and modal input keeps it
+                // untouched. Rebind after Apply so old field values aren't
+                // mistaken for a new draft against the updated cue.
+                if let Some(id) = editor.selected_cue(track) {
+                    app.shell.lyrics.select_single(&track.lyrics, id);
                 }
             }
         }
@@ -1851,6 +1965,20 @@ fn run(
                 }
                 ShellCommand::SelectScene(id) => {
                     app.select_scene_interactive(id, time_seconds, rl.get_time());
+                }
+                ShellCommand::ResumeRouteDraft { track_slot, scene } => {
+                    // A preceding track switch may have been refused by another
+                    // editor's guard. Never show/apply this draft on that track.
+                    if app.workspace.current_index() == Some(track_slot)
+                        && app.shell.focused_route_row(track_slot, scene).is_some()
+                    {
+                        let seed = app
+                            .workspace
+                            .current()
+                            .map_or(DEFAULT_SCENE_SEED, |track| track.scene_seed);
+                        app.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+                        app.shell.inspector_open = true;
+                    }
                 }
                 ShellCommand::SetAutoScenes(enabled) => {
                     app.set_auto_scenes(enabled, rl.get_time());
@@ -3166,15 +3294,13 @@ fn bind_audio<'audio>(
     // it.
     unsafe { audio_bridge::attach(opened.stream) }
         .map_err(|error| format!("could not attach the audio bridge: {error}"))?;
-    // Both halves begin marked processed. Fill them before playback starts so
-    // the device never races the first rendered frame for actual PCM.
-    opened.update_stream();
+    // raylib 6 only refills a started stream, and Play resets its buffers.
+    // Park it immediately, prime real PCM while paused, then release playback.
     opened.play_stream();
-    if !play {
-        // A parked probe is a paused live stream, not a never-started buffer.
-        // That distinction matters because raylib only lets the seek transaction
-        // reset a paused buffer after it has been resumed.
-        opened.pause_stream();
+    opened.pause_stream();
+    opened.update_stream();
+    if play {
+        opened.resume_stream();
     }
 
     app.shell
@@ -3210,10 +3336,15 @@ fn seek_preview(
         music.resume_stream();
     }
     music.stop_stream();
+    // PlayAudioBuffer in raylib 6 resets framesProcessed and buffer flags;
+    // UpdateMusicStream refuses a stopped stream. Start and park first, then
+    // seek/refill so Play cannot erase the requested time afterward.
+    music.play_stream();
+    music.pause_stream();
     music.seek_stream(target as f32);
     music.update_stream();
 
-    // The stream is stopped, so the callback cannot race either reset. Queued
+    // The stream is paused, so the callback cannot race either reset. Queued
     // samples and analyzer smoothing both describe the old playhead and must be
     // discarded together.
     if let Some(ring) = audio_bridge::ring() {
@@ -3227,9 +3358,8 @@ fn seek_preview(
         track.cue_settings_active = false;
     }
 
-    music.play_stream();
-    if !was_playing {
-        music.pause_stream();
+    if was_playing {
+        music.resume_stream();
     }
 }
 
@@ -3272,16 +3402,18 @@ fn append_answer_line(path: &Path, line: &str) -> std::io::Result<()> {
 /// Deliberately not [`App::select_scene`]: that marks the track dirty and
 /// raises a "Base scene changed" notice, and a 24-item session would stack 24
 /// of them over the question card.
-fn protocol_bind_scene(app: &mut App, id: SceneId) {
-    if app.scene.id() == id {
+fn protocol_bind_scene(app: &mut App, id: SceneId, protocol_seed: Option<u64>) {
+    if app.scene.id() == id && protocol_seed.is_none() {
         return;
     }
-    let seed = app
-        .workspace
-        .current()
-        .map_or(DEFAULT_SCENE_SEED, |track| track.scene_seed);
+    let seed = protocol_seed.unwrap_or_else(|| {
+        app.workspace
+            .current()
+            .map_or(DEFAULT_SCENE_SEED, |track| track.scene_seed)
+    });
     app.scene = SceneInstance::new(scene_host::descriptor(id), seed);
     if let Some(track) = app.workspace.current_mut() {
+        track.scene_seed = seed;
         track.select_base_scene(id);
     }
 }
@@ -3296,7 +3428,7 @@ fn protocol_apply_activation(
     play: bool,
 ) {
     if let Some((scene, snapshot)) = activation.apply {
-        protocol_bind_scene(app, scene);
+        protocol_bind_scene(app, scene, activation.seed);
         if !app.settings_mut().apply_snapshot(scene, &snapshot) {
             // Unreachable for a parsed protocol — `Protocol::parse` validated
             // every snapshot — which is exactly why it is reported rather
@@ -3392,8 +3524,6 @@ fn load_protocol_session<'audio>(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     );
-    let title = protocol.title.clone();
-    let total = protocol.items.len();
     let mut session =
         ui::protocol::ProtocolSession::new(protocol, file_name, answers_path, already_answered);
     let activation = session
@@ -3403,13 +3533,8 @@ fn load_protocol_session<'audio>(
     if let Some(activation) = activation {
         protocol_apply_activation(app, music, analysis, scene_clock_previous, activation, play);
     }
-    app.shell.notify(
-        Severity::Info,
-        &format!("Listening session: {title}"),
-        &format!(
-            "{total} questions on the timeline. 1-4 answer, R replays the moment, B plays the other look, N skips. Every answer saves the instant you press it."
-        ),
-    );
+    // The question card owns session instructions. A second notice would sit
+    // over the scene at the very moment the first audition starts (SX4).
     Ok(())
 }
 
@@ -3926,7 +4051,12 @@ fn mark_current_track_dirty(app: &mut App, now_seconds: f64) {
 /// refuses the **first** request and says why, in the tray and on stderr, and
 /// honours the second. That is finite, it never loses work without having said
 /// so, and it is the smallest invention that satisfies both halves.
-fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> bool {
+fn confirm_close(
+    app: &mut App,
+    exporting: bool,
+    toolkit_draft: bool,
+    already_warned: &mut bool,
+) -> bool {
     let dirty = app
         .workspace
         .tracks()
@@ -3940,7 +4070,7 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
     // twice about the same decision. Guarding quit the way the track row is
     // guarded would be worse still — refusing to close an application is not a
     // reasonable answer to a half-typed lyric.
-    let lyric_draft = app.shell.lyric_draft_is_dirty(&app.workspace);
+    let lyric_draft = app.shell.lyric_draft_is_dirty(&app.workspace) || toolkit_draft;
     // The remaining conditions the C weighs — staged Assist suggestions, a
     // running analysis and a running export — arrive through `assist` and
     // `exporting`.

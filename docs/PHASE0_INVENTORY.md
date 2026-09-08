@@ -58,6 +58,12 @@ application added; the tables below pin the grammar's shape and the semantics
 inherited from `src/musializer.c` (parser at `:315-662`, four value parsers at
 `:19-250`).
 
+The toolkit editor adds `--editor-ui` (open at startup) and
+`--ui-theme light-blue|black-amber` (session appearance override). The Editor
+selector persists the same theme tokens in the workstation UI preference JSON;
+missing theme fields default to `light-blue`. Neither flag changes project or
+export appearance. See [UI_TOOLKIT.md](UI_TOOLKIT.md).
+
 ### 3.1 Pre-pass: help and version short-circuit
 
 `src/musializer.c:317-326` scans **all** of `argv` **before** anything else —
@@ -300,7 +306,7 @@ a strict superset and its authoritative list is
 `crates/musializer-app/src/cli.rs`'s own doc comments** — deliberately not
 duplicated here, because a headless probe key is added in the same commit as the
 surface it drives and a copy in this file would be stale before it was read.
-Keys invented here so far include `hover`, `click`, `wheel`, `wheel-shift`,
+Keys invented here so far include `hover`, `click`, `wheel`, `wheel-shift`, `wheel-alt`,
 `middle-drag`, `drop`, `scene-pick`, `save-to`, `lyric-tap`, `lyric-undo`,
 `tune-seed`, `tune-explore`, `tune-type`, `protocol-flip`, `protocol-answer`,
 `sidebar`, `inspector`, `timeline-height`, `audio-stall`, `route`, `picker`,
@@ -518,6 +524,14 @@ cadence(7), loom(7), pentagram(8). **75 controls total.**
 | 5 | `settings.ascii.tint` | Band hue spread | 0.00 | 1.00 | **0.45** | 2 | slider |
 
 ### 5.5 Song Atlas — 12 controls (the only scene at capacity), `src/scene_settings.c:56-69`
+
+**SX4 interpretation (2026-09-05):** keys, labels, bounds and defaults below
+are retained. The rendered terrain is now a spiral relief: height embosses the
+surface, width changes the groove, and depth spaces its turns. Detail changes
+engraving density; every stored audio slice contributes at every detail level.
+Camera, hue, surface style and contour controls retain their roles. Existing
+projects open with this deliberately redesigned appearance; see
+[`SCENE_DESIGN.md`](SCENE_DESIGN.md) for the operator decision and evidence.
 
 | # | Key | Label | Min | Max | **Default** | Prec | Kind |
 | --- | --- | --- | --- | --- | --- | --- | --- |

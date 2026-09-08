@@ -6213,7 +6213,7 @@ fi
 #
 #   1. a value chip *takes* a press and opens a field  -> click= plus `tune entry:`
 #   2. a typed number is clamped by its descriptor      -> tune-type=
-#   3. the wheel steps one unit of the descriptor's own precision
+#   3. Alt+wheel steps one unit of the descriptor's own precision
 #   4. Surprise then Revert restores the **exact bits** -> tune-explore=, tune values:
 #
 # Why two probe families rather than one. `click=` presses one control per run,
@@ -6251,10 +6251,12 @@ fi
 # -- UX0-B09: the value chip takes a press and becomes a field -----------------
 #
 # The click coordinate is the Amplitude chip's centre at 1280x720, read off
-# panel-tune-1280x720.png. Asserting `tune entry:` as well as `click probe:` is
+# panel-tune-1280x720.png, adjusted by -12 x / +4 y for the scrollbar
+# gutter/body padding. That adjustment awaits the next visual gate.
+# Asserting `tune entry:` as well as `click probe:` is
 # the point: a press cashed by the right widget id through a branch that forgot to
 # open the field photographs exactly like one that opened it.
-capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=1195x164" || TUNE_FAILED=1
+capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=1183x168" || TUNE_FAILED=1
 CHIP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-click.txt")"
 CHIP_ENTRY="$(tune_entry tune-chip-click)"
 echo "chip click: $CHIP_CLAIM -> [$CHIP_ENTRY]"
@@ -6271,7 +6273,7 @@ esac
 # The control-free gap between the label zone and the chip. Without this row a
 # probe that pressed nothing would satisfy every assertion above, since a no-op
 # leaves the panel exactly as it started.
-capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=1160x164" || TUNE_FAILED=1
+capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=1148x168" || TUNE_FAILED=1
 GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-gap.txt")"
 GAP_ENTRY="$(tune_entry tune-chip-gap)"
 echo "chip gap: $GAP_CLAIM -> [$GAP_ENTRY]"
@@ -6325,15 +6327,15 @@ tune_typed junk spectrum.amplitude:1.5x \
     'settings.spectrum.amplitude "1.5x" REFUSED NotANumber' \
     "$TUNE_BASE"
 
-# -- UX0-B09: the wheel steps one unit of the descriptor's precision -----------
+# -- UX0-B09: Alt+wheel steps one unit of the descriptor's precision -----------
 #
 # `hover=` parks the pointer, `wheel=` delivers one notch on one frame (LX2). The
 # timed lanes read the same notch, so each run also asserts the timeline did NOT
 # zoom: two rectangles claiming one physical event is exactly the defect LX2-c's
 # first-claim-wins rule exists to prevent, in the other direction.
 tune_wheel() {
-    # tune_wheel NAME POINT NOTCHES EXPECTED-VALUES
-    capture "tune-wheel-$1" 1280x720 --ui-probe "panel=tune,hover=$2,wheel=$3" || TUNE_FAILED=1
+    # tune_wheel NAME POINT NOTCHES EXPECTED-VALUES [ALT=1]
+    capture "tune-wheel-$1" 1280x720 --ui-probe "panel=tune,hover=$2,wheel=$3,wheel-alt=${5:-1}" || TUNE_FAILED=1
     local values zoom
     values="$(tune_values "tune-wheel-$1")"
     zoom="$(sed -n 's/^timeline: *//p' "$OUT_DIR/tune-wheel-$1.txt")"
@@ -6357,6 +6359,8 @@ tune_wheel down 1050x190 -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
 # a wheel handler scoped to the inspector instead of to a row would pass every
 # assertion above and silently move whichever setting happened to be first.
 tune_wheel miss 1000x620 1 "$TUNE_BASE"
+# Unmodified wheel navigates Tune and must never change the setting underneath.
+tune_wheel scroll 1050x190 -3 "$TUNE_BASE" 0
 
 # -- UX0-C07: Surprise stays inside every bound, and is reproducible -----------
 #
@@ -6611,7 +6615,7 @@ env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
         --size 1280x720 \
         --probe-frames 60 \
         --probe-shot "$OUT_DIR/recovery-restored.png" \
-        --ui-probe "click=200x365" \
+        --ui-probe "click=200x401" \
     >"$RECOVERY_RESTART_LOG" 2>&1
 RECOVERY_RESTART_STATUS=$?
 set -e
@@ -6626,7 +6630,7 @@ if ! grep -q '^tracks:          1 open, current 0 ' "$RECOVERY_RESTART_LOG" \
     RECOVERY_FAILED=1
 fi
 RECOVERY_CLAIM="$(sed -n 's/^click probe: .*claimed=//p' "$RECOVERY_RESTART_LOG")"
-if [ -z "$RECOVERY_CLAIM" ] || [ "$RECOVERY_CLAIM" = "none" ]; then
+if [ "$RECOVERY_CLAIM" != "0x600000003" ]; then
     echo "FAIL: the welcome-screen recovery action did not claim its click" >&2
     RECOVERY_FAILED=1
 fi

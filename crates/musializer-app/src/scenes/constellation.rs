@@ -20,8 +20,9 @@ use musializer_core::scenes::constellation::{
     self as constellation, ConstellationState, EventFlare, Vec3 as CoreVec3, NODE_COUNT,
 };
 use musializer_runtime::draw;
+use musializer_runtime::draw::Camera3D;
 use raylib::prelude::{
-    BlendMode, Camera3D, Color, RaylibBlendModeExt, RaylibDraw, RaylibDraw3D, RaylibDrawHandle,
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDraw3D, RaylibDrawHandle,
     RaylibMode3DExt, RaylibShaderModeExt, Rectangle, Vector2, Vector3,
 };
 
@@ -140,7 +141,7 @@ pub fn draw(
         );
     }
 
-    d.draw_mode3D(camera, |mut m3, camera| {
+    d.draw_mode3D(camera, |mut m3| {
         viewport.correct_aspect(&mut m3);
 
         // The web: each node links to its immediate neighbour and to one further

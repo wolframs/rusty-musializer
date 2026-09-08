@@ -48,6 +48,12 @@ pub enum ShellCommand {
     /// Absolute transport position in seconds.
     Seek(f64),
     SelectScene(SceneId),
+    /// Show the scene owning an existing route draft without rewriting a scene
+    /// plan or changing the track's saved base scene.
+    ResumeRouteDraft {
+        track_slot: usize,
+        scene: SceneId,
+    },
     /// One scene setting, already clamped by the descriptor.
     SetSetting {
         scene: SceneId,
@@ -251,6 +257,7 @@ impl ShellCommand {
             ShellCommand::TogglePlay
             | ShellCommand::Seek(_)
             | ShellCommand::SelectTrack(_)
+            | ShellCommand::ResumeRouteDraft { .. }
             | ShellCommand::SetVolume(_)
             | ShellCommand::ToggleMute
             | ShellCommand::SetFullscreen(_)
@@ -440,6 +447,8 @@ pub struct ToolbarResult {
 
 /// Shell state that survives between frames.
 pub struct Shell {
+    /// Egui editor dialog. Its modal input boundary protects legacy text fields.
+    pub editor_open: bool,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -552,6 +561,8 @@ pub struct Shell {
     /// would let a spec ask for a zoom and a pan on one frame, which no hand can
     /// do.
     pub probe_wheel_shift: bool,
+    /// `--ui-probe wheel-alt=1`: Tune's explicit value-edit modifier.
+    pub probe_wheel_alt: bool,
     /// Whether Shift was held when this frame's wheel was read, so a notch over
     /// any timed lane pans rather than zooms.
     ///
@@ -1044,6 +1055,7 @@ impl Shell {
         // screen it covered the format strip along the bottom edge — which a
         // headless capture is what showed.
         Self {
+            editor_open: false,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1064,6 +1076,7 @@ impl Shell {
             timeline_event_markers: EventMarkerReport::default(),
             probe_wheel: None,
             probe_wheel_shift: false,
+            probe_wheel_alt: false,
             probe_middle_drag_frame: None,
             wheel_pan_modifier: false,
             probe_wheel_frame: None,
@@ -1092,6 +1105,15 @@ impl Shell {
             fullscreen_attention_since: None,
             fullscreen_attention_token: "none",
         }
+    }
+
+    pub fn appearance(&self) -> super::theme::UiTheme {
+        self.ui_preferences.theme
+    }
+    pub fn set_appearance(&mut self, theme: super::theme::UiTheme) -> ShellCommand {
+        self.ui_preferences.theme = theme;
+        super::theme::set_current(theme);
+        ShellCommand::SaveUiPreferences(self.ui_preferences)
     }
 
     pub fn set_ui_scale_override(&mut self, preference: Option<UiScalePreference>) {
@@ -1305,6 +1327,9 @@ impl Shell {
     /// one about `tracks_mode` — which is exactly the state review 1.12 is about.
     #[must_use]
     pub fn frame_for(&self, window: (f32, f32), workspace: &Workspace) -> WorkspaceFrame {
+        if self.editor_open && !self.assist_settings.is_open() {
+            return WorkspaceFrame::editor(window);
+        }
         if self.fullscreen {
             return WorkspaceFrame::fullscreen(window.0, window.1, true);
         }
@@ -1479,7 +1504,7 @@ impl Shell {
         // means nothing underneath can be pressed. The dialog draws its controls
         // into a bank of its own, which this claim cannot reach. See
         // `ui/assist_settings.rs`'s module comment.
-        let modal = self.assist_settings.is_open();
+        let modal = self.assist_settings.is_open() || self.editor_open;
         if modal {
             self.widgets.button(
                 d,
@@ -1510,10 +1535,12 @@ impl Shell {
             if !modal {
                 self.timeline_strip(d, frame, input, toolbar, &mut commands);
             }
-            if self.inspector_open {
+            if self.inspector_open && !self.editor_open {
                 self.inspector(d, frame, input, &mut commands);
             }
-            self.splitters(d, frame, input, &mut commands);
+            if !self.editor_open {
+                self.splitters(d, frame, input, &mut commands);
+            }
         }
         // The protocol question card sits over the preview's bottom edge, and
         // the notice tray stacks *above* it rather than over it — the first
@@ -1523,9 +1550,13 @@ impl Shell {
         let mut notice_region = frame.preview;
         if let Some(session) = &self.protocol {
             if !modal {
-                if let Some(card_top) =
-                    super::protocol::draw_card(d, input.fonts.ui(), session, frame.preview)
-                {
+                if let Some(card_top) = super::protocol::draw_card(
+                    d,
+                    input.fonts.ui(),
+                    session,
+                    frame.preview,
+                    input.playing,
+                ) {
                     notice_region.height = (card_top - notice_region.y).max(0.0);
                 }
             }
@@ -1533,7 +1564,7 @@ impl Shell {
         self.notice_tray(d, input.fonts.ui(), notice_region);
         self.fullscreen_attention(d, input);
 
-        if modal {
+        if self.assist_settings.is_open() {
             // AP3-R S11: the one fact the dialog cannot read off disk. It states
             // that routing changes apply to the next job (§5 invariant 3), and
             // without this it could never say whether there is a current one.
@@ -1637,15 +1668,24 @@ impl Shell {
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
+        appearance_input_blocked: bool,
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
         // The welcome screen has no timed lane, so the modifier can never be
         // consulted; passing the real key state anyway keeps one rule.
         self.begin_frame(input.ui_scale, shift_held(d));
-        self.dropped_files(d, &mut commands);
+        if self.editor_open || appearance_input_blocked {
+            self.widgets.button(
+                d,
+                widgets::widget_id(super::assist_settings::MODAL_BLOCK_NAMESPACE, 0),
+                UiRect::new(0.0, 0.0, input.window.0, input.window.1),
+            );
+        } else {
+            self.dropped_files(d, &mut commands);
+        }
 
         let (w, h) = input.window;
-        let frame = WelcomeFrame::layout(w, h);
+        let frame = WelcomeFrame::layout(w, h, self.recovery_available);
         let font = input.fonts.ui();
 
         // A light surface, not the scene background: this screen is chrome, and
@@ -1707,7 +1747,7 @@ impl Shell {
         widgets::draw_text(
             d,
             font,
-            "Open an audio file, choose a scene, refine timing, then export a deterministic MP4.",
+            "Open an audio file, choose a scene, refine timing, then export a video.",
             frame.body.x,
             frame.body.y + 112.0,
             17.0,
@@ -1759,16 +1799,14 @@ impl Shell {
                 commands.push(ShellCommand::OpenProject);
             }
         }
-        if self.recovery_available {
-            let recovery = UiRect::new(frame.drop_hint.x, frame.drop_hint.y, 286.0, 32.0);
-            let dismiss = UiRect::new(recovery.x + recovery.width + 8.0, recovery.y, 88.0, 32.0);
+        if let Some(recovery) = frame.recovery {
             if self
                 .widgets
                 .text_button(
                     d,
                     font,
                     widgets::widget_id(widgets::id::WELCOME, 2),
-                    recovery,
+                    recovery.recover,
                     "Recover session",
                     true,
                     ButtonStyle::Neutral,
@@ -1784,7 +1822,7 @@ impl Shell {
                     d,
                     font,
                     widgets::widget_id(widgets::id::WELCOME, 3),
-                    dismiss,
+                    recovery.dismiss,
                     "Dismiss",
                     false,
                     ButtonStyle::Neutral,
@@ -1797,9 +1835,9 @@ impl Shell {
             widgets::draw_text(
                 d,
                 font,
-                "Recover or Dismiss before opening another track",
-                frame.drop_hint.x,
-                frame.drop_hint.y + 42.0,
+                "Recover or dismiss the saved session to open another track.",
+                recovery.hint.x,
+                recovery.hint.y,
                 15.0,
                 color::ui_warning(),
             );
@@ -2178,6 +2216,14 @@ impl Shell {
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
+        if d.is_key_pressed(raylib::consts::KeyboardKey::KEY_F8)
+            && !d.is_mouse_button_down(raylib::consts::MouseButton::MOUSE_BUTTON_LEFT)
+            && !self.text_entry_has_focus()
+            && self.lyric_draft_allows_context_change(input.workspace)
+        {
+            self.editor_open = true;
+            return;
+        }
         self.keyboard_actions(KeyboardFrame::read(d), KeyboardContext::of(input), commands);
     }
 
@@ -2399,7 +2445,13 @@ impl Shell {
         } else {
             icons::PLAY
         };
-        let panels = [icons::TUNE, icons::EXPORT, icons::LYRICS, icons::ASSIST];
+        let panels = [
+            icons::TUNE,
+            icons::EXPORT,
+            icons::LYRICS,
+            icons::ASSIST,
+            icons::EDITOR,
+        ];
         let seek = [icons::SEEK_START, icons::SEEK_BACK, icons::SEEK_FORWARD];
 
         // Natural widths. With the icon face loaded every control is a square, so
@@ -2477,6 +2529,7 @@ impl Shell {
                 c if *c == icons::SEEK_BACK => (widgets::id::SEEK, 1, false),
                 c if *c == icons::SEEK_FORWARD => (widgets::id::SEEK, 2, false),
                 c if *c == icons::TUNE => (widgets::id::TOOLBAR, 1, self.inspector_open),
+                c if *c == icons::EDITOR => (widgets::id::TOOLBAR, 5, self.editor_open),
                 c if *c == icons::EXPORT => {
                     (widgets::id::TOOLBAR, 2, self.panel == UiPanel::Export)
                 }
@@ -2544,6 +2597,11 @@ impl Shell {
                     commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
                 }
                 c if *c == icons::TUNE => self.set_inspector_open(!self.inspector_open),
+                c if *c == icons::EDITOR => {
+                    if self.lyric_draft_allows_context_change(input.workspace) {
+                        self.editor_open = true;
+                    }
+                }
                 // The three bottom panels share one guard, as they do in the
                 // oracle's own panel row (`plug.c:2905-2906`): leaving the lyrics
                 // editor with a half-typed cue is a context change like any other,
@@ -2660,19 +2718,23 @@ impl Shell {
         // so the tooltip explaining the refusal can be asked for.
         let state = self.widgets.button(d, id, scrub.hit);
         let mouse = input.ui_scale.mouse(d);
-        let dragging = self.transport_scrub(
-            TransportScrubInput {
-                track: scrub.track,
-                pointer_x: mouse.x,
-                hovered: state.hovered,
-                pressed: d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT),
-                down: d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
-                playing: input.playing,
-                duration_seconds: input.duration_seconds,
-                seekable,
-            },
-            commands,
-        );
+        let dragging = if self.editor_open || self.assist_settings.is_open() {
+            None
+        } else {
+            self.transport_scrub(
+                TransportScrubInput {
+                    track: scrub.track,
+                    pointer_x: mouse.x,
+                    hovered: state.hovered,
+                    pressed: d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT),
+                    down: d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+                    playing: input.playing,
+                    duration_seconds: input.duration_seconds,
+                    seekable,
+                },
+                commands,
+            )
+        };
 
         // While dragging, the bar shows the hand rather than the decoder: the
         // seek has not been sent yet, so the playhead has genuinely not moved.
@@ -3823,40 +3885,45 @@ impl Shell {
 
         let mouse = input.ui_scale.mouse(d);
         let over_panel = frame.tracks.contains_point(mouse.x, mouse.y);
-        if over_panel {
+        let input_allowed = !self.editor_open && !self.assist_settings.is_open();
+        if over_panel && input_allowed {
             self.track_scroll.wheel(d.get_mouse_wheel_move(), &metrics);
         }
 
         // The thumb is measured before `advance` so that a drag reads the same
         // rectangle the user pressed on, and released before the rows are drawn.
         let bar_x = frame.tracks.x + frame.tracks.width - metrics.bar_width;
-        if let Some((thumb_y, thumb_height)) = metrics.thumb(self.track_scroll.offset()) {
-            let thumb = UiRect::new(bar_x, area.y + thumb_y, metrics.bar_width, thumb_height);
-            if self.track_scroll.is_dragging() {
-                if d.is_mouse_button_released(MOUSE_BUTTON_LEFT) {
-                    self.track_scroll.end_drag();
+        if input_allowed {
+            if let Some((thumb_y, thumb_height)) = metrics.thumb(self.track_scroll.offset()) {
+                let thumb = UiRect::new(bar_x, area.y + thumb_y, metrics.bar_width, thumb_height);
+                if self.track_scroll.is_dragging() {
+                    if d.is_mouse_button_released(MOUSE_BUTTON_LEFT) {
+                        self.track_scroll.end_drag();
+                    }
+                } else if thumb.contains_point(mouse.x, mouse.y) {
+                    if d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
+                        self.track_scroll.begin_drag(mouse.y - thumb.y);
+                    }
+                } else if mouse.x >= bar_x
+                    && mouse.x <= bar_x + metrics.bar_width
+                    && mouse.y >= area.y
+                    && mouse.y <= area.y + area.height
+                    && d.is_mouse_button_released(MOUSE_BUTTON_LEFT)
+                {
+                    let hit = if mouse.y < thumb.y {
+                        BarHit::Above
+                    } else {
+                        BarHit::Below
+                    };
+                    self.track_scroll.page(hit, &metrics);
                 }
-            } else if thumb.contains_point(mouse.x, mouse.y) {
-                if d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
-                    self.track_scroll.begin_drag(mouse.y - thumb.y);
-                }
-            } else if mouse.x >= bar_x
-                && mouse.x <= bar_x + metrics.bar_width
-                && mouse.y >= area.y
-                && mouse.y <= area.y + area.height
-                && d.is_mouse_button_released(MOUSE_BUTTON_LEFT)
-            {
-                let hit = if mouse.y < thumb.y {
-                    BarHit::Above
-                } else {
-                    BarHit::Below
-                };
-                self.track_scroll.page(hit, &metrics);
             }
-        }
 
-        self.track_scroll
-            .advance(d.get_frame_time(), mouse.y - area.y, &metrics);
+            self.track_scroll
+                .advance(d.get_frame_time(), mouse.y - area.y, &metrics);
+        } else {
+            self.track_scroll.end_drag();
+        }
 
         let current = input.workspace.current_index();
         let row_width = metrics.row_width(frame.tracks.width);

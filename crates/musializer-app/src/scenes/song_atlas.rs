@@ -1,80 +1,31 @@
-//! Song Atlas: the drawing half.
+//! Song Atlas — Tideline: the whole song engraved into a spiral of light.
 //!
-//! The live ring, the map's validity and interpolation, and the render-sampling
-//! arithmetic are all in
-//! `musializer_core::scenes::song_atlas`.
+//! Time advances along a relief that breathes and folds with the music; flowing
+//! light crosses its surface while a warm front marks the song position.
+//! Frequency runs across the groove, amplitude embosses its surface.
+//! Unlike framebuffer feedback, that memory is reconstructed from musical time:
+//! a seek and an export show the same chart, with no warm-up or camera reset.
 //!
-//! A lit heightfield of the song's spectrum, flown over from above: frequency
-//! across, time into the distance, amplitude as terrain height. Two surface
-//! sources with the same geometry — the whole-song map when there is one, the
-//! rolling live ring when there is not — plus a batched contour pass that makes it
-//! read as a survey map rather than a hillside.
-//!
-//! ## Why this uses raw rlgl
-//!
-//! The terrain is thousands of triangles per frame and hundreds of contour lines.
-//! C batches them through `rlBegin(RL_TRIANGLES)`/`rlVertex3f`, and the safe
-//! raylib API has no equivalent — `draw_triangle_3D` would issue each triangle
-//! separately. [`Batch`] wraps the immediate-mode calls so the `rlEnd` cannot be
-//! forgotten.
-//!
-//! The surface uses softened display samples, luminous survey contours and an
-//! atmospheric horizon so the map reads as cartography rather than a raw mesh.
+//! SX4 (2026-09-05): original implementation, informed by an Opus 5 design
+//! discussion and Le Biniou's vocabulary of flow/slow fade, without copied code
+//! or assets. Settings keys/bounds/defaults are retained: height is relief,
+//! width is groove width, depth is radial spacing, camera is elevation, orbit
+//! and distance frame the chart, contours trace the relief, drift moves the
+//! vantage around the relief. Wireframe follows the same moving surface.
 
-#![allow(dead_code)]
+use std::hash::{Hash, Hasher};
 
 use musializer_core::scene::settings::index::atlas as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::song_atlas::{
-    render_distance, render_sample_count, render_sample_indices, Slice, SongAtlasMap,
-    SongAtlasState, BAND_COUNT, BASE_SLICES, MAX_DETAIL, SLICE_SPACING,
+    self as core_atlas, Slice, SongAtlasMap, SongAtlasState, BAND_COUNT,
 };
-use musializer_runtime::draw;
-use raylib::prelude::{
-    Camera3D, Color, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector2, Vector3,
-};
+use musializer_runtime::draw::Camera3D;
+use musializer_runtime::draw::{self, SceneViewport};
+use raylib::prelude::{Color, RaylibDrawHandle, RaylibMode3DExt, Rectangle, Vector2, Vector3};
 
-use musializer_core::scenes::song_atlas as core_atlas;
-use musializer_runtime::draw::SceneViewport;
-
-const PI: f32 = std::f32::consts::PI;
-const DEG2RAD: f32 = PI / 180.0;
-
-/// The terrain palette (`scene_song_atlas.c:228-231`): bass through treble, with a
-/// warm summit for the peaks.
-const BASS: Color = Color::new(20, 72, 156, 255);
-const MIDDLE: Color = Color::new(42, 205, 184, 255);
-const TREBLE: Color = Color::new(210, 73, 176, 255);
-const SUMMIT: Color = Color::new(255, 224, 172, 255);
-/// The warm survey line drawn on a latched onset.
-const LANDMARK: Color = Color::new(255, 219, 150, 255);
-/// The teal frequency meridian.
-const MERIDIAN: Color = Color::new(93, 219, 205, 255);
-
-fn clamp01(value: f32) -> f32 {
-    // `atlas_clamp01` (`scene_song_atlas.c:32-37`); no `isfinite` test, as in C.
-    if value < 0.0 {
-        return 0.0;
-    }
-    if value > 1.0 {
-        return 1.0;
-    }
-    value
-}
-
-/// A small display kernel over adjacent perceptual bands.
-///
-/// The map remains exact data; only its drawn surface is rounded. A one-bin peak
-/// used to become a row of knife-edged triangular fins, advertising the mesh
-/// more loudly than the music. The 1-2-3-2-1 kernel keeps peaks and frequency
-/// position intact while letting the heightfield read as continuous terrain.
-fn display_amplitude(slice: &Slice, band: usize) -> f32 {
-    let at = |offset: isize| {
-        let index = (band as isize + offset).clamp(0, (BAND_COUNT - 1) as isize) as usize;
-        slice.bands[index]
-    };
-    (at(-2) + at(-1) * 2.0 + at(0) * 3.0 + at(1) * 2.0 + at(2)) / 9.0
-}
+const TAU: f32 = std::f32::consts::TAU;
+const ACROSS: usize = 41;
 
 /// An open rlgl immediate-mode batch. `rlEnd` runs on drop.
 ///
@@ -142,406 +93,256 @@ fn color_to_hsv(color: Color) -> Vector3 {
     Vector3::new(out.x, out.y, out.z)
 }
 
-/// One vertex of the heightfield (`atlas_vertex`, `scene_song_atlas.c:184-195`).
-///
-/// `terrain_profile` is the reason the terrain has a ridge rather than a flat
-/// plateau: the mid frequencies get up to 2.35 units of height and the extremes
-/// only 0.72, so the surface arches across the frequency axis.
-fn vertex(slice: &Slice, band: usize, age: f32, scroll_phase: f32) -> Vector3 {
-    let across = band as f32 / (BAND_COUNT - 1) as f32;
-    let amplitude = display_amplitude(slice, band);
-    let terrain_profile = 0.42 + 0.58 * (across * PI).sin();
-    Vector3::new(
-        (across - 0.5) * 9.4,
-        -1.68 + amplitude * (0.72 + terrain_profile * 2.35),
-        1.40 - (age + scroll_phase) * SLICE_SPACING,
-    )
+fn mix_color(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+    Color::new(mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b), mix(a.a, b.a))
 }
 
-/// `atlas_live_vertex` (`scene_song_atlas.c:197-203`).
-fn live_vertex(slice: &Slice, band: usize, source_age: usize, scroll_phase: f32) -> Vector3 {
-    vertex(
-        slice,
-        band,
-        render_distance(source_age as f32 + scroll_phase),
-        0.0,
-    )
-}
-
-/// `atlas_complete_vertex` (`scene_song_atlas.c:452-457`).
-fn complete_vertex(slice: &Slice, band: usize, map_distance: f32) -> Vector3 {
-    vertex(slice, band, render_distance(map_distance), 0.0)
-}
-
-/// `atlas_mix_color` (`scene_song_atlas.c:205-214`).
-fn mix_color(from: Color, to: Color, amount: f32) -> Color {
-    let amount = clamp01(amount);
-    let channel =
-        |from: u8, to: u8| (f32::from(from) + (f32::from(to) - f32::from(from)) * amount) as u8;
-    Color::new(
-        channel(from.r, to.r),
-        channel(from.g, to.g),
-        channel(from.b, to.b),
-        channel(from.a, to.a),
-    )
-}
-
-/// `atlas_hue_shift` (`scene_song_atlas.c:216-223`): rotates hue, preserving alpha.
-fn hue_shift(color: Color, color_shift: f32) -> Color {
+fn hue_shift(color: Color, shift: f32) -> Color {
     let hsv = color_to_hsv(color);
-    let mut shifted = draw::color_from_hsv((hsv.x + color_shift + 720.0) % 360.0, hsv.y, hsv.z);
-    shifted.a = color.a;
-    shifted
+    let mut c = draw::color_from_hsv((hsv.x + shift).rem_euclid(360.0), hsv.y, hsv.z);
+    c.a = color.a;
+    c
 }
 
-/// `atlas_color` (`scene_song_atlas.c:225-245`).
-///
-/// Frequency picks the base hue, amplitude and flux blend toward the summit, and
-/// `age` darkens with distance — so the near terrain is exposed and the far
-/// terrain falls away into the background instead of needing a fog plane.
-fn terrain_color(slice: &Slice, band: usize, age: f32, color_shift: f32) -> Color {
-    let across = band as f32 / (BAND_COUNT - 1) as f32;
-    let frequency = if across < 0.5 {
-        mix_color(BASS, MIDDLE, across * 2.0)
-    } else {
-        mix_color(MIDDLE, TREBLE, (across - 0.5) * 2.0)
-    };
-    let amplitude = display_amplitude(slice, band);
-    let mut color = mix_color(
-        frequency,
-        SUMMIT,
-        clamp01(amplitude * 0.52 + slice.flux * 0.14),
-    );
-    let depth = 1.0 - age / (BASE_SLICES - 1) as f32;
-    let exposure = 0.12 + depth * 0.68 + amplitude * 0.24;
-    let scale = clamp01(exposure);
-    color.r = (f32::from(color.r) * scale) as u8;
-    color.g = (f32::from(color.g) * scale) as u8;
-    color.b = (f32::from(color.b) * scale) as u8;
-    color.a = (188.0 + amplitude * 52.0).min(240.0) as u8;
-    hue_shift(color, color_shift)
+fn palette(value: f32) -> Color {
+    let stops = [
+        Color::new(9, 23, 29, 255),
+        Color::new(24, 64, 65, 255),
+        Color::new(86, 135, 124, 255),
+        Color::new(185, 206, 184, 255),
+        Color::new(242, 232, 204, 255),
+    ];
+    let x = value.clamp(0.0, 1.0) * 4.0;
+    let i = (x.floor() as usize).min(3);
+    mix_color(stops[i], stops[i + 1], x - i as f32)
 }
 
-/// `atlas_light_color` (`scene_song_atlas.c:253-263`).
-fn light_color(color: Color, light: f32) -> Color {
-    // A broad fill plus a restrained key: the old 0.26 floor turned adjacent
-    // triangles into near-black facets. Relief remains visible, but it no longer
-    // reads as a low-poly material demo.
-    let light = 0.76 + clamp01(light) * 0.28;
-    Color::new(
-        (f32::from(color.r) * light).min(255.0) as u8,
-        (f32::from(color.g) * light).min(255.0) as u8,
-        (f32::from(color.b) * light).min(255.0) as u8,
-        color.a,
-    )
+#[derive(Clone, Copy)]
+struct ReliefVertex {
+    point: Vector3,
+    amplitude: f32,
+    across: f32,
 }
 
-/// `atlas_triangle_light` (`scene_song_atlas.c:265-285`).
-///
-/// The absolute dot product, so a triangle facing away is lit like one facing
-/// toward: the terrain is a single-sided surface and a signed test would leave
-/// half of it black. A degenerate triangle takes a neutral 0.45.
-fn triangle_light(a: Vector3, b: Vector3, c: Vector3, light_direction: Vector3) -> f32 {
-    let first = Vector3::new(b.x - a.x, b.y - a.y, b.z - a.z);
-    let second = Vector3::new(c.x - a.x, c.y - a.y, c.z - a.z);
-    let normal = Vector3::new(
-        first.y * second.z - first.z * second.y,
-        first.z * second.x - first.x * second.z,
-        first.x * second.y - first.y * second.x,
-    );
-    let normal_length = (normal.x * normal.x + normal.y * normal.y + normal.z * normal.z).sqrt();
-    let light_length = (light_direction.x * light_direction.x
-        + light_direction.y * light_direction.y
-        + light_direction.z * light_direction.z)
-        .sqrt();
-    if normal_length <= 0.00001 || light_length <= 0.00001 {
-        return 0.45;
-    }
-    let dot = (normal.x * light_direction.x
-        + normal.y * light_direction.y
-        + normal.z * light_direction.z)
-        / (normal_length * light_length);
-    clamp01(dot.abs())
+/// CPU-side rest-shape cache. Motion is evaluated after this cache on every
+/// frame; no GL objects or accumulated animation history live here.
+#[derive(Default)]
+pub struct AtlasRenderer {
+    identity: Option<u64>,
+    vertices: Vec<ReliefVertex>,
+    material: Vec<Color>,
+    energy_floor: f32,
+    energy_span: f32,
 }
 
-/// `atlas_lit_triangle` (`scene_song_atlas.c:287-295`): one flat light per
-/// triangle, applied to all three vertex colours.
-#[allow(clippy::too_many_arguments)]
-fn lit_triangle(
-    batch: &mut Batch,
-    a: Vector3,
-    b: Vector3,
-    c: Vector3,
-    ca: Color,
-    cb: Color,
-    cc: Color,
-    light_direction: Vector3,
-) {
-    let light = triangle_light(a, b, c, light_direction);
-    batch.vertex(a, light_color(ca, light));
-    batch.vertex(b, light_color(cb, light));
-    batch.vertex(c, light_color(cc, light));
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RowMotion {
+    radial_scale: f32,
+    twist_sin: f32,
+    twist_cos: f32,
+    lift: f32,
+    light: f32,
 }
 
-/// The live fallback surface (`atlas_draw_surface`, `scene_song_atlas.c:297-404`).
-#[allow(clippy::too_many_arguments)]
-fn draw_live_surface(
-    atlas: &SongAtlasState,
-    scroll_phase: f32,
-    pixel_scale: f32,
-    contour_scale: f32,
-    color_shift: f32,
-    wireframe: bool,
-    detail_level: usize,
-    light_direction: Vector3,
-) {
-    if atlas.count() < 2 {
-        return;
-    }
-    let available = atlas.count();
-    let render_count = render_sample_count(0, available, detail_level);
-    if render_count < 2 {
-        return;
-    }
-    // `age` counts backward from the newest slice, so the ring index is
-    // `count - age - 1`.
-    let slice_at = |age: usize| atlas.slice(available - age - 1);
-
-    if !wireframe {
-        let mut batch = Batch::begin(raylib_sys::RL_TRIANGLES);
-        for (newer_age, older_age) in render_sample_indices(0, available, detail_level)
-            .zip(render_sample_indices(0, available, detail_level).skip(1))
-        {
-            let (Some(newer), Some(older)) = (slice_at(newer_age), slice_at(older_age)) else {
-                continue;
-            };
-            for band in 0..BAND_COUNT - 1 {
-                let a = live_vertex(newer, band, newer_age, scroll_phase);
-                let b = live_vertex(newer, band + 1, newer_age, scroll_phase);
-                let c = live_vertex(older, band, older_age, scroll_phase);
-                let dd = live_vertex(older, band + 1, older_age, scroll_phase);
-                let newer_depth = render_distance(newer_age as f32);
-                let older_depth = render_distance(older_age as f32);
-                let ca = terrain_color(newer, band, newer_depth, color_shift);
-                let cb = terrain_color(newer, band + 1, newer_depth, color_shift);
-                let cc = terrain_color(older, band, older_depth, color_shift);
-                let cd = terrain_color(older, band + 1, older_depth, color_shift);
-                // Counter-clockwise from above: the atlas camera lives above the
-                // heightfield, so upward-facing terrain must survive back-face
-                // culling on every OpenGL target.
-                lit_triangle(&mut batch, a, b, c, ca, cb, cc, light_direction);
-                lit_triangle(&mut batch, b, dd, c, cb, cd, cc, light_direction);
-            }
-        }
-    }
-
-    if contour_scale <= 0.001 {
-        return;
-    }
-
-    // A single batched contour pass replaces hundreds of tiny cylinders. The
-    // fixed-cadence cross-lines and sparse frequency meridians read as a map;
-    // latched onsets become warm survey lines instead of arbitrary cubes.
-    let _line_width = LineWidth::set(1.0f32.max(pixel_scale * contour_scale));
-    let mut batch = Batch::begin(raylib_sys::RL_LINES);
-    let row_step = if wireframe { 1usize } else { 5 };
-    let band_step = if wireframe { 1usize } else { 5 };
-    for (sample, source_age) in render_sample_indices(0, available, detail_level).enumerate() {
-        if sample % row_step == 0 {
-            if let Some(slice) = slice_at(source_age) {
-                let line = draw::color_alpha(
-                    Color::RAYWHITE,
-                    (if wireframe { 0.20 } else { 0.14 })
-                        + 0.22 * (1.0 - sample as f32 / render_count as f32),
-                );
-                for band in 0..BAND_COUNT - 1 {
-                    batch.vertex(live_vertex(slice, band, source_age, scroll_phase), line);
-                    batch.vertex(live_vertex(slice, band + 1, source_age, scroll_phase), line);
-                }
-            }
-        }
-    }
-    let mut band = if wireframe { 0usize } else { 2 };
-    while band + 1 < BAND_COUNT {
-        let line = draw::color_alpha(
-            hue_shift(MERIDIAN, color_shift),
-            if wireframe { 0.36 } else { 0.25 },
-        );
-        for (newer_age, older_age) in render_sample_indices(0, available, detail_level)
-            .zip(render_sample_indices(0, available, detail_level).skip(1))
-        {
-            let (Some(newer), Some(older)) = (slice_at(newer_age), slice_at(older_age)) else {
-                continue;
-            };
-            batch.vertex(live_vertex(newer, band, newer_age, scroll_phase), line);
-            batch.vertex(live_vertex(older, band, older_age, scroll_phase), line);
-        }
-        band += band_step;
-    }
-    for source_age in render_sample_indices(0, available, detail_level) {
-        let Some(slice) = slice_at(source_age) else {
-            continue;
-        };
-        if !slice.onset {
-            continue;
-        }
-        let landmark =
-            draw::color_alpha(hue_shift(LANDMARK, color_shift), 0.24 + slice.flux * 0.52);
-        for band in 0..BAND_COUNT - 1 {
-            let mut a = live_vertex(slice, band, source_age, scroll_phase);
-            let mut b = live_vertex(slice, band + 1, source_age, scroll_phase);
-            // Lifted clear of the surface so the survey line is not z-fought by
-            // the terrain it marks.
-            a.y += 0.025;
-            b.y += 0.025;
-            batch.vertex(a, landmark);
-            batch.vertex(b, landmark);
-        }
+/// Traveling folds in fixed song coordinates. Seconds own the flow rate,
+/// independent of track duration; musical energy owns its reach. Reducing the
+/// phase in f64 avoids stepped movement on long tracks. No beat-phase wrap or
+/// integration state can restart this field on a seek.
+fn row_motion(time: f64, song_position: f32, energy: f32, bass: f32) -> RowMotion {
+    let phase = (time * 1.35 - f64::from(song_position) * std::f64::consts::TAU * 2.0)
+        .rem_euclid(std::f64::consts::TAU) as f32;
+    let strength = 0.20 + 0.80 * energy.clamp(0.0, 1.0);
+    let wave = phase.sin();
+    let twist = 0.055 * strength * phase.cos();
+    let (twist_sin, twist_cos) = twist.sin_cos();
+    let light_phase = (time * 1.9 - f64::from(song_position) * std::f64::consts::TAU * 5.0)
+        .rem_euclid(std::f64::consts::TAU) as f32;
+    RowMotion {
+        radial_scale: 1.0 + 0.035 * strength * wave + 0.025 * bass.clamp(0.0, 1.0),
+        twist_sin,
+        twist_cos,
+        lift: 0.38 * strength * wave + 0.16 * bass.clamp(0.0, 1.0),
+        light: (0.5 + 0.5 * light_phase.cos()).powi(5),
     }
 }
 
-/// `atlas_map_playhead_vertex` (`scene_song_atlas.c:432-450`).
-///
-/// The playhead sits *between* two slices, so its vertex is the interpolation of
-/// the same band on both, each offset by its own fractional distance.
-fn playhead_vertex(map: &SongAtlasMap, playhead: f32, band: usize) -> Vector3 {
-    let slices = map.slices();
-    let lower = playhead.floor() as usize;
-    let last = slices.len() - 1;
-    if lower >= last {
-        return vertex(&slices[last], band, 0.0, 0.0);
-    }
-    let amount = playhead - lower as f32;
-    let a = vertex(&slices[lower], band, -amount / MAX_DETAIL as f32, 0.0);
-    let b = vertex(
-        &slices[lower + 1],
-        band,
-        (1.0 - amount) / MAX_DETAIL as f32,
-        0.0,
-    );
+fn animated_point(vertex: ReliefVertex, motion: RowMotion, band: f32) -> Vector3 {
+    let edge = (vertex.across * std::f32::consts::PI).sin().max(0.0);
+    let p = vertex.point;
     Vector3::new(
-        a.x + (b.x - a.x) * amount,
-        a.y + (b.y - a.y) * amount,
-        a.z + (b.z - a.z) * amount,
+        (p.x * motion.twist_cos - p.z * motion.twist_sin) * motion.radial_scale,
+        p.y * (1.0 + 0.65 * band) + motion.lift * (0.35 + 0.65 * edge),
+        (p.x * motion.twist_sin + p.z * motion.twist_cos) * motion.radial_scale,
     )
 }
 
-/// The whole-song surface (`atlas_draw_complete_surface`,
-/// `scene_song_atlas.c:459-555`).
-#[allow(clippy::too_many_arguments)]
-fn draw_complete_surface(
-    map: &SongAtlasMap,
-    time_seconds: f64,
-    pixel_scale: f32,
-    contour_scale: f32,
-    color_shift: f32,
-    wireframe: bool,
-    detail_level: usize,
-    light_direction: Vector3,
-) {
-    if !map.is_valid() {
-        return;
-    }
-    let slices = map.slices();
-    let playhead = core_atlas::map_playhead(map, time_seconds);
-    // Ten slices' worth of already-played terrain is kept behind the playhead, so
-    // the recent past is visible without drawing the whole song every frame.
-    let history = 10 * MAX_DETAIL;
-    let first = if playhead > history as f32 {
-        playhead.floor() as usize - history
-    } else {
-        0
-    };
-    let available = slices.len() - first;
-    let sample_count = render_sample_count(first, available, detail_level);
-    if sample_count < 2 {
-        return;
-    }
-
-    if !wireframe {
-        let mut batch = Batch::begin(raylib_sys::RL_TRIANGLES);
-        for (row, next_row) in render_sample_indices(first, available, detail_level)
-            .zip(render_sample_indices(first, available, detail_level).skip(1))
-        {
-            let near = &slices[row];
-            let far = &slices[next_row];
-            let near_distance = row as f32 - playhead;
-            let far_distance = next_row as f32 - playhead;
-            let near_depth = near_distance.max(0.0) / MAX_DETAIL as f32;
-            let far_depth = far_distance.max(0.0) / MAX_DETAIL as f32;
-            for band in 0..BAND_COUNT - 1 {
-                let a = complete_vertex(near, band, near_distance);
-                let b = complete_vertex(near, band + 1, near_distance);
-                let c = complete_vertex(far, band, far_distance);
-                let dd = complete_vertex(far, band + 1, far_distance);
-                let ca = terrain_color(near, band, near_depth, color_shift);
-                let cb = terrain_color(near, band + 1, near_depth, color_shift);
-                let cc = terrain_color(far, band, far_depth, color_shift);
-                let cd = terrain_color(far, band + 1, far_depth, color_shift);
-                lit_triangle(&mut batch, a, b, c, ca, cb, cc, light_direction);
-                lit_triangle(&mut batch, b, dd, c, cb, cd, cc, light_direction);
-            }
-        }
-    }
-
-    if contour_scale <= 0.001 {
-        return;
-    }
-
-    let _line_width = LineWidth::set(1.0f32.max(pixel_scale * contour_scale));
-    let mut batch = Batch::begin(raylib_sys::RL_LINES);
-    for row in render_sample_indices(first, available, detail_level) {
-        let distance = row as f32 - playhead;
-        // Solid mode draws every eighth cross-line plus every onset; wireframe
-        // draws them all.
-        if !wireframe && row % 8 != 0 && !slices[row].onset {
-            continue;
-        }
-        let line = if slices[row].onset {
-            draw::color_alpha(
-                hue_shift(LANDMARK, color_shift),
-                0.28 + slices[row].flux * 0.50,
-            )
-        } else {
-            draw::color_alpha(Color::RAYWHITE, 0.17)
-        };
-        for band in 0..BAND_COUNT - 1 {
-            batch.vertex(complete_vertex(&slices[row], band, distance), line);
-            batch.vertex(complete_vertex(&slices[row], band + 1, distance), line);
-        }
-    }
-    let band_step = if wireframe { 1usize } else { 5 };
-    let mut band = if wireframe { 0usize } else { 2 };
-    while band + 1 < BAND_COUNT {
-        let line = draw::color_alpha(
-            hue_shift(MERIDIAN, color_shift),
-            if wireframe { 0.35 } else { 0.24 },
-        );
-        for (row, next_row) in render_sample_indices(first, available, detail_level)
-            .zip(render_sample_indices(first, available, detail_level).skip(1))
-        {
-            let near_distance = row as f32 - playhead;
-            let far_distance = next_row as f32 - playhead;
-            batch.vertex(complete_vertex(&slices[row], band, near_distance), line);
-            batch.vertex(complete_vertex(&slices[next_row], band, far_distance), line);
-        }
-        band += band_step;
-    }
-    // The playhead itself, in warm white, drawn last so it sits on top.
-    let playhead_color = Color::new(255, 238, 196, 255);
-    for band in 0..BAND_COUNT - 1 {
-        batch.vertex(playhead_vertex(map, playhead, band), playhead_color);
-        batch.vertex(playhead_vertex(map, playhead, band + 1), playhead_color);
-    }
+fn camera_azimuth(time: f64, orbit: f32, drift: f32) -> f32 {
+    orbit
+        + (time * 0.045 * f64::from(drift)).rem_euclid(std::f64::consts::TAU) as f32
+        + (time * 0.16).sin() as f32 * 0.06 * drift
 }
 
-/// Draws Song Atlas into `boundary`.
-///
-/// `map` is the whole-track analysis prepared when the track loaded
-/// (`renderer->song_atlas_map`, `scene.h:62`). An absent or invalid map falls back
-/// to the live ring in `state`.
+fn geometry_identity(slices: &[Slice], seed: u64, height: f32, width: f32, depth: f32) -> u64 {
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut hash);
+    for value in [height, width, depth] {
+        value.to_bits().hash(&mut hash);
+    }
+    slices.len().hash(&mut hash);
+    for slice in slices {
+        slice.rms.to_bits().hash(&mut hash);
+        for band in slice.bands {
+            band.to_bits().hash(&mut hash);
+        }
+    }
+    hash.finish()
+}
+
+fn normalized(v: Vector3) -> Vector3 {
+    let length = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt().max(0.00001);
+    Vector3::new(v.x / length, v.y / length, v.z / length)
+}
+fn delta(a: Vector3, b: Vector3) -> Vector3 {
+    Vector3::new(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+fn dot(a: Vector3, b: Vector3) -> f32 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+fn cross(a: Vector3, b: Vector3) -> Vector3 {
+    Vector3::new(
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x,
+    )
+}
+
+/// A fixed spatial kernel on the immutable map. Drawing detail cannot change
+/// its coordinates or time domain: no moving-window resampling of the song.
+fn amplitude(slices: &[Slice], row: usize, band: f32) -> f32 {
+    let lo = band.floor() as usize;
+    let fraction = band - lo as f32;
+    let mut sum = 0.0;
+    for (di, tw) in [
+        (-4, 1.0),
+        (-3, 4.0),
+        (-2, 7.0),
+        (-1, 10.0),
+        (0, 12.0),
+        (1, 10.0),
+        (2, 7.0),
+        (3, 4.0),
+        (4, 1.0),
+    ] {
+        let i = (row as isize + di).clamp(0, slices.len() as isize - 1) as usize;
+        for (dk, bw) in [(-2, 1.0), (-1, 4.0), (0, 6.0), (1, 4.0), (2, 1.0)] {
+            let k = (lo as isize + dk).clamp(0, BAND_COUNT as isize - 1) as usize;
+            let k1 = (lo as isize + dk + 1).clamp(0, BAND_COUNT as isize - 1) as usize;
+            let a = slices[i].bands[k] * (1.0 - fraction) + slices[i].bands[k1] * fraction;
+            sum += a * tw * bw;
+        }
+    }
+    (sum / 896.0).clamp(0.0, 1.0)
+}
+
+fn build_geometry(
+    slices: &[Slice],
+    seed: u64,
+    height: f32,
+    width: f32,
+    depth: f32,
+) -> (Vec<ReliefVertex>, Vec<Color>) {
+    let turns = 3.35;
+    let inner = 0.86;
+    let radial = 3.65 * depth.sqrt();
+    let pitch = radial / turns;
+    let groove = pitch * (0.88 * width.sqrt()).min(0.97);
+    let phase = -1.0 + core_atlas::hash_unit(seed, 7) * 0.4;
+    // Every stored slice participates even at low drawing detail. Detail adds
+    // contour density, never moves the underlying audio landmarks.
+    let amplitudes: Vec<f32> = (0..slices.len())
+        .flat_map(|row| {
+            (0..ACROSS).map(move |k| {
+                amplitude(
+                    slices,
+                    row,
+                    k as f32 / (ACROSS - 1) as f32 * (BAND_COUNT - 1) as f32,
+                )
+            })
+        })
+        .collect();
+    let mut ordered = amplitudes.clone();
+    ordered.sort_by(f32::total_cmp);
+    let low = ordered[ordered.len() / 10];
+    let high = ordered[ordered.len() * 9 / 10];
+    let range = (high - low).max(0.12);
+    let mut levels: Vec<f32> = slices.iter().map(|s| s.rms).collect();
+    levels.sort_by(f32::total_cmp);
+    let floor = levels[levels.len() / 10];
+    let ceiling = levels[levels.len() * 9 / 10];
+    let mut vertices = Vec::with_capacity(slices.len() * ACROSS);
+    for row in 0..slices.len() {
+        let u = row as f32 / (slices.len() - 1) as f32;
+        let theta = phase + u * turns * TAU;
+        let (sin, cos) = theta.sin_cos();
+        let envelope = musializer_core::scenes::cadence::smooth(u / 0.025)
+            * musializer_core::scenes::cadence::smooth((1.0 - u) / 0.035);
+        let rms = (-5isize..=5)
+            .map(|offset| {
+                let index = (row as isize + offset).clamp(0, slices.len() as isize - 1) as usize;
+                slices[index].rms * (6 - offset.abs()) as f32
+            })
+            .sum::<f32>()
+            / 36.0;
+        let level = ((rms - floor) / (ceiling - floor).max(0.15)).clamp(0.0, 1.0);
+        let local_width = groove * (0.28 + 0.72 * level) * envelope;
+        for k in 0..ACROSS {
+            let v = k as f32 / (ACROSS - 1) as f32;
+            let a = ((amplitudes[row * ACROSS + k] - low) / range).clamp(0.0, 1.0);
+            let r = inner + radial * u + (v - 0.5) * local_width;
+            let edge = (v * std::f32::consts::PI).sin().max(0.0);
+            let relief =
+                pitch * height * 0.42 * edge.powf(0.65) * (0.035 + a.powf(1.7) * 0.70) * envelope;
+            vertices.push(ReliefVertex {
+                point: Vector3::new(r * cos, relief, r * sin),
+                amplitude: a,
+                across: v,
+            });
+        }
+    }
+    let mut colors = Vec::with_capacity(vertices.len());
+    let key = normalized(Vector3::new(-0.64, 0.32, -0.70));
+    for row in 0..slices.len() {
+        for k in 0..ACROSS {
+            let v = vertices[row * ACROSS + k];
+            let dt = delta(
+                vertices[(row + 1).min(slices.len() - 1) * ACROSS + k].point,
+                vertices[row.saturating_sub(1) * ACROSS + k].point,
+            );
+            let dk = delta(
+                vertices[row * ACROSS + (k + 1).min(ACROSS - 1)].point,
+                vertices[row * ACROSS + k.saturating_sub(1)].point,
+            );
+            let normal = normalized(cross(dt, dk));
+            let lambert = (dot(normal, key) * 0.5 + 0.5).clamp(0.0, 1.0);
+            let lip = (v.across * std::f32::consts::PI).sin().max(0.0);
+            let sheen = dot(normal, normalized(Vector3::new(-0.5, 0.8, 0.2)))
+                .max(0.0)
+                .powf(18.0);
+            let value =
+                0.02 + 0.53 * lambert.powf(2.0) + 0.12 * v.amplitude + 0.30 * sheen + 0.02 * lip;
+            colors.push(palette(value));
+        }
+    }
+    (vertices, colors)
+}
+
+/// Draw the chart from map coordinates, including its spectral cross-section.
+/// The same bounded ring supplies geometry when no whole-track map exists.
 pub fn draw(
     d: &mut RaylibDrawHandle<'_>,
+    renderer: &mut AtlasRenderer,
     state: &SongAtlasState,
     frame: &SceneFrame<'_>,
     boundary: Rectangle,
@@ -551,163 +352,299 @@ pub fn draw(
     if boundary.width <= 1.0 || boundary.height <= 1.0 {
         return;
     }
-    let energy = state.camera_energy();
-    let flux = state.camera_flux();
-    let height_scale = frame.setting(SceneId::SongAtlas, setting::HEIGHT);
-    let width_scale = frame.setting(SceneId::SongAtlas, setting::WIDTH);
-    let depth_scale = frame.setting(SceneId::SongAtlas, setting::DEPTH);
-    let camera_scale = frame.setting(SceneId::SongAtlas, setting::CAMERA);
-    let contour_scale = frame.setting(SceneId::SongAtlas, setting::CONTOURS);
-    let mut color_shift = frame.setting(SceneId::SongAtlas, setting::COLOR);
-    let drift_scale = frame.setting(SceneId::SongAtlas, setting::SPEED);
-    let orbit_degrees = frame.setting(SceneId::SongAtlas, setting::ORBIT);
-    let zoom_scale = frame.setting(SceneId::SongAtlas, setting::ZOOM);
-    let wireframe = frame.setting(SceneId::SongAtlas, setting::WIREFRAME) >= 0.5;
-    let detail_level =
-        (frame.setting(SceneId::SongAtlas, setting::DETAIL).round() as usize).clamp(1, MAX_DETAIL);
-    let hue_motion = frame.setting(SceneId::SongAtlas, setting::HUE_MOTION) >= 0.5;
-
-    // A valid map is the source of the hue's dynamics too, so the colour sweep
-    // follows the song's own shape rather than the preview analyzer's smoothing.
-    let valid_map = map.filter(|map| map.is_valid());
-    if hue_motion {
-        let mut hue_energy = frame.audio.rms;
-        let mut hue_flux = frame.audio.spectral_flux;
-        if let Some(map) = valid_map {
-            let playhead = core_atlas::map_playhead(map, frame.time_seconds);
-            if let Some((energy, flux)) = core_atlas::map_dynamics(map, playhead) {
-                hue_energy = energy;
-                hue_flux = flux;
-            }
-        }
-        let hue_energy = clamp01(hue_energy);
-        let hue_flux = clamp01(hue_flux);
-        let hue_wave = (frame.time_seconds as f32 * (0.70 + hue_energy * 0.55)).sin();
-        color_shift += (frame.time_seconds as f32 * 12.0
-            + hue_wave * (14.0 + hue_energy * 34.0)
-            + hue_flux * 82.0)
-            % 360.0;
-    }
-    let seed_phase = musializer_core::scenes::song_atlas::hash_unit(state.seed(), 7) * 2.0 * PI;
-    let semantic_weight = if frame.semantic.available {
-        frame.semantic.confidence
+    let get = |i| frame.setting(SceneId::SongAtlas, i);
+    let height = get(setting::HEIGHT);
+    let width = get(setting::WIDTH);
+    let depth = get(setting::DEPTH);
+    let elevation = get(setting::CAMERA);
+    let contours = get(setting::CONTOURS);
+    let drift = get(setting::SPEED);
+    let orbit = get(setting::ORBIT).to_radians();
+    let zoom = get(setting::ZOOM);
+    let wire = get(setting::WIREFRAME) >= 0.5;
+    let detail = get(setting::DETAIL).round().clamp(1.0, 3.0) as usize;
+    let valid = map.filter(|m| m.is_valid());
+    let fallback: Vec<Slice> = if valid.is_none() {
+        (0..state.count())
+            .filter_map(|i| state.slice(i).copied())
+            .collect()
     } else {
-        0.0
+        Vec::new()
     };
-    let hue = (205.0
-        + musializer_core::scenes::song_atlas::hash_unit(state.seed(), 2) * 100.0
-        + frame.semantic.valence * 70.0 * semantic_weight
-        + color_shift
-        + 720.0)
-        % 360.0;
-    let background = draw::color_from_hsv(hue, 0.70, 0.022 + energy * 0.022);
-    let horizon = draw::color_from_hsv((hue + 24.0) % 360.0, 0.62, 0.072 + energy * 0.045);
+    let slices = valid.map_or(fallback.as_slice(), SongAtlasMap::slices);
+    let progress = valid.map_or(1.0, |m| {
+        (frame.time_seconds / m.duration_seconds()).clamp(0.0, 1.0) as f32
+    });
+    let energy = valid
+        .and_then(|m| core_atlas::map_dynamics(m, core_atlas::map_playhead(m, frame.time_seconds)))
+        .map_or(frame.audio.rms, |(e, _)| e);
+    let mut shift = get(setting::COLOR);
+    if get(setting::HUE_MOTION) >= 0.5 {
+        shift += ((frame.time_seconds * 0.045).sin() as f32) * 16.0;
+    }
+    let ground = hue_shift(Color::new(6, 14, 19, 255), shift);
     draw::atmospheric_backdrop(
         d,
         boundary,
-        background,
-        horizon,
+        ground,
+        hue_shift(Color::new(14, 29, 33, 255), shift),
         Vector2::new(
-            boundary.x + boundary.width * 0.53,
-            boundary.y + boundary.height * 0.62,
+            boundary.x + boundary.width * 0.58,
+            boundary.y + boundary.height * 0.48,
         ),
-        boundary.width.max(boundary.height) * 0.58,
-        draw::color_alpha(
-            draw::color_from_hsv((hue + 42.0) % 360.0, 0.58, 0.17 + energy * 0.06),
-            0.58,
-        ),
+        boundary.width.max(boundary.height) * 0.50,
+        draw::color_alpha(hue_shift(Color::new(50, 78, 70, 255), shift), 0.34),
     );
+    if slices.len() < 2 {
+        return;
+    }
 
+    let identity = geometry_identity(slices, state.seed(), height, width, depth);
+    if renderer.identity != Some(identity) {
+        (renderer.vertices, renderer.material) =
+            build_geometry(slices, state.seed(), height, width, depth);
+        let mut levels: Vec<_> = slices.iter().map(|slice| slice.rms).collect();
+        levels.sort_by(f32::total_cmp);
+        renderer.energy_floor = levels[levels.len() / 10];
+        renderer.energy_span = (levels[levels.len() * 9 / 10] - renderer.energy_floor).max(0.12);
+        renderer.identity = Some(identity);
+    }
+    let energy = ((energy - renderer.energy_floor) / renderer.energy_span).clamp(0.0, 1.0);
+    // Interpolate the spectrum at the same absolute position as the map light.
+    // The bounded live ring uses its newest slice when no full map is available.
+    let position = progress * (slices.len() - 1) as f32;
+    let lower = (position.floor() as usize).min(slices.len() - 1);
+    let upper = (lower + 1).min(slices.len() - 1);
+    let mix = musializer_core::scenes::cadence::smooth(position - lower as f32);
+    let bands: [f32; BAND_COUNT] = std::array::from_fn(|k| {
+        (slices[lower].bands[k] + (slices[upper].bands[k] - slices[lower].bands[k]) * mix)
+            .clamp(0.0, 1.0)
+    });
+    let bass = bands[..6].iter().sum::<f32>() / 6.0;
+    let vertices = &renderer.vertices;
+    let mut points = Vec::with_capacity(vertices.len());
+    let mut colors = Vec::with_capacity(vertices.len());
+    let flare = hue_shift(Color::new(255, 206, 126, 255), shift * 0.3);
+    let flowing_ink = hue_shift(Color::new(177, 225, 203, 255), shift);
+    for row in 0..slices.len() {
+        let u = row as f32 / (slices.len() - 1) as f32;
+        let memory = core_atlas::tideline_light(progress - u);
+        let motion = row_motion(frame.time_seconds, u, energy, bass);
+        for k in 0..ACROSS {
+            let i = row * ACROSS + k;
+            let band_position = vertices[i].across * (BAND_COUNT - 1) as f32;
+            let band_index = band_position.floor() as usize;
+            let band = bands[band_index]
+                + (bands[(band_index + 1).min(BAND_COUNT - 1)] - bands[band_index])
+                    * (band_position - band_index as f32);
+            points.push(animated_point(vertices[i], motion, band));
+            let warm = memory * (0.35 + 0.65 * vertices[i].amplitude) * (0.75 + energy * 0.25);
+            let flowing = motion.light * (0.18 + 0.34 * energy + 0.20 * band);
+            colors.push(mix_color(
+                mix_color(hue_shift(renderer.material[i], shift), flowing_ink, flowing),
+                flare,
+                warm,
+            ));
+        }
+    }
     let screen_width = d.get_screen_width();
     let screen_height = d.get_screen_height();
-    // Declared before the 3D handle so `EndMode3D` runs before the viewport is
-    // restored, matching the C's order.
     let Some(viewport) = SceneViewport::begin_with_screen(boundary, screen_width, screen_height)
     else {
         return;
     };
-
-    let journey = frame.time_seconds as f32 * 0.025 * drift_scale + seed_phase;
-    let mut target_z = -5.4f32;
-    if let Some(map) = valid_map {
-        // With a map the camera looks a bounded distance ahead of the playhead
-        // rather than at a fixed point, so the framing tightens toward the end of
-        // the song instead of staring past it.
-        let playhead = core_atlas::map_playhead(map, frame.time_seconds);
-        let remaining = ((map.len() - 1) as f32 - playhead) / MAX_DETAIL as f32;
-        let focus_slices = (remaining * 0.45).clamp(4.0, 18.0);
-        target_z = 1.40 - focus_slices * SLICE_SPACING;
-    }
-    target_z *= depth_scale;
-    let mut camera = Camera3D::perspective(
+    let azimuth = camera_azimuth(frame.time_seconds, orbit, drift);
+    let pitch_angle = (0.90
+        + (elevation - 1.0) * 0.32
+        + (frame.time_seconds * 0.21).sin() as f32 * 0.035 * drift)
+        .clamp(0.55, 1.22);
+    let aspect = boundary.width / boundary.height;
+    let distance = 11.8 * zoom * (1.15 / aspect).max(1.0);
+    let camera = Camera3D::perspective(
         Vector3::new(
-            journey.sin() * 0.52,
-            (4.28 + (journey * 0.47).cos() * 0.10 + energy * 0.16) * camera_scale,
-            7.35,
+            azimuth.sin() * distance * pitch_angle.cos(),
+            distance * pitch_angle.sin(),
+            azimuth.cos() * distance * pitch_angle.cos(),
         ),
-        Vector3::new(
-            (journey * 0.31).sin() * 0.34,
-            -0.58 * height_scale,
-            target_z,
-        ),
+        Vector3::new(0.0, 0.0, 0.0),
         Vector3::new(0.0, 1.0, 0.0),
-        46.0 + flux * 1.4,
+        46.0,
     );
-
-    // Orbit rotates the vantage horizontally around the focus point; distance
-    // dollies it radially in or out. The solid terrain is z-buffered, so any
-    // azimuth reads cleanly, and orbit 0 / distance 1 leaves the framing intact.
-    let orbit = orbit_degrees * DEG2RAD;
-    let off_x = camera.position.x - camera.target.x;
-    let off_y = camera.position.y - camera.target.y;
-    let off_z = camera.position.z - camera.target.z;
-    let orbit_cos = orbit.cos();
-    let orbit_sin = orbit.sin();
-    camera.position.x = camera.target.x + (off_x * orbit_cos + off_z * orbit_sin) * zoom_scale;
-    camera.position.y = camera.target.y + off_y * zoom_scale;
-    camera.position.z = camera.target.z + (-off_x * orbit_sin + off_z * orbit_cos) * zoom_scale;
-
     {
         let _space = d.begin_mode3D(camera);
         viewport.correct_projection_aspect();
-        // The world itself is scaled, not the vertices: one model-view scale keeps
-        // the terrain arithmetic identical whatever the width/height/depth dials
-        // say.
-        viewport.scale_modelview(width_scale, height_scale, depth_scale);
-
-        // A slowly circling key light, so the terrain's relief changes over the
-        // song instead of being lit identically for an hour.
-        let light_direction = Vector3::new(
-            (journey * 0.73 + seed_phase).cos() * 0.42,
-            0.78 + energy * 0.20,
-            (journey * 0.73 + seed_phase).sin() * 0.42,
-        );
-
-        match valid_map {
-            Some(map) => draw_complete_surface(
-                map,
-                frame.time_seconds,
-                pixel_scale,
-                contour_scale,
-                color_shift,
-                wireframe,
-                detail_level,
-                light_direction,
-            ),
-            None => draw_live_surface(
-                state,
-                state.scroll_phase(frame.time_seconds),
-                pixel_scale,
-                contour_scale,
-                color_shift,
-                wireframe,
-                detail_level,
-                light_direction,
-            ),
+        if !wire {
+            let mut batch = Batch::begin(raylib_sys::RL_TRIANGLES);
+            for row in 0..slices.len() - 1 {
+                for k in 0..ACROSS - 1 {
+                    let a = row * ACROSS + k;
+                    let b = a + 1;
+                    let c = a + ACROSS;
+                    let e = c + 1;
+                    for i in [a, c, b, b, c, e] {
+                        batch.vertex(points[i], colors[i]);
+                    }
+                }
+            }
+        }
+        if contours > 0.001 || wire {
+            let _width = LineWidth::set((pixel_scale * 0.8).max(1.0));
+            let mut batch = Batch::begin(raylib_sys::RL_LINES);
+            // Engraving follows the long axis of each spectral ribbon. A handful
+            // of delicate material seams, never a crosshatched polygon grid.
+            let step = if wire { 3 } else { (13 / detail).max(4) };
+            for k in (1..ACROSS - 1).step_by(step) {
+                for row in 0..slices.len() - 1 {
+                    let a = row * ACROSS + k;
+                    let b = a + ACROSS;
+                    let light = core_atlas::tideline_light(
+                        progress - row as f32 / (slices.len() - 1) as f32,
+                    );
+                    let flow = row_motion(
+                        frame.time_seconds,
+                        row as f32 / (slices.len() - 1) as f32,
+                        energy,
+                        bass,
+                    )
+                    .light;
+                    let tint = draw::color_alpha(
+                        mix_color(
+                            hue_shift(Color::new(155, 199, 173, 255), shift),
+                            flare,
+                            light,
+                        ),
+                        if wire {
+                            0.35 + 0.40 * light + 0.20 * flow
+                        } else {
+                            (0.08 + 0.14 * light + 0.10 * flow) * contours
+                        },
+                    );
+                    let mut p = points[a];
+                    p.y += 0.008;
+                    let mut q = points[b];
+                    q.y += 0.008;
+                    batch.vertex(p, tint);
+                    batch.vertex(q, tint);
+                }
+            }
         }
     }
     drop(viewport);
+    draw::vignette(d, boundary, 0.22);
+}
 
-    d.draw_rectangle_rec(boundary, draw::color_alpha(background, 0.018));
-    draw::vignette(d, boundary, 0.20);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn motion_vertex() -> ReliefVertex {
+        ReliefVertex {
+            point: Vector3::new(3.0, 0.2, 1.0),
+            amplitude: 0.6,
+            across: 0.5,
+        }
+    }
+
+    fn separation(a: Vector3, b: Vector3) -> f32 {
+        let difference = delta(a, b);
+        dot(difference, difference).sqrt()
+    }
+
+    #[test]
+    fn cached_relief_moves_visibly_within_one_second() {
+        // The same rest vertex is retained across frames. Motion must survive
+        // a cache hit, at a timescale a listener can actually notice.
+        let vertex = motion_vertex();
+        let first = row_motion(0.0, 0.2, 0.8, 0.6);
+        let next = row_motion(1.0, 0.2, 0.8, 0.6);
+        assert!(
+            separation(
+                animated_point(vertex, first, 0.5),
+                animated_point(vertex, next, 0.5)
+            ) > 0.15
+        );
+        assert!((first.light - next.light).abs() > 0.5);
+        assert!((camera_azimuth(3.0, 0.0, 1.0) - camera_azimuth(0.0, 0.0, 1.0)) > 0.1);
+        assert_eq!(camera_azimuth(3.0, 0.4, 0.0), 0.4);
+    }
+
+    #[test]
+    fn music_changes_the_surface_not_only_its_brightness() {
+        let vertex = motion_vertex();
+        let quiet = row_motion(0.8, 0.2, 0.0, 0.0);
+        // At an individual instant a downward fold can cancel the extra
+        // spectral lift. Measure the change over motion, not that crossing.
+        let average_change = (0..60)
+            .map(|step| {
+                let time = f64::from(step) * 0.05;
+                separation(
+                    animated_point(vertex, row_motion(time, 0.2, 0.0, 0.0), 0.0),
+                    animated_point(vertex, row_motion(time, 0.2, 1.0, 1.0), 1.0),
+                )
+            })
+            .sum::<f32>()
+            / 60.0;
+        assert!(average_change > 0.10);
+        assert!(
+            separation(
+                animated_point(vertex, quiet, 0.0),
+                animated_point(vertex, quiet, 1.0)
+            ) > 0.10,
+            "frequency energy must change the cross-section"
+        );
+    }
+
+    #[test]
+    fn folds_are_continuous_and_seek_repeatable() {
+        let vertex = motion_vertex();
+        for time in [0.0, 1.0, std::f64::consts::TAU / 1.35, 3600.0] {
+            let point = |t| animated_point(vertex, row_motion(t, 0.2, 0.8, 0.6), 0.5);
+            assert!(separation(point(time - 0.00001), point(time + 0.00001)) < 0.0001);
+            let first = point(time);
+            let _ = point(time + 600.0);
+            assert_eq!(first, point(time));
+        }
+    }
+
+    #[test]
+    fn geometry_cache_tracks_audio_content_and_relief_controls() {
+        let mut slices = vec![Slice::ZERO; 24];
+        let first = geometry_identity(&slices, 7, 1.0, 1.0, 1.0);
+        slices[10].bands[4] = 0.8;
+        assert_ne!(geometry_identity(&slices, 7, 1.0, 1.0, 1.0), first);
+        let (quiet, _) = build_geometry(&vec![Slice::ZERO; 24], 7, 1.0, 1.0, 1.0);
+        let (sound, _) = build_geometry(&slices, 7, 1.0, 1.0, 1.0);
+        assert!(
+            quiet
+                .iter()
+                .zip(sound)
+                .any(|(a, b)| (a.point.y - b.point.y).abs() > 0.001),
+            "the chart must encode the spectrum, not just draw a seeded spiral"
+        );
+        assert_ne!(
+            geometry_identity(&slices, 7, 1.0, 1.0, 1.0),
+            geometry_identity(&slices, 7, 1.4, 1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn silent_and_constant_maps_make_finite_geometry() {
+        for level in [0.0, 1.0] {
+            let slices = vec![
+                Slice {
+                    bands: [level; BAND_COUNT],
+                    rms: level,
+                    flux: 0.0,
+                    onset: false
+                };
+                24
+            ];
+            let (vertices, colors) = build_geometry(&slices, 7, 1.0, 1.0, 1.0);
+            assert_eq!(vertices.len(), 24 * ACROSS);
+            assert_eq!(colors.len(), vertices.len());
+            assert!(vertices
+                .iter()
+                .all(|v| v.point.x.is_finite() && v.point.y.is_finite() && v.point.z.is_finite()));
+        }
+    }
 }

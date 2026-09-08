@@ -7,7 +7,7 @@
   "playback": "external",
   "companion": {
     "label": "Rust visual protocol runner",
-    "command": "cargo run -- --protocol build/protocols/cx4-surprise-b.protocol.json",
+    "command": "cargo run --release --bin musializer -- --protocol build/protocols/cx4-surprise-b.protocol.json",
     "help": "The Rust app owns audio, scene state, and blind A/B order. This browser owns only the structured feedback log."
   },
   "tracks": [

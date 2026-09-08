@@ -192,6 +192,8 @@ pub struct Widgets {
     /// control, or a control on top of it took the press — and a capture cannot
     /// tell them apart, because both leave the same picture on screen.
     last_claimed_id: u64,
+    /// Input boundary paired with a scrolling surface's drawing scissor.
+    input_clip: Option<UiRect>,
 }
 
 impl Widgets {
@@ -208,7 +210,15 @@ impl Widgets {
         self.release_stranded_claim();
         self.interacted = false;
         self.pending_tooltip = None;
+        self.input_clip = None;
         self.ui_scale = ui_scale;
+    }
+
+    /// Restrict new presses and hover to the visible viewport. Restore the
+    /// returned boundary when leaving the scissor; active drags still release
+    /// normally outside it.
+    pub fn set_input_clip(&mut self, clip: Option<UiRect>) -> Option<UiRect> {
+        std::mem::replace(&mut self.input_clip, clip)
     }
 
     /// Installs (or clears) `--ui-probe click=`'s synthesized button state.
@@ -346,7 +356,10 @@ impl Widgets {
         if boundary.is_empty() {
             return ButtonState::default();
         }
-        let hovered = boundary.contains_point(pointer.x, pointer.y);
+        let hovered = boundary.contains_point(pointer.x, pointer.y)
+            && self
+                .input_clip
+                .is_none_or(|clip| clip.contains_point(pointer.x, pointer.y));
 
         let mut clicked = false;
         if self.active_button_id == 0 {
@@ -529,7 +542,7 @@ impl Widgets {
             } else {
                 match style {
                     ButtonStyle::Danger => alpha(signal, 0.72),
-                    ButtonStyle::Neutral => color::ui_rule(),
+                    ButtonStyle::Neutral => color::ui_control_edge(),
                 }
             },
         );
@@ -544,7 +557,7 @@ impl Widgets {
             // one of the contrast checks in `theme`, and it can only check the
             // colour actually drawn.
             if selected {
-                color::white()
+                color::on_accent()
             } else {
                 color::ui_ink()
             },
@@ -730,9 +743,7 @@ const TOOLTIP_MARGIN: f32 = 4.0;
 
 /// Draws a tooltip above everything else.
 ///
-/// Ink-on-white is the chrome's pairing; a tooltip inverts it — white on ink — so
-/// that it reads as floating rather than as another panel. That pair is one of the
-/// palette's contrast-checked ones.
+/// Opaque theme-specific colors keep tooltip text readable over chrome or video.
 pub fn draw_tooltip(
     d: &mut RaylibDrawHandle<'_>,
     font: &UiFonts,
@@ -746,8 +757,8 @@ pub fn draw_tooltip(
         return;
     }
     let rect = rectangle(boundary);
-    d.draw_rectangle_rec(rect, color::ui_ink());
-    d.draw_rectangle_lines_ex(rect, 1.0, alpha(color::white(), 0.18));
+    d.draw_rectangle_rec(rect, color::ui_tooltip_surface());
+    d.draw_rectangle_lines_ex(rect, 1.0, color::ui_tooltip_edge());
     draw_text(
         d,
         font,
@@ -755,7 +766,7 @@ pub fn draw_tooltip(
         boundary.x + TOOLTIP_PADDING_X,
         boundary.y + TOOLTIP_PADDING_Y,
         size,
-        color::white(),
+        color::ui_tooltip_ink(),
     );
 }
 
@@ -1684,6 +1695,50 @@ pub mod id {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scrolled_controls_cannot_claim_hidden_pixels_or_release_as_a_click() {
+        let mut widgets = Widgets::new();
+        let viewport = UiRect::new(0.0, 100.0, 200.0, 100.0);
+        let row = UiRect::new(10.0, 80.0, 150.0, 50.0);
+        let old = widgets.set_input_clip(Some(viewport));
+        let pointer = Pointer {
+            x: 30.0,
+            y: 90.0,
+            down: true,
+            pressed: true,
+            released: false,
+        };
+        let hidden = widgets.button_at(1, row, pointer);
+        assert!(!hidden.hovered);
+        assert_eq!(widgets.active_button_id, 0);
+        // The same row's visible portion works, but releasing above the viewport cancels.
+        widgets.button_at(
+            1,
+            row,
+            Pointer {
+                y: 110.0,
+                ..pointer
+            },
+        );
+        assert_eq!(widgets.active_button_id, 1);
+        let released = widgets.button_at(
+            1,
+            row,
+            Pointer {
+                down: false,
+                pressed: false,
+                released: true,
+                ..pointer
+            },
+        );
+        assert!(!released.clicked);
+        assert_eq!(widgets.active_button_id, 0);
+        widgets.set_input_clip(old);
+        // Leaving the body restores interaction with fixed header/footer controls.
+        assert!(widgets.button_at(2, row, pointer).hovered);
+        assert_eq!(widgets.active_button_id, 2);
+    }
 
     #[test]
     fn slider_value_clamps_to_its_own_track() {

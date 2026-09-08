@@ -27,6 +27,16 @@ inventory, the divergence table and the deliberate exclusions; `REWRITE_PLAN.md`
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
+## UI toolkit follow-through
+
+The representative egui Tune/Lyrics editor and two workstation themes are
+implemented; see [UI_TOOLKIT](docs/UI_TOOLKIT.md). Remaining migration work:
+
+- Move the other workspace panels through the existing command boundary.
+- Decide whether unfinished toolkit drafts should persist across application restarts.
+- Evaluate simultaneous timeline editing in the focused editor view; the current
+  view restores the timeline when closed.
+
 ## Deliberate exclusions
 
 These are not open work and do not block anything. They are restated from
@@ -92,12 +102,32 @@ adjudicated error rates. No research helper remains running. The operator
 requested a pause and prepared listening review for the two unresolved phrase
 groupings; see [the handoff](docs/LYRICS_GROUPING_REVIEW.md).
 
+**SX4 — built, awaiting operator review (2026-09-05).** The operator
+completed CX-4 track A in the Rust runner: ten `reject` and two `neither`
+answers (`build/protocols/cx4-surprise-a.answers.jsonl`). Song Atlas needs a
+creative redesign; Cadence has discontinuous motion; the audition windows cut
+across musical phrases. Preserve those answers and the original protocols.
+Atlas now has the Tideline spiral relief and traveling warm light; Cadence's
+onset/beat-wrap/word-envelope discontinuities are repaired, with soft ambient
+strata. New `build/listening-review/sx4-tideline-{a,b}.protocol.json` auditions
+use measured candidate cuts and output fades. Cuts are **not yet verified phrase
+boundaries**. The reusable generator and browser form distinguish bad cuts from
+bad looks. Design decisions, compatibility and evidence are recorded in
+[`docs/SCENE_DESIGN.md`](docs/SCENE_DESIGN.md). This is the current operator
+priority; human acceptance remains open. Revisit cue-to-cue type sizing or
+remaining motion defects if the new listening pass finds them.
+The operator found the first Tideline version effectively frozen. The follow-up
+adds traveling surface folds, stronger musical deformation, flowing light and
+visible camera movement. Nonvisual checks only for this correction, as requested;
+the operator will judge its motion. Earlier render evidence is for the first
+version and does not establish acceptance or performance of the correction.
+
 Ordered as a session should pick it up. Trust outranks delight — that ordering is
 a CX ruling, not a preference.
 
 | # | Work | Ids | Size |
 | --- | --- | --- | --- |
-| 0 | **The fifteen-minute listening session.** The only item in the whole queue a human has to do: validate the tap offset (4 min), compare 80/120/200 ms tap flashes (2 min), blind-compare five current against five revised Surprise seeds on two tracks (9 min), against CX-4's stated pass condition. Blind protocol files are written and waiting — `build/protocols/cx4-surprise-{a,b}.protocol.json`, driven by `tools/cx4_surprise_session.sh`, with the browser counterpart in `tools/listening-lab/protocols/`. Unblind through the matching `.key.json` **only after** answering | CX-4 | 15 min, operator |
+| 0 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
 | 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`). **Needs an explicit operator go-ahead**: it sends audio to OpenRouter and spends credits | — | one session |
 | 2 | **The remaining CX rulings, in their stated order.** CX-5 scene thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
 | 3 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-5, PXF-12 | medium |
@@ -120,8 +150,9 @@ prefix.
   export variants. Schema v2. Prerequisite: PXF-4.
 - **CX-4** — the operator listening session above. The rulings it already made
   (visual-only tap feedback with no stamp click, revised Surprise constants) are
-  landed; only the nine-minute blind seed comparison is outstanding — **and the
-  -100 ms tap-offset default is NOT landed** (found 2026-08-29: `LyricTap`
+  landed. Track A was rejected on 2026-09-05; track B and tap/flash validation
+  remain open. SX4 is the response to that rejection, not a passing CX-4 result.
+  The **-100 ms tap-offset default is NOT landed** (found 2026-08-29: `LyricTap`
   derives `Default`, 0.0, and core tests pin it). Since PXF-2 the persistence
   path defers to `LyricTap::default()`, so the ruling is one constant plus
   `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
@@ -172,8 +203,9 @@ here.
 - **C5** — adopt a project's embedded scene presets into the shared library, with
   the C's dedup rule, and never let the in-memory and on-disk libraries silently
   disagree after a failed write.
-- **D6** — Tune reachability: a scrollable inspector, and `SettingKind::Toggle`
-  drawn as a labelled binary control rather than a numeric slider.
+- **D6** — `SettingKind::Toggle` drawn as a labelled binary control rather than
+  a numeric slider. Inspector scrolling is implemented (2026-09-05), with
+  nonvisual reachability/input checks; the operator's visual check is pending.
 - **D7** — **direct 1–0 scene selection and its tile tooltips.** Ctrl+S /
   Ctrl+Shift+S are bound (UX0-A) and the "text entry suppresses every global
   shortcut" test exists (UX0-A06); the number row does not.

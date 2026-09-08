@@ -350,7 +350,7 @@ impl RenderJob {
             };
             wave.crop(start, end);
         }
-        if !wave.export(&staged_audio) {
+        if wave.export(&staged_audio).is_err() {
             let _ = std::fs::remove_file(&staged_audio);
             return Err(RenderStartError::Staging(staged_audio));
         }

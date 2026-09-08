@@ -3591,7 +3591,7 @@ impl Shell {
                     15.0,
                     0.0,
                     if self.assist_settings.is_open() {
-                        color::white()
+                        color::on_accent()
                     } else {
                         color::ui_muted()
                     },
@@ -3822,11 +3822,16 @@ impl Shell {
             failure_detail: &session.failure_detail,
             log_file_name,
         });
+        let font = input.fonts.ui();
+        let text_x = boundary.x + metric::UI_PANEL_PADDING;
+        let available = (boundary.width - metric::UI_PANEL_PADDING * 2.0).max(0.0);
+        let measure = |value: &str| widgets::measure(font, value, 16.0);
+        let shown = ellipsize(&text, available, &measure);
         widgets::draw_text(
             d,
-            input.fonts.ui(),
-            &text,
-            boundary.x + metric::UI_PANEL_PADDING,
+            font,
+            &shown,
+            text_x,
             boundary.y + layout.status_y,
             16.0,
             match tone {
@@ -3837,6 +3842,17 @@ impl Shell {
                 AssistStatusTone::Success => color::ui_success(),
             },
         );
+        // Failure diagnostics often contain a helper location and log name.
+        // At the minimum window width that useful tail used to continue past
+        // the panel edge and disappear. Keep the row bounded, while making the
+        // complete diagnosis available without sending the user to a notice
+        // they may already have dismissed.
+        if shown != text {
+            let status = UiRect::new(text_x, boundary.y + layout.status_y - 2.0, available, 21.0);
+            let id = widgets::widget_id(ASSIST_WIDGETS, 92);
+            let state = self.widgets.button(d, id, status);
+            self.widgets.hint(d, state, id, status, &text);
+        }
     }
 
     /// Whichever of the six bodies `panel_content` chose (`plug.c:2340-2539`).

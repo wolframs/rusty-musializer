@@ -847,6 +847,23 @@ class CodexModelDiscoveryTests(unittest.TestCase):
             self.assertIn("missing runtime", result.error or "")
             self.assertLess(elapsed, 1.0)
 
+    def test_exit_before_first_write_keeps_the_child_diagnostic(self) -> None:
+        # Force the ordering that occasionally broke the early-exit test:
+        # the child is already gone before the parent gets its first timeslice.
+        def already_exited(*args, **kwargs):
+            proc = subprocess.Popen(*args, **kwargs)
+            proc.wait(timeout=2)
+            return proc
+
+        result = codex_model_discovery.discover_models(
+            codex_bin=[sys.executable, '-c',
+                       'import sys; print("missing runtime", file=sys.stderr); sys.exit(127)'],
+            popen=already_exited, timeout=2.0,
+        )
+        self.assertFalse(result.supported)
+        self.assertIn('missing runtime', result.error or '')
+        self.assertIn('127', result.error or '')
+
     def test_spawned_process_is_always_terminated(self) -> None:
         stub = self._write_stub(_NEW_CODEX_TAIL)
         spawned: list[subprocess.Popen] = []

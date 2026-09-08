@@ -21,9 +21,10 @@ use musializer_core::scene::settings::index::orbital as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::orbital_lattice::{OrbitalLatticeState, NODES_PER_RING, RING_COUNT};
 use musializer_runtime::draw;
+use musializer_runtime::draw::Camera3D;
 use musializer_runtime::draw::{draw_billboard_rec, SceneViewport};
 use raylib::prelude::{
-    BlendMode, Camera3D, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt,
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt,
     RaylibShaderModeExt, Rectangle, Vector2, Vector3,
 };
 

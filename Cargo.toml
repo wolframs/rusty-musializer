@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/raylib-5-5-link",
+    "crates/raylib-link",
     "crates/musializer-core",
     "crates/musializer-runtime",
     "crates/musializer-app",
@@ -11,21 +11,15 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-rust-version = "1.80"
+rust-version = "1.92"
 
 [workspace.dependencies]
-# raylib stays C. The binding crate is pinned to 5.5.x and runs in `nobuild`
-# mode; `raylib-5-5-link` supplies the actual library, built from the raylib 5.5
-# source vendored under vendor/. See REWRITE_PLAN.md "The raylib linking choice".
-#
-# `nobuild` means raylib-sys generates bindings but neither builds nor links a
-# library; `raylib-5-5-link` supplies the library, built from vendored 5.5
-# source. Note that `bindgen` is on anyway despite `default-features = false`:
-# the safe `raylib` crate declares raylib-sys without disabling defaults, and
-# Cargo unifies features. See vendor/clang-builtin-shim/README.md.
-raylib = { version = "5.5.1", default-features = false, features = ["nobuild"] }
-raylib-sys = { version = "5.5.1", default-features = false, features = ["nobuild"] }
-raylib-5-5-link = { path = "crates/raylib-5-5-link" }
+# Build the pinned upstream C release ourselves to retain the audio diagnostic.
+# The 6.0 Rust bindings' headers match this upstream release byte-for-byte.
+raylib = { version = "=6.0.0", default-features = false, features = ["nobuild", "SUPPORT_IMAGE_GENERATION"] }
+raylib-sys = { version = "=6.0.0", default-features = false, features = ["nobuild"] }
+raylib-link = { path = "crates/raylib-link" }
+egui = "0.35"
 musializer-core = { path = "crates/musializer-core" }
 musializer-runtime = { path = "crates/musializer-runtime" }
 

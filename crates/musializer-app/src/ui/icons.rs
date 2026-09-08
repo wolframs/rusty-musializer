@@ -58,6 +58,8 @@ pub const SEEK_FORWARD: Control = Control::new(
 pub const TUNE: Control = Control::new(Icon::Sliders, "Tune", "Tuning inspector [T]");
 pub const EXPORT: Control = Control::new(Icon::Film, "Export", "Render to video");
 pub const LYRICS: Control = Control::new(Icon::FileText, "Lyrics", "Lyrics editor");
+pub const EDITOR: Control =
+    Control::new(Icon::Pencil, "Editor", "Tune, lyrics and appearance [F8]");
 pub const ASSIST: Control = Control::new(Icon::Magic, "Assist", "Analysis assist");
 
 pub const READOUT: Control = Control::new(Icon::Info, "Info", "Diagnostic readout [H]");
@@ -133,6 +135,7 @@ mod tests {
             SEEK_BACK,
             SEEK_FORWARD,
             TUNE,
+            EDITOR,
             EXPORT,
             LYRICS,
             ASSIST,
@@ -160,6 +163,7 @@ mod tests {
             SEEK_BACK,
             SEEK_FORWARD,
             TUNE,
+            EDITOR,
             READOUT,
             MUTE,
             UNMUTE,

@@ -147,12 +147,9 @@ fn measure<F: RaylibFont>(font: &F, text: &str, font_size: f32, spacing: f32) ->
 /// Wraps the whole line into centered rows so every word owns a stable slot for the
 /// duration of the cue, shrinking the type until the block fits.
 ///
-/// One oracle quirk is reproduced rather than corrected: on the sixth *failed*
-/// attempt the loop shrinks `font_size` once more and then exits, so the returned
-/// size is 0.82x smaller than the size the slot widths were measured at. A line that
-/// cannot be made to fit is therefore drawn slightly narrower than its layout
-/// assumes. It is only reachable with a pathological cue, and matching the oracle
-/// matters more than tidying it.
+/// Every returned slot is measured at the returned size, including when an
+/// oversized cue exhausts the fitting attempts. Never shrink after the final
+/// measurement: that moves the type away from the particle targets (SX4).
 fn layout<F: RaylibFont>(
     words: &[Word<'_>],
     font: &F,
@@ -168,7 +165,7 @@ fn layout<F: RaylibFont>(
     let mut rows = 1usize;
     let mut slots = vec![Slot::default(); words.len()];
 
-    for _ in 0..LAYOUT_ATTEMPTS {
+    for attempt in 0..LAYOUT_ATTEMPTS {
         spacing = font_size * 0.03 * spacing_scale;
         line_advance = font_size * 1.16;
         let space_width = font_size * 0.34;
@@ -195,7 +192,9 @@ fn layout<F: RaylibFont>(
         if fits && rows <= MAX_LAYOUT_ROWS && rows as f32 * line_advance <= max_height {
             break;
         }
-        font_size *= 0.82;
+        if attempt + 1 < LAYOUT_ATTEMPTS {
+            font_size *= 0.82;
+        }
     }
 
     let mut row_extent = [0.0f32; MAX_LAYOUT_ROWS];
@@ -326,57 +325,67 @@ fn draw_ambient(
     swarm: f32,
     pixel_scale: f32,
 ) {
-    let phase = frame.audio.beat_phase * 2.0 * PI;
+    // Continuous ink strata. The periodic beat term meets itself at the wrap;
+    // musical time supplies drift, so neither seeking nor a beat resets a field.
+    let t = frame.time_seconds;
+    let extent = boundary.width.min(boundary.height);
+    let sway = cadence::beat_sway(frame.audio.beat_phase);
+    let energy = frame.audio.rms.clamp(0.0, 1.0);
+    let layers = 4usize;
+    let segments = 180usize;
+    let cross_steps = 10usize;
     d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
-        // With no authored words there is still a typographic *field*: broad,
-        // slowly breathing strokes suggest ink waiting to condense instead of
-        // leaving ninety-six pinpricks in an almost black frame. Nothing here
-        // invents text; the actual cue remains the only source of letterforms.
-        let extent = boundary.width.min(boundary.height);
-        for ribbon in 0..4 {
-            let ribbon_phase = frame.time_seconds as f32 * (0.11 + ribbon as f32 * 0.018)
-                + cadence::unit(state.seed, 900 + ribbon) * 2.0 * PI;
-            let mut previous = Vector2::zero();
-            for segment in 0..=96 {
-                let t = segment as f32 / 96.0;
-                let x = boundary.x + boundary.width * (0.12 + t * 0.76);
-                let wave = (t * PI * (1.5 + ribbon as f32 * 0.34) + ribbon_phase).sin();
-                let counter = (t * PI * 3.0 - ribbon_phase * 0.63).cos();
+        for layer in 0..layers {
+            let phase = (t * (0.10 + layer as f64 * 0.012)).rem_euclid(std::f64::consts::TAU)
+                as f32
+                + cadence::unit(state.seed, 900 + layer as u64) * 2.0 * PI;
+            let mut mesh = Vec::with_capacity(segments * cross_steps * 6);
+            let point = |i: usize, j: usize| {
+                let u = i as f32 / segments as f32;
+                let v = j as f32 / cross_steps as f32 * 2.0 - 1.0;
+                let taper = (u * PI).sin().max(0.0).powf(1.2);
+                let wave = (u * PI * (1.4 + layer as f32 * 0.22) + phase).sin();
                 let y = boundary.y
-                    + boundary.height * (0.36 + ribbon as f32 * 0.085)
-                    + wave * extent * (0.055 + frame.audio.rms * 0.055)
-                    + counter * extent * 0.018;
-                let point = Vector2::new(x, y);
-                if segment > 0 {
-                    let taper = (t * PI).sin().max(0.0);
-                    blend.draw_line_ex(
-                        previous,
-                        point,
-                        (1.2 + taper * (2.8 + frame.audio.rms * 3.8)) * pixel_scale * swarm,
-                        draw::color_alpha(color, (0.13 + taper * 0.17) * swarm),
-                    );
+                    + boundary.height * (0.37 + layer as f32 * 0.085)
+                    + wave * extent * (0.07 + 0.03 * energy) * swarm
+                    + (u * PI * 3.0 - phase * 0.4).cos() * extent * 0.015;
+                let half_width =
+                    extent * (0.009 + 0.018 * energy) * taper * swarm * (1.0 + 0.06 * sway);
+                let alpha = (1.0 - v * v).max(0.0).powi(3) * taper * 0.19;
+                (
+                    Vector2::new(
+                        boundary.x + boundary.width * (0.08 + u * 0.84),
+                        y + v * half_width,
+                    ),
+                    draw::color_alpha(color, alpha),
+                )
+            };
+            for i in 0..segments {
+                for j in 0..cross_steps {
+                    let a = point(i, j);
+                    let b = point(i + 1, j);
+                    let c = point(i, j + 1);
+                    let e = point(i + 1, j + 1);
+                    mesh.extend_from_slice(&[a, c, b, b, c, e]);
                 }
-                previous = point;
             }
+            draw::shaded_triangles(&mut blend, &mesh);
         }
-        for i in 0..AMBIENT_PARTICLES as u64 {
-            let angle = cadence::unit(state.seed, i * 3 + 1) * 2.0 * PI + phase * 0.12;
-            let radius = cadence::unit(state.seed, i * 3 + 2).sqrt()
-                * boundary.width.min(boundary.height)
-                * 0.38;
-            let breathing =
-                0.84 + 0.16 * (frame.time_seconds as f32 * 0.43 + i as f32 * 0.31).sin();
+        // A sparse, slowly traveling dust layer catches the light. Fixed count,
+        // absolute-time paths, and a smooth visibility envelope avoid respawns.
+        for i in 0..AMBIENT_PARTICLES as u64 / 3 {
+            let phase = (t * 0.035 + f64::from(cadence::unit(state.seed, i * 3 + 1)) * 6.0)
+                .rem_euclid(std::f64::consts::TAU) as f32;
+            let radius = cadence::unit(state.seed, i * 3 + 2).sqrt() * extent * 0.36;
             let point = Vector2::new(
-                boundary.x + boundary.width * 0.5 + angle.cos() * radius * breathing,
-                boundary.y + boundary.height * 0.5 + angle.sin() * radius * breathing,
+                boundary.x + boundary.width * 0.5 + phase.cos() * radius * 1.4,
+                boundary.y + boundary.height * 0.51 + phase.sin() * radius * 0.60,
             );
-            let size = (0.9 + cadence::unit(state.seed, i * 3 + 3) * 2.2 + frame.audio.rms * 3.0)
-                * pixel_scale
-                * swarm;
+            let alpha = (0.5 + 0.5 * (phase * 2.0 + i as f32).sin()).powi(2) * 0.32;
             blend.draw_circle_v(
                 point,
-                size,
-                draw::color_alpha(color, 0.34 + frame.audio.rms * 0.32),
+                (0.65 + energy * 0.25) * pixel_scale,
+                draw::color_alpha(color, alpha),
             );
         }
     });
@@ -390,6 +399,7 @@ struct WordStyle {
     beat_response: f32,
     glow: f32,
     pixel_scale: f32,
+    particles_per_glyph: usize,
 }
 
 /// `cadence_draw_word` (`:288-397`).
@@ -406,22 +416,28 @@ fn draw_word(
     boundary: Rectangle,
     focus: Focus,
     style: &WordStyle,
-    particle_budget: &mut usize,
 ) {
     let font_size = layout.font_size;
-    let ink_alpha = if focus.active {
-        0.55 + focus.focus * 0.45
-    } else if focus.focus >= 1.0 {
-        0.62
-    } else {
-        cadence::smooth((focus.focus - 0.55) / 0.45) * 0.5
-    };
+    // The active flag is a label, not an opacity switch: hard 0.55/0.62
+    // branches flashed at both ends of every estimated word window.
+    let position = frame.lyric.map_or(0.0, |lyric| {
+        cadence::cue_position(frame.time_seconds, lyric.start_seconds, lyric.end_seconds)
+    });
+    let span = (word.window_end - word.window_start).max(0.0001);
+    let emphasis = cadence::smooth((position - word.window_start) / (span * 0.22))
+        * (1.0 - cadence::smooth((position - word.window_end + span * 0.22) / (span * 0.22)));
+    let ink_alpha = cadence::smooth((focus.focus - 0.42) / 0.58) * (0.68 + 0.32 * emphasis);
     // The beat coil: the swarm tightens toward the letterform approaching the beat
     // and relaxes just after the phase wraps.
     let coil = 1.0 - style.beat_response * 0.15 * (frame.audio.beat_phase * PI).sin();
     let scatter_reach = boundary.width.min(boundary.height) * style.swarm * coil;
     let word_center = Vector2::new(slot.x + slot.width * 0.5, slot.y + font_size * 0.5);
-    let particle_alpha = (1.0 - cadence::smooth((focus.focus - 0.60) / 0.35)) * 0.88;
+    let edge_alpha = frame.lyric.map_or(1.0, |lyric| {
+        cadence::smooth(((frame.time_seconds - lyric.start_seconds) / 0.16) as f32)
+            * cadence::smooth(((lyric.end_seconds - frame.time_seconds) / 0.16) as f32)
+    });
+    let particle_alpha = (1.0 - cadence::smooth((focus.focus - 0.60) / 0.35)) * 0.88 * edge_alpha;
+    let ink_alpha = ink_alpha * edge_alpha;
     let wants_particles = focus.focus < 0.985 && particle_alpha > 0.01;
 
     // The lyric id seeds the whole word's particle field, so the same cue always
@@ -447,14 +463,8 @@ fn draw_word(
             .wrapping_add((word_index as u64).wrapping_mul(0x2545_f491_4f6c_dd1d))
             .wrapping_add(glyph_index as u64);
 
-        if wants_particles && *particle_budget > 0 {
-            // Long words get fewer particles per glyph so a long line does not cost
-            // more than a short one; the global budget is the hard ceiling.
-            let want = 320usize
-                .checked_div(word.glyphs)
-                .unwrap_or(PARTICLES_PER_GLYPH)
-                .clamp(6, PARTICLES_PER_GLYPH)
-                .min(*particle_budget);
+        if wants_particles && style.particles_per_glyph > 0 {
+            let want = style.particles_per_glyph;
             let mut ink_points = [Vector2::zero(); PARTICLES_PER_GLYPH];
             let want = glyph_ink(
                 faces.ink,
@@ -464,7 +474,6 @@ fn draw_word(
                 want,
                 &mut ink_points,
             );
-            *particle_budget -= want;
             // The *ink* face's base size, because `ink_points` are coordinates in
             // its glyph bitmaps. Scaling them by the text face's base size would
             // put the particles somewhere else entirely the moment the two atlases
@@ -482,8 +491,8 @@ fn draw_word(
                         pen.x + ink_point.x * glyph_scale,
                         pen.y + ink_point.y * glyph_scale,
                     );
-                    let angle =
-                        cadence::unit(state.seed, salt) * 2.0 * PI + frame.audio.beat_phase * 0.4;
+                    let angle = cadence::unit(state.seed, salt) * 2.0 * PI
+                        + cadence::beat_sway(frame.audio.beat_phase) * 0.035;
                     let distance =
                         (0.10 + cadence::unit(state.seed, salt + 1) * 0.24) * scatter_reach;
                     let home = Vector2::new(
@@ -519,11 +528,12 @@ fn draw_word(
         }
 
         if ink_alpha > 0.01 {
-            if focus.active && style.glow > 0.01 {
+            if emphasis > 0.001 && style.glow > 0.01 {
                 // A single additive ghost offset to the left, which reads as a bloom
                 // around the stroke rather than as a second glyph.
                 let ghost = Vector2::new(pen.x - 1.5 * style.pixel_scale, pen.y);
-                let ghost_tint = draw::color_alpha(style.ink, 0.16 * style.glow * focus.focus);
+                let ghost_tint =
+                    draw::color_alpha(style.ink, 0.16 * style.glow * focus.focus * emphasis);
                 d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
                     draw_glyph(&mut blend, faces, codepoint, ghost, font_size, ghost_tint);
                 });
@@ -574,7 +584,7 @@ pub fn draw(
     };
     let hue = (205.0
         + frame.semantic.valence * hue_swing * semantic_weight
-        + frame.audio.spectral_flux * 72.0
+        + frame.audio.spectral_flux * 8.0
         + 360.0)
         % 360.0;
     let background = draw::color_from_hsv(hue, 0.60, 0.030 + frame.audio.rms * 0.030);
@@ -598,8 +608,8 @@ pub fn draw(
         draw::color_alpha(ink, 0.13 + frame.audio.rms * 0.10),
     );
 
+    draw_ambient(d, frame, state, boundary, ink, swarm, pixel_scale);
     let Some(lyric) = frame.lyric.filter(|lyric| !lyric.text.is_empty()) else {
-        draw_ambient(d, frame, state, boundary, ink, swarm, pixel_scale);
         draw::vignette(d, boundary, 0.22);
         return;
     };
@@ -621,8 +631,10 @@ pub fn draw(
         beat_response,
         glow,
         pixel_scale,
+        particles_per_glyph: (PARTICLE_BUDGET
+            / words.iter().map(|w| w.glyphs).sum::<usize>().max(1))
+        .min(PARTICLES_PER_GLYPH),
     };
-    let mut particle_budget = PARTICLE_BUDGET;
     for (i, word) in words.iter().enumerate() {
         let focus = cadence::resolved_focus(
             word,
@@ -643,7 +655,6 @@ pub fn draw(
             boundary,
             focus,
             &style,
-            &mut particle_budget,
         );
     }
 }

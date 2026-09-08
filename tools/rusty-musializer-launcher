@@ -60,9 +60,9 @@ fi
 # StartupWMClass in the .desktop file matches so the taskbar attributes the window
 # to this entry.
 #
-# This is load-bearing and non-obvious. raylib 5.5 does not expose GLFW's
+# This is load-bearing and non-obvious. raylib 6.0 does not expose GLFW's
 # GLFW_X11_CLASS_NAME hint, and with no hint GLFW falls back to the *window title*
-# for both halves of WM_CLASS (vendor/raylib-5.5/src/external/glfw/src/x11_window.c:743-770).
+# for both halves of WM_CLASS (vendor/raylib-6.0/src/external/glfw/src/x11_window.c:743-770).
 # Verified by reading WM_CLASS off the live window: without this the class is
 # "Musializer (Rust)", with it the instance name becomes "rusty-musializer".
 # Without it, renaming the window would silently break the taskbar association.

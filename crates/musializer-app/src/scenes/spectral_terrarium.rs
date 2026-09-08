@@ -15,8 +15,9 @@ use musializer_core::scenes::spectral_terrarium::{
     self as terrarium, SpectralTerrariumState, CREATURE_COUNT, PARTICLE_COUNT, PLANT_COUNT,
 };
 use musializer_runtime::draw;
+use musializer_runtime::draw::Camera3D;
 use raylib::prelude::{
-    BlendMode, Camera3D, Color, RaylibBlendModeExt, RaylibDraw, RaylibDraw3D, RaylibDrawHandle,
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDraw3D, RaylibDrawHandle,
     RaylibMode3DExt, RaylibShaderModeExt, Rectangle, Vector2, Vector3,
 };
 
@@ -104,7 +105,7 @@ pub fn draw(
         Vector3::new(0.0, 1.0, 0.0),
         52.0 + state.flux * 5.0 + state.onset_pulse * 2.0,
     );
-    d.draw_mode3D(camera, |mut m3, camera| {
+    d.draw_mode3D(camera, |mut m3| {
         viewport.correct_aspect(&mut m3);
         draw_world(
             &mut m3,
@@ -159,7 +160,7 @@ fn draw_world<D>(
     // primitive; layered rings now imply a habitat without becoming the subject.
     let soil = draw::color_from_hsv((hue + 18.0) % 360.0, 0.62, 0.060 + state.bass * 0.040);
     d.draw_cylinder(Vector3::new(0.0, -1.76, 0.0), 4.02, 3.78, 0.10, 64, soil);
-    d.draw_circle_3D(
+    d.draw_circle3D(
         Vector3::new(0.0, -1.70, 0.0),
         3.88,
         Vector3::new(1.0, 0.0, 0.0),
@@ -167,7 +168,7 @@ fn draw_world<D>(
         draw::color_alpha(draw::color_from_hsv(hue, 0.48, 0.46), 0.42),
     );
     for ring in 1..=3 {
-        d.draw_circle_3D(
+        d.draw_circle3D(
             Vector3::new(0.0, -1.695 + ring as f32 * 0.002, 0.0),
             3.88 * ring as f32 / 4.0,
             Vector3::new(1.0, 0.0, 0.0),
@@ -182,7 +183,7 @@ fn draw_world<D>(
     // ripple expands outward across the floor.
     if state.onset_pulse > 0.03 {
         let ripple_radius = 0.45 + (1.0 - state.onset_pulse) * 3.6;
-        d.draw_circle_3D(
+        d.draw_circle3D(
             Vector3::new(0.0, -1.66, 0.0),
             ripple_radius,
             Vector3::new(1.0, 0.0, 0.0),
@@ -474,7 +475,7 @@ fn draw_world<D>(
     for ring in 0..3 {
         let y = -1.25 + ring as f32 * 1.55;
         let radius = (16.0f32 - (y + 1.65) * (y + 1.65)).max(0.0).sqrt();
-        d.draw_circle_3D(
+        d.draw_circle3D(
             Vector3::new(0.0, y, 0.0),
             radius,
             Vector3::new(1.0, 0.0, 0.0),

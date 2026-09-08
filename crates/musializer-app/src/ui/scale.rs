@@ -7,7 +7,8 @@
 //! was given.
 
 use musializer_core::ui::workspace_layout::UiRect;
-use raylib::prelude::{Camera2D, RaylibDrawHandle, Vector2};
+use raylib::prelude::{RaylibDrawHandle, Vector2};
+use raylib_sys::Camera2D;
 
 /// Supported scale rungs. Stepped values keep font atlases and pixel snapping
 /// deterministic and avoid rebuilding GPU fonts for every fractional DPI value.
@@ -79,8 +80,8 @@ impl UiScale {
     #[must_use]
     pub fn camera(self) -> Camera2D {
         Camera2D {
-            offset: Vector2::zero(),
-            target: Vector2::zero(),
+            offset: Vector2::zero().into(),
+            target: Vector2::zero().into(),
             rotation: 0.0,
             zoom: self.0,
         }

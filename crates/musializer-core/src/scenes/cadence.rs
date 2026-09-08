@@ -181,39 +181,27 @@ pub struct Focus {
     pub active: bool,
 }
 
-/// `cadence_word_focus` (`:270-286`).
+/// A continuous, monotone gathering envelope across the estimated word window.
 ///
-/// Words gather slightly as their window approaches, snap into formation while
-/// sung, and hold afterward. An onset floors the focus at 0.93 so a hit always
-/// reads as legible type.
+/// Onsets must not assign particle positions: the old one-frame 0.93 floor
+/// formed a word on a hit and scattered it again on the next frame. Audio may
+/// light the ink, but the cue clock owns its formation (SX4).
 #[must_use]
-pub fn word_focus(word: &Word<'_>, cue_position: f32, focus_speed: f32, onset: bool) -> Focus {
-    if cue_position >= word.window_end {
-        return Focus {
-            focus: 1.0,
-            active: false,
-        };
-    }
-    if cue_position < word.window_start {
-        let lead = word.window_start - cue_position;
-        return Focus {
-            focus: 0.14 * clamp01(1.0 - lead / 0.30),
-            active: false,
-        };
-    }
-    let mut span = word.window_end - word.window_start;
-    if span < 0.0001 {
-        span = 0.0001;
-    }
-    let progress = (cue_position - word.window_start) / span;
-    let mut focus = clamp01(progress * (2.4 + focus_speed * 1.8));
-    if onset {
-        focus = focus.max(0.93);
-    }
+pub fn word_focus(word: &Word<'_>, cue_position: f32, focus_speed: f32, _onset: bool) -> Focus {
+    let span = (word.window_end - word.window_start).max(0.0001);
+    let lead = span.min(0.12) * 0.22;
+    let gather = span / (2.4 + focus_speed.max(0.0) * 1.8);
     Focus {
-        focus,
-        active: true,
+        focus: smooth((cue_position - word.window_start + lead) / (gather + lead)),
+        active: cue_position >= word.window_start && cue_position < word.window_end,
     }
+}
+
+/// A periodic beat displacement. Both value and velocity meet at the wrap;
+/// multiplying raw phase by an angle instead teleports particles every beat.
+#[must_use]
+pub fn beat_sway(phase: f32) -> f32 {
+    (phase * std::f32::consts::TAU).sin()
 }
 
 /// The focus and legibility a word is drawn with, after the line's dissolve is
@@ -351,14 +339,33 @@ mod tests {
     }
 
     #[test]
-    fn an_onset_snaps_a_word_into_legible_type() {
-        let words = words_for_cue("hit");
-        let word = &words[0];
-        let position = word.window_start + 0.001;
-        let quiet = word_focus(word, position, 1.0, false);
-        let struck = word_focus(word, position, 1.0, true);
-        assert!(quiet.focus < 0.93);
-        assert_eq!(struck.focus, 0.93);
+    fn onset_cannot_teleport_a_gathering_word() {
+        let word = &words_for_cue("hit")[0];
+        for step in 0..1000 {
+            let p = step as f32 / 1000.0;
+            assert_eq!(
+                word_focus(word, p, 1.0, false),
+                word_focus(word, p, 1.0, true)
+            );
+        }
+    }
+
+    #[test]
+    fn gathering_has_no_jump_at_word_boundaries() {
+        for word in words_for_cue("gather round now") {
+            for boundary in [word.window_start, word.window_end] {
+                let before = word_focus(&word, boundary - 0.00001, 1.0, false).focus;
+                let after = word_focus(&word, boundary + 0.00001, 1.0, false).focus;
+                assert!((after - before).abs() < 0.001);
+            }
+            let mut previous = 0.0;
+            for step in 0..1000 {
+                let focus = word_focus(&word, step as f32 / 999.0, 1.0, false).focus;
+                assert!(focus >= previous);
+                previous = focus;
+            }
+        }
+        assert!((beat_sway(1.0 - 0.00001) - beat_sway(0.00001)).abs() < 0.001);
     }
 
     #[test]

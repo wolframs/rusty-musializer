@@ -203,7 +203,7 @@ def generate() -> str:
             "",
             "Dependency direction: `musializer-app` → `musializer-runtime` → raylib,",
             "while both outer crates depend on the raylib-free `musializer-core`.",
-            "`raylib-5-5-link` builds the exact vendored C library used by the application.",
+            "`raylib-link` builds the exact vendored C library used by the application.",
             "",
             "## Cargo entry points",
             "",

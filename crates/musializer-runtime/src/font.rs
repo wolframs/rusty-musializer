@@ -32,6 +32,7 @@
 //! started from the wrong directory is a failure mode worth deleting rather than
 //! reproducing. The shaders are already embedded for the same reason.
 
+use raylib::core::AsRawMut;
 use std::borrow::Cow;
 use std::cell::{Cell, Ref, RefCell};
 use std::path::{Path, PathBuf};
@@ -97,7 +98,7 @@ pub const SDF_ATLAS_SIZE: i32 = 64;
 /// agree with.
 ///
 /// `DrawTextCodepoint` grows the source rectangle by `font.glyphPadding` on
-/// every side (`vendor/raylib-5.5/src/rtext.c`), so the number handed to
+/// every side (`vendor/raylib-6.0/src/rtext.c`), so the number handed to
 /// `GenImageFontAtlas` and the number stored on the `Font` are one decision, not
 /// two. They disagreeing is a glyph sampled from its neighbour's pixels.
 pub const SDF_GLYPH_PADDING: i32 = 4;
@@ -171,13 +172,15 @@ pub enum Icon {
     FileText,
     /// The assist panel.
     Magic,
+    /// The toolkit editor.
+    Pencil,
     /// The diagnostic readout toggle.
     Info,
 }
 
 impl Icon {
     /// Every icon, which is exactly what the atlas is built over.
-    pub const ALL: [Icon; 15] = [
+    pub const ALL: [Icon; 16] = [
         Icon::Play,
         Icon::Pause,
         Icon::Film,
@@ -192,6 +195,7 @@ impl Icon {
         Icon::Sliders,
         Icon::FileText,
         Icon::Magic,
+        Icon::Pencil,
         Icon::Info,
     ];
 
@@ -213,6 +217,7 @@ impl Icon {
             Icon::Sliders => 0xF1DE,
             Icon::FileText => 0xF0F6,
             Icon::Magic => 0xF0D0,
+            Icon::Pencil => 0xF040,
             Icon::Info => 0xF05A,
         }
     }
@@ -260,11 +265,15 @@ impl AsRef<raylib_sys::Font> for Face {
     }
 }
 
-impl AsMut<raylib_sys::Font> for Face {
-    fn as_mut(&mut self) -> &mut raylib_sys::Font {
-        match self {
-            Face::Loaded(font) => font.as_mut(),
-            Face::Default(font) => font.as_mut(),
+impl AsRawMut<raylib_sys::Font> for Face {
+    unsafe fn as_raw_mut(&mut self) -> &mut raylib_sys::Font {
+        // SAFETY: the caller accepts AsRawMut's requirement to preserve the
+        // owned font allocations; delegate that same contract to the variant.
+        unsafe {
+            match self {
+                Face::Loaded(font) => font.as_raw_mut(),
+                Face::Default(font) => font.as_raw_mut(),
+            }
         }
     }
 }
@@ -689,7 +698,7 @@ pub struct Faces {
     /// codepoints the chrome draws, so typesetting a caption with it would drop
     /// Greek and Cyrillic without saying so (`plug.c:346-349`).
     caption_alt: Face,
-    /// Font Awesome at the fifteen codepoints in [`Icon::ALL`], and nothing else.
+    /// Font Awesome at the declared codepoints in [`Icon::ALL`], and nothing else.
     ///
     /// Fifteen glyphs rather than the face's ~600: an atlas costs space per
     /// *requested* codepoint whether or not the face has a glyph, and this face is
@@ -1729,7 +1738,7 @@ fn rasterize_at(
     // The order and the `&mut` are both load-bearing. `GenTextureMipmaps` writes
     // the new level count back through its pointer, and `SetTextureFilter` reads
     // `texture.mipmaps` to decide between `LINEAR` and `LINEAR_MIP_NEAREST`
-    // (`vendor/raylib-5.5/src/rtextures.c:4380-4397`). Generating mipmaps on a
+    // (`vendor/raylib-6.0/src/rtextures.c:4372`). Generating mipmaps on a
     // *copy* of the texture struct would upload them and then filter as though
     // they did not exist — the levels would sit in VRAM unused, which is the kind
     // of bug that reads as "mipmaps do nothing here".
@@ -1741,7 +1750,7 @@ fn rasterize_at(
     unsafe {
         // Named, because `Font` implements `AsRef` for both the ffi font and its
         // texture and the inferred one would be a coin flip.
-        let raw_font: &mut raylib_sys::Font = font.as_mut();
+        let raw_font: &mut raylib_sys::Font = font.as_raw_mut();
         if generate_mipmaps {
             raylib_sys::GenTextureMipmaps(&mut raw_font.texture);
         }
@@ -1757,7 +1766,7 @@ fn rasterize_at(
 /// texture behind its back.
 ///
 /// `rlLoadTexture` unbinds the current texture on entry and on exit
-/// (`vendor/raylib-5.5/src/rlgl.h:3181`), and the batch re-binds per draw when
+/// (`vendor/raylib-6.0/src/rlgl.h:3257`), and the batch re-binds per draw when
 /// it flushes, so this is belt and braces rather than a known defect — but the
 /// on-demand atlases are built *inside* a begin/end drawing pair, which nothing
 /// else in this codebase does, and a flush costs one draw call on the handful of
@@ -1772,7 +1781,7 @@ fn flush_render_batch() {
 /// Alegreya (or any face) as a signed-distance-field atlas.
 ///
 /// `LoadFontFromMemory` cannot produce one: it hard-codes `FONT_DEFAULT`
-/// (`vendor/raylib-5.5/src/rtext.c`), so the three steps it performs internally —
+/// (`vendor/raylib-6.0/src/rtext.c`), so the three steps it performs internally —
 /// glyph data, atlas image, texture — are done here with `FONT_SDF` in the first.
 /// That is also why this is ffi rather than a safe wrapper; there is no safe
 /// wrapper for this path in raylib-rs at all, and the three that do exist in this
@@ -1787,27 +1796,36 @@ fn rasterize_sdf(bytes: &[u8], codepoints: &[i32], pixel_size: i32) -> Option<Fo
     if codepoints.is_empty() {
         return None;
     }
-    let count = i32::try_from(codepoints.len()).ok()?;
+    let requested_count = i32::try_from(codepoints.len()).ok()?;
+    let mut count = 0;
     flush_render_batch();
 
-    // SAFETY: `LoadFontData` reads `bytes.len()` bytes from `bytes` and `count`
+    // SAFETY: `LoadFontData` reads `bytes.len()` bytes from `bytes` and `requested_count`
     // `i32`s from `codepoints`; both lengths come from the slices themselves and
     // both borrows outlive the call, which is all raylib needs — it copies out
     // what it wants and keeps no pointer into either. The codepoint pointer is
-    // cast to `*mut` because the C signature is non-const, but `LoadFontData`
-    // only writes through it when it is null (it then allocates its own), and it
-    // is not null here. The return is an owning `GlyphInfo` array of `count`
+    // immutable. `count` receives the number of glyphs actually present in the
+    // font; raylib 6 omits missing codepoints. The return owns `count`
     // entries, or null; every path below either hands it to `Font::from_raw`
     // (whose `Drop` unloads it) or unloads it explicitly.
     let glyphs = unsafe {
-        raylib_sys::LoadFontData(
+        let glyphs = raylib_sys::LoadFontData(
             bytes.as_ptr(),
             bytes.len() as i32,
             pixel_size,
-            codepoints.as_ptr().cast_mut(),
-            count,
+            codepoints.as_ptr(),
+            requested_count,
             raylib_sys::FontType::FONT_SDF as i32,
-        )
+            &mut count,
+        );
+        // A valid font can have none of the requested codepoints. calloc(0)
+        // may return non-null; GenImageFontAtlas interprets zero as 95, so
+        // never pass that empty allocation onward. We own and free it here.
+        if count <= 0 && !glyphs.is_null() {
+            raylib_sys::UnloadFontData(glyphs, 0);
+            return None;
+        }
+        glyphs
     };
     if glyphs.is_null() {
         return None;

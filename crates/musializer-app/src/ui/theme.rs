@@ -1,6 +1,6 @@
 //! The workspace palette and metrics.
 //!
-//! Port of `../musializer/src/ui_palette.h` and `ui_theme.h`. The C splits them
+//! Light/blue and black/amber workstation palettes. The C splits them
 //! for a reason worth keeping: `ui_palette.h` is raylib-free packed
 //! `0xRRGGBBAA`, so `tests/test_ui_contrast.c` can check the exact numbers the
 //! application draws with, and `ui_theme.h` only wraps each one in `GetColor`.
@@ -9,13 +9,88 @@
 //! it becomes invisible to the contrast checks in
 //! [`musializer_core::ui::contrast`].
 
-/// The palette as packed `0xRRGGBBAA`, raylib-free
-/// (`../musializer/src/ui_palette.h:13-24`).
+/// Workstation appearance; never part of an exported scene or music project.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiTheme {
+    #[default]
+    LightBlue,
+    BlackAmber,
+}
+impl UiTheme {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LightBlue => "Light / blue",
+            Self::BlackAmber => "Black / amber",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "light-blue" => Some(Self::LightBlue),
+            "black-amber" => Some(Self::BlackAmber),
+            _ => None,
+        }
+    }
+}
+
+// Legacy widgets still call parameterless palette functions. The UI thread's
+// palette is a compatibility bridge while panels move to explicit egui styles;
+// model and renderer state never read it. Thread-local storage keeps independent
+// headless UI tests from changing each other's appearance.
+thread_local! { static CURRENT_THEME: std::cell::Cell<UiTheme> = const { std::cell::Cell::new(UiTheme::LightBlue) }; }
+pub fn set_current(theme: UiTheme) {
+    CURRENT_THEME.set(theme);
+}
+pub fn current() -> UiTheme {
+    CURRENT_THEME.get()
+}
+fn palette_color(role: &str, fallback: u32) -> u32 {
+    if current() == UiTheme::LightBlue {
+        return fallback;
+    }
+    match role {
+        "ACCENT" => 0xFFB800FF,
+        "UI_SURFACE" => 0x0B0C0AFF,
+        "UI_RAISED" => dark::RAISED,
+        "UI_CONTROL" => dark::CONTROL,
+        "UI_CONTROL_EDGE" => dark::CONTROL_EDGE,
+        "UI_TOOLTIP_SURFACE" => dark::TOOLTIP,
+        "UI_TOOLTIP_INK" => 0xF4F5EDFF,
+        "UI_TOOLTIP_EDGE" => dark::CONTROL_EDGE,
+        "UI_INK" => 0xE5E6E2FF,
+        "UI_MUTED" => 0xA8AAA4FF,
+        "UI_DISABLED" => 0x85877FFF,
+        "UI_RULE" => dark::RULE,
+        "UI_DANGER" => 0xFF8888FF,
+        "UI_WARNING" => 0xFFB800FF,
+        "UI_SUCCESS" => 0x7DDDA7FF,
+        "TRACK_BUTTON_HOVEROVER" => dark::HOVER,
+        "UI_LANE_TROUGH" => 0x171912FF,
+        _ => fallback,
+    }
+}
+
+/// Shared dark surfaces for raylib chrome and toolkit controls. Controls have
+/// stronger edges than structural dividers; overlays remain opaque over video.
+pub mod dark {
+    pub const RAISED: u32 = 0x191C17FF;
+    pub const CONTROL: u32 = 0x282C24FF;
+    pub const CONTROL_EDGE: u32 = 0x929B87FF;
+    pub const RULE: u32 = 0x454B40FF;
+    pub const HOVER: u32 = 0x353C2EFF;
+    pub const TOOLTIP: u32 = 0x30382AFF;
+}
+
 pub mod rgba {
     pub const ACCENT: u32 = 0x002F_A7FF;
     pub const BACKGROUND: u32 = 0x1515_15FF;
     pub const UI_SURFACE: u32 = 0xF7F7_F8FF;
     pub const UI_RAISED: u32 = 0xFFFF_FFFF;
+    pub const UI_CONTROL: u32 = UI_RAISED;
+    pub const UI_CONTROL_EDGE: u32 = UI_RULE;
+    pub const UI_TOOLTIP_SURFACE: u32 = UI_INK;
+    pub const UI_TOOLTIP_INK: u32 = WHITE;
+    pub const UI_TOOLTIP_EDGE: u32 = 0x3E3E3EFF;
     pub const UI_INK: u32 = 0x1414_14FF;
     pub const UI_MUTED: u32 = 0x6666_6BFF;
     pub const UI_DISABLED: u32 = 0x8C8C_92FF;
@@ -199,7 +274,7 @@ pub mod color {
             $(
                 #[must_use]
                 pub fn $name() -> Color {
-                    Color::get_color(super::rgba::$source)
+                    Color::get_color(super::palette_color(stringify!($source), super::rgba::$source))
                 }
             )*
         };
@@ -210,6 +285,11 @@ pub mod color {
         background = BACKGROUND;
         ui_surface = UI_SURFACE;
         ui_raised = UI_RAISED;
+        ui_control = UI_CONTROL;
+        ui_control_edge = UI_CONTROL_EDGE;
+        ui_tooltip_surface = UI_TOOLTIP_SURFACE;
+        ui_tooltip_ink = UI_TOOLTIP_INK;
+        ui_tooltip_edge = UI_TOOLTIP_EDGE;
         ui_ink = UI_INK;
         ui_muted = UI_MUTED;
         ui_disabled = UI_DISABLED;
@@ -231,13 +311,22 @@ pub mod color {
         notice_error_on_dark = NOTICE_ERROR_ON_DARK;
     }
 
+    /// Text on the selected control's accent fill.
+    pub fn on_accent() -> Color {
+        if super::current() == super::UiTheme::BlackAmber {
+            Color::BLACK
+        } else {
+            white()
+        }
+    }
+
     /// `COLOR_TRACK_PANEL_BACKGROUND` is `COLOR_UI_SURFACE`,
     /// `COLOR_TRACK_BUTTON_BACKGROUND` is `COLOR_UI_RAISED` and
     /// `COLOR_TIMELINE_BACKGROUND` is `COLOR_UI_SURFACE` — aliases in the C, kept
     /// as aliases here so a later divergence is a one-line change.
     #[must_use]
     pub fn track_button_background() -> Color {
-        ui_raised()
+        ui_control()
     }
 
     #[must_use]
@@ -287,6 +376,51 @@ pub mod metric {
 mod tests {
     use super::*;
     use musializer_core::ui::contrast;
+
+    #[test]
+    fn amber_chrome_text_and_selected_labels_have_readable_contrast() {
+        set_current(UiTheme::BlackAmber);
+        for role in [
+            "UI_INK",
+            "UI_MUTED",
+            "UI_DANGER",
+            "UI_WARNING",
+            "UI_SUCCESS",
+        ] {
+            for surface in [
+                "UI_SURFACE",
+                "UI_RAISED",
+                "UI_CONTROL",
+                "TRACK_BUTTON_HOVEROVER",
+            ] {
+                assert!(
+                    contrast::ratio(palette_color(role, 0), palette_color(surface, 0))
+                        >= contrast::AA_TEXT,
+                    "{role} on {surface}"
+                );
+            }
+        }
+        assert!(contrast::ratio(0x0B0C0AFF, palette_color("ACCENT", 0)) >= contrast::AA_TEXT);
+        set_current(UiTheme::LightBlue);
+    }
+
+    #[test]
+    fn tooltip_colors_and_control_edges_remain_distinguishable() {
+        for theme in [UiTheme::LightBlue, UiTheme::BlackAmber] {
+            set_current(theme);
+            assert!(
+                contrast::ratio(
+                    palette_color("UI_TOOLTIP_INK", rgba::UI_TOOLTIP_INK),
+                    palette_color("UI_TOOLTIP_SURFACE", rgba::UI_TOOLTIP_SURFACE),
+                ) >= contrast::AA_TEXT
+            );
+        }
+        // The original dark tooltip was white text on the theme's pale ink.
+        assert!(contrast::ratio(rgba::WHITE, palette_color("UI_INK", 0)) < contrast::AA_TEXT);
+        assert!(contrast::ratio(dark::CONTROL_EDGE, dark::CONTROL) >= 3.0);
+        assert!(contrast::ratio(dark::CONTROL_EDGE, dark::HOVER) >= 3.0);
+        set_current(UiTheme::LightBlue);
+    }
 
     #[test]
     fn body_text_on_its_surfaces_clears_the_wcag_aa_threshold() {

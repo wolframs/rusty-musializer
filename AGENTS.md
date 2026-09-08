@@ -255,14 +255,14 @@ that distinction is the point.
 
 ```text
 crates/
-  raylib-5-5-link/    # builds + links raylib 5.5 from vendor/raylib-5.5
+  raylib-link/    # builds + links raylib 6.0 from vendor/raylib-6.0
   musializer-core/    # no raylib: analysis, scene contracts, model, layout
   musializer-runtime/ # raylib, the audio bridge, processes, filesystem edges
   musializer-app/     # the binary, CLI, scene drawing, UI
                       #   ui/panels/ is one file per fan-out agent; nobody edits
                       #   another's, and nobody edits a mod.rs
 vendor/
-  raylib-5.5/         # upstream raylib source (third-party, not ours)
+  raylib-6.0/         # upstream raylib source (third-party, not ours)
   clang-builtin-shim/ # five headers so bindgen can run; see its README
 resources/shaders/    # first-party GLSL
 resources/fonts/      # Space Grotesk + Alegreya + Font Awesome 4, SIL OFL 1.1
@@ -287,14 +287,11 @@ project's 327-test suite possible and it is the main bet of this rewrite.
 
 ## The raylib binding decision
 
-**Option 2, decided and proven by the vertical slice.** raylib 5.5 source is
-vendored here and built by `crates/raylib-5-5-link`, with `raylib`/`raylib-sys`
-5.5.1 in `nobuild` mode supplying only the bindings.
-
-The reason, recorded so nobody re-derives it: `raylib-sys` 5.5.1 vendors raylib
-**5.6-dev**, so letting it build its own copy would put a different raylib under
-the renderer than the parity oracle was built against. Compile flags mirror
-`../musializer/src_build/nob_linux.c` exactly.
+The vendored raylib 6.0 source is built by `crates/raylib-link`, with
+`raylib`/`raylib-sys` 6.0.0 in `nobuild` mode supplying the bindings. The
+workspace requires Rust 1.92 for egui 0.35. See `docs/RAYLIB_6_UPGRADE.md`
+for upstream provenance, the preserved audio diagnostic and compatibility
+changes. The original 5.5 pin belonged to the archived migration.
 
 Two things about this that will otherwise waste a session:
 
@@ -303,7 +300,7 @@ Two things about this that will otherwise waste a session:
   features, so `bindgen` is on whenever `raylib` is in the graph.
 - bindgen needs clang's builtin headers, which Ubuntu's `libclang1` does not
   ship. `vendor/clang-builtin-shim/` supplies them via `CPATH`, and
-  `raylib-5-5-link/build.rs` strips `CPATH` before compiling raylib so those
+  `raylib-link/build.rs` strips `CPATH` before compiling raylib so those
   minimal headers never shadow GCC's real ones. Full reasoning in
   `vendor/clang-builtin-shim/README.md`.
 
@@ -329,10 +326,12 @@ comment stating why it holds. Current islands:
 | `runtime::feedback` | frame-persistence needs the previous frame's buffer redrawn into this one, which is a render target mid-frame — the same pair of problems `runtime::halo` documents: a safe texture-mode guard would end an export's supersampled target behind its back, and `EndTextureMode` never restores rlgl's cached framebuffer size | Four blocks, and deliberately the *same* four `halo.rs` has, in the same order: the batch flush plus the active-framebuffer capture, the by-value `BeginTextureMode` into the buffer this struct owns, the unconditional restore (`EndTextureMode` **plus** the explicit `rlSetFramebufferWidth`/`Height` pair for the screen, or a reconstructed `BeginTextureMode` carrying id and dimensions for a render target), and the `LoadRenderTexture` pair whose zero-id failure is checked before `RenderTexture2D::from_raw` takes ownership (its `Drop` is `UnloadRenderTexture`) and whose filter/wrap calls take the colour texture by value. No pointer crosses the boundary. The `gl framebuffer:` report line the headless gate asserts is what proves the restore holds |
 | `runtime::assist::env` | `std::env::remove_var` is `unsafe` in edition 2024, and E1 in `docs/ASSIST_PROVIDER_CONTRACTS.md` requires the app to take `OPENROUTER_API_KEY` out of its own environment after importing it, so no child — `ffmpeg`, `kdialog`/`zenity`, `codex`, a Python helper — can inherit it by accident | One block, inside `import_session_credentials`, which is itself an `unsafe fn` documenting the contract. `musializer-app`'s `main` calls it as its **first statement**, before the window, the audio device, `cli::parse` and any thread, so no other thread can be reading the environment concurrently. The value is copied into an owned `String` before the removal and nothing reads the environment after it |
 | `app::scenes::ascii_field` `DefaultFont` | `scene_ascii_field.c:154-160` deliberately draws through raylib's built-in font rather than the caption face; the safe wrapper has no way to borrow `GetFontDefault()`'s handle without a crate-private constructor. **Shared with `app::scenes::phosphor_dream`**, which needs the same monospaced face — one type rather than two identical ones, so this stays a single island | One block. `GetFontDefault` returns a non-owning handle that exists for as long as the window does; the newtype never calls `UnloadFont` on it |
-| `app::scenes::song_atlas` `Batch`/`LineWidth`/`color_to_hsv` | `scene_song_atlas.c`'s immediate-mode terrain draw needs `rlBegin`/`rlVertex3f`/`rlColor4ub`/`rlEnd`/`rlSetLineWidth` and `ColorToHSV`, none of which raylib-rs exposes on its own `Color` | Six blocks. `Batch`/`LineWidth` are RAII guards whose `Drop` closes what `begin`/`set` opened, so every call happens inside an already-open drawing context that `self` proves; `color_to_hsv` is pure arithmetic over a by-value colour |
+| `app::scenes::song_atlas` `Batch`/`LineWidth`/`color_to_hsv` | The Tideline relief's immediate-mode draw needs `rlBegin`/`rlVertex3f`/`rlColor4ub`/`rlEnd`/`rlSetLineWidth` and `ColorToHSV`, retaining the original wrapper boundary | Six blocks. `Batch`/`LineWidth` are RAII guards whose `Drop` closes what `begin`/`set` opened, so every call happens inside an already-open drawing context that `self` proves; `color_to_hsv` is pure arithmetic over a by-value colour |
 | `app::scenes::orbital_lattice` `color_brightness` | `ColorBrightness`, which the safe raylib API only exposes for images, not colours | One block. Pure arithmetic over a by-value colour, no global state |
 | `app::scenes::cadence` `glyph_alpha_at` | `cadence_glyph_alpha_at` (`:184-194`) reads a loaded TTF glyph's CPU-side bitmap so particles condense onto the letterform | One `unsafe fn`, documented with a `# Safety` section: the caller (`glyph_ink`) proves `data` is non-null with a supported format and positive dimensions before calling, and clamps `(x, y)` inside `width * height` first |
 | `core::audio::sample_ring` `SyncCell`/`push`/`pop` | The realtime audio callback must push/pop with no allocation, lock, or syscall, so the ring's per-slot storage needs interior mutability without `Mutex` | `unsafe impl Send + Sync for SyncCell`, plus the two index-guarded writes in `push`/`pop`. Synchronisation comes from the acquire/release pair on `head`/`tail`: a slot is only ever written by the producer while the consumer is proven not to be reading it, and only ever read by the consumer while the producer is proven not to be writing it |
+| `app::ui::egui_backend::flush_batch` | Texture uploads and egui drawing must flush raylib's queued geometry before touching GL state | One `rlDrawRenderBatchActive` call on the UI thread with a live window/context; no caller pointer is read or retained |
+| `runtime::font::FontFace::as_raw_mut` | raylib 6 exposes mutable font handles through unsafe `AsRawMut` | Delegates to the owned or weak font variant without changing the handle; callers retain the upstream ownership contract |
 
 Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
 
@@ -687,6 +686,16 @@ in the tree:
 | — | `--ui-probe protocol-flip=ID` / `protocol-answer=ID:CHOICE[+ID:CHOICE]`, and a `protocol:` report line | Invented, HX-5. Xvfb can neither hear the track nor press `2` — and items are addressed by **id, never by pixel**, because GX-1 is what a pixel-addressed probe costs. The gate answers two items headlessly, reads the JSONL back, asserts the recorded variant order equals the claimed one, and proves a wrong digest refuses with a nonzero exit |
 | A route cell for a configured-but-unimplemented route is disabled and reads "not available" | The cell stays enabled and reads `<route> → inherit`; activating it **removes the override**, returning the contract to its inherited recommendation (2026-08-31, operator screenshot) | The old cell was a dead end for a state the settings schema still permits saving: `TC-VERIFY`'s inherited value is "no route", so there was no way to clear a stale OpenRouter override from the UI at all — the operator had to hand-edit `assist.json`. Do not "harden" this back to a disabled cell: the truthful capability matrix stays as the source of what *runs* (`core::assist::contracts`), the cell's job is only to make every saved state recoverable. The stale profile shape is pinned by `stale_route_overrides_are_enabled_for_repair_and_clear_independently` and photographed through the real input path by the gate's `assist-stale-routes` capture; `--skip-render` runs that capture without the render suites |
 | A job's child process inherits the parent's ambient `OPENROUTER_API_KEY` unless a route authorized one | `spawn_assistant` **removes** the variable from the child's environment when no authorized credential is in the spec, and sets it only when one is (§4 E1) | The startup scrub lives in the app binary's `main`, so any other entry point into the spawn — the library tests first among them — ran with whatever the invoking shell exported, and the pinned local-only refusal failed in exactly the normal dev shell that has a real key. The E1 guarantee is now a property of the spawn boundary itself rather than of one caller's discipline; both halves are pinned by the credential tests in `runtime::process::assist`, which therefore no longer need a scrubbed shell |
+
+**SX4 design decision (2026-09-05).** The operator rejected Atlas's appearance
+and Cadence's discontinuous motion in the CX-4 listening session and authorized
+a creative rework. Atlas now renders Tideline, a spiral relief with analytic
+traveling folds, musical deformation and flowing light; Cadence has continuous
+cue/beat envelopes and soft ambient strata.
+This deliberately changes saved projects' appearance while retaining their
+settings keys, bounds, defaults and file schemas. The shared Atlas audio map is
+unchanged. See `docs/SCENE_DESIGN.md` for control interpretation, render evidence
+and the negative control; human acceptance remains SX4 in the live queue.
 
 **Not negotiable by accident — anything a user or a file can observe.** Since
 the 2026-08-03 legacy decision these may change *deliberately* (with a schema

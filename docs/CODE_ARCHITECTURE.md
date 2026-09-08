@@ -15,7 +15,7 @@ source disagree about a feature, the source wins and this guide has drifted.
                          FFmpeg, Python, models
                                   ^
                                   |
-musializer-app ------> musializer-runtime ------> raylib 5.5
+musializer-app ------> musializer-runtime ------> raylib 6.0
        |                       |
        +-----------------------+----> musializer-core
 
@@ -28,6 +28,13 @@ handles, OS process handles, global mutable state, or filesystem side effects.
 Both `musializer-runtime` and `musializer-app` depend on it; core does not depend
 on either one.
 
+The application has an egui editor alongside its existing workspace panels.
+Toolkit widgets emit the same settings commands and lyric edits; `main.rs`
+applies them through the established model, undo and persistence boundaries.
+The raylib adapter owns input and GPU resources and draws after the scene and
+legacy chrome. Appearance is workstation state, never scene/export state.
+See [UI_TOOLKIT.md](UI_TOOLKIT.md) for the migration boundary.
+
 ## Crates and ownership
 
 | Area | Owns | Does not own |
@@ -35,7 +42,7 @@ on either one.
 | [`musializer-core`](../crates/musializer-core/src/lib.rs) | Audio analysis, project model and schemas, scene contracts and deterministic state, timing, routes, UI policy and layout | Windows, GPU resources, files, child processes |
 | [`musializer-runtime`](../crates/musializer-runtime/src/lib.rs) | raylib adapters, decoded media, the audio callback bridge, fonts, offscreen render targets and mid-frame GL state, project filesystem edges, dialogs, FFmpeg and helper supervision | Editor policy or top-level application state |
 | [`musializer-app`](../crates/musializer-app/src/main.rs) | Composition root, active playback, workspace, command dispatch, scene drawing, panels, preview and export orchestration | Reusable pure policy that can live in core |
-| [`raylib-5-5-link`](../crates/raylib-5-5-link/build.rs) | Building and linking the vendored raylib 5.5 source | Application behavior |
+| [`raylib-link`](../crates/raylib-link/build.rs) | Building and linking the vendored raylib 6.0 source | Application behavior |
 | [`tools`](../tools) | Independent measured/model evidence, adapters, verification drivers, support checks | Direct mutation of a live project |
 
 The important distinction is not “backend versus frontend.” It is deterministic

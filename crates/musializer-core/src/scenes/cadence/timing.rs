@@ -54,17 +54,21 @@ pub fn line_hold(cue_position: f32) -> f32 {
 
 /// Dissolve factor for one word (`:23-29`).
 ///
-/// A word that has not finished its own window is exempt from the line's exit.
-/// That exemption is a bug fix the oracle already paid for: the last word's window
-/// ends at exactly 1.0, so the line dissolve and the final word's own moment
-/// overlap by construction, and applying the line hold to it scaled its focus
-/// toward zero precisely while it was due to settle into legible type.
+/// A word keeps its own moment, then joins the line's exit continuously.
+/// Assigning `line_hold` on the first frame after its window used to drop
+/// opacity in one step for late words (SX4). The last word remains exempt;
+/// the renderer supplies its short absolute-time cue-edge fade.
 #[must_use]
 pub fn word_hold(cue_position: f32, window_end: f32, line_hold: f32) -> f32 {
     if cue_position < window_end {
         return 1.0;
     }
-    line_hold
+    let release = smoothstep((cue_position - window_end) / 0.04);
+    if release >= 1.0 {
+        line_hold
+    } else {
+        1.0 + (line_hold - 1.0) * release
+    }
 }
 
 /// Splits `[0, 1]` across `glyph_counts.len()` words in proportion to glyph count
@@ -180,14 +184,23 @@ mod tests {
         let line = line_hold(position);
         assert!(line < HOLD_LEGIBLE);
         for &(_, end) in &windows[..LONG_LINE.len() - 1] {
-            if end <= position {
-                assert_eq!(word_hold(position, end, line), line);
+            if end + 0.04 <= position {
+                assert!((word_hold(position, end, line) - line).abs() < 1.0e-6);
             }
         }
         // A word whose window has not opened yet is likewise exempt, so nothing is
         // dissolved before it has had its moment.
         let last_end = windows[LONG_LINE.len() - 1].1;
         assert_eq!(word_hold(0.10, last_end, line_hold(0.10)), 1.0);
+    }
+
+    #[test]
+    fn late_words_join_the_dissolve_without_an_opacity_step() {
+        let end = 0.95;
+        let before = word_hold(end - 0.00001, end, line_hold(end - 0.00001));
+        let after = word_hold(end + 0.00001, end, line_hold(end + 0.00001));
+        assert!((after - before).abs() < 0.00001);
+        assert!(word_hold(0.97, end, line_hold(0.97)) < 1.0);
     }
 
     /// Port of `cadence_timing_assign_windows_rejects_unusable_input`.

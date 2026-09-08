@@ -29,9 +29,9 @@ pub use raylib;
 pub use raylib_sys;
 
 /// The raylib version actually linked, from the vendored source.
-pub const RAYLIB_VERSION: &str = raylib_5_5_link::RAYLIB_VERSION;
+pub const RAYLIB_VERSION: &str = raylib_link::RAYLIB_VERSION;
 
-/// Keeps `raylib-5-5-link` in the link graph. Call once from `main`.
+/// Keeps `raylib-link` in the link graph. Call once from `main`.
 pub fn ensure_raylib_linked() -> &'static str {
-    raylib_5_5_link::link_marker()
+    raylib_link::link_marker()
 }

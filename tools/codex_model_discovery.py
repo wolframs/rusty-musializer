@@ -142,8 +142,28 @@ class _AppServerSession:
         stdin = self._proc.stdin
         if stdin is None:
             raise DiscoveryError("app-server process has no stdin pipe")
-        stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
-        stdin.flush()
+        try:
+            stdin.write((json.dumps(obj) + "\n").encode("utf-8"))
+            stdin.flush()
+        except BrokenPipeError as error:
+            # An invalid executable can exit before the very first write.
+            # Preserve the same useful stderr as the response-wait path; do
+            # not turn scheduler timing into a different diagnostic.
+            try:
+                self._proc.wait(timeout=0.05)
+            except subprocess.TimeoutExpired:
+                raise error
+            raise DiscoveryError(self._exit_message()) from error
+
+    def _exit_message(self) -> str:
+        detail = ""
+        if self._proc.stderr is not None:
+            try:
+                detail = self._proc.stderr.read(4096).decode("utf-8", "replace").strip()
+            except (OSError, ValueError):
+                pass
+        suffix = f": {detail}" if detail else ""
+        return f"codex app-server exited with code {self._proc.returncode}{suffix}"
 
     def wait_for_id(self, wanted_id: int, deadline: float) -> Optional[dict[str, Any]]:
         # Notifications (e.g. remoteControl/status/changed) can arrive
@@ -159,16 +179,7 @@ class _AppServerSession:
                 returncode = self._proc.poll()
                 if returncode is None:
                     continue
-                detail = ""
-                if self._proc.stderr is not None:
-                    try:
-                        detail = self._proc.stderr.read(4096).decode(
-                            "utf-8", "replace").strip()
-                    except (OSError, ValueError):
-                        pass
-                suffix = f": {detail}" if detail else ""
-                raise DiscoveryError(
-                    f"codex app-server exited with code {returncode}{suffix}")
+                raise DiscoveryError(self._exit_message())
             line = line.strip()
             if not line:
                 continue
@@ -302,7 +313,7 @@ def discover_models(*, codex_bin: str | Sequence[str] = "codex", timeout: float 
 
         try:
             session.send({"id": 2, "method": "model/list", "params": {}})
-        except OSError as error:
+        except (OSError, DiscoveryError) as error:
             return DiscoveryResult(False, error=f"could not write model/list request: {error}")
 
         try:

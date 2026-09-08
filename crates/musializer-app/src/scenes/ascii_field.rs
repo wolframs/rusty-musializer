@@ -63,8 +63,8 @@ impl AsRef<raylib_sys::Font> for DefaultFont {
     }
 }
 
-impl AsMut<raylib_sys::Font> for DefaultFont {
-    fn as_mut(&mut self) -> &mut raylib_sys::Font {
+impl raylib::core::AsRawMut<raylib_sys::Font> for DefaultFont {
+    unsafe fn as_raw_mut(&mut self) -> &mut raylib_sys::Font {
         &mut self.0
     }
 }

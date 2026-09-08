@@ -96,7 +96,7 @@ cd tools/listening-lab
 npm run dev
 
 # terminal 2, from the repository root
-cargo run -- --protocol build/protocols/cx4-surprise-a.protocol.json
+cargo run --release --bin musializer -- --protocol build/protocols/cx4-surprise-a.protocol.json
 ```
 
 Keep both surfaces on the same `qNN`. In Rust, use `B` to alternate a two-look
@@ -110,6 +110,47 @@ The two browser logs are:
 build/listening-lab/answers/cx4-surprise-a-feedback.answers.jsonl
 build/listening-lab/answers/cx4-surprise-b-feedback.answers.jsonl
 ```
+
+### Author the next scene review
+
+Use a fresh session id for each revision so an earlier rejection stays intact.
+`scene_listening_session.py` reads local measured audio, picks two longer windows
+near sustained energy valleys, and obtains current default settings from the Rust
+registry. Those cuts are candidates, **not verified phrase boundaries**. Supply
+`--window START:END` (repeatable) when an operator has marked better bounds.
+No command below plays audio or makes a network request while preparing the test.
+
+```sh
+# From the repository root. Replace song.mp3 and the title with your track.
+python3 tools/analyze_audio.py song.mp3 build/song.measured.json
+python3 tools/scene_listening_session.py song.mp3 \
+  --measured build/song.measured.json --id scene-review-01 \
+  --title 'Scene review — first pass'
+
+# Start a separate browser lab for these generated sheets.
+cd tools/listening-lab
+LISTENING_LAB_PROTOCOLS="$PWD/../../build/listening-review/browser" \
+  npm run dev -- --host 127.0.0.1 --port 4179
+```
+
+Open `http://127.0.0.1:4179` and copy the companion command. Start that command
+from the repository root. **This step plays the music.** Answer in the Rust
+runner with 1–3 (it saves and advances), or use the richer browser form and press
+N in Rust to advance. The browser separately asks whether the start/end cuts were
+natural, so a bad window does not have to masquerade as a verdict on the scene.
+During playback the Rust question card collapses to a small strip; pause with
+Space to see all choices, or wait for the excerpt to finish. The number keys
+still work during playback.
+
+Prepared for SX4: `sx4-tideline-a` and `sx4-tideline-b` under
+`build/listening-review/`, four questions each. These openly identified design
+reviews use new ids; the original CX-4 protocols and answers remain untouched.
+The scene generator also writes `*.windows.json` with the audio digest, measured
+analysis identity, actual selected bounds, selection method, and an unreviewed
+acceptance status. These are local artifacts, not a second product queue.
+
+The importer accepts `--output-dir DIRECTORY` and uses the actual input protocol
+path in the copied command, including safe shell quoting for spaces/apostrophes.
 
 If the Rust protocol files are regenerated, rebuild their feedback sheets with:
 

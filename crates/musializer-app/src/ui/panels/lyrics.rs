@@ -2619,8 +2619,8 @@ impl Shell {
             return;
         }
         let rect = widgets::rectangle(boundary);
-        d.draw_rectangle_rec(rect, color::ui_ink());
-        d.draw_rectangle_lines_ex(rect, 1.0, fade(color::white(), 0.18));
+        d.draw_rectangle_rec(rect, color::ui_tooltip_surface());
+        d.draw_rectangle_lines_ex(rect, 1.0, color::ui_tooltip_edge());
         let (text_x, text_y) = widgets::tooltip_text_origin(boundary);
         authored.draw_text(
             d,
@@ -2628,7 +2628,7 @@ impl Shell {
             Vector2::new(text_x, text_y),
             size,
             0.0,
-            color::white(),
+            color::ui_tooltip_ink(),
         );
     }
 

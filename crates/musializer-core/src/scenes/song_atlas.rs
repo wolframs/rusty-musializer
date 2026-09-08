@@ -187,6 +187,34 @@ pub fn map_dynamics(map: &SongAtlasMap, playhead: f32) -> Option<(f32, f32)> {
     ))
 }
 
+/// Analytic light memory for Tideline, in normalized song coordinates.
+/// A soft approach meets a longer wake continuously at the playhead. It depends
+/// only on musical time, so seeking cannot erase the trail (SX4).
+#[must_use]
+pub fn tideline_light(distance: f32) -> f32 {
+    if !distance.is_finite() {
+        return 0.0;
+    }
+    let width = if distance < 0.0 { 0.009 } else { 0.040 };
+    (-(distance / width).powi(2)).exp()
+}
+
+#[cfg(test)]
+mod tideline_tests {
+    #[test]
+    fn light_is_continuous_and_has_a_longer_wake() {
+        use super::tideline_light as light;
+        assert_eq!(light(0.0), 1.0);
+        assert!((light(-0.000001) - light(0.000001)).abs() < 0.00001);
+        assert!(light(0.025) > 0.6);
+        assert!(light(-0.025) < 0.001);
+        assert_eq!(light(f32::NAN), 0.0);
+        let expected = light(0.013);
+        let _ = light(0.8);
+        assert_eq!(light(0.013), expected, "a seek does not clear the wake");
+    }
+}
+
 /// The live fallback ring (`Song_Atlas_State`, `scene_song_atlas.c:19-30`).
 ///
 /// A fixed [`MAX_SLICES`]-slot ring buffer plus damped camera envelopes. Bounded

@@ -1,8 +1,14 @@
 #!/usr/bin/env node
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { basename, resolve } from 'node:path'
+import { basename, relative, resolve } from 'node:path'
 
 const inputs = process.argv.slice(2)
+const outputFlag = inputs.indexOf('--output-dir')
+const outputOverride = outputFlag < 0 ? undefined : inputs[outputFlag + 1]
+if (outputFlag >= 0) {
+  if (!outputOverride) throw new Error('--output-dir requires a directory')
+  inputs.splice(outputFlag, 2)
+}
 if (!inputs.length) {
   console.error('usage: npm run import:cx4 -- PATH.protocol.json [PATH.protocol.json ...]')
   process.exit(2)
@@ -151,7 +157,10 @@ const feedbackTemplates = {
   },
 }
 
-const outputDirectory = resolve(new URL('../protocols', import.meta.url).pathname)
+const outputDirectory = resolve(outputOverride || new URL('../protocols', import.meta.url).pathname)
+const repository = resolve(new URL('../../../', import.meta.url).pathname)
+const shellQuote = (value) => /^[A-Za-z0-9_./-]+$/.test(value)
+  ? value : `'${value.replaceAll("'", "'\\''")}'`
 await mkdir(outputDirectory, { recursive: true })
 
 for (const input of inputs) {
@@ -172,7 +181,7 @@ for (const input of inputs) {
     playback: 'external',
     companion: {
       label: 'Rust visual protocol runner',
-      command: `cargo run -- --protocol build/protocols/${sourceName}`,
+      command: `cargo run --release --bin musializer -- --protocol ${shellQuote(relative(repository, inputPath))}`,
       help: 'The Rust app owns audio, scene state, and blind A/B order. This browser owns only the structured feedback log.',
     },
     tracks: [

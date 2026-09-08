@@ -14,6 +14,9 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 
 ## Start here
 
+- [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — toolkit editor, appearance, migration boundary and real-input checks.
+- [`RAYLIB_6_UPGRADE.md`](RAYLIB_6_UPGRADE.md) — raylib provenance and compatibility changes.
+
 - [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md) — crate boundaries, state
   ownership, the shared preview/export frame path, persistence, and what each
   correctness layer is for. Boundaries and rules, not a feature inventory.
@@ -42,6 +45,9 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 - [`LYRICS_ASSIST_REPAIR_2026-09-06.md`](LYRICS_ASSIST_REPAIR_2026-09-06.md) —
   ten-track lyrics investigation, production repairs and unadjudicated evidence.
 
+- [`SCENE_DESIGN.md`](SCENE_DESIGN.md) — SX4's visual and motion decisions,
+  saved-settings interpretation, measured audition cuts, and dated evidence;
+  operator acceptance remains in the live queue.
 - [`../tools/listening-lab/README.md`](../tools/listening-lab/README.md) — the
   local browser A/B listening workspace: agent-authored audio protocols, precise
   waveform playback, blinding, and append-only feedback logs.
@@ -105,8 +111,8 @@ method, not as instructions, and each carries its own archived-on header.
   `PHASE0_INVENTORY.md` is **not** archived material — it is the live contract
   inventory listed under "Start here" above.
 - [`archive/FEATURE_PARITY_HISTORY.md`](archive/FEATURE_PARITY_HISTORY.md) — the
-- [`archive/ASSIST_AUDIT_2026-08-29.md`](archive/ASSIST_AUDIT_2026-08-29.md) — the assist-area audit: 24 findings, a Rust↔Python protocol map, and the solid-areas record; the live queue's AX section is its shortlist.
   completed parity and operator waves.
+- [`archive/ASSIST_AUDIT_2026-08-29.md`](archive/ASSIST_AUDIT_2026-08-29.md) — the assist-area audit: 24 findings, a Rust↔Python protocol map, and the solid-areas record; the live queue's AX section is its shortlist.
 - [`archive/UX_PERSPECTIVE_REVIEW_2026-08-03.md`](archive/UX_PERSPECTIVE_REVIEW_2026-08-03.md)
   — the point-in-time user-perspective review whose findings became UX0.
 - `archive/LYRICS_TIMING_INCIDENT_2026-08-17.bridge.tsv` — the preserved failing

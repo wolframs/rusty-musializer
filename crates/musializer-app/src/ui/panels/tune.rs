@@ -3,13 +3,13 @@
 //! **Owner: Agent G** for the route editor row. The slider list itself is
 //! already ported and is only here because the row it expands lives inside it.
 //!
-//! The route editor is **not a new panel** — that was a misreading this
-//! repository has already made once. It replaces the setting's own 30 px slider
-//! zone with a taller block: the legacy editor's 262 px plus a second 26 px row
-//! for post-legacy musical sources, and 24 more when the source is `band`. Draft
-//! edits, Apply commits, Close discards, and dirty participates in the close
-//! guards — all of which [`musializer_core::ui::route_editor_state`] already
-//! implements and tests.
+//! Opening a route gives its setting the available Tune area, temporarily
+//! hiding presets and other settings so Apply/Discard cannot fall below the
+//! panel. Closing returns to all settings. A dirty draft on another scene or
+//! track remains visible through Edit draft / Discard draft actions. Manual
+//! values remain independent of route drafts. The body scrolls with the wheel
+//! or scrollbar; Alt+wheel steps a value. The pure draft state lives in
+//! [`musializer_core::ui::route_editor_state`].
 //!
 //! # Three seams this file cannot reach, and what it does instead
 //!
@@ -39,6 +39,7 @@ use musializer_core::scene::settings::{self, SceneSettings, SettingDescriptor, S
 use musializer_core::scene::SceneId;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::route_editor_state::{self, RouteEditorDraft, RouteEditorState};
+use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::text_edit::TextRules;
 use musializer_core::ui::tune_explore::{
     self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
@@ -135,11 +136,12 @@ mod slot {
     /// The route editor's two disabled actions, which need a hit target of
     /// their own to hover-test: `disabled_button` returns no state (B08).
     pub const ACTION_DISABLED: u32 = 420;
+    pub const HIDDEN_DRAFT: u32 = 450;
 
     /// Every constant above, named individually, plus the two bare literals the
     /// row loop uses (`index` for the slider, `900` for Reset scene).
     #[cfg(test)]
-    pub const ALL_SLOTS: [(&str, u32, u32); 19] = [
+    pub const ALL_SLOTS: [(&str, u32, u32); 20] = [
         // (name, first slot, count)
         ("SLIDER", 0, 12),
         ("ROUTE_TOGGLE", ROUTE_TOGGLE, 12),
@@ -160,12 +162,14 @@ mod slot {
         ("SURPRISE", SURPRISE, 1),
         ("AB", AB_COMPARE, 3),
         ("ACTION_DISABLED", ACTION_DISABLED, 2),
+        ("HIDDEN_DRAFT", HIDDEN_DRAFT, 2),
     ];
 }
 
 /// The Reset-scene button's slot, named rather than left a literal at its use
 /// site so [`slot::ALL_SLOTS`]' overlap test can see it.
 const RESET_SCENE_SLOT: u32 = 900;
+const ROUTE_DRAFT_WARNING: &str = "Route edit in progress";
 
 // -- the draft's temporary home ----------------------------------------------
 
@@ -198,6 +202,7 @@ pub(crate) struct EditorHost {
     explore_presses: u64,
     /// `--ui-probe tune-seed=`, replacing the counter for a capture run.
     probe_seed: Option<u64>,
+    scroll: TuneScroll,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -296,7 +301,70 @@ impl Default for EditorHost {
             typing: None,
             explore_presses: 0,
             probe_seed: None,
+            scroll: TuneScroll::default(),
         }
+    }
+}
+
+const SETTING_ROW_HEIGHT: f32 = 46.0;
+const SCROLLBAR_WIDTH: f32 = 12.0;
+const SCROLL_CONTENT_PADDING: f32 = 4.0;
+
+#[derive(Default)]
+struct TuneScroll {
+    context: Option<(usize, SceneId)>,
+    focused: Option<usize>,
+    settings: ScrollState,
+    route: ScrollState,
+}
+
+impl TuneScroll {
+    fn for_view(
+        &mut self,
+        track: usize,
+        scene: SceneId,
+        focused: Option<usize>,
+    ) -> &mut ScrollState {
+        if self.context != Some((track, scene)) {
+            self.settings.reset();
+            self.route.reset();
+            self.context = Some((track, scene));
+        }
+        if self.focused != focused {
+            self.route.reset();
+            self.focused = focused;
+        }
+        if focused.is_some() {
+            &mut self.route
+        } else {
+            &mut self.settings
+        }
+    }
+}
+
+fn tune_scroll_metrics(visible: f32, body_height: f32) -> ListMetrics {
+    let visible = visible.max(1.0);
+    let scrollable = body_height + SCROLL_CONTENT_PADDING * 2.0;
+    ListMetrics {
+        item_size: SETTING_ROW_HEIGHT,
+        padding: 0.0,
+        bar_width: SCROLLBAR_WIDTH,
+        visible,
+        scrollable,
+        max_offset: (scrollable - visible).max(0.0),
+    }
+}
+
+fn explore_block_height(audition: bool) -> f32 {
+    30.0 + if audition { 46.0 } else { 0.0 }
+}
+
+/// Ordinary wheel movement navigates; editing a value is an explicit modifier.
+fn tune_wheel(wheel: f32, alt: bool) -> (f32, f32) {
+    if alt {
+        (0.0, wheel)
+    } else {
+        (wheel, 0.0)
     }
 }
 
@@ -513,8 +581,140 @@ impl Shell {
     /// visible (`route_editor_open_for_active_track`, `plug.c:574-578`).
     pub(crate) fn route_editor_open_for_active_track(&self, track_slot: Option<usize>) -> bool {
         track_slot.is_some_and(|slot| {
-            self.peek_editor(|host| host.state.is_open() && host.track_slot == slot)
+            self.peek_editor(|host| {
+                host.state
+                    .session()
+                    .is_some_and(|draft| draft.track_slot == slot)
+            })
         })
+    }
+
+    pub(crate) fn focused_route_row(&self, track_slot: usize, scene: SceneId) -> Option<usize> {
+        self.peek_editor(|host| {
+            host.state
+                .session()
+                .filter(|draft| draft.track_slot == track_slot && draft.scene == scene)
+                .map(|draft| draft.setting_index)
+        })
+    }
+
+    fn warn_route_draft(&mut self) {
+        if self
+            .notices
+            .notices()
+            .iter()
+            .any(|notice| notice.title == ROUTE_DRAFT_WARNING)
+        {
+            return;
+        }
+        let Some(draft) = self.route_editor.state.session() else {
+            return;
+        };
+        let label = settings::descriptor(draft.scene, draft.setting_index)
+            .map_or("setting", |descriptor| descriptor.label);
+        let detail = format!(
+            "Unapplied route: {} / {label}, track {}. Use Edit draft or Discard draft in Tune.",
+            draft.scene.display_name(),
+            draft.track_slot + 1
+        );
+        self.notify(Severity::Warning, ROUTE_DRAFT_WARNING, &detail);
+    }
+
+    fn clear_route_warning(&mut self) {
+        let ids: Vec<_> = self
+            .notices
+            .notices()
+            .iter()
+            .filter(|notice| notice.title == ROUTE_DRAFT_WARNING)
+            .map(|notice| notice.id)
+            .collect();
+        for id in ids {
+            self.notices.dismiss(id);
+        }
+    }
+
+    fn discard_route_draft(&mut self) {
+        self.route_editor.state.close();
+        self.clear_route_warning();
+    }
+
+    /// Keep a draft that belongs elsewhere visible and recoverable. Merely
+    /// viewing another scene must neither lose it nor leave an invisible lock.
+    fn hidden_route_draft_bar(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        area: UiRect,
+        commands: &mut Vec<ShellCommand>,
+    ) -> f32 {
+        let Some(draft) = self.route_editor.state.session().cloned() else {
+            return 0.0;
+        };
+        let current = input.workspace.current_index().unwrap_or(0);
+        if !self.route_editor.state.is_dirty()
+            || (draft.track_slot == current && draft.scene == input.scene)
+        {
+            return 0.0;
+        }
+        let label = settings::descriptor(draft.scene, draft.setting_index)
+            .map_or("setting", |descriptor| descriptor.label);
+        widgets::draw_text_faded(
+            d,
+            input.fonts.ui(),
+            &format!(
+                "Unapplied route: {} / {label} (track {})",
+                draft.scene.display_name(),
+                draft.track_slot + 1
+            ),
+            area.x,
+            area.y,
+            area.width,
+            24.0,
+            metric::UI_FONT_CAPTION,
+            color::ui_warning(),
+        );
+        let width = (area.width - 8.0) / 2.0;
+        for (index, label) in ["Edit draft", "Discard draft"].iter().enumerate() {
+            let button = UiRect::new(
+                area.x + index as f32 * (width + 8.0),
+                area.y + 20.0,
+                width,
+                28.0,
+            );
+            if index == 0 && input.workspace.get(draft.track_slot).is_none() {
+                self.widgets
+                    .disabled_button(d, input.fonts.ui(), button, label, None);
+                continue;
+            }
+            if self
+                .widgets
+                .text_button(
+                    d,
+                    input.fonts.ui(),
+                    widgets::widget_id(widgets::id::INSPECTOR, slot::HIDDEN_DRAFT + index as u32),
+                    button,
+                    label,
+                    false,
+                    ButtonStyle::Neutral,
+                    None,
+                )
+                .clicked
+            {
+                if index == 0 {
+                    if draft.track_slot != current {
+                        commands.push(ShellCommand::SelectTrack(draft.track_slot));
+                    }
+                    commands.push(ShellCommand::ResumeRouteDraft {
+                        track_slot: draft.track_slot,
+                        scene: draft.scene,
+                    });
+                    self.clear_route_warning();
+                } else {
+                    self.discard_route_draft();
+                }
+            }
+        }
+        58.0
     }
 }
 
@@ -813,356 +1013,476 @@ impl Shell {
         );
         y += metric::UI_FONT_CAPTION + metric::UI_CONTROL_GAP;
 
-        // The shared preset block, between the header and the first slider
-        // (`plug.c:5979-6100`): 42 px collapsed, 98 px populated, 0 if it does
-        // not fit.
-        let mut presets = Vec::new();
-        y += self.preset_block(
-            d,
-            input,
-            UiRect::new(content.x, y, content.width, content.y + content.height - y),
-            input.presets,
-            &mut presets,
+        let focused_route = self.focused_route_row(track_slot, input.scene);
+        let hidden_height = if self.route_editor.state.is_dirty() && focused_route.is_none() {
+            58.0
+        } else {
+            0.0
+        };
+        let preset_height = if focused_route.is_none() {
+            super::events::preset_block_height(input.presets.library.presets(input.scene).len())
+        } else {
+            0.0
+        };
+        let explore_height = if focused_route.is_none() {
+            explore_block_height(self.route_editor.explore.session(target).is_some())
+        } else {
+            0.0
+        };
+        let rows_height = focused_route.map_or_else(
+            || settings::descriptors(input.scene).len() as f32 * SETTING_ROW_HEIGHT,
+            |index| self.route_editor_height(input.scene, index),
         );
-        if !presets.is_empty() {
-            // review 1.8: a preset Apply/Replace/Delete changes what Reset would
-            // act on, so an armed confirmation from a moment ago must not carry
-            // over and land on a scene the user has since edited a different way.
-            self.with_editor(|host| host.reset_arm.disarm());
-        }
-        // UX0-C04's headline case: *loading a preset* is the destructive
-        // exploration the plan names, and it arrives here as an action the
-        // application will perform after this frame. Capturing before it does is
-        // what makes "try that preset" reversible.
-        if presets
-            .iter()
-            .any(|action| matches!(action, PresetAction::Apply(_)))
-        {
-            self.begin_audition(target, input.settings, ExploreSource::Preset);
-        }
-        commands.extend(presets.into_iter().map(ShellCommand::Preset));
-
-        // UX0-C04/C07. Between the presets and the sliders because that is where
-        // the actions it makes reversible are: a preset Apply and a Surprise are
-        // the same gesture, and a Revert anywhere else would have to be hunted
-        // for after the thing it undoes has already happened.
-        // The list — and the block above it — stop above "Reset scene", which is
-        // pinned to the panel floor. **The row loop used to measure against
-        // `content` alone**, so on a twelve-control scene at the 960x640 minimum
-        // the last row and the "+N more" notice drew *underneath* the Reset
-        // button. That was already true before this block existed; adding 48 px
-        // of audition bar is what made it reachable at 720p too, so it is fixed
-        // here rather than left as a thing the next capture rediscovers.
-        let list_bottom = content.y + content.height - metric::UI_BUTTON_HEIGHT - padding * 2.0;
-        y += self.explore_block(
-            d,
-            input,
-            UiRect::new(content.x, y, content.width, (list_bottom - y).max(0.0)),
-            target,
-            commands,
-        );
-
-        let descriptors = settings::descriptors(input.scene);
-        let row_height = 46.0f32;
-        for (index, descriptor) in descriptors.iter().enumerate() {
-            // The expanded route editor asks for the row before it is measured,
-            // because a row it owns is taller than a slider row and the strip
-            // must be checked against the height it will actually use.
-            let expanded = self.route_editor_height(input.scene, index);
-            let row = UiRect::new(
-                content.x + padding,
-                y,
-                content.width - padding * 2.0,
-                if expanded > 0.0 { expanded } else { row_height },
-            );
-            if !content.contains(row) || row.y + row.height > list_bottom {
-                // Out of room. Say so rather than silently dropping the tail: a
-                // truncated list that does not admit it is a feature nobody can
-                // find.
-                widgets::draw_text(
-                    d,
-                    input.fonts.ui(),
-                    &format!("+{} more (enlarge the window)", descriptors.len() - index),
-                    content.x + padding,
-                    y,
-                    metric::UI_FONT_CAPTION,
-                    color::ui_warning(),
-                );
-                break;
-            }
-            y += row.height;
-
-            let committed = committed_route(input, input.scene, index).cloned();
-            let routed = committed.is_some();
-
-            // UX0-B08: the route affordance is a **word**, not `~`.
-            //
-            // The oracle draws a tilde (`plug.c:6169-6186`) and the review found
-            // exactly what a tilde tells a newcomer, which is nothing — it is not
-            // an abbreviation of anything, has no established meaning in an
-            // audio interface, and its tooltip was the only thing in the
-            // application that explained it. The button now says which of its
-            // three states it is in, so the row is readable with the pointer
-            // parked somewhere else entirely.
-            let route_label = if expanded > 0.0 {
-                "Editing"
-            } else if routed {
-                "Routed"
-            } else {
-                "Route"
-            };
-            let route_width = (widgets::measure(font, route_label, metric::UI_FONT_CAPTION) + 14.0)
-                .clamp(44.0, 74.0);
-            let toggle = UiRect::new(
-                row.x + row.width - route_width,
-                row.y - 3.0,
-                route_width,
-                20.0,
-            );
-            let toggle_id =
-                widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTE_TOGGLE + index as u32);
-            let toggle_state = self.widgets.text_button(
-                d,
-                font,
-                toggle_id,
-                toggle,
-                route_label,
-                routed || expanded > 0.0,
-                ButtonStyle::Neutral,
-                Some(metric::UI_FONT_CAPTION),
-            );
-            if toggle_state.clicked {
-                self.toggle_route_editor(input, index, committed.as_ref(), expanded > 0.0);
-            }
-            // UX0-B08's second half: a *dynamic* tip. A routed row's tip names
-            // the route it would open rather than repeating the static sentence,
-            // because by then the user knows what routing is and wants to know
-            // what this one does.
-            self.widgets.hint(
-                d,
-                toggle_state,
-                toggle_id,
-                toggle,
-                &match (expanded > 0.0, committed.as_ref()) {
-                    (true, _) => "Close this route editor".to_string(),
-                    (false, Some(route)) => format!(
-                        "Driven by {} - click to edit",
-                        ascii_fallback(
-                            font.all_loaded(),
-                            &route_editor_state::summary(route, descriptor.precision)
-                        )
-                    ),
-                    (false, None) => {
-                        "Let the music move this setting instead of the slider".to_string()
-                    }
-                },
-            );
-
-            // The label and the readout are drawn for *every* row, expanded
-            // included (`plug.c:6156-6190`): the C's editor replaces the slider
-            // zone, not the line that names the setting. Losing the readout there
-            // would leave the one row the user is working on as the only one that
-            // does not say what value it currently produces.
-            let value = input.settings.get(input.scene, index);
-            let effective = input
-                .routed
-                .map_or(value, |routed| routed.get(input.scene, index));
-
-            // Only an unrouted, uncollapsed row gets the editable chip: a routed
-            // setting's number is produced by its route, and a text field over it
-            // would take a value the next frame overwrites.
-            let editable = !routed && expanded <= 0.0;
-            let pulse_auto = input.scene == SceneId::PulseField
-                && descriptor.key == "settings.pulse.petals"
-                && effective < 0.5
-                && !routed;
-            let readout = if pulse_auto {
-                "Auto: balance".to_string()
-            } else {
-                format!(
-                    "{:.*}{}",
-                    descriptor.precision as usize,
-                    effective,
-                    if routed { "  routed" } else { "" }
-                )
-            };
-            let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
-            let chip_width = if editable {
-                (readout_width + 14.0).clamp(46.0, 104.0)
-            } else {
-                readout_width
-            };
-            let chip = UiRect::new(toggle.x - 8.0 - chip_width, row.y - 3.0, chip_width, 20.0);
-
-            // UX0-B09: per-setting reset, on the label.
-            //
-            // A third button on a 46 px row that already carries a chip and a
-            // route control does not fit at the 960 px minimum, and an
-            // affordance that only appears on hover is the defect LX2-a was.
-            // The label is already drawn, already wide, and already names the
-            // thing being reset; a leading `*` marks it as moved from its
-            // default, which also makes "what have I changed on this scene"
-            // answerable at a glance rather than value by value.
-            let modified = value.to_bits() != descriptor.default_value.to_bits();
-            let label_zone = (chip.x - 6.0 - row.x).max(24.0);
-            let label_rect = UiRect::new(row.x, row.y - 3.0, label_zone, 20.0);
-            let label_id =
-                widgets::widget_id(widgets::id::INSPECTOR, slot::LABEL_RESET + index as u32);
-            // An unmodified label claims no press: there is nothing to reset, and
-            // a hit target over an inert control is a click the user cannot
-            // account for.
-            let label_state = if modified {
-                self.widgets.button(d, label_id, label_rect)
-            } else {
-                widgets::ButtonState::default()
-            };
-            if label_state.clicked {
-                self.begin_audition(target, input.settings, ExploreSource::Manual);
-                commands.push(ShellCommand::SetSetting {
-                    scene: input.scene,
-                    index,
-                    value: descriptor.default_value,
-                });
-                self.with_editor(|host| host.reset_arm.disarm());
-            }
-            if modified {
-                self.widgets.hint(
-                    d,
-                    label_state,
-                    label_id,
-                    label_rect,
-                    &format!(
-                        "{} - click to reset to {:.*}",
-                        descriptor.label, descriptor.precision as usize, descriptor.default_value
-                    ),
-                );
-            }
-            let label_text = if modified {
-                format!("* {}", descriptor.label)
-            } else {
-                descriptor.label.to_string()
-            };
-            widgets::draw_text_faded(
-                d,
-                input.fonts.ui(),
-                &label_text,
-                row.x,
-                row.y,
-                label_zone,
-                12.0,
-                metric::UI_FONT_CAPTION,
-                if routed || label_state.hovered {
-                    // Hovered can only be true where the label is a live reset
-                    // button, so the accent is the affordance: the one word that
-                    // lights up under the pointer is the one that does something.
-                    color::accent()
-                } else if modified {
-                    color::ui_ink()
-                } else {
-                    color::ui_muted()
-                },
-            );
-
-            if editable {
-                self.value_chip(
-                    d, input, chip, index, descriptor, effective, &readout, target, commands,
-                );
-            } else {
-                widgets::draw_text(
-                    d,
-                    input.fonts.ui(),
-                    &readout,
-                    chip.x,
-                    row.y,
-                    metric::UI_FONT_VALUE,
-                    if routed {
-                        color::accent()
-                    } else {
-                        color::ui_ink()
-                    },
-                );
-            }
-
-            // An expanded row replaces the whole slider zone rather than sitting
-            // beside it (`plug.c:5517-5528`), so nothing below runs for it.
-            if expanded > 0.0 {
-                self.route_editor_row(d, input, row, input.scene, index, commands);
-                continue;
-            }
-
-            // A routed setting shows the route, not a slider that appears to move
-            // on its own: the summary, the live meter, and a hit target that opens
-            // the editor (`plug.c:6197-6215`).
-            if let Some(route) = committed.as_ref() {
-                self.routed_row(d, input, row, index, descriptor, route);
-                continue;
-            }
-
-            let span = descriptor.maximum - descriptor.minimum;
-            let normalized = if span > 0.0 {
-                (effective - descriptor.minimum) / span
+        // Only the scene/scope header and Reset remain fixed. Presets, audition
+        // actions and all setting controls share one scrollable body.
+        let list_bottom = content.y + content.height
+            - padding
+            - if focused_route.is_none() {
+                metric::UI_BUTTON_HEIGHT + padding
             } else {
                 0.0
             };
-            // UX0-B09's fine step. The wheel over the row moves one unit of the
-            // descriptor's own precision — 0.01 on a two-place slider, one degree
-            // on a hue — and Shift moves ten. A ratio rather than two hand-picked
-            // deltas, so every control takes the same number of notches to cross
-            // the same fraction of its range.
-            //
-            // Read from the row rectangle rather than from the slider's, because
-            // the value chip and the label are part of the same control as far as
-            // a user aiming a wheel is concerned, and the timed lanes' wheel
-            // (LX2-c) is a different rectangle entirely so neither can steal the
-            // other's notch.
-            let wheel = self.wheel_delta(d);
-            if wheel != 0.0 {
-                let pointer = input.ui_scale.mouse(d);
-                if row.contains_point(pointer.x, pointer.y) {
-                    let coarse = d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-                        || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
-                    let steps = (wheel.round() as i32) * if coarse { 10 } else { 1 };
-                    let stepped = tune_explore::step(descriptor, value, steps);
-                    if stepped.to_bits() != value.to_bits() {
-                        commands.push(ShellCommand::SetSetting {
-                            scene: input.scene,
-                            index,
-                            value: stepped,
-                        });
-                        self.with_editor(|host| {
-                            host.reset_arm.disarm();
-                            host.explore.note_manual_edit(target);
-                        });
-                    }
+        let viewport = UiRect::new(content.x, y, content.width, (list_bottom - y).max(0.0));
+        let metrics = tune_scroll_metrics(
+            viewport.height,
+            hidden_height + preset_height + explore_height + rows_height,
+        );
+        let mouse = input.ui_scale.mouse(d);
+        let alt = d.is_key_down(KeyboardKey::KEY_LEFT_ALT)
+            || d.is_key_down(KeyboardKey::KEY_RIGHT_ALT)
+            || self.probe_wheel_alt;
+        let (scroll_wheel, value_wheel) = tune_wheel(self.wheel_delta(d), alt);
+        let scroll = self
+            .route_editor
+            .scroll
+            .for_view(track_slot, input.scene, focused_route);
+        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
+        let bar = UiRect::new(
+            viewport.x + viewport.width - SCROLLBAR_WIDTH,
+            viewport.y,
+            SCROLLBAR_WIDTH,
+            viewport.height,
+        );
+        // Finish drags even if resizing has removed the scrollbar.
+        if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) || !metrics.needs_bar() {
+            scroll.end_drag();
+        }
+        if viewport.contains_point(mouse.x, mouse.y) && !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+            scroll.wheel(scroll_wheel, &metrics);
+        }
+        if let Some((top, height)) = metrics.thumb(scroll.offset()) {
+            let thumb = UiRect::new(bar.x, bar.y + top, bar.width, height);
+            if d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) && bar.contains_point(mouse.x, mouse.y)
+            {
+                if thumb.contains_point(mouse.x, mouse.y) {
+                    scroll.begin_drag(mouse.y - thumb.y);
+                } else {
+                    scroll.page(
+                        if mouse.y < thumb.y {
+                            BarHit::Above
+                        } else {
+                            BarHit::Below
+                        },
+                        &metrics,
+                    );
                 }
             }
+        }
+        // A slider drag must not slide the surface out from under its pointer.
+        let delta = if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) && !scroll.is_dragging() {
+            0.0
+        } else {
+            d.get_frame_time()
+        };
+        scroll.advance(delta, mouse.y - viewport.y, &metrics);
+        let offset = scroll.offset();
+        let thumb = metrics.thumb(offset);
+        let body = UiRect::new(
+            viewport.x,
+            viewport.y,
+            (viewport.width - SCROLLBAR_WIDTH).max(0.0),
+            viewport.height,
+        );
+        let old_clip = self.widgets.set_input_clip(Some(body));
+        {
+            let mut clip = widgets::begin_scissor(d, body, input.ui_scale);
+            let d = &mut *clip;
+            y = viewport.y + SCROLL_CONTENT_PADDING - offset;
+            y += self.hidden_route_draft_bar(
+                d,
+                input,
+                UiRect::new(
+                    body.x + padding,
+                    y,
+                    body.width - padding * 2.0,
+                    hidden_height,
+                ),
+                commands,
+            );
 
-            let track = UiRect::new(row.x, row.y + 22.0, row.width, 20.0);
-            let id = widgets::widget_id(widgets::id::INSPECTOR, index as u32);
-            if let Some(fraction) = self.widgets.slider(d, id, track, normalized) {
-                // Every value this panel writes goes onto the descriptor's own
-                // precision grid, so the readout above the slider is the number
-                // in the store rather than a rounded picture of it. The C only
-                // did this for `precision == 0` (`plug.c`'s integer readout),
-                // which left a two-place slider showing "1.23" for 1.2345.
-                let proposed =
-                    tune_explore::conform(descriptor, descriptor.minimum + fraction * span);
-                commands.push(ShellCommand::SetSetting {
-                    scene: input.scene,
-                    index,
-                    value: proposed,
-                });
-                // A drag while an audition is open is the user refining the
-                // experiment; it becomes the new "B" without starting a session
-                // of its own.
-                self.with_editor(|host| host.explore.note_manual_edit(target));
-                // review 1.8: an edit made after arming Reset is exactly the
-                // "changed my mind" case the arm/confirm step exists to protect
-                // — the preset block's Delete disarms the same way on any other
-                // preset action (`main.rs`'s `handle_preset`), mirrored here for
-                // the same reason.
+            // The shared preset block, between the header and the first slider
+            // (`plug.c:5979-6100`): 42 px collapsed, 98 px populated, 0 if it does
+            // not fit.
+            let mut presets = Vec::new();
+            if focused_route.is_none() {
+                y += self.preset_block(
+                    d,
+                    input,
+                    UiRect::new(body.x, y, body.width, preset_height),
+                    input.presets,
+                    &mut presets,
+                );
+            }
+            if !presets.is_empty() {
+                // review 1.8: a preset Apply/Replace/Delete changes what Reset would
+                // act on, so an armed confirmation from a moment ago must not carry
+                // over and land on a scene the user has since edited a different way.
                 self.with_editor(|host| host.reset_arm.disarm());
             }
+            // UX0-C04's headline case: *loading a preset* is the destructive
+            // exploration the plan names, and it arrives here as an action the
+            // application will perform after this frame. Capturing before it does is
+            // what makes "try that preset" reversible.
+            if presets
+                .iter()
+                .any(|action| matches!(action, PresetAction::Apply(_)))
+            {
+                self.begin_audition(target, input.settings, ExploreSource::Preset);
+            }
+            commands.extend(presets.into_iter().map(ShellCommand::Preset));
+
+            // UX0-C04/C07. Between the presets and the sliders because that is where
+            // the actions it makes reversible are: a preset Apply and a Surprise are
+            // the same gesture, and a Revert anywhere else would have to be hunted
+            // for after the thing it undoes has already happened.
+            if focused_route.is_none() {
+                y += self.explore_block(
+                    d,
+                    input,
+                    UiRect::new(body.x, y, body.width, explore_height + SETTING_ROW_HEIGHT),
+                    target,
+                    commands,
+                );
+            }
+
+            let descriptors = settings::descriptors(input.scene);
+            let row_height = SETTING_ROW_HEIGHT;
+            for (index, descriptor) in descriptors.iter().enumerate() {
+                // Give the open route the available Tune area. Previously a late
+                // setting's expanded row disappeared below the panel floor, taking
+                // Apply/Discard with it while its dirty guard kept blocking edits.
+                if focused_route.is_some_and(|focused| index != focused) {
+                    continue;
+                }
+                // Expanded routes have their full natural height, including the
+                // extra band controls; the same height sizes the scrollbar.
+                let expanded = self.route_editor_height(input.scene, index);
+                let row = UiRect::new(
+                    body.x + padding,
+                    y,
+                    body.width - padding * 2.0,
+                    if expanded > 0.0 { expanded } else { row_height },
+                );
+                y += row.height;
+                // Keep laying out every row: the scissor clips pixels and Widgets
+                // clips presses. No tail is dropped when the pane is too short.
+
+                let committed = committed_route(input, input.scene, index).cloned();
+                let routed = committed.is_some();
+
+                // UX0-B08: the route affordance is a **word**, not `~`.
+                //
+                // The oracle draws a tilde (`plug.c:6169-6186`) and the review found
+                // exactly what a tilde tells a newcomer, which is nothing — it is not
+                // an abbreviation of anything, has no established meaning in an
+                // audio interface, and its tooltip was the only thing in the
+                // application that explained it. The button now says which of its
+                // three states it is in, so the row is readable with the pointer
+                // parked somewhere else entirely.
+                let route_label = if expanded > 0.0 {
+                    if self.route_edit_is_dirty() {
+                        "Discard"
+                    } else {
+                        "Close"
+                    }
+                } else if routed {
+                    "Routed"
+                } else {
+                    "Route"
+                };
+                let route_width = (widgets::measure(font, route_label, metric::UI_FONT_CAPTION)
+                    + 14.0)
+                    .clamp(44.0, 74.0);
+                let toggle = UiRect::new(
+                    row.x + row.width - route_width,
+                    row.y - 3.0,
+                    route_width,
+                    20.0,
+                );
+                let toggle_id =
+                    widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTE_TOGGLE + index as u32);
+                let toggle_state = self.widgets.text_button(
+                    d,
+                    font,
+                    toggle_id,
+                    toggle,
+                    route_label,
+                    routed || expanded > 0.0,
+                    ButtonStyle::Neutral,
+                    Some(metric::UI_FONT_CAPTION),
+                );
+                if toggle_state.clicked {
+                    self.toggle_route_editor(track_slot, input.scene, index, committed.as_ref());
+                }
+                // UX0-B08's second half: a *dynamic* tip. A routed row's tip names
+                // the route it would open rather than repeating the static sentence,
+                // because by then the user knows what routing is and wants to know
+                // what this one does.
+                self.widgets.hint(
+                    d,
+                    toggle_state,
+                    toggle_id,
+                    toggle,
+                    &match (expanded > 0.0, committed.as_ref()) {
+                        (true, _) if self.route_edit_is_dirty() => {
+                            "Discard this unapplied route and return to all settings".to_string()
+                        }
+                        (true, _) => {
+                            "Close this route editor and return to all settings".to_string()
+                        }
+                        (false, Some(route)) => format!(
+                            "Driven by {} - click to edit",
+                            ascii_fallback(
+                                font.all_loaded(),
+                                &route_editor_state::summary(route, descriptor.precision)
+                            )
+                        ),
+                        (false, None) => {
+                            "Let the music move this setting instead of the slider".to_string()
+                        }
+                    },
+                );
+
+                // The label and the readout are drawn for *every* row, expanded
+                // included (`plug.c:6156-6190`): the C's editor replaces the slider
+                // zone, not the line that names the setting. Losing the readout there
+                // would leave the one row the user is working on as the only one that
+                // does not say what value it currently produces.
+                let value = input.settings.get(input.scene, index);
+                let effective = input
+                    .routed
+                    .map_or(value, |routed| routed.get(input.scene, index));
+
+                // Only an unrouted, uncollapsed row gets the editable chip: a routed
+                // setting's number is produced by its route, and a text field over it
+                // would take a value the next frame overwrites.
+                let editable = !routed && expanded <= 0.0;
+                let pulse_auto = input.scene == SceneId::PulseField
+                    && descriptor.key == "settings.pulse.petals"
+                    && effective < 0.5
+                    && !routed;
+                let readout = if pulse_auto {
+                    "Auto: balance".to_string()
+                } else {
+                    format!(
+                        "{:.*}{}",
+                        descriptor.precision as usize,
+                        effective,
+                        if routed { "  routed" } else { "" }
+                    )
+                };
+                let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
+                let chip_width = if editable {
+                    (readout_width + 14.0).clamp(46.0, 104.0)
+                } else {
+                    readout_width
+                };
+                let chip = UiRect::new(toggle.x - 8.0 - chip_width, row.y - 3.0, chip_width, 20.0);
+                if !body.contains(chip)
+                    && self
+                        .route_editor
+                        .typing
+                        .as_ref()
+                        .is_some_and(|entry| entry.scene == input.scene && entry.index == index)
+                {
+                    self.route_editor.typing = None;
+                }
+
+                // UX0-B09: per-setting reset, on the label.
+                //
+                // A third button on a 46 px row that already carries a chip and a
+                // route control does not fit at the 960 px minimum, and an
+                // affordance that only appears on hover is the defect LX2-a was.
+                // The label is already drawn, already wide, and already names the
+                // thing being reset; a leading `*` marks it as moved from its
+                // default, which also makes "what have I changed on this scene"
+                // answerable at a glance rather than value by value.
+                let modified = value.to_bits() != descriptor.default_value.to_bits();
+                let label_zone = (chip.x - 6.0 - row.x).max(24.0);
+                let label_rect = UiRect::new(row.x, row.y - 3.0, label_zone, 20.0);
+                let label_id =
+                    widgets::widget_id(widgets::id::INSPECTOR, slot::LABEL_RESET + index as u32);
+                // An unmodified label claims no press: there is nothing to reset, and
+                // a hit target over an inert control is a click the user cannot
+                // account for.
+                let label_state = if modified {
+                    self.widgets.button(d, label_id, label_rect)
+                } else {
+                    widgets::ButtonState::default()
+                };
+                if label_state.clicked {
+                    self.begin_audition(target, input.settings, ExploreSource::Manual);
+                    commands.push(ShellCommand::SetSetting {
+                        scene: input.scene,
+                        index,
+                        value: descriptor.default_value,
+                    });
+                    self.with_editor(|host| host.reset_arm.disarm());
+                }
+                if modified {
+                    self.widgets.hint(
+                        d,
+                        label_state,
+                        label_id,
+                        label_rect,
+                        &format!(
+                            "{} - click to reset to {:.*}",
+                            descriptor.label,
+                            descriptor.precision as usize,
+                            descriptor.default_value
+                        ),
+                    );
+                }
+                let label_text = if modified {
+                    format!("* {}", descriptor.label)
+                } else {
+                    descriptor.label.to_string()
+                };
+                widgets::draw_text_faded(
+                    d,
+                    input.fonts.ui(),
+                    &label_text,
+                    row.x,
+                    row.y,
+                    label_zone,
+                    12.0,
+                    metric::UI_FONT_CAPTION,
+                    if routed || label_state.hovered {
+                        // Hovered can only be true where the label is a live reset
+                        // button, so the accent is the affordance: the one word that
+                        // lights up under the pointer is the one that does something.
+                        color::accent()
+                    } else if modified {
+                        color::ui_ink()
+                    } else {
+                        color::ui_muted()
+                    },
+                );
+
+                if editable {
+                    self.value_chip(
+                        d, input, chip, index, descriptor, effective, &readout, target, commands,
+                    );
+                } else {
+                    widgets::draw_text(
+                        d,
+                        input.fonts.ui(),
+                        &readout,
+                        chip.x,
+                        row.y,
+                        metric::UI_FONT_VALUE,
+                        if routed {
+                            color::accent()
+                        } else {
+                            color::ui_ink()
+                        },
+                    );
+                }
+
+                // An expanded row replaces the whole slider zone rather than sitting
+                // beside it (`plug.c:5517-5528`), so nothing below runs for it.
+                if expanded > 0.0 {
+                    self.route_editor_row(d, input, row, input.scene, index, commands);
+                    continue;
+                }
+
+                // A routed setting shows the route, not a slider that appears to move
+                // on its own: the summary, the live meter, and a hit target that opens
+                // the editor (`plug.c:6197-6215`).
+                if let Some(route) = committed.as_ref() {
+                    self.routed_row(d, input, row, index, descriptor, route);
+                    continue;
+                }
+
+                let span = descriptor.maximum - descriptor.minimum;
+                let normalized = if span > 0.0 {
+                    (effective - descriptor.minimum) / span
+                } else {
+                    0.0
+                };
+                // Alt+wheel retains precise value stepping without changing values
+                // when the user scrolls through the panel. Shift makes ten steps.
+                let wheel = value_wheel;
+                if wheel != 0.0 {
+                    let pointer = input.ui_scale.mouse(d);
+                    if row.contains_point(pointer.x, pointer.y)
+                        && body.contains_point(pointer.x, pointer.y)
+                    {
+                        let coarse = d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+                            || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
+                            || self.probe_wheel_shift;
+                        let steps = (wheel.round() as i32) * if coarse { 10 } else { 1 };
+                        let stepped = tune_explore::step(descriptor, value, steps);
+                        if stepped.to_bits() != value.to_bits() {
+                            commands.push(ShellCommand::SetSetting {
+                                scene: input.scene,
+                                index,
+                                value: stepped,
+                            });
+                            self.with_editor(|host| {
+                                host.reset_arm.disarm();
+                                host.explore.note_manual_edit(target);
+                            });
+                        }
+                    }
+                }
+
+                let track = UiRect::new(row.x, row.y + 22.0, row.width, 20.0);
+                let id = widgets::widget_id(widgets::id::INSPECTOR, index as u32);
+                if let Some(fraction) = self.widgets.slider(d, id, track, normalized) {
+                    // Every value this panel writes goes onto the descriptor's own
+                    // precision grid, so the readout above the slider is the number
+                    // in the store rather than a rounded picture of it. The C only
+                    // did this for `precision == 0` (`plug.c`'s integer readout),
+                    // which left a two-place slider showing "1.23" for 1.2345.
+                    let proposed =
+                        tune_explore::conform(descriptor, descriptor.minimum + fraction * span);
+                    commands.push(ShellCommand::SetSetting {
+                        scene: input.scene,
+                        index,
+                        value: proposed,
+                    });
+                    // A drag while an audition is open is the user refining the
+                    // experiment; it becomes the new "B" without starting a session
+                    // of its own.
+                    self.with_editor(|host| host.explore.note_manual_edit(target));
+                    // review 1.8: an edit made after arming Reset is exactly the
+                    // "changed my mind" case the arm/confirm step exists to protect
+                    // — the preset block's Delete disarms the same way on any other
+                    // preset action (`main.rs`'s `handle_preset`), mirrored here for
+                    // the same reason.
+                    self.with_editor(|host| host.reset_arm.disarm());
+                }
+            }
+        }
+        self.widgets.set_input_clip(old_clip);
+        if let Some((top, height)) = thumb {
+            widgets::fill(d, bar, color::ui_rule());
+            widgets::fill(
+                d,
+                UiRect::new(bar.x + 2.0, bar.y + top, bar.width - 4.0, height),
+                color::ui_muted(),
+            );
         }
 
         let reset = UiRect::new(
@@ -1171,7 +1491,7 @@ impl Shell {
             content.width - padding * 2.0,
             metric::UI_BUTTON_HEIGHT,
         );
-        if content.contains(reset) {
+        if content.contains(reset) && focused_route.is_none() {
             // review 1.8 (UX0-A08): Reset used to fire on a single unconfirmed
             // click while the less-destructive preset Delete right above it
             // already required a second one. Same arm/confirm shape, same
@@ -1386,7 +1706,7 @@ impl Shell {
             id,
             chip,
             &format!(
-                "Type a value ({:.*} to {:.*})  -  wheel steps by {}, Shift by ten",
+                "Type a value ({:.*} to {:.*})  -  Alt+wheel steps by {}, Shift by ten",
                 descriptor.precision as usize,
                 descriptor.minimum,
                 descriptor.precision as usize,
@@ -1425,13 +1745,7 @@ impl Shell {
 
         let font = input.fonts.ui();
         let session = self.peek_editor(|host| host.explore.session(target));
-        let needed = BUTTON_H
-            + GAP_AFTER
-            + if session.is_some() {
-                SENTENCE_H + BUTTON_H + 4.0
-            } else {
-                0.0
-            };
+        let needed = explore_block_height(session.is_some());
         if area.height < needed + ROOM_FOR_ONE_ROW {
             return 0.0;
         }
@@ -1624,27 +1938,28 @@ impl Shell {
     /// to a click on a different row.
     fn toggle_route_editor(
         &mut self,
-        input: &ShellInput<'_>,
+        track_slot: usize,
+        scene: SceneId,
         index: usize,
         committed: Option<&ParameterMapping>,
-        editing_this_row: bool,
     ) {
-        let track_slot = input.workspace.current_index().unwrap_or(0);
+        if self.focused_route_row(track_slot, scene) == Some(index) {
+            self.discard_route_draft();
+            return;
+        }
         let dirty = self.peek_editor(|host| host.state.is_dirty());
         if dirty {
-            self.notify(
-                Severity::Warning,
-                "Route edit in progress",
-                "Apply or discard the open route draft first.",
-            );
+            self.warn_route_draft();
             return;
         }
-        if editing_this_row {
-            self.with_editor(|host| host.state.close());
-            return;
+        let opened = self.with_editor(|host| host.state.open(track_slot, scene, index, committed));
+        if opened {
+            // A route click leaves manual text entry, just like clicking any
+            // other control. Its now-hidden field must not keep keyboard focus.
+            self.route_editor.typing = None;
+            self.route_editor.reset_arm.disarm();
+            self.clear_route_warning();
         }
-        let opened =
-            self.with_editor(|host| host.state.open(track_slot, input.scene, index, committed));
         if !opened {
             // `open` only refuses for a setting that has no descriptor or a
             // committed route that does not belong to it — both of which mean the
@@ -1691,7 +2006,12 @@ impl Shell {
         let hit = UiRect::new(row.x, row.y + 18.0, row.width, 28.0);
         let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTED_SUMMARY + index as u32);
         if self.widgets.button(d, id, hit).clicked {
-            self.toggle_route_editor(input, index, Some(route), false);
+            self.toggle_route_editor(
+                input.workspace.current_index().unwrap_or(0),
+                input.scene,
+                index,
+                Some(route),
+            );
         }
     }
 
@@ -2113,7 +2433,7 @@ impl Shell {
                     scene: input.scene,
                     route: draft.clone(),
                 });
-                self.with_editor(|host| host.state.close());
+                self.discard_route_draft();
             }
         } else {
             // UX0-B08: a disabled action says *why*. `disabled_button` returns no
@@ -2155,7 +2475,7 @@ impl Shell {
                     scene: input.scene,
                     parameter: draft.parameter.clone(),
                 });
-                self.with_editor(|host| host.state.close());
+                self.discard_route_draft();
             }
         } else {
             self.widgets
@@ -2189,7 +2509,7 @@ impl Shell {
             )
             .clicked
         {
-            self.with_editor(|host| host.state.close());
+            self.discard_route_draft();
         }
     }
 
@@ -2325,6 +2645,140 @@ mod tests {
     // `Shell::new()` and there is nothing to leak between them. It used to be a
     // `thread_local`, which is why these tests were once wrapped in a
     // close-before-and-after helper; that helper is gone with the global.
+
+    #[test]
+    fn scrolling_reaches_the_last_atlas_control_with_all_sections_open() {
+        let count = settings::descriptors(SceneId::SongAtlas).len();
+        assert_eq!(count, 12);
+        let preceding =
+            58.0 + super::super::events::preset_block_height(1) + explore_block_height(true);
+        let metrics = tune_scroll_metrics(300.0, preceding + count as f32 * SETTING_ROW_HEIGHT);
+        assert_eq!(metrics.scrollable, 792.0);
+        assert_eq!(metrics.max_offset, 492.0);
+        let mut scroll = ScrollState::new();
+        scroll.begin_drag(0.0);
+        scroll.advance(0.0, metrics.visible, &metrics);
+        scroll.end_drag();
+        let last_top = SCROLL_CONTENT_PADDING + preceding + (count - 1) as f32 * SETTING_ROW_HEIGHT
+            - scroll.offset();
+        assert_eq!(last_top, 250.0);
+        assert_eq!(last_top + SETTING_ROW_HEIGHT, 296.0);
+        // Resizing until all content fits removes the bar and clamps the old offset.
+        let enlarged = tune_scroll_metrics(900.0, 784.0);
+        scroll.advance(0.0, 0.0, &enlarged);
+        assert_eq!(scroll.offset(), 0.0);
+        assert!(!enlarged.needs_bar());
+    }
+
+    #[test]
+    fn wheel_navigation_does_not_edit_and_route_focus_preserves_list_position() {
+        assert_eq!(tune_wheel(-2.0, false), (-2.0, 0.0));
+        assert_eq!(tune_wheel(1.0, true), (0.0, 1.0));
+        let metrics = tune_scroll_metrics(300.0, 784.0);
+        let mut view = TuneScroll::default();
+        let list = view.for_view(0, SceneId::SongAtlas, None);
+        list.wheel(-3.0, &metrics);
+        list.advance(1.0 / 60.0, 0.0, &metrics);
+        let saved = list.offset();
+        assert!(saved > 0.0);
+        assert_eq!(view.for_view(0, SceneId::SongAtlas, Some(11)).offset(), 0.0);
+        assert_eq!(view.for_view(0, SceneId::SongAtlas, None).offset(), saved);
+        assert_eq!(view.for_view(1, SceneId::SongAtlas, None).offset(), 0.0);
+        assert_eq!(view.for_view(1, SceneId::Loom, None).offset(), 0.0);
+    }
+
+    #[test]
+    fn a_route_taller_than_the_viewport_can_scroll_to_its_actions() {
+        let mut shell = Shell::new();
+        shell.toggle_route_editor(0, SceneId::SongAtlas, index::atlas::COLOR, None);
+        shell.route_editor.state.set_source(AnalysisSource::Band);
+        let height = shell.route_editor_height(SceneId::SongAtlas, index::atlas::COLOR);
+        let metrics = tune_scroll_metrics(200.0, height);
+        assert!(metrics.needs_bar());
+        assert_eq!(SCROLL_CONTENT_PADDING + height - metrics.max_offset, 196.0);
+        let (top, thumb) = metrics.thumb(metrics.max_offset).unwrap();
+        assert!((top + thumb - 200.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn manual_hue_motion_leaves_other_routes_available() {
+        let mut shell = Shell::new();
+        let mut values = SceneSettings::default();
+        assert!(values.set(SceneId::SongAtlas, index::atlas::HUE_MOTION, 1.0));
+        shell.route_editor.explore.note_manual_edit(TuneTarget {
+            track_slot: 0,
+            scene: SceneId::SongAtlas,
+            cue: None,
+        });
+        assert!(!shell.route_edit_is_dirty());
+        shell.toggle_route_editor(0, SceneId::SongAtlas, index::atlas::COLOR, None);
+        assert_eq!(
+            shell.focused_route_row(0, SceneId::SongAtlas),
+            Some(index::atlas::COLOR)
+        );
+        assert!(!shell.route_edit_is_dirty());
+        assert!(shell.notices.notices().is_empty());
+    }
+
+    #[test]
+    fn hidden_draft_is_preserved_and_warns_only_once_until_explicitly_discarded() {
+        let mut shell = Shell::new();
+        assert!(!ShellCommand::ResumeRouteDraft {
+            track_slot: 1,
+            scene: SceneId::Loom,
+        }
+        .mutates_project());
+        shell.toggle_route_editor(1, SceneId::Loom, index::loom::WEIGHT, None);
+        shell
+            .route_editor
+            .state
+            .set_curve(Interpolation::Smoothstep);
+        let original = shell.route_recovery_draft().unwrap();
+        // The inspector most recently drew track zero; that is not ownership.
+        shell.route_editor.track_slot = 0;
+        assert!(!shell.route_editor_open_for_active_track(Some(0)));
+        assert!(shell.route_editor_open_for_active_track(Some(1)));
+        assert_eq!(shell.focused_route_row(0, SceneId::SongAtlas), None);
+        for _ in 0..8 {
+            shell.toggle_route_editor(0, SceneId::SongAtlas, index::atlas::COLOR, None);
+        }
+        assert_eq!(shell.route_recovery_draft().unwrap(), original);
+        assert_eq!(shell.notices.notices().len(), 1);
+        assert!(shell.notices.notices()[0].detail.contains("Loom"));
+        assert!(shell.notices.notices()[0].detail.contains("track 2"));
+        shell.discard_route_draft();
+        assert!(shell.notices.notices().is_empty());
+        shell.toggle_route_editor(0, SceneId::SongAtlas, index::atlas::COLOR, None);
+        assert_eq!(
+            shell.focused_route_row(0, SceneId::SongAtlas),
+            Some(index::atlas::COLOR)
+        );
+    }
+
+    #[test]
+    fn an_open_last_setting_gets_the_same_space_as_the_first() {
+        let mut shell = Shell::new();
+        let last = settings::descriptors(SceneId::SongAtlas).len() - 1;
+        shell.toggle_route_editor(0, SceneId::SongAtlas, last, None);
+        shell.route_editor.state.set_source(AnalysisSource::Band);
+        assert_eq!(shell.focused_route_row(0, SceneId::SongAtlas), Some(last));
+        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 1, 150.0);
+        let padding = metric::UI_PANEL_PADDING;
+        let available = frame.inspector.height
+            - 27.0
+            - padding
+            - metric::UI_FONT_HEADER
+            - metric::UI_CONTROL_GAP
+            - metric::UI_FONT_CAPTION
+            - metric::UI_CONTROL_GAP
+            - metric::UI_BUTTON_HEIGHT
+            - padding * 2.0;
+        assert!(shell.route_editor_height(SceneId::SongAtlas, last) <= available);
+        // The header's Discard action works even while the draft is dirty.
+        shell.toggle_route_editor(0, SceneId::SongAtlas, last, None);
+        assert!(!shell.route_edit_is_dirty());
+        assert_eq!(shell.focused_route_row(0, SceneId::SongAtlas), None);
+    }
 
     #[test]
     fn a_closed_editor_leaves_every_row_a_slider() {

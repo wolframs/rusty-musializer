@@ -41,6 +41,8 @@ pub struct Activation {
     /// The scene and tuning to apply before the window plays. `None` for an
     /// item with no `apply` block, which asks about the track as it is.
     pub apply: Option<(SceneId, SettingsSnapshot)>,
+    /// The declared scene seed, shared across the two looks of an A/B item.
+    pub seed: Option<u64>,
     /// Where the audition starts: `at_seconds - window.pre`, floored at zero.
     pub seek_to: f64,
     /// Where playback pauses itself: `at_seconds + window.post`.
@@ -162,6 +164,7 @@ impl ProtocolSession {
 
     fn activation(&self, item: &ProtocolItem, variant: Variant) -> Activation {
         Activation {
+            seed: item.apply.as_ref().and_then(|apply| apply.seed),
             apply: item
                 .apply
                 .as_ref()
@@ -169,6 +172,23 @@ impl ProtocolSession {
             seek_to: (item.at_seconds - item.window.pre).max(0.0),
             stop_at: item.at_seconds + item.window.post,
         }
+    }
+
+    /// Short output-only fades soften audition cuts without touching analyzer
+    /// PCM, saved audio, or the operator's device volume (SX4).
+    #[must_use]
+    pub fn audition_gain(&self, time: f64) -> f32 {
+        let Some(item) = self.current.and_then(|i| self.protocol.items.get(i)) else {
+            return 1.0;
+        };
+        if self.stop_at.is_none() {
+            return 1.0;
+        }
+        audition_gain(
+            time,
+            (item.at_seconds - item.window.pre).max(0.0),
+            item.at_seconds + item.window.post,
+        )
     }
 
     /// Make `index` the current item and start its first audition.
@@ -296,6 +316,28 @@ impl ProtocolSession {
     }
 }
 
+fn audition_gain(time: f64, start: f64, end: f64) -> f32 {
+    let smooth = |x: f64| {
+        let x = x.clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    (smooth((time - start) / 0.20) * smooth((end - time) / 0.35)) as f32
+}
+
+#[cfg(test)]
+mod audition_tests {
+    #[test]
+    fn output_fade_has_silent_edges_and_unity_interior() {
+        use super::audition_gain as gain;
+        assert_eq!(gain(10.0, 10.0, 30.0), 0.0);
+        assert_eq!(gain(30.0, 10.0, 30.0), 0.0);
+        assert_eq!(gain(20.0, 10.0, 30.0), 1.0);
+        assert!((gain(10.1, 10.0, 30.0) - 0.5).abs() < 0.00001);
+        assert!(gain(29.9, 10.0, 30.0) > 0.0);
+        assert!(gain(10.001, 10.0, 30.0) < 0.001);
+    }
+}
+
 /// A variant order as a compact token: `[B, A, B]` -> `b,a,b`; empty -> `-`.
 #[must_use]
 pub fn order_token(order: &[Variant]) -> String {
@@ -379,9 +421,53 @@ pub(crate) fn draw_card(
     font: &UiFonts,
     session: &ProtocolSession,
     preview: UiRect,
+    playing: bool,
 ) -> Option<f32> {
     if preview.is_empty() {
         return None;
+    }
+    // A full answer form obscures the thing being judged. Keep the question
+    // visible during playback and reveal the choices when paused (SX4).
+    if playing && preview.width > 300.0 && preview.height > 70.0 {
+        if let Some(item) = session.item() {
+            let card = UiRect::new(
+                preview.x + 12.0,
+                preview.y + preview.height - 58.0,
+                preview.width - 24.0,
+                46.0,
+            );
+            widgets::fill(d, card, color::ui_overlay_surface());
+            let lines = musializer_core::ui::notice::wrap_detail(
+                &item.question,
+                card.width - 24.0,
+                1,
+                |text| widgets::measure(font, text, metric::UI_FONT_LABEL),
+            );
+            widgets::draw_text(
+                d,
+                font,
+                lines.first().map_or("", String::as_str),
+                card.x + 12.0,
+                card.y + 6.0,
+                metric::UI_FONT_LABEL,
+                color::ui_overlay_ink(),
+            );
+            let hint = format!(
+                "{} / {}  ·  Space pause for choices  ·  R replay  ·  N next",
+                session.current.unwrap_or(0) + 1,
+                session.total(),
+            );
+            widgets::draw_text(
+                d,
+                font,
+                &hint,
+                card.x + 12.0,
+                card.y + 26.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_overlay_muted(),
+            );
+            return Some(card.y);
+        }
     }
     let width = CARD_WIDTH.min(preview.width - 24.0);
     if width <= 120.0 {
@@ -576,6 +662,7 @@ mod tests {
         let activation = session.activate(0).unwrap();
         assert_eq!(activation.seek_to, 8.0);
         assert_eq!(activation.stop_at, 16.0);
+        assert_eq!(activation.seed, Some(7));
         assert!(activation.apply.is_some());
         assert_eq!(session.auditions, 1);
         assert_eq!(session.order.len(), 1);
@@ -587,6 +674,7 @@ mod tests {
         session.activate(0).unwrap();
         let first = session.live;
         let flip = session.flip().unwrap();
+        assert_eq!(flip.seed, Some(7), "both looks use the declared scene seed");
         assert_eq!(session.live, first.other());
         assert_eq!(session.order, vec![first, first.other()]);
         // The flip's activation applies the *other* snapshot.

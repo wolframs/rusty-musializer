@@ -17,7 +17,7 @@
 //! RaylibDraw` where they can, and where the raw ffi has no safe counterpart
 //! they take the handle anyway purely to make the requirement checkable.
 
-use raylib::prelude::{Camera3D, Color, RaylibDraw, Rectangle, Vector2, Vector3};
+use raylib::prelude::{Color, RaylibDraw, Rectangle, Vector2, Vector3};
 
 /// A non-owning handle to raylib's built-in 1x1 white texture.
 ///
@@ -586,5 +586,58 @@ fn to_ffi_color(color: Color) -> raylib_sys::Color {
         g: color.g,
         b: color.b,
         a: color.a,
+    }
+}
+
+/// By-value perspective camera for raylib's externally built C library.
+/// raylib-rs 6 gates its camera module off under `nobuild`.
+#[derive(Clone, Copy)]
+pub struct Camera3D(raylib_sys::Camera3D);
+
+impl Camera3D {
+    pub fn perspective(position: Vector3, target: Vector3, up: Vector3, fovy: f32) -> Self {
+        Self(raylib_sys::Camera3D {
+            position: position.into(),
+            target: target.into(),
+            up: up.into(),
+            fovy,
+            projection: raylib_sys::CameraProjection::CAMERA_PERSPECTIVE as i32,
+        })
+    }
+}
+
+impl From<Camera3D> for raylib_sys::Camera3D {
+    fn from(camera: Camera3D) -> Self {
+        camera.0
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    use super::*;
+
+    #[test]
+    fn perspective_camera_preserves_all_scene_inputs() {
+        let camera: raylib_sys::Camera3D = Camera3D::perspective(
+            Vector3::new(1.25, -2.5, 3.75),
+            Vector3::new(-4.0, 5.0, -6.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            47.5,
+        )
+        .into();
+        assert_eq!(
+            (camera.position.x, camera.position.y, camera.position.z),
+            (1.25, -2.5, 3.75)
+        );
+        assert_eq!(
+            (camera.target.x, camera.target.y, camera.target.z),
+            (-4.0, 5.0, -6.0)
+        );
+        assert_eq!((camera.up.x, camera.up.y, camera.up.z), (0.0, 1.0, 0.0));
+        assert_eq!(camera.fovy, 47.5);
+        assert_eq!(
+            camera.projection,
+            raylib_sys::CameraProjection::CAMERA_PERSPECTIVE as i32
+        );
     }
 }

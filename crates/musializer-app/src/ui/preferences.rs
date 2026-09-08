@@ -36,6 +36,7 @@ const TAP_OFFSET_LIMIT: f32 =
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct UiPreferences {
+    pub theme: super::theme::UiTheme,
     pub scale: UiScalePreference,
     pub sidebar_width: Option<f32>,
     pub inspector_width: Option<f32>,
@@ -100,6 +101,8 @@ pub enum UiPreferencesError {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
+    #[serde(default)]
+    theme: super::theme::UiTheme,
     schema: String,
     scale: String,
     sidebar_width: Option<f32>,
@@ -154,6 +157,7 @@ pub fn load(path: &Path) -> Result<Option<UiPreferences>, UiPreferencesError> {
     }
     let scale = UiScalePreference::parse(&document.scale).ok_or(UiPreferencesError::Format)?;
     let preferences = UiPreferences {
+        theme: document.theme,
         scale,
         sidebar_width: document.sidebar_width,
         inspector_width: document.inspector_width,
@@ -172,6 +176,7 @@ pub fn save(path: &Path, preferences: UiPreferences) -> Result<(), UiPreferences
         return Err(UiPreferencesError::Format);
     }
     let document = Document {
+        theme: preferences.theme,
         schema: SCHEMA.to_string(),
         scale: match preferences.scale {
             UiScalePreference::Auto => "auto".to_string(),
@@ -209,6 +214,7 @@ mod tests {
     fn preferences_round_trip_without_entering_a_project() {
         let path = scratch("round-trip").join("nested/ui.json");
         let preferences = UiPreferences {
+            theme: super::super::theme::UiTheme::BlackAmber,
             scale: UiScalePreference::parse("150").unwrap(),
             sidebar_width: Some(384.0),
             inspector_width: Some(420.0),

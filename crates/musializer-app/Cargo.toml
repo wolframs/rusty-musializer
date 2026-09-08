@@ -18,6 +18,7 @@ name = "make-fixture-wav"
 path = "src/bin/make_fixture_wav.rs"
 
 [dependencies]
+egui.workspace = true
 musializer-core.workspace = true
 musializer-runtime.workspace = true
 raylib.workspace = true

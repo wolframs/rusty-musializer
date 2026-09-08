@@ -5,7 +5,7 @@
 //! High and Master render into a target `supersample_factor` times the output on
 //! both axes and then downsample. That downsample used to be raylib's
 //! `ImageResize`, which for an 8-bit RGBA image takes a fast path calling
-//! **`stbir_resize_uint8_linear`** (`vendor/raylib-5.5/src/rtextures.c:1770-1773`).
+//! **`stbir_resize_uint8_linear`** (`vendor/raylib-6.0/src/rtextures.c:1759-1762`).
 //! `_linear` in stb's naming means "the data *is* linear light" — the sibling
 //! that actually decodes sRGB first is `stbir_resize_uint8_srgb`
 //! (`stb_image_resize2.h:8009`). Our frames are sRGB-encoded 8-bit, so that call

@@ -8,7 +8,7 @@
 //!
 //! ## Why there is a `static`
 //!
-//! raylib 5.5's `AudioCallback` is `void (*)(void *bufferData, unsigned int
+//! raylib 6.0's `AudioCallback` is `void (*)(void *bufferData, unsigned int
 //! frames)` — there is no user-data pointer, so a closure cannot be attached.
 //! The C oracle solves this the same way, with a file-scope callback reaching
 //! global state (`../musializer/src/plug.c:531-536`). The ring therefore lives in
@@ -51,7 +51,7 @@ static CAPTURE_RING: OnceLock<SampleRing> = OnceLock::new();
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 
 unsafe extern "C" {
-    /// Small diagnostic extension carried by the vendored raylib 5.5 build.
+    /// Small diagnostic extension carried by the vendored raylib 6.0 build.
     fn GetAudioStreamUnderrunCount() -> c_uint;
 }
 

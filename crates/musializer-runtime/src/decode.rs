@@ -73,9 +73,9 @@ pub fn whole_track(audio: &RaylibAudio, path: &Path) -> Option<DecodedAudio> {
 /// # The raylib-rs bug this exists for
 ///
 /// `Wave::load_samples` builds its slice as `(pointer, self.frameCount)`
-/// (`raylib-5.5.1/src/core/audio.rs:261-268`), but `LoadWaveSamples` allocates
+/// (`raylib-6.0.0/src/core/audio.rs:438-443`), but `LoadWaveSamples` allocates
 /// and fills `frameCount * channels` floats
-/// (`vendor/raylib-5.5/src/raudio.c:1299-1310`). For any stereo track the safe
+/// (`vendor/raylib-6.0/src/raudio.c:1323`). For any stereo track the safe
 /// wrapper therefore hands back **exactly half the audio**, silently: an export
 /// built on it would analyze the first half of the track spread across the whole
 /// timeline, and a Song Atlas built on it would compress the whole terrain into
