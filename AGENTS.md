@@ -789,6 +789,11 @@ makes an unfinished area show up in a capture instead of in a bug report.
   `~/.local/share/musializer/models/`, one subdirectory per model. The existing
   `~/.local/share/musializer/lyrics-align/` venv stays as is and nothing is ever
   installed into it.
+- Anything fetched by Hugging Face id (not a local model dir) lands in
+  `~/.cache/huggingface/hub`, which on this machine is a symlink to
+  `/run/media/wolfram/Bigger SSD/AI/huggingface/hub`. The SSD auto-mounts at
+  desktop login only; if `mountpoint -q "/run/media/wolfram/Bigger SSD"` fails,
+  run `udisksctl mount -b '/dev/disk/by-label/Bigger\x20SSD'` first.
 - **Remote-provider credentials**: no OS/vendor wallet — kwallet/Secret Service
   rejected 2026-08-04 for cross-platform reasons. Persist to a 0600-permission
   credentials file under the per-user config directory (the `gh`/`aws` model),
