@@ -1437,7 +1437,7 @@ mod tests {
         // thresholds past what their clamps were written against.
         let mood = setting_descriptor(SCENE, setting::MOOD).expect("mood descriptor");
         assert_eq!(mood.maximum, MOOD_CEILING);
-        assert_eq!(crate::scene::SCENE_COUNT, 12);
+        assert_eq!(crate::scene::SCENE_COUNT, SceneId::ALL.len());
         // Preset-store token derivation reads descriptor 0's key segment; it
         // must equal the stable name or presets reload onto the wrong scene.
         let first = setting_descriptor(SCENE, 0).expect("first descriptor");

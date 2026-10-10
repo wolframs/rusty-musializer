@@ -4938,6 +4938,7 @@ impl Report {
         // cats all photograph as a perfectly plausible cute picture. `none`
         // means it has not drawn.
         println!("clawd:           {}", renderer.describe_clawd());
+        println!("openai knot:     {}", renderer.describe_knot());
         // Which encoder an export from this run would use. Evidence rather than
         // assertion: an NVENC file and an x264 file of the same frames are
         // different bytes, so a capture that compares two exports has to be able

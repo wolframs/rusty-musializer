@@ -1091,4 +1091,37 @@ mod tests {
         assert_eq!(presets[0].snapshot.values[..12], snapshot.values[..12]);
         assert!(presets[0].snapshot.is_valid_for(scene));
     }
+    #[test]
+    fn knot_preset_round_trip_keeps_all_eleven_controls() {
+        let scene = SceneId::OpenAiKnot;
+        let mut values = SceneSettings::new();
+        assert!(values.set(scene, 0, 0.75));
+        assert!(values.set(scene, 7, 0.25));
+        assert!(values.set(scene, 10, 0.65));
+        let snapshot = values.capture(scene).unwrap();
+        assert_eq!(snapshot.count, 11);
+        let mut library = PresetLibrary::new();
+        library.push(scene, "Porcelain current", &snapshot).unwrap();
+        let text = save_to_string(&library).unwrap();
+        assert!(text.contains("\"scene_name\":\"knot\""));
+        let loaded = load_from_bytes(text.as_bytes()).unwrap();
+        assert_eq!(loaded.presets(scene)[0].snapshot, snapshot);
+    }
+    #[test]
+    fn eight_control_knot_preset_backfills_the_finish() {
+        let scene = SceneId::OpenAiKnot;
+        let mut values = SceneSettings::new();
+        values.set(scene, 0, 0.75);
+        let mut old = values.capture(scene).unwrap();
+        old.count = 8;
+        old.values[8..].fill(0.0);
+        let mut library = PresetLibrary::new();
+        library.push(scene, "Before the finish", &old).unwrap();
+        let loaded = load_from_bytes(save_to_string(&library).unwrap().as_bytes()).unwrap();
+        assert!(values.apply_snapshot(scene, &loaded.presets(scene)[0].snapshot));
+        assert_eq!(values.get(scene, 0), 0.75);
+        assert_eq!(values.get(scene, 8), 1.10);
+        assert_eq!(values.get(scene, 9), 0.70);
+        assert_eq!(values.get(scene, 10), 0.35);
+    }
 }

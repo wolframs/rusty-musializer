@@ -141,7 +141,6 @@ a CX ruling, not a preference.
 
 | # | Work | Ids | Size |
 | --- | --- | --- | --- |
-| 0 | **Build the OpenAI Knot scene.** A procedural, audio-reactive visualization of the interwoven OpenAI mark—not a static logo pasted onto a backdrop. Preserve the recognizable topology at rest and through its strongest musical response | SX5 | medium |
 | 1 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
 | 2 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`). **Needs an explicit operator go-ahead**: it sends audio to OpenRouter and spends credits | — | one session |
 | 3 | **The remaining CX rulings, in their stated order.** CX-5 scene thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
@@ -347,13 +346,7 @@ a setting, so a variant switch has to be built first. `TrackDynamics` rides ever
 `SceneFrame` but only Clawd reads it — any scene with an absolute loudness gate
 has the same latent defect.
 
-**SX5 — OpenAI Knot scene.** Build the mark as procedural interwoven geometry,
-not a bitmap: sixfold band response can breathe and carry light through its
-strands, while onset/beat accents may briefly open or turn the weave without
-breaking the recognizable topology. Give it an authored material, atmosphere
-and motion language at the current scene quality bar. Register it through scene
-selection, settings, presets, `.musi`, CLI and deterministic preview/export;
-add a muted capture/report gate and judge the result in motion before closing it.
+
 
 ## Two standing facts a new session needs
 

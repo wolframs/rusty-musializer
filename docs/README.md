@@ -14,6 +14,8 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 
 ## Start here
 
+- [`OPENAI_KNOT.md`](OPENAI_KNOT.md) — procedural weave, audio response and muted scene checks.
+
 - [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — toolkit editor, appearance, migration boundary and real-input checks.
 - [`RAYLIB_6_UPGRADE.md`](RAYLIB_6_UPGRADE.md) — raylib provenance and compatibility changes.
 

@@ -50,14 +50,16 @@ pub enum SceneId {
     PhosphorDream = 10,
     /// Post-legacy, no C counterpart (2026-08-24).
     Clawd = 11,
+    /// Procedural sixfold weave (2026-09-09).
+    OpenAiKnot = 12,
 }
 
 /// Number of scenes.
 ///
 /// This was C's `COUNT_SCENES`/`SCENE_SETTINGS_SCENE_COUNT` (`scene.h:28`,
 /// `scene_settings_values.h:8`) and equalled 10 for as long as the rewrite was
-/// chasing parity. It is now **12** — Phosphor Dream (id 10, 2026-08-08) and
-/// Clawd (id 11, 2026-08-24) — and that is a deliberate divergence under the
+/// chasing parity. Post-legacy scenes are appended to the registry; the current count is derived
+/// from that registry below. This is a deliberate divergence under the
 /// 2026-08-03 legacy decision rather than a drift.
 ///
 /// What it moves, recorded here because the number is load-bearing in four
@@ -75,7 +77,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = 12;
+pub const SCENE_COUNT: usize = SceneId::OpenAiKnot as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -100,6 +102,7 @@ impl SceneId {
         SceneId::Pentagram,
         SceneId::PhosphorDream,
         SceneId::Clawd,
+        SceneId::OpenAiKnot,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -152,6 +155,7 @@ impl SceneId {
             SceneId::Pentagram => "Pentagram Orbits",
             SceneId::PhosphorDream => "Phosphor Dream",
             SceneId::Clawd => "Clawd",
+            SceneId::OpenAiKnot => "OpenAI Knot",
         }
     }
 
@@ -179,6 +183,7 @@ impl SceneId {
             // persisted identifier and a scene is not the assistant. "clawd" is
             // the name thebes' flower answers to.
             SceneId::Clawd => "clawd",
+            SceneId::OpenAiKnot => "knot",
         }
     }
 
@@ -611,6 +616,7 @@ mod tests {
         // what lets a .musi written before 2026-08-08 still resolve its scenes.
         assert_eq!(SceneId::PhosphorDream as u32, 10);
         assert_eq!(SceneId::Clawd as u32, 11);
+        assert_eq!(SceneId::OpenAiKnot as u32, 12);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
         assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
         assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);
@@ -641,6 +647,7 @@ mod tests {
             "pentagram",
             "phosphor",
             "clawd",
+            "knot",
         ];
         for (id, name) in SceneId::ALL.into_iter().zip(expected) {
             assert_eq!(id.stable_name(), name);

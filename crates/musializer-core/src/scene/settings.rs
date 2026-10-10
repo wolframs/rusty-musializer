@@ -255,6 +255,20 @@ pub mod index {
         /// Idle sway amplitude.
         pub const WIGGLE: usize = 11;
     }
+    /// OpenAI Knot: the persisted control order; new finish controls are appended.
+    pub mod knot {
+        pub const SIZE: usize = 0;
+        pub const RESPONSE: usize = 1;
+        pub const PULSE: usize = 2;
+        pub const DRIFT: usize = 3;
+        pub const FLOW: usize = 4;
+        pub const HUE: usize = 5;
+        pub const ATMOSPHERE: usize = 6;
+        pub const POLISH: usize = 7;
+        pub const BLOOM: usize = 8;
+        pub const FRINGE: usize = 9;
+        pub const GRAIN: usize = 10;
+    }
 }
 
 use SettingDescriptor as D;
@@ -455,6 +469,22 @@ const CLAWD: &[SettingDescriptor] = &[
     D::slider("settings.clawd.wiggle", "Idle sway", 0.00, 2.00, 1.00, 2),
 ];
 
+/// SX5: topology-safe controls. Width and crossing order are structural constants.
+#[rustfmt::skip]
+const KNOT: &[SettingDescriptor] = &[
+    D::slider("settings.knot.size", "Knot size", 0.50, 1.15, 0.92, 2),
+    D::slider("settings.knot.response", "Strand response", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.knot.pulse", "Beat lift", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.knot.drift", "Slow turn", 0.00, 2.00, 0.65, 2),
+    D::slider("settings.knot.flow", "Light travel", 0.00, 2.00, 0.70, 2),
+    D::slider("settings.knot.hue", "Hue shift (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.knot.atmosphere", "Aurora", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.knot.polish", "Pearlescence", 0.00, 1.00, 0.80, 2),
+    D::slider("settings.knot.bloom", "Bloom", 0.00, 2.00, 1.10, 2),
+    D::slider("settings.knot.fringe", "Spectral fringe", 0.00, 2.00, 0.70, 2),
+    D::slider("settings.knot.grain", "Film grain", 0.00, 1.00, 0.35, 2),
+];
+
 /// The descriptor table, in scene registry order (`scene_settings.c:129-141`
 /// for the first ten).
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
@@ -470,6 +500,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     PENTAGRAM,
     PHOSPHOR,
     CLAWD,
+    KNOT,
 ];
 
 /// Descriptors for one scene.
@@ -696,6 +727,7 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         | SceneId::Pentagram
         | SceneId::PhosphorDream
         | SceneId::Clawd => false,
+        SceneId::OpenAiKnot => count == 8,
     }
 }
 

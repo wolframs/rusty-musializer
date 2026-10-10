@@ -16,7 +16,7 @@
 //!
 //! ## Future scene additions
 //!
-//! All twelve current scenes are complete. A future scene whose deterministic half
+//! All registered scenes have a drawing half. A future scene whose deterministic half
 //! has not landed yet starts with
 //! [`StatelessScene`], and a scene whose drawing half has not landed yet gets
 //! [`draw_placeholder`] — a labelled card naming the scene and the C file it
@@ -104,6 +104,7 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
         },
         SceneId::PhosphorDream => core_scenes::phosphor_dream::descriptor(),
         SceneId::Clawd => core_scenes::clawd::descriptor(),
+        SceneId::OpenAiKnot => core_scenes::openai_knot::descriptor(),
     }
 }
 
@@ -148,6 +149,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::Pentagram => |_| Box::new(StatelessScene::new(SceneId::Pentagram)),
             SceneId::PhosphorDream => |_| Box::new(StatelessScene::new(SceneId::PhosphorDream)),
             SceneId::Clawd => |_| Box::new(StatelessScene::new(SceneId::Clawd)),
+            SceneId::OpenAiKnot => |_| Box::new(StatelessScene::new(SceneId::OpenAiKnot)),
         },
     }
 }
@@ -194,6 +196,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         // through to a plausible-looking C filename that does not exist.
         SceneId::PhosphorDream => "(no oracle: post-legacy addition)",
         SceneId::Clawd => "(no oracle: post-legacy addition)",
+        SceneId::OpenAiKnot => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -262,6 +265,7 @@ pub struct SceneRenderer {
     /// empty floor that should have cats), so its evidence lives here like
     /// phosphor's.
     clawd: scenes::clawd::ClawdResources,
+    knot: scenes::openai_knot::KnotResources,
     /// Which `(scene, seed)` the feedback buffer's accumulated light belongs to.
     /// See the reset in [`SceneRenderer::draw`].
     feedback_identity: Option<(SceneId, u64)>,
@@ -306,6 +310,7 @@ impl SceneRenderer {
             caption_halo_last: "none",
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
             clawd: scenes::clawd::ClawdResources::new(),
+            knot: scenes::openai_knot::KnotResources::load(rl, thread),
             feedback_identity: None,
         })
     }
@@ -362,6 +367,10 @@ impl SceneRenderer {
     /// default is a choreography that never ran — and all three photograph as a
     /// perfectly plausible cute picture.
     #[must_use]
+    pub fn describe_knot(&self) -> &str {
+        &self.knot.report
+    }
+
     pub fn describe_clawd(&self) -> String {
         self.clawd.describe()
     }
@@ -420,6 +429,11 @@ impl SceneRenderer {
         if id == SceneId::PhosphorDream {
             if let Some(state) = state_of(instance, id) {
                 scenes::phosphor_dream::prepare(d, &mut self.phosphor, state, frame, boundary);
+            }
+        }
+        if id == SceneId::OpenAiKnot {
+            if let Some(state) = state_of(instance, id) {
+                scenes::openai_knot::prepare(d, &mut self.knot, state, frame, boundary);
             }
         }
         // Clawd's trail accumulates offscreen for the same reason, and drops
@@ -580,6 +594,11 @@ impl SceneRenderer {
                 SceneId::Pentagram => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::pentagram::draw(d, frame, state, &mut self.circle, boundary);
+                    }
+                }
+                SceneId::OpenAiKnot => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::openai_knot::draw(d, frame, state, &mut self.knot, boundary);
                     }
                 }
                 SceneId::Clawd => {
@@ -756,6 +775,7 @@ mod tests {
                 "pentagram",
                 "phosphor",
                 "clawd",
+                "knot",
             ]
         );
     }
@@ -785,6 +805,7 @@ mod tests {
                 SceneId::Pentagram => any.is::<cs::pentagram::PentagramState>(),
                 SceneId::PhosphorDream => any.is::<cs::phosphor_dream::PhosphorDreamState>(),
                 SceneId::Clawd => any.is::<cs::clawd::ClawdState>(),
+                SceneId::OpenAiKnot => any.is::<cs::openai_knot::KnotState>(),
             };
             assert!(
                 recovered,

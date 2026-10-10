@@ -797,6 +797,12 @@ const ASCII_FOOTER_GAP: f32 = 4.0;
 /// action.
 const ASCII_FOOTER_HEIGHT: f32 = ASCII_BUTTON_HEIGHT * 2.0 + ASCII_FOOTER_GAP;
 
+/// Header has already been removed by widgets::panel. Keep this shared with
+/// the minimum-size regression so extra vertical reservations cannot hide tiles.
+fn scene_browser_available_height(content_height: f32) -> f32 {
+    content_height - 6.0 * 3.0 - ASCII_FOOTER_HEIGHT
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlayheadGeometry {
     line_x: f32,
@@ -4032,13 +4038,14 @@ impl Shell {
             return;
         }
         let content = widgets::panel(d, input.fonts.ui(), boundary, "SCENES");
-        let padding = 8.0f32;
+        let padding = 6.0f32;
         // The ASCII footer's seat, reserved before the tiles are sized (D2). A
         // panel that reserves height it never draws steals it from something
         // else, and one that draws height it never reserved prints over its
         // neighbour — `shell_layout`'s rule 1, applied inside a panel.
-        let footer_height = ASCII_FOOTER_HEIGHT + padding;
-        let available_height = content.height - padding * 2.0 - 24.0 - footer_height;
+        // panel() already removed the header. Reserving another 24 px here
+        // hid the thirteenth tile at minimum height (SX5).
+        let available_height = scene_browser_available_height(content.height);
         if available_height <= 0.0 {
             return;
         }
@@ -4070,7 +4077,8 @@ impl Shell {
         // nothing, which is why they are written down together there.
         let tile_height =
             ((available_height - gap * (rows - 1) as f32) / rows as f32).clamp(24.0, 52.0);
-        let tile_width = (content.width - padding * 2.0 - gap) / columns as f32;
+        let tile_width =
+            (content.width - padding * 2.0 - gap * (columns - 1) as f32) / columns as f32;
 
         let labels: Vec<&str> = SceneId::ALL.iter().map(|id| id.display_name()).collect();
         let widths = vec![tile_width; labels.len()];
@@ -5553,7 +5561,11 @@ mod tests {
         const GAP: f32 = 4.0;
         // The tightest the panel gets: the 720p minimum window, sidebar at its
         // automatic width, with the ASCII footer's seat already reserved.
-        for available_height in [80.0f32, 100.0, 112.0, 160.0] {
+        for old_available in [80.0f32, 100.0, 112.0, 160.0] {
+            // Same panel sizes as the original regression, before the duplicated
+            // header reservation was removed and padding was tightened.
+            let content_height = old_available + 8.0 * 3.0 + 24.0 + ASCII_FOOTER_HEIGHT;
+            let available_height = scene_browser_available_height(content_height);
             let mut columns = 2usize;
             let fits = |columns: usize| {
                 let rows = SceneId::ALL.len().div_ceil(columns) as f32;

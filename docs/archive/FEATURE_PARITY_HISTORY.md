@@ -1,5 +1,83 @@
 # Feature-parity waves, 2026-08-01 to 2026-08-27 (archived)
 
+## SX5 finish — post-processing (completed 2026-09-09)
+
+Operator feedback: the geometry worked, but the finish looked plain. Added
+thresholded highlight bloom through the existing framebuffer-safe `HaloBlur`,
+cyan/magenta separation of the glow, a soft vignette and fine deterministic grain.
+The original mesh stays sharp. Bloom, Spectral fringe and Film grain append
+three controls; eight-control presets still load and backfill their defaults.
+The state uses no feedback history. The grain/vignette shader is embedded and
+reports its availability alongside the blur outcome.
+
+Evidence: `build/knot-finish-final/` and `build/knot-finish-final-cpu/` contain
+release-binary GPU/software checks and four-second clips. Both pass warm/cold
+export hash equality, real picker entry, portrait/peak framing, central opening,
+audio-response checks, route hydration and framebuffer restoration. Finish-on
+versus bypass MAD is 6.2921 / 6.3341, above the 1.0 floor. Substituting bypass
+output as the finished capture fails on both renderers at MAD=0; originals
+were restored byte-for-byte and passed again. Review included the motion sheet
+and peak output, retaining clear crossings despite the larger light halo.
+
+The initial CPU grain pass was too expensive. Grain/vignette moved to one GPU
+pass, the blurred source uses a lighter mesh, and shared vertices are shaded
+once. The final release preview runs 160 frames in 2.64 seconds of track time
+with zero audio underruns. The vertex-cache optimization preserves the decoded
+video hash exactly (`build/knot/cache.hash`). The eleven-value preset and the
+legacy eight-value backfill both have tests. Quick verification passes; the
+release binary was rebuilt. No additional unsafe code or external assets.
+One parallel verification run hit `ExecutableFileBusy` while an existing encoder
+test spawned its temporary helper. That test passed immediately on its own;
+the complete quick gate then passed with `--jobs 1`, without changes to the
+encoder code (`build/knot/finish-verified.log`).
+
+## SX5 — OpenAI Knot (completed 2026-09-09)
+
+Implemented in the local working tree; no commit or push was requested.
+The current behavior and its controls are documented in
+[`../OPENAI_KNOT.md`](../OPENAI_KNOT.md).
+
+Six procedural hooked ribbons form the recognizable mark, with a pearlescent
+violet/cyan/magenta material, travelling highlights, an aurora and six independent
+frequency followers. Shared positive radial breathing preserves the weave and
+central opening; a fit against maximum current expansion keeps peak settings
+inside portrait and landscape frames. Scene id 12 / `knot` is wired through
+selection, Tune, routes, saved presets, `.musi`, CLI, Assist vocabulary and the
+shared deterministic preview/export path. No external images or LeBiniou code
+were copied, and no new unsafe blocks or GPU resources were needed.
+
+Design review used the playing scene entered through its picker, paused and
+portrait captures, maximum-control output and a 16-frame motion sequence over
+an authored synthetic musical phrase. The first pass was too restrained;
+travelling light and local breathing were strengthened before closure. The
+finished motion keeps the mark legible while individual regions swell and
+carry bright light. All application probes were muted on isolated displays.
+
+Evidence (gitignored artifacts, reproducible with `tools/knot_check.sh`):
+
+- `build/knot-final/`: picker click at 960x640, playing/paused previews,
+  four-second `cold.mp4`, `motion.png`, portrait and strongest-setting output,
+  routed `knot.musi` and successful reload. Warm/cold decoded video hashes match.
+- Audio-on versus response-off uses identical PCM, seed and time: image mean
+  absolute difference 7.2471 on VirtualGL and 7.2256 on software rendering
+  (`build/knot-cpu/`), against a 0.5 floor. The response-off control substituted
+  as the active capture fails at MAD=0; the original was restored byte-for-byte
+  and passed. This catches an audio-disconnected drawing path that still animates.
+- Four core tests pin geometric landmarks, sixfold symmetry, opening and
+  maximum breathing, selective followers, release, determinism and invalid
+  inputs. The additional saved-preset test preserves all eight values.
+- Registry tests caught a missing Assist vocabulary entry and obsolete scene
+  totals. The minimum-picker regression caught the thirteenth tile falling
+  outside the grid: removed a duplicate header reservation, tightened padding
+  and accounted for every column gap. A real click claims `0x20000000d` and
+  selects `knot`, with audio followers active.
+- `tools/verify.sh --quick`: 8 passed, 0 failed; 1,741 Rust tests passed, one
+  pre-existing ignored test. `tools/headless_check.sh build/knot-full`: exit 0.
+  Focused GPU and CPU gates passed. Both post-legacy descriptor/route pins
+  matched their Rust dumps; the C checkout was not needed.
+- `cargo build --release`: passed. The release binary is the deliverable.
+
+
 **Archived 2026-08-29. This is history, not a queue.** It is the complete record
 of the waves that took the Rust application from "the port compiles" to a tool
 well past what the frozen C could do: the operator rounds (LX, EX, PX, CX, HX),

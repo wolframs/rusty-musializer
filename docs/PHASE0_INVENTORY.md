@@ -242,6 +242,7 @@ short names **and six long aliases**:
 | `pentagram`, `pentagram-orbits` | Pentagram Orbits |
 | `phosphor`, `phosphor-dream` | Phosphor Dream (post-legacy; the C rejects both) |
 | `clawd`, `claude` | Clawd (post-legacy; the C rejects both) |
+| `knot`, `openai-knot` | OpenAI Knot (post-legacy, id 12) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -419,6 +420,10 @@ followed on 2026-08-24. Neither has an oracle, so their evidence is their own
 tests and pinned expectation files rather than a diff. Because both are
 appended, every id above keeps its value and a `.musi` written before those
 dates resolves its scenes unchanged. Their descriptor tables are in 5.
+
+OpenAI Knot — id 12, stable name `knot`, display name `OpenAI Knot`, eleven
+controls — was added on 2026-09-09. Its procedural geometry and response
+contract are documented in [`OPENAI_KNOT.md`](OPENAI_KNOT.md).
 
 Two behaviours of the registry that are still contract, whatever the count is:
 
@@ -640,6 +645,29 @@ Two are **selectors**, and both spell zero as "let the scene decide": `field` 0
 runs the whole cycle and 1..=10 pins one, `ramp` 0 lets each field keep its own
 alphabet and 1..=7 pins one. Encoding "auto" inside the range rather than as a
 paired toggle is what keeps them routable and randomizable like anything else.
+
+### `knot` — OpenAI Knot (11 controls, no C counterpart)
+
+| Slot | Key | Label | Min | Max | Default | Precision | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.knot.size` | Knot size | 0.50 | 1.15 | 0.92 | 2 | slider |
+| 1 | `settings.knot.response` | Strand response | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 2 | `settings.knot.pulse` | Beat lift | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 3 | `settings.knot.drift` | Slow turn | 0.00 | 2.00 | 0.65 | 2 | slider |
+| 4 | `settings.knot.flow` | Light travel | 0.00 | 2.00 | 0.70 | 2 | slider |
+| 5 | `settings.knot.hue` | Hue shift (deg) | -180.0 | 180.0 | 0.0 | 0 | slider |
+| 6 | `settings.knot.atmosphere` | Aurora | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 7 | `settings.knot.polish` | Pearlescence | 0.00 | 1.00 | 0.80 | 2 | slider |
+| 8 | `settings.knot.bloom` | Bloom | 0.00 | 2.00 | 1.10 | 2 | slider |
+| 9 | `settings.knot.fringe` | Spectral fringe | 0.00 | 2.00 | 0.70 | 2 | slider |
+| 10 | `settings.knot.grain` | Film grain | 0.00 | 1.00 | 0.35 | 2 | slider |
+
+Size is fitted against maximum current breathing so portrait output cannot
+clip a lobe. Response and Beat lift at zero leave the authored idle motion;
+Slow turn and Light travel control that motion independently. There are no
+new project fields: settings, routes and saved tuning presets use the existing
+scene machinery. Eight-control snapshots are accepted as legacy and backfill
+Bloom, Spectral fringe and Film grain from defaults.
 
 ### `clawd` — Clawd (12 controls, no C counterpart)
 

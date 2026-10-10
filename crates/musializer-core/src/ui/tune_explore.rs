@@ -725,8 +725,8 @@ mod tests {
         //
         // Two numbers now, because the tree has scenes the oracle does not.
         // 81 is what `differential_settings.sh` still diffs against the frozen C
-        // and must not move; 105 is what this module sweeps (81 + phosphor's 12
-        // + clawd's 12), and it moves whenever a post-legacy scene is added or
+        // and must not move; 116 is what this module sweeps (81 + phosphor's 12
+        // + clawd's 12 + knot's 11), and it moves whenever a post-legacy scene is added or
         // changed.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
@@ -736,7 +736,7 @@ mod tests {
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 105);
+        assert_eq!(all_descriptors().len(), 116);
     }
 
     // -- conform / step / parse ------------------------------------------------

@@ -23,3 +23,5 @@ pub mod pulse_field;
 pub mod song_atlas;
 pub mod spectral_terrarium;
 pub mod spectrum;
+
+pub mod openai_knot;

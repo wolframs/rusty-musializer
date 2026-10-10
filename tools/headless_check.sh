@@ -529,9 +529,12 @@ capture() {
 }
 
 echo "=== scene sweep ==="
-for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram phosphor clawd; do
+for scene in spectrum pulse orbital ascii atlas terrarium constellation cadence loom pentagram phosphor clawd knot; do
     capture "scene-$scene" 1280x720 --scene "$scene" || SWEEP_FAILED=1
 done
+
+# SX5 has a focused, reusable muted motion/export gate.
+tools/knot_check.sh "$OUT_DIR/knot" || SWEEP_FAILED=1
 
 # The synthetic track's startup transient crosses Spectrum's onset threshold by
 # frame eight. The removed renderer pass used that boolean to paint a full-width

@@ -96,6 +96,7 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         // by sitting well into orange, and of Song Atlas's ochre (197,137,46) by
         // staying red of it — the swatch should *be* Clawd at a glance.
         SceneId::Clawd => (222, 112, 68),
+        SceneId::OpenAiKnot => (131, 89, 230),
     };
     Color::new(r, g, b, alpha)
 }

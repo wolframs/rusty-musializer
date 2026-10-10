@@ -1,4 +1,4 @@
-post-constant-count 24
+post-constant-count 35
 post-constant 0 settings.phosphor.field 0 0 0 1 0 0 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.phosphor.motion 0 0 0 1 1 1 1 1
@@ -47,7 +47,29 @@ post-constant 22 settings.clawd.glow 0 0 0 1 1 1 1 1
 post-constant-is-constant 22 1
 post-constant 23 settings.clawd.wiggle 0 0 0 1 1 1 1 1
 post-constant-is-constant 23 1
-post-routed-count 24
+post-constant 24 settings.knot.size 0 0 0 1 0.920000017 0.920000017 1 1
+post-constant-is-constant 24 1
+post-constant 25 settings.knot.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 25 1
+post-constant 26 settings.knot.pulse 0 0 0 1 1 1 1 1
+post-constant-is-constant 26 1
+post-constant 27 settings.knot.drift 0 0 0 1 0.649999976 0.649999976 1 1
+post-constant-is-constant 27 1
+post-constant 28 settings.knot.flow 0 0 0 1 0.699999988 0.699999988 1 1
+post-constant-is-constant 28 1
+post-constant 29 settings.knot.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 29 1
+post-constant 30 settings.knot.atmosphere 0 0 0 1 1 1 1 1
+post-constant-is-constant 30 1
+post-constant 31 settings.knot.polish 0 0 0 1 0.800000012 0.800000012 1 1
+post-constant-is-constant 31 1
+post-constant 32 settings.knot.bloom 0 0 0 1 1.10000002 1.10000002 1 1
+post-constant-is-constant 32 1
+post-constant 33 settings.knot.fringe 0 0 0 1 0.699999988 0.699999988 1 1
+post-constant-is-constant 33 1
+post-constant 34 settings.knot.grain 0 0 0 1 0.349999994 0.349999994 1 1
+post-constant-is-constant 34 1
+post-routed-count 35
 post-routed 0 settings.phosphor.field 0 0 0 1 0 0 1 1
 post-routed 1 settings.phosphor.motion 0 0 0 1 1 1 1 1
 post-routed 2 settings.phosphor.breathe 0 0 0 1 1 1 1 1
@@ -72,6 +94,17 @@ post-routed 20 settings.clawd.daylight 0 0 0 1 0.850000024 0.850000024 1 1
 post-routed 21 settings.clawd.ink 0 0 0 1 1 1 1 1
 post-routed 22 settings.clawd.glow 0 0 0 1 1 1 1 1
 post-routed 23 settings.clawd.wiggle 0 0 0 1 1 1 1 1
+post-routed 24 settings.knot.size 0 0 0 1 0.920000017 0.920000017 1 1
+post-routed 25 settings.knot.response 0 0 0 1 1 1 1 1
+post-routed 26 settings.knot.pulse 0 0 0 1 1 1 1 1
+post-routed 27 settings.knot.drift 0 0 0 1 0.649999976 0.649999976 1 1
+post-routed 28 settings.knot.flow 0 0 0 1 0.699999988 0.699999988 1 1
+post-routed 29 settings.knot.hue 0 0 0 1 0 0 1 1
+post-routed 30 settings.knot.atmosphere 0 0 0 1 1 1 1 1
+post-routed 31 settings.knot.polish 0 0 0 1 0.800000012 0.800000012 1 1
+post-routed 32 settings.knot.bloom 0 0 0 1 1.10000002 1.10000002 1 1
+post-routed 33 settings.knot.fringe 0 0 0 1 0.699999988 0.699999988 1 1
+post-routed 34 settings.knot.grain 0 0 0 1 0.349999994 0.349999994 1 1
 post-import-value 10 0 0
 post-import-value 10 1 1
 post-import-value 10 2 1
@@ -96,3 +129,14 @@ post-import-value 11 8 0.850000024
 post-import-value 11 9 1
 post-import-value 11 10 1
 post-import-value 11 11 1
+post-import-value 12 0 0.920000017
+post-import-value 12 1 1
+post-import-value 12 2 1
+post-import-value 12 3 0.649999976
+post-import-value 12 4 0.699999988
+post-import-value 12 5 0
+post-import-value 12 6 1
+post-import-value 12 7 0.800000012
+post-import-value 12 8 1.10000002
+post-import-value 12 9 0.699999988
+post-import-value 12 10 0.349999994

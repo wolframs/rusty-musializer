@@ -24,3 +24,15 @@ scene 11 count 12
 11 9 settings.clawd.ink|Line weight|0.5|2|1|2|0
 11 10 settings.clawd.glow|Bass glow|0|2|1|2|0
 11 11 settings.clawd.wiggle|Idle sway|0|2|1|2|0
+scene 12 count 11
+12 0 settings.knot.size|Knot size|0.5|1.14999998|0.920000017|2|0
+12 1 settings.knot.response|Strand response|0|2|1|2|0
+12 2 settings.knot.pulse|Beat lift|0|2|1|2|0
+12 3 settings.knot.drift|Slow turn|0|2|0.649999976|2|0
+12 4 settings.knot.flow|Light travel|0|2|0.699999988|2|0
+12 5 settings.knot.hue|Hue shift (deg)|-180|180|0|0|0
+12 6 settings.knot.atmosphere|Aurora|0|2|1|2|0
+12 7 settings.knot.polish|Pearlescence|0|1|0.800000012|2|0
+12 8 settings.knot.bloom|Bloom|0|2|1.10000002|2|0
+12 9 settings.knot.fringe|Spectral fringe|0|2|0.699999988|2|0
+12 10 settings.knot.grain|Film grain|0|1|0.349999994|2|0
