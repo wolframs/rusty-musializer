@@ -16,6 +16,13 @@
 //! oracle exactly and the second against a checked-in expectation. Changing a
 //! C-era bound still fails against the C; changing a post-legacy one fails
 //! against a file somebody has to update on purpose. Neither can drift quietly.
+//!
+//! ## A C-era scene may grow (2026-10-12)
+//!
+//! Cadence gained five controls the C does not have. Its first section still
+//! prints the oracle's seven, under the oracle's count, and the appended rows
+//! print after the marker under an `extra` header — the same split, one level
+//! down, for the same reason.
 
 use musializer_core::scene::settings::{self, SettingKind};
 use musializer_core::scene::SceneId;
@@ -28,30 +35,53 @@ fn main() {
     for scene in SceneId::ALL {
         if !scene.exists_in_oracle() && !marked {
             println!("{POST_LEGACY_MARKER}");
+            print_extras();
             marked = true;
         }
         let descriptors = settings::descriptors(scene);
-        println!("scene {} count {}", scene.index(), descriptors.len());
-        for (index, d) in descriptors.iter().enumerate() {
-            // `{:.9}` would print trailing zeros where C's `%.9g` prints none, so
-            // the float fields are formatted to match `%.9g`: shortest form that
-            // round-trips at nine significant digits.
-            println!(
-                "{} {} {}|{}|{}|{}|{}|{}|{}",
-                scene.index(),
-                index,
-                d.key,
-                d.label,
-                g9(d.minimum),
-                g9(d.maximum),
-                g9(d.default_value),
-                d.precision,
-                match d.kind {
-                    SettingKind::Slider => 0,
-                    SettingKind::Toggle => 1,
-                },
-            );
+        let shown = if scene.exists_in_oracle() {
+            settings::oracle_count(scene)
+        } else {
+            descriptors.len()
+        };
+        println!("scene {} count {}", scene.index(), shown);
+        print_rows(scene, 0, shown);
+    }
+}
+
+/// The controls C-era scenes gained after the legacy decision.
+fn print_extras() {
+    for scene in SceneId::ALL {
+        let from = settings::oracle_count(scene);
+        let total = settings::descriptors(scene).len();
+        if scene.exists_in_oracle() && total > from {
+            println!("scene {} extra {}", scene.index(), total - from);
+            print_rows(scene, from, total);
         }
+    }
+}
+
+fn print_rows(scene: SceneId, from: usize, to: usize) {
+    let descriptors = settings::descriptors(scene);
+    for (index, d) in descriptors.iter().enumerate().take(to).skip(from) {
+        // `{:.9}` would print trailing zeros where C's `%.9g` prints none, so
+        // the float fields are formatted to match `%.9g`: shortest form that
+        // round-trips at nine significant digits.
+        println!(
+            "{} {} {}|{}|{}|{}|{}|{}|{}",
+            scene.index(),
+            index,
+            d.key,
+            d.label,
+            g9(d.minimum),
+            g9(d.maximum),
+            g9(d.default_value),
+            d.precision,
+            match d.kind {
+                SettingKind::Slider => 0,
+                SettingKind::Toggle => 1,
+            },
+        );
     }
 }
 

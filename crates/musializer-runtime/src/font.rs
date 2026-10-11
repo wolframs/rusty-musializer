@@ -89,10 +89,16 @@ pub const CAPTION_ATLAS_MAX: i32 = 256;
 /// Rasterization size for the Cadence scene's signed-distance-field atlas.
 ///
 /// SDF glyphs carry a distance ramp rather than coverage, so one atlas serves
-/// every drawn size; 64 px is raylib's own working range for this (its SDF
-/// example uses 16) and keeps the ramp wide enough for the 100--300 px Cadence
-/// animates through.
-pub const SDF_ATLAS_SIZE: i32 = 64;
+/// every drawn size. 96 px, up from 64 on 2026-10-12: Cadence draws at 200 to
+/// 600 px once export supersampling is counted, and at 64 the stroke edges
+/// wobbled visibly.
+pub const SDF_ATLAS_SIZE: i32 = 96;
+
+/// How far the field reaches outside a glyph's outline, in atlas texels, and
+/// the slope it falls with. These restate the two `FONT_SDF_*` definitions in
+/// `crates/raylib-link/build.rs`; the shader's halo is measured in them.
+pub const SDF_FIELD_TEXELS: f32 = 12.0;
+pub const SDF_UNITS_PER_TEXEL: f32 = 10.0 / 255.0;
 
 /// Atlas padding for the SDF face, and the `glyphPadding` the draw path must
 /// agree with.
@@ -1019,7 +1025,7 @@ impl Faces {
     /// Cadence animates per-glyph scale continuously as a word pops in, so no
     /// fixed raster size is the right one and the at-size cache above cannot
     /// help: it would rebuild every frame. An SDF atlas is scale-independent
-    /// instead — one 64 px build, sharp edges at any size — at the cost of a
+    /// instead — one build, sharp edges at any size — at the cost of a
     /// fragment shader, which is why this returns the face and the caller owns
     /// whether the shader compiled. **Do not draw this face without that
     /// shader**: an SDF atlas rendered through the normal path is a field of grey

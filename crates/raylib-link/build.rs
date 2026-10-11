@@ -54,6 +54,15 @@ fn main() {
         .define("PLATFORM_DESKTOP_GLFW", None)
         .define("_GLFW_X11", None)
         .define("SUPPORT_FILEFORMAT_FLAC", "1")
+        // Cadence's signed-distance-field type (`runtime::font::rasterize_sdf`).
+        // raylib's defaults fall from the outline to zero in two texels: steep
+        // enough that bilinear filtering cannot reconstruct a corner, which
+        // drew lumpy strokes at Cadence's sizes, and far too short to carry a
+        // halo. Twelve texels of field at a tenth of the slope fixes both. All
+        // three are `#ifndef`-guarded in `rtext.c`, so this is configuration
+        // rather than a patch to the vendored source.
+        .define("FONT_SDF_CHAR_PADDING", "12")
+        .define("FONT_SDF_PIXEL_DIST_SCALE", "10.0f")
         .include(raylib_src.join("external/glfw/include"))
         .include(&raylib_src)
         .flag_if_supported("-fPIC")

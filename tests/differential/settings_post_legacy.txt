@@ -1,3 +1,9 @@
+scene 7 extra 5
+7 7 settings.cadence.hue|Hue|-180|180|0|0|0
+7 8 settings.cadence.saturation|Colour|0|2|1|2|0
+7 9 settings.cadence.halo|Type halo|0|2|0.699999988|2|0
+7 10 settings.cadence.reveal|Reveal style|0|3|0|0|0
+7 11 settings.cadence.ribbons|Backdrop ribbons|0|2|1|2|0
 scene 10 count 12
 10 0 settings.phosphor.field|Field (0 = cycle)|0|10|0|0|0
 10 1 settings.phosphor.motion|Field motion|0|2|1|2|0

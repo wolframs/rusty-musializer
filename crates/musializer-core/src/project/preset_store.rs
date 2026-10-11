@@ -1124,4 +1124,29 @@ mod tests {
         assert_eq!(values.get(scene, 9), 0.70);
         assert_eq!(values.get(scene, 10), 0.35);
     }
+
+    #[test]
+    fn a_seven_value_cadence_preset_backfills_its_new_controls() {
+        // Every Cadence preset and segment saved before 2026-10-12 is this
+        // shape. It must load, keep its seven, and take the appended controls
+        // from their defaults rather than from whatever the scene held.
+        let scene = SceneId::Cadence;
+        let mut values = SceneSettings::new();
+        values.set(scene, 0, 1.25);
+        values.set(scene, 7, 120.0);
+        values.set(scene, 10, 2.0);
+        let mut old = values.capture(scene).unwrap();
+        old.count = 7;
+        old.values[7..].fill(0.0);
+        let mut library = PresetLibrary::new();
+        library.push(scene, "Before the colour", &old).unwrap();
+        let loaded = load_from_bytes(save_to_string(&library).unwrap().as_bytes()).unwrap();
+        assert_eq!(loaded.presets(scene)[0].snapshot.count, 7);
+        assert!(values.apply_snapshot(scene, &loaded.presets(scene)[0].snapshot));
+        assert_eq!(values.get(scene, 0), 1.25);
+        assert_eq!(values.get(scene, 7), 0.0, "hue back to its default");
+        assert_eq!(values.get(scene, 9), 0.70, "halo at its default");
+        assert_eq!(values.get(scene, 10), 0.0, "reveal back to condense");
+        assert_eq!(values.get(scene, 11), 1.0);
+    }
 }

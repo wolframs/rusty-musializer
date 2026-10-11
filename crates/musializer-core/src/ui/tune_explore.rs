@@ -299,6 +299,7 @@ const CYCLIC_KEYS: &[&str] = &[
     "settings.orbital.hue",
     "settings.atlas.color",
     "settings.pentagram.hue",
+    "settings.cadence.hue",
     "settings.phosphor.hue",
     "settings.clawd.hue",
 ];
@@ -727,16 +728,17 @@ mod tests {
         // 81 is what `differential_settings.sh` still diffs against the frozen C
         // and must not move; 116 is what this module sweeps (81 + phosphor's 12
         // + clawd's 12 + knot's 11), and it moves whenever a post-legacy scene is added or
-        // changed.
+        // changed — or when a C-era scene grows past the oracle, as Cadence
+        // did by five on 2026-10-12.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
-            .map(|scene| settings::descriptors(scene).len())
+            .map(settings::oracle_count)
             .sum();
         assert_eq!(
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 116);
+        assert_eq!(all_descriptors().len(), 121);
     }
 
     // -- conform / step / parse ------------------------------------------------

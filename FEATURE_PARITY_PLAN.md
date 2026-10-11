@@ -149,7 +149,7 @@ a CX ruling, not a preference.
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
-| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV6 | MV2 and MV3 are `.musi` extensions; the rest small |
+| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV7 | MV2 and MV3 are `.musi` extensions; the rest small |
 
 ### The items, in one line each
 
@@ -356,6 +356,10 @@ one real video with it found these, each from a contact sheet:
   cannot be set apart from a lyric line, so it is a lyric line shown through
   Cadence. Wants a per-line or per-section style and probably a title lane.
   A `.musi` extension: bump deliberately, default never serialized.
+  Operator, 2026-10-12: no title card unless one is asked for, and a card that
+  is asked for carries the artist too (for a Suno track, display name and
+  `@handle`). So the title lane needs an artist line, and nothing may add a
+  card by default.
 - **MV3 — a section change is always a cut.** No fade from or to black, no
   crossfade. The first and last frame of every export are a hard start.
 - **MV4 — Phosphor's `titles` clips a long line.** The built-in 5x7 face fits
@@ -367,6 +371,11 @@ one real video with it found these, each from a contact sheet:
   seeded from the track's energy at that instant.
 - **MV6 — a treatment cannot name an imported caption face** or the caption
   effects' drive-tuning blocks. Both are refused by name today.
+
+- **MV7 — Cadence's second pass** landed 2026-10-12 (`docs/SCENE_DESIGN.md`):
+  clean edges, a halo, colour and reveal controls, a reading-pace cap. Still
+  open from the same notes: one typeface only, no per-word colour, no gradient
+  across the letterforms. Wants the operator's eye before more is added.
 
 One measurement for **LT2**, from the same session and not yet acted on: on a
 3:59 track with an embedded 27-line sheet, the normal local route

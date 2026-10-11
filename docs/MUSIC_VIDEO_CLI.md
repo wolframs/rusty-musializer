@@ -234,8 +234,16 @@ Found while making the first video, each one from a contact sheet:
   bars, the terrarium's base. `top_center` is the anchor that is clear in every
   scene. A per-section style needs a `.musi` extension and is not built.
 - **Cadence does not draw the caption overlay.** The lyric line *is* its
-  picture. That makes it the title card and the sing-along chorus, and it means
-  a Cadence section with no line on screen is only its strata.
+  picture, which makes it the sing-along chorus, and it means a Cadence section
+  with no line on screen is only its backdrop. Give each Cadence section its own
+  `hue`, `saturation` and `reveal`; the defaults are one pink on one purple, and
+  five sections of that read as one idea repeated.
+- **No title card unless one was asked for.** The first video opened on the
+  track's name and the operator's verdict was that a card nobody requested is
+  filler (2026-10-12). Open on the music. When a card *is* asked for it carries
+  the artist as well as the title — for a Suno track, the display name and the
+  `@handle` of the profile it was published under — and both come from the
+  operator, not from a guess at the file name.
 - **Clawd's petal show needs about three seconds of kicks before it ignites.**
   It is gated on a kick detector with hysteresis, by design. To have it lit *at*
   a cut, start a Clawd section two bars earlier and change its tuning at the cut.
@@ -255,7 +263,7 @@ Found while making the first video, each one from a contact sheet:
 Said here so nobody looks for a flag:
 
 - Per-section or per-line caption styles, and a title lane separate from lyrics.
-  A title today is a lyric line shown through Cadence.
+  A requested title card today is a lyric line shown through Cadence.
 - Transitions. A section change is a cut; there is no fade or crossfade, and no
   fade from or to black.
 - An imported caption face in a treatment. `"face": "imported"` is refused by

@@ -49,11 +49,21 @@ pub struct Word<'a> {
     pub window_end: f32,
 }
 
-/// `scene_cadence.c:38-40` — Cadence keeps no history at all.
+/// `scene_cadence.c:38-40` keeps a seed and nothing else. This also carries one
+/// loudness follower (2026-10-12): the backdrop and the swarm used to read the
+/// frame's raw `rms`, which moves every analyzer tick, so everything they drove
+/// trembled instead of breathing.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CadenceState {
     pub seed: u64,
+    /// Smoothed `rms`: quick to rise, slow to fall.
+    pub energy: f32,
 }
+
+/// Seconds for [`CadenceState::energy`] to close most of a gap, rising and
+/// falling.
+pub const ENERGY_ATTACK_SECONDS: f32 = 0.10;
+pub const ENERGY_RELEASE_SECONDS: f32 = 0.70;
 
 /// `cadence_clamp01` (`:42-47`).
 #[must_use]
@@ -159,6 +169,116 @@ pub fn words_for_cue(text: &str) -> Vec<Word<'_>> {
     words
 }
 
+/// [`words_for_cue`] with the reveal capped to a reading pace: every window is
+/// scaled into the cue's first [`timing::reveal_span`], so a short line on a
+/// long cue forms promptly and then holds. Returns the span with the words,
+/// because the drawing half needs to know when the line has finished arriving.
+#[must_use]
+pub fn words_for_timed_cue(text: &str, duration_seconds: f64) -> (Vec<Word<'_>>, f32) {
+    let mut words = words_for_cue(text);
+    let counts: Vec<u32> = words.iter().map(|word| word.glyphs as u32).collect();
+    let span = timing::reveal_span(&counts, duration_seconds);
+    if span < 1.0 {
+        for word in &mut words {
+            word.window_start *= span;
+            word.window_end *= span;
+        }
+    }
+    (words, span)
+}
+
+/// How a line's type arrives (`settings.cadence.reveal`, post-legacy).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reveal {
+    /// Particles condense onto the letterforms — the C's Cadence.
+    Condense,
+    /// Each word rises into place.
+    Rise,
+    /// Letters drop in one after another.
+    Cascade,
+    /// Each word lands large and settles.
+    Pop,
+}
+
+impl Reveal {
+    #[must_use]
+    pub fn from_setting(value: f32) -> Self {
+        match value.round() as i32 {
+            1 => Self::Rise,
+            2 => Self::Cascade,
+            3 => Self::Pop,
+            _ => Self::Condense,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Condense => "condense",
+            Self::Rise => "rise",
+            Self::Cascade => "cascade",
+            Self::Pop => "pop",
+        }
+    }
+}
+
+/// Where one glyph is on its way in or out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlyphPose {
+    pub alpha: f32,
+    /// Multiplies the font size about the glyph's own centre.
+    pub scale: f32,
+    /// Vertical offset in font sizes, positive downward.
+    pub lift: f32,
+}
+
+/// The pose a glyph is drawn in for a word's `focus`.
+///
+/// Every style is a function of focus alone, so a word leaves the way it came
+/// and nothing here can disagree between preview and export. At focus 1 every
+/// style is the settled glyph exactly.
+#[must_use]
+pub fn glyph_pose(reveal: Reveal, focus: f32, glyph_index: usize, glyph_count: usize) -> GlyphPose {
+    let focus = clamp01(focus);
+    match reveal {
+        Reveal::Condense => GlyphPose {
+            alpha: smooth((focus - 0.42) / 0.58),
+            scale: 1.0,
+            lift: 0.0,
+        },
+        Reveal::Rise => {
+            let arrive = smooth(focus);
+            GlyphPose {
+                alpha: arrive,
+                scale: 1.0,
+                lift: (1.0 - arrive) * 0.32,
+            }
+        }
+        Reveal::Cascade => {
+            const STAGGER: f32 = 0.9;
+            let order = if glyph_count > 1 {
+                glyph_index.min(glyph_count - 1) as f32 / (glyph_count - 1) as f32
+            } else {
+                0.0
+            };
+            let arrive = smooth(focus * (1.0 + STAGGER) - STAGGER * order);
+            GlyphPose {
+                alpha: arrive,
+                scale: 1.0,
+                lift: -(1.0 - arrive) * 0.45,
+            }
+        }
+        Reveal::Pop => {
+            let arrive = smooth(focus);
+            GlyphPose {
+                alpha: arrive,
+                scale: 1.0 + (1.0 - arrive) * 0.32,
+                lift: 0.0,
+            }
+        }
+    }
+}
+
 /// Where the playhead sits inside a cue, as `[0, 1]` (`:442-445`).
 ///
 /// A zero-or-negative duration reads as 1.0 — a finished cue — rather than as a
@@ -229,7 +349,7 @@ impl CadenceState {
     /// `cadence_init` (`:237-241`).
     #[must_use]
     pub fn new(seed: u64) -> Self {
-        Self { seed }
+        Self { seed, energy: 0.0 }
     }
 }
 
@@ -238,8 +358,18 @@ impl SceneState for CadenceState {
         SceneId::Cadence
     }
 
-    // No `update`: the C descriptor sets none (`:473-480`). Cadence is a pure
-    // function of the frame plus its seed.
+    // The C descriptor sets no `update` (`:473-480`). Everything Cadence draws
+    // is still a function of the frame and the seed, except the one follower.
+    fn update(&mut self, frame: &crate::scene::SceneFrame<'_>) {
+        let target = clamp01(frame.audio.rms);
+        let seconds = if target > self.energy {
+            ENERGY_ATTACK_SECONDS
+        } else {
+            ENERGY_RELEASE_SECONDS
+        };
+        let step = 1.0 - (-frame.delta_seconds.max(0.0) / seconds).exp();
+        self.energy += (target - self.energy) * step;
+    }
 
     fn as_any(&self) -> &dyn Any {
         self
@@ -256,6 +386,65 @@ pub const DESCRIPTOR: SceneDescriptor = SceneDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_reveal_style_settles_on_the_plain_glyph_and_starts_invisible() {
+        for reveal in [Reveal::Condense, Reveal::Rise, Reveal::Cascade, Reveal::Pop] {
+            for index in 0..5 {
+                let settled = glyph_pose(reveal, 1.0, index, 5);
+                assert_eq!(
+                    settled,
+                    GlyphPose {
+                        alpha: 1.0,
+                        scale: 1.0,
+                        lift: 0.0
+                    },
+                    "{reveal:?} glyph {index}"
+                );
+                assert_eq!(glyph_pose(reveal, 0.0, index, 5).alpha, 0.0);
+            }
+        }
+        // The cascade is ordered: at one moment an earlier letter is further in.
+        let first = glyph_pose(Reveal::Cascade, 0.5, 0, 5).alpha;
+        let last = glyph_pose(Reveal::Cascade, 0.5, 4, 5).alpha;
+        assert!(first > last, "{first} {last}");
+        assert_eq!(Reveal::from_setting(2.4), Reveal::Cascade);
+        assert_eq!(Reveal::from_setting(9.0), Reveal::Condense);
+    }
+
+    #[test]
+    fn a_timed_cue_scales_its_windows_into_the_reveal_span() {
+        let (words, span) = words_for_timed_cue("haul away", 6.0);
+        assert!(span < 0.2);
+        assert_eq!(words[0].window_start, 0.0);
+        assert!((words[1].window_end - span).abs() < 1.0e-6);
+        let (full, full_span) = words_for_timed_cue("haul away", 0.8);
+        assert_eq!(full_span, 1.0);
+        assert_eq!(full, words_for_cue("haul away"));
+    }
+
+    #[test]
+    fn the_energy_follower_rises_faster_than_it_falls_and_never_overshoots() {
+        let settings = crate::scene::settings::SceneSettings::default();
+        let mut frame = crate::scene::SceneFrame::idle(&settings);
+        frame.delta_seconds = 1.0 / 30.0;
+        let mut state = CadenceState::new(1);
+        frame.audio.rms = 1.0;
+        for _ in 0..6 {
+            state.update(&frame);
+        }
+        let risen = state.energy;
+        assert!(risen > 0.8 && risen <= 1.0, "{risen}");
+        frame.audio.rms = 0.0;
+        for _ in 0..6 {
+            state.update(&frame);
+        }
+        assert!(
+            state.energy > risen * 0.6,
+            "the fall is slow: {}",
+            state.energy
+        );
+    }
 
     #[test]
     fn splitting_handles_runs_of_whitespace_and_control_bytes() {

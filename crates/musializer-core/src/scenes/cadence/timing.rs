@@ -102,9 +102,53 @@ pub fn assign_windows(glyph_counts: &[u32]) -> Option<Vec<(f32, f32)>> {
     Some(windows)
 }
 
+/// How long one glyph's worth of a line takes to form at the slowest
+/// (post-legacy, 2026-10-12).
+///
+/// The windows above split the *whole cue*, which is right for a line sung
+/// across its span and wrong for two words held for six seconds: the second
+/// word would not start gathering until three seconds in, and the frame is an
+/// empty swarm for most of that. About nine glyphs a second is an unhurried
+/// reading pace, so a line never takes longer than that to arrive and then
+/// simply stays.
+pub const REVEAL_SECONDS_PER_GLYPH: f32 = 0.11;
+
+/// Below this a capped reveal would read as a cut rather than as an arrival.
+pub const REVEAL_MIN_SECONDS: f32 = 0.45;
+
+/// The fraction of a cue its words form across: 1 for a line that fills its
+/// span, less for a short line on a long cue.
+///
+/// Uses the same `glyphs + 1` weight as [`assign_windows`], so the cap and the
+/// split agree about how long a word is. A cue with no positive duration reads
+/// as 1, the same answer `cue_position` gives it.
+#[must_use]
+pub fn reveal_span(glyph_counts: &[u32], duration_seconds: f64) -> f32 {
+    if duration_seconds.is_nan() || duration_seconds <= 0.0 || glyph_counts.is_empty() {
+        return 1.0;
+    }
+    let weight: u64 = glyph_counts.iter().map(|&count| u64::from(count) + 1).sum();
+    let seconds = (weight as f32 * REVEAL_SECONDS_PER_GLYPH).max(REVEAL_MIN_SECONDS);
+    (f64::from(seconds) / duration_seconds).min(1.0) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_line_on_a_long_cue_arrives_early_and_a_full_line_is_untouched() {
+        // "haul away" held for six seconds: both words are up inside 1.1 s.
+        let span = reveal_span(&[4, 4], 6.0);
+        assert!((span - 1.1 / 6.0).abs() < 1.0e-4, "{span}");
+        // Eight words in three seconds already outrun the cap.
+        assert_eq!(reveal_span(&[3, 5, 7, 2, 6, 6, 4, 5], 3.0), 1.0);
+        // A single short word still takes long enough to be seen arriving.
+        let one = reveal_span(&[1], 10.0);
+        assert!((one - REVEAL_MIN_SECONDS / 10.0).abs() < 1.0e-5);
+        assert_eq!(reveal_span(&[4], 0.0), 1.0);
+        assert_eq!(reveal_span(&[], 5.0), 1.0);
+    }
 
     /// The reported case from the C test: eleven ordinary words and a two-letter
     /// closer, so the short final word gets a narrow slice at the very end of the

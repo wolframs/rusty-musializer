@@ -183,6 +183,13 @@ pub mod index {
         pub const GLOW: usize = 4;
         pub const SPACING: usize = 5;
         pub const HUE_SWING: usize = 6;
+        // Post-legacy (2026-10-12): appended, so every earlier index and every
+        // seven-value snapshot keeps its meaning.
+        pub const HUE: usize = 7;
+        pub const SATURATION: usize = 8;
+        pub const HALO: usize = 9;
+        pub const REVEAL: usize = 10;
+        pub const RIBBONS: usize = 11;
     }
     /// `scene_settings.h:47-49`
     pub mod loom {
@@ -377,6 +384,13 @@ const CADENCE: &[SettingDescriptor] = &[
     D::slider("settings.cadence.glow", "Particle glow", 0.00, 2.00, 1.00, 2),
     D::slider("settings.cadence.spacing", "Letter spacing", 0.50, 2.00, 1.00, 2),
     D::slider("settings.cadence.hue_swing", "Semantic hue swing", 0.00, 160.00, 80.00, 0),
+    // Post-legacy (2026-10-12). Not in the oracle's table: `oracle_count` is
+    // what keeps the differential dump's C-era section at seven rows.
+    D::slider("settings.cadence.hue", "Hue", -180.00, 180.00, 0.00, 0),
+    D::slider("settings.cadence.saturation", "Colour", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.cadence.halo", "Type halo", 0.00, 2.00, 0.70, 2),
+    D::slider("settings.cadence.reveal", "Reveal style", 0.00, 3.00, 0.00, 0),
+    D::slider("settings.cadence.ribbons", "Backdrop ribbons", 0.00, 2.00, 1.00, 2),
 ];
 
 /// `scene_settings.c:103-111`
@@ -702,13 +716,26 @@ impl Default for SettingsSnapshot {
     }
 }
 
+/// How many of a scene's controls the frozen C also has.
+///
+/// A C-era scene may gain controls here; they are appended, and this is where
+/// the differential dump learns which rows the oracle can still be asked about.
+#[must_use]
+pub fn oracle_count(scene: SceneId) -> usize {
+    match scene {
+        SceneId::Cadence => 7,
+        _ if scene.exists_in_oracle() => count(scene),
+        _ => 0,
+    }
+}
+
 /// Control counts a scene used to have, which must stay loadable.
 ///
 /// Copied from `scene_settings_count_is_legacy` (`scene_settings.c:239-251`).
 /// This is pure compatibility history: a project saved by an older build carries
-/// fewer values, and the missing ones back-fill from defaults. The three scenes
-/// added last (cadence, loom, pentagram) have no legacy counts because their
-/// control set never shrank.
+/// fewer values, and the missing ones back-fill from defaults. Loom and Pentagram have
+/// no legacy counts because their control set never changed; Cadence grew from
+/// the C's seven on 2026-10-12.
 #[must_use]
 pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
     match scene {
@@ -719,14 +746,13 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         SceneId::SongAtlas => count == 8 || count == 10,
         SceneId::SpectralTerrarium => count == 3 || count == 7,
         SceneId::Constellation => count == 3 || count == 7,
+        // Seven is the C's own Cadence, and every project saved before
+        // 2026-10-12 carries it.
+        SceneId::Cadence => count == 7,
         // Phosphor Dream and Clawd shipped with twelve and have never had
         // another count; both postdate the C entirely, so there is no legacy
         // shape to admit.
-        SceneId::Cadence
-        | SceneId::Loom
-        | SceneId::Pentagram
-        | SceneId::PhosphorDream
-        | SceneId::Clawd => false,
+        SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream | SceneId::Clawd => false,
         SceneId::OpenAiKnot => count == 8,
     }
 }
@@ -774,7 +800,15 @@ mod tests {
     fn the_c_control_counts_are_reproduced_exactly() {
         let expected = [8, 8, 9, 6, 12, 8, 8, 7, 7, 8];
         for (scene, want) in SceneId::ALL.into_iter().zip(expected) {
-            assert_eq!(count(scene), want, "{scene:?} control count");
+            assert_eq!(oracle_count(scene), want, "{scene:?} control count");
+        }
+        // Cadence is the one C-era scene that has grown, and only at its end:
+        // the oracle's seven are still its first seven.
+        assert_eq!(count(SceneId::Cadence), 12);
+        assert_eq!(CADENCE[6].key, "settings.cadence.hue_swing");
+        assert!(count_is_legacy(SceneId::Cadence, 7));
+        for scene in SceneId::ALL {
+            assert!(oracle_count(scene) <= count(scene));
         }
     }
 

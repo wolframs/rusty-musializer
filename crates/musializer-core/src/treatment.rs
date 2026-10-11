@@ -1342,8 +1342,12 @@ pub fn scene_look(scene: SceneId) -> &'static str {
         }
         SceneId::Cadence => {
             "Kinetic typography: the current lyric line is the picture, word by word, \
-             over soft strata. With no line on screen only the strata remain. The \
-             caption overlay is not drawn on top of it."
+             glowing over soft ribbons. `reveal` picks how words arrive (0 particles \
+             condense, 1 rise, 2 letters cascade, 3 pop); `hue` and `saturation` turn \
+             the palette, `halo` is the light around the type, `ribbons` the backdrop. \
+             A short line on a long cue arrives at reading pace and holds. With no \
+             line on screen only the backdrop remains. The caption overlay is not \
+             drawn on top of it."
         }
         SceneId::Loom => {
             "A cloth woven left to right across the whole track, one column per moment; \

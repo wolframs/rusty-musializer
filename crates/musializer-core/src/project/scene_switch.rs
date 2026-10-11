@@ -908,16 +908,16 @@ mod tests {
     #[test]
     fn retarget_rejects_a_snapshot_shaped_for_a_different_scene() {
         let mut timeline = plan();
-        // Song Atlas has 12 controls; Cadence has 7, so carrying that snapshot
+        // Song Atlas has 12 controls; Loom has 7, so carrying that snapshot
         // across is caught.
         let atlas = snapshot(SceneId::SongAtlas);
         assert_eq!(settings::count(SceneId::SongAtlas), 12);
-        assert_eq!(settings::count(SceneId::Cadence), 7);
+        assert_eq!(settings::count(SceneId::Loom), 7);
         assert_eq!(
             timeline
                 .retarget(
                     1,
-                    SceneId::Cadence.index() as u32,
+                    SceneId::Loom.index() as u32,
                     Some(&atlas),
                     DURATION,
                     SCENES
@@ -926,11 +926,11 @@ mod tests {
             SceneSwitchError::Settings
         );
         // The matching snapshot is accepted.
-        let cadence = snapshot(SceneId::Cadence);
+        let cadence = snapshot(SceneId::Loom);
         assert!(timeline
             .retarget(
                 1,
-                SceneId::Cadence.index() as u32,
+                SceneId::Loom.index() as u32,
                 Some(&cadence),
                 DURATION,
                 SCENES

@@ -95,7 +95,9 @@ fn split_by_era(mappings: &[ParameterMapping]) -> (Vec<ParameterMapping>, Vec<Pa
     let mut post = Vec::new();
     for mapping in mappings {
         let in_oracle = settings::descriptor_by_key(&mapping.parameter)
-            .is_some_and(|(scene, _, _)| scene.exists_in_oracle());
+            // A C-era scene's appended controls (Cadence, 2026-10-12) are
+            // post-legacy too: the oracle has the scene and not the slot.
+            .is_some_and(|(scene, index, _)| index < settings::oracle_count(scene));
         if in_oracle {
             oracle.push(mapping.clone());
         } else {
@@ -166,7 +168,7 @@ fn main() {
     let (restored, restored_table) =
         routes::import_mappings(&mappings).expect("the exported list imports");
     for scene in SceneId::ORACLE_ALL {
-        for index in 0..settings::count(scene) {
+        for index in 0..settings::oracle_count(scene) {
             println!(
                 "import-value {} {index} {}",
                 scene.index(),
@@ -255,10 +257,9 @@ fn main() {
         print_mapping("post-routed", at, mapping);
     }
     for scene in SceneId::ALL {
-        if scene.exists_in_oracle() {
-            continue;
-        }
-        for index in 0..settings::count(scene) {
+        // Everything the oracle has no slot for: a post-legacy scene whole, and
+        // the controls a C-era scene gained since.
+        for index in settings::oracle_count(scene)..settings::count(scene) {
             println!(
                 "post-import-value {} {index} {}",
                 scene.index(),

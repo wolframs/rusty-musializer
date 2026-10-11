@@ -203,7 +203,16 @@ fn main() {
         for k in 0..presets {
             let name = format!("Preset {}", library.next_id());
             fill(&mut values, scene, k);
-            let snapshot = values.capture(scene).expect("a capturable scene");
+            let mut snapshot = values.capture(scene).expect("a capturable scene");
+            // A C-era scene that has grown since (Cadence, 2026-10-12) goes in
+            // at the oracle's width, which is a legacy count this build still
+            // loads. Same argument as the scene list above: the appended
+            // controls would change the fixture, not test the format harder,
+            // and `a_seven_value_cadence_preset_backfills_its_new_controls`
+            // covers them where they can be asserted.
+            let width = settings::oracle_count(scene);
+            snapshot.values[width..].fill(0.0);
+            snapshot.count = width;
             if library.push(scene, &name, &snapshot).is_none() {
                 println!("save_failed {scene_index} {k}");
             }

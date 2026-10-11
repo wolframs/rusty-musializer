@@ -654,6 +654,22 @@ Note `density` defaults to its **maximum**.
 | 5 | `settings.cadence.spacing` | Letter spacing | 0.50 | 2.00 | **1.00** | 2 | slider |
 | 6 | `settings.cadence.hue_swing` | Semantic hue swing | 0.00 | 160.00 | **80.00** | 0 | slider |
 
+Five more are appended **post-legacy** (2026-10-12) and are not in the C's
+table. A seven-value Cadence snapshot stays loadable and back-fills these from
+their defaults; `settings::oracle_count` keeps the differential dump's C-era
+section at the seven rows above.
+
+| # | Key | Label | Min | Max | **Default** | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 7 | `settings.cadence.hue` | Hue | -180.00 | 180.00 | **0.00** | 0 | slider |
+| 8 | `settings.cadence.saturation` | Colour | 0.00 | 2.00 | **1.00** | 2 | slider |
+| 9 | `settings.cadence.halo` | Type halo | 0.00 | 2.00 | **0.70** | 2 | slider |
+| 10 | `settings.cadence.reveal` | Reveal style | 0.00 | 3.00 | **0.00** | 0 | slider |
+| 11 | `settings.cadence.ribbons` | Backdrop ribbons | 0.00 | 2.00 | **1.00** | 2 | slider |
+
+`reveal`: 0 particles condense onto the letterforms (the C's Cadence), 1 words
+rise, 2 letters cascade in, 3 words pop.
+
 ### 5.9 Loom — 7 controls, `src/scene_settings.c:103-111`
 
 | # | Key | Label | Min | Max | **Default** | Prec | Kind |
@@ -789,8 +805,9 @@ get wrong.
 - **Legacy snapshot back-fill.** `scene_settings_count_is_legacy`
   (`:239-251`) enumerates every historical per-scene control count that must
   remain loadable: spectrum `3` or `7`; pulse `5`; orbital `5` or `7`; ascii
-  `4`; atlas `8` or `10`; terrarium `3` or `7`; constellation `3` or `7`. Cadence,
-  loom, and pentagram have no legacy counts. `scene_settings_apply_snapshot`
+  `4`; atlas `8` or `10`; terrarium `3` or `7`; constellation `3` or `7`. Loom and
+  pentagram have no legacy counts; Cadence gained `7` here on 2026-10-12, when
+  it grew past the C's seven controls. `scene_settings_apply_snapshot`
   (`:268-282`) copies the present values and **back-fills the rest from
   descriptor defaults**. This is a load-bearing compatibility contract: an old
   `.musi` with a 3-value spectrum snapshot must still open, and the missing five

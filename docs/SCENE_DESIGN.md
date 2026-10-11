@@ -90,6 +90,35 @@ global hue. These changes do not invent lyrics or alter authored timing.
 Type size can still differ between cues; this work does not claim section-wide
 font sizing or perfect continuity under arbitrary incoming cue timing.
 
+### Second pass, 2026-10-12: the type itself
+
+The first video directed from the command line put Cadence on screen for a
+minute, and the operator's notes were about the picture rather than its motion:
+lumpy edges at size, a backdrop that pulsed oddly, one fixed colour, no effect
+beyond the words arriving, and a two-word line held for six seconds taking
+three of them to appear.
+
+- **Edges.** The distance field fell from the outline to zero in two texels —
+  raylib's default — which bilinear filtering cannot reconstruct at a corner.
+  It now spans twelve texels at a tenth of the slope, rasterized at 96 px
+  (`crates/raylib-link/build.rs`, `runtime::font`).
+- **Halo.** The same field holds the light around a letter, so the shader
+  gained a second pass that reads it (`sdf_text.fs`). It replaces the single
+  offset ghost glyph, and it swells with the track and on the beat.
+- **Pulsing.** The ribbons' width and the backdrop's brightness read the
+  frame's raw `rms`; the lens shapes between two crossing ribbons therefore
+  trembled like bubbles. They read one follower now (fast up, slow down), the
+  beat coil is a raised cosine instead of a half-sine with a corner at the
+  wrap, particles size from the trailing band smear, and the raw-flux hue lean
+  is gone.
+- **Controls.** `hue`, `saturation`, `halo`, `reveal`, `ribbons`. The ink stays
+  the background's near-complement, so any hue is legible.
+- **Pace.** A line forms at no slower than about nine glyphs a second
+  (`timing::reveal_span`) and then holds at full strength.
+
+This changes Cadence's pixels in every saved project, on purpose. Not built: a
+second typeface, per-word colour, and a gradient across the letterforms.
+
 ## Audition design
 
 [`scene_listening_session.py`](../tools/scene_listening_session.py) obtains

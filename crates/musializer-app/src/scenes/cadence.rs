@@ -22,16 +22,17 @@ use std::ffi::CString;
 use musializer_core::scene::settings::index::cadence as setting;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::cadence::{
-    self as cadence, timing, CadenceState, Focus, Word, AMBIENT_PARTICLES, INK_ALPHA_THRESHOLD,
-    INK_PROBES, LAYOUT_ATTEMPTS, MAX_LAYOUT_ROWS, PARTICLES_PER_GLYPH, PARTICLE_BUDGET,
+    self as cadence, timing, CadenceState, Focus, GlyphPose, Reveal, Word, AMBIENT_PARTICLES,
+    INK_ALPHA_THRESHOLD, INK_PROBES, LAYOUT_ATTEMPTS, MAX_LAYOUT_ROWS, PARTICLES_PER_GLYPH,
+    PARTICLE_BUDGET,
 };
 use musializer_runtime::draw;
-use musializer_runtime::font::Face;
+use musializer_runtime::font::{Face, SDF_FIELD_TEXELS, SDF_UNITS_PER_TEXEL};
 use raylib::prelude::{
     BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibFont,
     RaylibShaderModeExt, Rectangle, Vector2,
 };
-use raylib::shaders::Shader;
+use raylib::shaders::{RaylibShader, Shader};
 
 const PI: f32 = std::f32::consts::PI;
 
@@ -89,6 +90,26 @@ impl CadenceType<'_> {
     }
 }
 
+/// Which of the SDF shader's two passes a glyph is drawn through.
+#[derive(Clone, Copy)]
+enum GlyphPass {
+    /// The letterform.
+    Fill,
+    /// The light around it, at this strength.
+    Halo(f32),
+}
+
+/// The shader's `halo` and `haloReach` uniform locations.
+#[derive(Clone, Copy)]
+struct HaloUniforms {
+    strength: i32,
+    reach: i32,
+}
+
+/// The halo's reach in the field's own units: nearly all of what the atlas
+/// holds outside the outline, stopping short of where the field clips to zero.
+const HALO_REACH: f32 = (SDF_FIELD_TEXELS - 1.0) * SDF_UNITS_PER_TEXEL;
+
 /// One glyph, through the SDF shader when there is one.
 ///
 /// The shader is entered per glyph rather than once around the word because the
@@ -97,9 +118,15 @@ impl CadenceType<'_> {
 /// which is a different picture. A word is tens of glyphs, so this is tens of
 /// batch flushes per frame — measured against a scene that already draws hundreds
 /// of additive circles, it does not register.
+///
+/// A [`GlyphPass::Halo`] with no shader draws nothing: the bitmap atlas has no
+/// field to read a halo out of.
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph<D: RaylibDraw>(
     d: &mut D,
     faces: &mut CadenceType<'_>,
+    uniforms: Option<HaloUniforms>,
+    pass: GlyphPass,
     codepoint: char,
     pen: Vector2,
     font_size: f32,
@@ -108,10 +135,26 @@ fn draw_glyph<D: RaylibDraw>(
     let CadenceType { text, sdf, .. } = faces;
     let text: &Face = text;
     match sdf.as_deref_mut() {
-        Some(shader) => d.draw_shader_mode(shader, |mut pass| {
-            pass.draw_text_codepoint(text, codepoint as i32, pen, font_size, tint);
-        }),
-        None => d.draw_text_codepoint(text, codepoint as i32, pen, font_size, tint),
+        Some(shader) => {
+            if let Some(uniforms) = uniforms {
+                let strength = match pass {
+                    GlyphPass::Fill => 0.0f32,
+                    GlyphPass::Halo(strength) => strength,
+                };
+                shader.set_shader_value(uniforms.strength, strength);
+                shader.set_shader_value(uniforms.reach, HALO_REACH);
+            } else if matches!(pass, GlyphPass::Halo(_)) {
+                return;
+            }
+            d.draw_shader_mode(shader, |mut pass| {
+                pass.draw_text_codepoint(text, codepoint as i32, pen, font_size, tint);
+            });
+        }
+        None => {
+            if matches!(pass, GlyphPass::Fill) {
+                d.draw_text_codepoint(text, codepoint as i32, pen, font_size, tint);
+            }
+        }
     }
 }
 
@@ -316,6 +359,7 @@ fn glyph_ink<F: RaylibFont>(
 }
 
 /// The instrumental idle state, with no lyric line.
+#[allow(clippy::too_many_arguments)]
 fn draw_ambient(
     d: &mut RaylibDrawHandle<'_>,
     frame: &SceneFrame<'_>,
@@ -323,6 +367,7 @@ fn draw_ambient(
     boundary: Rectangle,
     color: Color,
     swarm: f32,
+    ribbons: f32,
     pixel_scale: f32,
 ) {
     // Continuous ink strata. The periodic beat term meets itself at the wrap;
@@ -330,8 +375,11 @@ fn draw_ambient(
     let t = frame.time_seconds;
     let extent = boundary.width.min(boundary.height);
     let sway = cadence::beat_sway(frame.audio.beat_phase);
-    let energy = frame.audio.rms.clamp(0.0, 1.0);
-    let layers = 4usize;
+    // The follower, not the frame's `rms`: a ribbon whose width tracks the raw
+    // level trembles, and the lens shapes between two crossing ribbons then
+    // pulse like bubbles.
+    let energy = state.energy.clamp(0.0, 1.0);
+    let layers = if ribbons > 0.005 { 4usize } else { 0 };
     let segments = 180usize;
     let cross_steps = 10usize;
     d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
@@ -349,9 +397,13 @@ fn draw_ambient(
                     + boundary.height * (0.37 + layer as f32 * 0.085)
                     + wave * extent * (0.07 + 0.03 * energy) * swarm
                     + (u * PI * 3.0 - phase * 0.4).cos() * extent * 0.015;
-                let half_width =
-                    extent * (0.009 + 0.018 * energy) * taper * swarm * (1.0 + 0.06 * sway);
-                let alpha = (1.0 - v * v).max(0.0).powi(3) * taper * 0.19;
+                let half_width = extent
+                    * (0.009 + 0.018 * energy)
+                    * taper
+                    * swarm
+                    * ribbons.max(1.0)
+                    * (1.0 + 0.03 * sway);
+                let alpha = (1.0 - v * v).max(0.0).powi(3) * taper * 0.19 * ribbons.min(1.0);
                 (
                     Vector2::new(
                         boundary.x + boundary.width * (0.08 + u * 0.84),
@@ -398,8 +450,25 @@ struct WordStyle {
     swarm: f32,
     beat_response: f32,
     glow: f32,
+    halo: f32,
+    reveal: Reveal,
+    /// The fraction of the cue the line forms across; below 1 it then holds.
+    reveal_span: f32,
+    energy: f32,
+    uniforms: Option<HaloUniforms>,
     pixel_scale: f32,
     particles_per_glyph: usize,
+}
+
+/// One glyph of a word, placed and posed for this frame.
+struct PlacedGlyph {
+    codepoint: char,
+    /// The settled pen position; particles condense onto this.
+    pen: Vector2,
+    /// The pen position and size the pose draws at.
+    drawn_pen: Vector2,
+    drawn_size: f32,
+    alpha: f32,
 }
 
 /// `cadence_draw_word` (`:288-397`).
@@ -424,12 +493,22 @@ fn draw_word(
         cadence::cue_position(frame.time_seconds, lyric.start_seconds, lyric.end_seconds)
     });
     let span = (word.window_end - word.window_start).max(0.0001);
-    let emphasis = cadence::smooth((position - word.window_start) / (span * 0.22))
+    let sung = cadence::smooth((position - word.window_start) / (span * 0.22))
         * (1.0 - cadence::smooth((position - word.window_end + span * 0.22) / (span * 0.22)));
-    let ink_alpha = cadence::smooth((focus.focus - 0.42) / 0.58) * (0.68 + 0.32 * emphasis);
+    // A line that arrived early holds at full strength: without this every word
+    // of a capped reveal would sit at its unemphasised 68 % for the rest of the
+    // cue, which is most of it.
+    let settled = if style.reveal_span < 1.0 {
+        cadence::smooth((position - style.reveal_span) / (style.reveal_span * 0.35).max(0.0001))
+    } else {
+        0.0
+    };
+    let emphasis = sung.max(settled);
     // The beat coil: the swarm tightens toward the letterform approaching the beat
-    // and relaxes just after the phase wraps.
-    let coil = 1.0 - style.beat_response * 0.15 * (frame.audio.beat_phase * PI).sin();
+    // and relaxes after it. A raised cosine, so value and velocity both meet at
+    // the wrap; the half-sine this replaces turned a corner there every beat.
+    let beat = 0.5 - 0.5 * (frame.audio.beat_phase * 2.0 * PI).cos();
+    let coil = 1.0 - style.beat_response * 0.15 * beat;
     let scatter_reach = boundary.width.min(boundary.height) * style.swarm * coil;
     let word_center = Vector2::new(slot.x + slot.width * 0.5, slot.y + font_size * 0.5);
     let edge_alpha = frame.lyric.map_or(1.0, |lyric| {
@@ -437,21 +516,47 @@ fn draw_word(
             * cadence::smooth(((lyric.end_seconds - frame.time_seconds) / 0.16) as f32)
     });
     let particle_alpha = (1.0 - cadence::smooth((focus.focus - 0.60) / 0.35)) * 0.88 * edge_alpha;
-    let ink_alpha = ink_alpha * edge_alpha;
-    let wants_particles = focus.focus < 0.985 && particle_alpha > 0.01;
+    let wants_particles =
+        style.reveal == Reveal::Condense && focus.focus < 0.985 && particle_alpha > 0.01;
 
     // The lyric id seeds the whole word's particle field, so the same cue always
     // condenses the same way — including on an export pass.
     let lyric_id = frame.lyric.map_or(0, |lyric| lyric.id);
-    let bands = frame.audio.bands;
+    // The trailing smear where there is one: a particle sized from the live
+    // band flickers with it.
+    let bands = if frame.audio.trails.is_empty() {
+        frame.audio.bands
+    } else {
+        frame.audio.trails
+    };
 
+    let glyph_count = word.text.chars().count();
+    let mut placed = Vec::with_capacity(glyph_count);
     let mut cursor = slot.x;
     for (glyph_index, codepoint) in word.text.chars().enumerate() {
         let mut encoded = [0u8; 4];
         let encoded = codepoint.encode_utf8(&mut encoded);
         let glyph_advance = measure(faces.text, encoded, font_size, 0.0);
         let pen = Vector2::new(cursor, slot.y);
-        // Read straight from `bands`, unclamped, exactly as the C does.
+        let GlyphPose { alpha, scale, lift } =
+            cadence::glyph_pose(style.reveal, focus.focus, glyph_index, glyph_count);
+        placed.push(PlacedGlyph {
+            codepoint,
+            pen,
+            drawn_pen: Vector2::new(
+                pen.x - (scale - 1.0) * glyph_advance * 0.5,
+                pen.y - (scale - 1.0) * font_size * 0.5 + lift * font_size,
+            ),
+            drawn_size: font_size * scale,
+            alpha: alpha * (0.68 + 0.32 * emphasis) * edge_alpha,
+        });
+        cursor += glyph_advance + layout.spacing;
+    }
+
+    // Light first, for the whole word, then the letterforms over it: a halo
+    // drawn per glyph would lay the next letter's light across this one's ink.
+    for (glyph_index, glyph) in placed.iter().enumerate() {
+        // Read straight from the band table, unclamped, exactly as the C does.
         let band = if bands.is_empty() {
             0.0
         } else {
@@ -462,13 +567,14 @@ fn draw_word(
             .wrapping_mul(0x9e37_79b9_7f4a_7c15)
             .wrapping_add((word_index as u64).wrapping_mul(0x2545_f491_4f6c_dd1d))
             .wrapping_add(glyph_index as u64);
+        let pen = glyph.pen;
 
         if wants_particles && style.particles_per_glyph > 0 {
             let want = style.particles_per_glyph;
             let mut ink_points = [Vector2::zero(); PARTICLES_PER_GLYPH];
             let want = glyph_ink(
                 faces.ink,
-                codepoint,
+                glyph.codepoint,
                 state.seed,
                 glyph_salt.wrapping_mul(64),
                 want,
@@ -527,27 +633,62 @@ fn draw_word(
             });
         }
 
-        if ink_alpha > 0.01 {
-            if emphasis > 0.001 && style.glow > 0.01 {
-                // A single additive ghost offset to the left, which reads as a bloom
-                // around the stroke rather than as a second glyph.
-                let ghost = Vector2::new(pen.x - 1.5 * style.pixel_scale, pen.y);
-                let ghost_tint =
-                    draw::color_alpha(style.ink, 0.16 * style.glow * focus.focus * emphasis);
+        if glyph.alpha > 0.01 && style.halo > 0.005 {
+            if style.uniforms.is_some() {
+                // The halo breathes with the track and lifts on the beat. Both
+                // terms are smooth, so it swells rather than flashes.
+                let lift = 1.0 + 0.55 * style.energy + 0.35 * style.beat_response * (1.0 - beat);
+                let strength = 0.36 * style.halo * lift;
                 d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
-                    draw_glyph(&mut blend, faces, codepoint, ghost, font_size, ghost_tint);
+                    draw_glyph(
+                        &mut blend,
+                        faces,
+                        style.uniforms,
+                        GlyphPass::Halo(strength),
+                        glyph.codepoint,
+                        glyph.drawn_pen,
+                        glyph.drawn_size,
+                        draw::color_alpha(style.ink, glyph.alpha * 0.55),
+                    );
+                });
+            } else if emphasis > 0.001 {
+                // The bitmap fallback has no field to read a halo from, so it
+                // keeps the C's single additive ghost, offset to the left.
+                let ghost = Vector2::new(
+                    glyph.drawn_pen.x - 1.5 * style.pixel_scale,
+                    glyph.drawn_pen.y,
+                );
+                let ghost_tint =
+                    draw::color_alpha(style.ink, 0.16 * style.halo * focus.focus * emphasis);
+                d.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
+                    draw_glyph(
+                        &mut blend,
+                        faces,
+                        None,
+                        GlyphPass::Fill,
+                        glyph.codepoint,
+                        ghost,
+                        glyph.drawn_size,
+                        ghost_tint,
+                    );
                 });
             }
+        }
+    }
+
+    for glyph in &placed {
+        if glyph.alpha > 0.01 {
             draw_glyph(
                 d,
                 faces,
-                codepoint,
-                pen,
-                font_size,
-                draw::color_alpha(style.ink, ink_alpha),
+                style.uniforms,
+                GlyphPass::Fill,
+                glyph.codepoint,
+                glyph.drawn_pen,
+                glyph.drawn_size,
+                draw::color_alpha(style.ink, glyph.alpha),
             );
         }
-        cursor += glyph_advance + layout.spacing;
     }
 }
 
@@ -575,6 +716,12 @@ pub fn draw(
     let glow = frame.setting(SceneId::Cadence, setting::GLOW);
     let spacing_scale = frame.setting(SceneId::Cadence, setting::SPACING);
     let hue_swing = frame.setting(SceneId::Cadence, setting::HUE_SWING);
+    let hue_offset = frame.setting(SceneId::Cadence, setting::HUE);
+    let saturation = frame.setting(SceneId::Cadence, setting::SATURATION);
+    let halo = frame.setting(SceneId::Cadence, setting::HALO);
+    let reveal = Reveal::from_setting(frame.setting(SceneId::Cadence, setting::REVEAL));
+    let ribbons = frame.setting(SceneId::Cadence, setting::RIBBONS);
+    let energy = state.energy.clamp(0.0, 1.0);
     let pixel_scale = if pixel_scale > 0.0 { pixel_scale } else { 1.0 };
 
     let semantic_weight = if frame.semantic.available {
@@ -582,39 +729,40 @@ pub fn draw(
     } else {
         0.0
     };
-    let hue = (205.0
-        + frame.semantic.valence * hue_swing * semantic_weight
-        + frame.audio.spectral_flux * 8.0
-        + 360.0)
-        % 360.0;
-    let background = draw::color_from_hsv(hue, 0.60, 0.030 + frame.audio.rms * 0.030);
-    // The ink is the hue's near-complement, so type stays legible against the
-    // background whatever the semantic lane does to the hue.
+    // `hue` turns the whole palette; the ink stays the background's
+    // near-complement, so type is legible wherever the wheel is turned to. The
+    // C also leaned the hue on the frame's raw spectral flux, which is a
+    // different number every tick and read as the picture shivering.
+    let hue =
+        (205.0 + hue_offset + frame.semantic.valence * hue_swing * semantic_weight + 720.0) % 360.0;
+    let chroma = |base: f32| (base * saturation).clamp(0.0, 1.0);
+    let background = draw::color_from_hsv(hue, chroma(0.60), 0.030 + energy * 0.030);
     let ink = draw::color_from_hsv(
         (hue + 118.0) % 360.0,
-        0.48 + frame.semantic.tension * 0.28 * semantic_weight,
+        chroma(0.48 + frame.semantic.tension * 0.28 * semantic_weight),
         0.94,
     );
     draw::atmospheric_backdrop(
         d,
         boundary,
         background,
-        draw::color_from_hsv((hue + 24.0) % 360.0, 0.56, 0.076 + frame.audio.rms * 0.05),
+        draw::color_from_hsv((hue + 24.0) % 360.0, chroma(0.56), 0.076 + energy * 0.05),
         Vector2::new(
             boundary.x + boundary.width * 0.48,
             boundary.y + boundary.height * 0.52,
         ),
         boundary.width.max(boundary.height) * 0.52,
-        draw::color_alpha(ink, 0.13 + frame.audio.rms * 0.10),
+        draw::color_alpha(ink, 0.13 + energy * 0.10),
     );
 
-    draw_ambient(d, frame, state, boundary, ink, swarm, pixel_scale);
+    draw_ambient(d, frame, state, boundary, ink, swarm, ribbons, pixel_scale);
     let Some(lyric) = frame.lyric.filter(|lyric| !lyric.text.is_empty()) else {
         draw::vignette(d, boundary, 0.22);
         return;
     };
 
-    let words = cadence::words_for_cue(&lyric.text);
+    let (words, reveal_span) =
+        cadence::words_for_timed_cue(&lyric.text, lyric.end_seconds - lyric.start_seconds);
     if words.is_empty() {
         return;
     }
@@ -625,11 +773,20 @@ pub fn draw(
     let line_hold = timing::line_hold(cue_position);
     let layout = layout(&words, faces.text, boundary, scale, spacing_scale);
 
+    let uniforms = faces.sdf.as_ref().map(|shader| HaloUniforms {
+        strength: shader.get_shader_location("halo"),
+        reach: shader.get_shader_location("haloReach"),
+    });
     let style = WordStyle {
         ink,
         swarm,
         beat_response,
         glow,
+        halo,
+        reveal,
+        reveal_span,
+        energy,
+        uniforms,
         pixel_scale,
         particles_per_glyph: (PARTICLE_BUDGET
             / words.iter().map(|w| w.glyphs).sum::<usize>().max(1))
