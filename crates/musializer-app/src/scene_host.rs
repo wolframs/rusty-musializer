@@ -26,11 +26,18 @@
 //! a broken scene.
 
 use musializer_core::project::caption_effects::EffectInputs;
+use musializer_core::project::transition::{self, Active, Source, TransitionKind};
 use musializer_core::scene::{SceneDescriptor, SceneFrame, SceneId, SceneInstance, StatelessScene};
 use musializer_core::scenes as core_scenes;
+use musializer_runtime::draw;
 use musializer_runtime::font::Faces;
 use musializer_runtime::halo::HaloBlur;
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt, Rectangle};
+use musializer_runtime::transition::HeldFrame;
+use raylib::prelude::{
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt,
+    RaylibShaderModeExt, Rectangle, Vector2,
+};
+use raylib::shaders::RaylibShader;
 
 use crate::scenes;
 
@@ -227,6 +234,9 @@ pub struct TrackAssets<'a> {
     /// Project caption typography for the shared application overlay. `None`
     /// only when there is no track, in which case there is no lyric either.
     pub caption_style: Option<&'a musializer_core::project::model::CaptionStyle>,
+    /// The track's scene plan, for the transition in force this frame (MV3).
+    /// `None` only when there is no track.
+    pub scene_plan: Option<&'a musializer_core::project::scene_switch::SceneSwitchTimeline>,
 }
 
 pub struct SceneRenderer {
@@ -273,6 +283,32 @@ pub struct SceneRenderer {
     /// `unavailable` — because a frame with no halo and a frame whose halo
     /// silently failed to build are the same picture.
     caption_halo_last: &'static str,
+    /// The transition shader (MV3). `None` when the driver refused it, which
+    /// turns every transition into a cut and says so on the report line.
+    transition_shader: Option<raylib::shaders::Shader>,
+    /// The last frame the scene drew, for a transition to composite.
+    held: HeldFrame,
+    /// What the last frame did about transitions, and how many frames have
+    /// composited one: a transition that fell back to a cut is the same
+    /// picture as a plan that asked for a cut.
+    transition_last: TransitionOutcome,
+    transition_frames: u64,
+}
+
+/// What [`SceneRenderer::draw`] did about the plan's transition on one frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TransitionOutcome {
+    /// No plan, or a plan with nothing but cuts.
+    Idle,
+    /// A plan with transitions, none in force; the frame was held for the next.
+    Holding,
+    /// One was composited.
+    Drew(Active),
+    /// One was in force and the held frame was not the frame before its cut —
+    /// a preview seek landed inside it. Drawn as a cut.
+    Stale(TransitionKind),
+    /// The shader or the buffer was refused. Drawn as a cut.
+    Unavailable,
 }
 
 impl SceneRenderer {
@@ -283,6 +319,8 @@ impl SceneRenderer {
     /// variant here would be a file nothing compiles.
     const SDF_TEXT_SOURCE: &'static str =
         include_str!("../../../resources/shaders/glsl330/sdf_text.fs");
+    const TRANSITION_SOURCE: &'static str =
+        include_str!("../../../resources/shaders/glsl330/transition.fs");
 
     pub fn load(
         rl: &mut raylib::RaylibHandle,
@@ -300,7 +338,13 @@ impl SceneRenderer {
                 Some("the driver refused the GLSL 330 SDF text shader".to_string()),
             )
         };
+        let transition = rl.load_shader_from_memory(thread, None, Some(Self::TRANSITION_SOURCE));
+        let transition_shader = transition.is_shader_valid().then_some(transition);
         Ok(Self {
+            transition_shader,
+            held: HeldFrame::new(),
+            transition_last: TransitionOutcome::Idle,
+            transition_frames: 0,
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
             sdf_text,
@@ -324,8 +368,131 @@ impl SceneRenderer {
     /// callers are in the export panel: the encoder's session start, and a
     /// still's replay.
     pub fn reset_feedback(&mut self) {
+        self.reset_trails();
+        self.held.reset();
+    }
+
+    /// The reset between two captures of one replay: the trails go, the held
+    /// transition frame stays.
+    ///
+    /// Two stills inside one transition share the frame drawn before its cut,
+    /// and the replay passes that frame once. Dropping it after the first
+    /// capture would draw the second as a cut. It cannot go stale instead:
+    /// [`SceneRenderer::composite`] only uses a held frame drawn within half a
+    /// second before the cut it is asked about, and the run-up to a capture
+    /// inside a transition always starts the same distance before that cut.
+    pub fn reset_trails(&mut self) {
         self.clawd.trail.reset();
         self.feedback_identity = None;
+    }
+
+    /// One line naming what the last frame did about transitions (MV3).
+    ///
+    /// A transition can silently be a cut in three ways — the shader refused,
+    /// the buffer refused, or the held frame was not the one before the cut —
+    /// and each of those photographs as a plan that simply asked for a cut.
+    #[must_use]
+    pub fn describe_transition(&self) -> String {
+        let shader = if self.transition_shader.is_some() {
+            "compiled"
+        } else {
+            "FALLBACK"
+        };
+        let last = match self.transition_last {
+            TransitionOutcome::Idle => "idle".to_string(),
+            TransitionOutcome::Holding => "holding".to_string(),
+            TransitionOutcome::Drew(active) => format!(
+                "{}@{:.2} from {}",
+                active.kind,
+                active.progress,
+                match active.source {
+                    Source::Previous => "previous",
+                    Source::Black => "black",
+                }
+            ),
+            TransitionOutcome::Stale(kind) => format!("{kind} skipped (no frame held)"),
+            TransitionOutcome::Unavailable => "unavailable".to_string(),
+        };
+        format!(
+            "shader={shader}, last={last}, composited-frames={}",
+            self.transition_frames
+        )
+    }
+
+    /// Composites one transition over what the scene just drew.
+    fn composite(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        active: Active,
+        boundary: Rectangle,
+    ) -> TransitionOutcome {
+        let Some(shader) = self.transition_shader.as_mut() else {
+            return TransitionOutcome::Unavailable;
+        };
+        if active.source == Source::Previous {
+            // The held frame has to be the one drawn just before this cut. In
+            // an export it always is; in the preview a seek can land inside a
+            // transition holding a picture from somewhere else entirely, and
+            // dissolving out of that would be a lie about the video.
+            let fresh = self.held.held_seconds().is_some_and(|held| {
+                held < active.cut_seconds && held >= active.cut_seconds - HELD_FRAME_MAX_AGE
+            });
+            if !fresh {
+                return TransitionOutcome::Stale(active.kind);
+            }
+        } else if !self.held.prepare(d, boundary) {
+            return TransitionOutcome::Unavailable;
+        }
+        let Some(texture) = self.held.texture() else {
+            return TransitionOutcome::Unavailable;
+        };
+        let uniform = |shader: &mut raylib::shaders::Shader, name: &str, value: f32| {
+            let location = shader.get_shader_location(name);
+            shader.set_shader_value(location, value);
+        };
+        uniform(shader, "kind", f32::from(active.kind as u8));
+        uniform(shader, "progress", active.progress);
+        uniform(
+            shader,
+            "solid",
+            if active.source == Source::Black {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        uniform(shader, "seed", (active.seed % 4096) as f32);
+        uniform(shader, "aspect", boundary.width / boundary.height.max(1.0));
+        let region = self.held.region();
+        let location = shader.get_shader_location("region");
+        shader.set_shader_value(
+            location,
+            raylib::prelude::Vector4::new(region[0], region[1], region[2], region[3]),
+        );
+        // The scene's part of the buffer, flipped, because a render texture's
+        // rows run bottom-up; the shader undoes both for its own coordinates.
+        let (width, height) = (texture.width as f32, texture.height as f32);
+        let source = Rectangle::new(
+            region[0] * width,
+            region[1] * height,
+            region[2] * width,
+            -(region[3] * height),
+        );
+        d.draw_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY, |mut blend| {
+            blend.draw_shader_mode(shader, |mut pass| {
+                draw::draw_texture_pro(
+                    &mut pass,
+                    texture,
+                    source,
+                    boundary,
+                    Vector2::zero(),
+                    0.0,
+                    Color::WHITE,
+                );
+            });
+        });
+        self.transition_frames = self.transition_frames.saturating_add(1);
+        TransitionOutcome::Drew(active)
     }
 
     /// One line naming the scene-text path, for the slice report.
@@ -615,6 +782,29 @@ impl SceneRenderer {
                 }
             }
         }
+        // The plan's transition (MV3). The held picture of the outgoing section
+        // goes over the scene and *under* the caption, which belongs to the new
+        // moment; black — the video's own beginning and end, or a dip — goes
+        // over everything, further down. Outside any transition the frame just
+        // drawn is copied aside, so the one before the next cut is always the
+        // one held. The scene clip is closed by now, which the copy requires.
+        let plan = assets.scene_plan;
+        let active =
+            plan.and_then(|plan| plan.transition_at(frame.time_seconds, frame.duration_seconds));
+        let keeps = plan.is_some_and(|plan| transition::needs_previous(&plan.sections()));
+        self.transition_last = match active {
+            Some(active) if active.source == Source::Previous => {
+                self.composite(d, active, boundary)
+            }
+            _ if keeps => {
+                if self.held.capture(d, boundary, frame.time_seconds) {
+                    TransitionOutcome::Holding
+                } else {
+                    TransitionOutcome::Unavailable
+                }
+            }
+            _ => TransitionOutcome::Idle,
+        };
         if id != SceneId::Cadence {
             if let Some(style) = assets.caption_style {
                 // The effect drives read the same frame the scene just drew
@@ -639,8 +829,16 @@ impl SceneRenderer {
                 );
             }
         }
+        if let Some(active) = active.filter(|active| active.source == Source::Black) {
+            self.transition_last = self.composite(d, active, boundary);
+        }
     }
 }
+
+/// How old the held frame may be, in seconds before the cut, and still be the
+/// outgoing section's last picture. Generous against a low preview frame rate;
+/// an export holds the frame exactly one frame before.
+const HELD_FRAME_MAX_AGE: f64 = 0.5;
 
 /// How long a scene's frame-persistence buffer needs to fill before a frame
 /// drawn from it is the frame an export would have encoded, in seconds.

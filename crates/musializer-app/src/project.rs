@@ -248,8 +248,10 @@ pub fn build_project(
                 } else {
                     Vec::new()
                 },
+                transition: cue.transition,
             })
             .collect(),
+        outro: track.scene_switches.outro,
     };
 
     project.scene_presets = Vec::new();
@@ -719,6 +721,7 @@ fn hydrate_scene_switches(
 ) -> Result<SceneSwitchTimeline, ProjectError> {
     let mut timeline = SceneSwitchTimeline::new();
     if suggestions.cues.is_empty() {
+        timeline.outro = suggestions.outro;
         timeline.enabled = suggestions.enabled;
         return Ok(timeline);
     }
@@ -744,12 +747,14 @@ fn hydrate_scene_switches(
             scene_index: scene.index() as u32,
             strength: suggestion.strength,
             settings,
+            transition: suggestion.transition,
         });
     }
     timeline
         .replace(&cues, audio.duration_seconds, SCENE_COUNT as u32)
         .map_err(|error| ProjectError::Build(error.to_string()))?;
     timeline.enabled = suggestions.enabled;
+    timeline.outro = suggestions.outro;
     Ok(timeline)
 }
 

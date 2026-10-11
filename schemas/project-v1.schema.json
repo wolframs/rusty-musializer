@@ -972,6 +972,10 @@
           },
           "default": [],
           "description": "Scene-specific tuning values captured when this cue was authored. Empty only for early v1 projects."
+        },
+        "transition": {
+          "$ref": "#/$defs/scene_transition",
+          "description": "How this section arrives. On the first cue it plays out of black."
         }
       }
     },
@@ -992,6 +996,10 @@
           "items": {
             "$ref": "#/$defs/scene_switch_cue"
           }
+        },
+        "outro": {
+          "$ref": "#/$defs/scene_transition",
+          "description": "Played backwards into black over the final seconds of the track."
         }
       },
       "description": "Suggested scene sequence. Nonempty cues form contiguous full-duration coverage; enabled is the durable user opt-in."
@@ -1064,6 +1072,39 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 18446744073709551615
+    },
+    "scene_transition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "seconds"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "fade",
+            "flash",
+            "wipe",
+            "iris",
+            "zoom",
+            "slices",
+            "glitch",
+            "burn",
+            "pixel",
+            "dip",
+            "blinds",
+            "ripple"
+          ]
+        },
+        "seconds": {
+          "type": "number",
+          "minimum": 0.05,
+          "maximum": 8
+        }
+      },
+      "description": "How a section arrives, or how the track ends. Post-legacy (2026-10-12); a cut is spelled by omitting the member, so projects without transitions are unchanged."
     }
   }
 }

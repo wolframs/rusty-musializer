@@ -747,6 +747,8 @@ pub struct SceneSwitchSuggestion {
     pub strength: f32,
     /// Empty only for early v1 projects (`project-v1.schema.json:817`).
     pub settings: Vec<f32>,
+    /// How the section arrives (post-legacy, MV3). A cut is never written.
+    pub transition: super::transition::Transition,
 }
 
 /// The imported switch plan (`Musi_Scene_Switch_Suggestions`, `project.h:273-277`).
@@ -755,6 +757,8 @@ pub struct SceneSwitchSuggestions {
     /// The durable user opt-in. Nonempty cues must cover the whole track.
     pub enabled: bool,
     pub cues: Vec<SceneSwitchSuggestion>,
+    /// How the track ends (post-legacy, MV3). A cut is never written.
+    pub outro: super::transition::Transition,
 }
 
 /// A saved tuning preset (`Musi_Scene_Preset`, `project.h:279-285`).
@@ -1141,6 +1145,7 @@ impl Project {
         let switches = &self.scene_switches;
         if switches.cues.len() > SCENE_SWITCH_CAPACITY
             || (switches.enabled && switches.cues.is_empty())
+            || !switches.outro.is_valid()
         {
             return Err(fail(ProjectError::SceneSwitch, 0, 0));
         }
@@ -1160,6 +1165,7 @@ impl Project {
                 || cue.strength < 0.0
                 || cue.strength > 1.0
                 || cue.settings.len() > MAX_CONTROLS
+                || !cue.transition.is_valid()
             {
                 return Err(fail(ProjectError::SceneSwitch, index, 0));
             }
@@ -1913,6 +1919,7 @@ mod tests {
             scene_name: "spectrum".into(),
             strength: 0.5,
             settings: Vec::new(),
+            transition: crate::project::transition::Transition::CUT,
         };
         project.scene_switches.cues = vec![switch(1, 0.0, 30.0), switch(2, 30.0, 60.0)];
         assert_eq!(project.validate(), Ok(()));
@@ -1935,6 +1942,7 @@ mod tests {
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
             cues: Vec::new(),
+            outro: crate::project::transition::Transition::CUT,
         };
         assert_eq!(
             project.validate().unwrap_err().error,

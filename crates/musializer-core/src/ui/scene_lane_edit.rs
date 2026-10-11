@@ -115,6 +115,7 @@ mod tests {
                 scene_index: 0,
                 strength: 1.0,
                 settings: snapshot,
+                transition: crate::project::transition::Transition::CUT,
             },
             SceneSwitchCue {
                 id: 20,
@@ -123,6 +124,7 @@ mod tests {
                 scene_index: 1,
                 strength: 1.0,
                 settings: settings.capture(SceneId::PulseField).unwrap(),
+                transition: crate::project::transition::Transition::CUT,
             },
         ];
         let mut plan = SceneSwitchTimeline::new();

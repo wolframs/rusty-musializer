@@ -369,12 +369,87 @@ def check_stills(out: Path) -> None:
     check(plate < ground - 40.0, f"no caption plate at top centre (plate {plate:.1f}, ground {ground:.1f})")
 
 
+def check_transitions(out: Path) -> None:
+    log = read(out / "moves.log")
+    line = report_line(log, "treatment")
+    check("4 transitions" in line, f"the treatment line does not count four transitions: {line}")
+    report = report_line(log, "transition")
+    check("shader=compiled" in report, f"the transition shader did not compile: {report}")
+    drawn = re.search(r"composited-frames=(\d+)", report)
+    check(bool(drawn) and int(drawn.group(1)) > 0, f"no frame composited a transition: {report}")
+    cuts = report_line(read(out / "cuts.log"), "transition")
+    check("composited-frames=0" in cuts, f"a plan of cuts composited something: {cuts}")
+
+    # The saved project carries them, and nothing else changed shape.
+    project = json.loads(read(out / "moves.musi"))
+    plan = project["scene_switches"]
+    check(plan["cues"][0].get("transition") == {"kind": "iris", "seconds": 1.5}, "the intro was not saved")
+    check(plan["cues"][1].get("transition") == {"kind": "burn", "seconds": 2}, "the burn was not saved")
+    check(plan["cues"][2].get("transition", {}).get("kind") == "dip", "the dip was not saved")
+    check(plan.get("outro") == {"kind": "fade", "seconds": 1.5}, "the outro was not saved")
+    again = json.loads(read(out / "moves-again.musi"))
+    check(again["scene_switches"] == plan, "reopening and saving changed the transitions")
+    plain = json.loads(read(out / "full.musi"))["scene_switches"]
+    check("outro" not in plain and all("transition" not in cue for cue in plain["cues"]),
+          "a plan of cuts wrote a transition")
+
+    for name in ("move-intro", "move-burn", "move-outro", "move-burn-alone", "move-burn-export",
+                 "move-burn-reopened", "cut-intro", "cut-burn", "cut-outro"):
+        check((out / f"{name}.png").is_file(), f"{name}.png was not written")
+        if not (out / f"{name}.png").is_file():
+            return
+    burn = rgb(out / "move-burn.png")
+    # Determinism: the held frame comes from the replay, not from whatever the
+    # previous capture left behind.
+    check((out / "move-burn.png").read_bytes() == (out / "move-burn-alone.png").read_bytes(),
+          "a still inside a transition differs between a multi-still pass and alone")
+    check((out / "move-burn.png").read_bytes() == (out / "move-burn-reopened.png").read_bytes(),
+          "the saved project draws the transition differently from the treatment")
+    matched = psnr(burn, rgb(out / "move-burn-export.png"))
+    control = psnr(burn, rgb(out / "cut-burn.png"))
+    print(f"transition still vs export frame: {matched:.2f} dB (same moment as a cut: {control:.2f} dB)")
+    # A lower floor than the plain still's 35 dB, measured rather than chosen:
+    # the two are the same picture (their difference image is encoder ringing
+    # along the ember edge and nothing else), and a burn is the hardest thing
+    # in this tree to hand x264. The control is what gives the number meaning.
+    check(matched >= 29.0, f"a still inside a transition is not the export's frame: {matched:.2f} dB")
+    check(control < matched - 8.0, f"the burn is not visibly different from a cut: {control:.2f} dB")
+
+    # The intro and the outro are mostly black where the cut plan is not.
+    # The preview: the held frame has to have come off the window, which is
+    # where this was first broken while every export passed. The scene on
+    # screen is Spectrum (dark); the middle of its panel is Clawd's cream only
+    # if the picture held from before the cut is really there.
+    preview_log = read(out / "preview-move.log")
+    preview = report_line(preview_log, "transition")
+    check("slices@" in preview and "from previous" in preview,
+          f"the preview did not composite the transition: {preview}")
+    check("GL: Error" not in preview_log, "the preview's frame copy raised a GL error")
+    shot = rgb(out / "preview-move.png")
+    held = region_mean(shot, shot[0] // 2 + 40, shot[1] // 4, 160, 60)
+    print(f"preview held-frame luma: {held:.1f}")
+    check(held > 120.0, f"the preview's held frame is not the outgoing picture: {held:.1f}")
+
+    # The intro's corner (an iris opens from the centre) and the outro's
+    # centre (Pulse Field is dark at its own corners) are black where the cut
+    # plan is not.
+    width, height, _ = burn
+    regions = {"intro": (0, 0), "outro": (width // 2 - 40, height // 2 - 30)}
+    for name, (left, top) in regions.items():
+        moved = region_mean(rgb(out / f"move-{name}.png"), left, top, 80, 60)
+        cut = region_mean(rgb(out / f"cut-{name}.png"), left, top, 80, 60)
+        print(f"{name} luma: {moved:.1f} with the transition, {cut:.1f} as a cut")
+        check(moved < 6.0, f"the {name} is not black: {moved:.1f}")
+        check(cut > moved + 12.0, f"the {name} control is as dark as the transition: {cut:.1f}")
+
+
 def check_refusals(out: Path) -> None:
     expected = {
         "bad-setting": ["segments[0]", "loom has no setting \"wieght\"", "weight"],
         "bad-range": ["segments[0]", "99 is outside"],
         "past-end": ["segments[1] (1:00.000)", "end of the track (0:12.000)"],
         "bad-digest": ["audio.sha256", "the treatment expects 0000"],
+        "bad-move": ["segments[0]", "\"crossfade\" is not a transition", "burn"],
     }
     for name, fragments in expected.items():
         status = read(out / f"{name}.status").strip()
@@ -407,6 +482,7 @@ def main() -> int:
     check_relook(out)
     check_sheets(out)
     check_stills(out)
+    check_transitions(out)
     check_refusals(out)
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed", file=sys.stderr)

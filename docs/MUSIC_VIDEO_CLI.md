@@ -149,12 +149,13 @@ goes missing.
 | `caption_style` | The `.musi` member names, each optional here (see below) |
 | `scenes` | Per scene name: `settings` (the base tuning for every section of that scene) and `routes` |
 | `segments` | The plan. Required |
+| `outro` | How the track ends: a transition, played backwards into black |
 | `lyrics` | Timed lines |
 | `events` | Authored markers; Constellation flares on them |
 
 ### `segments`
 
-Each has `at`, `scene`, and optionally `settings` and a `note`. Sections are
+Each has `at`, `scene`, and optionally `settings`, a `transition` and a `note`. Sections are
 listed in playing order, the first starts at 0, and each runs until the next one
 starts; the last runs to the end of the track. There is nothing to keep
 contiguous by hand.
@@ -170,6 +171,54 @@ Two adjacent sections of the **same** scene keep the scene's running state and
 only change its tuning, which is how one scene changes mid-phrase: a riser that
 tightens, or a ground that goes from night to day on a bar line. A section of a
 *different* scene starts that scene fresh.
+
+### `transition` and `outro`
+
+A section's `transition` is how that section **arrives**. It is a kind's name,
+at the default 0.6 s, or an object:
+
+```json
+{ "at": "1:12.63", "scene": "orbital", "transition": { "kind": "flash", "seconds": 0.45 } }
+```
+
+On the **first** section it plays out of black and is the video's intro. The
+top-level `outro` plays its kind backwards into black over the last seconds of
+the track, so `"outro": "iris"` closes the picture the way `"transition": "iris"`
+on the first section opens it.
+
+| Kind | What it does |
+| --- | --- |
+| `fade` | A dissolve |
+| `flash` | Blows out to white, and the white decays onto the new picture. For a drop; keep it under half a second |
+| `wipe` | A soft diagonal edge, lit where it passes |
+| `iris` | A circle opens from the centre |
+| `zoom` | The old picture rushes at the viewer and thins out |
+| `slices` | Horizontal bands slide off, alternately left and right |
+| `glitch` | Rows tear sideways with colour fringes and blocks drop out |
+| `burn` | The old picture burns away along a ragged, glowing edge |
+| `pixel` | The old picture coarsens into growing blocks and fades |
+| `blinds` | Vertical blinds turn open |
+| `ripple` | A ring of light spreads from the centre and carries the old picture off |
+| `dip` | Down to black and back up, half **before** the change and half after |
+
+`--vocabulary` prints the same list under `transitions`. Lengths run 0.05 to 8
+seconds, and a transition never outlasts the section it brings in: asked for
+two seconds into a one-second section, it gets the one.
+
+Three things to know before trusting one:
+
+- **The outgoing picture is held, not replayed.** A transition composites the
+  last frame the old section drew over the new section, which is live. Inside
+  half a second nobody can tell; a four-second `fade` out of a busy scene shows
+  a still picture dissolving. Use long ones for intros, outros and quiet
+  places.
+- **Every kind but `dip` starts *on* the change**, so the new section's first
+  moments are partly covered. Put a `flash` on a drop and the white lands on
+  the downbeat; put a slow `burn` there and the drop plays under the old
+  picture.
+- **Captions and Cadence's type** belong to the moment, not to the section: the
+  caption overlay is drawn over a transition, and black (an intro, an outro, a
+  `dip`) is drawn over the caption.
 
 ### `routes`
 
@@ -255,6 +304,11 @@ Found while making the first video, each one from a contact sheet:
   defect in the halo pass that the default size had been hiding as texture
   since the scene was written. It is fixed (`AGENTS.md`, MV1), and it was found
   by an audition sheet, not by a test.
+- **A transition is reviewed from stills inside it.** `--sheet-at segments`
+  photographs every section's midpoint, where no transition is running. List
+  times a few tenths after each change instead (`--sheet-at 72.75,72.95,…`),
+  and read the `transition:` line: `skipped` or `unavailable` there means it
+  drew as a cut.
 - **A still at a section's midpoint says nothing about how it arrives.** Sheet
   the first seconds of a section densely before trusting it.
 
@@ -264,8 +318,10 @@ Said here so nobody looks for a flag:
 
 - Per-section or per-line caption styles, and a title lane separate from lyrics.
   A requested title card today is a lyric line shown through Cadence.
-- Transitions. A section change is a cut; there is no fade or crossfade, and no
-  fade from or to black.
+- Transitions where both scenes keep moving. The outgoing picture is a held
+  frame (see `transition`); a true crossfade of two live scenes is not built.
+- Authoring a transition in the window. They come from a treatment, are saved
+  in the `.musi` and play in the preview, and no panel shows or edits them yet.
 - An imported caption face in a treatment. `"face": "imported"` is refused by
   name; import the face in the Lyrics panel after `--save-project`.
 - Per-section routes, and the caption effects' drive-tuning blocks.

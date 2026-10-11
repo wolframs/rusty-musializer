@@ -1001,6 +1001,16 @@ numbers, `minItems 1`, `maxItems 12`).
 (`stable_name`), `strength` (number 0..1); optional `settings` (array of
 numbers, `maxItems 12`, default `[]`, "Empty only for early v1 projects").
 
+**Post-legacy (2026-10-12, MV3):** a cue may carry `transition` and the block
+may carry `outro`, both a **`scene_transition`**: required `kind` (one of
+`fade`, `flash`, `wipe`, `iris`, `zoom`, `slices`, `glitch`, `burn`, `pixel`,
+`dip`, `blinds`, `ripple`) and `seconds` (0.05..8). A cut is spelled by leaving
+the member out and is never written, so a project with no transitions is
+byte-identical to one saved before they existed; an explicit `"cut"`, an unknown
+kind and a length out of bounds are refused. The frozen C cannot read a file
+that has either member. `schema_version` stays 1, the precedent the caption
+`effects` block set: an additive member whose default is never serialized.
+
 ### 6.3 `caption_style` and `caption_font_asset` in detail
 
 `caption_style`, `schemas/project-v1.schema.json:265-346`.

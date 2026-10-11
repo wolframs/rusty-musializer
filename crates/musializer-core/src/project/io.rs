@@ -36,6 +36,7 @@
 //! guarantees, the transaction filename policy, and the path-shape rules the
 //! resolver applies before it ever touches a disk.
 
+use super::transition::{Transition, TransitionKind};
 use crate::project::assets;
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
 use crate::project::model::{
@@ -519,10 +520,22 @@ fn write_project(out: &mut String, project: &Project) {
         write_f64(out, f64::from(cue.strength));
         out.push_str(",\"settings\":");
         write_f32_array(out, &cue.settings);
+        // Post-legacy (MV3). A cut is the C's plan and is never written, so a
+        // project with no transitions is byte-identical to one saved before
+        // they existed.
+        if !cue.transition.is_cut() {
+            out.push_str(",\"transition\":");
+            write_transition(out, cue.transition);
+        }
         out.push('}');
     }
+    out.push(']');
+    if !project.scene_switches.outro.is_cut() {
+        out.push_str(",\"outro\":");
+        write_transition(out, project.scene_switches.outro);
+    }
 
-    out.push_str("]},\"scene_presets\":[");
+    out.push_str("},\"scene_presets\":[");
     for (index, preset) in project.scene_presets.iter().enumerate() {
         if index > 0 {
             out.push(',');
@@ -1289,13 +1302,14 @@ fn parse_f32_array(parser: &mut Parser<'_>, capacity: usize) -> Parsed<Vec<f32>>
 /// `parse_switch` (`project_io.c:224-225`): `settings` is optional and defaults to
 /// empty, which is how early v1 projects are spelled.
 fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
-    const NAMES: [&str; 6] = [
+    const NAMES: [&str; 7] = [
         "id",
         "start_seconds",
         "end_seconds",
         "scene_name",
         "strength",
         "settings",
+        "transition",
     ];
     let mut cue = SceneSwitchSuggestion::default();
     let mut seen = Seen::default();
@@ -1308,7 +1322,8 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
             2 => cue.end_seconds = parser.f64()?,
             3 => cue.scene_name = parser.string(capacity::TYPE)?,
             4 => cue.strength = parser.f32()?,
-            _ => cue.settings = parse_f32_array(parser, MAX_CONTROLS)?,
+            5 => cue.settings = parse_f32_array(parser, MAX_CONTROLS)?,
+            _ => cue.transition = parse_transition(parser)?,
         }
         Ok(())
     })?;
@@ -1318,8 +1333,38 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
     Ok(cue)
 }
 
+fn write_transition(out: &mut String, transition: Transition) {
+    out.push_str("{\"kind\":");
+    write_string(out, transition.kind.name());
+    out.push_str(",\"seconds\":");
+    write_f64(out, f64::from(transition.seconds));
+    out.push('}');
+}
+
+/// A `transition` or `outro` block: both members required, and a `cut` is
+/// refused because a cut is spelled by leaving the block out.
+fn parse_transition(parser: &mut Parser<'_>) -> Parsed<Transition> {
+    const NAMES: [&str; 2] = ["kind", "seconds"];
+    let mut transition = Transition::CUT;
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        if field == 0 {
+            transition.kind = parser.enum_value(TransitionKind::from_name)?;
+        } else {
+            transition.seconds = parser.f32()?;
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x3) || transition.is_cut() {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(transition)
+}
+
 fn parse_switches(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestions> {
-    const NAMES: [&str; 2] = ["enabled", "cues"];
+    const NAMES: [&str; 3] = ["enabled", "cues", "outro"];
     let mut switches = SceneSwitchSuggestions::default();
     let mut seen = Seen::default();
     parser.object(|parser, key| {
@@ -1327,6 +1372,8 @@ fn parse_switches(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestions> {
         seen.mark(field)?;
         if field == 0 {
             switches.enabled = parser.bool()?;
+        } else if field == 2 {
+            switches.outro = parse_transition(parser)?;
         } else {
             let cues = &mut switches.cues;
             parser.array(SCENE_SWITCH_CAPACITY, |parser, _| {
@@ -2847,6 +2894,49 @@ mod tests {
     }
 
     #[test]
+    fn transitions_round_trip_and_a_cut_is_never_written() {
+        let mut project = valid_project();
+        let switch = |id, start, end, transition| SceneSwitchSuggestion {
+            id,
+            start_seconds: start,
+            end_seconds: end,
+            scene_name: "spectrum".into(),
+            strength: 1.0,
+            settings: Vec::new(),
+            transition,
+        };
+        project.scene_switches = SceneSwitchSuggestions {
+            enabled: true,
+            cues: vec![switch(1, 0.0, 60.0, Transition::CUT)],
+            outro: Transition::CUT,
+        };
+        let plain = serialize(&project).unwrap();
+        assert!(!plain.contains("transition") && !plain.contains("outro"));
+
+        project.scene_switches.cues = vec![
+            switch(1, 0.0, 30.0, Transition::new(TransitionKind::Iris, 1.5)),
+            switch(2, 30.0, 60.0, Transition::new(TransitionKind::Burn, 0.75)),
+        ];
+        project.scene_switches.outro = Transition::new(TransitionKind::Fade, 3.0);
+        let text = serialize(&project).unwrap();
+        assert!(text.contains("\"transition\":{\"kind\":\"burn\",\"seconds\":0.75}"));
+        assert!(text.contains("\"outro\":{\"kind\":\"fade\",\"seconds\":3}"));
+        let reopened = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(reopened.scene_switches, project.scene_switches);
+        assert_eq!(serialize(&reopened).unwrap(), text);
+
+        // An explicit cut, an unknown kind and a length out of bounds are all
+        // refused rather than read as "no transition".
+        for broken in [
+            text.replace("\"kind\":\"burn\"", "\"kind\":\"cut\""),
+            text.replace("\"kind\":\"burn\"", "\"kind\":\"crossfade\""),
+            text.replace("\"seconds\":0.75", "\"seconds\":90"),
+        ] {
+            assert!(deserialize(broken.as_bytes()).is_err(), "{broken}");
+        }
+    }
+
+    #[test]
     fn opening_a_project_never_rewrites_it() {
         // The invariant, as a test: parse, do nothing, re-serialize, compare. Any
         // "helpful" normalization in the reader shows up here.
@@ -2860,7 +2950,9 @@ mod tests {
                 scene_name: "spectrum".into(),
                 strength: 0.75,
                 settings: vec![0.5, 0.25],
+                transition: Transition::CUT,
             }],
+            outro: Transition::CUT,
         };
         project.scene_presets = vec![ScenePreset {
             id: 1,

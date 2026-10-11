@@ -93,6 +93,39 @@ cat > "$OUT/look-only.treatment.json" <<'EOF'
 }
 EOF
 
+# Transitions: an intro out of black, a burn off Clawd (the one scene that
+# keeps light of its own, so its run-up is in play), a dip, and an outro. The
+# same plan with cuts is the control the burn is judged against.
+cat > "$OUT/moves.treatment.json" <<'EOF'
+{
+  "schema": "musializer.treatment/v1",
+  "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 30, "quality": "balanced" },
+  "seed": 2012,
+  "segments": [
+    { "at": 0, "scene": "clawd", "transition": { "kind": "iris", "seconds": 1.5 } },
+    { "at": 5, "scene": "spectrum", "transition": { "kind": "burn", "seconds": 2 } },
+    { "at": 9, "scene": "pulse", "transition": "dip" }
+  ],
+  "outro": { "kind": "fade", "seconds": 1.5 }
+}
+EOF
+python3 - "$OUT/moves.treatment.json" "$OUT/cuts.treatment.json" <<'EOF'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+plan.pop("outro")
+for segment in plan["segments"]:
+    segment.pop("transition")
+json.dump(plan, open(sys.argv[2], "w"), indent=2)
+EOF
+cat > "$OUT/bad-move.treatment.json" <<'EOF'
+{
+  "schema": "musializer.treatment/v1",
+  "audio": { "path": "fixture.wav" },
+  "segments": [ { "at": 0, "scene": "loom", "transition": "crossfade" } ]
+}
+EOF
+
 # Refusals. Each is one mistake a caller would actually make.
 cat > "$OUT/bad-setting.treatment.json" <<'EOF'
 {
@@ -154,6 +187,40 @@ ffmpeg -v error -y -i "$OUT/at-seven.mp4" -frames:v 1 "$OUT/at-seven.png"
 run --treatment "$OUT/full.treatment.json" --still 6.5 "$OUT/still-neighbour.png" \
     > "$OUT/neighbour.log" 2>&1
 
+# --- transitions ----------------------------------------------------------------
+# A still inside the burn in a pass with others, the same still alone, the frame
+# an export of that moment encodes, and the same moment from the plan with cuts.
+run --treatment "$OUT/moves.treatment.json" --save-project "$OUT/moves.musi" \
+    --still 0.3 "$OUT/move-intro.png" --still 5.4 "$OUT/move-burn-early.png" \
+    --still 5.8 "$OUT/move-burn.png" \
+    --still 11.7 "$OUT/move-outro.png" > "$OUT/moves.log" 2>&1
+run --treatment "$OUT/moves.treatment.json" --still 5.8 "$OUT/move-burn-alone.png" \
+    > "$OUT/moves-alone.log" 2>&1
+run --treatment "$OUT/moves.treatment.json" --render-window 5.8 0.2 \
+    --render "$OUT/move-burn.mp4" > "$OUT/moves-export.log" 2>&1
+ffmpeg -v error -y -i "$OUT/move-burn.mp4" -frames:v 1 "$OUT/move-burn-export.png"
+run --treatment "$OUT/cuts.treatment.json" --still 0.3 "$OUT/cut-intro.png" \
+    --still 5.8 "$OUT/cut-burn.png" --still 11.7 "$OUT/cut-outro.png" \
+    > "$OUT/cuts.log" 2>&1
+run --project "$OUT/moves.musi" --save-project "$OUT/moves-again.musi" \
+    --still 5.8 "$OUT/move-burn-reopened.png" > "$OUT/moves-reopen.log" 2>&1
+
+# The preview draws them too, and it is a different framebuffer: the window is
+# multisampled and the scene sits in a panel, not at the origin. Slices off
+# Clawd's cream ground onto Spectrum's dark one, held long enough to photograph.
+cat > "$OUT/preview-move.treatment.json" <<'EOF'
+{
+  "schema": "musializer.treatment/v1",
+  "audio": { "path": "fixture.wav" },
+  "segments": [
+    { "at": 0, "scene": "clawd" },
+    { "at": 0.6, "scene": "spectrum", "transition": { "kind": "slices", "seconds": 8 } }
+  ]
+}
+EOF
+run --treatment "$OUT/preview-move.treatment.json" --probe-frames 120 \
+    --probe-shot "$OUT/preview-move.png" > "$OUT/preview-move.log" 2>&1
+
 # --- the saved project is an ordinary project ----------------------------------
 run --project "$OUT/full.musi" --save-project "$OUT/full-again.musi" \
     > "$OUT/reopen.log" 2>&1
@@ -165,7 +232,7 @@ run "$FIXTURE" --treatment "$OUT/look-only.treatment.json" \
     --save-project "$OUT/positional.musi" > "$OUT/positional.log" 2>&1
 
 # --- refusals: exit 1, name the place, write nothing ---------------------------
-for name in bad-setting bad-range past-end bad-digest; do
+for name in bad-setting bad-range past-end bad-digest bad-move; do
     status=0
     run --treatment "$OUT/$name.treatment.json" \
         --save-project "$OUT/$name.musi" --contact-sheet "$OUT/$name.png" \

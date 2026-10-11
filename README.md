@@ -141,8 +141,9 @@ Run `./target/release/musializer --help` for all options.
 <summary><strong>Direct a whole video from a file</strong></summary>
 
 A *treatment* is one JSON file that says which scene plays when, how each
-section is tuned, what the audio drives, and which lyric line is on screen from
-when to when. No window is needed to write one, review it, or render it — which
+section is tuned and how it arrives (a burn, a flash on the drop, an iris out of
+black), what the audio drives, and which lyric line is on screen from when to
+when. No window is needed to write one, review it, or render it — which
 makes it the way a script or an AI agent makes a video here.
 
 ```sh

@@ -13,6 +13,7 @@
 //! it was. This is also the model-output staging rule in miniature: nothing mutates
 //! because an operation started, only because it finished and validated.
 
+use super::transition::{self, Active, Section, Transition};
 use crate::scene::settings::{SettingsSnapshot, MAX_CONTROLS};
 use crate::scene::SceneId;
 
@@ -66,6 +67,9 @@ pub struct SceneSwitchCue {
     /// Tuning captured **from this cue's scene**. A snapshot is a bare value array
     /// whose meaning comes entirely from the scene it was captured for.
     pub settings: SettingsSnapshot,
+    /// How this section arrives (post-legacy, MV3). A cut by default, which is
+    /// the C's plan and what nothing serializes.
+    pub transition: Transition,
 }
 
 impl Default for SceneSwitchCue {
@@ -77,6 +81,7 @@ impl Default for SceneSwitchCue {
             scene_index: 0,
             strength: 0.0,
             settings: SettingsSnapshot::default(),
+            transition: Transition::CUT,
         }
     }
 }
@@ -86,6 +91,10 @@ impl Default for SceneSwitchCue {
 pub struct SceneSwitchTimeline {
     /// The durable user opt-in, preserved across every republication.
     pub enabled: bool,
+    /// How the track ends (post-legacy, MV3): its kind played backwards into
+    /// black over the final seconds. Independent of the cues, so a track with
+    /// no plan can still end softly.
+    pub outro: Transition,
     active_index: Option<usize>,
     cues: Vec<SceneSwitchCue>,
 }
@@ -141,6 +150,46 @@ impl SceneSwitchTimeline {
         true
     }
 
+    /// The transition in force at `time_seconds`, if any. `None` while the
+    /// plan is switched off, except for the outro, which is the track's own.
+    #[must_use]
+    pub fn transition_at(&self, time_seconds: f64, duration_seconds: f64) -> Option<Active> {
+        let sections = self.sections();
+        transition::resolve(&sections, self.outro, duration_seconds, time_seconds)
+    }
+
+    /// The enabled plan's boundaries, as [`transition::resolve`] reads them.
+    #[must_use]
+    pub fn sections(&self) -> Vec<Section> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        self.cues
+            .iter()
+            .map(|cue| Section {
+                id: cue.id,
+                start_seconds: cue.start_seconds,
+                end_seconds: cue.end_seconds,
+                transition: cue.transition,
+            })
+            .collect()
+    }
+
+    /// Sets how one section arrives. Refuses an unknown id or a transition
+    /// outside its bounds, and changes nothing when it refuses.
+    pub fn set_transition(&mut self, cue_id: u64, transition: Transition) -> bool {
+        if !transition.is_valid() {
+            return false;
+        }
+        match self.cues.iter_mut().find(|cue| cue.id == cue_id) {
+            Some(cue) => {
+                cue.transition = transition;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `scene_switch_reset` (`scene_switch.c:18-21`): forgets which cue is active
     /// without touching the plan, so the next [`Self::update`] re-reports a switch.
     pub fn reset(&mut self) {
@@ -176,6 +225,7 @@ impl SceneSwitchTimeline {
                 || cue.scene_index >= scene_count
                 || !cue.strength.is_finite()
                 || !(0.0..=1.0).contains(&cue.strength)
+                || !cue.transition.is_valid()
             {
                 return Err(SceneSwitchError::Cue);
             }
@@ -270,6 +320,7 @@ impl SceneSwitchTimeline {
                 scene_index,
                 strength,
                 settings: *settings,
+                transition: crate::project::transition::Transition::CUT,
             });
         } else {
             let selected = staged
@@ -460,6 +511,7 @@ mod tests {
             scene_index,
             strength: 0.5,
             settings: SettingsSnapshot::default(),
+            transition: Transition::CUT,
         }
     }
 

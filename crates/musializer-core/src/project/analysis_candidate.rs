@@ -1163,6 +1163,7 @@ impl AnalysisCandidate {
                     scene_index: section.recommended_scene.index() as u32,
                     strength: f32::from(section.transition_strength_milli) / 1000.0,
                     settings: SettingsSnapshot::default(),
+                    transition: crate::project::transition::Transition::CUT,
                 })
                 .collect();
             candidate
@@ -1478,6 +1479,7 @@ mod tests {
                     scene_index: 3,
                     strength: 0.5,
                     settings: SettingsSnapshot::default(),
+                    transition: crate::project::transition::Transition::CUT,
                 }],
                 DURATION,
                 SCENES,

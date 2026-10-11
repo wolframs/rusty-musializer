@@ -1626,6 +1626,7 @@ fn run(
                         atlas_map: track.atlas_map(),
                         ascii_grid: track.ascii_grid(),
                         caption_style: Some(&track.caption_style),
+                        scene_plan: Some(&track.scene_switches),
                     }
                 });
 
@@ -3716,11 +3717,12 @@ fn apply_treatment<'audio>(
         None => format!("{noun} kept"),
     };
     let line = format!(
-        "{} sections over {} ({} scenes), {} routes, {}{}, {}, caption style {caption}, \
-         output {output}, seed {seed} — {}",
+        "{} sections over {} ({} scenes), {} transitions, {} routes, {}{}, {}, caption style \
+         {caption}, output {output}, seed {seed} — {}",
         summary.segments,
         format_time(duration),
         summary.distinct_scenes,
+        summary.transitions,
         summary.routes,
         lane(summary.lyrics, "lyric lines"),
         if summary.lyrics_fully_shadowed > 0 {
@@ -5315,6 +5317,10 @@ impl Report {
         // same picture; `off` versus `unavailable` is a claim only this line
         // can carry.
         println!("caption halo:    {}", renderer.describe_caption_halo());
+        // The plan's transitions (MV3). One that silently became a cut — a
+        // refused shader, a refused buffer, no frame held — is the same picture
+        // as a plan that asked for a cut.
+        println!("transition:      {}", renderer.describe_transition());
         // Phosphor Dream's own line, for the same reason the two above have one.
         // This scene can draw a good-looking frame in several wrong states — the
         // wrong field, a collapsed grid, a bloom that never built — and none of

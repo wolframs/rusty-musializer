@@ -55,6 +55,7 @@ use crate::project::model::{
 };
 use crate::project::scene_switch::{self, SceneSwitchCue, SceneSwitchTimeline};
 use crate::project::sha256;
+use crate::project::transition::{self, Transition, TransitionKind};
 use crate::scene::events::{EventRecord, EventType, VALUE_CAPACITY};
 use crate::scene::routes::{
     self, AnalysisSource, Interpolation, ParameterMapping, RouteError, RouteTable,
@@ -146,6 +147,9 @@ struct TreatmentWire {
     #[serde(default)]
     scenes: BTreeMap<String, SceneWire>,
     segments: Vec<SegmentWire>,
+    /// How the track ends: a transition kind played backwards into black.
+    #[serde(default)]
+    outro: Option<Value>,
     #[serde(default)]
     lyrics: Option<Vec<LyricWire>>,
     #[serde(default)]
@@ -187,6 +191,9 @@ struct SegmentWire {
     scene: String,
     #[serde(default)]
     settings: BTreeMap<String, Value>,
+    /// How this section arrives. On the first section it is the video's intro.
+    #[serde(default)]
+    transition: Option<Value>,
     #[serde(default)]
     #[allow(dead_code)]
     note: Option<Value>,
@@ -330,6 +337,7 @@ struct Segment {
     /// The scene's whole table for this section: defaults, then the treatment's
     /// per-scene base, then this segment's own overrides.
     settings: SceneSettings,
+    transition: Transition,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -359,6 +367,7 @@ pub struct Treatment {
     scene_routes: RouteTable,
     route_count: usize,
     segments: Vec<Segment>,
+    outro: Transition,
     /// `None` when the file has no `lyrics` key at all, which is different
     /// from an empty list: see [`CompiledTreatment::lyrics`].
     lyrics: Option<Vec<LyricLine>>,
@@ -400,6 +409,8 @@ pub struct CompiledTreatment {
 pub struct Summary {
     pub segments: usize,
     pub distinct_scenes: usize,
+    /// Sections that arrive by something other than a cut, plus the outro.
+    pub transitions: usize,
     pub routes: usize,
     /// `None` when the treatment does not speak for the lyrics at all.
     pub lyrics: Option<usize>,
@@ -516,12 +527,21 @@ impl Treatment {
                 &segment.settings,
                 &mut table,
             )?;
+            let transition = match &segment.transition {
+                Some(value) => parse_transition(&format!("{place}.transition"), value)?,
+                None => Transition::CUT,
+            };
             segments.push(Segment {
                 at,
                 scene,
                 settings: table,
+                transition,
             });
         }
+        let outro = match &wire.outro {
+            Some(value) => parse_transition("outro", value)?,
+            None => Transition::CUT,
+        };
 
         let wire_lyrics = wire.lyrics.as_deref().unwrap_or(&[]);
         if wire_lyrics.len() > lyrics::CUE_CAPACITY {
@@ -633,6 +653,7 @@ impl Treatment {
             scene_routes,
             route_count,
             segments,
+            outro,
             lyrics: wire.lyrics.is_some().then_some(lines),
             events: wire.events.is_some().then_some(events),
         })
@@ -690,6 +711,7 @@ impl Treatment {
                 scene_index: segment.scene.index() as u32,
                 strength: 1.0,
                 settings: snapshot,
+                transition: segment.transition,
             });
         }
         let mut scene_switches = SceneSwitchTimeline::new();
@@ -697,6 +719,7 @@ impl Treatment {
             .replace(&cues, duration_seconds, SCENE_COUNT as u32)
             .map_err(|error| invalid("segments", format!("the plan was refused: {error}")))?;
         scene_switches.enabled = true;
+        scene_switches.outro = self.outro;
 
         let mut document = LyricsDocument::new(duration_seconds)
             .map_err(|error| invalid("lyrics", error.to_string()))?;
@@ -783,6 +806,12 @@ impl Treatment {
             summary: Summary {
                 segments: self.segments.len(),
                 distinct_scenes: seen.iter().filter(|used| **used).count(),
+                transitions: self
+                    .segments
+                    .iter()
+                    .filter(|segment| !segment.transition.is_cut())
+                    .count()
+                    + usize::from(!self.outro.is_cut()),
                 routes: self.route_count,
                 lyrics: self.lyrics.is_some().then_some(document.len()),
                 lyrics_fully_shadowed,
@@ -795,6 +824,66 @@ impl Treatment {
 }
 
 // -- field parsers ---------------------------------------------------------------
+
+/// A transition: a kind's name alone (`"burn"`, at the default length), or
+/// `{"kind": "burn", "seconds": 0.8}`. `"cut"` is accepted and means none.
+fn parse_transition(place: &str, value: &Value) -> Result<Transition, TreatmentError> {
+    let kind_of = |name: &str| {
+        TransitionKind::from_name(name).ok_or_else(|| {
+            invalid(
+                place,
+                format!(
+                    "\"{name}\" is not a transition; use one of {}",
+                    TransitionKind::ALL.map(TransitionKind::name).join(", ")
+                ),
+            )
+        })
+    };
+    let (kind, seconds) = match value {
+        Value::String(name) => (kind_of(name)?, transition::DEFAULT_SECONDS),
+        Value::Object(map) => {
+            if let Some(unknown) = map
+                .keys()
+                .find(|key| !matches!(key.as_str(), "kind" | "seconds"))
+            {
+                return Err(invalid(
+                    place,
+                    format!("unknown field \"{unknown}\"; a transition has kind and seconds"),
+                ));
+            }
+            let kind = match map.get("kind") {
+                Some(Value::String(name)) => kind_of(name)?,
+                _ => return Err(invalid(place, "needs a \"kind\" naming a transition")),
+            };
+            let seconds = match map.get("seconds") {
+                None => transition::DEFAULT_SECONDS,
+                Some(value) => value
+                    .as_f64()
+                    .map(|seconds| seconds as f32)
+                    .ok_or_else(|| invalid(place, "\"seconds\" must be a number"))?,
+            };
+            (kind, seconds)
+        }
+        _ => {
+            return Err(invalid(
+                place,
+                "must be a transition's name or {\"kind\": ..., \"seconds\": ...}",
+            ))
+        }
+    };
+    let transition = Transition::new(kind, seconds);
+    if !transition.is_valid() {
+        return Err(invalid(
+            place,
+            format!(
+                "{seconds} seconds is outside {}..={}",
+                transition::MIN_SECONDS,
+                transition::MAX_SECONDS
+            ),
+        ));
+    }
+    Ok(transition)
+}
 
 fn parse_audio(wire: AudioWire) -> Result<TreatmentAudio, TreatmentError> {
     if wire.path.is_empty() || wire.path.len() > MAX_PATH_BYTES || wire.path.contains('\0') {
@@ -1432,6 +1521,18 @@ pub fn vocabulary() -> Value {
         "treatment_schema": TREATMENT_SCHEMA,
         "time": "seconds as a number (73.5), or a string \"m:ss.fff\" (\"1:13.5\")",
         "scenes": scenes,
+        "transitions": {
+            "where": "a section's \"transition\" is how that section arrives; on the first \
+                      section it plays out of black and is the video's intro. The \
+                      top-level \"outro\" plays its kind backwards into black at the end \
+                      of the track.",
+            "spell": "a kind's name (\"burn\"), or {\"kind\": \"burn\", \"seconds\": 0.8}",
+            "default_seconds": transition::DEFAULT_SECONDS,
+            "minimum_seconds": transition::MIN_SECONDS,
+            "maximum_seconds": transition::MAX_SECONDS,
+            "kinds": TransitionKind::ALL
+                .map(|kind| json!({ "name": kind.name(), "look": kind.look() })),
+        },
         "routes": {
             "sources": AnalysisSource::ALL.map(AnalysisSource::canonical_name),
             "curves": Interpolation::ALL.map(Interpolation::canonical_name),
@@ -1522,6 +1623,7 @@ mod tests {
             Summary {
                 segments: 1,
                 distinct_scenes: 1,
+                transitions: 0,
                 routes: 0,
                 lyrics: None,
                 lyrics_fully_shadowed: 0,
@@ -2179,6 +2281,74 @@ mod tests {
     }
 
     #[test]
+    fn transitions_compile_onto_the_sections_they_bring_in() {
+        let treatment = parse(
+            r##"{"schema":"musializer.treatment/v1",
+                "segments":[
+                  {"at":0,"scene":"atlas","transition":{"kind":"iris","seconds":2}},
+                  {"at":10,"scene":"loom","transition":"burn"},
+                  {"at":20,"scene":"pulse"},
+                  {"at":30,"scene":"loom","transition":"cut"}],
+                "outro":{"kind":"fade","seconds":3}}"##,
+        )
+        .unwrap();
+        let compiled = treatment.compile(60.0).unwrap();
+        let cues = compiled.scene_switches.cues();
+        assert_eq!(
+            cues[0].transition,
+            Transition::new(TransitionKind::Iris, 2.0)
+        );
+        assert_eq!(
+            cues[1].transition,
+            Transition::new(TransitionKind::Burn, transition::DEFAULT_SECONDS)
+        );
+        assert!(cues[2].transition.is_cut() && cues[3].transition.is_cut());
+        assert_eq!(
+            compiled.scene_switches.outro,
+            Transition::new(TransitionKind::Fade, 3.0)
+        );
+        assert_eq!(compiled.summary.transitions, 3);
+        // And the plan resolves them: black at the very start and the very end.
+        let opening = compiled.scene_switches.transition_at(0.0, 60.0).unwrap();
+        assert_eq!(opening.progress, 0.0);
+        let closing = compiled.scene_switches.transition_at(60.0, 60.0).unwrap();
+        assert_eq!(closing.progress, 0.0);
+        assert!(compiled.scene_switches.transition_at(25.0, 60.0).is_none());
+    }
+
+    #[test]
+    fn a_bad_transition_is_refused_by_name() {
+        let refuse = |transition: &str| {
+            let text = format!(
+                r##"{{"schema":"musializer.treatment/v1",
+                    "segments":[{{"at":0,"scene":"atlas","transition":{transition}}}]}}"##
+            );
+            parse(&text).unwrap_err().to_string()
+        };
+        let unknown = refuse("\"crossfade\"");
+        assert!(
+            unknown.contains("is not a transition") && unknown.contains("burn"),
+            "{unknown}"
+        );
+        assert!(refuse("{\"kind\":\"burn\",\"seconds\":30}").contains("outside"));
+        assert!(refuse("{\"kind\":\"burn\",\"length\":1}").contains("unknown field"));
+        assert!(refuse("{\"seconds\":1}").contains("kind"));
+        assert!(refuse("7").contains("must be a transition's name"));
+    }
+
+    #[test]
+    fn the_vocabulary_lists_every_transition_the_parser_takes() {
+        let document = vocabulary();
+        let kinds = document["transitions"]["kinds"].as_array().unwrap();
+        assert_eq!(kinds.len(), TransitionKind::ALL.len());
+        for kind in kinds {
+            let name = kind["name"].as_str().unwrap();
+            assert!(TransitionKind::from_name(name).is_some(), "{name}");
+            assert!(!kind["look"].as_str().unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn the_documented_example_is_a_treatment_this_build_accepts() {
         // `docs/MUSIC_VIDEO_CLI.md` points at this file as the thing to copy.
         // An example that the parser refuses is worse than no example, and
@@ -2189,6 +2359,10 @@ mod tests {
         assert_eq!(compiled.summary.segments, 5);
         assert_eq!(compiled.summary.distinct_scenes, 4);
         assert_eq!(compiled.summary.routes, 2);
+        assert_eq!(
+            compiled.summary.transitions, 4,
+            "three sections and the outro"
+        );
         assert_eq!(compiled.summary.lyrics, Some(4));
         assert_eq!(compiled.summary.events, Some(2));
         assert!(treatment.caption_style.is_some());

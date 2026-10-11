@@ -18,3 +18,4 @@ pub mod preset_store;
 pub mod scene_switch;
 pub mod semantic_lane;
 pub mod sha256;
+pub mod transition;

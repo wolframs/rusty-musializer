@@ -26,12 +26,15 @@
     "pulse": { "routes": [ "pulse.glow:bass:0:0.1:0.8:1:2" ] }
   },
   "segments": [
-    { "at": 0,         "scene": "atlas",   "note": "intro", "settings": { "wireframe": true, "speed": 0.4 } },
-    { "at": "0:08",    "scene": "cadence", "note": "title, then verse one as kinetic type" },
-    { "at": "0:24.5",  "scene": "orbital", "note": "drop", "settings": { "reactivity": 1.6 } },
+    { "at": 0,         "scene": "atlas",   "note": "intro", "settings": { "wireframe": true, "speed": 0.4 },
+      "transition": { "kind": "iris", "seconds": 2 } },
+    { "at": "0:08",    "scene": "cadence", "note": "verse one as kinetic type" },
+    { "at": "0:24.5",  "scene": "orbital", "note": "drop", "settings": { "reactivity": 1.6 },
+      "transition": { "kind": "flash", "seconds": 0.4 } },
     { "at": 40,        "scene": "pulse",   "note": "second half of the drop", "settings": { "petals": 5 } },
-    { "at": "0:52",    "scene": "atlas",   "note": "outro" }
+    { "at": "0:52",    "scene": "atlas",   "note": "outro", "transition": "burn" }
   ],
+  "outro": { "kind": "fade", "seconds": 2 },
   "lyrics": [
     { "at": "0:08.2", "until": "0:13", "text": "Example Treatment" },
     { "at": "0:16",   "text": "a line with no `until` runs to the next line" },

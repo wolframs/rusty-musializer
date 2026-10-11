@@ -1531,7 +1531,8 @@ fn prepare_frames(
                     // ghost-free picture of a frame the video drew with ghosts —
                     // the "a still is the video frame" invariant, broken by
                     // drawing state rather than by scene state.
-                    let warmup = warmup_frames(app.scene.id(), config.fps);
+                    let warmup = warmup_frames(app.scene.id(), config.fps)
+                        .max(transition_warmup_frames(app, frame_index, config.fps));
                     let draws = index == frame_index || frame_index - index <= warmup;
                     if draws {
                         draw_offline_frame(
@@ -1567,7 +1568,7 @@ fn prepare_frames(
             // Cold again, so the next capture's run-up starts where a separate
             // still's would. Without this a sheet's later tiles would carry
             // whatever the earlier ones left in the buffer.
-            renderer.reset_feedback();
+            renderer.reset_trails();
         }
     }
     Ok(())
@@ -2544,7 +2545,11 @@ impl ExportSession {
                     // window's own first frame is still the first *encoded* one,
                     // which is what the `export frame lanes:` line reports and
                     // the gate asserts.
-                    let warmup = warmup_frames(app.scene.id(), fps);
+                    let warmup = warmup_frames(app.scene.id(), fps).max(transition_warmup_frames(
+                        app,
+                        window_start,
+                        fps,
+                    ));
                     if warmup > 0 && window_start.saturating_sub(frame_index) <= warmup {
                         // Updates the scene itself, so this is not a second one.
                         draw_offline_frame(
@@ -2736,6 +2741,31 @@ fn warmup_frames(id: musializer_core::scene::SceneId, fps: u32) -> u64 {
     (scene_host::feedback_warmup_seconds(id) * f64::from(fps)).ceil() as u64
 }
 
+/// Frames of run-up a frame inside a scene transition needs (MV3).
+///
+/// A transition composites the frame drawn just before its cut. A still, or a
+/// clip, that starts inside one has to have drawn that frame — and, for an
+/// outgoing scene that keeps light of its own, that scene's run-up before it.
+/// Zero everywhere else, so nothing outside a transition draws a frame more
+/// than it did before transitions existed.
+fn transition_warmup_frames(app: &crate::App, target_frame: u64, fps: u32) -> u64 {
+    let Some(track) = app.workspace.current() else {
+        return 0;
+    };
+    let time = target_frame as f64 / f64::from(fps.max(1));
+    let active = track
+        .scene_switches
+        .transition_at(time, track.duration_seconds);
+    // Clawd's is the longest run-up any scene has, and asking which scene the
+    // outgoing section was is not worth a second lookup for three seconds.
+    let seconds = musializer_core::project::transition::warmup_seconds(
+        active,
+        time,
+        scene_host::feedback_warmup_seconds(musializer_core::scene::SceneId::Clawd),
+    );
+    (seconds * f64::from(fps)).ceil() as u64
+}
+
 /// Draws one frame into the offline target, exactly as an encoded frame is
 /// drawn.
 ///
@@ -2778,6 +2808,7 @@ fn draw_offline_frame(
                 atlas_map: track.atlas_map(),
                 ascii_grid: track.ascii_grid(),
                 caption_style: Some(&track.caption_style),
+                scene_plan: Some(&track.scene_switches),
             }
         });
     renderer.draw(

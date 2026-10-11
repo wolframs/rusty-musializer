@@ -149,7 +149,7 @@ a CX ruling, not a preference.
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
-| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV7 | MV2 and MV3 are `.musi` extensions; the rest small |
+| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV7 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
 
 ### The items, in one line each
 
@@ -360,8 +360,21 @@ one real video with it found these, each from a contact sheet:
   is asked for carries the artist too (for a Suno track, display name and
   `@handle`). So the title lane needs an artist line, and nothing may add a
   card by default.
-- **MV3 — a section change is always a cut.** No fade from or to black, no
-  crossfade. The first and last frame of every export are a hard start.
+- **MV3 — transitions**, landed 2026-10-12: twelve kinds, an intro out of
+  black and an outro into it, authored in a treatment, saved in the `.musi`,
+  drawn by preview and export alike (`docs/MUSIC_VIDEO_CLI.md`). Still open:
+  - **MV3-a — nothing in the window shows or edits them.** The scene lane
+    draws a section boundary the same whether it cuts or burns. A cue's
+    transition wants a mark on the boundary and a picker; the outro wants one
+    at the end of the lane. Until then a project that has them says so nowhere
+    on screen, which is the state "missing beats pretending" exists to prevent.
+  - **MV3-b — the outgoing picture is a held frame.** Invisible under half a
+    second, visible in a long dissolve out of a busy scene. Two live scenes
+    need a second settings table, a second route evaluation and scene state
+    advanced past its own cut.
+  - **MV3-c — beat-aware lengths.** A transition is seconds; "one bar" and
+    "land on the next downbeat" would be worth having once the tempo grid is
+    trusted.
 - **MV4 — Phosphor's `titles` clips a long line.** The built-in 5x7 face fits
   about twenty characters; a full lyric runs off both edges. Wrap, scale or
   shorten.

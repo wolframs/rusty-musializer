@@ -860,6 +860,7 @@ fn build_fixture() -> Project {
                 scene_name: "spectrum".to_owned(),
                 strength: 0.125,
                 settings: vec![0.1, 0.2, 0.3, 0.4],
+                transition: musializer_core::project::transition::Transition::CUT,
             },
             SceneSwitchSuggestion {
                 id: 22,
@@ -880,6 +881,7 @@ fn build_fixture() -> Project {
                     f32::MAX,
                     -f32::MAX,
                 ],
+                transition: musializer_core::project::transition::Transition::CUT,
             },
             SceneSwitchSuggestion {
                 id: 33,
@@ -888,8 +890,10 @@ fn build_fixture() -> Project {
                 scene_name: "atlas.terrain".to_owned(),
                 strength: 1.0,
                 settings: Vec::new(),
+                transition: musializer_core::project::transition::Transition::CUT,
             },
         ],
+        outro: musializer_core::project::transition::Transition::CUT,
     };
 
     // -- scene presets. The first fills all twelve controls.
