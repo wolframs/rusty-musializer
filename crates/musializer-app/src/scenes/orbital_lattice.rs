@@ -25,7 +25,7 @@ use musializer_runtime::draw::Camera3D;
 use musializer_runtime::draw::{draw_billboard_rec, SceneViewport};
 use raylib::prelude::{
     BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibMode3DExt,
-    RaylibShaderModeExt, Rectangle, Vector2, Vector3,
+    RaylibRlgl, RaylibShaderModeExt, Rectangle, Vector2, Vector3,
 };
 
 use super::spectral_terrarium::set_circle;
@@ -382,6 +382,23 @@ pub fn draw(
         let glow_source = Rectangle::new(0.0, 0.0, 1.0, 1.0);
         set_circle(shader, 0.055, 2.8);
         space.draw_blend_mode(BlendMode::BLEND_ADDITIVE, |mut blend| {
+            // No depth test for the light, and it is the *whole* fix for a defect
+            // that only showed once somebody raised `nodes` (found directing a
+            // video, 2026-10-11): each halo is a square quad whose corners the
+            // circle shader leaves transparent, but a quad writes depth across
+            // all of itself. A nearer halo drawn first therefore punched its
+            // empty corners out of every farther halo drawn after it — black
+            // squares around the brightest nodes, obvious at `nodes: 1.6` and
+            // present as a nick in overlapping halos at any size. Additive light
+            // has no order to get wrong, so there is nothing for the test to
+            // protect: a pearl behind another simply adds to it.
+            //
+            // Placement is load-bearing. `rlDisableDepthTest` is immediate GL
+            // state while the quads are batched, so the toggle has to bracket a
+            // *flush*: entering the shader mode flushes what came before, and
+            // leaving it flushes the halos, both while the test is off. Turned
+            // back on before `EndBlendMode`, which then has nothing left to draw.
+            blend.rl_disable_depth_test();
             blend.draw_shader_mode(&mut shader.shader, |mut pass| {
                 for (index, &(position, radius, color, amplitude, fog)) in
                     lanterns.iter().enumerate()
@@ -414,6 +431,7 @@ pub fn draw(
                     );
                 }
             });
+            blend.rl_enable_depth_test();
         });
     }
     drop(viewport);
