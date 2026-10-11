@@ -149,6 +149,7 @@ a CX ruling, not a preference.
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
+| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV6 | MV2 and MV3 are `.musi` extensions; the rest small |
 
 ### The items, in one line each
 
@@ -346,7 +347,42 @@ a setting, so a variant switch has to be built first. `TrackDynamics` rides ever
 `SceneFrame` but only Clawd reads it — any scene with an absolute loudness gate
 has the same latent defect.
 
+**MV — directing from the command line.** MV1 (`--treatment`, `--vocabulary`,
+`--contact-sheet`, `--still`, `tools/headless_run.sh`) is in the archive. Making
+one real video with it found these, each from a contact sheet:
 
+- **MV2 — one caption style per project.** A bottom caption collides with
+  whatever a scene keeps at the bottom (Clawd's cats, Spectrum's bars); a title
+  cannot be set apart from a lyric line, so it is a lyric line shown through
+  Cadence. Wants a per-line or per-section style and probably a title lane.
+  A `.musi` extension: bump deliberately, default never serialized.
+- **MV3 — a section change is always a cut.** No fade from or to black, no
+  crossfade. The first and last frame of every export are a hard start.
+- **MV4 — Phosphor's `titles` clips a long line.** The built-in 5x7 face fits
+  about twenty characters; a full lyric runs off both edges. Wrap, scale or
+  shorten.
+- **MV5 — Clawd's petal show cannot be lit *at* a cut.** It needs about three
+  seconds of kicks after the scene starts. The workaround (start the section two
+  bars early) is documented; a section that begins mid-drop could instead be
+  seeded from the track's energy at that instant.
+- **MV6 — a treatment cannot name an imported caption face** or the caption
+  effects' drive-tuning blocks. Both are refused by name today.
+
+One measurement for **LT2**, from the same session and not yet acted on: on a
+3:59 track with an embedded 27-line sheet, the normal local route
+(`external_analysis.py assist --mode lyrics --lyrics-file`) placed 15 lines and
+left 12 unplaced — both pre-chorus lines, the whole first chorus, the first line
+of verse two. MMS CTC forced alignment of the *same* sheet inside nine
+hand-chosen section windows gave a placement for every line, and its three
+choruses agreed with each other to within 30 ms at whole-bar offsets (60.41 s
+and 68.00 s). Five placements scored under 0.2 — the two shouted responses, the
+two whispered lines, one held word — and were accepted because they sat on the
+bar grid the others established, not on their score; one first word was off by
+2.6 s and was caught only by the chorus-to-chorus comparison. The windows came
+from the measured kick sections, not from Whisper. That is one track and the
+windows were chosen by a reader, so it is a lead rather than a result:
+section-bounded CTC with a repetition cross-check may recover what anchor-block
+localization drops.
 
 ## Two standing facts a new session needs
 

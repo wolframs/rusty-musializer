@@ -64,6 +64,10 @@ selector persists the same theme tokens in the workstation UI preference JSON;
 missing theme fields default to `light-blue`. Neither flag changes project or
 export appearance. See [UI_TOOLKIT.md](UI_TOOLKIT.md).
 
+The directing flags — `--treatment`, `--vocabulary`, `--contact-sheet`,
+`--sheet-at`, `--still` — are post-legacy additions (2026-10-11) with no row in
+3.2; their grammar and their place in the application order are in 3.8.
+
 ### 3.1 Pre-pass: help and version short-circuit
 
 `src/musializer.c:317-326` scans **all** of `argv` **before** anything else —
@@ -388,6 +392,61 @@ need `panel=lyrics`; `lyric=N` needs `panel=assist`; audio-reactive scenes need
 18. Main loop, unless `exit_after_save` (`:637-651`). `KEY_H` triggers an
     interactive hot-reload handoff (`:639-648`).
 19. `plug_shutdown`, `CloseAudioDevice`, `CloseWindow`, return `exit_status`.
+
+### 3.8 Directing flags (post-legacy, 2026-10-11)
+
+Not the oracle's. The guide is [`MUSIC_VIDEO_CLI.md`](MUSIC_VIDEO_CLI.md); this
+is the grammar and the ordering, which are the contract.
+
+| Flag | Values | Applied | Failure |
+| --- | --- | --- | --- |
+| `--vocabulary` | none | **pre-pass**, with `-h`/`--help`/`--version` (3.1): prints one JSON document and returns `0` before the display check and before raylib | — |
+| `--treatment FILE` | 1 | stored; applied **after the argv loop and before the deferred routes** (between steps 7 and 8 of 3.7). Last one wins | warn + error |
+| `--still SECONDS FILE` | **2**, repeatable | stored; rendered after the UI probe stage and before `--render` | warn + error |
+| `--contact-sheet FILE` | 1 | stored; rendered with the stills | warn + error if missing value |
+| `--sheet-at SPEC` | 1 | parsed immediately | warn + error, naming the spec |
+
+Order effects, each observable:
+
+- **`--vocabulary` wins from any position**, over an invalid command line, with
+  no `DISPLAY`. Among the three pre-pass flags, whichever comes first in `argv`
+  wins, as in 3.1.
+- **`--treatment` runs after every input and before `--route`.** A treatment
+  that names its own audio opens it there, so `--treatment FILE` alone is a
+  complete command; one without an `audio` block directs the track the earlier
+  arguments opened. A `--route` on the same line is added to what the treatment
+  declared and is refused as a duplicate if it routes a setting the treatment
+  already routes. `--resolution`, `--fps` and `--quality` (step 9) override the
+  treatment's `output` block.
+- **A treatment that names audio while a different track is already open is
+  refused.** Opening a second track does not make it the current one, so the
+  file would be checked against one track and applied to another.
+- **`--still` and `--contact-sheet` skip the main loop** unless `--render` is
+  also present, exactly as `--save-project` does (`Cli::exits_without_main_loop`;
+  `exit_after_save` is unchanged). With `--render` they are written first, then
+  the export runs.
+- **Every stage after a refused treatment is gated on the error**: no project is
+  saved, no frame is rendered, exit status 1.
+- **`--still` consumes two argv words with `--render-window`'s own index
+  arithmetic**, so a truncated `--still 5` errors and terminates rather than
+  taking the next flag as its path.
+- `--render-window` restricts `--sheet-at`'s `even:`, `segments` and `lyrics`
+  forms to its span and bounds its listed times.
+
+**`--still SECONDS`** and the times in **`--sheet-at`** read the lyric editor's
+grammar (`parse_cue_timestamp`): `73.5`, `1:13.5`, `01:13.500`. A negative sign,
+an hour field, `1:60` and anything non-numeric are refused. A `--still` at or
+past the end of the track is refused by name; the Export panel's still clamps
+instead, because its playhead is on the track by construction.
+
+**`--sheet-at SPEC`** — `even:N` with N in `1..=96` (bare `even` is `even:24`,
+which is also the default), `segments`, `lyrics`, or a comma-separated list of
+times. A sheet holds at most 96 tiles.
+
+Report lines: `treatment:` (section, scene, route, lyric and event counts,
+caption and output state, seed, path), `contact sheet:` (tile count, first and
+last time, size, achieved supersample factor, path), and one `export still:`
+per still in the Export panel's own format.
 
 ---
 
@@ -1182,6 +1241,28 @@ by `runtime::assist::files::credentials_path` (§9.4), which also enforces the
 `0600`/`0700` refuse-not-repair rule before any secret byte is written.
 
 ---
+
+### 6.10 `musializer.treatment/v1` — the treatment file (2026-10-11)
+
+The authoring format behind `--treatment`. **It has no file in `schemas/`, on
+purpose**: the parser (`crates/musializer-core/src/treatment.rs`) is strict
+(`deny_unknown_fields` at every level), and the names a treatment may use —
+scenes, setting keys with their bounds, route sources, curves, caption enums —
+are not a fixed list but the descriptor tables themselves, which
+`--vocabulary` prints (`musializer.vocabulary/v1`). A hand-written JSON Schema
+would be a second copy of both and would drift from them within one scene.
+
+Shape, bounds and defaults are documented in
+[`MUSIC_VIDEO_CLI.md`](MUSIC_VIDEO_CLI.md); `docs/examples/example.treatment.json`
+is parsed by a core test. A treatment is **not** a project: it carries no
+digest-addressed assets and no positional arrays, and it is compiled into
+project state rather than stored. What it produces is saved, if at all, as an
+ordinary `.musi` through `--save-project`.
+
+Top level: `schema` and `segments` are required; `title`, `notes`, `audio`,
+`output`, `seed`, `caption_style`, `scenes`, `lyrics` and `events` are optional.
+An absent `lyrics` or `events` key leaves that lane of the track untouched; an
+empty array replaces it with nothing.
 
 ## 7. Resources
 

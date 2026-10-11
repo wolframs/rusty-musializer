@@ -279,6 +279,17 @@ fn run(
             );
             return Ok(std::process::ExitCode::SUCCESS);
         }
+        Outcome::Vocabulary => {
+            // Before the display check and before raylib, like the two arms
+            // above: the caller asking what it may write is, by definition, one
+            // that has not written anything yet and may have no display at all.
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&musializer_core::treatment::vocabulary())
+                    .map_err(|error| error.to_string())?
+            );
+            return Ok(std::process::ExitCode::SUCCESS);
+        }
         Outcome::Parsed(cli) => cli,
     };
 
@@ -631,6 +642,46 @@ fn run(
                     play,
                 ) {
                     eprintln!("warning: could not load {}: {error}", path.display());
+                    options.error = true;
+                }
+            }
+        }
+    }
+
+    // `--treatment` (2026-10-11), after every input is resolved and before the
+    // deferred routes. After the inputs because it directs a track, and a
+    // treatment that names its own audio opens it here; before the routes so a
+    // `--route` on the same line adds to what the treatment declared — and is
+    // refused as a duplicate, by the table's own rule, if it re-routes a setting
+    // the treatment already routes. `--resolution`, `--fps` and `--quality` run
+    // later still and so override its `output` block.
+    if let Some(path) = options.treatment.clone() {
+        if options.error {
+            eprintln!("warning: could not apply treatment {}", path.display());
+        } else {
+            match apply_treatment(
+                &path,
+                &audio,
+                &mut analysis,
+                &mut music,
+                &mut app,
+                &mut scratch,
+                play,
+            ) {
+                // The line a caller checks against the file it wrote. A
+                // treatment that applied and one that applied nothing both exit
+                // 0, so the counts are the evidence.
+                Ok(line) => println!("treatment:       {line}"),
+                Err(error) => {
+                    eprintln!(
+                        "warning: could not apply treatment {}: {error}",
+                        path.display()
+                    );
+                    // For the case the exit status cannot cover: a session,
+                    // where the window opens anyway and would otherwise show an
+                    // undirected track with nothing saying why.
+                    app.shell
+                        .notify(Severity::Error, "Treatment was not applied", &error);
                     options.error = true;
                 }
             }
@@ -1146,7 +1197,35 @@ fn run(
     // `--render` runs the export and exits (`musializer.c:650`), where an export
     // started from the panel returns to the workspace.
     let exit_after_render = options.render.is_some();
-    let mut running = !options.exit_after_save();
+
+    // `--still` and `--contact-sheet` (2026-10-11): frames through the export's
+    // own offline path, written as files. Here rather than in the loop because
+    // they are a batch request like `--save-project`, and before `--render` so
+    // a run that asks for a sheet *and* an export reviews the same state it
+    // then encodes. Gated like every stage after an error: a sheet of a
+    // treatment that was refused would be a picture of some other project.
+    if !options.stills.is_empty() || options.contact_sheet.is_some() {
+        if options.error {
+            eprintln!("warning: could not render the requested frames");
+        } else if let Err(error) = render_batch_frames(
+            &options,
+            &mut rl,
+            &thread,
+            &audio,
+            music.as_ref(),
+            &mut app,
+            &mut analysis,
+            &mut renderer,
+            &fonts,
+        ) {
+            eprintln!("warning: could not render the requested frames: {error}");
+            options.error = true;
+        }
+    }
+
+    // `--save-project` without `--render` skips the main loop, and so does a
+    // run that asked only for stills or a sheet (`Cli::exits_without_main_loop`).
+    let mut running = !options.exits_without_main_loop();
     if let Some(destination) = options.render.clone() {
         if options.error {
             // An earlier stage already failed; rendering on top of it would
@@ -3453,6 +3532,306 @@ fn protocol_apply_activation(
     }
 }
 
+/// Apply a `*.treatment.json` to the workspace (`--treatment`).
+///
+/// Returns the report line. Everything that can be refused is refused before
+/// anything on the track is replaced, so a treatment that fails leaves the
+/// plan, the tuning, the routes, the lyrics and the caption style exactly as
+/// the earlier arguments left them. The one thing that may already have
+/// happened is that the audio it names was opened: the track's duration is what
+/// the rest is checked against. Every later stage is gated on the error, so a
+/// refused treatment still writes nothing.
+///
+/// The audio path resolves against the treatment file's own directory — the
+/// rule protocols and project assets use — and a pinned digest is checked
+/// before the file is opened. A treatment with no `audio` block directs
+/// whatever track the command line already opened.
+fn apply_treatment<'audio>(
+    path: &Path,
+    audio: &'audio RaylibAudio,
+    analysis: &mut Analysis,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    play: bool,
+) -> Result<String, String> {
+    use musializer_core::project::model::Metadata;
+    use musializer_core::treatment::{format_time, Treatment};
+
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
+
+    if let Some(declared) = &treatment.audio {
+        let declared_path = Path::new(&declared.path);
+        let resolved = if declared_path.is_absolute() {
+            declared_path.to_path_buf()
+        } else {
+            path.parent().unwrap_or(Path::new(".")).join(declared_path)
+        };
+        let canonical = project_files::canonicalize_existing_file(&resolved)
+            .map_err(|error| format!("audio.path {}: {error}", resolved.display()))?;
+        match app.workspace.current() {
+            // Already open — `song.mp3 --treatment t.json` where the treatment
+            // names the same file. The digest cached at load answers a pin.
+            Some(track) if track.file_path == canonical => {
+                if declared.sha256.is_some() && !track.audio_sha256.is_empty() {
+                    declared
+                        .verify_digest(&track.audio_sha256)
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            // Opening a second track would not make it the current one
+            // (`open_track` binds audio only to the first), so the treatment
+            // would be compiled against one file and applied to another.
+            Some(track) => {
+                return Err(format!(
+                    "it is written for {}, but {} is already open; drop the track \
+                     from the command line or the audio block from the treatment",
+                    canonical.display(),
+                    track.file_path.display()
+                ));
+            }
+            None => {
+                if declared.sha256.is_some() {
+                    let digest = project_files::sha256_file_hex(&canonical)
+                        .map_err(|error| format!("{}: {error}", canonical.display()))?;
+                    declared
+                        .verify_digest(&digest)
+                        .map_err(|error| error.to_string())?;
+                }
+                open_track(audio, &canonical, analysis, music, app, scratch, play)?;
+            }
+        }
+    }
+
+    let track = app
+        .workspace
+        .current_mut()
+        .ok_or("a treatment directs a track: name one in its audio block or on the command line")?;
+    let duration = track.duration_seconds;
+    let compiled = treatment
+        .compile(duration)
+        .map_err(|error| error.to_string())?;
+
+    // The one refusal left that needs the track: the output shape, checked on
+    // a copy so a bad one changes nothing.
+    let mut render_config = track.render_config;
+    if let Some(output) = treatment.output {
+        if let Some((width, height)) = output.resolution {
+            render_config.width = width;
+            render_config.height = height;
+        }
+        if let Some(fps) = output.fps {
+            render_config.fps = fps;
+        }
+        if let Some(quality) = output.quality {
+            render_config.set_quality(quality);
+        }
+        render_config.validate().map_err(|error| {
+            format!(
+                "output {}x{} at {} fps: {error}",
+                render_config.width, render_config.height, render_config.fps
+            )
+        })?;
+    }
+    // Staged, so a lane the model refuses is also a refusal of the whole file.
+    let mut lyrics = track.lyrics.clone();
+    if let Some(document) = &compiled.lyrics {
+        lyrics
+            .replace(document)
+            .map_err(|error| format!("lyrics: {error}"))?;
+    }
+    let mut manual_events = track.manual_events.clone();
+    if let Some(lane) = &compiled.manual_events {
+        manual_events
+            .replace(lane)
+            .map_err(|error| format!("events: {error}"))?;
+    }
+
+    // Nothing below this line can fail.
+    if let Some(seed) = treatment.seed {
+        track.scene_seed = seed;
+    }
+    track.scene_settings = compiled.scene_settings;
+    track.playback_scene_settings = compiled.scene_settings;
+    track.scene_routes = compiled.scene_routes;
+    track.scene_switches = compiled.scene_switches;
+    // The first section's scene, so the plan switched off in the interface
+    // still shows something the treatment chose.
+    track.base_scene = compiled.base_scene;
+    track.previous_base_scene = compiled.base_scene;
+    track.scene_selection_pending = false;
+    track.cue_settings_active = false;
+    track.lyrics = lyrics;
+    if compiled.manual_events.is_some() {
+        track.manual_events = manual_events;
+        track.manual_clear.forget();
+        track.refresh_next_manual_event_id();
+    }
+    if let Some(style) = treatment.caption_style.clone() {
+        // A treatment cannot name an imported face (`treatment.rs` refuses
+        // one), so the two asset paths are stale the moment the style changes.
+        track.caption_style = style;
+        track.caption_font_path = None;
+        track.caption_licence_path = None;
+    }
+    track.render_config = render_config;
+    if let Some(title) = &treatment.title {
+        match track.project_metadata.as_mut() {
+            Some(metadata) => metadata.title.clone_from(title),
+            // The id `build_project` would have derived, so a titled treatment
+            // and an untitled one save under the same project identity.
+            None => {
+                track.project_metadata = Some(Metadata {
+                    project_id: format!(
+                        "track-{}",
+                        &track.audio_sha256[..track.audio_sha256.len().min(16)]
+                    ),
+                    title: title.clone(),
+                    ..Metadata::default()
+                });
+            }
+        }
+    }
+    let seed = track.scene_seed;
+    let caption = if treatment.caption_style.is_some() {
+        "set"
+    } else {
+        "kept"
+    };
+    let output = format!(
+        "{}x{}@{} {}",
+        track.render_config.width,
+        track.render_config.height,
+        track.render_config.fps,
+        track.render_config.quality.name().to_lowercase()
+    );
+
+    app.scene = SceneInstance::new(scene_host::descriptor(compiled.base_scene), seed);
+    app.apply_auto_scene_switch(0.0);
+
+    let summary = compiled.summary;
+    let lane = |count: Option<usize>, noun: &str| match count {
+        Some(count) => format!("{count} {noun}"),
+        None => format!("{noun} kept"),
+    };
+    let line = format!(
+        "{} sections over {} ({} scenes), {} routes, {}{}, {}, caption style {caption}, \
+         output {output}, seed {seed} — {}",
+        summary.segments,
+        format_time(duration),
+        summary.distinct_scenes,
+        summary.routes,
+        lane(summary.lyrics, "lyric lines"),
+        if summary.lyrics_fully_shadowed > 0 {
+            format!(" ({} never shown)", summary.lyrics_fully_shadowed)
+        } else {
+            String::new()
+        },
+        lane(summary.events, "events"),
+        path.display()
+    );
+    app.shell.notify(
+        Severity::Info,
+        "Treatment applied",
+        &format!(
+            "{} sections across {} scenes are driving the preview.",
+            summary.segments, summary.distinct_scenes
+        ),
+    );
+    Ok(line)
+}
+
+/// `--still` and `--contact-sheet`: the frames a batch run asked for.
+///
+/// Returns once every file is written. The two share one function because they
+/// share the gate, and nothing else — each is its own replay, so a sheet's
+/// tiles never depend on which stills happened to be asked for beside it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the resources one offline frame needs; see `ExportSession::begin`"
+)]
+fn render_batch_frames(
+    options: &Cli,
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut App,
+    analysis: &mut Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+) -> Result<(), String> {
+    if !options.stills.is_empty() {
+        ui::panels::export::export_stills(
+            rl,
+            thread,
+            audio,
+            music,
+            app,
+            analysis,
+            renderer,
+            fonts,
+            &options.stills,
+        )?;
+    }
+    if let Some(destination) = options.contact_sheet.as_deref() {
+        let track = app
+            .workspace
+            .current()
+            .ok_or("there is no track to render a sheet from")?;
+        let segments: Vec<(f64, f64)> = if track.scene_switches.enabled {
+            track
+                .scene_switches
+                .cues()
+                .iter()
+                .map(|cue| (cue.start_seconds, cue.end_seconds))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Displayable lines only: a `Potential` cue never reaches a frame, so a
+        // tile at its midpoint would be labelled with a line that is not there.
+        let lyrics: Vec<(f64, f64)> = track
+            .lyrics
+            .cues()
+            .iter()
+            .filter(|cue| cue.origin.is_displayable())
+            .map(|cue| (cue.start_seconds, cue.end_seconds))
+            .collect();
+        let stops = options.sheet_at.clone().unwrap_or_default();
+        let times = stops.resolve(
+            track.duration_seconds,
+            options.render_window,
+            &segments,
+            &lyrics,
+        )?;
+        let done = ui::panels::export::export_contact_sheet(
+            rl,
+            thread,
+            audio,
+            music,
+            app,
+            analysis,
+            renderer,
+            fonts,
+            &times,
+            destination,
+        )?;
+        println!(
+            "contact sheet:   {} tiles from {} to {} at {}x{} ({}x target), {}",
+            done.frames,
+            musializer_core::treatment::format_time(times[0]),
+            musializer_core::treatment::format_time(times[times.len() - 1]),
+            done.config.width,
+            done.config.height,
+            done.achieved_factor,
+            destination.display()
+        );
+    }
+    Ok(())
+}
+
 /// Load a `*.protocol.json` and start (or resume) its listening session.
 ///
 /// The audio path resolves against the protocol file's own directory, and the
@@ -4280,7 +4659,15 @@ fn recover_session<'audio>(
 /// per-user configuration. `--save-project` in particular is how this
 /// repository's own gate manufactures its `.musi` fixtures.
 fn is_session_run(options: &Cli) -> bool {
-    options.probe_frames.is_none() && options.render.is_none() && options.save_project.is_none()
+    options.probe_frames.is_none()
+        && options.render.is_none()
+        && options.save_project.is_none()
+        // The two batch outputs the oracle does not have: a run that writes a
+        // still or a contact sheet exits when it has, exactly like the three
+        // above, and must leave the operator's recent list alone for the same
+        // reason.
+        && options.stills.is_empty()
+        && options.contact_sheet.is_none()
 }
 
 /// Keeps an advertised recovery generation from being displaced by a new

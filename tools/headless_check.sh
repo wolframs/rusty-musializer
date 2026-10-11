@@ -536,6 +536,11 @@ done
 # SX5 has a focused, reusable muted motion/export gate.
 tools/knot_check.sh "$OUT_DIR/knot" || SWEEP_FAILED=1
 
+# So does directing from the command line: --treatment, --vocabulary,
+# --contact-sheet, --still, and tools/headless_run.sh, which every launch in it
+# goes through.
+tools/treatment_check.sh "$OUT_DIR/treatment" || SWEEP_FAILED=1
+
 # The synthetic track's startup transient crosses Spectrum's onset threshold by
 # frame eight. The removed renderer pass used that boolean to paint a full-width
 # white gradient across the reflection floor — the short flash reported in both

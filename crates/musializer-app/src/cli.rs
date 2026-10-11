@@ -37,9 +37,11 @@
 
 use std::path::PathBuf;
 
+use musializer_core::render::contact_sheet::SheetStops;
 use musializer_core::scene::events::{EventRecord, EventType, VALUE_CAPACITY};
 use musializer_core::scene::routes::{self, ParameterMapping};
 use musializer_core::scene::{settings, SceneId};
+use musializer_core::ui::lyric_lane_edit::parse_cue_timestamp;
 
 use crate::ui::scale::UiScalePreference;
 
@@ -68,6 +70,13 @@ pub enum Outcome {
     Help,
     /// `--version` seen anywhere in `argv`; print the version, exit 0.
     Version,
+    /// `--vocabulary` seen anywhere in `argv`: print every name a treatment or
+    /// a `--route` may use as one JSON document, exit 0. Not the oracle's. A
+    /// pre-pass flag like the two above, and for their reason: it is a question
+    /// about the build rather than about a track, so it must answer with no
+    /// window, no display and no audio device — which is exactly the situation
+    /// of the caller that needs it.
+    Vocabulary,
     Parsed(Box<Cli>),
 }
 
@@ -504,6 +513,24 @@ pub struct Cli {
     /// `AGENTS.md` for when an agent should reach for the GPU one.
     pub encoder: Option<String>,
     pub save_project: Option<PathBuf>,
+    /// `--treatment FILE` (2026-10-11): a whole music video as one authored
+    /// file — scene plan, per-section tuning, routes, lyric timing, caption
+    /// style (`musializer_core::treatment`). Applied after every input action
+    /// and before the deferred routes, so a `--route` beside it adds to what
+    /// the treatment declared and `--resolution`/`--fps`/`--quality` override
+    /// its `output` block.
+    pub treatment: Option<PathBuf>,
+    /// `--still SECONDS FILE`, repeatable: frames rendered through the export's
+    /// own offline path and written as PNGs. All of them come out of one pass
+    /// over the track.
+    pub stills: Vec<(f64, PathBuf)>,
+    /// `--contact-sheet FILE`: one PNG of labelled tiles across the track (or
+    /// the `--render-window`), which is how a caller with no window looks at a
+    /// video.
+    pub contact_sheet: Option<PathBuf>,
+    /// `--sheet-at SPEC`: which moments the sheet shows. `None` is the default
+    /// spread.
+    pub sheet_at: Option<SheetStops>,
     pub analysis_bridge: Option<PathBuf>,
     /// `--protocol PATH`: load a `*.protocol.json` feedback protocol and start
     /// its listening session (HX-2). Additive; nothing else on the grammar
@@ -571,6 +598,21 @@ impl Cli {
         self.save_project.is_some() && self.render.is_none()
     }
 
+    /// True when the command line asked only for files — a project, stills, a
+    /// contact sheet — and not for an export, so there is nothing for the main
+    /// loop to do once they are written.
+    ///
+    /// [`Cli::exit_after_save`] is the oracle's rule and stays exactly what it
+    /// was; this is the same rule extended to the two outputs the oracle does
+    /// not have. A run that asks for a still and then leaves a window open,
+    /// waiting on a display nobody is looking at, is a batch job that never
+    /// returns.
+    #[must_use]
+    pub fn exits_without_main_loop(&self) -> bool {
+        self.exit_after_save()
+            || (self.render.is_none() && (!self.stills.is_empty() || self.contact_sheet.is_some()))
+    }
+
     /// The last `--scene` on the command line, for the diagnostics report.
     #[must_use]
     pub fn requested_scene(&self) -> Option<SceneId> {
@@ -630,6 +672,7 @@ where
         match argument.as_str() {
             "-h" | "--help" => return Outcome::Help,
             "--version" => return Outcome::Version,
+            "--vocabulary" => return Outcome::Vocabulary,
             _ => {}
         }
     }
@@ -740,6 +783,45 @@ where
                 None => cli.warn("Missing project output path"),
             },
 
+            // Additive (2026-10-11): the authoring half of the command line.
+            // See `docs/MUSIC_VIDEO_CLI.md`.
+            "--treatment" => match value_of(&argv, i) {
+                Some(path) => cli.treatment = Some(PathBuf::from(path)),
+                None => cli.warn("Missing command-line treatment path"),
+            },
+
+            // Two argv words, like `--render-window`, and advanced the same way
+            // so a truncated flag errors and terminates rather than swallowing
+            // whatever follows it.
+            "--still" => {
+                let seconds = argv.get(i + 1).and_then(|text| parse_cue_timestamp(text));
+                let path = argv.get(i + 2);
+                match (seconds, path) {
+                    (Some(seconds), Some(path)) => {
+                        cli.stills.push((seconds, PathBuf::from(path)));
+                    }
+                    _ => cli.warn("Invalid still; expected --still SECONDS FILE.png"),
+                }
+                i += if i + 2 < argv.len() {
+                    2
+                } else {
+                    argv.len().saturating_sub(1).saturating_sub(i)
+                };
+            }
+
+            "--contact-sheet" => match value_of(&argv, i) {
+                Some(path) => cli.contact_sheet = Some(PathBuf::from(path)),
+                None => cli.warn("Missing contact sheet output path"),
+            },
+
+            "--sheet-at" => match value_of(&argv, i) {
+                None => cli.warn("Missing --sheet-at spec"),
+                Some(spec) => match SheetStops::parse(spec, parse_cue_timestamp) {
+                    Ok(stops) => cli.sheet_at = Some(stops),
+                    Err(message) => cli.warn(message),
+                },
+            },
+
             "--analysis-bridge" => match value_of(&argv, i) {
                 Some(path) => cli.analysis_bridge = Some(PathBuf::from(path)),
                 None => cli.warn("Missing command-line analysis bridge path"),
@@ -841,6 +923,9 @@ fn takes_one_value(flag: &str) -> bool {
             | "--encoder"
             | "--project"
             | "--save-project"
+            | "--treatment"
+            | "--contact-sheet"
+            | "--sheet-at"
             | "--analysis-bridge"
             | "--protocol"
             | "--ui-probe"
@@ -1277,6 +1362,29 @@ Workspace:
                           keys 1-4, answers append beside it as
                           *.answers.jsonl
   --auto-scenes           Enable imported scene suggestions
+
+Directing (no window needed to author; see docs/MUSIC_VIDEO_CLI.md):
+  --treatment FILE        Apply a *.treatment.json: which scene plays when,
+                          each section's tuning by setting name, per-scene
+                          audio routes, timed lyric lines, caption style and
+                          output shape. The file may name its own audio, so
+                          this flag alone opens a whole video. Unknown names
+                          and out-of-range values are refused, not ignored.
+                          --save-project after it writes an ordinary .musi
+  --vocabulary            Print every scene, setting (with bounds and
+                          default), route source, curve and caption option a
+                          treatment may name, as JSON, and exit. Opens no
+                          window
+  --contact-sheet FILE    Write one PNG of labelled frames across the track
+                          (or the --render-window) and exit: timecode, scene
+                          section and lyric line under each tile, rendered
+                          through the export path
+  --sheet-at SPEC         Which frames: even:N (default even:24), segments
+                          (one per scene section), lyrics (one per line), or
+                          a list of times such as 0:23,1:13.5,95
+  --still SECONDS FILE    Write that frame as a PNG and exit. Repeatable; all
+                          stills come out of one pass. SECONDS is 73.5 or
+                          1:13.5
 
 Export:
   --render FILE           Render MP4 and exit
@@ -1831,6 +1939,120 @@ mod tests {
         assert_eq!(Quality::from_name("master"), Some(Quality::Master));
         // A missing value does fail here, as in the C.
         assert!(parsed(&["--quality"]).error);
+    }
+
+    #[test]
+    fn vocabulary_is_a_pre_pass_flag_like_help_and_version() {
+        // It answers a question about the build, so it wins from any position
+        // and over an invalid command line, exactly as the other two do.
+        assert!(matches!(parse(["--vocabulary"]), Outcome::Vocabulary));
+        assert!(matches!(
+            parse(["--fps", "0", "song.mp3", "--vocabulary"]),
+            Outcome::Vocabulary
+        ));
+        // First in argv wins among the three.
+        assert!(matches!(parse(["--help", "--vocabulary"]), Outcome::Help));
+        assert!(matches!(
+            parse(["--vocabulary", "--version"]),
+            Outcome::Vocabulary
+        ));
+    }
+
+    #[test]
+    fn the_treatment_flag_takes_one_path_and_last_wins() {
+        let cli = parsed(&["--treatment", "a.treatment.json", "--mute"]);
+        assert_eq!(cli.treatment, Some(PathBuf::from("a.treatment.json")));
+        // The value was consumed, not replayed as a track.
+        assert_eq!(cli.actions, vec![Action::Mute]);
+        assert!(!cli.error);
+        let cli = parsed(&["--treatment", "a.json", "--treatment", "b.json"]);
+        assert_eq!(cli.treatment, Some(PathBuf::from("b.json")));
+        assert!(parsed(&["--treatment"]).error);
+        // A treatment is not a project: the positional rule is unchanged.
+        let cli = parsed(&["song.treatment.json"]);
+        assert_eq!(
+            cli.actions,
+            vec![Action::LoadTrack(PathBuf::from("song.treatment.json"))]
+        );
+    }
+
+    #[test]
+    fn a_still_takes_a_time_in_either_grammar_and_a_path_and_repeats() {
+        let cli = parsed(&[
+            "--still", "73.5", "a.png", "--still", "1:13.5", "b.png", "--fps", "30",
+        ]);
+        assert_eq!(
+            cli.stills,
+            vec![
+                (73.5, PathBuf::from("a.png")),
+                (73.5, PathBuf::from("b.png"))
+            ]
+        );
+        // Both words were consumed and the flag after them still parsed.
+        assert_eq!(cli.fps, Some(30));
+        assert!(cli.actions.is_empty());
+        assert!(!cli.error);
+    }
+
+    #[test]
+    fn a_truncated_or_malformed_still_errors_and_terminates() {
+        // The same index arithmetic as `--render-window`: one word short must
+        // not loop and must not read the next flag as its path.
+        let cli = parsed(&["--still", "5"]);
+        assert!(cli.error);
+        assert!(cli.stills.is_empty());
+        assert!(parsed(&["--still"]).error);
+        for bad in ["-1", "soon", "1:60", "nan"] {
+            let cli = parsed(&["--still", bad, "a.png"]);
+            assert!(cli.error, "{bad}");
+            assert!(cli.stills.is_empty(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_contact_sheet_flags_parse_their_spec_and_name_a_bad_one() {
+        let cli = parsed(&["--contact-sheet", "sheet.png"]);
+        assert_eq!(cli.contact_sheet, Some(PathBuf::from("sheet.png")));
+        assert_eq!(cli.sheet_at, None);
+        for (spec, expected) in [
+            ("even:12", SheetStops::Even(12)),
+            ("segments", SheetStops::Segments),
+            ("lyrics", SheetStops::Lyrics),
+            ("0:23,1:13.5,95", SheetStops::Times(vec![23.0, 73.5, 95.0])),
+        ] {
+            let cli = parsed(&["--sheet-at", spec]);
+            assert_eq!(cli.sheet_at, Some(expected), "{spec}");
+            assert!(!cli.error, "{spec}");
+        }
+        let cli = parsed(&["--sheet-at", "even:0"]);
+        assert!(cli.error);
+        assert!(cli
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("even:0")));
+        let cli = parsed(&["--sheet-at", "0:23,later"]);
+        assert!(cli
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("\"later\"")));
+        assert!(parsed(&["--contact-sheet"]).error);
+        assert!(parsed(&["--sheet-at"]).error);
+    }
+
+    #[test]
+    fn file_only_requests_skip_the_main_loop_and_an_export_does_not() {
+        // The oracle's rule, untouched.
+        assert!(parsed(&["--save-project", "out.musi"]).exits_without_main_loop());
+        // And the two outputs it does not have.
+        assert!(parsed(&["--still", "5", "a.png"]).exits_without_main_loop());
+        assert!(parsed(&["--contact-sheet", "s.png"]).exits_without_main_loop());
+        // An export owns the loop and exits by its own path.
+        assert!(
+            !parsed(&["--contact-sheet", "s.png", "--render", "o.mp4"]).exits_without_main_loop()
+        );
+        // A treatment on its own is a session: the window opens on the video.
+        assert!(!parsed(&["--treatment", "a.json"]).exits_without_main_loop());
+        assert!(!parsed(&["song.mp3"]).exits_without_main_loop());
     }
 
     #[test]

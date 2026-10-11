@@ -1,5 +1,110 @@
 # Feature-parity waves, 2026-08-01 to 2026-08-27 (archived)
 
+## MV1 — directing a video from the command line (completed 2026-10-11)
+
+Operator request, verbatim: *"You should extend the CLI interface such that you
+can create music videos yourself :D"*, with a track attached and a video another
+model had made in a chat window with FFmpeg as the bar to meet.
+
+**What was missing.** The command line could render a project and could not
+author one. `--scene` picks one scene for a whole track and `--route` adds one
+mapping; the scene plan, per-section tuning, lyric timing and caption style had
+no flag at all. Nor could a caller with no window *look* at anything short of a
+whole export.
+
+**What landed.**
+
+- `--treatment FILE` — a video as one strict JSON file, compiled into the state
+  the editors produce (`crates/musializer-core/src/treatment.rs`, 28 tests).
+- `--vocabulary` — every name a treatment may use, generated from the tables the
+  parser reads; a pre-pass flag, no display needed.
+- `--contact-sheet FILE`, `--sheet-at SPEC`, `--still SECONDS FILE` — frames
+  through the export's own offline path
+  (`crates/musializer-core/src/render/contact_sheet.rs`, 10 tests; the replay in
+  `ui/panels/export.rs` generalized from one capture to many).
+- `tools/headless_run.sh` — the gate's isolation as a pass-through launcher.
+- `tools/treatment_check.sh` + `.py` — the gate, run by `tools/headless_check.sh`.
+- `docs/MUSIC_VIDEO_CLI.md`, `docs/examples/example.treatment.json`, and
+  `docs/PHASE0_INVENTORY.md` 3.8 and 6.10 for the grammar.
+
+The decisions and their reasons are in `AGENTS.md`'s divergence table under MV1.
+
+**The proof was a video, not a test.** "Twenty-Twelve, Haul Away", 3:59, directed
+entirely through the new flags: 26 sections across 9 scenes, 32 timed lines, 2
+routes, 8 events. The treatment went through five versions, each judged from
+contact sheets — eleven sheets and about two dozen stills in all — and none of
+it needed the window. What the loop was actually used for, in order:
+
+1. A survey sheet of every scene at a quiet and a loud moment, to learn what the
+   thirteen names look like.
+2. A first cut; `--sheet-at lyrics` showed the type too small, Phosphor's
+   `titles` clipping a long line, and the caption colliding with Clawd's cats.
+3. Audition treatments: ten Phosphor fields in one sheet (rain for "go count the
+   lines", the vortex for the acid solo), five candidates for the last drop.
+4. `--render-window 202 18 --sheet-at even:16` on the last drop, three times,
+   until the petal show was lit at the cut rather than five seconds after it.
+5. A 720p NVENC draft, tiled from the encoded file, which showed the three
+   risers playing over an empty Cadence — fixed by giving them their held word.
+
+Measured through `tools/headless_run.sh` on the RTX 3090, release build: a
+26-tile sheet in 6 s at 720p Balanced and 7 s at 1080p High; four stills in 5 s;
+the full 720p Balanced export under NVENC in 2 min 05 s; the final 1920x1080
+High export under x264 in 7 min 19 s (7199 frames, 168 MB).
+
+**Evidence.** `tools/treatment_check.sh` passes; `cargo test` is green (app 523,
+core 1076, runtime 187); `tools/verify.sh --quick` 8 of 8. The still-versus-export
+cross-check reads 39.10 dB against a 21.55 dB neighbouring-moment control at
+640x360 Balanced under x264.
+
+**Negative controls, each on a scratch binary and reverted byte-for-byte
+(sha256-checked):**
+
+| Perturbation | Gate | Unit tests |
+| --- | --- | --- |
+| No persistence-buffer reset between captures | two-still byte equality fails | n/a |
+| Frame outputs not gated on an earlier error | `past-end: a sheet was rendered after the refusal` | n/a |
+| A section's own settings dropped | 3 applied-value checks fail | 4 of 28 fail |
+
+Two things the controls taught that the passing gate had not:
+
+- **The first control could not fail as first written.** With one still in
+  Spectrum and one in Clawd the equality held with the reset removed, because
+  nothing had left light in the buffer to carry. Both stills had to sit inside
+  the one scene that keeps light, the first before the second's three-second
+  run-up. A check that cannot fail was passing.
+- **The second caught the dangerous case rather than the obvious one.** A
+  treatment refused at parse has opened no audio, so the missing gate is
+  invisible. One refused at *compile* has, and without the gate a sheet of the
+  undirected track is written to the path the caller asked for.
+
+**What the gate itself found on its first run** — three real things, before any
+control: a `--still` past the end of the track silently wrote the last frame
+(now refused; the panel's clamp is unchanged); the reopen check compared bytes
+across a bundle path that is supposed to differ; and "tile looks empty" was
+judging Loom's fine threads by mean brightness.
+
+**A scene defect found by directing, and fixed.** Raising Orbital Lattice's
+`nodes` to 1.6 in a treatment drew black squares around its brightest pearls:
+the additive halo quads were depth-tested, so each nearer quad's transparent
+corners occluded the farther ones. At the default size the same fight striped
+every pearl's core against its own halo, and had since the scene was written —
+every capture had photographed it as texture. The pass now runs with the depth
+test off. This changes the scene's pixels deliberately: 34.09 and 31.97 dB
+against the old frame at two default-tuned moments, 25.16 dB at `nodes: 1.6`.
+
+**Lyric timing, as a by-product.** The embedded 27-line sheet was timed by MMS
+CTC forced alignment inside nine section windows, and checked by the song's own
+repetition: chorus 2 = chorus 1 + 60.41 s and chorus 3 = chorus 2 + 68.00 s on
+every word, to within 30 ms. Two instruments were tried and set aside for
+*timing*: Whisper's word timestamps (seconds early at segment starts, and
+smeared across the drops) and a listening model's (compressed — every phrase of
+a 22 s crop listed inside its first 13.7 s). The comparison against the normal
+Assist route is recorded under LT2 in the live queue.
+
+**Left open:** MV2–MV6 in `FEATURE_PARITY_PLAN.md`. The video's own files — the
+treatment, the saved project, the storyboard sheet and the MP4 — are outside the
+repository by the rule against committing user audio and generated video.
+
 ## SX5 finish — post-processing (completed 2026-09-09)
 
 Operator feedback: the geometry worked, but the finish looked plain. Added

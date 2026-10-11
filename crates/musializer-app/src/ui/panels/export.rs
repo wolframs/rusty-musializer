@@ -1306,11 +1306,10 @@ struct PreparedFrame {
 
 /// Replays the offline scene path to one frame and reads back resolved pixels.
 ///
-/// This is shared by PNG stills and share-preview substitution. Keeping the
-/// replay here is the important part: stateful scenes, analyzer history, beat
-/// tracking, routes, captions and automatic scene switches all see every frame
-/// they would have seen in an ordinary export. The caller must stop preview
-/// playback first and restore or reinitialize the preview/export state after.
+/// This is shared by PNG stills and share-preview substitution, and it is the
+/// one-moment case of [`prepare_frames`] rather than a path of its own — so a
+/// still pressed in the panel and a still asked for on the command line cannot
+/// come to be different pictures.
 #[allow(
     clippy::too_many_arguments,
     reason = "the same borrowed resources one offline export frame needs"
@@ -1326,6 +1325,69 @@ fn prepare_frame_pixels(
     time_seconds: f64,
     progress_label: &str,
 ) -> Result<PreparedFrame, String> {
+    let mut prepared = None;
+    prepare_frames(
+        rl,
+        thread,
+        audio,
+        app,
+        analysis,
+        renderer,
+        fonts,
+        &[time_seconds],
+        progress_label,
+        &mut |_, frame| {
+            // Moved out rather than copied: 8 MiB at 1080p, and this is the
+            // only capture there will be.
+            prepared = Some(PreparedFrame {
+                pixels: std::mem::take(&mut frame.pixels),
+                config: frame.config,
+                frame_index: frame.frame_index,
+                total_frames: frame.total_frames,
+                achieved_factor: frame.achieved_factor,
+            });
+            Ok(())
+        },
+    )?;
+    prepared.ok_or_else(|| "the frame was not produced".to_owned())
+}
+
+/// Replays the offline scene path once and hands back a resolved frame at each
+/// of `times`.
+///
+/// Keeping the replay here is the important part: stateful scenes, analyzer
+/// history, beat tracking, routes, captions and automatic scene switches all
+/// see every frame they would have seen in an ordinary export. The caller must
+/// stop preview playback first and restore or reinitialize the preview/export
+/// state after.
+///
+/// **One pass for any number of moments** (2026-10-11). A contact sheet is two
+/// dozen stills, and replaying from zero for each would decode the track and
+/// drive the analyzer over it two dozen times — the cost of a sheet would be
+/// the cost of the review loop it exists to shorten. The moments are visited in
+/// time order whatever order they were asked for in; `each` is told which
+/// request (its position in `times`) a frame answers.
+///
+/// Each capture is the picture a *separate* still would have been, by
+/// construction rather than by measurement: frame-persistence light is reset
+/// after every capture, so the next one warms up over exactly the frames a
+/// fresh replay would have drawn, from exactly the same cold buffer.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one offline export frame needs"
+)]
+fn prepare_frames(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    times: &[f64],
+    progress_label: &str,
+    each: &mut dyn FnMut(usize, &mut PreparedFrame) -> Result<(), String>,
+) -> Result<(), String> {
     let track = app
         .workspace
         .current()
@@ -1351,13 +1413,20 @@ fn prepare_frame_pixels(
     let (samples, (sample_rate, channels, frame_count)) = decoded.ok_or_else(|| {
         "the source audio decoder rejected the file, so the frame could not be prepared".to_owned()
     })?;
-    let (total_frames, frame_index) =
-        render_export::total_frames(u64::from(frame_count), sample_rate, config.fps)
-            .and_then(|total| {
-                render_export::still_frame_index(time_seconds, config.fps, total)
-                    .map(|index| (total, index))
-            })
-            .map_err(|_| "the playhead is not on a frame this track can produce".to_owned())?;
+    let total_frames = render_export::total_frames(u64::from(frame_count), sample_rate, config.fps)
+        .map_err(|_| "the track has no frames at this frame rate".to_owned())?;
+    // `(frame, request)`, in the order the replay will reach them. Two requests
+    // may land on one frame; both are answered from the same pixels.
+    let mut targets = Vec::with_capacity(times.len());
+    for (request, &time_seconds) in times.iter().enumerate() {
+        let frame_index = render_export::still_frame_index(time_seconds, config.fps, total_frames)
+            .map_err(|_| format!("{time_seconds:.3} s is not on a frame this track can produce"))?;
+        targets.push((frame_index, request));
+    }
+    targets.sort_unstable();
+    let Some(&(last_frame, _)) = targets.last() else {
+        return Ok(());
+    };
 
     let (mut target, achieved_factor) =
         offline_render_target(rl, thread, &config).ok_or_else(|| {
@@ -1407,9 +1476,21 @@ fn prepare_frame_pixels(
     }
 
     let mut sample_cursor = 0u64;
+    let mut prepared = PreparedFrame {
+        pixels: Vec::new(),
+        config,
+        frame_index: 0,
+        total_frames,
+        achieved_factor,
+    };
+    let mut resolver = LinearResolver::new();
+    let mut next_target = 0usize;
     {
         let mut d = rl.begin_drawing(thread);
-        for index in 0..=frame_index {
+        for index in 0..=last_frame {
+            // The capture this frame is working toward. `index` never passes
+            // it: the cursor moves on in the same iteration that reaches it.
+            let frame_index = targets[next_target].0;
             // `RenderJob::take_samples` (`plug.c:7987-8011`): frame zero hears
             // nothing, and every frame after it hears exactly the samples
             // between the two cursors.
@@ -1468,21 +1549,321 @@ fn prepare_frame_pixels(
                     }
                 },
             );
+            if index != frame_index {
+                continue;
+            }
+            // Read back inside the drawing pair, as `ExportSession::step` does
+            // for every encoded frame: the texture mode has already ended and
+            // flushed, so the target holds this frame and nothing else.
+            if prepared.pixels.len() != config.width as usize * config.height as usize * 4 {
+                prepared.pixels = vec![0u8; config.width as usize * config.height as usize * 4];
+            }
+            resolve_offline_frame(&mut target, &mut resolver, &mut prepared.pixels, &config)?;
+            prepared.frame_index = frame_index;
+            while next_target < targets.len() && targets[next_target].0 == frame_index {
+                each(targets[next_target].1, &mut prepared)?;
+                next_target += 1;
+            }
+            // Cold again, so the next capture's run-up starts where a separate
+            // still's would. Without this a sheet's later tiles would carry
+            // whatever the earlier ones left in the buffer.
+            renderer.reset_feedback();
         }
     }
+    Ok(())
+}
 
-    let mut pixels = vec![0u8; config.width as usize * config.height as usize * 4];
-    resolve_offline_frame(
-        &mut target,
-        &mut LinearResolver::new(),
-        &mut pixels,
-        &config,
-    )?;
-    Ok(PreparedFrame {
-        pixels,
+/// What a batch output did, for the caller's report line.
+pub(crate) struct BatchFrames {
+    pub(crate) frames: usize,
+    pub(crate) config: RenderExportConfig,
+    pub(crate) achieved_factor: u32,
+}
+
+/// Stops the preview, runs `work`, and puts the preview back — the bracket
+/// every offline replay needs, in one place for the command line's two
+/// outputs. [`export_still`] spells the same sequence out inline because it
+/// also has a picker to ask first.
+fn with_preview_stopped<T>(
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    work: impl FnOnce(&mut crate::App, &mut crate::Analysis) -> T,
+) -> T {
+    let restore_position = music.map_or(0.0, Music::get_time_played);
+    let restore_playing = music.is_some_and(Music::is_stream_playing);
+    if let Some(music) = music {
+        if !restore_playing {
+            music.resume_stream();
+        }
+        music.stop_stream();
+    }
+    let result = work(app, analysis);
+    restore_preview(music, app, analysis, restore_position, restore_playing);
+    result
+}
+
+/// `--still SECONDS FILE`, any number of them, out of one replay.
+///
+/// The same frames [`export_still`] writes from the panel — same replay, same
+/// offline draw, same linear-light resolve, same row flip — with the picker
+/// replaced by the paths the command line already gave. Nothing is written
+/// unless every requested moment is on a frame the track can produce, so a
+/// mistyped time fails the run before it costs a replay.
+///
+/// # Errors
+///
+/// In the words a caller should read: no track, an unusable time, a decoder or
+/// surface failure, or a PNG raylib would not write.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one export frame needs; see `ExportSession::begin`"
+)]
+pub(crate) fn export_stills(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    stills: &[(f64, PathBuf)],
+) -> Result<BatchFrames, String> {
+    let Some(track) = app.workspace.current() else {
+        return Err("there is no track to render a frame from".to_owned());
+    };
+    // Refused here, where the panel's still clamps instead. The panel is handed
+    // a playhead that is on the track by construction, so clamping only ever
+    // absorbs rounding at the last frame. A typed `--still 400` on a four-minute
+    // track is a different thing: clamped, it writes the track's final frame to
+    // a file the caller named after some other moment.
+    if let Some((late, _)) = stills
+        .iter()
+        .find(|(time, _)| *time >= track.duration_seconds)
+    {
+        return Err(format!(
+            "{late:.3} s is not on a frame of this track, which ends at {:.3} s",
+            track.duration_seconds
+        ));
+    }
+    let times: Vec<f64> = stills.iter().map(|(time, _)| *time).collect();
+    let mut summary = None;
+    with_preview_stopped(music, app, analysis, |app, analysis| {
+        prepare_frames(
+            rl,
+            thread,
+            audio,
+            app,
+            analysis,
+            renderer,
+            fonts,
+            &times,
+            "Rendering still frames",
+            &mut |request, frame| {
+                let (time_seconds, destination) = &stills[request];
+                write_resolved_png(&frame.pixels, &frame.config, destination)?;
+                // The panel's own line, so one assertion reads both entries.
+                println!(
+                    "export still:    t={time_seconds:.3} frame {} of {} at \
+                     {}x{} ({}x target), {}",
+                    frame.frame_index,
+                    frame.total_frames,
+                    frame.config.width,
+                    frame.config.height,
+                    frame.achieved_factor,
+                    destination.display(),
+                );
+                summary = Some((frame.config, frame.achieved_factor));
+                Ok(())
+            },
+        )
+    })?;
+    let (config, achieved_factor) = summary.ok_or_else(|| "no still was requested".to_owned())?;
+    Ok(BatchFrames {
+        frames: stills.len(),
         config,
-        frame_index,
-        total_frames,
+        achieved_factor,
+    })
+}
+
+/// What a contact sheet's label needs to know about one moment.
+struct SheetLabel {
+    heading: String,
+    lyric: String,
+}
+
+/// The two lines under a tile: when and what scene, then the line on screen.
+///
+/// Read from the track's own model rather than from the frame that was drawn,
+/// so the label says what the project *asks for* at that moment — which is the
+/// thing a reviewer compares the picture against.
+fn sheet_label(track: &crate::workspace::Track, time_seconds: f64) -> SheetLabel {
+    use musializer_core::render::contact_sheet::label_text;
+
+    let plan = &track.scene_switches;
+    let section = (plan.enabled && !plan.is_empty())
+        .then(|| {
+            plan.cues()
+                .iter()
+                .position(|cue| cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds)
+        })
+        .flatten();
+    let scene = match section {
+        Some(index) => format!(
+            "{}/{} {}",
+            index + 1,
+            plan.len(),
+            musializer_core::scene::SceneId::from_index(plan.cues()[index].scene_index as usize)
+                .map_or("?", musializer_core::scene::SceneId::stable_name)
+        ),
+        None => track.base_scene.stable_name().to_owned(),
+    };
+    SheetLabel {
+        heading: format!(
+            "{}  {scene}",
+            musializer_core::treatment::format_time(time_seconds)
+        ),
+        lyric: track
+            .lyrics
+            .at_time(time_seconds)
+            .map(|cue| label_text(&cue.text))
+            .unwrap_or_default(),
+    }
+}
+
+/// `--contact-sheet FILE`: labelled frames across the track as one PNG.
+///
+/// Every tile is rendered at the project's own output size through the same
+/// offline path as a still and only then shrunk, so a tile is a small picture
+/// of the frame the export will contain — caption placement, supersampling and
+/// all — rather than a cheaper render at tile size that would answer a
+/// different question.
+///
+/// # Errors
+///
+/// In the words a caller should read, as [`export_stills`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one export frame needs; see `ExportSession::begin`"
+)]
+pub(crate) fn export_contact_sheet(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    times: &[f64],
+    destination: &Path,
+) -> Result<BatchFrames, String> {
+    use musializer_core::render::contact_sheet::{
+        shrink_bottom_up_rgba, truncate_label, SheetLayout,
+    };
+
+    /// The label face's size. raylib's built-in face is a 10 px bitmap, so 20
+    /// is an exact 2x and stays crisp where 18 would smear.
+    const LABEL_SIZE: i32 = 20;
+
+    let track = app
+        .workspace
+        .current()
+        .ok_or_else(|| "there is no track to render a sheet from".to_owned())?;
+    let config = track.render_config;
+    let layout = SheetLayout::plan(times.len(), config.width, config.height)
+        .ok_or_else(|| "a contact sheet needs at least one frame".to_owned())?;
+    let labels: Vec<SheetLabel> = times.iter().map(|&time| sheet_label(track, time)).collect();
+    let Some(path) = destination.to_str() else {
+        return Err("the destination path is not valid text".to_owned());
+    };
+
+    // Near-black rather than black, so a tile of a dark scene still has an
+    // edge and a sheet of them does not read as one undivided rectangle.
+    let mut sheet = raylib::texture::Image::gen_image_color(
+        layout.width as i32,
+        layout.height as i32,
+        Color::new(14, 14, 18, 255),
+    );
+    let mut achieved_factor = 1;
+    with_preview_stopped(music, app, analysis, |app, analysis| {
+        prepare_frames(
+            rl,
+            thread,
+            audio,
+            app,
+            analysis,
+            renderer,
+            fonts,
+            times,
+            "Rendering contact sheet",
+            &mut |request, frame| {
+                let tile = shrink_bottom_up_rgba(
+                    &frame.pixels,
+                    frame.config.width as usize,
+                    frame.config.height as usize,
+                    layout.tile_width as usize,
+                    layout.tile_height as usize,
+                )
+                .ok_or_else(|| "a frame came back at the wrong size".to_owned())?;
+                let (left, top) = layout.tile_origin(request);
+                for (index, pixel) in tile.chunks_exact(4).enumerate() {
+                    sheet.draw_pixel(
+                        left as i32 + (index % layout.tile_width as usize) as i32,
+                        top as i32 + (index / layout.tile_width as usize) as i32,
+                        Color::new(pixel[0], pixel[1], pixel[2], 255),
+                    );
+                }
+                achieved_factor = frame.achieved_factor;
+                Ok(())
+            },
+        )
+    })?;
+
+    // Labels last, over a finished sheet. Fitted by measuring, because the
+    // built-in face is proportional and a character budget would either waste
+    // a third of a narrow tile or run a wide lyric into its neighbour.
+    let fit = |text: &str| -> String {
+        let budget = layout.tile_width as i32 - 4;
+        let mut cut = text.to_owned();
+        let mut keep = cut.chars().count();
+        while keep > 0 && rl.measure_text(&cut, LABEL_SIZE) > budget {
+            keep -= 1;
+            cut = truncate_label(text, keep);
+        }
+        cut
+    };
+    for (index, label) in labels.iter().enumerate() {
+        let (left, top) = layout.label_origin(index);
+        let (left, top) = (left as i32 + 2, top as i32 + 3);
+        sheet.draw_text(
+            &fit(&label.heading),
+            left,
+            top,
+            LABEL_SIZE,
+            Color::new(236, 236, 240, 255),
+        );
+        if !label.lyric.is_empty() {
+            sheet.draw_text(
+                &fit(&label.lyric),
+                left,
+                top + LABEL_SIZE + 2,
+                LABEL_SIZE,
+                Color::new(255, 200, 100, 255),
+            );
+        }
+    }
+    sheet.export_image(path);
+    if !destination.is_file() {
+        return Err(format!(
+            "raylib refused to write {}; check the directory exists and is writable",
+            destination.display()
+        ));
+    }
+    Ok(BatchFrames {
+        frames: times.len(),
+        config,
         achieved_factor,
     })
 }

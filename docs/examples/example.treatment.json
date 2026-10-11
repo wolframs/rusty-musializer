@@ -1,0 +1,45 @@
+{
+  "schema": "musializer.treatment/v1",
+  "title": "Example treatment",
+  "notes": [
+    "Every block a treatment can carry, on a one-minute track.",
+    "A core test parses this file, so it cannot drift from the parser."
+  ],
+  "audio": { "path": "song.wav" },
+  "output": { "resolution": "1920x1080", "fps": 30, "quality": "high" },
+  "seed": 7,
+  "caption_style": {
+    "face": "alegreya",
+    "box": "shadow",
+    "anchor": "top_center",
+    "size_scale": 0.07,
+    "text_rgba": "#fff3dc",
+    "effects": { "shadow_blur": 0.25, "glow_strength": 0.4, "glow_rgba": "#ffb45a", "glow_pulse": "beat" }
+  },
+  "scenes": {
+    "orbital": {
+      "settings": { "motion": 1.3 },
+      "routes": [
+        { "setting": "radius", "source": "bass", "input": [0.15, 0.8], "output": [0.92, 1.22], "curve": "smoothstep" }
+      ]
+    },
+    "pulse": { "routes": [ "pulse.glow:bass:0:0.1:0.8:1:2" ] }
+  },
+  "segments": [
+    { "at": 0,         "scene": "atlas",   "note": "intro", "settings": { "wireframe": true, "speed": 0.4 } },
+    { "at": "0:08",    "scene": "cadence", "note": "title, then verse one as kinetic type" },
+    { "at": "0:24.5",  "scene": "orbital", "note": "drop", "settings": { "reactivity": 1.6 } },
+    { "at": 40,        "scene": "pulse",   "note": "second half of the drop", "settings": { "petals": 5 } },
+    { "at": "0:52",    "scene": "atlas",   "note": "outro" }
+  ],
+  "lyrics": [
+    { "at": "0:08.2", "until": "0:13", "text": "Example Treatment" },
+    { "at": "0:16",   "text": "a line with no `until` runs to the next line" },
+    { "at": "0:20",   "until": "0:24", "text": "or to six seconds, or to the end of the track" },
+    { "at": "0:53",   "text": "last words" }
+  ],
+  "events": [
+    { "at": "0:24.5" },
+    { "at": 40, "type": "custom", "value": 0.5 }
+  ]
+}

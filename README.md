@@ -137,6 +137,28 @@ Run `./target/release/musializer --help` for all options.
 
 </details>
 
+<details>
+<summary><strong>Direct a whole video from a file</strong></summary>
+
+A *treatment* is one JSON file that says which scene plays when, how each
+section is tuned, what the audio drives, and which lyric line is on screen from
+when to when. No window is needed to write one, review it, or render it — which
+makes it the way a script or an AI agent makes a video here.
+
+```sh
+tools/headless_run.sh --vocabulary                       # every scene and setting you may name
+tools/headless_run.sh --treatment song.treatment.json \
+  --contact-sheet sheet.png                              # one image of labelled frames to review
+tools/headless_run.sh --treatment song.treatment.json \
+  --save-project song.musi --render song.mp4             # the video, and a project you can open
+```
+
+`tools/headless_run.sh` runs the app on a private virtual display, muted. Start
+from [`docs/examples/example.treatment.json`](docs/examples/example.treatment.json)
+and read the [directing guide](docs/MUSIC_VIDEO_CLI.md).
+
+</details>
+
 ## Build on it
 
 The renderer and audio engine use **raylib 6.0**. **egui 0.35** powers the new
@@ -160,6 +182,7 @@ timed-lyric comparisons when a judgment needs human ears.
 | Editor behavior and themes | [UI toolkit](docs/UI_TOOLKIT.md) |
 | Code ownership and data flows | [Architecture](docs/CODE_ARCHITECTURE.md) |
 | A module or command | [Code map](docs/CODE_MAP.md) · [CLI and formats](docs/PHASE0_INVENTORY.md) |
+| Making a video without the window | [Directing guide](docs/MUSIC_VIDEO_CLI.md) |
 | Open product work | [Development queue](FEATURE_PARITY_PLAN.md) |
 | Engineering and verification rules | [Repository guide](AGENTS.md) |
 | Everything else | [Documentation index](docs/README.md) |

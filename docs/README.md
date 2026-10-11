@@ -14,6 +14,9 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 
 ## Start here
 
+- [`MUSIC_VIDEO_CLI.md`](MUSIC_VIDEO_CLI.md) — directing a whole video with no
+  window: the treatment file, `--vocabulary`, contact sheets and stills, the
+  isolated launcher, and what the first video made this way ran into.
 - [`OPENAI_KNOT.md`](OPENAI_KNOT.md) — procedural weave, audio response and muted scene checks.
 
 - [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — toolkit editor, appearance, migration boundary and real-input checks.

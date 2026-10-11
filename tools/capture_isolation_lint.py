@@ -26,7 +26,13 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_FILES = ["tools/headless_check.sh", "tools/lyric_lane_capture.sh", "tools/knot_check.sh"]
+DEFAULT_FILES = [
+    "tools/headless_check.sh",
+    "tools/lyric_lane_capture.sh",
+    "tools/knot_check.sh",
+    "tools/headless_run.sh",
+    "tools/treatment_check.sh",
+]
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
