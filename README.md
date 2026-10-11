@@ -13,6 +13,7 @@
   <a href="#get-started">Get started</a> ·
   <a href="#make-it-yours">What you can make</a> ·
   <a href="#lyrics-and-assist">Lyrics &amp; Assist</a> ·
+  <a href="#let-an-agent-direct-it">Agents &amp; CLI</a> ·
   <a href="docs/README.md">Documentation</a>
 </p>
 
@@ -25,7 +26,7 @@ workspace, with playback and preview beside the controls as you work.
 
 ## Make it yours
 
-**Twelve scenes to explore.** Try the luminous bars of Spectrum, the shifting
+**Thirteen scenes to explore.** Try the luminous bars of Spectrum, the shifting
 characters of Phosphor Dream, the landscapes of Song Atlas, or Cadence's animated
 letterforms. Each scene has its own controls and responds to your track.
 
@@ -137,28 +138,69 @@ Run `./target/release/musializer --help` for all options.
 
 </details>
 
-<details>
-<summary><strong>Direct a whole video from a file</strong></summary>
+## Let an agent direct it
 
-A *treatment* is one JSON file that says which scene plays when, how each
-section is tuned and how it arrives (a burn, a flash on the drop, an iris out of
-black), what the audio drives, and which lyric line is on screen from when to
-when. No window is needed to write one, review it, or render it — which
-makes it the way a script or an AI agent makes a video here.
+Everything above can also be done without the window. An AI coding agent — or a
+script, or you in a terminal — can write a video as one file, look at what it
+made, revise it, and render it, all from the command line.
 
-```sh
-tools/headless_run.sh --vocabulary                       # every scene and setting you may name
-tools/headless_run.sh --treatment song.treatment.json \
-  --contact-sheet sheet.png                              # one image of labelled frames to review
-tools/headless_run.sh --treatment song.treatment.json \
-  --save-project song.musi --render song.mp4             # the video, and a project you can open
+**The file is a *treatment*.** It says which scene plays when, how each section
+is tuned, how it arrives (a burn, a flash on the drop, an iris out of black),
+what the audio drives, and which lyric line is on screen from when to when.
+Settings are named, not positional, and a mistake is refused by name with the
+valid choices, so an agent can correct itself from the error.
+
+```json
+{
+  "schema": "musializer.treatment/v1",
+  "audio": { "path": "song.mp3" },
+  "output": { "resolution": "1920x1080", "fps": 30, "quality": "high" },
+  "segments": [
+    { "at": 0,         "scene": "atlas",   "transition": { "kind": "iris", "seconds": 2 } },
+    { "at": "0:24.5",  "scene": "orbital", "transition": { "kind": "flash", "seconds": 0.4 },
+      "settings": { "reactivity": 1.6 } },
+    { "at": "0:52",    "scene": "cadence", "transition": "burn",
+      "settings": { "hue": 72, "reveal": 2 } }
+  ],
+  "outro": { "kind": "fade", "seconds": 2 },
+  "lyrics": [ { "at": "0:53.7", "until": "0:56.6", "text": "the line being sung" } ]
+}
 ```
 
-`tools/headless_run.sh` runs the app on a private virtual display, muted. Start
-from [`docs/examples/example.treatment.json`](docs/examples/example.treatment.json)
-and read the [directing guide](docs/MUSIC_VIDEO_CLI.md).
+**The loop is ask, write, look, render.**
 
-</details>
+```sh
+tools/headless_run.sh --vocabulary                       # 1. what can I name? scenes, settings, transitions
+tools/headless_run.sh --treatment song.treatment.json \
+  --contact-sheet sheet.png --sheet-at segments          # 2. one image of labelled frames to review
+tools/headless_run.sh --treatment song.treatment.json \
+  --still 24.7 drop.png                                  #    or single frames at chosen moments
+tools/headless_run.sh --treatment song.treatment.json \
+  --save-project song.musi --render song.mp4             # 3. the video, and a project you can open
+```
+
+- **`--vocabulary`** prints every scene with a line on how it looks, every
+  setting with its bounds and default, and every transition, as JSON. It needs
+  no display, so it is the first thing an agent should run.
+- **`--contact-sheet`** and **`--still`** draw through the same path as the
+  export, so what an agent reviews is what the video will contain. A sheet is
+  how something without eyes on a screen watches four minutes in one image.
+- **`--save-project`** writes an ordinary `.musi`. Open it in the window and
+  keep working by hand; nothing about it is special.
+- **`tools/headless_run.sh`** runs the app on a private virtual display, muted,
+  and passes its arguments through. Nothing appears on your screen and nothing
+  plays through your speakers while an agent works.
+
+To try it, point your agent at this repository and a track and ask for a video.
+The [directing guide](docs/MUSIC_VIDEO_CLI.md) is written for that reader: the
+full format, what each report line means, and what the first video made this
+way taught. [`docs/examples/example.treatment.json`](docs/examples/example.treatment.json)
+is a complete treatment to start from.
+
+What an agent cannot do is hear. Where sections change and when a line is sung
+come from analysis and alignment, so check the timing by ear before you post.
+And transitions are authored in a treatment for now: the window plays them but
+does not yet show or edit them.
 
 ## Build on it
 
@@ -182,17 +224,4 @@ timed-lyric comparisons when a judgment needs human ears.
 | --- | --- |
 | Editor behavior and themes | [UI toolkit](docs/UI_TOOLKIT.md) |
 | Code ownership and data flows | [Architecture](docs/CODE_ARCHITECTURE.md) |
-| A module or command | [Code map](docs/CODE_MAP.md) · [CLI and formats](docs/PHASE0_INVENTORY.md) |
-| Making a video without the window | [Directing guide](docs/MUSIC_VIDEO_CLI.md) |
-| Open product work | [Development queue](FEATURE_PARITY_PLAN.md) |
-| Engineering and verification rules | [Repository guide](AGENTS.md) |
-| Everything else | [Documentation index](docs/README.md) |
-
-Musializer is an actively developed application. The earlier C implementation is
-archived; this repository is the home of the product.
-
-## License
-
-[MIT](LICENSE) for first-party code. Bundled libraries and fonts retain their own
-licenses alongside their sources, including raylib, the egui rendering adapter,
-Space Grotesk, Alegreya, and Font Awesome.
+| A module or command | [Code map](docs/CODE_MAP.md) · [CLI and formats](docs/PHASE0_INVENTORY.md)
