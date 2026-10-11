@@ -112,6 +112,7 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
         SceneId::PhosphorDream => core_scenes::phosphor_dream::descriptor(),
         SceneId::Clawd => core_scenes::clawd::descriptor(),
         SceneId::OpenAiKnot => core_scenes::openai_knot::descriptor(),
+        SceneId::Stage => core_scenes::stage::descriptor(),
     }
 }
 
@@ -157,6 +158,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::PhosphorDream => |_| Box::new(StatelessScene::new(SceneId::PhosphorDream)),
             SceneId::Clawd => |_| Box::new(StatelessScene::new(SceneId::Clawd)),
             SceneId::OpenAiKnot => |_| Box::new(StatelessScene::new(SceneId::OpenAiKnot)),
+            SceneId::Stage => |_| Box::new(StatelessScene::new(SceneId::Stage)),
         },
     }
 }
@@ -204,6 +206,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         SceneId::PhosphorDream => "(no oracle: post-legacy addition)",
         SceneId::Clawd => "(no oracle: post-legacy addition)",
         SceneId::OpenAiKnot => "(no oracle: post-legacy addition)",
+        SceneId::Stage => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -276,6 +279,10 @@ pub struct SceneRenderer {
     /// phosphor's.
     clawd: scenes::clawd::ClawdResources,
     knot: scenes::openai_knot::KnotResources,
+    /// What Stage last drew. No GPU resources; the report is the point, for
+    /// the reason Cadence's is: a staged line and a bare ground are both
+    /// plausible pictures of this scene.
+    stage: scenes::stage::StageReport,
     /// Which `(scene, seed)` the feedback buffer's accumulated light belongs to.
     /// See the reset in [`SceneRenderer::draw`].
     feedback_identity: Option<(SceneId, u64)>,
@@ -355,6 +362,7 @@ impl SceneRenderer {
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
             clawd: scenes::clawd::ClawdResources::new(),
             knot: scenes::openai_knot::KnotResources::load(rl, thread),
+            stage: scenes::stage::StageReport::default(),
             feedback_identity: None,
         })
     }
@@ -534,6 +542,10 @@ impl SceneRenderer {
     /// default is a choreography that never ran — and all three photograph as a
     /// perfectly plausible cute picture.
     #[must_use]
+    pub fn describe_stage(&self) -> String {
+        self.stage.describe()
+    }
+
     pub fn describe_knot(&self) -> &str {
         &self.knot.report
     }
@@ -768,6 +780,12 @@ impl SceneRenderer {
                         scenes::openai_knot::draw(d, frame, state, &mut self.knot, boundary);
                     }
                 }
+                SceneId::Stage => {
+                    if let Some(state) = state_of(instance, id) {
+                        self.stage =
+                            scenes::stage::draw(d, fonts, frame, state, boundary, pixel_scale);
+                    }
+                }
                 SceneId::Clawd => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::clawd::draw(
@@ -805,7 +823,9 @@ impl SceneRenderer {
             }
             _ => TransitionOutcome::Idle,
         };
-        if id != SceneId::Cadence {
+        // Cadence and Stage draw the line themselves; a caption over either
+        // would say everything twice.
+        if id != SceneId::Cadence && id != SceneId::Stage {
             if let Some(style) = assets.caption_style {
                 // The effect drives read the same frame the scene just drew
                 // from, which is what makes an export's glow pulse identical to
@@ -974,6 +994,7 @@ mod tests {
                 "phosphor",
                 "clawd",
                 "knot",
+                "stage",
             ]
         );
     }
@@ -1004,6 +1025,7 @@ mod tests {
                 SceneId::PhosphorDream => any.is::<cs::phosphor_dream::PhosphorDreamState>(),
                 SceneId::Clawd => any.is::<cs::clawd::ClawdState>(),
                 SceneId::OpenAiKnot => any.is::<cs::openai_knot::KnotState>(),
+                SceneId::Stage => any.is::<cs::stage::StageState>(),
             };
             assert!(
                 recovered,

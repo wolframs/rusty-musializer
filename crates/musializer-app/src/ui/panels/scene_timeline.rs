@@ -97,6 +97,7 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         // staying red of it — the swatch should *be* Clawd at a glance.
         SceneId::Clawd => (222, 112, 68),
         SceneId::OpenAiKnot => (131, 89, 230),
+        SceneId::Stage => (214, 92, 148),
     };
     Color::new(r, g, b, alpha)
 }

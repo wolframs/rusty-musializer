@@ -1,4 +1,4 @@
-post-constant-count 40
+post-constant-count 51
 post-constant 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
@@ -79,7 +79,29 @@ post-constant 38 settings.knot.fringe 0 0 0 1 0.699999988 0.699999988 1 1
 post-constant-is-constant 38 1
 post-constant 39 settings.knot.grain 0 0 0 1 0.349999994 0.349999994 1 1
 post-constant-is-constant 39 1
-post-routed-count 40
+post-constant 40 settings.stage.layout 0 0 0 1 0 0 1 1
+post-constant-is-constant 40 1
+post-constant 41 settings.stage.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 41 1
+post-constant 42 settings.stage.saturation 0 0 0 1 1 1 1 1
+post-constant-is-constant 42 1
+post-constant 43 settings.stage.scale 0 0 0 1 1 1 1 1
+post-constant-is-constant 43 1
+post-constant 44 settings.stage.bounce 0 0 0 1 1 1 1 1
+post-constant-is-constant 44 1
+post-constant 45 settings.stage.tilt 0 0 0 1 0 0 1 1
+post-constant-is-constant 45 1
+post-constant 46 settings.stage.light 0 0 0 1 0 0 1 1
+post-constant-is-constant 46 1
+post-constant 47 settings.stage.accent 0 0 0 1 1 1 1 1
+post-constant-is-constant 47 1
+post-constant 48 settings.stage.grain 0 0 0 1 0.349999994 0.349999994 1 1
+post-constant-is-constant 48 1
+post-constant 49 settings.stage.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 49 1
+post-constant 50 settings.stage.familiar 0 0 0 1 0 0 1 1
+post-constant-is-constant 50 1
+post-routed-count 51
 post-routed 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-routed 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
 post-routed 2 settings.cadence.halo 0 0 0 1 0.200000003 0.200000003 1 1
@@ -120,6 +142,17 @@ post-routed 36 settings.knot.polish 0 0 0 1 0.800000012 0.800000012 1 1
 post-routed 37 settings.knot.bloom 0 0 0 1 1.10000002 1.10000002 1 1
 post-routed 38 settings.knot.fringe 0 0 0 1 0.699999988 0.699999988 1 1
 post-routed 39 settings.knot.grain 0 0 0 1 0.349999994 0.349999994 1 1
+post-routed 40 settings.stage.layout 0 0 0 1 0 0 1 1
+post-routed 41 settings.stage.hue 0 0 0 1 0 0 1 1
+post-routed 42 settings.stage.saturation 0 0 0 1 1 1 1 1
+post-routed 43 settings.stage.scale 0 0 0 1 1 1 1 1
+post-routed 44 settings.stage.bounce 0 0 0 1 1 1 1 1
+post-routed 45 settings.stage.tilt 0 0 0 1 0 0 1 1
+post-routed 46 settings.stage.light 0 0 0 1 0 0 1 1
+post-routed 47 settings.stage.accent 0 0 0 1 1 1 1 1
+post-routed 48 settings.stage.grain 0 0 0 1 0.349999994 0.349999994 1 1
+post-routed 49 settings.stage.pace 0 0 0 1 1 1 1 1
+post-routed 50 settings.stage.familiar 0 0 0 1 0 0 1 1
 post-import-value 7 7 108
 post-import-value 7 8 2
 post-import-value 7 9 0.200000003
@@ -160,3 +193,14 @@ post-import-value 12 7 0.800000012
 post-import-value 12 8 1.10000002
 post-import-value 12 9 0.699999988
 post-import-value 12 10 0.349999994
+post-import-value 13 0 0
+post-import-value 13 1 0
+post-import-value 13 2 1
+post-import-value 13 3 1
+post-import-value 13 4 1
+post-import-value 13 5 0
+post-import-value 13 6 0
+post-import-value 13 7 1
+post-import-value 13 8 0.349999994
+post-import-value 13 9 1
+post-import-value 13 10 0

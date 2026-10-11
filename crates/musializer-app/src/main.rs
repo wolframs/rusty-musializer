@@ -5332,6 +5332,8 @@ impl Report {
         // means it has not drawn.
         println!("clawd:           {}", renderer.describe_clawd());
         println!("openai knot:     {}", renderer.describe_knot());
+        // Stage: which staging drew, how the line wrapped and at what size.
+        println!("stage:           {}", renderer.describe_stage());
         // Which encoder an export from this run would use. Evidence rather than
         // assertion: an NVENC file and an x264 file of the same frames are
         // different bytes, so a capture that compares two exports has to be able

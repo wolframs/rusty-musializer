@@ -172,6 +172,37 @@ only change its tuning, which is how one scene changes mid-phrase: a riser that
 tightens, or a ground that goes from night to day on a bar line. A section of a
 *different* scene starts that scene fresh.
 
+### Staging a line: the `stage` scene
+
+Most scenes draw the sound and let a caption ride on top. `stage` draws the
+**line**: whatever lyric is on screen, in the staging its `layout` setting
+names.
+
+| `layout` | Staging |
+| --- | --- |
+| 0 | **poster** — heavy stacked words filling the frame, the sung word in the accent colour |
+| 1 | **terminal** — a console window typing the line behind a prompt |
+| 2 | **chat** — typing dots, then a bubble; a cat's head is the speaker |
+| 3 | **card** — typed on a paper card, the line's last word stamped across it |
+| 4 | **placards** — one raised sign per word |
+| 5 | **ticker** — the line as a headline over a climbing chart and a percentage |
+
+A section can be as short as a line, so **cut one section per line** and give
+each the staging its words ask for: a line about a log goes in the terminal, a
+line someone says goes in a bubble.
+
+```json
+{ "at": "0:26.5", "scene": "stage", "settings": { "layout": 1, "hue": 0 } },
+{ "at": "0:30.8", "scene": "stage", "settings": { "layout": 0 }, "transition": { "kind": "pixel", "seconds": 0.2 } }
+```
+
+`hue` and `saturation` turn the palette, `light` takes the ground from night
+(0) to paper (1), `tilt` leans the whole staging, and `familiar` seats a black
+cat in the corner. A line lands in about half its reading time and then holds,
+so a still from the back half of a cue always shows the whole line. With no
+line on screen `stage` draws only its ground; return to a reactive scene for an
+instrumental stretch longer than a couple of seconds.
+
 ### `transition` and `outro`
 
 A section's `transition` is how that section **arrives**. It is a kind's name,
@@ -287,6 +318,11 @@ Found while making the first video, each one from a contact sheet:
   with no line on screen is only its backdrop. Give each Cadence section its own
   `hue`, `saturation` and `reveal`; the defaults are one pink on one purple, and
   five sections of that read as one idea repeated.
+- **Ask what each line is before choosing where it goes.** The second version
+  of the first video was a visualizer with captions: nothing in the picture
+  knew what a line said. Staging every sung line (`stage`, one section per
+  line) and keeping the reactive scenes for the instrumental stretches is what
+  made it read as a video *of the song*.
 - **No title card unless one was asked for.** The first video opened on the
   track's name and the operator's verdict was that a card nobody requested is
   filler (2026-10-12). Open on the music. When a card *is* asked for it carries

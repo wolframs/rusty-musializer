@@ -653,7 +653,7 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
 
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
-constellation, cadence, loom, pentagram, phosphor, clawd, knot (also pulse-field, \
+constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
 phosphor-dream, claude, openai-knot)";
 
@@ -1685,6 +1685,7 @@ mod tests {
             ("clawd", SceneId::Clawd),
             ("knot", SceneId::OpenAiKnot),
             ("openai-knot", SceneId::OpenAiKnot),
+            ("stage", SceneId::Stage),
             ("claude", SceneId::Clawd),
         ];
         for (name, id) in expected {

@@ -1456,6 +1456,17 @@ pub fn scene_look(scene: SceneId) -> &'static str {
              their bands, the face reacts, ASCII cats bounce, and a hue-wheel petal \
              show ignites on the track's biggest moments. `terminal` types the lyric."
         }
+        SceneId::Stage => {
+            "The lyric line itself, staged; with no line on screen only the ground \
+             remains. `layout` picks the staging: 0 poster (heavy stacked words \
+             filling the frame), 1 terminal (typed behind a prompt), 2 chat (typing \
+             dots, then a bubble), 3 card (typed on paper, last word stamped across \
+             it), 4 placards (one raised sign per word), 5 ticker (the line as a \
+             headline over a climbing chart). Cut one section per line to give each \
+             line its own staging. `light` turns the ground from night to paper, \
+             `familiar` seats a black cat in the corner. The caption overlay is not \
+             drawn on top of it."
+        }
         SceneId::OpenAiKnot => {
             "Six glossy interlocked ribbons forming one knot, lit by the audio. A bold \
              single object on a deep ground."

@@ -25,3 +25,4 @@ pub mod spectral_terrarium;
 pub mod spectrum;
 
 pub mod openai_knot;
+pub mod stage;

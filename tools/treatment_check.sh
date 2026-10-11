@@ -221,6 +221,29 @@ EOF
 run --treatment "$OUT/preview-move.treatment.json" --probe-frames 120 \
     --probe-shot "$OUT/preview-move.png" > "$OUT/preview-move.log" 2>&1
 
+# --- Stage: every staging draws its line ---------------------------------------
+python3 - "$OUT/staged.treatment.json" <<'EOF'
+import json, sys
+lines = ["count the lines", "no name to call myself", "arriving and no one waits",
+         "a cat guards the hold tonight", "haul away haul away", "ten billion gates"]
+plan = {
+    "schema": "musializer.treatment/v1",
+    "audio": {"path": "fixture.wav"},
+    "output": {"resolution": "640x360", "fps": 30, "quality": "balanced"},
+    "seed": 2012,
+    "segments": [{"at": index * 1.8, "scene": "stage",
+                  "settings": {"layout": index, "familiar": index == 3, "light": 1 if index == 3 else 0}}
+                 for index in range(6)] + [{"at": 10.9, "scene": "stage"}],
+    "lyrics": [{"at": index * 1.8 + 0.1, "until": index * 1.8 + 1.7, "text": line}
+               for index, line in enumerate(lines)],
+}
+json.dump(plan, open(sys.argv[1], "w"), indent=2)
+EOF
+run --treatment "$OUT/staged.treatment.json" --contact-sheet "$OUT/sheet-staged.png" \
+    --sheet-at 1.5,3.3,5.1,6.9,8.7,10.5 > "$OUT/staged.log" 2>&1
+run --treatment "$OUT/staged.treatment.json" --still 11.5 "$OUT/staged-empty.png" \
+    > "$OUT/staged-empty.log" 2>&1
+
 # --- the saved project is an ordinary project ----------------------------------
 run --project "$OUT/full.musi" --save-project "$OUT/full-again.musi" \
     > "$OUT/reopen.log" 2>&1

@@ -78,7 +78,7 @@ BRIDGE_VERSION = "MUSIALIZER_BRIDGE\t1"
 # unreachable from the one surface that picks scenes automatically.
 SCENES = (
     "spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium",
-    "constellation", "cadence", "loom", "pentagram", "phosphor", "clawd", "knot",
+    "constellation", "cadence", "loom", "pentagram", "phosphor", "clawd", "knot", "stage",
 )
 
 # Keep the orchestrator's measured-cache contract dependency-free. These are

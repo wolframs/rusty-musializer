@@ -262,6 +262,20 @@ pub mod index {
         /// Idle sway amplitude.
         pub const WIGGLE: usize = 11;
     }
+    /// Stage (post-legacy, 2026-10-12).
+    pub mod stage {
+        pub const LAYOUT: usize = 0;
+        pub const HUE: usize = 1;
+        pub const SATURATION: usize = 2;
+        pub const SCALE: usize = 3;
+        pub const BOUNCE: usize = 4;
+        pub const TILT: usize = 5;
+        pub const LIGHT: usize = 6;
+        pub const ACCENT: usize = 7;
+        pub const GRAIN: usize = 8;
+        pub const PACE: usize = 9;
+        pub const FAMILIAR: usize = 10;
+    }
     /// OpenAI Knot: the persisted control order; new finish controls are appended.
     pub mod knot {
         pub const SIZE: usize = 0;
@@ -501,6 +515,24 @@ const KNOT: &[SettingDescriptor] = &[
 
 /// The descriptor table, in scene registry order (`scene_settings.c:129-141`
 /// for the first ten).
+/// Stage. `layout` picks the staging (see `scenes::stage::Layout`); the rest
+/// are shared by every layout so a section can change staging and keep its
+/// colour.
+#[rustfmt::skip]
+const STAGE: &[SettingDescriptor] = &[
+    D::slider("settings.stage.layout", "Staging", 0.00, 5.00, 0.00, 0),
+    D::slider("settings.stage.hue", "Hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.stage.saturation", "Colour", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.stage.scale", "Type scale", 0.50, 1.50, 1.00, 2),
+    D::slider("settings.stage.bounce", "Beat bounce", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.stage.tilt", "Tilt (deg)", -12.0, 12.0, 0.0, 1),
+    D::slider("settings.stage.light", "Ground light", 0.00, 1.00, 0.00, 2),
+    D::slider("settings.stage.accent", "Sung-word accent", 0.00, 1.00, 1.00, 2),
+    D::slider("settings.stage.grain", "Film grain", 0.00, 1.00, 0.35, 2),
+    D::slider("settings.stage.pace", "Reveal pace", 0.50, 3.00, 1.00, 2),
+    D::toggle("settings.stage.familiar", "Cat familiar", 0.0),
+];
+
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     SPECTRUM,
     PULSE,
@@ -515,6 +547,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     PHOSPHOR,
     CLAWD,
     KNOT,
+    STAGE,
 ];
 
 /// Descriptors for one scene.
@@ -754,6 +787,7 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         // shape to admit.
         SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream | SceneId::Clawd => false,
         SceneId::OpenAiKnot => count == 8,
+        SceneId::Stage => false,
     }
 }
 

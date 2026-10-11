@@ -26,7 +26,7 @@ workspace, with playback and preview beside the controls as you work.
 
 ## Make it yours
 
-**Thirteen scenes to explore.** Try the luminous bars of Spectrum, the shifting
+**Fourteen scenes to explore.** Try the luminous bars of Spectrum, the shifting
 characters of Phosphor Dream, the landscapes of Song Atlas, or Cadence's animated
 letterforms. Each scene has its own controls and responds to your track.
 
@@ -36,7 +36,9 @@ volume, beats, spectral changes, or individual frequency bands to scene settings
 through adjustable routes.
 
 **Make lyrics part of the picture.** Edit cue text and timing, stack lines, import
-a typeface, and choose placement, backing, glow, and shadow. The lyric timeline
+a typeface, and choose placement, backing, glow, and shadow. Or let the line be
+the picture: Cadence sets it as glowing kinetic type, and Stage stages it — as a
+poster, a terminal, a chat bubble, a stamped card, placards, or a market ticker. The lyric timeline
 supports dragging, splitting, merging, tap timing, and undo.
 
 **Choose your workspace.** Light / blue and Black / amber are available from the

@@ -52,6 +52,8 @@ pub enum SceneId {
     Clawd = 11,
     /// Procedural sixfold weave (2026-09-09).
     OpenAiKnot = 12,
+    /// The lyric line, staged (2026-10-12).
+    Stage = 13,
 }
 
 /// Number of scenes.
@@ -77,7 +79,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = SceneId::OpenAiKnot as usize + 1;
+pub const SCENE_COUNT: usize = SceneId::Stage as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -103,6 +105,7 @@ impl SceneId {
         SceneId::PhosphorDream,
         SceneId::Clawd,
         SceneId::OpenAiKnot,
+        SceneId::Stage,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -156,6 +159,7 @@ impl SceneId {
             SceneId::PhosphorDream => "Phosphor Dream",
             SceneId::Clawd => "Clawd",
             SceneId::OpenAiKnot => "OpenAI Knot",
+            SceneId::Stage => "Stage",
         }
     }
 
@@ -184,6 +188,7 @@ impl SceneId {
             // the name thebes' flower answers to.
             SceneId::Clawd => "clawd",
             SceneId::OpenAiKnot => "knot",
+            SceneId::Stage => "stage",
         }
     }
 
@@ -617,6 +622,7 @@ mod tests {
         assert_eq!(SceneId::PhosphorDream as u32, 10);
         assert_eq!(SceneId::Clawd as u32, 11);
         assert_eq!(SceneId::OpenAiKnot as u32, 12);
+        assert_eq!(SceneId::Stage as u32, 13);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
         assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
         assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);
@@ -648,6 +654,7 @@ mod tests {
             "phosphor",
             "clawd",
             "knot",
+            "stage",
         ];
         for (id, name) in SceneId::ALL.into_iter().zip(expected) {
             assert_eq!(id.stable_name(), name);

@@ -42,3 +42,15 @@ scene 12 count 11
 12 8 settings.knot.bloom|Bloom|0|2|1.10000002|2|0
 12 9 settings.knot.fringe|Spectral fringe|0|2|0.699999988|2|0
 12 10 settings.knot.grain|Film grain|0|1|0.349999994|2|0
+scene 13 count 11
+13 0 settings.stage.layout|Staging|0|5|0|0|0
+13 1 settings.stage.hue|Hue (deg)|-180|180|0|0|0
+13 2 settings.stage.saturation|Colour|0|2|1|2|0
+13 3 settings.stage.scale|Type scale|0.5|1.5|1|2|0
+13 4 settings.stage.bounce|Beat bounce|0|2|1|2|0
+13 5 settings.stage.tilt|Tilt (deg)|-12|12|0|1|0
+13 6 settings.stage.light|Ground light|0|1|0|2|0
+13 7 settings.stage.accent|Sung-word accent|0|1|1|2|0
+13 8 settings.stage.grain|Film grain|0|1|0.349999994|2|0
+13 9 settings.stage.pace|Reveal pace|0.5|3|1|2|0
+13 10 settings.stage.familiar|Cat familiar|0|1|0|0|1

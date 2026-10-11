@@ -247,6 +247,7 @@ short names **and six long aliases**:
 | `phosphor`, `phosphor-dream` | Phosphor Dream (post-legacy; the C rejects both) |
 | `clawd`, `claude` | Clawd (post-legacy; the C rejects both) |
 | `knot`, `openai-knot` | OpenAI Knot (post-legacy, id 12) |
+| `stage` | Stage (post-legacy, id 13) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -484,6 +485,10 @@ OpenAI Knot — id 12, stable name `knot`, display name `OpenAI Knot`, eleven
 controls — was added on 2026-09-09. Its procedural geometry and response
 contract are documented in [`OPENAI_KNOT.md`](OPENAI_KNOT.md).
 
+Stage — id 13, stable name `stage`, display name `Stage`, eleven controls —
+was added on 2026-10-12. It draws the current lyric line in one of six
+stagings; see `docs/MUSIC_VIDEO_CLI.md`.
+
 Two behaviours of the registry that are still contract, whatever the count is:
 
 - **A name lookup never fails into nothing.** An out-of-range id resolves to the
@@ -720,6 +725,29 @@ Two are **selectors**, and both spell zero as "let the scene decide": `field` 0
 runs the whole cycle and 1..=10 pins one, `ramp` 0 lets each field keep its own
 alphabet and 1..=7 pins one. Encoding "auto" inside the range rather than as a
 paired toggle is what keeps them routable and randomizable like anything else.
+
+### `stage` — Stage (11 controls, no C counterpart)
+
+Post-legacy, 2026-10-12, id 13. Draws the current lyric line, staged; the
+caption overlay is not drawn over it.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.stage.layout` | Staging | 0.00 | 5.00 | 0.00 | 0 | slider |
+| 1 | `settings.stage.hue` | Hue (deg) | -180.0 | 180.0 | 0.0 | 0 | slider |
+| 2 | `settings.stage.saturation` | Colour | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 3 | `settings.stage.scale` | Type scale | 0.50 | 1.50 | 1.00 | 2 | slider |
+| 4 | `settings.stage.bounce` | Beat bounce | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 5 | `settings.stage.tilt` | Tilt (deg) | -12.0 | 12.0 | 0.0 | 1 | slider |
+| 6 | `settings.stage.light` | Ground light | 0.00 | 1.00 | 0.00 | 2 | slider |
+| 7 | `settings.stage.accent` | Sung-word accent | 0.00 | 1.00 | 1.00 | 2 | slider |
+| 8 | `settings.stage.grain` | Film grain | 0.00 | 1.00 | 0.35 | 2 | slider |
+| 9 | `settings.stage.pace` | Reveal pace | 0.50 | 3.00 | 1.00 | 2 | slider |
+| 10 | `settings.stage.familiar` | Cat familiar | 0 | 1 | 0 | 0 | toggle |
+
+`layout` is a persisted index, appended to and never reordered: 0 poster,
+1 terminal, 2 chat, 3 card, 4 placards, 5 ticker. An out-of-range value draws
+the poster.
 
 ### `knot` — OpenAI Knot (11 controls, no C counterpart)
 

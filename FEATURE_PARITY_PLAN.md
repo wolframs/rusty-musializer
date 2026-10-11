@@ -149,7 +149,7 @@ a CX ruling, not a preference.
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
-| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV7 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
+| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
 
 ### The items, in one line each
 
@@ -389,6 +389,21 @@ one real video with it found these, each from a contact sheet:
   clean edges, a halo, colour and reveal controls, a reading-pace cap. Still
   open from the same notes: one typeface only, no per-word colour, no gradient
   across the letterforms. Wants the operator's eye before more is added.
+
+- **MV8 — Stage**, landed 2026-10-12: a scene that draws the lyric line as one
+  of six stagings, picked per section. It is the first scene here about what a
+  line *says*. Open, in the order a director runs into them:
+  - **MV8-a — staging is a section's, not a line's.** One section per line
+    works and is verbose; a `stage` hint on the lyric cue itself would let a
+    plan stay coarse. A `.musi` extension to the cue.
+  - **MV8-b — the chat side follows the line id's parity.** Two lines meant as
+    one speaker can land on opposite sides. Wants a control.
+  - **MV8-c — no images or props beyond the cat.** A section cannot place a
+    picture, a logo, or a second character.
+  - **MV8-d — six stagings.** Obvious next ones: a calendar page, a road sign,
+    a receipt with totals, a split-flap board, a handwritten note.
+  - **MV8-e — no Tune-panel affordance for `layout`.** It is a 0..5 slider;
+    it wants named buttons.
 
 One measurement for **LT2**, from the same session and not yet acted on: on a
 3:59 track with an embedded 27-line sheet, the normal local route

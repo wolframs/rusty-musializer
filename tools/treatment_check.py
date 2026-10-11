@@ -443,6 +443,39 @@ def check_transitions(out: Path) -> None:
         check(cut > moved + 12.0, f"the {name} control is as dark as the transition: {cut:.1f}")
 
 
+def check_stage(out: Path) -> None:
+    log = read(out / "staged.log")
+    check("panicked" not in log, "a staging panicked")
+    line = report_line(log, "stage")
+    # The last tile is the ticker, three words, on a sized atlas.
+    for wanted in ("layout=ticker", "words=3", "atlas=sized"):
+        check(wanted in line, f"stage line lacks {wanted!r}: {line!r}")
+    empty = report_line(read(out / "staged-empty.log"), "stage")
+    check("line=none" in empty, f"a moment with no line did not say so: {empty!r}")
+
+    sheet_path = out / "sheet-staged.png"
+    check(sheet_path.is_file(), "the staged sheet was not written")
+    if not sheet_path.is_file():
+        return
+    sheet = rgb(sheet_path)
+    layout = sheet_layout(6, 640, 360)
+    ground = rgb(out / "staged-empty.png")
+    ground_luma = region_mean(ground, 200, 120, 240, 120)
+    lumas = []
+    for index in range(6):
+        left, top = tile_origin(layout, index)
+        tile_w, tile_h = layout["tile"]
+        # The middle of the tile, where every staging puts its line.
+        luma = region_mean(sheet, left + tile_w // 5, top + tile_h // 5, tile_w * 3 // 5, tile_h * 3 // 5)
+        lumas.append(luma)
+    print("staged tile luma: " + " ".join(f"{luma:.1f}" for luma in lumas) + f" (bare ground {ground_luma:.1f})")
+    for index, luma in enumerate(lumas):
+        check(luma > ground_luma + 2.0, f"staging {index} drew nothing over the ground: {luma:.1f}")
+    # The card is on paper: by far the brightest tile.
+    check(lumas[3] > 150.0, f"the card's paper ground is not light: {lumas[3]:.1f}")
+    check(len({round(luma, 1) for luma in lumas}) == 6, "two stagings drew the same picture")
+
+
 def check_refusals(out: Path) -> None:
     expected = {
         "bad-setting": ["segments[0]", "loom has no setting \"wieght\"", "weight"],
@@ -483,6 +516,7 @@ def main() -> int:
     check_sheets(out)
     check_stills(out)
     check_transitions(out)
+    check_stage(out)
     check_refusals(out)
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed", file=sys.stderr)
