@@ -192,6 +192,14 @@ tools/headless_run.sh --treatment song.treatment.json \
 - **`tools/headless_run.sh`** runs the app on a private virtual display, muted,
   and passes its arguments through. Nothing appears on your screen and nothing
   plays through your speakers while an agent works.
+- **A look, not just scenes.** A section can be held to a palette (`grade`),
+  the whole video finished like film (`finish`: bloom, toning, vignette, grain),
+  a section's tuning eased in from the one before (`glide`), and lines made to
+  arrive out of focus. The `threshold` scene is a room with a door whose
+  doorway shows another scene *live* — walk the camera through it and the plan
+  cuts to that scene without a seam.
+- **`tools/align_lyrics.py song.mp3 song.lyrics.json`** times the track's own
+  embedded lyrics in seconds, and a treatment can take the file by path.
 
 To try it, point your agent at this repository and a track and ask for a video.
 The [directing guide](docs/MUSIC_VIDEO_CLI.md) is written for that reader: the

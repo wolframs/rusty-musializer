@@ -150,7 +150,7 @@ a CX ruling, not a preference.
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 | 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
-| 10 | **The compositor's work, moved into the renderer** — operator go-ahead 2026-10-21, claimed the same day. a/b/c first (every video gains), then d with the nested scene, then g | MV9-a…i | large; one session per two letters |
+| 10 | **The compositor's work, moved into the renderer** — a, b, c, d, f, g landed 2026-10-21; the rest are small follow-ups | MV9-e, h, i, j, k | small each |
 
 ### The items, in one line each
 
@@ -406,57 +406,24 @@ one real video with it found these, each from a contact sheet:
   - **MV8-e — no Tune-panel affordance for `layout`.** It is a 0..5 slider;
     it wants named buttons.
 
-- **MV9 — what the "Door, No Room" video needed from outside the application**
-  (2026-10-19). That video (Chaos Cat Familiar; built in `build/door/`, not
-  tracked) was a Musializer render plus a GPU Python compositor
-  (`build/door/work/comp.py`) for everything a treatment could not say. The
-  operator asked which of that could become Musializer componentry, then
-  asked for it to be built (2026-10-21: "Just build ;) … I'm really not
-  married to the musializer's current UI and functionalities, I barely use it
-  by hand anymore"). The inventory, in the order it pays off:
-  - **MV9-a — a finish pass.** Bloom, a highlight shoulder, split toning
-    (teal shadows, warm highlights), vignette and seeded grain as one
-    full-frame shader after the scene and the caption. A plan-level `finish`
-    block; preview, still and export alike. Stills need premultiplied output
-    or the PNG's alpha is damaged (the `BLEND_ALPHA` trap in `AGENTS.md`).
-  - **MV9-b — a palette lock.** A luminance gradient map plus a narrow
-    selective hue shift, per section (or per scene in a treatment).
-    Constellation and Orbital pick their colours from the music and
-    Constellation has no hue control at all, so without this they cannot be
-    held to a video's palette. Must not map a transition's bright flat flash
-    frames, or a flash comes out lavender.
-  - **MV9-c — settings glide.** A section's tuning currently snaps on the cut.
-    A per-section `glide` seconds eases adjacent same-scene sections into each
-    other: a door opening over 2.6 s, light swelling on a word. Toggles and
-    whole-number controls snap; sliders ease.
-  - **MV9-d — a threshold scene.** The compositor's room, door, light pool,
-    floor reflection, volumetric beam, mist, gold motes with threads and the
-    standing presences, as a fragment-shader scene. Its doorway shows a
-    **live nested scene** (`beyond`), fitted to the doorway far away and
-    full-frame at the threshold, so pushing `distance` to zero walks the
-    camera into the visualizer. When the plan cuts from the threshold to the
-    scene it was showing, the running instance is handed over rather than
-    restarted, and the reverse cut hands it back.
-  - **MV9-e — a `portal` transition kind.** The door shape over any section
-    change. Lower value once MV9-d exists; the push-through is the threshold
-    scene's own `distance` gliding to zero.
-  - **MV9-f — caption entrance.** The soft-focus fade-in the spoken lines
-    used. Captions have no entrance animation at all today.
-  - **MV9-g — lyric timing from the file's own tags.** One whole-track MMS
-    CTC pass with wildcard tokens between lines placed all 88 lines of a
-    5:22 track from its embedded `lyrics-eng` tag, no Whisper; two weak lines
-    were re-windowed after the chorus-repetition cross-check. Wants a tool
-    and a treatment that can take its output by path.
-  - **MV9-h — a per-line `voice` tag** driving palette (low = lavender, high
-    = gold in that video). The listening relay's voice assignment was
-    inconsistent across the three choruses, so this stays a director's
-    statement, not an inference.
-  - **MV9-i — transition length cap.** 8 s cannot hold a 24.8 s spoken
-    intro; with MV9-c and MV9-d the intro is a few threshold sections and the
-    cap stops mattering.
-
-  Not to be moved: the compositor as a pipeline stage. Once a and b live in
-  the renderer, preview, still and export are one picture again.
+- **MV9 — the "Door, No Room" compositor's work, moved into the renderer.**
+  a (finish), b (grade), c (glide), d (threshold with a live nested scene),
+  f (caption entrance) and g (`tools/align_lyrics.py`, lyrics by path) landed
+  2026-10-21; the record is in the archive under MV9. Still open:
+  - **MV9-e — a `portal` transition kind**: the door shape over any section
+    change. Lower value now that the threshold walks into a scene.
+  - **MV9-h — a per-line `voice` tag** driving palette. A director's
+    statement, not an inference: the listening relay's voice assignment was
+    inconsistent across three choruses.
+  - **MV9-i — transitions longer than 8 s.** A long intro is threshold
+    sections with glides instead, so this may close as not needed.
+  - **MV9-j — the doorway's scene is tuned only by the `scenes` block.** It
+    has no section of its own while nested, so a section of the same scene
+    after the cut must repeat that tuning or the cut shows a jump. Tuning it
+    from its nearest section (as its grade already is) would remove the rule.
+  - **MV9-k — nothing in the window shows grades, glides, the finish or the
+    threshold's beyond.** Same shape as MV3-a: a project that has them says so
+    nowhere on screen.
 
 One measurement for **LT2**, from the same session and not yet acted on: on a
 3:59 track with an embedded 27-line sheet, the normal local route

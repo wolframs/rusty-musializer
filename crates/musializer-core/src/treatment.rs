@@ -2920,8 +2920,19 @@ mod tests {
         let example = include_str!("../../../docs/examples/example.treatment.json");
         let treatment = parse(example).unwrap();
         let compiled = treatment.compile(60.0).unwrap();
-        assert_eq!(compiled.summary.segments, 5);
+        assert_eq!(compiled.summary.segments, 6);
         assert_eq!(compiled.summary.distinct_scenes, 4);
+        assert!(treatment.finish.is_active());
+        let cues = compiled.scene_switches.cues();
+        assert_eq!(cues[3].glide, 4.0);
+        assert!(
+            cues[2].grade.is_some() && cues[3].grade.is_some(),
+            "orbital's scene grade"
+        );
+        assert_eq!(
+            cues[4].grade,
+            Some(Grade::from_palette(Palette::Ember, DEFAULT_GRADE_MAP))
+        );
         assert_eq!(compiled.summary.routes, 2);
         assert_eq!(
             compiled.summary.transitions, 4,

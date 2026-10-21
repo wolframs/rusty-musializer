@@ -244,6 +244,60 @@ run --treatment "$OUT/staged.treatment.json" --contact-sheet "$OUT/sheet-staged.
 run --treatment "$OUT/staged.treatment.json" --still 11.5 "$OUT/staged-empty.png" \
     > "$OUT/staged-empty.log" 2>&1
 
+# --- the look, a glide, and a walk through the threshold's door (MV9) ----------
+# The threshold shows Loom live; its distance glides to the doorway and the
+# plan cuts to Loom on the arrival. Loom because it weaves a column per moment
+# and keeps it: a doorway that cut to a *fresh* Loom would land on a different
+# cloth, so this walk can tell a hand-over from a restart, where a scene drawn
+# from time alone could not. The same treatment without grades or finish is
+# the control for "the look drew".
+python3 - "$OUT" <<'EOF'
+import json, sys
+out = sys.argv[1]
+def plan(look):
+    tuned = {"density": 1.4, "weight": 1.3}
+    doc = {
+        "schema": "musializer.treatment/v1",
+        "audio": {"path": "fixture.wav"},
+        "output": {"resolution": "640x360", "fps": 30, "quality": "balanced"},
+        "seed": 2012,
+        "scenes": {"loom": {"settings": tuned},
+                   "threshold": {"settings": {"beyond": 9, "open": 0.8, "light": 1.0}}},
+        "segments": [
+            {"at": 0, "scene": "threshold", "settings": {"distance": 0.9}},
+            {"at": 4, "scene": "threshold", "settings": {"distance": 0.0, "haze": 0.0}, "glide": 2},
+            {"at": 6.5, "scene": "loom"},
+        ],
+        "lyrics": [{"at": 1.0, "until": 3.0, "text": "a line arrives"}],
+    }
+    if look:
+        doc["finish"] = "film"
+        doc["scenes"]["loom"]["grade"] = "night-door"
+        doc["caption_style"] = {"effects": {"entrance_seconds": 1.0}}
+    return doc
+json.dump(plan(True), open(f"{out}/look.treatment.json", "w"), indent=2)
+json.dump(plan(False), open(f"{out}/plain.treatment.json", "w"), indent=2)
+# The reference for the hand-over: the same Loom, on screen from the start.
+continuous = plan(True)
+continuous["segments"] = [{"at": 0, "scene": "loom"}]
+json.dump(continuous, open(f"{out}/continuous.treatment.json", "w"), indent=2)
+EOF
+run --treatment "$OUT/look.treatment.json" --save-project "$OUT/look.musi" \
+    --still 2 "$OUT/look-far.png" --still 5 "$OUT/look-glide.png" \
+    --still 6.45 "$OUT/look-doorway.png" --still 8 "$OUT/look-beyond.png" \
+    > "$OUT/look.log" 2>&1
+# Each moment alone, so its own report line can be read.
+run --treatment "$OUT/look.treatment.json" --still 5 "$OUT/look-glide-alone.png" \
+    > "$OUT/look-glide.log" 2>&1
+run --treatment "$OUT/look.treatment.json" --still 1.15 "$OUT/look-entering.png" \
+    > "$OUT/look-entering.log" 2>&1
+run --treatment "$OUT/plain.treatment.json" --still 8 "$OUT/plain-beyond.png" \
+    --still 1.15 "$OUT/plain-entering.png" > "$OUT/plain.log" 2>&1
+run --treatment "$OUT/continuous.treatment.json" --still 8 "$OUT/continuous-beyond.png" \
+    > "$OUT/continuous.log" 2>&1
+run --project "$OUT/look.musi" --save-project "$OUT/look-again.musi" \
+    > "$OUT/look-reopen.log" 2>&1
+
 # --- the saved project is an ordinary project ----------------------------------
 run --project "$OUT/full.musi" --save-project "$OUT/full-again.musi" \
     > "$OUT/reopen.log" 2>&1

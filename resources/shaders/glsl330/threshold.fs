@@ -349,7 +349,7 @@ vec3 presence(vec2 pixel, float x, float z, vec3 colour, float floorHit) {
     float breath = 0.85 + 0.15 * sin(time * 2.3 + x * 9.0);
     // A presence is seen from across the room. Walked up to, it would fill
     // the frame with one smear of light, so it thins out as the camera nears.
-    float seen = smoothstep(0.6, 1.8, cam.z - z);
+    float seen = smoothstep(1.2, 2.8, cam.z - z);
     return colour * (g + m) * breath * seen;
 }
 

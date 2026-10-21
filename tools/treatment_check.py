@@ -476,6 +476,66 @@ def check_stage(out: Path) -> None:
     check(len({round(luma, 1) for luma in lumas}) == 6, "two stagings drew the same picture")
 
 
+def png_alpha_extrema(path: Path) -> tuple[int, int]:
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "rawvideo", "-pix_fmt", "rgba", "-"],
+        check=True,
+        capture_output=True,
+    ).stdout
+    alpha = raw[3::4]
+    return min(alpha), max(alpha)
+
+
+def check_look(out: Path) -> None:
+    log = read(out / "look.log")
+    check("panicked" not in log, "the look treatment panicked")
+    look = report_line(log, "look")
+    check("finish=drew" in look, f"the finish did not draw: {look!r}")
+    threshold = report_line(read(out / "look-glide.log"), "threshold")
+    check("beyond=loom (live)" in threshold, f"the doorway was not live: {threshold!r}")
+    # Halfway through a two-second glide from 0.9 to 0: a smoothstep is at one
+    # half there, so the reported distance is 0.45.
+    distance = threshold.split("distance=", 1)[1].split(" ", 1)[0] if "distance=" in threshold else "nan"
+    check(abs(float(distance) - 0.45) < 0.02, f"the glide is not halfway at its midpoint: {distance}")
+    # A still writes the framebuffer's alpha straight into the PNG: every pass
+    # must leave it opaque (the BLEND_ALPHA trap in AGENTS.md).
+    for name in ("look-far", "look-beyond"):
+        low, high = png_alpha_extrema(out / f"{name}.png")
+        check(low == 255 == high, f"{name}: the finish left the alpha at {low}..{high}")
+
+    beyond = rgb(out / "look-beyond.png")
+    plain = rgb(out / "plain-beyond.png")
+    doorway = rgb(out / "look-doorway.png")
+    far = rgb(out / "look-far.png")
+    graded = psnr(beyond, plain)
+    walked = psnr(doorway, beyond)
+    control = psnr(far, beyond)
+    print(f"look: graded vs plain {graded:.1f} dB; doorway vs beyond {walked:.1f} dB, across the room {control:.1f} dB")
+    check(graded < 30.0, f"the grade and finish changed nothing: {graded:.1f} dB")
+    # The walk ends on the scene it was showing: the last threshold frame and
+    # a frame of that scene are far closer than the room seen from across it.
+    check(walked > control + 6.0, f"the doorway does not arrive at the beyond: {walked:.1f} vs {control:.1f} dB")
+
+    # The hand-over: the Loom walked into through the doorway is the *same*
+    # Loom, advanced by every frame since zero inside the threshold, so after
+    # the cut it is the Loom that was on screen all along — byte for byte.
+    # Restarted at the cut instead, it loses the cloth's history (31 dB with
+    # the hand-over removed, the negative control this was written against).
+    continuous = psnr(rgb(out / "continuous-beyond.png"), beyond)
+    print(f"look: the walked-into Loom vs a Loom on screen from the start: {continuous:.1f} dB")
+    check(continuous > 45.0, f"the doorway's scene was not handed across the cut: {continuous:.1f} dB")
+
+    entering = rgb(out / "look-entering.png")
+    plain_entering = rgb(out / "plain-entering.png")
+    print(f"look: a line 0.15 s into a 1 s entrance vs an instant caption: {psnr(entering, plain_entering):.1f} dB")
+
+    saved = read(out / "look.musi")
+    for member in ('"grade":{"stops":', '"glide":2', '"finish":{"bloom":'):
+        check(member in saved, f"the saved project lacks {member}")
+    check(saved == read(out / "look-again.musi").replace("look-again", "look"),
+          "reopening the look project and saving it changed it")
+
+
 def check_refusals(out: Path) -> None:
     expected = {
         "bad-setting": ["segments[0]", "loom has no setting \"wieght\"", "weight"],
@@ -517,6 +577,7 @@ def main() -> int:
     check_stills(out)
     check_transitions(out)
     check_stage(out)
+    check_look(out)
     check_refusals(out)
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed", file=sys.stderr)

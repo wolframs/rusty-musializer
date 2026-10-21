@@ -13,9 +13,9 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 49 | 71,825 | 523 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `listening_defaults` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 103 | 69,083 | 1,097 |
-| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 28 | 16,428 | 188 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 50 | 72,150 | 523 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `listening_defaults` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 105 | 71,349 | 1,118 |
+| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 30 | 17,137 | 190 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 109 | 0 |
 
 Dependency direction: `musializer-app` → `musializer-runtime` → raylib,
@@ -59,18 +59,18 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | Source | Lines | Tests | Module responsibility |
 | --- | ---: | ---: | --- |
 | [`src/bin/make_fixture_wav.rs`](../crates/musializer-app/src/bin/make_fixture_wav.rs) | 89 | 0 | Writes a synthetic WAV for headless checks. |
-| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,347 | 51 | The command line. |
-| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 5,874 | 3 | The Musializer binary: composition root. |
-| [`src/project.rs`](../crates/musializer-app/src/project.rs) | 925 | 6 | Saving a [`Track`] to a `.musi` and opening one back into a [`Track`]. |
+| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,351 | 51 | The command line. |
+| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 5,948 | 3 | The Musializer binary: composition root. |
+| [`src/project.rs`](../crates/musializer-app/src/project.rs) | 932 | 6 | Saving a [`Track`] to a `.musi` and opening one back into a [`Track`]. |
 | [`src/recovery.rs`](../crates/musializer-app/src/recovery.rs) | 535 | 5 | App-owned crash recovery for edited sessions without a durable home (CX-3). |
-| [`src/scene_host.rs`](../crates/musializer-app/src/scene_host.rs) | 1,057 | 5 | Binding and drawing the scenes. |
+| [`src/scene_host.rs`](../crates/musializer-app/src/scene_host.rs) | 1,133 | 5 | Binding and drawing the scenes. |
 | [`src/scenes/ascii_field.rs`](../crates/musializer-app/src/scenes/ascii_field.rs) | 471 | 0 | ASCII Field: the drawing half. |
 | [`src/scenes/cadence.rs`](../crates/musializer-app/src/scenes/cadence.rs) | 817 | 0 | Cadence: the drawing half. |
-| [`src/scenes/caption.rs`](../crates/musializer-app/src/scenes/caption.rs) | 683 | 6 | Shared project lyric captions, drawn after every scene except Cadence. |
+| [`src/scenes/caption.rs`](../crates/musializer-app/src/scenes/caption.rs) | 722 | 6 | Shared project lyric captions, drawn after every scene except Cadence. |
 | [`src/scenes/clawd.rs`](../crates/musializer-app/src/scenes/clawd.rs) | 2,457 | 24 | Clawd: the drawing half. |
 | [`src/scenes/constellation.rs`](../crates/musializer-app/src/scenes/constellation.rs) | 271 | 0 | Constellation: the drawing half. |
 | [`src/scenes/loom.rs`](../crates/musializer-app/src/scenes/loom.rs) | 372 | 0 | Loom: the drawing half. |
-| [`src/scenes/mod.rs`](../crates/musializer-app/src/scenes/mod.rs) | 23 | 0 | The drawing halves of the scenes. |
+| [`src/scenes/mod.rs`](../crates/musializer-app/src/scenes/mod.rs) | 24 | 0 | The drawing halves of the scenes. |
 | [`src/scenes/openai_knot.rs`](../crates/musializer-app/src/scenes/openai_knot.rs) | 380 | 0 | Pearlescent ribbons suspended in an audio-lit aurora. All animation reads scene time/state; the highlight bloom has no framebuffer history. |
 | [`src/scenes/orbital_lattice.rs`](../crates/musializer-app/src/scenes/orbital_lattice.rs) | 445 | 0 | Orbital Lattice: the drawing half. |
 | [`src/scenes/pentagram.rs`](../crates/musializer-app/src/scenes/pentagram.rs) | 309 | 0 | Pentagram Orbits: the drawing half. |
@@ -80,6 +80,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/spectral_terrarium.rs`](../crates/musializer-app/src/scenes/spectral_terrarium.rs) | 486 | 0 | Spectral Terrarium: the drawing half. |
 | [`src/scenes/spectrum.rs`](../crates/musializer-app/src/scenes/spectrum.rs) | 217 | 0 | Spectrum: the drawing half. |
 | [`src/scenes/stage.rs`](../crates/musializer-app/src/scenes/stage.rs) | 1,617 | 0 | Stage: the drawing half. |
+| [`src/scenes/threshold.rs`](../crates/musializer-app/src/scenes/threshold.rs) | 122 | 0 | Threshold's drawing half (MV9-d): one shader pass over the boundary. |
 | [`src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,600 | 66 | The **AI settings** dialog: one modal surface for assist routing, local runtimes, Codex, OpenRouter and the privacy/provenance summary. |
 | [`src/ui/egui_backend/input.rs`](../crates/musializer-app/src/ui/egui_backend/input.rs) | 446 | 1 | Raylib input conversion with explicit keyboard ownership. |
 | [`src/ui/egui_backend/output.rs`](../crates/musializer-app/src/ui/egui_backend/output.rs) | 70 | 0 | Platform cursor and clipboard requests from egui. |
@@ -96,7 +97,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/panels/fonts.rs`](../crates/musializer-app/src/ui/panels/fonts.rs) | 965 | 6 | The font browser pane, and the faces it adds. |
 | [`src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,597 | 55 | The three-pane lyrics editor: cue list, cue form, caption typography. |
 | [`src/ui/panels/mod.rs`](../crates/musializer-app/src/ui/panels/mod.rs) | 38 | 0 | One file per bottom panel and per inspector pane. |
-| [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 669 | 2 | The always-visible scene-plan lane and its compact editing controls. |
+| [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 671 | 2 | The always-visible scene-plan lane and its compact editing controls. |
 | [`src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,228 | 29 | The tuning inspector, and the route editor row inside it. |
 | [`src/ui/preferences.rs`](../crates/musializer-app/src/ui/preferences.rs) | 855 | 19 | Per-user shell scale and split preferences. |
 | [`src/ui/protocol.rs`](../crates/musializer-app/src/ui/protocol.rs) | 775 | 8 | The in-app protocol runner (HX-2): markers, the question card, and the session state machine. |
@@ -123,7 +124,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`examples/layout_dump.rs`](../crates/musializer-core/examples/layout_dump.rs) | 676 | 0 | Dumps the Rust workspace and timeline layout decisions over a dense sweep of window sizes, in the same format as `tests/differential/layout_oracle.c`. |
 | [`examples/listening_defaults.rs`](../crates/musializer-core/examples/listening_defaults.rs) | 17 | 0 | Machine-readable scene defaults for authored listening protocols. Reads the actual descriptor registry so a test never silently pins stale defaults. |
 | [`examples/preset_store_dump.rs`](../crates/musializer-core/examples/preset_store_dump.rs) | 284 | 0 | The Rust half of `tools/differential_preset_store.sh`. |
-| [`examples/project_io_dump.rs`](../crates/musializer-core/examples/project_io_dump.rs) | 1,057 | 0 | The Rust half of `tools/differential_project_io.sh`. |
+| [`examples/project_io_dump.rs`](../crates/musializer-core/examples/project_io_dump.rs) | 1,064 | 0 | The Rust half of `tools/differential_project_io.sh`. |
 | [`examples/route_persistence_dump.rs`](../crates/musializer-core/examples/route_persistence_dump.rs) | 344 | 0 | Dumps the Rust route persistence over the same corpus and fixture as `tests/differential/route_persistence_oracle.c`. |
 | [`examples/routes_dump.rs`](../crates/musializer-core/examples/routes_dump.rs) | 67 | 0 | Dumps the Rust route evaluation over the same sweep as `tests/differential/routes_oracle.c`, for every curve and both clamp settings. |
 | [`examples/settings_dump.rs`](../crates/musializer-core/examples/settings_dump.rs) | 106 | 0 | Dumps the Rust scene-settings descriptor table in the same format as `tests/differential/settings_oracle.c`, so the hand-transcribed table can be verified against the frozen C mechanically rather than by eye. |
@@ -147,19 +148,20 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/feedback.rs`](../crates/musializer-core/src/feedback.rs) | 1,091 | 21 | Human-feedback protocols: the `*.protocol.json` schema and the append-only answers log (HX-1, HX-3). |
 | [`src/lib.rs`](../crates/musializer-core/src/lib.rs) | 21 | 0 | Pure, deterministic, headlessly testable Musializer code. |
 | [`src/project/analysis_bridge.rs`](../crates/musializer-core/src/project/analysis_bridge.rs) | 1,109 | 24 | The bounded reader for helper analysis output. |
-| [`src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,343 | 45 | Staged analysis results awaiting Apply or Discard. |
+| [`src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,347 | 45 | Staged analysis results awaiting Apply or Discard. |
 | [`src/project/assets.rs`](../crates/musializer-core/src/project/assets.rs) | 667 | 13 | Content-addressed bundling for the `audio`, `images` and `fonts` categories. |
-| [`src/project/caption_effects.rs`](../crates/musializer-core/src/project/caption_effects.rs) | 488 | 12 | Per-frame caption effect resolution: glow pulse, hue drive, soft shadow. |
+| [`src/project/caption_effects.rs`](../crates/musializer-core/src/project/caption_effects.rs) | 537 | 13 | Per-frame caption effect resolution: glow pulse, hue drive, soft shadow. |
 | [`src/project/caption_layout.rs`](../crates/musializer-core/src/project/caption_layout.rs) | 643 | 17 | Caption line breaking, bounded before anything reaches the renderer. |
 | [`src/project/editor_draft.rs`](../crates/musializer-core/src/project/editor_draft.rs) | 147 | 6 | Draft editing state distinct from canonical project values. |
 | [`src/project/event_timeline.rs`](../crates/musializer-core/src/project/event_timeline.rs) | 820 | 16 | The bounded manual event timeline and its replay cursors. |
 | [`src/project/frame_lanes.rs`](../crates/musializer-core/src/project/frame_lanes.rs) | 251 | 3 | The project-owned lanes attached to one `SceneFrame`. |
-| [`src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,137 | 43 | The `.musi` codec, its compatibility defaults, and transactional-save policy. |
+| [`src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,403 | 44 | The `.musi` codec, its compatibility defaults, and transactional-save policy. |
+| [`src/project/look.rs`](../crates/musializer-core/src/project/look.rs) | 555 | 7 | A video's look: the palette a section is held to, and the finish over every frame. |
 | [`src/project/lyrics.rs`](../crates/musializer-core/src/project/lyrics.rs) | 2,388 | 41 | Timed lyric cues and their editorial timing. |
-| [`src/project/mod.rs`](../crates/musializer-core/src/project/mod.rs) | 21 | 0 | The `.musi` project model, codec, and editor state. |
-| [`src/project/model.rs`](../crates/musializer-core/src/project/model.rs) | 2,307 | 28 | The `.musi` data model and its validation. |
+| [`src/project/mod.rs`](../crates/musializer-core/src/project/mod.rs) | 22 | 0 | The `.musi` project model, codec, and editor state. |
+| [`src/project/model.rs`](../crates/musializer-core/src/project/model.rs) | 2,341 | 28 | The `.musi` data model and its validation. |
 | [`src/project/preset_store.rs`](../crates/musializer-core/src/project/preset_store.rs) | 1,152 | 27 | The per-user scene tuning preset library. |
-| [`src/project/scene_switch.rs`](../crates/musializer-core/src/project/scene_switch.rs) | 1,060 | 22 | Section-boundary scene switching plans. |
+| [`src/project/scene_switch.rs`](../crates/musializer-core/src/project/scene_switch.rs) | 1,347 | 25 | Section-boundary scene switching plans. |
 | [`src/project/semantic_lane.rs`](../crates/musializer-core/src/project/semantic_lane.rs) | 188 | 6 | The model-derived semantic evidence lane. |
 | [`src/project/sha256.rs`](../crates/musializer-core/src/project/sha256.rs) | 318 | 6 | Content-addressed asset identity: SHA-256. |
 | [`src/project/transition.rs`](../crates/musializer-core/src/project/transition.rs) | 475 | 7 | How a section of the scene plan arrives, and how a video begins and ends. |
@@ -167,9 +169,9 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/render/mod.rs`](../crates/musializer-core/src/render/mod.rs) | 9 | 0 | Pixel arithmetic that has no business being near a GPU handle. |
 | [`src/render/resolve.rs`](../crates/musializer-core/src/render/resolve.rs) | 360 | 6 | Resolving a supersampled frame down to the output size, in linear light. |
 | [`src/scene/events.rs`](../crates/musializer-core/src/scene/events.rs) | 788 | 19 | The frame-facing event view and its merge. |
-| [`src/scene/mod.rs`](../crates/musializer-core/src/scene/mod.rs) | 725 | 7 | The scene contract: identifiers, the per-frame input every scene reads, and the registry that binds deterministic state to it. |
+| [`src/scene/mod.rs`](../crates/musializer-core/src/scene/mod.rs) | 758 | 7 | The scene contract: identifiers, the per-frame input every scene reads, and the registry that binds deterministic state to it. |
 | [`src/scene/routes.rs`](../crates/musializer-core/src/scene/routes.rs) | 1,157 | 24 | Audio-to-parameter routes: the shared modulation layer under every scene. |
-| [`src/scene/settings.rs`](../crates/musializer-core/src/scene/settings.rs) | 1,009 | 13 | Per-scene tunable settings: the descriptor table, the value store, and snapshot compatibility. |
+| [`src/scene/settings.rs`](../crates/musializer-core/src/scene/settings.rs) | 1,054 | 13 | Per-scene tunable settings: the descriptor table, the value store, and snapshot compatibility. |
 | [`src/scenes/ascii_field/ascii_art.rs`](../crates/musializer-core/src/scenes/ascii_field/ascii_art.rs) | 1,272 | 22 | Image-to-ASCII conversion: grid fitting, layout, RGBA8 conversion, and the deterministic glyph animation. |
 | [`src/scenes/ascii_field.rs`](../crates/musializer-core/src/scenes/ascii_field.rs) | 465 | 10 | ASCII Field: deterministic state, update, and the pure colour pipeline. |
 | [`src/scenes/cadence/timing.rs`](../crates/musializer-core/src/scenes/cadence/timing.rs) | 275 | 8 | Cadence's word timing, raylib-free. |
@@ -179,7 +181,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/constellation.rs`](../crates/musializer-core/src/scenes/constellation.rs) | 520 | 8 | Constellation: deterministic state, node geometry, and the authored-event lane. |
 | [`src/scenes/loom/weave.rs`](../crates/musializer-core/src/scenes/loom/weave.rs) | 495 | 6 | Loom's woven record of the song, raylib-free. |
 | [`src/scenes/loom.rs`](../crates/musializer-core/src/scenes/loom.rs) | 512 | 11 | Loom: deterministic state, the woven record, and the cloth's structure. |
-| [`src/scenes/mod.rs`](../crates/musializer-core/src/scenes/mod.rs) | 28 | 0 | Deterministic scene state and per-frame updates. |
+| [`src/scenes/mod.rs`](../crates/musializer-core/src/scenes/mod.rs) | 71 | 0 | Deterministic scene state and per-frame updates. |
 | [`src/scenes/openai_knot.rs`](../crates/musializer-core/src/scenes/openai_knot.rs) | 224 | 4 | SX5: six hooked ribbons, with a fixed weave and audio-carried light. |
 | [`src/scenes/orbital_lattice/motion.rs`](../crates/musializer-core/src/scenes/orbital_lattice/motion.rs) | 673 | 6 | Orbital Lattice motion: the audio-independent camera path and the damped audio envelopes the geometry is drawn from. |
 | [`src/scenes/orbital_lattice.rs`](../crates/musializer-core/src/scenes/orbital_lattice.rs) | 157 | 3 | Orbital Lattice: deterministic state and update. |
@@ -190,11 +192,12 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/spectral_terrarium.rs`](../crates/musializer-core/src/scenes/spectral_terrarium.rs) | 701 | 7 | Spectral Terrarium: deterministic state and update. |
 | [`src/scenes/spectrum.rs`](../crates/musializer-core/src/scenes/spectrum.rs) | 62 | 2 | Spectrum: the registry half. There is no deterministic state. |
 | [`src/scenes/stage.rs`](../crates/musializer-core/src/scenes/stage.rs) | 286 | 5 | Stage: the lyric line, staged. |
+| [`src/scenes/threshold.rs`](../crates/musializer-core/src/scenes/threshold.rs) | 373 | 5 | Threshold: a dark room, a door, and another scene through it. |
 | [`src/timing/mod.rs`](../crates/musializer-core/src/timing/mod.rs) | 9 | 0 | Deterministic time and frame arithmetic. |
 | [`src/timing/render_export.rs`](../crates/musializer-core/src/timing/render_export.rs) | 2,065 | 38 | The deterministic export transport: frame counts over decoded audio frames. |
 | [`src/timing/track_identity.rs`](../crates/musializer-core/src/timing/track_identity.rs) | 110 | 4 | The human identity of a track: whatever a user reads as its name. |
 | [`src/timing/track_timeline.rs`](../crates/musializer-core/src/timing/track_timeline.rs) | 452 | 13 | Track waveform envelopes and exact transport arithmetic. |
-| [`src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 2,405 | 31 | Treatments: a whole music video described as one file a script or an agent can write (`*.treatment.json`, `--treatment`). |
+| [`src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 2,969 | 35 | Treatments: a whole music video described as one file a script or an agent can write (`*.treatment.json`, `--treatment`). |
 | [`src/ui/assist_ui_state.rs`](../crates/musializer-core/src/ui/assist_ui_state.rs) | 1,644 | 22 | Assist panel state including the confirmation step's lyric-sheet row. |
 | [`src/ui/contrast.rs`](../crates/musializer-core/src/ui/contrast.rs) | 232 | 5 | WCAG 2.1 relative luminance and contrast ratio over packed `0xRRGGBBAA` colours. |
 | [`src/ui/font_import_state.rs`](../crates/musializer-core/src/ui/font_import_state.rs) | 1,043 | 13 | Font import state machine, nonce and staleness handling, and the browser pane's own view state and geometry. |
@@ -206,14 +209,14 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/notice.rs`](../crates/musializer-core/src/ui/notice.rs) | 822 | 13 | The notice queue: transient toasts and persistent failure cards. |
 | [`src/ui/route_editor_state.rs`](../crates/musializer-core/src/ui/route_editor_state.rs) | 962 | 11 | Route editor state over `core::scene::routes`. |
 | [`src/ui/row_typography.rs`](../crates/musializer-core/src/ui/row_typography.rs) | 489 | 12 | The shared font size for a row of buttons, and label ellipsization. |
-| [`src/ui/scene_lane_edit.rs`](../crates/musializer-core/src/ui/scene_lane_edit.rs) | 199 | 4 | Pure hit testing and boundary clamping for the editable scene-plan lane. |
+| [`src/ui/scene_lane_edit.rs`](../crates/musializer-core/src/ui/scene_lane_edit.rs) | 203 | 4 | Pure hit testing and boundary clamping for the editable scene-plan lane. |
 | [`src/ui/scroll_list.rs`](../crates/musializer-core/src/ui/scroll_list.rs) | 351 | 8 | Vertical scrolling-list policy: geometry, momentum, and the scrollbar. |
 | [`src/ui/text_edit.rs`](../crates/musializer-core/src/ui/text_edit.rs) | 872 | 16 | Caret, selection and editing policy for a single-line text field. |
 | [`src/ui/timed_lane.rs`](../crates/musializer-core/src/ui/timed_lane.rs) | 129 | 3 | Geometry shared by editable, time-aligned lanes. |
 | [`src/ui/timeline_layout.rs`](../crates/musializer-core/src/ui/timeline_layout.rs) | 377 | 7 | Timeline top-band placement: controls, the trailing clear button, timecode. |
 | [`src/ui/timeline_view.rs`](../crates/musializer-core/src/ui/timeline_view.rs) | 624 | 14 | Timeline view state over the layout. |
 | [`src/ui/transport_bar.rs`](../crates/musializer-core/src/ui/transport_bar.rs) | 611 | 12 | Where the transport row's control clusters go. |
-| [`src/ui/tune_explore.rs`](../crates/musializer-core/src/ui/tune_explore.rs) | 1,365 | 28 | Reversible tuning exploration: snapshot/audition, bounded randomize, and typed/stepped value entry. |
+| [`src/ui/tune_explore.rs`](../crates/musializer-core/src/ui/tune_explore.rs) | 1,366 | 28 | Reversible tuning exploration: snapshot/audition, bounded randomize, and typed/stepped value entry. |
 | [`src/ui/workspace_layout.rs`](../crates/musializer-core/src/ui/workspace_layout.rs) | 610 | 10 | Workspace panel tiling and sidebar budgets. |
 
 ### `musializer-runtime`
@@ -234,7 +237,9 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/feedback.rs`](../crates/musializer-runtime/src/feedback.rs) | 450 | 5 | Frame-persistence feedback: the classic visualizer trick, as a resource. |
 | [`src/font.rs`](../crates/musializer-runtime/src/font.rs) | 2,359 | 17 | The interface and caption faces. |
 | [`src/halo.rs`](../crates/musializer-runtime/src/halo.rs) | 464 | 0 | The offscreen Gaussian blur behind the caption glow halo (UX0-C11). |
-| [`src/lib.rs`](../crates/musializer-runtime/src/lib.rs) | 38 | 0 | Unsafe and platform-sensitive work behind small, named safe APIs. |
+| [`src/lib.rs`](../crates/musializer-runtime/src/lib.rs) | 40 | 0 | Unsafe and platform-sensitive work behind small, named safe APIs. |
+| [`src/offscreen.rs`](../crates/musializer-runtime/src/offscreen.rs) | 236 | 1 | A render texture to draw into mid-frame, and back out of, safely. |
+| [`src/post.rs`](../crates/musializer-runtime/src/post.rs) | 464 | 1 | The palette lock and the finish, as GPU passes over a drawn frame (MV9-a/b). |
 | [`src/preset_files.rs`](../crates/musializer-runtime/src/preset_files.rs) | 204 | 6 | The filesystem half of the shared tuning-preset store. |
 | [`src/process/assist.rs`](../crates/musializer-runtime/src/process/assist.rs) | 1,219 | 19 | Assist child-process supervision. |
 | [`src/process/dialogs.rs`](../crates/musializer-runtime/src/process/dialogs.rs) | 487 | 5 | Native file dialogs, as supervised child processes. |
@@ -247,7 +252,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/process/reveal.rs`](../crates/musializer-runtime/src/process/reveal.rs) | 256 | 3 | Opening a directory in the user's file manager. |
 | [`src/project_files.rs`](../crates/musializer-runtime/src/project_files.rs) | 454 | 7 | The filesystem half of `.musi`: resolving asset references, hashing files, and bundling assets beside a project. |
 | [`src/support.rs`](../crates/musializer-runtime/src/support.rs) | 289 | 4 | Files that make the optional external workflows a runnable product. |
-| [`src/transition.rs`](../crates/musializer-runtime/src/transition.rs) | 319 | 0 | The held frame behind a scene transition, as a resource. |
+| [`src/transition.rs`](../crates/musializer-runtime/src/transition.rs) | 326 | 0 | The held frame behind a scene transition, as a resource. |
 
 ### `raylib-link`
 
@@ -268,17 +273,17 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,597 | 55 |
 | [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,006 | 47 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,720 | 65 |
-| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 5,874 | 3 |
+| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 5,948 | 3 |
+| [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,403 | 44 |
 | [`crates/musializer-app/src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,228 | 29 |
 | [`crates/musializer-core/src/assist/execution.rs`](../crates/musializer-core/src/assist/execution.rs) | 3,226 | 39 |
 | [`crates/musializer-app/src/ui/panels/export.rs`](../crates/musializer-app/src/ui/panels/export.rs) | 3,157 | 8 |
-| [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,137 | 43 |
+| [`crates/musializer-core/src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 2,969 | 35 |
 | [`crates/musializer-app/src/scenes/clawd.rs`](../crates/musializer-app/src/scenes/clawd.rs) | 2,457 | 24 |
-| [`crates/musializer-core/src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 2,405 | 31 |
 | [`crates/musializer-core/src/project/lyrics.rs`](../crates/musializer-core/src/project/lyrics.rs) | 2,388 | 41 |
 | [`crates/musializer-runtime/src/font.rs`](../crates/musializer-runtime/src/font.rs) | 2,359 | 17 |
-| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,347 | 51 |
-| [`crates/musializer-core/src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,343 | 45 |
+| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,351 | 51 |
+| [`crates/musializer-core/src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,347 | 45 |
 
 ## Non-Rust boundaries
 
@@ -289,6 +294,7 @@ generated build output, fixtures, and media assets are intentionally excluded.
 
 | Tool | Role |
 | --- | --- |
+| [`tools/align_lyrics.py`](../tools/align_lyrics.py) | Time a track's known lyrics with one whole-track CTC pass (MV9-g). tools/align_lyrics.py song.mp3 song.lyrics.json # embedded tags tools/align_lyrics.py song.mp3 song.lyrics.json --lyrics words.txt Writes ``musializer.aligned-lyrics/v1`` JSON that a treatment can name by path (``"lyrics": "song.lyrics.json"``), and prints a report a director should read before trusting it: the lines the acoustic model was unsure of, and how the song's repeated lines line up with each other. Why this exists. Making the "Door, No Room" video, this exact procedure — the known words, forced-aligned with torchaudio's MMS_FA over the *whole* track at once, with a wildcard token between lines to absorb instrumental stretches and wordless vocals — placed all 88 lines of a 5:22 track from its embedded ``lyrics-eng`` tag. No Whisper, no hand-chosen windows. Two lines came back weak; the chorus-repetition check (every repeat of a chorus line sits at the same offset from the first) found which. The normal Assist route (LT2) is a different, Whisper-led pipeline; this is the short path for a director who already has the words. What it is not: a transcription. It forces the words you give it onto the audio. Wrong words get confidently wrong times; the scores and the repetition table are how you notice. Runs under the MMS alignment runtime (``musializer_doctor.py`` reports it). If the interpreter running this file has no torch, it re-executes itself under ``$MUSIALIZER_ALIGN_PYTHON`` or ``~/.local/share/musializer/lyrics-align``'s venv. Opens no audio device; ffmpeg decodes to a pipe. |
 | [`tools/analysis_io.py`](../tools/analysis_io.py) | Shared, dependency-free I/O helpers for optional analysis adapters. |
 | [`tools/analyze_audio.py`](../tools/analyze_audio.py) | Create a deterministic, offline measured-audio analysis sidecar. Runtime dependencies are Python 3, NumPy, and an ``ffmpeg`` executable. The input is decoded to explicitly selected float32 PCM before analysis, so codec container details never leak into the feature implementation. |
 | [`tools/anchor_block_align.py`](../tools/anchor_block_align.py) | Anchor-to-block forced alignment of authored lyrics: the acoustic half. Runs under the installed alignment runtime (torch + torchaudio + soundfile), which is why it is a separate executable from ``external_analysis.py``. The policy it applies lives in ``tools/lyric_anchor_block.py`` and needs no model, so it can be tested and versioned on its own. ~/.local/share/musializer/lyrics-align/.venv/bin/python \ tools/anchor_block_align.py AUDIO WHISPER OUTPUT \ --duration 114.84 --reference-file lyrics.reference.txt \ --coarse lyrics.sync.json Every block's complete consecutive text goes through MMS_FA in one CTC pass, so a repeated phrase is disambiguated by its ordered neighbours instead of by a local score. The initial block before the first anchor and the terminal block after the last one are first-class: dropping them is precisely how the coverage canary lost its two outro lines. No audio output device is opened; samples are decoded with soundfile and go straight to the model. |
@@ -371,6 +377,7 @@ generated build output, fixtures, and media assets are intentionally excluded.
 | [`tests/differential/settings_oracle.c`](../tests/differential/settings_oracle.c) | `c` |
 | [`tests/differential/song_atlas_map_oracle.c`](../tests/differential/song_atlas_map_oracle.c) | `c` |
 | [`tests/differential/timeline_view_oracle.c`](../tests/differential/timeline_view_oracle.c) | `c` |
+| [`tests/test_align_lyrics.py`](../tests/test_align_lyrics.py) | `py` |
 | [`tests/test_antigravity_lyrics.py`](../tests/test_antigravity_lyrics.py) | `py` |
 | [`tests/test_assist_execution.py`](../tests/test_assist_execution.py) | `py` |
 | [`tests/test_assist_orchestrator.py`](../tests/test_assist_orchestrator.py) | `py` |

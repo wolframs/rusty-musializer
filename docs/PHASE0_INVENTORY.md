@@ -248,6 +248,7 @@ short names **and six long aliases**:
 | `clawd`, `claude` | Clawd (post-legacy; the C rejects both) |
 | `knot`, `openai-knot` | OpenAI Knot (post-legacy, id 12) |
 | `stage` | Stage (post-legacy, id 13) |
+| `threshold`, `door` | Threshold (post-legacy, id 14) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -488,6 +489,11 @@ contract are documented in [`OPENAI_KNOT.md`](OPENAI_KNOT.md).
 Stage — id 13, stable name `stage`, display name `Stage`, eleven controls —
 was added on 2026-10-12. It draws the current lyric line in one of six
 stagings; see `docs/MUSIC_VIDEO_CLI.md`.
+
+Threshold — id 14, stable name `threshold`, display name `Threshold`, eleven
+controls — was added on 2026-10-21 (MV9-d). A room with a door; its `beyond`
+control runs another scene live inside it. The scene registry itself moved to
+`musializer-core::scenes::descriptor` so a scene can construct another.
 
 Two behaviours of the registry that are still contract, whatever the count is:
 
@@ -748,6 +754,28 @@ caption overlay is not drawn over it.
 `layout` is a persisted index, appended to and never reordered: 0 poster,
 1 terminal, 2 chat, 3 card, 4 placards, 5 ticker. An out-of-range value draws
 the poster.
+
+### `threshold` — Threshold (11 controls, no C counterpart)
+
+Post-legacy, 2026-10-21, id 14 (MV9-d).
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.threshold.distance` | Camera distance | 0.00 | 1.00 | 1.00 | 2 | slider |
+| 1 | `settings.threshold.open` | Door open | 0.00 | 1.00 | 0.00 | 2 | slider |
+| 2 | `settings.threshold.light` | Light | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 3 | `settings.threshold.haze` | Doorway haze | 0.00 | 1.00 | 0.60 | 2 | slider |
+| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 14 | 0 | 0 | slider |
+| 5 | `settings.threshold.presences` | Presences | 0 | 2 | 0 | 0 | slider |
+| 6 | `settings.threshold.motes` | Motes | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 7 | `settings.threshold.mist` | Mist | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 8 | `settings.threshold.hue` | Light hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 9 | `settings.threshold.sway` | Camera sway | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 10 | `settings.threshold.reflection` | Floor reflection | 0.00 | 1.00 | 0.60 | 2 | slider |
+
+`beyond` is a scene index plus one (0 is the doorway's own fog; the threshold
+never nests itself), so its maximum is the threshold's own id and grows if a
+scene is appended — a deliberate re-pin of `settings_post_legacy.txt`.
 
 ### `knot` — OpenAI Knot (11 controls, no C counterpart)
 
@@ -1039,6 +1067,23 @@ kind and a length out of bounds are refused. The frozen C cannot read a file
 that has either member. `schema_version` stays 1, the precedent the caption
 `effects` block set: an additive member whose default is never serialized.
 
+**Post-legacy (2026-10-21, MV9):** a cue may also carry `grade` and `glide`, and
+the block `finish`, on the same never-written-when-default rule.
+
+- **`grade`** (`scene_grade`): required `stops` (2..8 colours, six lowercase
+  hex digits, darkest first), `map` (0..1), `shift_from` (0..360), `shift_by`
+  (-180..180), `shift_width` (1..90). The section's palette lock, applied to
+  what its scene drew before the transition composites.
+- **`glide`**: seconds, written only when positive (0 < glide ≤ 30). The
+  section's tuning eases in from the previous same-scene section's.
+- **`finish`**: required `bloom` (0..2), `bloom_threshold` (0..1),
+  `bloom_radius` (0.002..0.08), `shoulder`, `tone` (0..1), `shadow_rgb` and
+  `highlight_rgb` (six hex digits), `vignette`, `grain` (0..1); refused when
+  every strength is zero, because "no finish" is leaving the member out.
+
+Post-legacy floats in these blocks are written in their shortest round-trip
+spelling (`0.45`), not the C-era widened one.
+
 ### 6.3 `caption_style` and `caption_font_asset` in detail
 
 `caption_style`, `schemas/project-v1.schema.json:265-346`.
@@ -1054,7 +1099,9 @@ silently mix the author's intent with shipped defaults." The C agrees —
 frozen C does not know. A default block is never written, so every pre-effects
 project keeps its exact C-era serialization; the authoritative description
 lives in the schema and `crates/musializer-core/src/project/caption_effects.rs`,
-not in this inventory, which documents the C's behaviour only.
+not in this inventory, which documents the C's behaviour only. The block gained
+two more optional members on 2026-10-21 (MV9-f), `entrance_seconds` and
+`exit_seconds` (each 0..3, written only when positive).
 
 Every measurement is a fraction of the frame, never a pixel count, so a project
 typeset against a preview window exports identically at any resolution

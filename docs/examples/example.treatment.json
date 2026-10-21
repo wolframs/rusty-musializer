@@ -14,11 +14,14 @@
     "anchor": "top_center",
     "size_scale": 0.07,
     "text_rgba": "#fff3dc",
-    "effects": { "shadow_blur": 0.25, "glow_strength": 0.4, "glow_rgba": "#ffb45a", "glow_pulse": "beat" }
+    "effects": { "shadow_blur": 0.25, "glow_strength": 0.4, "glow_rgba": "#ffb45a", "glow_pulse": "beat",
+                 "entrance_seconds": 0.6, "exit_seconds": 0.4 }
   },
+  "finish": { "base": "film", "grain": 0.25 },
   "scenes": {
     "orbital": {
       "settings": { "motion": 1.3 },
+      "grade": { "palette": "night-door", "map": 0.6, "shift_by": 50 },
       "routes": [
         { "setting": "radius", "source": "bass", "input": [0.15, 0.8], "output": [0.92, 1.22], "curve": "smoothstep" }
       ]
@@ -31,7 +34,8 @@
     { "at": "0:08",    "scene": "cadence", "note": "verse one as kinetic type" },
     { "at": "0:24.5",  "scene": "orbital", "note": "drop", "settings": { "reactivity": 1.6 },
       "transition": { "kind": "flash", "seconds": 0.4 } },
-    { "at": 40,        "scene": "pulse",   "note": "second half of the drop", "settings": { "petals": 5 } },
+    { "at": 34,        "scene": "orbital", "note": "the lattice opens out", "settings": { "radius": 1.4 }, "glide": 4 },
+    { "at": 40,        "scene": "pulse",   "note": "second half of the drop", "settings": { "petals": 5 }, "grade": "ember" },
     { "at": "0:52",    "scene": "atlas",   "note": "outro", "transition": "burn" }
   ],
   "outro": { "kind": "fade", "seconds": 2 },

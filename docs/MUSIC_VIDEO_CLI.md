@@ -32,7 +32,7 @@ evidence fits the question.
 | --- | --- | --- |
 | Where do sections start and end? Where is the kick? | `python3 tools/analyze_audio.py song.mp3 measured.json` — per-frame level and bands, onsets, a pulse estimate. Local, deterministic | It has no idea what a chorus is. Read `sub_bass` for the kick and `rms` for level and find the edges yourself |
 | What is the song *about*, what is the mood, what is sung? | An audio-capable model describing the track | It invents. And its **timestamps are not measurements** — see below |
-| When exactly is each line sung? | CTC forced alignment of the known words inside a known window (`torchaudio.pipelines.MMS_FA`, the runtime `tools/musializer_doctor.py` reports) | A wrong window gives a confident wrong answer. Check it against the song's own repetition |
+| When exactly is each line sung? | `tools/align_lyrics.py song.mp3 song.lyrics.json` — the track's own lyric tag (or `--lyrics words.txt`) forced onto the audio with MMS CTC over the whole track, a wildcard between lines. Six seconds for a five-minute track; a treatment takes the file by path | It forces the words you give it. It prints the weak lines and the offsets between repeated lines: a repeat that disagrees with its siblings is the one that is wrong |
 
 Two things that cost time on the first video made this way, recorded so they do
 not cost it again:
@@ -147,15 +147,16 @@ goes missing.
 | `output` | `{ "resolution": "1920x1080", "fps": 30, "quality": "high" }`, each optional. `--resolution`, `--fps` and `--quality` on the command line override it |
 | `seed` | The deterministic seed scenes are built from |
 | `caption_style` | The `.musi` member names, each optional here (see below) |
-| `scenes` | Per scene name: `settings` (the base tuning for every section of that scene) and `routes` |
+| `scenes` | Per scene name: `settings` (the base tuning for every section of that scene), `routes`, and a `grade` every section of that scene wears |
 | `segments` | The plan. Required |
 | `outro` | How the track ends: a transition, played backwards into black |
-| `lyrics` | Timed lines |
+| `finish` | The finish over every frame: `"film"`, or an object (see *The look*) |
+| `lyrics` | Timed lines, or the path of a `tools/align_lyrics.py` file |
 | `events` | Authored markers; Constellation flares on them |
 
 ### `segments`
 
-Each has `at`, `scene`, and optionally `settings`, a `transition` and a `note`. Sections are
+Each has `at`, `scene`, and optionally `settings`, a `transition`, a `grade`, a `glide` and a `note`. Sections are
 listed in playing order, the first starts at 0, and each runs until the next one
 starts; the last runs to the end of the track. There is nothing to keep
 contiguous by hand.
@@ -171,6 +172,14 @@ Two adjacent sections of the **same** scene keep the scene's running state and
 only change its tuning, which is how one scene changes mid-phrase: a riser that
 tightens, or a ground that goes from night to day on a bar line. A section of a
 *different* scene starts that scene fresh.
+
+**`glide`** is how a section's tuning arrives: seconds over which it eases in
+(a smoothstep) from the section before it, when that is the same scene. A door
+opening over 2.6 s, light swelling on a word, a camera walking forward — each is
+two sections and a glide. Toggles snap, and so does a whole-number control with
+fewer than sixteen steps (a `layout`, a `field`, a cat count): those are choices,
+and passing through the ones between would show pictures nobody asked for. A
+whole-number control with a wide range — a hue in degrees — eases. Up to 30 s.
 
 ### Staging a line: the `stage` scene
 
@@ -251,6 +260,79 @@ Three things to know before trusting one:
   caption overlay is drawn over a transition, and black (an intro, an outro, a
   `dip`) is drawn over the caption.
 
+### The look: `grade` and `finish`
+
+Some scenes choose their colours from the music: Constellation has no hue
+control at all, and Orbital's palette moves with the spectrum. A **grade** holds
+a section to a palette anyway — the picture's luminance mapped through a list of
+colours, darkest first, and mixed over the scene's own colour by `map` — and can
+turn one narrow band of hue (`shift_from`, `shift_by`, `shift_width`, in
+degrees), which is how a palette with no green in it keeps a green chat ground
+from showing.
+
+```json
+"scenes": { "constellation": { "grade": "night-door" },
+            "orbital": { "grade": { "palette": "night-door", "map": 0.55, "shift_by": 52 } } },
+"segments": [ { "at": 30, "scene": "constellation", "grade": "none" },
+              { "at": 40, "scene": "atlas", "grade": { "palette": ["#05080b", "#4a3f72", "#e9c27a"], "map": 0.6 } } ]
+```
+
+`--vocabulary` lists the named palettes (`night-door`, `ember`, `ice`, `mono`,
+`sepia`, `dusk`) with their colours. A palette named alone maps at 0.82. A
+section's own `grade` wins over its scene's; `"none"` clears it.
+
+The grade is applied to what the scene drew **before** the section's
+transition: an outgoing picture is held already graded, and a transition's own
+light — a `flash` to white — is never pushed through a palette.
+
+The **finish** is one block for the whole video, applied to every frame, last —
+over the caption and over a fade to black: bloom, a highlight shoulder (paper
+reads as paper instead of a white hole), split toning toward a shadow and a
+highlight colour, a vignette, and film grain hashed from the frame's *time*, so
+a still and a clip of one moment grain alike.
+
+```json
+"finish": "film"
+"finish": { "base": "film", "grain": 0.2, "shadow": "#102a30", "vignette": 0.3 }
+```
+
+`--vocabulary` prints `film`'s values and every member's bounds. The `look:`
+report line says whether the grade and the finish drew, and how many frames:
+a pass that silently failed is the same picture as a video that asked for
+none.
+
+### A room with a scene through its door: `threshold`
+
+`threshold` (alias `door`) is a dark slate room with a lavender door, light
+pooling on a wet floor, mist, gold motes with threads between them, and up to
+two standing lights in the doorway. `open` swings the door, `distance` walks the
+camera from across the room (1) into the doorway (0), `light`, `haze` and
+`mist` set the glow, `presences` stands one gold or a gold and a lavender light
+in the doorway.
+
+`beyond` names the scene the doorway shows — **live**, not a picture of it.
+`0` is the doorway's own fog; `n` is the n-th scene in `--vocabulary`'s list
+(7 is `constellation`). That scene runs inside the threshold, tuned by its own
+`scenes.<name>.settings` and wearing its own nearest section's grade. Far away
+it is fitted to the doorway; at `distance` 0 it is exactly the full frame. So:
+
+```json
+{ "at": 15.95, "scene": "threshold", "settings": { "beyond": 7, "open": 0.8, "distance": 0.86 }, "glide": 2.6 },
+{ "at": 22.9,  "scene": "threshold", "settings": { "beyond": 7, "open": 0.8, "distance": 0.0, "haze": 0 }, "glide": 1.9 },
+{ "at": 24.8,  "scene": "constellation" }
+```
+
+opens the door, walks into the doorway, and cuts to the constellation it was
+showing — and the cut is invisible, because the running constellation is
+**handed across it** rather than restarted. The reverse works too: a threshold
+section whose `beyond` is the scene on screen takes that scene in at
+`distance` 0, and a glide back out pulls the camera into the room.
+
+Give the beyond scene's tuning in `scenes`, not in a section of its own: inside
+the doorway it has no section, and a section after the cut tuned differently is
+a visible jump. The `threshold:` report line names the camera, the door and
+whether the doorway's scene was live.
+
 ### `routes`
 
 A route drives one setting from the audio, for every section of that scene. It
@@ -284,13 +366,21 @@ editor are the slowest thing in a project to get right, and
 The report line counts lines that never reach the screen because a later line
 covers their whole span.
 
+`"lyrics": "song.lyrics.json"` reads the lines out of a `tools/align_lyrics.py`
+file instead, relative to the treatment. They are checked like inline lines,
+and the file is refused when it was aligned against different audio.
+
 ### `caption_style`
 
 `face` (`alegreya`, `space_grotesk`), `box` (`none`, `shadow`, `plate`),
 `anchor` (nine positions), `size_scale`, `margin_scale`, `width_scale`,
 `text_rgba`, `box_rgba`, and `effects` (`glow_strength`, `glow_radius`,
 `glow_rgba`, `glow_pulse`, `glow_pulse_depth`, `glow_hue_drive`,
-`glow_hue_range`, `shadow_blur`, `shadow_opacity`, `plate_roundness`). Colours
+`glow_hue_range`, `shadow_blur`, `shadow_opacity`, `plate_roundness`,
+`entrance_seconds`, `exit_seconds`). The last two let a line arrive out of a
+soft blur and leave back into it — the ink fades with the line's presence and a
+blurred copy in the ink's colour carries the rest; a line shorter than both
+shares its time between them. Colours
 are `"#rrggbb"` or `"#rrggbbaa"`. Whatever is not stated is the shipped default;
 with no block at all the track's own style is kept.
 
@@ -356,6 +446,10 @@ Said here so nobody looks for a flag:
   A requested title card today is a lyric line shown through Cadence.
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
+  The one place two scenes run at once is the threshold's doorway.
+- A `portal` transition (the door shape over any change) and transitions longer
+  than 8 s. A long intro is a few threshold sections with glides instead.
+- A per-line `voice` that picks a palette.
 - Authoring a transition in the window. They come from a treatment, are saved
   in the `.musi` and play in the preview, and no panel shows or edits them yet.
 - An imported caption face in a treatment. `"face": "imported"` is refused by

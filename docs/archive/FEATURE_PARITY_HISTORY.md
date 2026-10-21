@@ -4761,3 +4761,81 @@ length and lands inside one second leaves a stale `__pycache__` `.pyc` valid
 made hotter, since `plan::resolve` now reaches the login-shell rung at Start),
 and B12's `find_tool` override rung. A12 was skipped with a recorded reason (a
 schema decision, not a defect), A8 stays an operator contract decision.
+
+## MV9 — the "Door, No Room" compositor's work, moved into the renderer (2026-10-21)
+
+**Why.** The operator's video for "Door, No Room" (Chaos Cat Familiar,
+2026-10-19) was a Musializer render plus a GPU Python pass for everything a
+treatment could not say: a ray-traced room with a door for the intro and the
+ending, a palette lock, a film finish, soft-focus spoken lines, and lyric
+timing from the file's own tag. Asked which of that could become componentry,
+then (2026-10-21): *"Just build ;) You have a lot of freedom, I'm really not
+married to the musializer's current UI and functionalities, I barely use it
+'by hand' anymore."* The inventory went into the plan as MV9 (commit
+`4f855bf`); six of its items landed the same day.
+
+**What landed.**
+
+- **MV9-a/b — the look** (`b44953c`). `core::project::look`: `Grade` (a
+  luminance gradient map over named or listed stops, plus a selective hue
+  turn) and `Finish` (bloom, shoulder, split toning, vignette, grain), with CPU
+  reference functions the shaders restate. `runtime::post` draws them
+  (`post_grade.fs`, `post_bright.fs`, `post_finish.fs`, the caption halo's blur
+  reused), `runtime::offscreen::Canvas` is the one render-target helper the
+  new passes share. The grade rides on a plan cue and is applied before the
+  transition — which is what made the compositor's flash detection
+  unnecessary: a held outgoing picture already wears its own grade, and a
+  `flash` is drawn after. The finish rides on the plan and is applied last.
+- **MV9-c — glide** (`b44953c`). A cue's `glide` eases its tuning in from the
+  same-scene section before it, in preview and export through one
+  `App::frame_settings`; toggles and whole-number choices under sixteen steps
+  snap.
+- **MV9-d — the threshold** (`bbfeb4a`). Scene id 14 (`threshold`, alias
+  `door`): the compositor's room as one fragment shader (`threshold.fs`), its
+  doorway showing another scene **live** — nested in `ThresholdState`, drawn
+  into a canvas by the same `draw_body` every scene uses, fitted to the doorway
+  far away and the identity at distance 0 (`beyond_map`). The running instance
+  is handed across the cut both ways (`SceneState::take_nested` /
+  `adopt_nested`), and wears its own nearest section's grade
+  (`grade_near`). The scene registry moved to `core::scenes::descriptor` so a
+  scene can construct another. Post-legacy differential expectations
+  re-pinned (additions only: 51 → 62 descriptors).
+- **MV9-g — lyric timing** (`8c9e68a`). `tools/align_lyrics.py`: the file's own
+  lyric tag forced onto the audio in one whole-track MMS CTC pass with a
+  wildcard between lines; `musializer.aligned-lyrics/v1`, which a treatment
+  takes by path and the application refuses when aligned against different
+  audio.
+- **MV9-f — caption entrance** (`cb8b4df`). `entrance_seconds` /
+  `exit_seconds` in the caption effects.
+
+**Evidence.**
+
+- **The whole video, natively.** The same treatment generator, with the
+  threshold, grades, glides, the film finish and the caption entrance in place
+  of the compositor (`build/door/work/make_native.py`, untracked): 5:22 at
+  1080p High, 2x supersampled, x264, one process, **10 min 56 s**, 9676
+  frames. Frames from it against the compositor's: the intro walk, the cut at
+  24.8 s and the pull-back ending read as the same shots.
+- **The aligner**: 88 lines of that track in 6 s; seven scored under 0.4, and
+  the repetition table put the third "Let the state persist" at +194.37 s
+  where its siblings sit on a +73.4 / +167.6 grid — the one placement that
+  was actually wrong.
+- **The directing gate** gained a look section (`tools/treatment_check.sh`):
+  graded and finished vs plain 26.1 dB; the glide's reported distance at its
+  midpoint 0.45; every still's alpha 255; the saved project carries `grade`,
+  `glide` and `finish` and reopens byte-identically; and **the Loom walked into
+  through the doorway is byte-identical to a Loom on screen from the start**
+  (PSNR infinite).
+- **Negative controls**, each on a scratch binary and reverted byte for byte:
+  the hand-over removed → the walked-into Loom drops to **31.3 dB** and the
+  gate fails on exactly that check; the glide disabled → the midpoint
+  distance reads **0.00** and the gate fails on exactly that check. The first
+  control is the instructive one: with **Constellation** as the doorway's
+  scene it could not fail at all — the scene draws from time and seed, so a
+  restarted instance is the same picture — and the gate was moved to Loom,
+  which keeps the cloth it weaves. A check that cannot fail was passing.
+
+**Left open** (in the queue): MV9-e portal transition, MV9-h voice tags,
+MV9-i long transitions, MV9-j nested tuning from the nearest section, MV9-k
+nothing in the window shows any of it.
+
