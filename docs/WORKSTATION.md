@@ -48,9 +48,9 @@ timing of Door, No Room. It is a direction, not a pixel spec:
 | WX-1 | The dock: a right-hand region the workspace makes room for | done 2026-10-21 |
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
-| WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | open |
+| WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
 | WX-5 | The restyle the mockup proposes | open; wants the operator's reaction to the mockup |
-| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1/2/3; grows with each part |
+| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
 
 ### WX-1 — the dock
 
@@ -107,7 +107,7 @@ TUI inside a terminal:
 | Agent | Transport |
 | --- | --- |
 | Claude Code | `claude -p --input-format stream-json --output-format stream-json --verbose` |
-| Antigravity | `agy -p --input-format stream-json --output-format stream-json` (the same NDJSON shape) |
+| Antigravity | `agy --input-format stream-json --output-format stream-json --print=` (its own `event`-tagged NDJSON; see below) |
 | Codex | `codex app-server` (JSON-RPC over stdio) |
 
 - The transcript model lives in `musializer-core`: pure, and fed by recorded
@@ -178,4 +178,40 @@ recorded NDJSON. The gate never starts a real agent and never spends credits.
   The treatment is the source; the project follows it.
 - **Not done yet:** a "Follow a treatment…" picker in the dock. For now the
   ways in are `--treatment` and dropping the file on the window.
+
+**WX-4 (2026-10-21).**
+
+- **The three protocols were read off live sessions, not documentation.**
+  Each was probed with a one-line task on 2026-10-21 (Claude Code 2.1.301
+  on Haiku, agy on Gemini 3.8 Flash Low, codex-cli 0.163.0). Antigravity
+  turned out *not* to be Claude's format: its input is
+  `{"event":"user","message":{"content":"…"}}`, its output is `step_update`s,
+  and `-p` takes the next word as the prompt, so the dock puts `--print=`
+  last. The tests in `core::agent` replay synthetic lines of each shape.
+- **Permissions.** Claude runs with `--permission-mode acceptEdits` and
+  `--permission-prompt-tool stdio`, so anything else it wants to do arrives
+  as an Allow/Deny row. Codex runs with `approvalPolicy: on-request`, and its
+  approvals are server requests answered the same way. Antigravity cannot ask
+  in this mode: a refused action shows up in its result, and the chat says
+  so and offers "let it run commands", which restarts it with
+  `--dangerously-skip-permissions` and resumes its conversation. That is the
+  operator's choice, made per chat, and nothing turns it on by default.
+- **PATH.** A desktop launch does not read `.zshrc`, which is where Codex's
+  npm bin and an nvm `node` usually come from. Agents are resolved and run
+  with the login shell's interactive PATH, asked once in the background.
+  `MUSIALIZER_AGENT_<NAME>` names an exact program instead. That override is
+  the gate's seam: `tools/fake_agent.py` speaks all three protocols, and no
+  check ever starts a real agent.
+- **Context is visible.** The playhead line is prefixed to the message and
+  shows in the user's bubble. The standing instructions go once per session:
+  Claude's `--append-system-prompt`, Codex's `developerInstructions`, and the
+  first message for Antigravity.
+- **Live check, by hand, once:** a real Claude Code turn through the dock
+  chat answered "pong" on Opus 5.5. Codex and Antigravity were exercised
+  live only through the protocol probes above, not through the dock, to keep
+  Codex's weekly limit for real work.
+- **Not done yet:** inline images (a contact sheet the agent wrote should
+  show in the chat), resuming a Codex thread after its process dies (Claude
+  and Antigravity resume, Codex starts a new thread), and a model picker
+  (each CLI uses its own configured default).
 

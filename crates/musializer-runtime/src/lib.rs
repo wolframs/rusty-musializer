@@ -13,6 +13,7 @@
 //! Re-exports `raylib` so downstream crates depend on one place for the binding
 //! version rather than each pinning it.
 
+pub mod agent_process;
 pub mod assist;
 pub mod audio_bridge;
 pub mod decode;

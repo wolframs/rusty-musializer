@@ -19,6 +19,8 @@
 //! and rc files as in any other terminal, and quitting it leaves a shell in
 //! the tab rather than a dead one.
 
+#[path = "dock/chat_view.rs"]
+pub mod chat_view;
 #[path = "dock/keys.rs"]
 pub mod keys;
 #[path = "dock/terminal_view.rs"]
@@ -31,6 +33,7 @@ use egui::{Color32, Context, Rect, RichText, Stroke};
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::terminal::{GridSize, Session, Spawn};
 
+use chat_view::ChatTab;
 use terminal_view::TerminalView;
 
 /// The narrowest the workspace may become beside an open dock. Below this the
@@ -64,6 +67,18 @@ impl Agent {
         }
     }
 
+    /// The agent named on a probe line: `claude`, `codex`, `agy` or
+    /// `antigravity`.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "claude" => Some(Agent::Claude),
+            "codex" => Some(Agent::Codex),
+            "agy" | "antigravity" => Some(Agent::Antigravity),
+            _ => None,
+        }
+    }
+
     /// The command as typed at a prompt.
     #[must_use]
     pub const fn command(self) -> &'static str {
@@ -71,15 +86,6 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Antigravity => "agy",
-        }
-    }
-
-    #[must_use]
-    pub const fn tip(self) -> &'static str {
-        match self {
-            Agent::Claude => "Start Claude Code in a new tab, in this project's folder",
-            Agent::Codex => "Start Codex in a new tab, in this project's folder",
-            Agent::Antigravity => "Start Antigravity (agy) in a new tab, in this project's folder",
         }
     }
 }
@@ -93,6 +99,11 @@ pub struct DockContext {
     pub place: String,
     /// The treatment the window follows (WX-3), if any.
     pub following: Option<Following>,
+    /// Where the user is, for a chat message's context line (WX-4):
+    /// `playhead 3:12.0 · section 38 of 70, threshold · treatment x.json`.
+    pub now: String,
+    /// The standing instructions a chat agent gets once per session.
+    pub instructions: String,
 }
 
 /// What the header says about the followed treatment.
@@ -104,17 +115,68 @@ pub struct Following {
     pub error: Option<String>,
 }
 
-struct Tab {
-    label: String,
+/// A terminal tab: a shell, or an agent CLI run through one.
+struct Terminal {
     agent: Option<Agent>,
     spawn: Spawn,
     session: Option<Session>,
     error: Option<String>,
     view: TerminalView,
+}
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a dock holds a handful of tabs, created by a click; the size of one is irrelevant"
+)]
+enum Body {
+    Terminal(Terminal),
+    Chat(ChatTab),
+}
+
+struct Tab {
+    label: String,
+    body: Body,
     id: egui::Id,
 }
 
 impl Tab {
+    fn title(&self) -> String {
+        match &self.body {
+            Body::Terminal(terminal) => terminal.title(&self.label),
+            Body::Chat(chat) => chat.title(),
+        }
+    }
+
+    fn exited(&self) -> bool {
+        match &self.body {
+            Body::Terminal(terminal) => terminal
+                .session
+                .as_ref()
+                .is_some_and(|session| session.exit().is_some()),
+            Body::Chat(_) => false,
+        }
+    }
+
+    fn focus(&mut self) {
+        match &mut self.body {
+            Body::Terminal(terminal) => terminal.view.focus_next = true,
+            Body::Chat(chat) => chat.focus_next = true,
+        }
+    }
+
+    fn close(&mut self) {
+        match &mut self.body {
+            Body::Terminal(terminal) => {
+                if let Some(session) = terminal.session.as_mut() {
+                    session.close();
+                }
+            }
+            Body::Chat(chat) => chat.close(),
+        }
+    }
+}
+
+impl Terminal {
     fn start(&mut self, focus: bool) {
         // The first resize sets the real size; this is only a starting grid.
         let size = GridSize {
@@ -136,16 +198,16 @@ impl Tab {
         self.view.focus_next = focus;
     }
 
-    fn title(&self) -> String {
+    fn title(&self, label: &str) -> String {
         let live = self
             .session
             .as_ref()
             .and_then(Session::title)
             .filter(|title| !title.trim().is_empty());
         match (self.agent, live) {
-            (Some(agent), _) => agent.label().to_string(),
+            (Some(agent), _) => format!("{} (terminal)", agent.label()),
             (None, Some(title)) => title.chars().take(24).collect(),
-            (None, None) => self.label.clone(),
+            (None, None) => label.to_string(),
         }
     }
 }
@@ -170,6 +232,10 @@ pub struct Dock {
     dragging: Option<f32>,
     /// Ctrl+` opened the dock before it had a tab; the first tab takes focus.
     focus_first: bool,
+    /// Whether the agent buttons open a native chat (the default) or the
+    /// agent's own TUI in a terminal tab.
+    agents_in_terminal: bool,
+    opened: u64,
 }
 
 impl Dock {
@@ -231,33 +297,78 @@ impl Dock {
         } else {
             String::new()
         };
-        let id = egui::Id::new((
-            "dock_terminal",
-            self.tabs.len(),
-            self.shells_opened,
-            agent.map(Agent::label),
-        ));
-        let mut tab = Tab {
-            label,
+        let mut terminal = Terminal {
             agent,
             spawn,
             session: None,
             error: None,
             view: TerminalView::default(),
-            id: id.with(std::time::SystemTime::now()),
         };
-        tab.start(focus);
-        self.tabs.push(tab);
+        terminal.start(focus);
+        let id = self.next_id();
+        self.tabs.push(Tab {
+            label,
+            body: Body::Terminal(terminal),
+            id,
+        });
         self.active = self.tabs.len() - 1;
+    }
+
+    fn next_id(&mut self) -> egui::Id {
+        self.opened += 1;
+        egui::Id::new(("dock_tab", self.opened))
+    }
+
+    /// Opens a native chat with `agent` (WX-4).
+    pub fn open_chat(&mut self, agent: Agent, context: &DockContext) {
+        musializer_runtime::agent_process::warm_shell_path();
+        let id = self.next_id();
+        let chat = ChatTab::new(agent, context, id);
+        self.tabs.push(Tab {
+            label: agent.label().to_string(),
+            body: Body::Chat(chat),
+            id,
+        });
+        self.active = self.tabs.len() - 1;
+    }
+
+    /// Sends `text` to the active chat as if typed (`--ui-probe agent-say=`).
+    pub fn probe_say(&mut self, text: &str, context: &DockContext) {
+        if let Some(Body::Chat(chat)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.body) {
+            chat.probe_say(text, context);
+        }
+    }
+
+    /// Answers the active chat's open permission prompts
+    /// (`--ui-probe agent-decide=`).
+    pub fn probe_decide(&mut self, allow: bool) {
+        if let Some(Body::Chat(chat)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.body) {
+            chat.probe_decide(allow);
+        }
+    }
+
+    /// Pumps every tab's process, visible or not, so an agent keeps working
+    /// and a busy terminal's events do not pile up while the dock is hidden.
+    pub fn tick(&mut self) {
+        for tab in &mut self.tabs {
+            match &mut tab.body {
+                Body::Terminal(terminal) => {
+                    if let Some(session) = terminal.session.as_mut() {
+                        let _ = session.poll();
+                    }
+                }
+                Body::Chat(chat) => chat.tick(),
+            }
+        }
     }
 
     /// Types `text` into the active terminal (`--ui-probe dock-run=`). Xvfb
     /// has no keyboard; key encoding is covered by `keys`' own tests.
     pub fn probe_write(&mut self, text: &str) {
-        if let Some(session) = self
-            .tabs
-            .get(self.active)
-            .and_then(|tab| tab.session.as_ref())
+        if let Some(Body::Terminal(Terminal {
+            session: Some(session),
+            ..
+        })) = self.tabs.get(self.active).map(|tab| &tab.body)
         {
             session.write(text.as_bytes().to_vec());
         }
@@ -266,7 +377,7 @@ impl Dock {
     /// Asks the active terminal to take the keyboard on the next frame.
     pub fn focus_active(&mut self) {
         match self.tabs.get_mut(self.active) {
-            Some(tab) => tab.view.focus_next = true,
+            Some(tab) => tab.focus(),
             None => self.focus_first = true,
         }
     }
@@ -274,9 +385,7 @@ impl Dock {
     fn close_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             let mut tab = self.tabs.remove(index);
-            if let Some(session) = tab.session.as_mut() {
-                session.close();
-            }
+            tab.close();
             if self.active >= self.tabs.len() {
                 self.active = self.tabs.len().saturating_sub(1);
             }
@@ -299,32 +408,39 @@ impl Dock {
             return format!("open={open} tabs=0");
         }
         let tabs: Vec<String> = self.tabs.iter().map(Tab::title).collect();
-        let active = &self.tabs[self.active];
-        let state = match (&active.session, &active.error) {
-            (Some(session), _) => match session.exit() {
-                None => "running".to_string(),
-                Some(Some(code)) => format!("exited {code}"),
-                Some(None) => "signalled".to_string(),
-            },
-            (None, Some(error)) => format!("failed: {error}"),
-            (None, None) => "not started".to_string(),
+        let detail = match &self.tabs[self.active].body {
+            Body::Terminal(terminal) => {
+                let state = match (&terminal.session, &terminal.error) {
+                    (Some(session), _) => match session.exit() {
+                        None => "running".to_string(),
+                        Some(Some(code)) => format!("exited {code}"),
+                        Some(None) => "signalled".to_string(),
+                    },
+                    (None, Some(error)) => format!("failed: {error}"),
+                    (None, None) => "not started".to_string(),
+                };
+                let screen = terminal
+                    .session
+                    .as_ref()
+                    .map(terminal_view::screen_text)
+                    .unwrap_or_default();
+                let lines: Vec<&str> = screen
+                    .lines()
+                    .filter(|line| !line.trim().is_empty())
+                    .collect();
+                format!(
+                    "{state} keyboard={} screen={:?}",
+                    self.keyboard,
+                    lines.join(" | ")
+                )
+            }
+            Body::Chat(chat) => format!("keyboard={} {}", self.keyboard, chat.describe()),
         };
-        let screen = active
-            .session
-            .as_ref()
-            .map(terminal_view::screen_text)
-            .unwrap_or_default();
-        let lines: Vec<&str> = screen
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect();
         format!(
-            "open={open} tabs={} [{}] active={} {state} keyboard={} screen={:?}",
+            "open={open} tabs={} [{}] active={} {detail}",
             tabs.len(),
             tabs.join(", "),
             self.active,
-            self.keyboard,
-            lines.join(" | "),
         )
     }
 
@@ -362,27 +478,31 @@ impl Dock {
                 let body = child.available_rect_before_wrap();
                 let mut keyboard = false;
                 if let Some(tab) = self.tabs.get_mut(self.active) {
-                    let restart;
-                    {
-                        let mut body_ui = child.new_child(egui::UiBuilder::new().max_rect(body));
-                        if let Some(session) = tab.session.as_mut() {
-                            let view = tab.view.show(&mut body_ui, tab.id, session);
-                            keyboard = view.has_focus;
-                            output.toggle |= view.toggle_dock;
-                            restart = view.restart;
-                        } else {
-                            body_ui.label(
-                                RichText::new(format!(
-                                    "Could not start the terminal: {}",
-                                    tab.error.as_deref().unwrap_or("unknown error")
-                                ))
-                                .color(Color32::from_rgb(0xd0, 0x6f, 0x63)),
-                            );
-                            restart = body_ui.button("Try again").clicked();
+                    let mut body_ui = child.new_child(egui::UiBuilder::new().max_rect(body));
+                    match &mut tab.body {
+                        Body::Terminal(terminal) => {
+                            let restart = if let Some(session) = terminal.session.as_mut() {
+                                let view = terminal.view.show(&mut body_ui, tab.id, session);
+                                keyboard = view.has_focus;
+                                output.toggle |= view.toggle_dock;
+                                view.restart
+                            } else {
+                                body_ui.label(
+                                    RichText::new(format!(
+                                        "Could not start the terminal: {}",
+                                        terminal.error.as_deref().unwrap_or("unknown error")
+                                    ))
+                                    .color(Color32::from_rgb(0xd0, 0x6f, 0x63)),
+                                );
+                                body_ui.button("Try again").clicked()
+                            };
+                            if restart {
+                                terminal.start(true);
+                            }
                         }
-                    }
-                    if restart {
-                        tab.start(true);
+                        Body::Chat(chat) => {
+                            keyboard = chat.show(&mut body_ui, context).has_focus;
+                        }
                     }
                 }
                 self.keyboard = keyboard;
@@ -432,7 +552,7 @@ impl Dock {
             for (index, tab) in self.tabs.iter().enumerate() {
                 let selected = index == self.active;
                 let title = tab.title();
-                let exited = tab.session.as_ref().is_some_and(|s| s.exit().is_some());
+                let exited = tab.exited();
                 let text = if exited {
                     RichText::new(format!("{title} ·")).weak()
                 } else {
@@ -441,7 +561,7 @@ impl Dock {
                 if ui.selectable_label(selected, text).clicked() {
                     self.active = index;
                     if let Some(tab) = self.tabs.get_mut(index) {
-                        tab.view.focus_next = true;
+                        tab.focus();
                     }
                     break;
                 }
@@ -458,17 +578,27 @@ impl Dock {
                 open = Some(None);
             }
         });
+        let mut chat = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             for agent in Agent::ALL {
-                if ui
-                    .button(agent.label())
-                    .on_hover_text(format!("{}: {}", agent.tip(), context.place))
-                    .clicked()
-                {
-                    open = Some(Some(agent));
+                let tip = if self.agents_in_terminal {
+                    format!("{} in a terminal tab, in {}", agent.label(), context.place)
+                } else {
+                    format!("Chat with {}, working in {}", agent.label(), context.place)
+                };
+                if ui.button(agent.label()).on_hover_text(tip).clicked() {
+                    if self.agents_in_terminal {
+                        open = Some(Some(agent));
+                    } else {
+                        chat = Some(agent);
+                    }
                 }
             }
+            ui.checkbox(&mut self.agents_in_terminal, "in terminal")
+                .on_hover_text(
+                    "Open the agent's own interface in a terminal tab instead of a chat",
+                );
         });
         ui.add(
             egui::Label::new(
@@ -518,6 +648,9 @@ impl Dock {
         }
         if let Some(agent) = open {
             self.open_tab(agent, context, true);
+        }
+        if let Some(agent) = chat {
+            self.open_chat(agent, context);
         }
         stop
     }

@@ -1315,6 +1315,9 @@ fn run(
                 dock.focus_active();
             }
         }
+        // Agents keep working, and terminals keep draining, whether or not
+        // the dock is on screen.
+        dock.tick();
         let full_logical = ui_scale.logical_size(physical_window);
         let dock_rect = (app.shell.dock_open && !app.shell.fullscreen)
             .then(|| {
@@ -1627,12 +1630,29 @@ fn run(
             );
             if let Some(bounds) = dock_rect {
                 ui::egui_editor::apply_theme(editor_backend.ctx(), editor.theme);
-                let context = dock_context(&app, follow.as_ref());
+                let context = dock_context(&app, follow.as_ref(), time_seconds);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
                 );
                 if let Some(probe) = options.ui_probe.as_ref() {
+                    if report.frames == 10 {
+                        if let Some(agent) =
+                            probe.agent.as_deref().and_then(ui::dock::Agent::from_name)
+                        {
+                            dock.open_chat(agent, &context);
+                        }
+                    }
+                    if report.frames == 30 {
+                        if let Some(text) = probe.agent_say.as_deref() {
+                            dock.probe_say(text, &context);
+                        }
+                    }
+                    if report.frames == 60 {
+                        if let Some(allow) = probe.agent_decide {
+                            dock.probe_decide(allow);
+                        }
+                    }
                     if report.frames == 20 {
                         if let Some(command) = probe.dock_run.as_deref() {
                             dock.probe_write(&format!("{command}\r"));
@@ -5017,7 +5037,11 @@ impl TreatmentFollow {
 /// Where a new dock tab starts and what it is told (WX-2): the project's
 /// folder, else the track's, else home; and the paths an agent started there
 /// needs to direct this window from the command line.
-fn dock_context(app: &App, follow: Option<&TreatmentFollow>) -> ui::dock::DockContext {
+fn dock_context(
+    app: &App,
+    follow: Option<&TreatmentFollow>,
+    time_seconds: f64,
+) -> ui::dock::DockContext {
     let mut env = std::collections::HashMap::new();
     let following = follow.map(|follow| {
         env.insert(
@@ -5033,13 +5057,42 @@ fn dock_context(app: &App, follow: Option<&TreatmentFollow>) -> ui::dock::DockCo
     if let Ok(exe) = std::env::current_exe() {
         env.insert("MUSIALIZER_BIN".to_string(), exe.display().to_string());
     }
-    // The directing guide, when this binary still sits in its checkout.
-    let guide = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/MUSIC_VIDEO_CLI.md");
-    if let Ok(guide) = guide.canonicalize() {
+    // The directing guide and the isolated launcher, when this binary still
+    // sits in its checkout.
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let guide = checkout.join("docs/MUSIC_VIDEO_CLI.md").canonicalize().ok();
+    let launcher = checkout.join("tools/headless_run.sh").canonicalize().ok();
+    if let Some(guide) = &guide {
         env.insert("MUSIALIZER_GUIDE".to_string(), guide.display().to_string());
     }
+    if let Some(launcher) = &launcher {
+        env.insert(
+            "MUSIALIZER_HEADLESS_RUN".to_string(),
+            launcher.display().to_string(),
+        );
+    }
+    let mut now = Vec::new();
     let mut directory = None;
     if let Some(track) = app.workspace.current() {
+        now.push(format!(
+            "playhead {}",
+            musializer_core::treatment::format_time(time_seconds)
+        ));
+        let plan = &track.scene_switches;
+        if let Some(cue) = plan.cue_covering(time_seconds) {
+            let index = plan
+                .cues()
+                .iter()
+                .position(|candidate| std::ptr::eq(candidate, cue))
+                .map_or(0, |index| index + 1);
+            let scene =
+                SceneId::from_index(cue.scene_index as usize).map_or("?", SceneId::stable_name);
+            now.push(format!(
+                "section {index} of {}, {scene}, from {}",
+                plan.cues().len(),
+                musializer_core::treatment::format_time(cue.start_seconds)
+            ));
+        }
         env.insert(
             "MUSIALIZER_TRACK".to_string(),
             track.file_path.display().to_string(),
@@ -5066,12 +5119,75 @@ fn dock_context(app: &App, follow: Option<&TreatmentFollow>) -> ui::dock::DockCo
         (Some(dir), None) => dir.display().to_string(),
         (None, _) => String::new(),
     };
+    if let Some(follow) = follow {
+        now.push(format!("treatment {}", follow.name()));
+    }
+    let instructions = dock_instructions(
+        follow.map(|follow| follow.path.as_path()),
+        guide.as_deref(),
+        launcher.as_deref(),
+    );
     ui::dock::DockContext {
         working_directory: directory,
         env,
         place,
         following,
+        now: now.join(" · "),
+        instructions,
     }
+}
+
+/// What a chat agent is told once per session (WX-4): where it is, what the
+/// window does with a treatment, and how to look at frames without opening a
+/// second window or playing sound on the operator's speakers.
+fn dock_instructions(
+    treatment: Option<&Path>,
+    guide: Option<&Path>,
+    launcher: Option<&Path>,
+) -> String {
+    let mut lines = vec![
+        "You are running inside Musializer's dock, next to the window the operator is watching. \
+         Musializer renders music videos from treatments (JSON)."
+            .to_string(),
+    ];
+    match treatment {
+        Some(path) => lines.push(format!(
+            "The window follows the treatment {}: every save is applied to the preview at the \
+             playhead within a second, and a file that does not compile is refused with the \
+             field named. Edit that file to direct the video.",
+            path.display()
+        )),
+        None => lines.push(
+            "The window follows no treatment yet. If you write one, the operator can drop it \
+             on the window, and from then on every save is applied live."
+                .to_string(),
+        ),
+    }
+    if let Some(guide) = guide {
+        lines.push(format!(
+            "The treatment format, scenes, settings and the directing loop are in {}. Read it \
+             before writing a treatment.",
+            guide.display()
+        ));
+    }
+    match launcher {
+        Some(launcher) => lines.push(format!(
+            "To look at frames (stills, contact sheets, renders), run the binary in \
+             $MUSIALIZER_BIN through {}, which uses a private display and no sound. Never \
+             start the binary directly: it would open a window and play audio.",
+            launcher.display()
+        )),
+        None => lines.push(
+            "Never start the binary in $MUSIALIZER_BIN directly: it opens a window and plays audio."
+                .to_string(),
+        ),
+    }
+    lines.push(
+        "A message may start with a line like [Musializer: playhead 3:12.000 · section 38 of 70, \
+         threshold, from 3:08.400]: that is where the operator is in the track."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 /// Whether this invocation is a user session rather than a batch job (UX0-C06).

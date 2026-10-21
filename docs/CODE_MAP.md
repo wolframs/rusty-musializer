@@ -13,9 +13,9 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 53 | 74,099 | 530 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `listening_defaults` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 105 | 72,024 | 1,123 |
-| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 31 | 17,631 | 194 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 54 | 74,951 | 530 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `listening_defaults` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 106 | 73,056 | 1,128 |
+| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 32 | 18,032 | 198 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 109 | 0 |
 
 Dependency direction: `musializer-app` → `musializer-runtime` → raylib,
@@ -59,8 +59,8 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | Source | Lines | Tests | Module responsibility |
 | --- | ---: | ---: | --- |
 | [`src/bin/make_fixture_wav.rs`](../crates/musializer-app/src/bin/make_fixture_wav.rs) | 89 | 0 | Writes a synthetic WAV for headless checks. |
-| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,374 | 51 | The command line. |
-| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 6,329 | 3 | The Musializer binary: composition root. |
+| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,398 | 51 | The command line. |
+| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 6,445 | 3 | The Musializer binary: composition root. |
 | [`src/project.rs`](../crates/musializer-app/src/project.rs) | 932 | 6 | Saving a [`Track`] to a `.musi` and opening one back into a [`Track`]. |
 | [`src/recovery.rs`](../crates/musializer-app/src/recovery.rs) | 535 | 5 | App-owned crash recovery for edited sessions without a durable home (CX-3). |
 | [`src/scene_host.rs`](../crates/musializer-app/src/scene_host.rs) | 1,133 | 5 | Binding and drawing the scenes. |
@@ -82,9 +82,10 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/scenes/stage.rs`](../crates/musializer-app/src/scenes/stage.rs) | 1,623 | 0 | Stage: the drawing half. |
 | [`src/scenes/threshold.rs`](../crates/musializer-app/src/scenes/threshold.rs) | 122 | 0 | Threshold's drawing half (MV9-d): one shader pass over the boundary. |
 | [`src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,600 | 66 | The **AI settings** dialog: one modal surface for assist routing, local runtimes, Codex, OpenRouter and the privacy/provenance summary. |
+| [`src/ui/dock/chat_view.rs`](../crates/musializer-app/src/ui/dock/chat_view.rs) | 579 | 0 | A native chat with Claude Code, Codex or Antigravity in the dock (WX-4). |
 | [`src/ui/dock/keys.rs`](../crates/musializer-app/src/ui/dock/keys.rs) | 244 | 6 | What a key press sends to a terminal program: the xterm encoding that shells, `less`, `vim` and the agent TUIs (Claude Code, Codex, Antigravity) all expect. |
 | [`src/ui/dock/terminal_view.rs`](../crates/musializer-app/src/ui/dock/terminal_view.rs) | 507 | 0 | Draws a [`Session`]'s grid with egui and turns egui input into the bytes the program expects (WX-2). |
-| [`src/ui/dock.rs`](../crates/musializer-app/src/ui/dock.rs) | 561 | 1 | The dock: a right-hand region for terminals and the agents run in them (WX-1, WX-2; design in `docs/WORKSTATION.md`). |
+| [`src/ui/dock.rs`](../crates/musializer-app/src/ui/dock.rs) | 694 | 1 | The dock: a right-hand region for terminals and the agents run in them (WX-1, WX-2; design in `docs/WORKSTATION.md`). |
 | [`src/ui/egui_backend/input.rs`](../crates/musializer-app/src/ui/egui_backend/input.rs) | 450 | 1 | Raylib input conversion with explicit keyboard ownership. |
 | [`src/ui/egui_backend/output.rs`](../crates/musializer-app/src/ui/egui_backend/output.rs) | 70 | 0 | Platform cursor and clipboard requests from egui. |
 | [`src/ui/egui_backend/renderer.rs`](../crates/musializer-app/src/ui/egui_backend/renderer.rs) | 61 | 0 | Egui triangle and clipping submission into raylib’s normal 2D pass. |
@@ -133,6 +134,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`examples/settings_dump.rs`](../crates/musializer-core/examples/settings_dump.rs) | 106 | 0 | Dumps the Rust scene-settings descriptor table in the same format as `tests/differential/settings_oracle.c`, so the hand-transcribed table can be verified against the frozen C mechanically rather than by eye. |
 | [`examples/song_atlas_map_dump.rs`](../crates/musializer-core/examples/song_atlas_map_dump.rs) | 243 | 0 | Dumps the Rust Song Atlas terrain for a set of deterministic synthetic tracks, in the same format as `tests/differential/song_atlas_map_oracle.c`. |
 | [`examples/timeline_view_dump.rs`](../crates/musializer-core/examples/timeline_view_dump.rs) | 655 | 0 | Dumps the Rust timeline view over a wide grid of view states, strip geometries and operation sequences, in the same format as `tests/differential/timeline_view_oracle.c`. |
+| [`src/agent.rs`](../crates/musializer-core/src/agent.rs) | 1,031 | 5 | A conversation with a coding agent CLI, as the dock's chat tab shows it (WX-4; design in `docs/WORKSTATION.md`). |
 | [`src/assist/contracts.rs`](../crates/musializer-core/src/assist/contracts.rs) | 659 | 14 | The task-contract table and the boundary ladder. |
 | [`src/assist/credentials.rs`](../crates/musializer-core/src/assist/credentials.rs) | 402 | 12 | `musializer.assist-credentials/v1`: the one file that holds a key. |
 | [`src/assist/diagnosis.rs`](../crates/musializer-core/src/assist/diagnosis.rs) | 455 | 10 | What the job log says the helper died of. |
@@ -149,7 +151,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/audio/song_atlas_map.rs`](../crates/musializer-core/src/audio/song_atlas_map.rs) | 1,008 | 14 | The Song Atlas terrain: a bounded whole-track spectral map. |
 | [`src/audio/track_dynamics.rs`](../crates/musializer-core/src/audio/track_dynamics.rs) | 258 | 6 | Track-relative loudness bounds, so "quiet" and "loud" mean *this track's* quiet and loud. |
 | [`src/feedback.rs`](../crates/musializer-core/src/feedback.rs) | 1,091 | 21 | Human-feedback protocols: the `*.protocol.json` schema and the append-only answers log (HX-1, HX-3). |
-| [`src/lib.rs`](../crates/musializer-core/src/lib.rs) | 21 | 0 | Pure, deterministic, headlessly testable Musializer code. |
+| [`src/lib.rs`](../crates/musializer-core/src/lib.rs) | 22 | 0 | Pure, deterministic, headlessly testable Musializer code. |
 | [`src/project/analysis_bridge.rs`](../crates/musializer-core/src/project/analysis_bridge.rs) | 1,109 | 24 | The bounded reader for helper analysis output. |
 | [`src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,347 | 45 | Staged analysis results awaiting Apply or Discard. |
 | [`src/project/assets.rs`](../crates/musializer-core/src/project/assets.rs) | 667 | 13 | Content-addressed bundling for the `audio`, `images` and `fonts` categories. |
@@ -228,6 +230,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | --- | ---: | ---: | --- |
 | [`examples/assist_canary_probe.rs`](../crates/musializer-runtime/examples/assist_canary_probe.rs) | 338 | 0 | Plants one sentinel credential through every entry route and leaves behind everything a scan needs to prove it did not escape. |
 | [`examples/export_probe.rs`](../crates/musializer-runtime/examples/export_probe.rs) | 274 | 0 | Drives one whole export through the real FFmpeg, and prints evidence. |
+| [`src/agent_process.rs`](../crates/musializer-runtime/src/agent_process.rs) | 400 | 4 | An agent CLI as a child process speaking lines over stdio (WX-4). |
 | [`src/assist/discover.rs`](../crates/musializer-runtime/src/assist/discover.rs) | 691 | 8 | Where an external executable actually is, and how it was found. |
 | [`src/assist/env.rs`](../crates/musializer-runtime/src/assist/env.rs) | 209 | 4 | The startup credential import, and taking the key back out of the process. |
 | [`src/assist/files.rs`](../crates/musializer-runtime/src/assist/files.rs) | 525 | 10 | Where assist settings and credentials live on disk, and how they are written. |
@@ -240,7 +243,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/feedback.rs`](../crates/musializer-runtime/src/feedback.rs) | 450 | 5 | Frame-persistence feedback: the classic visualizer trick, as a resource. |
 | [`src/font.rs`](../crates/musializer-runtime/src/font.rs) | 2,363 | 17 | The interface and caption faces. |
 | [`src/halo.rs`](../crates/musializer-runtime/src/halo.rs) | 464 | 0 | The offscreen Gaussian blur behind the caption glow halo (UX0-C11). |
-| [`src/lib.rs`](../crates/musializer-runtime/src/lib.rs) | 41 | 0 | Unsafe and platform-sensitive work behind small, named safe APIs. |
+| [`src/lib.rs`](../crates/musializer-runtime/src/lib.rs) | 42 | 0 | Unsafe and platform-sensitive work behind small, named safe APIs. |
 | [`src/offscreen.rs`](../crates/musializer-runtime/src/offscreen.rs) | 236 | 1 | A render texture to draw into mid-frame, and back out of, safely. |
 | [`src/post.rs`](../crates/musializer-runtime/src/post.rs) | 464 | 1 | The palette lock and the finish, as GPU passes over a drawn frame (MV9-a/b). |
 | [`src/preset_files.rs`](../crates/musializer-runtime/src/preset_files.rs) | 204 | 6 | The filesystem half of the shared tuning-preset store. |
@@ -277,7 +280,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,597 | 55 |
 | [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,064 | 47 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,720 | 65 |
-| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 6,329 | 3 |
+| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 6,445 | 3 |
 | [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,557 | 45 |
 | [`crates/musializer-app/src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,228 | 29 |
 | [`crates/musializer-core/src/assist/execution.rs`](../crates/musializer-core/src/assist/execution.rs) | 3,226 | 39 |
@@ -285,7 +288,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-core/src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 3,117 | 36 |
 | [`crates/musializer-core/src/project/lyrics.rs`](../crates/musializer-core/src/project/lyrics.rs) | 2,571 | 42 |
 | [`crates/musializer-app/src/scenes/clawd.rs`](../crates/musializer-app/src/scenes/clawd.rs) | 2,457 | 24 |
-| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,374 | 51 |
+| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,398 | 51 |
 | [`crates/musializer-runtime/src/font.rs`](../crates/musializer-runtime/src/font.rs) | 2,363 | 17 |
 | [`crates/musializer-core/src/project/analysis_candidate.rs`](../crates/musializer-core/src/project/analysis_candidate.rs) | 2,347 | 45 |
 
@@ -330,6 +333,7 @@ generated build output, fixtures, and media assets are intentionally excluded.
 | [`tools/dock_check.sh`](../tools/dock_check.sh) | The dock gate (WX-1/2): a real terminal in the window, checked headless. |
 | [`tools/egui_editor_check.sh`](../tools/egui_editor_check.sh) | Real-input smoke check for the egui editor. A probe only parks initial time; every editing/theme action and modal-blocking assertion uses actual input. All playback is process-muted and additionally denied the desktop audio sink. |
 | [`tools/external_analysis.py`](../tools/external_analysis.py) | Offline orchestration for Whisper, Codex lyric review, and scene planning. External programs are invoked as argv arrays without a shell, with bounded timeouts. Audio/lyrics are sent through files or stdin, never command-line arguments. Only the explicit ``assist --mode mimo\|all`` path may call the existing OpenRouter helper. |
+| [`tools/fake_agent.py`](../tools/fake_agent.py) | A stand-in for Claude Code, Codex and Antigravity in the dock gate (WX-4). MUSIALIZER_AGENT_CLAUDE=... MUSIALIZER_AGENT_CODEX=... MUSIALIZER_AGENT_AGY=... The dock starts this with the real CLI's arguments; the protocol is read off them (`app-server` is Codex, `--print=` is Antigravity, anything else is Claude). Each user message gets one scripted turn in that protocol's shapes: some streamed text, one tool call with its result, and a final message that echoes the user's words, so the gate can see its own message came back. A message containing the word `ask` makes the Claude and Codex fakes request permission first and report the answer in their reply ("permission: allow"). It never touches the network, never runs the "tool" it reports, and exits when its input closes. The real agents are never started by any check. |
 | [`tools/force_align_lyrics.py`](../tools/force_align_lyrics.py) | Refine lyric cue boundaries with an independent CTC forced aligner. Whisper supplies text/order evidence, but its decoder timestamps are not an acoustic word aligner: on produced singing the first token of a segment can be seconds early. This helper teacher-forces the already-decided cue text through TorchAudio's multilingual MMS_FA acoustic model. It never changes display text or cue order. Low-scoring alignments retain their input timing and are marked uncertain instead of silently replacing one guess with another. |
 | [`tools/google_fonts.py`](../tools/google_fonts.py) | Fetch an open-source caption face from Google Fonts. The helper is opt-in and external to the renderer. It sends no user content: the only thing that leaves the machine is a family name, plus whatever the network layer necessarily reveals. ``--dry-run`` never opens a connection and prints exactly which hosts a real run would contact. Two subcommands: ``catalogue`` Fetch the family list and reduce it to the fields the picker needs. Cached on disk, refreshed when the cache is older than ``--max-age`` seconds. ``fetch`` Resolve one family to a regular-weight TrueType file, download it, verify it is a font, retrieve the licence it is distributed under, and write both plus a manifest into an output directory. Nothing here mutates a project. The application verifies the manifest digests itself before the bytes reach a font rasteriser or a .musi file. |
 | [`tools/headless_check.sh`](../tools/headless_check.sh) | Runs the Rust Musializer on a private display and captures evidence, so a session can check its own work without a human looking at a screen. |

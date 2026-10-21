@@ -339,6 +339,15 @@ pub struct UiProbe {
     /// on frame 20. Invented, WX-2: Xvfb has no keyboard, and a terminal that
     /// never ran anything photographs as an empty dark rectangle.
     pub dock_run: Option<String>,
+    /// `agent=claude|codex|agy`: open a chat with that agent on frame 10
+    /// (WX-4). The gate points `MUSIALIZER_AGENT_<NAME>` at a fake agent; a
+    /// probe run never starts a real one by itself.
+    pub agent: Option<String>,
+    /// `agent-say=TEXT`: send `TEXT` to that chat on frame 30.
+    pub agent_say: Option<String>,
+    /// `agent-decide=allow|deny`: answer the chat's permission prompts on
+    /// frame 60, through the same path as the Allow and Deny buttons.
+    pub agent_decide: Option<bool>,
     /// `follow=1`: follow `--treatment` in a probe run too (WX-3). A batch
     /// run applies it once; this lets the gate edit the file mid-run.
     pub follow: bool,
@@ -1245,6 +1254,21 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "tune-seed" => probe.tune_seed = Some(value.parse().ok()?),
         "dock" => probe.dock = parse_probe_flag(value)?,
         "follow" => probe.follow = parse_probe_flag(value)?,
+        "agent" => {
+            if !matches!(value, "claude" | "codex" | "agy" | "antigravity") {
+                return None;
+            }
+            probe.dock = true;
+            probe.agent = Some(value.to_string());
+        }
+        "agent-say" => probe.agent_say = Some(value.to_string()),
+        "agent-decide" => {
+            probe.agent_decide = Some(match value {
+                "allow" => true,
+                "deny" => false,
+                _ => return None,
+            });
+        }
         "dock-run" => {
             probe.dock = true;
             probe.dock_run = Some(value.to_string());

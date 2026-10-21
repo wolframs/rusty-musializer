@@ -10,8 +10,9 @@
 # operator's desktop or speakers either. SHELL is pinned to /bin/sh so the
 # operator's rc files cannot change what the screen shows.
 #
-# No agent CLI is ever started here: the tab buttons are not pressed, and the
-# typed command uses only shell builtins.
+# No real agent CLI is ever started here: the terminal runs shell builtins,
+# and every chat is pointed at tools/fake_agent.py through
+# MUSIALIZER_AGENT_<NAME>.
 #
 # DOCK_BIN names a different binary, for a negative control without
 # replacing the build.
@@ -110,6 +111,46 @@ esac
 case "$segments_line" in
     *"loom"*) ;;
     *) fail "the plan on screen is not the rewritten one (loom)" ;;
+esac
+
+# 6. WX-4: a native chat with each agent, against tools/fake_agent.py, which
+#    speaks each CLI's protocol and echoes the message back. Then one
+#    permission round trip each way: the fake asks before its tool, and its
+#    reply says what the dock answered.
+#    PATH inside a headless run is the dialog guard only, so the fake is
+#    started through an absolute interpreter.
+FAKE="$OUT/fake-agent"
+printf '#!/bin/sh\nexec /usr/bin/python3 %s "$@"\n' "$(realpath tools/fake_agent.py)" >"$FAKE"
+chmod +x "$FAKE"
+chat() { # agent probe-extra -> the dock line
+    env MUSIALIZER_AGENT_CLAUDE="$FAKE" MUSIALIZER_AGENT_CODEX="$FAKE" MUSIALIZER_AGENT_AGY="$FAKE" \
+        tools/headless_run.sh "$FIXTURE" \
+        --ui-probe "agent=$1,$2,size=1600x900" --probe-frames 100 \
+        --probe-shot "$OUT/chat-$1.png" 2>&1 | grep -E '^dock: ' || true
+}
+for agent in claude codex agy; do
+    line="$(chat "$agent" 'agent-say=make the bridge colder')"
+    printf '%s\n' "${line:0:220}"
+    case "$line" in
+        *'replies=1 tools=1'*'busy=false'*'last="fake reply to: make the bridge colder"'*) ;;
+        *) fail "the $agent chat did not complete a turn with a tool call" ;;
+    esac
+done
+# Each protocol's own words: Claude's behavior, Codex's decision.
+for case_ in claude:allow:allow claude:deny:deny codex:allow:accept codex:deny:decline; do
+    IFS=: read -r agent answer wire <<<"$case_"
+    line="$(chat "$agent" "agent-say=please ask first,agent-decide=$answer")"
+    case "$line" in
+        *"prompts=1"*"(permission: $wire)"*) ;;
+        *) fail "the $agent chat's $answer did not reach the agent as $wire: ${line:0:200}" ;;
+    esac
+done
+# Negative control for the round trip: unanswered, the agent must still be
+# waiting, or "permission: allow" above could come from the fake alone.
+line="$(chat claude 'agent-say=please ask first')"
+case "$line" in
+    *"prompts=1 busy=true"*) ;;
+    *) fail "an unanswered prompt did not leave the turn waiting: ${line:0:200}" ;;
 esac
 
 if [ "$failures" -gt 0 ]; then
