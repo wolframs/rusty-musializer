@@ -98,6 +98,8 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         SceneId::Clawd => (222, 112, 68),
         SceneId::OpenAiKnot => (131, 89, 230),
         SceneId::Stage => (214, 92, 148),
+        // The door's lavender.
+        SceneId::Threshold => (156, 144, 200),
     };
     Color::new(r, g, b, alpha)
 }

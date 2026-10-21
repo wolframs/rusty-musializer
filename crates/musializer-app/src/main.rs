@@ -2973,8 +2973,33 @@ impl App {
         let Some(scene) = track.advance_scene_plan(time_seconds) else {
             return;
         };
-        if self.scene.id() != scene {
-            self.scene = SceneInstance::new(scene_host::descriptor(scene), seed);
+        if self.scene.id() == scene {
+            return;
+        }
+        // The threshold hands its doorway's scene across a cut in either
+        // direction (MV9-d): cutting from a threshold to the scene it was
+        // showing continues that scene rather than restarting it, and cutting
+        // into a threshold that shows the scene on screen carries it in.
+        let carried = if self.scene.id() == SceneId::Threshold {
+            self.scene
+                .take_nested()
+                .filter(|nested| nested.id() == scene)
+        } else {
+            None
+        };
+        let next =
+            carried.unwrap_or_else(|| SceneInstance::new(scene_host::descriptor(scene), seed));
+        let previous = std::mem::replace(&mut self.scene, next);
+        if scene == SceneId::Threshold {
+            let wanted = musializer_core::scenes::threshold::beyond_scene(self.settings().get(
+                SceneId::Threshold,
+                musializer_core::scene::settings::index::threshold::BEYOND,
+            ));
+            if wanted == Some(previous.id()) {
+                // Refused only if the doorway is occupied, which a fresh
+                // threshold's is not; either way nothing else holds it.
+                let _ = self.scene.adopt_nested(previous);
+            }
         }
     }
 }
@@ -5353,6 +5378,8 @@ impl Report {
         println!("openai knot:     {}", renderer.describe_knot());
         // Stage: which staging drew, how the line wrapped and at what size.
         println!("stage:           {}", renderer.describe_stage());
+        // Threshold: the camera, the door, and whether the doorway was live.
+        println!("threshold:       {}", renderer.describe_threshold());
         // Which encoder an export from this run would use. Evidence rather than
         // assertion: an NVENC file and an x264 file of the same frames are
         // different bytes, so a capture that compares two exports has to be able

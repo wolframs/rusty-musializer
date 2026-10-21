@@ -101,6 +101,13 @@ impl HeldFrame {
         self.refused
     }
 
+    /// The buffer's size, which is the framebuffer it last copied from:
+    /// `(0, 0)` before the first copy.
+    #[must_use]
+    pub fn size(&self) -> (i32, i32) {
+        (self.width, self.height)
+    }
+
     /// The scene time of the held picture, if there is one.
     #[must_use]
     pub fn held_seconds(&self) -> Option<f64> {

@@ -155,6 +155,15 @@ impl Canvas {
     }
 }
 
+/// The size of the framebuffer currently being drawn into: the window's
+/// render size, or the bound render target's. Flushes the batch first, like
+/// every capture here.
+#[must_use]
+pub fn active_framebuffer_size(d: &mut RaylibDrawHandle<'_>) -> (i32, i32) {
+    let caller = Caller::capture(d);
+    (caller.width, caller.height)
+}
+
 /// The framebuffer that was active when a [`Canvas::draw_into`] began.
 struct Caller {
     fbo: u32,

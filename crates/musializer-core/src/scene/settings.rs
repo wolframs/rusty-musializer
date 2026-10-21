@@ -276,6 +276,31 @@ pub mod index {
         pub const PACE: usize = 9;
         pub const FAMILIAR: usize = 10;
     }
+    /// Threshold (post-legacy, 2026-10-21, MV9-d).
+    pub mod threshold {
+        /// Camera distance from the door: 1 across the room, 0 in the doorway.
+        pub const DISTANCE: usize = 0;
+        /// How far the door has swung open, 0 shut to 1 wide.
+        pub const OPEN: usize = 1;
+        /// The light from beyond the door.
+        pub const LIGHT: usize = 2;
+        /// The luminous fog filling the doorway.
+        pub const HAZE: usize = 3;
+        /// What the doorway shows: 0 its own fog, `n` the scene with index `n - 1`.
+        pub const BEYOND: usize = 4;
+        /// Standing lights in the doorway: none, one (gold), two (gold and lavender).
+        pub const PRESENCES: usize = 5;
+        /// Gold motes drifting out, with threads between them.
+        pub const MOTES: usize = 6;
+        /// Floor mist and the light beam's density.
+        pub const MIST: usize = 7;
+        /// Turns the light's colour.
+        pub const HUE: usize = 8;
+        /// The camera's slow drift.
+        pub const SWAY: usize = 9;
+        /// How much the wet floor reflects.
+        pub const REFLECTION: usize = 10;
+    }
     /// OpenAI Knot: the persisted control order; new finish controls are appended.
     pub mod knot {
         pub const SIZE: usize = 0;
@@ -533,6 +558,25 @@ const STAGE: &[SettingDescriptor] = &[
     D::toggle("settings.stage.familiar", "Cat familiar", 0.0),
 ];
 
+/// Threshold (MV9-d). `beyond` is a scene index plus one, so its maximum is
+/// the index of the last scene before the threshold itself plus one; a scene
+/// appended later raises it, which is a deliberate re-pin of the post-legacy
+/// harness file rather than a drift.
+#[rustfmt::skip]
+const THRESHOLD: &[SettingDescriptor] = &[
+    D::slider("settings.threshold.distance", "Camera distance", 0.00, 1.00, 1.00, 2),
+    D::slider("settings.threshold.open", "Door open", 0.00, 1.00, 0.00, 2),
+    D::slider("settings.threshold.light", "Light", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.threshold.haze", "Doorway haze", 0.00, 1.00, 0.60, 2),
+    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 14.00, 0.00, 0),
+    D::slider("settings.threshold.presences", "Presences", 0.00, 2.00, 0.00, 0),
+    D::slider("settings.threshold.motes", "Motes", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.threshold.mist", "Mist", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.threshold.hue", "Light hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.threshold.sway", "Camera sway", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.threshold.reflection", "Floor reflection", 0.00, 1.00, 0.60, 2),
+];
+
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     SPECTRUM,
     PULSE,
@@ -548,6 +592,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     CLAWD,
     KNOT,
     STAGE,
+    THRESHOLD,
 ];
 
 /// Descriptors for one scene.
@@ -787,7 +832,7 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         // shape to admit.
         SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream | SceneId::Clawd => false,
         SceneId::OpenAiKnot => count == 8,
-        SceneId::Stage => false,
+        SceneId::Stage | SceneId::Threshold => false,
     }
 }
 

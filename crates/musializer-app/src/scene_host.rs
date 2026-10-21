@@ -32,6 +32,7 @@ use musializer_core::scenes as core_scenes;
 use musializer_runtime::draw;
 use musializer_runtime::font::Faces;
 use musializer_runtime::halo::HaloBlur;
+use musializer_runtime::offscreen::Canvas;
 use musializer_runtime::post::Post;
 use musializer_runtime::transition::HeldFrame;
 use raylib::prelude::{
@@ -54,67 +55,9 @@ use crate::scenes;
 /// `StatelessScene` is the finished article, not a stub.
 #[must_use]
 pub fn descriptor(id: SceneId) -> SceneDescriptor {
-    match id {
-        // Finished: Spectrum is a pure function of the frame.
-        SceneId::Spectrum => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |_seed| Box::new(StatelessScene::new(SceneId::Spectrum)),
-        },
-        SceneId::PulseField => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::pulse_field::PulseFieldState::new(seed)),
-        },
-        SceneId::OrbitalLattice => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| {
-                Box::new(core_scenes::orbital_lattice::OrbitalLatticeState::new(seed))
-            },
-        },
-        SceneId::AsciiField => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::ascii_field::AsciiFieldState::new(seed)),
-        },
-        SceneId::SongAtlas => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::song_atlas::SongAtlasState::new(seed)),
-        },
-        SceneId::SpectralTerrarium => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| {
-                Box::new(core_scenes::spectral_terrarium::SpectralTerrariumState::new(seed))
-            },
-        },
-        SceneId::Constellation => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::constellation::ConstellationState::new(seed)),
-        },
-        SceneId::Cadence => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::cadence::CadenceState::new(seed)),
-        },
-        SceneId::Loom => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::loom::LoomState::new(seed)),
-        },
-        SceneId::Pentagram => SceneDescriptor {
-            id,
-            state_version: 1,
-            make_state: |seed| Box::new(core_scenes::pentagram::PentagramState::new(seed)),
-        },
-        SceneId::PhosphorDream => core_scenes::phosphor_dream::descriptor(),
-        SceneId::Clawd => core_scenes::clawd::descriptor(),
-        SceneId::OpenAiKnot => core_scenes::openai_knot::descriptor(),
-        SceneId::Stage => core_scenes::stage::descriptor(),
-    }
+    // The table moved to core when the threshold needed to construct the
+    // scene in its doorway (MV9-d); this is the same registry.
+    core_scenes::descriptor(id)
 }
 
 /// Recovers a scene's concrete state from its boxed trait object.
@@ -160,6 +103,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::Clawd => |_| Box::new(StatelessScene::new(SceneId::Clawd)),
             SceneId::OpenAiKnot => |_| Box::new(StatelessScene::new(SceneId::OpenAiKnot)),
             SceneId::Stage => |_| Box::new(StatelessScene::new(SceneId::Stage)),
+            SceneId::Threshold => |_| Box::new(StatelessScene::new(SceneId::Threshold)),
         },
     }
 }
@@ -208,6 +152,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         SceneId::Clawd => "(no oracle: post-legacy addition)",
         SceneId::OpenAiKnot => "(no oracle: post-legacy addition)",
         SceneId::Stage => "(no oracle: post-legacy addition)",
+        SceneId::Threshold => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -303,6 +248,10 @@ pub struct SceneRenderer {
     transition_frames: u64,
     /// The palette lock and the finish (MV9-a/b).
     post: Post,
+    /// The threshold's shader and report (MV9-d).
+    threshold: scenes::threshold::ThresholdResources,
+    /// Where the threshold's doorway scene is drawn each frame.
+    beyond: Canvas,
 }
 
 /// What [`SceneRenderer::draw`] did about the plan's transition on one frame.
@@ -356,6 +305,8 @@ impl SceneRenderer {
             transition_last: TransitionOutcome::Idle,
             transition_frames: 0,
             post: Post::load(rl, thread),
+            threshold: scenes::threshold::ThresholdResources::load(rl, thread),
+            beyond: Canvas::new(),
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
             sdf_text,
@@ -558,6 +509,13 @@ impl SceneRenderer {
         self.stage.describe()
     }
 
+    /// One line naming what Threshold last drew: the camera, the door, and
+    /// whether the doorway's scene was live — a doorway whose nested scene
+    /// silently failed to draw shows plausible fog.
+    pub fn describe_threshold(&self) -> &str {
+        &self.threshold.report
+    }
+
     pub fn describe_knot(&self) -> &str {
         &self.knot.report
     }
@@ -610,7 +568,64 @@ impl SceneRenderer {
         boundary: Rectangle,
         pixel_scale: f32,
     ) {
+        self.draw_body(d, fonts, instance, frame, assets, boundary, pixel_scale);
+        self.draw_overlays(d, fonts, instance, frame, assets, boundary, pixel_scale);
+    }
+
+    /// The scene itself: its offscreen preparation, then its picture inside
+    /// the scene clip. No grade, transition, caption or finish — those belong
+    /// to the frame, and a scene nested in the threshold's doorway gets none
+    /// of them.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scene-draw crossing: target, faces, instance, frame, boundary, scale"
+    )]
+    fn draw_body(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        fonts: &Faces,
+        instance: &SceneInstance,
+        frame: &SceneFrame<'_>,
+        assets: TrackAssets<'_>,
+        boundary: Rectangle,
+        pixel_scale: f32,
+    ) {
         let id = instance.id();
+        // The threshold's doorway shows a live scene (MV9-d). It is drawn
+        // first, offscreen at the boundary's size, with no scissor active —
+        // the same ordering argument as the prepares below — and the room
+        // samples it.
+        let mut beyond = None;
+        if id == SceneId::Threshold {
+            if let Some(nested) = state_of::<core_scenes::threshold::ThresholdState>(instance, id)
+                .and_then(|state| state.beyond())
+            {
+                let (width, height) = (
+                    boundary.width.round() as i32,
+                    boundary.height.round() as i32,
+                );
+                let inner = Rectangle::new(0.0, 0.0, width as f32, height as f32);
+                let quiet = TrackAssets {
+                    caption_style: None,
+                    scene_plan: None,
+                    ..assets
+                };
+                // The doorway's scene wears the look its own nearest section
+                // wears, so the cut into that section is not a palette jump.
+                let grade = assets
+                    .scene_plan
+                    .and_then(|plan| plan.grade_near(frame.time_seconds, nested.id()));
+                let mut canvas = std::mem::take(&mut self.beyond);
+                let drew = canvas.draw_into(d, width, height, Color::BLACK, |d| {
+                    self.draw_body(d, fonts, nested, frame, quiet, inner, pixel_scale);
+                    if let Some(grade) = grade {
+                        self.post.grade(d, inner, &grade);
+                    }
+                });
+                beyond = if drew { canvas.texture() } else { None };
+                self.beyond = canvas;
+            }
+        }
         // Phosphor Dream evaluates its grid and builds its bloom *before* the
         // scene clip opens, and that ordering is load-bearing rather than
         // stylistic: `HaloBlur::render` redirects the framebuffer, and a scissor
@@ -798,6 +813,18 @@ impl SceneRenderer {
                             scenes::stage::draw(d, fonts, frame, state, boundary, pixel_scale);
                     }
                 }
+                SceneId::Threshold => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::threshold::draw(
+                            d,
+                            &mut self.threshold,
+                            state,
+                            frame,
+                            boundary,
+                            beyond,
+                        );
+                    }
+                }
                 SceneId::Clawd => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::clawd::draw(
@@ -812,6 +839,25 @@ impl SceneRenderer {
                 }
             }
         }
+    }
+
+    /// Everything over the scene: the grade, the transition, the caption, the
+    /// fade to black and the finish.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the scene-draw crossing: target, faces, instance, frame, boundary, scale"
+    )]
+    fn draw_overlays(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        fonts: &Faces,
+        instance: &SceneInstance,
+        frame: &SceneFrame<'_>,
+        assets: TrackAssets<'_>,
+        boundary: Rectangle,
+        pixel_scale: f32,
+    ) {
+        let id = instance.id();
         // The section's palette lock (MV9-b), on what the scene drew and
         // *before* the transition: the held picture of an outgoing section
         // then carries its own grade, and a transition's own light — a flash
@@ -1023,6 +1069,7 @@ mod tests {
                 "clawd",
                 "knot",
                 "stage",
+                "threshold",
             ]
         );
     }
@@ -1054,6 +1101,7 @@ mod tests {
                 SceneId::Clawd => any.is::<cs::clawd::ClawdState>(),
                 SceneId::OpenAiKnot => any.is::<cs::openai_knot::KnotState>(),
                 SceneId::Stage => any.is::<cs::stage::StageState>(),
+                SceneId::Threshold => any.is::<cs::threshold::ThresholdState>(),
             };
             assert!(
                 recovered,

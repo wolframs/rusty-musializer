@@ -647,15 +647,17 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         // someone who knows who the flower is will type the assistant's name.
         "claude" => Some(SceneId::Clawd),
         "openai-knot" => Some(SceneId::OpenAiKnot),
+        // What the threshold is a picture of.
+        "door" => Some(SceneId::Threshold),
         other => SceneId::from_stable_name(other),
     }
 }
 
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
-constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage (also pulse-field, \
+constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
-phosphor-dream, claude, openai-knot)";
+phosphor-dream, claude, openai-knot, door)";
 
 /// The pre-pass, then the main loop. Mirrors `main` (`musializer.c:315-561`).
 pub fn parse<I, S>(arguments: I) -> Outcome
@@ -1686,6 +1688,8 @@ mod tests {
             ("knot", SceneId::OpenAiKnot),
             ("openai-knot", SceneId::OpenAiKnot),
             ("stage", SceneId::Stage),
+            ("threshold", SceneId::Threshold),
+            ("door", SceneId::Threshold),
             ("claude", SceneId::Clawd),
         ];
         for (name, id) in expected {

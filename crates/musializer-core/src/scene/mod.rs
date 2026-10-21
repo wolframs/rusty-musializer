@@ -54,6 +54,8 @@ pub enum SceneId {
     OpenAiKnot = 12,
     /// The lyric line, staged (2026-10-12).
     Stage = 13,
+    /// A room, a door, and another scene through it (2026-10-21, MV9-d).
+    Threshold = 14,
 }
 
 /// Number of scenes.
@@ -79,7 +81,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = SceneId::Stage as usize + 1;
+pub const SCENE_COUNT: usize = SceneId::Threshold as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -106,6 +108,7 @@ impl SceneId {
         SceneId::Clawd,
         SceneId::OpenAiKnot,
         SceneId::Stage,
+        SceneId::Threshold,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -160,6 +163,7 @@ impl SceneId {
             SceneId::Clawd => "Clawd",
             SceneId::OpenAiKnot => "OpenAI Knot",
             SceneId::Stage => "Stage",
+            SceneId::Threshold => "Threshold",
         }
     }
 
@@ -189,6 +193,7 @@ impl SceneId {
             SceneId::Clawd => "clawd",
             SceneId::OpenAiKnot => "knot",
             SceneId::Stage => "stage",
+            SceneId::Threshold => "threshold",
         }
     }
 
@@ -466,6 +471,22 @@ pub trait SceneState: Any + Send {
     /// concrete state type. Implementations are always `fn as_any(&self) -> &dyn
     /// Any { self }`.
     fn as_any(&self) -> &dyn Any;
+
+    /// Hands out a scene this one is running inside itself, if it has one
+    /// (MV9-d). Only the threshold does: when the plan cuts from it to the
+    /// scene its doorway was showing, the running instance moves out instead
+    /// of a fresh one starting, so the cut does not restart the picture.
+    fn take_nested(&mut self) -> Option<SceneInstance> {
+        None
+    }
+
+    /// Offers this scene a running instance to show inside itself (MV9-d),
+    /// the reverse hand-over. Hands it back when the scene does not want it —
+    /// which every scene but the threshold, and the threshold showing a
+    /// different scene, does.
+    fn adopt_nested(&mut self, instance: SceneInstance) -> Option<SceneInstance> {
+        Some(instance)
+    }
 }
 
 /// Registry entry for one scene (`scene.h:77-86`).
@@ -567,6 +588,16 @@ impl SceneInstance {
     pub fn update(&mut self, frame: &SceneFrame<'_>) {
         self.state.update(frame);
     }
+
+    /// [`SceneState::take_nested`] on this instance's state.
+    pub fn take_nested(&mut self) -> Option<SceneInstance> {
+        self.state.take_nested()
+    }
+
+    /// [`SceneState::adopt_nested`] on this instance's state.
+    pub fn adopt_nested(&mut self, instance: SceneInstance) -> Option<SceneInstance> {
+        self.state.adopt_nested(instance)
+    }
 }
 
 #[cfg(test)]
@@ -623,6 +654,7 @@ mod tests {
         assert_eq!(SceneId::Clawd as u32, 11);
         assert_eq!(SceneId::OpenAiKnot as u32, 12);
         assert_eq!(SceneId::Stage as u32, 13);
+        assert_eq!(SceneId::Threshold as u32, 14);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
         assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
         assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);
@@ -655,6 +687,7 @@ mod tests {
             "clawd",
             "knot",
             "stage",
+            "threshold",
         ];
         for (id, name) in SceneId::ALL.into_iter().zip(expected) {
             assert_eq!(id.stable_name(), name);

@@ -1697,6 +1697,18 @@ pub fn scene_look(scene: SceneId) -> &'static str {
             "Six glossy interlocked ribbons forming one knot, lit by the audio. A bold \
              single object on a deep ground."
         }
+        SceneId::Threshold => {
+            "A dark slate room with a lavender door; light from beyond pools on a wet \
+             floor, mist hangs low and gold motes drift out with threads between \
+             them. `open` swings the door, `distance` walks the camera from across \
+             the room (1) into the doorway (0), `light`, `haze` and `mist` set the \
+             glow, `presences` stands one or two lights in the doorway. `beyond` \
+             names the scene seen through it, live (0 is its own fog; n is the \
+             scene listed n-th here, tuned by the `scenes` block): fitted to the \
+             doorway far away, exactly full frame at distance 0, so gliding \
+             `distance` to 0 and cutting to that scene walks into it — the running \
+             scene is handed across the cut, not restarted."
+        }
     }
 }
 

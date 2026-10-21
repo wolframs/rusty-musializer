@@ -54,3 +54,15 @@ scene 13 count 11
 13 8 settings.stage.grain|Film grain|0|1|0.349999994|2|0
 13 9 settings.stage.pace|Reveal pace|0.5|3|1|2|0
 13 10 settings.stage.familiar|Cat familiar|0|1|0|0|1
+scene 14 count 11
+14 0 settings.threshold.distance|Camera distance|0|1|1|2|0
+14 1 settings.threshold.open|Door open|0|1|0|2|0
+14 2 settings.threshold.light|Light|0|2|1|2|0
+14 3 settings.threshold.haze|Doorway haze|0|1|0.600000024|2|0
+14 4 settings.threshold.beyond|Beyond (0 = haze)|0|14|0|0|0
+14 5 settings.threshold.presences|Presences|0|2|0|0|0
+14 6 settings.threshold.motes|Motes|0|2|1|2|0
+14 7 settings.threshold.mist|Mist|0|2|1|2|0
+14 8 settings.threshold.hue|Light hue (deg)|-180|180|0|0|0
+14 9 settings.threshold.sway|Camera sway|0|2|1|2|0
+14 10 settings.threshold.reflection|Floor reflection|0|1|0.600000024|2|0

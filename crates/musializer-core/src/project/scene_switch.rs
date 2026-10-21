@@ -238,6 +238,38 @@ impl SceneSwitchTimeline {
             .filter(|grade| !grade.is_identity())
     }
 
+    /// The grade a scene wears near `time_seconds` (MV9-d): that of the
+    /// section of `scene` nearest in time, while the plan is on.
+    ///
+    /// For a scene shown *inside* another — the threshold's doorway — which has
+    /// no section of its own at that moment. Wearing the look its own nearest
+    /// section wears is what makes the cut from the doorway into that section
+    /// seamless instead of a palette jump.
+    #[must_use]
+    pub fn grade_near(&self, time_seconds: f64, scene: SceneId) -> Option<Grade> {
+        if !self.enabled {
+            return None;
+        }
+        let index = scene.index() as u32;
+        self.cues
+            .iter()
+            .filter(|cue| cue.scene_index == index)
+            .min_by(|a, b| {
+                let distance = |cue: &SceneSwitchCue| {
+                    if time_seconds < cue.start_seconds {
+                        cue.start_seconds - time_seconds
+                    } else if time_seconds >= cue.end_seconds {
+                        time_seconds - cue.end_seconds
+                    } else {
+                        0.0
+                    }
+                };
+                distance(a).total_cmp(&distance(b))
+            })
+            .and_then(|cue| cue.grade)
+            .filter(|grade| !grade.is_identity())
+    }
+
     /// The tuning in force while a section glides in (MV9-c), or `None` when
     /// nothing is gliding at `time_seconds`.
     ///
@@ -733,6 +765,26 @@ mod tests {
         // A plan switched off glides nothing.
         timeline.enabled = false;
         assert!(timeline.glided_settings(&base, 22.0).is_none());
+    }
+
+    #[test]
+    fn a_nested_scene_wears_its_nearest_sections_grade() {
+        use crate::project::look::{Grade, Palette};
+        let threshold = SceneId::Threshold.index() as u32;
+        let constellation = SceneId::Constellation.index() as u32;
+        let a = cue(1, 0.0, 20.0, threshold);
+        let mut b = cue(2, 20.0, 40.0, constellation);
+        b.grade = Some(Grade::from_palette(Palette::NightDoor, 0.8));
+        let c = cue(3, 40.0, 50.0, threshold);
+        let mut e = cue(4, 50.0, 60.0, constellation);
+        e.grade = Some(Grade::from_palette(Palette::Ember, 0.8));
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline.replace(&[a, b, c, e], DURATION, SCENES).unwrap();
+        timeline.enabled = true;
+        assert_eq!(timeline.grade_near(5.0, SceneId::Constellation), b.grade);
+        assert_eq!(timeline.grade_near(42.0, SceneId::Constellation), b.grade);
+        assert_eq!(timeline.grade_near(48.0, SceneId::Constellation), e.grade);
+        assert_eq!(timeline.grade_near(5.0, SceneId::Loom), None);
     }
 
     #[test]

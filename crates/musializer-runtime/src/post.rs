@@ -22,7 +22,7 @@ use raylib::shaders::Shader;
 use raylib::{RaylibHandle, RaylibThread};
 
 use crate::draw;
-use crate::offscreen::Canvas;
+use crate::offscreen::{self, Canvas};
 use crate::transition::HeldFrame;
 
 const GRADE_SOURCE: &str = include_str!("../../../resources/shaders/glsl330/post_grade.fs");
@@ -70,7 +70,11 @@ pub struct Post {
     bright_shader: Option<Shader>,
     finish_shader: Option<Shader>,
     blur_shader: Option<Shader>,
-    grab: HeldFrame,
+    /// Two frame copies, because a frame can be graded at two sizes: the
+    /// threshold's doorway scene at the boundary's size inside its canvas,
+    /// then the frame itself at the window's. One buffer would be reallocated
+    /// twice a frame in the preview.
+    grabs: [HeldFrame; 2],
     narrow: Bloom,
     wide: Bloom,
     pub last_grade: Outcome,
@@ -93,7 +97,7 @@ impl Post {
             bright_shader: compile(rl, thread, BRIGHT_SOURCE),
             finish_shader: compile(rl, thread, FINISH_SOURCE),
             blur_shader: compile(rl, thread, BLUR_SOURCE),
-            grab: HeldFrame::new(),
+            grabs: [HeldFrame::new(), HeldFrame::new()],
             narrow: Bloom {
                 canvas: Canvas::new(),
                 scratch: Canvas::new(),
@@ -149,11 +153,12 @@ impl Post {
         boundary: Rectangle,
         grade: &Grade,
     ) -> bool {
-        if self.grade_shader.is_none() || !self.grab.capture(d, boundary, 0.0) {
+        let slot = self.grab_slot(d);
+        if self.grade_shader.is_none() || !self.grabs[slot].capture(d, boundary, 0.0) {
             return false;
         }
-        let (Some(texture), Some(shader)) = (self.grab.texture(), self.grade_shader.as_mut())
-        else {
+        let grab = &self.grabs[slot];
+        let (Some(texture), Some(shader)) = (grab.texture(), self.grade_shader.as_mut()) else {
             return false;
         };
         let mut stops = [Vector3::zero(); MAX_STOPS];
@@ -168,7 +173,7 @@ impl Post {
         set(shader, "shiftFrom", grade.shift_from);
         set(shader, "shiftBy", grade.shift_by);
         set(shader, "shiftWidth", grade.shift_width.max(1.0));
-        let source = region_source(&self.grab, texture);
+        let source = region_source(grab, texture);
         d.draw_blend_mode(BlendMode::BLEND_ALPHA, |mut blend| {
             blend.draw_shader_mode(shader, |mut pass| {
                 draw::draw_texture_pro(
@@ -183,6 +188,19 @@ impl Post {
             });
         });
         true
+    }
+
+    /// The frame copy whose size matches the framebuffer being drawn into,
+    /// else the other one.
+    fn grab_slot(&mut self, d: &mut RaylibDrawHandle<'_>) -> usize {
+        let size = offscreen::active_framebuffer_size(d);
+        if self.grabs[0].size() == size {
+            0
+        } else if self.grabs[1].size() == size || self.grabs[1].size() == (0, 0) {
+            1
+        } else {
+            0
+        }
     }
 
     /// Finishes everything drawn inside `boundary` this frame.
@@ -208,13 +226,14 @@ impl Post {
         finish: &Finish,
         time_seconds: f64,
     ) -> bool {
-        if self.finish_shader.is_none() || !self.grab.capture(d, boundary, time_seconds) {
+        let slot = self.grab_slot(d);
+        if self.finish_shader.is_none() || !self.grabs[slot].capture(d, boundary, time_seconds) {
             return false;
         }
-        let Some(frame) = self.grab.texture() else {
+        let Some(frame) = self.grabs[slot].texture() else {
             return false;
         };
-        let source = region_source(&self.grab, frame);
+        let source = region_source(&self.grabs[slot], frame);
         let short = boundary.width.min(boundary.height).max(1.0);
         let wants_bloom = finish.bloom > 0.0;
         if wants_bloom {
@@ -244,7 +263,7 @@ impl Post {
         let Some(shader) = self.finish_shader.as_mut() else {
             return false;
         };
-        let region = self.grab.region();
+        let region = self.grabs[slot].region();
         let location = shader.get_shader_location("region");
         shader.set_shader_value(
             location,

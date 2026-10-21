@@ -1,4 +1,4 @@
-post-constant-count 51
+post-constant-count 62
 post-constant 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
@@ -101,7 +101,29 @@ post-constant 49 settings.stage.pace 0 0 0 1 1 1 1 1
 post-constant-is-constant 49 1
 post-constant 50 settings.stage.familiar 0 0 0 1 0 0 1 1
 post-constant-is-constant 50 1
-post-routed-count 51
+post-constant 51 settings.threshold.distance 0 0 0 1 1 1 1 1
+post-constant-is-constant 51 1
+post-constant 52 settings.threshold.open 0 0 0 1 0 0 1 1
+post-constant-is-constant 52 1
+post-constant 53 settings.threshold.light 0 0 0 1 1 1 1 1
+post-constant-is-constant 53 1
+post-constant 54 settings.threshold.haze 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 54 1
+post-constant 55 settings.threshold.beyond 0 0 0 1 0 0 1 1
+post-constant-is-constant 55 1
+post-constant 56 settings.threshold.presences 0 0 0 1 0 0 1 1
+post-constant-is-constant 56 1
+post-constant 57 settings.threshold.motes 0 0 0 1 1 1 1 1
+post-constant-is-constant 57 1
+post-constant 58 settings.threshold.mist 0 0 0 1 1 1 1 1
+post-constant-is-constant 58 1
+post-constant 59 settings.threshold.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 59 1
+post-constant 60 settings.threshold.sway 0 0 0 1 1 1 1 1
+post-constant-is-constant 60 1
+post-constant 61 settings.threshold.reflection 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 61 1
+post-routed-count 62
 post-routed 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-routed 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
 post-routed 2 settings.cadence.halo 0 0 0 1 0.200000003 0.200000003 1 1
@@ -153,6 +175,17 @@ post-routed 47 settings.stage.accent 0 0 0 1 1 1 1 1
 post-routed 48 settings.stage.grain 0 0 0 1 0.349999994 0.349999994 1 1
 post-routed 49 settings.stage.pace 0 0 0 1 1 1 1 1
 post-routed 50 settings.stage.familiar 0 0 0 1 0 0 1 1
+post-routed 51 settings.threshold.distance 0 0 0 1 1 1 1 1
+post-routed 52 settings.threshold.open 0 0 0 1 0 0 1 1
+post-routed 53 settings.threshold.light 0 0 0 1 1 1 1 1
+post-routed 54 settings.threshold.haze 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 55 settings.threshold.beyond 0 0 0 1 0 0 1 1
+post-routed 56 settings.threshold.presences 0 0 0 1 0 0 1 1
+post-routed 57 settings.threshold.motes 0 0 0 1 1 1 1 1
+post-routed 58 settings.threshold.mist 0 0 0 1 1 1 1 1
+post-routed 59 settings.threshold.hue 0 0 0 1 0 0 1 1
+post-routed 60 settings.threshold.sway 0 0 0 1 1 1 1 1
+post-routed 61 settings.threshold.reflection 0 0 0 1 0.600000024 0.600000024 1 1
 post-import-value 7 7 108
 post-import-value 7 8 2
 post-import-value 7 9 0.200000003
@@ -204,3 +237,14 @@ post-import-value 13 7 1
 post-import-value 13 8 0.349999994
 post-import-value 13 9 1
 post-import-value 13 10 0
+post-import-value 14 0 1
+post-import-value 14 1 0
+post-import-value 14 2 1
+post-import-value 14 3 0.600000024
+post-import-value 14 4 0
+post-import-value 14 5 0
+post-import-value 14 6 1
+post-import-value 14 7 1
+post-import-value 14 8 0
+post-import-value 14 9 1
+post-import-value 14 10 0.600000024
