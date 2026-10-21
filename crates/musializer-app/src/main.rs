@@ -5626,6 +5626,25 @@ impl Report {
                     segments.join(", ")
                 }
             );
+            // What the lane draws on those segments besides their colour
+            // (MV9-k), counted, because a mark nothing draws looks exactly like
+            // a plan that has none.
+            let cues = track.scene_switches.cues();
+            let plan = &track.scene_switches;
+            println!(
+                "scene marks:     graded={} glides={} transitions={} outro={} finish={}",
+                cues.iter()
+                    .filter(|cue| cue.grade.is_some_and(|grade| !grade.is_identity()))
+                    .count(),
+                cues.iter().filter(|cue| cue.glide > 0.0).count(),
+                cues.iter().filter(|cue| !cue.transition.is_cut()).count(),
+                if plan.outro.is_cut() {
+                    "cut".to_owned()
+                } else {
+                    plan.outro.kind.to_string()
+                },
+                if plan.finish.is_active() { "on" } else { "off" },
+            );
         }
         println!(
             "frame lanes:     lyric={} semantic={} source={} merged-events={}",

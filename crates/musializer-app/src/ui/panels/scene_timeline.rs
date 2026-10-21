@@ -120,6 +120,90 @@ fn packed(color: Color) -> u32 {
     u32::from_be_bytes([color.r, color.g, color.b, color.a])
 }
 
+/// Clips a label to `width` with an ellipsis, so a long segment summary stays
+/// inside its field.
+fn fit_text(input: &ShellInput<'_>, text: &str, width: f32) -> String {
+    if widgets::measure(input.fonts.ui(), text, metric::UI_FONT_CAPTION) <= width {
+        return text.to_owned();
+    }
+    let mut kept: Vec<char> = text.chars().collect();
+    while !kept.is_empty() {
+        kept.pop();
+        let candidate: String = kept.iter().collect::<String>() + "…";
+        if widgets::measure(input.fonts.ui(), &candidate, metric::UI_FONT_CAPTION) <= width {
+            return candidate;
+        }
+    }
+    String::new()
+}
+
+/// What a segment carries besides its scene, drawn on its block (MV9-k):
+/// the transition it arrives by as a light band fading in from its left edge
+/// across the transition's length, a glide as a ramp rising across the glide,
+/// and a grade as a strip of its palette along the bottom. Marks only; nothing
+/// here is editable yet.
+fn draw_segment_marks(
+    d: &mut RaylibDrawHandle<'_>,
+    timeline: &musializer_core::ui::timeline_view::TimelineView,
+    lane: UiRect,
+    rect: UiRect,
+    cue: &musializer_core::project::scene_switch::SceneSwitchCue,
+    start: f64,
+    alpha: u8,
+) {
+    let span_px = |seconds: f32| {
+        let to = timeline.x_at(
+            start + f64::from(seconds),
+            f64::from(lane.x),
+            f64::from(lane.width),
+        ) as f32;
+        (to - rect.x).clamp(0.0, rect.width)
+    };
+    if !cue.transition.is_cut() {
+        let width = span_px(cue.transition.seconds).max(3.0);
+        d.draw_rectangle_gradient_h(
+            rect.x as i32,
+            rect.y as i32,
+            width as i32,
+            3,
+            Color::new(255, 236, 196, alpha),
+            Color::new(255, 236, 196, 0),
+        );
+    }
+    if cue.glide > 0.0 {
+        let width = span_px(cue.glide);
+        if width >= 2.0 {
+            let bottom = rect.y + rect.height - 1.0;
+            d.draw_line_ex(
+                Vector2::new(rect.x, bottom),
+                Vector2::new(rect.x + width, rect.y + 4.0),
+                1.5,
+                Color::new(255, 255, 255, alpha / 2),
+            );
+        }
+    }
+    if let Some(grade) = cue.grade.filter(|grade| !grade.is_identity()) {
+        let stops = grade.stops();
+        let y = (rect.y + rect.height - 3.0) as i32;
+        let pieces = stops.len().saturating_sub(1).max(1);
+        let piece = rect.width / pieces as f32;
+        for index in 0..pieces {
+            let [r0, g0, b0] = musializer_core::project::look::rgb(stops[index]);
+            let [r1, g1, b1] =
+                musializer_core::project::look::rgb(stops[(index + 1).min(stops.len() - 1)]);
+            let channel = |value: f32| (value * 255.0).round() as u8;
+            d.draw_rectangle_gradient_h(
+                (rect.x + piece * index as f32) as i32,
+                y,
+                piece.ceil() as i32,
+                3,
+                Color::new(channel(r0), channel(g0), channel(b0), alpha),
+                Color::new(channel(r1), channel(g1), channel(b1), alpha),
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn control_button(
     shell: &mut Shell,
@@ -308,7 +392,22 @@ impl Shell {
             }
         }
 
-        let name = selected_scene.map_or("Select a segment", SceneId::display_name);
+        // The name field carries what a segment's colour cannot (MV9-k): a
+        // threshold's beyond, how it arrives, a glide, a grade. With nothing
+        // selected it says whether the video has a finish, which is otherwise
+        // invisible everywhere in the window.
+        let detail =
+            selected.and_then(|cue| scene_lane_edit::segment_summary(cue, &track.scene_settings));
+        let name_owned = match (selected_scene, detail) {
+            (Some(scene), Some(detail)) => format!("{} · {detail}", scene.display_name()),
+            (Some(scene), None) => scene.display_name().to_owned(),
+            (None, _) if track.scene_switches.finish.is_active() => {
+                "Select a segment · film finish on".to_owned()
+            }
+            (None, _) => "Select a segment".to_owned(),
+        };
+        let name = fit_text(input, &name_owned, name_width - 8.0);
+        let name = name.as_str();
         let name_rect = UiRect::new(x, row.y, name_width, row.height);
         widgets::fill(d, name_rect, color::ui_raised());
         d.draw_rectangle_lines_ex(widgets::rectangle(name_rect), 1.0, color::ui_rule());
@@ -476,6 +575,31 @@ impl Shell {
                     rect.y + 3.0,
                     metric::UI_FONT_CAPTION,
                     text_color,
+                );
+            }
+            draw_segment_marks(d, &self.timeline, lane, rect, cue, start, alpha);
+        }
+        // How the track ends (MV3): a band fading to black across the outro.
+        let outro = track.scene_switches.outro;
+        if !outro.is_cut() && track.duration_seconds > 0.0 {
+            let begin = (track.duration_seconds - f64::from(outro.seconds)).max(0.0);
+            let from =
+                self.timeline
+                    .x_at(begin, f64::from(lane.x), f64::from(lane.width)) as f32;
+            let to = self.timeline.x_at(
+                track.duration_seconds,
+                f64::from(lane.x),
+                f64::from(lane.width),
+            ) as f32;
+            let (from, to) = (from.max(lane.x), to.min(lane.x + lane.width));
+            if to > from {
+                d.draw_rectangle_gradient_h(
+                    from as i32,
+                    (lane.y + 2.0) as i32,
+                    (to - from).max(1.0) as i32,
+                    (lane.height - 4.0) as i32,
+                    Color::new(0, 0, 0, 0),
+                    Color::new(0, 0, 0, 200),
                 );
             }
         }

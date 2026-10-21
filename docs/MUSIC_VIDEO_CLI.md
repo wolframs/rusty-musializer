@@ -468,8 +468,12 @@ Said here so nobody looks for a flag:
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
-- Authoring a transition in the window. They come from a treatment, are saved
-  in the `.musi` and play in the preview, and no panel shows or edits them yet.
+- Authoring a transition, a grade, a glide, the finish or voices in the window.
+  They come from a treatment and are saved in the `.musi`. The scene lane
+  *shows* them — a light band for how a segment arrives, a ramp for a glide, a
+  palette strip for a grade, a dark band for the outro, and a selected
+  segment's details (a threshold's beyond among them) in the name field — but
+  nothing edits them yet. A `scene marks:` report line counts what it drew.
 - An imported caption face in a treatment. `"face": "imported"` is refused by
   name; import the face in the Lyrics panel after `--save-project`.
 - Per-section routes, and the caption effects' drive-tuning blocks.

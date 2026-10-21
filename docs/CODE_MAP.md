@@ -13,8 +13,8 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 50 | 72,214 | 523 |
-| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `listening_defaults` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 105 | 71,939 | 1,122 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 50 | 72,357 | 523 |
+| [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `layout_dump` (example), `listening_defaults` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 105 | 72,024 | 1,123 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 30 | 17,137 | 190 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 109 | 0 |
 
@@ -60,7 +60,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | --- | ---: | ---: | --- |
 | [`src/bin/make_fixture_wav.rs`](../crates/musializer-app/src/bin/make_fixture_wav.rs) | 89 | 0 | Writes a synthetic WAV for headless checks. |
 | [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 2,351 | 51 | The command line. |
-| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 5,989 | 3 | The Musializer binary: composition root. |
+| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 6,008 | 3 | The Musializer binary: composition root. |
 | [`src/project.rs`](../crates/musializer-app/src/project.rs) | 932 | 6 | Saving a [`Track`] to a `.musi` and opening one back into a [`Track`]. |
 | [`src/recovery.rs`](../crates/musializer-app/src/recovery.rs) | 535 | 5 | App-owned crash recovery for edited sessions without a durable home (CX-3). |
 | [`src/scene_host.rs`](../crates/musializer-app/src/scene_host.rs) | 1,133 | 5 | Binding and drawing the scenes. |
@@ -97,7 +97,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/panels/fonts.rs`](../crates/musializer-app/src/ui/panels/fonts.rs) | 965 | 6 | The font browser pane, and the faces it adds. |
 | [`src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,597 | 55 | The three-pane lyrics editor: cue list, cue form, caption typography. |
 | [`src/ui/panels/mod.rs`](../crates/musializer-app/src/ui/panels/mod.rs) | 38 | 0 | One file per bottom panel and per inspector pane. |
-| [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 671 | 2 | The always-visible scene-plan lane and its compact editing controls. |
+| [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 795 | 2 | The always-visible scene-plan lane and its compact editing controls. |
 | [`src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,228 | 29 | The tuning inspector, and the route editor row inside it. |
 | [`src/ui/preferences.rs`](../crates/musializer-app/src/ui/preferences.rs) | 855 | 19 | Per-user shell scale and split preferences. |
 | [`src/ui/protocol.rs`](../crates/musializer-app/src/ui/protocol.rs) | 775 | 8 | The in-app protocol runner (HX-2): markers, the question card, and the session state machine. |
@@ -209,7 +209,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/notice.rs`](../crates/musializer-core/src/ui/notice.rs) | 822 | 13 | The notice queue: transient toasts and persistent failure cards. |
 | [`src/ui/route_editor_state.rs`](../crates/musializer-core/src/ui/route_editor_state.rs) | 962 | 11 | Route editor state over `core::scene::routes`. |
 | [`src/ui/row_typography.rs`](../crates/musializer-core/src/ui/row_typography.rs) | 489 | 12 | The shared font size for a row of buttons, and label ellipsization. |
-| [`src/ui/scene_lane_edit.rs`](../crates/musializer-core/src/ui/scene_lane_edit.rs) | 203 | 4 | Pure hit testing and boundary clamping for the editable scene-plan lane. |
+| [`src/ui/scene_lane_edit.rs`](../crates/musializer-core/src/ui/scene_lane_edit.rs) | 288 | 5 | Pure hit testing and boundary clamping for the editable scene-plan lane. |
 | [`src/ui/scroll_list.rs`](../crates/musializer-core/src/ui/scroll_list.rs) | 351 | 8 | Vertical scrolling-list policy: geometry, momentum, and the scrollbar. |
 | [`src/ui/text_edit.rs`](../crates/musializer-core/src/ui/text_edit.rs) | 872 | 16 | Caret, selection and editing policy for a single-line text field. |
 | [`src/ui/timed_lane.rs`](../crates/musializer-core/src/ui/timed_lane.rs) | 129 | 3 | Geometry shared by editable, time-aligned lanes. |
@@ -273,7 +273,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,597 | 55 |
 | [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,006 | 47 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,720 | 65 |
-| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 5,989 | 3 |
+| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 6,008 | 3 |
 | [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,557 | 45 |
 | [`crates/musializer-app/src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,228 | 29 |
 | [`crates/musializer-core/src/assist/execution.rs`](../crates/musializer-core/src/assist/execution.rs) | 3,226 | 39 |

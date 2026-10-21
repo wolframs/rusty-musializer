@@ -98,9 +98,94 @@ pub fn clamp_boundary(
     Some(proposed_seconds.clamp(left, right))
 }
 
+/// What a segment carries beyond its scene, in words, for the lane's name
+/// field and the report (MV9-k): what its threshold doorway shows, how it
+/// arrives, whether it glides and whether it is graded. `None` for a segment
+/// that is just its scene.
+///
+/// `base` is the track's per-scene table, which a cue's snapshot is applied
+/// over; the threshold's `beyond` is read from the result.
+#[must_use]
+pub fn segment_summary(
+    cue: &crate::project::scene_switch::SceneSwitchCue,
+    base: &crate::scene::SceneSettings,
+) -> Option<String> {
+    use crate::scene::settings::index::threshold;
+    use crate::scene::SceneId;
+    let scene = SceneId::from_index(cue.scene_index as usize)?;
+    let mut parts = Vec::new();
+    if scene == SceneId::Threshold {
+        let mut table = *base;
+        if cue.settings.captured {
+            table.apply_snapshot(scene, &cue.settings);
+        }
+        let beyond = crate::scenes::threshold::beyond_scene(table.get(scene, threshold::BEYOND));
+        parts.push(format!(
+            "door onto {}",
+            beyond.map_or("its fog", SceneId::display_name)
+        ));
+    }
+    if !cue.transition.is_cut() {
+        parts.push(format!(
+            "arrives by {} {:.1} s",
+            cue.transition.kind, cue.transition.seconds
+        ));
+    }
+    if cue.glide > 0.0 {
+        parts.push(format!("glides {:.1} s", cue.glide));
+    }
+    if let Some(grade) = cue.grade.filter(|grade| !grade.is_identity()) {
+        if grade.map > 0.0 {
+            parts.push(format!("graded {:.0}%", grade.map * 100.0));
+        } else {
+            parts.push("hue-shifted".to_owned());
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_segment_summary_names_what_the_lane_cannot_show_by_colour() {
+        use crate::project::look::{Grade, Palette};
+        use crate::project::scene_switch::SceneSwitchCue;
+        use crate::project::transition::{Transition, TransitionKind};
+        use crate::scene::settings::index::threshold;
+        use crate::scene::{SceneId, SceneSettings};
+        let base = SceneSettings::new();
+        let plain = SceneSwitchCue {
+            id: 1,
+            start_seconds: 0.0,
+            end_seconds: 10.0,
+            scene_index: SceneId::Loom.index() as u32,
+            ..SceneSwitchCue::default()
+        };
+        assert_eq!(segment_summary(&plain, &base), None);
+        let dressed = SceneSwitchCue {
+            transition: Transition::new(TransitionKind::Portal, 0.8),
+            glide: 2.6,
+            grade: Some(Grade::from_palette(Palette::NightDoor, 0.82)),
+            ..plain
+        };
+        assert_eq!(
+            segment_summary(&dressed, &base).as_deref(),
+            Some("arrives by portal 0.8 s · glides 2.6 s · graded 82%")
+        );
+        let mut tuned = base;
+        tuned.set(SceneId::Threshold, threshold::BEYOND, 7.0);
+        let door = SceneSwitchCue {
+            scene_index: SceneId::Threshold.index() as u32,
+            settings: tuned.capture(SceneId::Threshold).unwrap(),
+            ..plain
+        };
+        assert_eq!(
+            segment_summary(&door, &base).as_deref(),
+            Some("door onto Constellation")
+        );
+    }
     use crate::project::scene_switch::SceneSwitchCue;
     use crate::scene::{SceneId, SceneSettings};
 
