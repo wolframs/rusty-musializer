@@ -580,6 +580,8 @@ def check_refusals(out: Path) -> None:
     check(read(out / "two-tracks.status").strip() == "1", "a treatment for another track exited 0")
     check("is already open" in read(out / "two-tracks.log"), "the two-track refusal does not explain itself")
     check(not (out / "two-tracks.musi").exists(), "a project was saved for the wrong track")
+    check(read(out / "same-audio.status").strip() == "0", "the same audio at another path was refused")
+    check((out / "same-audio.musi").exists(), "the same audio at another path saved no project")
 
 
 def main() -> int:

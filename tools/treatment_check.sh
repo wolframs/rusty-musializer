@@ -330,12 +330,22 @@ status=0
 run --treatment "$OUT/full.treatment.json" --still 90 "$OUT/late.png" \
     > "$OUT/late.log" 2>&1 || status=$?
 echo "$status" > "$OUT/late.status"
-# Two tracks: the treatment names one, the command line already opened another.
-cp "$FIXTURE" "$OUT/other.wav"
+# Two tracks: the treatment names one, the command line already opened
+# another. A *different* recording: since WX-3 the audio block matches by
+# content, so a byte-identical copy at another path is the same track.
+cargo run --quiet --bin make-fixture-wav -- "$OUT/other.wav" 10
 status=0
 run "$OUT/other.wav" --treatment "$OUT/full.treatment.json" \
     --save-project "$OUT/two-tracks.musi" > "$OUT/two-tracks.log" 2>&1 || status=$?
 echo "$status" > "$OUT/two-tracks.status"
+
+# ...and that copy: the same audio at another path (a project's bundled
+# `Song.assets/audio/<sha>.wav`) takes the treatment written for the original.
+cp "$FIXTURE" "$OUT/copy.wav"
+status=0
+run "$OUT/copy.wav" --treatment "$OUT/full.treatment.json" \
+    --save-project "$OUT/same-audio.musi" > "$OUT/same-audio.log" 2>&1 || status=$?
+echo "$status" > "$OUT/same-audio.status"
 
 python3 tools/treatment_check.py "$OUT"
 echo "PASS: vocabulary, treatment apply/save/reopen, contact sheets, stills and refusals ($OUT)"
