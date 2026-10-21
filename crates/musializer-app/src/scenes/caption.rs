@@ -260,7 +260,18 @@ pub fn draw_scene_lyric_overlay(
             (f32::from(color.a) * by).round() as u8,
         )
     };
-    let text_color = scale_alpha(Color::get_color(style.text_rgba), presence);
+    // A voiced line takes its voice's ink and glow colour (MV9-h); the glow's
+    // strength and pulse stay the style's, so a voice recolours the light
+    // rather than switching it on.
+    let voice = lyric.voice.unwrap_or_default();
+    if let (Some(glow), Some(voice_glow)) = (fx.glow.as_mut(), voice.glow_rgba) {
+        let alpha = ((glow.rgba & 0xFF) * (voice_glow & 0xFF)) / 255;
+        glow.rgba = (voice_glow & 0xFFFF_FF00) | alpha;
+    }
+    let text_color = scale_alpha(
+        Color::get_color(voice.text_rgba.unwrap_or(style.text_rgba)),
+        presence,
+    );
     let box_color = scale_alpha(Color::get_color(style.box_rgba), presence);
     if presence < 1.0 {
         if let Some(glow) = fx.glow.as_mut() {
@@ -271,7 +282,7 @@ pub fn draw_scene_lyric_overlay(
     let focus = if presence < 1.0 {
         let haze = ((1.0 - presence) * presence * 4.0 * 0.85 * 255.0).round() as u32;
         (haze > 0).then(|| caption_effects::ResolvedGlow {
-            rgba: (style.text_rgba & 0xFFFF_FF00) | haze.min(255),
+            rgba: (voice.text_rgba.unwrap_or(style.text_rgba) & 0xFFFF_FF00) | haze.min(255),
             radius_px: font_size * (0.12 + 0.5 * (1.0 - presence)),
         })
     } else {

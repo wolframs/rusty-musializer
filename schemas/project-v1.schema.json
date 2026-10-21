@@ -520,6 +520,11 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 511
+        },
+        "voice": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,32}$",
+          "description": "The name of the voice singing this line, one of the lyrics block's voices (post-legacy, MV9-h). Omitted when none."
         }
       }
     },
@@ -540,6 +545,38 @@
           "items": {
             "$ref": "#/$defs/lyric_cue"
           }
+        },
+        "voices": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,32}$"
+              },
+              "hue": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 360,
+                "description": "The hue of the colour the voice's lines are drawn in, on the colour wheel."
+              },
+              "text_rgba": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}$"
+              },
+              "glow_rgba": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}$"
+              }
+            }
+          },
+          "description": "Named voices (post-legacy, MV9-h): Cadence and Stage take a voiced line's hue, the caption its ink and glow. Omitted when empty."
         }
       },
       "description": "Authoritative editable lyric content and timing. Cues are sorted by (start_seconds,end_seconds,id); overlaps are allowed."

@@ -1470,6 +1470,7 @@ mod tests {
             start_seconds: 0.0,
             end_seconds: 8.0,
             text: "same seed, same eyelids".to_string(),
+            voice: None,
         };
         for i in 0..240 {
             let mut frame = frame_with(&settings, &bands, &trails, 1.0 / 60.0);
@@ -1889,6 +1890,7 @@ mod tests {
             start_seconds: 0.0,
             end_seconds: 4.0,
             text: "bucket! bucket!".to_string(),
+            voice: None,
         };
         let bands = [0.2f32; 8];
         let trails = [0.2f32; 8];
@@ -2021,6 +2023,7 @@ mod tests {
             start_seconds: 0.0,
             end_seconds: 60.0,
             text: "the distribution has an edge".to_string(),
+            voice: None,
         };
         let bands = [0.2f32; 8];
         let trails = [0.2f32; 8];
@@ -2142,6 +2145,7 @@ mod tests {
             start_seconds: 0.0,
             end_seconds: 8.0,
             text: "open wide and mean it".to_string(),
+            voice: None,
         };
         // Loud bands with no profile: the amplitude fallback stands in for
         // energy, and the carrier is what shapes the mouth.
@@ -2197,6 +2201,7 @@ mod tests {
             start_seconds: 0.0,
             end_seconds: 8.0,
             text: "sing it like the mix actually sounds".to_string(),
+            voice: None,
         };
 
         let sing = |bands: [f32; 24], trails: [f32; 24]| {

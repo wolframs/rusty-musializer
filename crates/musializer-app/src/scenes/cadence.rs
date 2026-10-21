@@ -716,7 +716,13 @@ pub fn draw(
     let glow = frame.setting(SceneId::Cadence, setting::GLOW);
     let spacing_scale = frame.setting(SceneId::Cadence, setting::SPACING);
     let hue_swing = frame.setting(SceneId::Cadence, setting::HUE_SWING);
-    let hue_offset = frame.setting(SceneId::Cadence, setting::HUE);
+    // A voiced line wears its voice's colour (MV9-h), whatever the section
+    // says. The ink is drawn at 205 + 118 = 323 degrees plus the offset.
+    let hue_offset = musializer_core::scene::VoiceStyle::hue_or(
+        frame.lyric.and_then(|lyric| lyric.voice.as_ref()),
+        frame.setting(SceneId::Cadence, setting::HUE),
+        323.0,
+    );
     let saturation = frame.setting(SceneId::Cadence, setting::SATURATION);
     let halo = frame.setting(SceneId::Cadence, setting::HALO);
     let reveal = Reveal::from_setting(frame.setting(SceneId::Cadence, setting::REVEAL));

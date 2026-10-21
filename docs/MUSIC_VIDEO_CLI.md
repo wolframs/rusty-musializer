@@ -372,6 +372,25 @@ covers their whole span.
 file instead, relative to the treatment. They are checked like inline lines,
 and the file is refused when it was aligned against different audio.
 
+**Voices.** A duet reads better when each singer has a colour. Name the voices
+once and tag each line:
+
+```json
+"voices": { "low":  { "hue": 253, "text": "#e9e3ff", "glow": "#b9a6ff" },
+            "high": { "hue": 33,  "text": "#ffe8c0", "glow": "#ffcf86" } },
+"lyrics": [ { "at": 46.2, "text": "Do not mistake the wanting", "voice": "high" },
+            { "at": 53.8, "text": "Do not make me answer",      "voice": "low" } ]
+```
+
+`hue` is the colour the voice's lines are drawn in, on the colour wheel (0 red,
+60 yellow, 120 green, 240 blue, 270 violet) — not a scene's `hue` offset, because
+each scene's offset starts from a different colour. Cadence's type and Stage's
+accent take it in place of their own `hue` while that line is on screen, so one
+voice is one colour in both; the caption takes `text` as its ink and `glow` as
+its glow colour (the style's glow strength still decides whether there is one).
+Every member is optional, a line without `voice` is drawn as before, and the
+voices are saved in the `.musi` with the lines. Up to eight.
+
 ### `caption_style`
 
 `face` (`alegreya`, `space_grotesk`), `box` (`none`, `shadow`, `plate`),
@@ -449,7 +468,6 @@ Said here so nobody looks for a flag:
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
-- A per-line `voice` that picks a palette.
 - Authoring a transition in the window. They come from a treatment, are saved
   in the `.musi` and play in the preview, and no panel shows or edits them yet.
 - An imported caption face in a treatment. `"face": "imported"` is refused by

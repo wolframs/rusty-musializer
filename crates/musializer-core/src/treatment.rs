@@ -157,6 +157,9 @@ struct TreatmentWire {
     /// Timed lines, or the path of an aligned-lyrics file (MV9-g).
     #[serde(default)]
     lyrics: Option<Value>,
+    /// Named voices a line may be sung in, and how each one's lines look (MV9-h).
+    #[serde(default)]
+    voices: BTreeMap<String, VoiceWire>,
     #[serde(default)]
     events: Option<Vec<EventWire>>,
 }
@@ -189,6 +192,8 @@ struct AlignedLineWire {
     #[serde(default)]
     #[allow(dead_code)]
     score: Option<f64>,
+    #[serde(default)]
+    voice: Option<String>,
 }
 
 /// The schema `tools/align_lyrics.py` writes.
@@ -255,7 +260,26 @@ struct LyricWire {
     #[serde(default)]
     until: Option<Value>,
     text: String,
+    /// One of the treatment's `voices` (MV9-h).
+    #[serde(default)]
+    voice: Option<String>,
 }
+
+/// One entry of the treatment's `voices` table (MV9-h): how a voice's lines
+/// look. Every member optional.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceWire {
+    #[serde(default)]
+    hue: Option<f64>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    glow: Option<String>,
+}
+
+/// A timed line as either source spells it: at, until, text, voice.
+type TimedWire = (Value, Option<Value>, String, Option<String>);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -400,6 +424,7 @@ struct LyricLine {
     at: f64,
     until: Option<f64>,
     text: String,
+    voice: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -432,6 +457,8 @@ pub struct Treatment {
     /// A lyrics file the application has to read and [`Treatment::attach_lyrics`]
     /// before compiling (MV9-g).
     lyrics_file: Option<String>,
+    /// The `voices` table, in name order (MV9-h).
+    voices: Vec<lyrics::Voice>,
     events: Option<Vec<EventMark>>,
 }
 
@@ -637,9 +664,9 @@ impl Treatment {
                 // was when the list was typed directly: a JSON one.
                 let wire_lyrics: Vec<LyricWire> = serde_json::from_value(value)
                     .map_err(|error| TreatmentError::Json(format!("lyrics: {error}")))?;
-                let timed: Vec<(Value, Option<Value>, String)> = wire_lyrics
+                let timed: Vec<TimedWire> = wire_lyrics
                     .into_iter()
-                    .map(|line| (line.at, line.until, line.text))
+                    .map(|line| (line.at, line.until, line.text, line.voice))
                     .collect();
                 (Some(parse_lyric_lines("lyrics", &timed)?), None)
             }
@@ -650,6 +677,45 @@ impl Treatment {
                 ))
             }
         };
+
+        if wire.voices.len() > lyrics::VOICE_CAPACITY {
+            return Err(invalid(
+                "voices",
+                format!("at most {} voices", lyrics::VOICE_CAPACITY),
+            ));
+        }
+        let mut voices = Vec::with_capacity(wire.voices.len());
+        for (name, voice) in &wire.voices {
+            let place = format!("voices.{name}");
+            if !lyrics::Voice::name_is_valid(name) {
+                return Err(invalid(
+                    &place,
+                    format!(
+                        "a voice's name is 1..={} letters, digits, '-' or '_'",
+                        lyrics::VOICE_NAME_MAX_BYTES
+                    ),
+                ));
+            }
+            let hue = voice
+                .hue
+                .map(|hue| bounded(&format!("{place}.hue"), hue, 0.0, 360.0))
+                .transpose()?
+                .map(|hue| hue as f32);
+            let colour = |member: &Option<String>, field: &str| {
+                member
+                    .as_deref()
+                    .map(|text| parse_rgba(&format!("{place}.{field}"), text))
+                    .transpose()
+            };
+            voices.push(lyrics::Voice {
+                name: name.clone(),
+                style: lyrics::VoiceStyle {
+                    hue,
+                    text_rgba: colour(&voice.text, "text")?,
+                    glow_rgba: colour(&voice.glow, "glow")?,
+                },
+            });
+        }
 
         let wire_events = wire.events.as_deref().unwrap_or(&[]);
         if wire_events.len() > crate::scene::events::TIMELINE_CAPACITY {
@@ -703,6 +769,7 @@ impl Treatment {
             outro,
             lyrics: lines,
             lyrics_file,
+            voices,
             events: wire.events.is_some().then_some(events),
         })
     }
@@ -735,10 +802,10 @@ impl Treatment {
                 ),
             ));
         }
-        let timed: Vec<(Value, Option<Value>, String)> = wire
+        let timed: Vec<TimedWire> = wire
             .lines
             .into_iter()
-            .map(|line| (line.at, line.until, line.text))
+            .map(|line| (line.at, line.until, line.text, line.voice))
             .collect();
         self.lyrics = Some(parse_lyric_lines(&place, &timed)?);
         self.lyrics_file = None;
@@ -818,6 +885,9 @@ impl Treatment {
 
         let mut document = LyricsDocument::new(duration_seconds)
             .map_err(|error| invalid("lyrics", error.to_string()))?;
+        if !document.set_voices(self.voices.clone()) {
+            return Err(invalid("voices", "the voice table is not usable"));
+        }
         let lines = self.lyrics.as_deref().unwrap_or(&[]);
         for (index, line) in lines.iter().enumerate() {
             let place = format!("lyrics[{index}] ({})", format_time(line.at));
@@ -851,7 +921,7 @@ impl Treatment {
                     hold.min(next).min(duration_seconds)
                 }
             };
-            document
+            let id = document
                 .insert(LyricCue {
                     id: 0,
                     start_seconds: line.at,
@@ -860,6 +930,26 @@ impl Treatment {
                     origin: CueOrigin::UserApplied,
                 })
                 .map_err(|error| invalid(&place, error.to_string()))?;
+            if let Some(voice) = &line.voice {
+                let index = self
+                    .voices
+                    .iter()
+                    .position(|candidate| &candidate.name == voice)
+                    .ok_or_else(|| {
+                        invalid(
+                            &place,
+                            format!(
+                                "voice {voice:?} is not in `voices` ({})",
+                                self.voices
+                                    .iter()
+                                    .map(|voice| voice.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                        )
+                    })?;
+                document.set_cue_voice(id, Some(index));
+            }
         }
         let lyrics_fully_shadowed = document
             .shadowed_cues()
@@ -923,7 +1013,7 @@ impl Treatment {
 /// Validates timed lines, wherever they came from: inline or an aligned file.
 fn parse_lyric_lines(
     root: &str,
-    wire_lyrics: &[(Value, Option<Value>, String)],
+    wire_lyrics: &[TimedWire],
 ) -> Result<Vec<LyricLine>, TreatmentError> {
     if wire_lyrics.len() > lyrics::CUE_CAPACITY {
         return Err(invalid(
@@ -936,7 +1026,7 @@ fn parse_lyric_lines(
         ));
     }
     let mut lines: Vec<LyricLine> = Vec::with_capacity(wire_lyrics.len());
-    for (index, (at_value, until_value, text)) in wire_lyrics.iter().enumerate() {
+    for (index, (at_value, until_value, text, voice)) in wire_lyrics.iter().enumerate() {
         let at = parse_time(&format!("{root}[{index}].at"), at_value)?;
         let place = format!("{root}[{index}] ({})", format_time(at));
         let until = until_value
@@ -982,6 +1072,7 @@ fn parse_lyric_lines(
             at,
             until,
             text: text.clone(),
+            voice: voice.clone(),
         });
     }
     Ok(lines)
@@ -1961,6 +2052,18 @@ pub fn vocabulary() -> Value {
                 "maximum_seconds": scene_switch::MAX_GLIDE_SECONDS,
             },
         },
+        "voices": {
+            "where": "the top-level \"voices\" names who sings: {\"low\": {\"hue\": 253, \
+                      \"text\": \"#e9e3ff\", \"glow\": \"#b9a6ff\"}}, each member optional; a lyric \
+                      line's \"voice\" names one. `hue` is the colour the voice's lines are \
+                      drawn in, on the colour wheel (0 red, 60 yellow, 120 green, 240 blue, \
+                      270 violet): Cadence's type and Stage's accent take it in place of \
+                      their own `hue` setting while that line is on screen; the caption \
+                      takes the voice's ink and glow colour.",
+            "maximum": lyrics::VOICE_CAPACITY,
+            "name": "1..=32 letters, digits, '-' or '_'",
+            "hue": [0, 360],
+        },
         "routes": {
             "sources": AnalysisSource::ALL.map(AnalysisSource::canonical_name),
             "curves": Interpolation::ALL.map(Interpolation::canonical_name),
@@ -2827,6 +2930,51 @@ mod tests {
         );
         assert!(refusal(r#"{"schema":"musializer.treatment/v1","lyrics":7,"segments":[{"at":0,"scene":"atlas"}]}"#)
             .contains("list of lines or the path"));
+    }
+
+    #[test]
+    fn voices_colour_the_lines_that_name_them() {
+        let treatment = parse(
+            r##"{"schema":"musializer.treatment/v1",
+                "voices":{"low":{"hue":253,"text":"#e9e3ff"},"high":{"hue":33,"glow":"#ffcf86"}},
+                "segments":[{"at":0,"scene":"cadence"}],
+                "lyrics":[{"at":1,"until":2,"text":"one","voice":"low"},
+                          {"at":3,"until":4,"text":"two","voice":"high"},
+                          {"at":5,"until":6,"text":"three"}]}"##,
+        )
+        .unwrap();
+        let compiled = treatment.compile(60.0).unwrap();
+        let document = compiled.lyrics.unwrap();
+        let cues = document.cues();
+        let voice = |index: usize| document.voice_of(cues[index].id).map(|voice| voice.style);
+        assert_eq!(voice(0).and_then(|style| style.hue), Some(253.0));
+        assert_eq!(
+            voice(0).and_then(|style| style.text_rgba),
+            Some(0xE9E3_FFFF)
+        );
+        assert_eq!(
+            voice(1).and_then(|style| style.glow_rgba),
+            Some(0xFFCF_86FF)
+        );
+        assert_eq!(voice(2), None);
+
+        let unknown = parse(
+            r#"{"schema":"musializer.treatment/v1","voices":{"low":{}},
+                "segments":[{"at":0,"scene":"cadence"}],
+                "lyrics":[{"at":1,"text":"x","voice":"tenor"}]}"#,
+        )
+        .unwrap()
+        .compile(60.0)
+        .unwrap_err()
+        .to_string();
+        assert!(
+            unknown.contains("\"tenor\"") && unknown.contains("low"),
+            "{unknown}"
+        );
+        assert!(refusal(r#"{"schema":"musializer.treatment/v1","voices":{"a b":{}},"segments":[{"at":0,"scene":"atlas"}]}"#)
+            .contains("letters, digits"));
+        assert!(refusal(r#"{"schema":"musializer.treatment/v1","voices":{"low":{"hue":400}},"segments":[{"at":0,"scene":"atlas"}]}"#)
+            .contains("outside 0..360"));
     }
 
     #[test]

@@ -1475,7 +1475,13 @@ pub fn draw(
     if boundary.width <= 1.0 || boundary.height <= 1.0 {
         return report;
     }
-    let hue = setting(setting::HUE);
+    // A voiced line wears its voice's colour (MV9-h), whatever the section
+    // says. The accent is drawn at 268 + 160 = 68 degrees plus the offset.
+    let hue = musializer_core::scene::VoiceStyle::hue_or(
+        frame.lyric.and_then(|lyric| lyric.voice.as_ref()),
+        setting(setting::HUE),
+        68.0,
+    );
     let saturation = setting(setting::SATURATION);
     let scale = setting(setting::SCALE);
     let bounce = setting(setting::BOUNCE);

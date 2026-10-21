@@ -1103,6 +1103,13 @@ not in this inventory, which documents the C's behaviour only. The block gained
 two more optional members on 2026-10-21 (MV9-f), `entrance_seconds` and
 `exit_seconds` (each 0..3, written only when positive).
 
+**Lyrics, post-legacy (2026-10-21, MV9-h):** the lyrics block may carry
+`voices` (≤ 8 of `{ name, hue?, text_rgba?, glow_rgba? }`; `name` 1..32 of
+`[A-Za-z0-9_-]`, unique; `hue` 0..360, the colour on the wheel), and a cue may
+carry `voice`, the name of one of them. Both are written only when used; a cue
+naming an undeclared voice is refused. The assignment is stored by cue id
+beside the cues, so it survives every edit that keeps the id.
+
 Every measurement is a fraction of the frame, never a pixel count, so a project
 typeset against a preview window exports identically at any resolution
 (`:43`).

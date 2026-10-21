@@ -86,6 +86,7 @@ impl ProjectFrameLanes {
             start_seconds: cue.start_seconds,
             end_seconds: cue.end_seconds,
             text: cue.text.clone(),
+            voice: lyrics.voice_of(cue.id).map(|voice| voice.style),
         });
 
         let mut events = SceneEventMerge::new();

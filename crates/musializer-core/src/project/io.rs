@@ -509,13 +509,44 @@ fn write_project(out: &mut String, project: &Project) {
             out.push_str(",\"origin\":");
             write_string(out, cue.origin.token());
         }
+        // Post-legacy (MV9-h), on the same rule: a line nobody assigned a
+        // voice writes nothing.
+        if let Some(voice) = project.lyrics.voice_of(cue.id) {
+            out.push_str(",\"voice\":");
+            write_string(out, &voice.name);
+        }
         out.push('}');
+    }
+    out.push(']');
+    if !project.lyrics.voices().is_empty() {
+        out.push_str(",\"voices\":[");
+        for (index, voice) in project.lyrics.voices().iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"name\":");
+            write_string(out, &voice.name);
+            if let Some(hue) = voice.style.hue {
+                out.push_str(",\"hue\":");
+                write_f32_short(out, hue);
+            }
+            if let Some(text) = voice.style.text_rgba {
+                out.push_str(",\"text_rgba\":");
+                write_rgba(out, text);
+            }
+            if let Some(glow) = voice.style.glow_rgba {
+                out.push_str(",\"glow_rgba\":");
+                write_rgba(out, glow);
+            }
+            out.push('}');
+        }
+        out.push(']');
     }
 
     out.push_str(if project.scene_switches.enabled {
-        "]},\"scene_switches\":{\"enabled\":true,\"cues\":["
+        "},\"scene_switches\":{\"enabled\":true,\"cues\":["
     } else {
-        "]},\"scene_switches\":{\"enabled\":false,\"cues\":["
+        "},\"scene_switches\":{\"enabled\":false,\"cues\":["
     });
     for (index, cue) in project.scene_switches.cues.iter().enumerate() {
         if index > 0 {
@@ -1269,12 +1300,21 @@ fn parse_lane(parser: &mut Parser<'_>) -> Parsed<AnalysisLaneReference> {
     Ok(lane)
 }
 
-fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<LyricCue> {
-    // `origin` is the one **optional** name here (LX1): absent means
+fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<(LyricCue, Option<String>)> {
+    // `origin` is an **optional** name here (LX1): absent means
     // [`CueOrigin::UserApplied`], which is what makes every pre-LX1 file open
-    // unchanged. `has_all` below still demands the original four, so optional
-    // does not mean forgiving.
-    const NAMES: [&str; 5] = ["id", "start_seconds", "end_seconds", "text", "origin"];
+    // unchanged. So is `voice` (MV9-h), a name resolved against the lyrics
+    // block's `voices` once the whole block is read. `has_all` below still
+    // demands the original four, so optional does not mean forgiving.
+    const NAMES: [&str; 6] = [
+        "id",
+        "start_seconds",
+        "end_seconds",
+        "text",
+        "origin",
+        "voice",
+    ];
+    let mut voice = None;
     /// Longest [`CueOrigin::token`]. Bounding the read before the lookup keeps
     /// the "strings are bounded at parse time" rule the module comment states.
     const ORIGIN_MAX_BYTES: usize = 16;
@@ -1288,6 +1328,7 @@ fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<LyricCue> {
             1 => cue.start_seconds = parser.f64()?,
             2 => cue.end_seconds = parser.f64()?,
             3 => cue.text = parser.string(crate::project::lyrics::TEXT_MAX_BYTES)?,
+            5 => voice = Some(parser.string(crate::project::lyrics::VOICE_NAME_MAX_BYTES)?),
             // An unrecognised token is a hard error rather than a fallback to
             // the default. Silently reading a future "verified" origin as
             // "user applied" would be this codec lying about provenance, and
@@ -1303,7 +1344,31 @@ fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<LyricCue> {
     if !seen.has_all(0xf) {
         return Err(ProjectIoError::MissingField);
     }
-    Ok(cue)
+    Ok((cue, voice))
+}
+
+fn parse_voice(parser: &mut Parser<'_>) -> Parsed<crate::project::lyrics::Voice> {
+    const NAMES: [&str; 4] = ["name", "hue", "text_rgba", "glow_rgba"];
+    let mut voice = crate::project::lyrics::Voice {
+        name: String::new(),
+        style: crate::project::lyrics::VoiceStyle::default(),
+    };
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => voice.name = parser.string(crate::project::lyrics::VOICE_NAME_MAX_BYTES)?,
+            1 => voice.style.hue = Some(parser.f32()?),
+            2 => voice.style.text_rgba = Some(parser.rgba()?),
+            _ => voice.style.glow_rgba = Some(parser.rgba()?),
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x1) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(voice)
 }
 
 /// `parse_lyrics` (`project_io.c:220-221`).
@@ -1312,25 +1377,43 @@ fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<LyricCue> {
 /// going through the editing insert path: a file that lists them out of order must
 /// be *rejected*, not quietly sorted.
 fn parse_lyrics(parser: &mut Parser<'_>, document: &mut LyricsDocument) -> Parsed<()> {
-    const NAMES: [&str; 2] = ["next_id", "cues"];
+    const NAMES: [&str; 3] = ["next_id", "cues", "voices"];
     let mut seen = Seen::default();
+    let mut assigned: Vec<(u64, String)> = Vec::new();
+    let mut voices = Vec::new();
     parser.object(|parser, key| {
         let field = field_index(key, &NAMES)?;
         seen.mark(field)?;
-        if field == 0 {
-            document.set_next_id(parser.u64()?);
-        } else {
-            parser.array(LYRIC_CUE_CAPACITY, |parser, _| {
-                let cue = parse_lyric_cue(parser)?;
+        match field {
+            0 => document.set_next_id(parser.u64()?),
+            1 => parser.array(LYRIC_CUE_CAPACITY, |parser, _| {
+                let (cue, voice) = parse_lyric_cue(parser)?;
+                if let Some(voice) = voice {
+                    assigned.push((cue.id, voice));
+                }
                 document.push_unvalidated(cue);
                 Ok(())
-            })?;
+            })?,
+            _ => parser.array(crate::project::lyrics::VOICE_CAPACITY, |parser, _| {
+                voices.push(parse_voice(parser)?);
+                Ok(())
+            })?,
         }
         Ok(())
     })?;
     if !seen.has_all(0x3) {
         return Err(ProjectIoError::MissingField);
     }
+    // A cue naming a voice the block does not declare is refused rather than
+    // read as unvoiced: it would be the file losing what its author said.
+    for (id, name) in assigned {
+        let index = voices
+            .iter()
+            .position(|voice| voice.name == name)
+            .ok_or(ProjectIoError::String)?;
+        document.set_cue_voice_unvalidated(id, index as u8);
+    }
+    document.set_voices_unvalidated(voices);
     Ok(())
 }
 
@@ -3197,6 +3280,77 @@ mod tests {
         );
         assert_ne!(one_stop, text);
         assert!(deserialize(one_stop.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn voices_round_trip_by_name_and_an_unknown_one_is_refused() {
+        use crate::project::lyrics::{CueOrigin, Voice, VoiceStyle};
+        let mut project = valid_project();
+        let plain = serialize(&project).unwrap();
+        assert!(!plain.contains("voice"), "no voices, nothing written");
+        let id = project
+            .lyrics
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+                text: "low line".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        project
+            .lyrics
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 3.0,
+                end_seconds: 4.0,
+                text: "unvoiced".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        assert!(project.lyrics.set_voices(vec![
+            Voice {
+                name: "high".into(),
+                style: VoiceStyle {
+                    hue: Some(33.0),
+                    text_rgba: None,
+                    glow_rgba: Some(0xFFCF_86FF)
+                },
+            },
+            Voice {
+                name: "low".into(),
+                style: VoiceStyle {
+                    hue: Some(253.0),
+                    text_rgba: Some(0xE9E3_FFFF),
+                    glow_rgba: None
+                },
+            },
+        ]));
+        assert!(project.lyrics.set_cue_voice(id, Some(1)));
+        let text = serialize(&project).unwrap();
+        assert!(
+            text.contains("\"text\":\"low line\",\"voice\":\"low\"}"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\"voices\":[{\"name\":\"high\",\"hue\":33,\"glow_rgba\":\"ffcf86ff\"}")
+        );
+        let reopened = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(
+            reopened
+                .lyrics
+                .voice_of(id)
+                .map(|voice| voice.name.as_str()),
+            Some("low")
+        );
+        assert_eq!(serialize(&reopened).unwrap(), text);
+        for broken in [
+            text.replace("\"voice\":\"low\"", "\"voice\":\"middle\""),
+            text.replace("\"hue\":33", "\"hue\":700"),
+            text.replace("\"name\":\"high\"", "\"name\":\"low\""),
+        ] {
+            assert!(deserialize(broken.as_bytes()).is_err(), "{broken}");
+        }
     }
 
     #[test]

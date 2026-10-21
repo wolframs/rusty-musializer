@@ -56,6 +56,8 @@ pub enum LyricsError {
     NotAdjacent,
     #[error("malformed lyrics bridge")]
     BridgeFormat,
+    #[error("invalid voice table or voice assignment")]
+    Voice,
 }
 
 /// A validation failure with the cue it concerns (`Lyrics_Validation`,
@@ -321,6 +323,51 @@ pub struct LyricsDocument {
     next_id: u64,
     revision: u64,
     cues: Vec<LyricCue>,
+    /// The named voices this project's lines may be sung in (post-legacy,
+    /// MV9-h), and which voice sings which cue, by cue id.
+    ///
+    /// Kept beside the cues rather than on [`LyricCue`] deliberately: a cue is
+    /// rebuilt by the editor's update, retime, split and merge paths, and a
+    /// field on it would have to be carried through every one of them or be
+    /// silently dropped by the first that forgot. Keyed by id, a voice survives
+    /// every edit that keeps the cue's id, and an entry for a cue that no
+    /// longer exists is simply never read or written.
+    voices: Vec<Voice>,
+    cue_voices: std::collections::BTreeMap<u64, u8>,
+}
+
+fn voices_are_valid(voices: &[Voice]) -> bool {
+    voices.len() <= VOICE_CAPACITY
+        && voices.iter().enumerate().all(|(index, voice)| {
+            Voice::name_is_valid(&voice.name)
+                && voice.style.is_valid()
+                && !voices[..index].iter().any(|other| other.name == voice.name)
+        })
+}
+
+/// Most voices a project may name.
+pub const VOICE_CAPACITY: usize = 8;
+/// Longest voice name, in bytes.
+pub const VOICE_NAME_MAX_BYTES: usize = 32;
+
+pub use crate::scene::VoiceStyle;
+
+/// One named voice (post-legacy, MV9-h).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Voice {
+    pub name: String,
+    pub style: VoiceStyle,
+}
+
+impl Voice {
+    #[must_use]
+    pub fn name_is_valid(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= VOICE_NAME_MAX_BYTES
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    }
 }
 
 impl LyricsDocument {
@@ -334,7 +381,67 @@ impl LyricsDocument {
             next_id: 1,
             revision: 1,
             cues: Vec::new(),
+            voices: Vec::new(),
+            cue_voices: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// The named voices, in their declared order.
+    #[must_use]
+    pub fn voices(&self) -> &[Voice] {
+        &self.voices
+    }
+
+    /// Replaces the voice table (MV9-h). Refuses a table that is too long, has
+    /// a bad or repeated name, or an out-of-range hue, and changes nothing
+    /// when it refuses. Cue assignments past the new table's end are dropped.
+    pub fn set_voices(&mut self, voices: Vec<Voice>) -> bool {
+        if !voices_are_valid(&voices) {
+            return false;
+        }
+        let count = voices.len();
+        self.voices = voices;
+        self.cue_voices
+            .retain(|_, index| usize::from(*index) < count);
+        self.bump_revision();
+        true
+    }
+
+    /// The voice singing cue `id`, if the project names one.
+    #[must_use]
+    pub fn voice_of(&self, id: u64) -> Option<&Voice> {
+        self.cue_voices
+            .get(&id)
+            .and_then(|index| self.voices.get(usize::from(*index)))
+    }
+
+    /// Assigns cue `id` to a voice by index, or clears it with `None`. Refuses
+    /// an index past the table or an id no cue has.
+    pub fn set_cue_voice(&mut self, id: u64, voice: Option<usize>) -> bool {
+        if !self.cues.iter().any(|cue| cue.id == id) {
+            return false;
+        }
+        match voice {
+            None => {
+                self.cue_voices.remove(&id);
+            }
+            Some(index) if index < self.voices.len() => {
+                self.cue_voices.insert(id, index as u8);
+            }
+            Some(_) => return false,
+        }
+        self.bump_revision();
+        true
+    }
+
+    /// The codec's path: voices and assignments arrive in file order and are
+    /// checked by [`Self::validate`] with everything else.
+    pub(crate) fn set_voices_unvalidated(&mut self, voices: Vec<Voice>) {
+        self.voices = voices;
+    }
+
+    pub(crate) fn set_cue_voice_unvalidated(&mut self, id: u64, index: u8) {
+        self.cue_voices.insert(id, index);
     }
 
     #[must_use]
@@ -438,6 +545,17 @@ impl LyricsDocument {
             if self.next_id != 0 && cue.id >= self.next_id {
                 return Err(fail(LyricsError::InvalidCue, index, 0));
             }
+        }
+        if !voices_are_valid(&self.voices) {
+            return Err(fail(LyricsError::Voice, 0, 0));
+        }
+        if let Some((position, _)) = self
+            .cue_voices
+            .values()
+            .enumerate()
+            .find(|(_, index)| usize::from(**index) >= self.voices.len())
+        {
+            return Err(fail(LyricsError::Voice, position, 0));
         }
         Ok(())
     }
@@ -769,6 +887,10 @@ impl LyricsDocument {
         self.next_id = source.next_id;
         self.cues.clear();
         self.cues.extend_from_slice(&source.cues);
+        // The voices travel with the cues (MV9-h): a copy that left them
+        // behind is the first path to drop what a treatment said.
+        self.voices.clone_from(&source.voices);
+        self.cue_voices.clone_from(&source.cue_voices);
         self.revision = revision;
         Ok(())
     }
@@ -806,6 +928,10 @@ impl LyricsDocument {
         self.next_id = source.next_id;
         self.cues.clear();
         self.cues.extend_from_slice(&source.cues);
+        // The voices travel with the cues (MV9-h): a copy that left them
+        // behind is the first path to drop what a treatment said.
+        self.voices.clone_from(&source.voices);
+        self.cue_voices.clone_from(&source.cue_voices);
         self.duration_seconds = duration_seconds;
         for cue in &mut self.cues {
             if cue.end_seconds > duration_seconds {
@@ -1390,6 +1516,63 @@ impl LyricHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voices_travel_with_a_copied_document_and_survive_an_edit() {
+        let mut source = LyricsDocument::new(30.0).unwrap();
+        let id = source
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+                text: "sung low".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        assert!(source.set_voices(vec![Voice {
+            name: "low".into(),
+            style: VoiceStyle {
+                hue: Some(253.0),
+                ..VoiceStyle::default()
+            },
+        }]));
+        assert!(source.set_cue_voice(id, Some(0)));
+        assert!(!source.set_cue_voice(id, Some(1)), "no second voice");
+        assert!(!source.set_cue_voice(id + 99, Some(0)), "no such cue");
+
+        let mut copy = LyricsDocument::new(30.0).unwrap();
+        copy.replace(&source).unwrap();
+        assert_eq!(
+            copy.voice_of(id).map(|voice| voice.name.as_str()),
+            Some("low")
+        );
+        let mut normalized = LyricsDocument::new(30.0).unwrap();
+        normalized.normalize_duration(&source, 20.0).unwrap();
+        assert_eq!(
+            normalized.voice_of(id).map(|voice| voice.name.as_str()),
+            Some("low")
+        );
+
+        // Keyed by id: a duplicate or a bad name is refused, a shrunk table
+        // drops the assignments it no longer covers.
+        assert!(!copy.set_voices(vec![
+            Voice {
+                name: "a".into(),
+                style: VoiceStyle::default()
+            },
+            Voice {
+                name: "a".into(),
+                style: VoiceStyle::default()
+            },
+        ]));
+        assert!(!copy.set_voices(vec![Voice {
+            name: "two words".into(),
+            style: VoiceStyle::default()
+        }]));
+        assert!(copy.set_voices(Vec::new()));
+        assert!(copy.voice_of(id).is_none());
+        assert!(copy.validate().is_ok());
+    }
 
     fn document() -> LyricsDocument {
         LyricsDocument::new(60.0).unwrap()

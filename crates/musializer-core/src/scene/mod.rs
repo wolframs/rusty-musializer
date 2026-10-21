@@ -388,6 +388,48 @@ pub struct LyricCue {
     pub start_seconds: f64,
     pub end_seconds: f64,
     pub text: String,
+    /// The look of the voice singing this line, when the project names one
+    /// (post-legacy, MV9-h). Cadence and Stage take its hue in place of their
+    /// own `hue` setting; the caption overlay takes its ink and glow.
+    pub voice: Option<VoiceStyle>,
+}
+
+/// How one voice's lines look (post-legacy, MV9-h). Every member optional: a
+/// voice can turn only the hue, or only the caption's ink.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VoiceStyle {
+    /// The hue of the colour the voice's lines are drawn in, in degrees on the
+    /// colour wheel, `0..=360` (0 red, 60 yellow, 120 green, 240 blue, 270
+    /// violet). Absolute rather than a scene's own `hue` offset, because every
+    /// scene's offset starts from a different colour: Cadence's ink at offset
+    /// 0 is pink and Stage's accent is lime, so one offset would paint one
+    /// voice two different colours. Each scene maps it with its own base.
+    pub hue: Option<f32>,
+    /// `0xRRGGBBAA` caption ink.
+    pub text_rgba: Option<u32>,
+    /// `0xRRGGBBAA` caption glow colour.
+    pub glow_rgba: Option<u32>,
+}
+
+impl VoiceStyle {
+    /// Whether this is a style a project may hold.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.hue
+            .is_none_or(|hue| hue.is_finite() && (0.0..=360.0).contains(&hue))
+    }
+
+    /// A scene's `hue` offset: the one that puts this voice's colour where the
+    /// scene puts the colour its offset 0 draws at `base` degrees, when the line
+    /// has a voice with a hue; else the scene's own setting. Wrapped into
+    /// `-180..180`, the range every scene's hue control has.
+    #[must_use]
+    pub fn hue_or(voice: Option<&Self>, own: f32, base: f32) -> f32 {
+        match voice.and_then(|voice| voice.hue) {
+            Some(hue) => (hue - base + 540.0).rem_euclid(360.0) - 180.0,
+            None => own,
+        }
+    }
 }
 
 /// Everything a scene sees for one frame (`scene.h:42-52`).
@@ -639,6 +681,35 @@ mod tests {
         frame.beat_phase = 0.5;
         frame.track_beat(&mut tracker, f64::NAN);
         assert_eq!(frame.beat_phase, 0.0);
+    }
+
+    #[test]
+    fn a_voice_colour_maps_into_each_scenes_own_hue_offset() {
+        let lavender = VoiceStyle {
+            hue: Some(253.0),
+            ..VoiceStyle::default()
+        };
+        let gold = VoiceStyle {
+            hue: Some(33.0),
+            ..VoiceStyle::default()
+        };
+        // Cadence draws its ink at 323 + offset: the offsets the Door video
+        // used by hand for its two voices.
+        assert!((VoiceStyle::hue_or(Some(&lavender), 0.0, 323.0) + 70.0).abs() < 1.0e-4);
+        assert!((VoiceStyle::hue_or(Some(&gold), 0.0, 323.0) - 70.0).abs() < 1.0e-4);
+        // Stage's accent is at 68 + offset: one voice, one colour, two scenes.
+        assert!((VoiceStyle::hue_or(Some(&lavender), 0.0, 68.0) + 175.0).abs() < 1.0e-4);
+        // No voice, or a voice with no hue: the scene's own setting.
+        assert_eq!(VoiceStyle::hue_or(None, 12.0, 323.0), 12.0);
+        assert_eq!(
+            VoiceStyle::hue_or(Some(&VoiceStyle::default()), 12.0, 323.0),
+            12.0
+        );
+        assert!(!VoiceStyle {
+            hue: Some(361.0),
+            ..VoiceStyle::default()
+        }
+        .is_valid());
     }
 
     #[test]
