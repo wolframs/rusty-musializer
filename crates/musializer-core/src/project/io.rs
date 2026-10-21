@@ -367,6 +367,16 @@ fn write_project(out: &mut String, project: &Project) {
         write_f64(out, effects.shadow_opacity);
         out.push_str(",\"plate_roundness\":");
         write_f64(out, effects.plate_roundness);
+        // Post-legacy (MV9-f): written only when set, so a style block saved
+        // before they existed is byte-identical.
+        if effects.entrance_seconds > 0.0 {
+            out.push_str(",\"entrance_seconds\":");
+            write_f64(out, effects.entrance_seconds);
+        }
+        if effects.exit_seconds > 0.0 {
+            out.push_str(",\"exit_seconds\":");
+            write_f64(out, effects.exit_seconds);
+        }
         out.push('}');
     }
     out.push('}');
@@ -1718,7 +1728,7 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
 /// post-date them (UX0-C14) and are optional with the identity as default —
 /// the same forward-compatibility shape `effects` itself has inside the style.
 fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
-    const NAMES: [&str; 12] = [
+    const NAMES: [&str; 14] = [
         "glow_strength",
         "glow_radius",
         "glow_rgba",
@@ -1731,6 +1741,8 @@ fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
         "plate_roundness",
         "pulse_tuning",
         "hue_tuning",
+        "entrance_seconds",
+        "exit_seconds",
     ];
     let mut effects = CaptionEffects::default();
     let mut seen = Seen::default();
@@ -1749,7 +1761,9 @@ fn parse_caption_effects(parser: &mut Parser<'_>) -> Parsed<CaptionEffects> {
             8 => effects.shadow_opacity = parser.f64()?,
             9 => effects.plate_roundness = parser.f64()?,
             10 => effects.pulse_tuning = parse_drive_tuning(parser)?,
-            _ => effects.hue_tuning = parse_drive_tuning(parser)?,
+            11 => effects.hue_tuning = parse_drive_tuning(parser)?,
+            12 => effects.entrance_seconds = parser.f64()?,
+            _ => effects.exit_seconds = parser.f64()?,
         }
         Ok(())
     })?;
@@ -2715,9 +2729,15 @@ mod tests {
             shadow_blur: 0.12,
             shadow_opacity: 0.9,
             plate_roundness: 0.3,
+            entrance_seconds: 0.6,
+            exit_seconds: 0.0,
         };
         let text = serialize(&project).unwrap();
         assert!(text.contains("\"effects\":{\"glow_strength\":"));
+        assert!(
+            text.contains("\"entrance_seconds\":0.6") && !text.contains("exit_seconds"),
+            "an entrance is written, an unset exit is not: {text}"
+        );
         assert!(text.contains("\"glow_rgba\":\"39ff88e0\""));
         assert!(text.contains("\"glow_pulse\":\"bass\""));
         assert!(

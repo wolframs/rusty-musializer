@@ -238,9 +238,45 @@ pub fn draw_scene_lyric_overlay(
     };
     // Deterministic per frame: the drives read the same figures the scenes do,
     // so an export reproduces the preview's pulse exactly.
-    let fx = caption_effects::resolve(&style.effects, inputs, font_size);
-    let text_color = Color::get_color(style.text_rgba);
-    let box_color = Color::get_color(style.box_rgba);
+    let mut fx = caption_effects::resolve(&style.effects, inputs, font_size);
+    // A line arriving out of focus and leaving into it (MV9-f): the ink and
+    // the backing fade with the line's presence, and a blurred copy in the
+    // ink's own colour carries the rest, so the line condenses out of a soft
+    // haze rather than fading in through nothing.
+    let presence = caption_effects::presence(
+        &style.effects,
+        lyric.start_seconds,
+        lyric.end_seconds,
+        inputs.time_seconds,
+    );
+    if presence <= 0.0 {
+        return "off";
+    }
+    let scale_alpha = |color: Color, by: f32| {
+        Color::new(
+            color.r,
+            color.g,
+            color.b,
+            (f32::from(color.a) * by).round() as u8,
+        )
+    };
+    let text_color = scale_alpha(Color::get_color(style.text_rgba), presence);
+    let box_color = scale_alpha(Color::get_color(style.box_rgba), presence);
+    if presence < 1.0 {
+        if let Some(glow) = fx.glow.as_mut() {
+            let alpha = ((glow.rgba & 0xFF) as f32 * presence).round() as u32;
+            glow.rgba = (glow.rgba & 0xFFFF_FF00) | alpha.min(255);
+        }
+    }
+    let focus = if presence < 1.0 {
+        let haze = ((1.0 - presence) * presence * 4.0 * 0.85 * 255.0).round() as u32;
+        (haze > 0).then(|| caption_effects::ResolvedGlow {
+            rgba: (style.text_rgba & 0xFFFF_FF00) | haze.min(255),
+            radius_px: font_size * (0.12 + 0.5 * (1.0 - presence)),
+        })
+    } else {
+        None
+    };
     if style.box_style == CaptionBox::Plate {
         d.draw_rectangle_rounded(composition.box_rect, fx.plate_roundness, 8, box_color);
         // Rounded like the fill it traces. The C outlined its rounded plate
@@ -263,6 +299,9 @@ pub fn draw_scene_lyric_overlay(
         Some(glow) => draw_glow_halo(d, blur, &composition, &font, glow, boundary),
         None => "off",
     };
+    if let Some(focus) = focus {
+        draw_glow_halo(d, blur, &composition, &font, focus, boundary);
+    }
 
     // The soft shadow rides the same blur as the glow (operator-approved
     // follow-up to UX0-C11, 2026-08-04): its 9-tap table had the identical

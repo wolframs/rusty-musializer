@@ -243,6 +243,11 @@ pub mod caption_fx {
     pub const PLATE_ROUNDNESS_MINIMUM: f64 = 0.0;
     pub const PLATE_ROUNDNESS_MAXIMUM: f64 = 0.5;
     pub const PLATE_ROUNDNESS_DEFAULT: f64 = 0.12;
+    /// Seconds a line takes to come into focus, and to leave (MV9-f). Zero is
+    /// the legacy instant caption.
+    pub const ENTRANCE_MINIMUM: f64 = 0.0;
+    pub const ENTRANCE_MAXIMUM: f64 = 3.0;
+    pub const ENTRANCE_DEFAULT: f64 = 0.0;
 }
 
 /// How one caption drive's raw 0..=1 value maps to the amount an effect uses —
@@ -353,6 +358,11 @@ pub struct CaptionEffects {
     pub shadow_opacity: f64,
     /// Corner roundness of the `Plate` backing.
     pub plate_roundness: f64,
+    /// Seconds over which a line arrives out of a soft blur (post-legacy,
+    /// MV9-f). Zero, the default and never written, is an instant caption.
+    pub entrance_seconds: f64,
+    /// Seconds over which a line leaves back into the blur. Zero likewise.
+    pub exit_seconds: f64,
 }
 
 impl Default for CaptionEffects {
@@ -370,6 +380,8 @@ impl Default for CaptionEffects {
             shadow_blur: caption_fx::SHADOW_BLUR_DEFAULT,
             shadow_opacity: caption_fx::SHADOW_OPACITY_DEFAULT,
             plate_roundness: caption_fx::PLATE_ROUNDNESS_DEFAULT,
+            entrance_seconds: caption_fx::ENTRANCE_DEFAULT,
+            exit_seconds: caption_fx::ENTRANCE_DEFAULT,
         }
     }
 }
@@ -414,6 +426,14 @@ impl CaptionEffects {
             self.plate_roundness,
             caption_fx::PLATE_ROUNDNESS_MINIMUM,
             caption_fx::PLATE_ROUNDNESS_MAXIMUM,
+        ) && bounded(
+            self.entrance_seconds,
+            caption_fx::ENTRANCE_MINIMUM,
+            caption_fx::ENTRANCE_MAXIMUM,
+        ) && bounded(
+            self.exit_seconds,
+            caption_fx::ENTRANCE_MINIMUM,
+            caption_fx::ENTRANCE_MAXIMUM,
         ) && self.pulse_tuning.validate()
             && self.hue_tuning.validate()
     }

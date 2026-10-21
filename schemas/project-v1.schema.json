@@ -433,6 +433,18 @@
         },
         "hue_tuning": {
           "$ref": "#/$defs/caption_drive_tuning"
+        },
+        "entrance_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 3,
+          "description": "Seconds over which a line arrives out of a soft blur (post-legacy, MV9-f). Omitted when zero."
+        },
+        "exit_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 3,
+          "description": "Seconds over which a line leaves into the blur (post-legacy, MV9-f). Omitted when zero."
         }
       }
     },

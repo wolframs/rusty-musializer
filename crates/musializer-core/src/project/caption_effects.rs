@@ -132,6 +132,32 @@ pub struct ResolvedCaptionFx {
     pub plate_roundness: f32,
 }
 
+/// How present a caption line is at `time_seconds`, `0..=1` (MV9-f): rising
+/// over the entrance from the cue's start and falling over the exit to its
+/// end, each a smoothstep. `1` throughout when neither is authored, which is
+/// the legacy instant caption.
+#[must_use]
+pub fn presence(effects: &CaptionEffects, start: f64, end: f64, time_seconds: f64) -> f32 {
+    let ramp = |elapsed: f64, seconds: f64| {
+        if seconds <= 0.0 {
+            return 1.0f32;
+        }
+        let t = (elapsed / seconds).clamp(0.0, 1.0) as f32;
+        t * t * (3.0 - 2.0 * t)
+    };
+    // A line shorter than its entrance and exit together shares the time
+    // between them rather than never arriving.
+    let length = (end - start).max(0.0);
+    let total = effects.entrance_seconds + effects.exit_seconds;
+    let squeeze = if total > length && total > 0.0 {
+        length / total
+    } else {
+        1.0
+    };
+    ramp(time_seconds - start, effects.entrance_seconds * squeeze)
+        * ramp(end - time_seconds, effects.exit_seconds * squeeze)
+}
+
 /// Resolves the authored effects against one frame's inputs.
 #[must_use]
 pub fn resolve(
@@ -268,6 +294,29 @@ pub fn hue_drive_rgba(rgba: u32, degrees: f32, drive: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presence_rises_and_falls_and_is_instant_unless_authored() {
+        let instant = CaptionEffects::default();
+        assert_eq!(presence(&instant, 10.0, 14.0, 10.0), 1.0);
+        let soft = CaptionEffects {
+            entrance_seconds: 1.0,
+            exit_seconds: 0.5,
+            ..CaptionEffects::default()
+        };
+        assert_eq!(presence(&soft, 10.0, 14.0, 10.0), 0.0);
+        assert_eq!(
+            presence(&soft, 10.0, 14.0, 10.5),
+            0.5,
+            "smoothstep at half is half"
+        );
+        assert_eq!(presence(&soft, 10.0, 14.0, 12.0), 1.0);
+        assert_eq!(presence(&soft, 10.0, 14.0, 14.0), 0.0);
+        // A line shorter than both ramps shares its length between them and
+        // still arrives.
+        let peak = presence(&soft, 10.0, 10.6, 10.4);
+        assert!(peak > 0.9, "{peak}");
+    }
     use crate::project::model::caption_fx;
 
     fn quiet() -> EffectInputs {

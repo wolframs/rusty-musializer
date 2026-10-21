@@ -335,6 +335,10 @@ struct CaptionEffectsWire {
     shadow_opacity: Option<f64>,
     #[serde(default)]
     plate_roundness: Option<f64>,
+    #[serde(default)]
+    entrance_seconds: Option<f64>,
+    #[serde(default)]
+    exit_seconds: Option<f64>,
 }
 
 // -- domain --------------------------------------------------------------------
@@ -1726,6 +1730,22 @@ fn parse_caption_style(wire: CaptionStyleWire) -> Result<CaptionStyle, Treatment
                 caption_fx::PLATE_ROUNDNESS_MAXIMUM,
             )?;
         }
+        if let Some(value) = effects.entrance_seconds {
+            fx.entrance_seconds = bounded(
+                "caption_style.effects.entrance_seconds",
+                value,
+                caption_fx::ENTRANCE_MINIMUM,
+                caption_fx::ENTRANCE_MAXIMUM,
+            )?;
+        }
+        if let Some(value) = effects.exit_seconds {
+            fx.exit_seconds = bounded(
+                "caption_style.effects.exit_seconds",
+                value,
+                caption_fx::ENTRANCE_MINIMUM,
+                caption_fx::ENTRANCE_MAXIMUM,
+            )?;
+        }
     }
     Ok(style)
 }
@@ -1978,6 +1998,8 @@ pub fn vocabulary() -> Value {
                 "shadow_blur": range(caption_fx::SHADOW_BLUR_MINIMUM, caption_fx::SHADOW_BLUR_MAXIMUM, caption_fx::SHADOW_BLUR_DEFAULT),
                 "shadow_opacity": range(caption_fx::SHADOW_OPACITY_MINIMUM, caption_fx::SHADOW_OPACITY_MAXIMUM, caption_fx::SHADOW_OPACITY_DEFAULT),
                 "plate_roundness": range(caption_fx::PLATE_ROUNDNESS_MINIMUM, caption_fx::PLATE_ROUNDNESS_MAXIMUM, caption_fx::PLATE_ROUNDNESS_DEFAULT),
+                "entrance_seconds": range(caption_fx::ENTRANCE_MINIMUM, caption_fx::ENTRANCE_MAXIMUM, caption_fx::ENTRANCE_DEFAULT),
+                "exit_seconds": range(caption_fx::ENTRANCE_MINIMUM, caption_fx::ENTRANCE_MAXIMUM, caption_fx::ENTRANCE_DEFAULT),
             },
         },
         "output": {
