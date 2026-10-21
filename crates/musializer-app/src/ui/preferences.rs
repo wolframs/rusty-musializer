@@ -60,6 +60,10 @@ pub struct UiPreferences {
     /// rather than as a stored zero — so a later change to that default reaches
     /// every user who has not dialled one in.
     pub lyric_tap_offset: Option<f32>,
+    /// Whether the dock (terminals and agents, WX-1) was open, and how wide
+    /// the user dragged it. Screen facts, like the splits above.
+    pub dock_open: bool,
+    pub dock_width: Option<f32>,
 }
 
 impl UiPreferences {
@@ -69,6 +73,7 @@ impl UiPreferences {
             self.sidebar_width,
             self.inspector_width,
             self.timeline_height,
+            self.dock_width,
         ]
         .into_iter()
         .flatten()
@@ -121,6 +126,11 @@ struct Document {
     /// every one of those files parse as corruption.
     #[serde(default)]
     lyric_tap_offset: Option<f32>,
+    /// `default` for the same reason, WX-1.
+    #[serde(default)]
+    dock_open: bool,
+    #[serde(default)]
+    dock_width: Option<f32>,
 }
 
 #[must_use]
@@ -164,6 +174,8 @@ pub fn load(path: &Path) -> Result<Option<UiPreferences>, UiPreferencesError> {
         timeline_height: document.timeline_height,
         lyric_lane_height: document.lyric_lane_height,
         lyric_tap_offset: document.lyric_tap_offset,
+        dock_open: document.dock_open,
+        dock_width: document.dock_width,
     };
     preferences
         .sane()
@@ -187,6 +199,8 @@ pub fn save(path: &Path, preferences: UiPreferences) -> Result<(), UiPreferences
         timeline_height: preferences.timeline_height,
         lyric_lane_height: preferences.lyric_lane_height,
         lyric_tap_offset: preferences.lyric_tap_offset,
+        dock_open: preferences.dock_open,
+        dock_width: preferences.dock_width,
     };
     let bytes = serde_json::to_vec_pretty(&document).map_err(|_| UiPreferencesError::Format)?;
     if let Some(parent) = path.parent() {
@@ -221,6 +235,8 @@ mod tests {
             timeline_height: Some(460.0),
             lyric_lane_height: Some(48.0),
             lyric_tap_offset: Some(-0.1),
+            dock_open: true,
+            dock_width: Some(480.0),
         };
         save(&path, preferences).unwrap();
         assert_eq!(load(&path).unwrap(), Some(preferences));

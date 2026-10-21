@@ -61,6 +61,11 @@ pub const LYRICS: Control = Control::new(Icon::FileText, "Lyrics", "Lyrics edito
 pub const EDITOR: Control =
     Control::new(Icon::Pencil, "Editor", "Tune, lyrics and appearance [F8]");
 pub const ASSIST: Control = Control::new(Icon::Magic, "Assist", "Analysis assist");
+pub const DOCK: Control = Control::new(
+    Icon::Terminal,
+    "Agents",
+    "Terminal and agents: Claude Code, Codex, Antigravity [Ctrl+`]",
+);
 
 pub const READOUT: Control = Control::new(Icon::Info, "Info", "Diagnostic readout [H]");
 pub const MUTE: Control = Control::new(Icon::VolumeUp, "Mute", "Mute [M]");
@@ -139,6 +144,7 @@ mod tests {
             EXPORT,
             LYRICS,
             ASSIST,
+            DOCK,
             READOUT,
             MUTE,
             UNMUTE,
@@ -164,6 +170,7 @@ mod tests {
             SEEK_FORWARD,
             TUNE,
             EDITOR,
+            DOCK,
             READOUT,
             MUTE,
             UNMUTE,

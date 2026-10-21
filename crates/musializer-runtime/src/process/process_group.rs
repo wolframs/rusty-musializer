@@ -54,6 +54,10 @@ pub enum Signal {
     Term = 15,
     /// Do not ask. `ffmpeg` cancellation and every escalation path use it.
     Kill = 9,
+    /// The terminal went away. A dock terminal's shell and whatever runs in its
+    /// foreground (an agent CLI, an editor) get this when the dock closes it,
+    /// which is what closing a terminal window means to them (WX-2).
+    Hangup = 1,
 }
 
 impl Signal {
@@ -68,6 +72,7 @@ impl Signal {
         match self {
             Signal::Term => "Terminated",
             Signal::Kill => "Killed",
+            Signal::Hangup => "Hangup",
         }
     }
 }

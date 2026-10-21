@@ -332,6 +332,16 @@ pub struct UiProbe {
     /// `time=` has parked the playhead and the segment it targets is the one a
     /// capture will show.
     pub scene_pick: Option<SceneId>,
+    /// `dock=1`: open the dock (WX-1) with a shell tab, whatever `ui.json`
+    /// says.
+    pub dock: bool,
+    /// `dock-run=COMMAND`: type `COMMAND` and Enter into the dock's terminal
+    /// on frame 20. Invented, WX-2: Xvfb has no keyboard, and a terminal that
+    /// never ran anything photographs as an empty dark rectangle.
+    pub dock_run: Option<String>,
+    /// `dock-focus=1`: give the terminal the keyboard on frame 20, so the
+    /// report can show the shell's shortcuts standing down.
+    pub dock_focus: bool,
     /// `tune-seed=N`: replace the Tune panel's Surprise/Nudge seed (PX6).
     ///
     /// **Invented, and it is what makes a random feature photographable at
@@ -1230,6 +1240,15 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
         "tune-seed" => probe.tune_seed = Some(value.parse().ok()?),
+        "dock" => probe.dock = parse_probe_flag(value)?,
+        "dock-run" => {
+            probe.dock = true;
+            probe.dock_run = Some(value.to_string());
+        }
+        "dock-focus" => {
+            probe.dock = true;
+            probe.dock_focus = parse_probe_flag(value)?;
+        }
         "tune-explore" => {
             // Validated here rather than in the panel, so a typo fails the
             // command line instead of quietly photographing an unexplored scene.

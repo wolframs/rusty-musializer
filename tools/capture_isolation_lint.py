@@ -32,6 +32,7 @@ DEFAULT_FILES = [
     "tools/knot_check.sh",
     "tools/headless_run.sh",
     "tools/treatment_check.sh",
+    "tools/dock_check.sh",
 ]
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 

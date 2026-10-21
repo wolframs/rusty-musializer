@@ -45,12 +45,12 @@ timing of Door, No Room. It is a direction, not a pixel spec:
 | Id | Part | Status |
 | --- | --- | --- |
 | WX-0 | Plan and mockup | done 2026-10-21 |
-| WX-1 | The dock: a right-hand region the workspace makes room for | open |
-| WX-2 | A real terminal in the dock | open |
+| WX-1 | The dock: a right-hand region the workspace makes room for | done 2026-10-21 |
+| WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | open |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | open |
 | WX-5 | The restyle the mockup proposes | open; wants the operator's reaction to the mockup |
-| WX-6 | A headless gate for all of it | grows with each part |
+| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1/2; grows with each part |
 
 ### WX-1 — the dock
 
@@ -141,4 +141,26 @@ recorded NDJSON. The gate never starts a real agent and never spends credits.
 
 ## Decisions recorded along the way
 
-(Appended as parts land.)
+**WX-1/2 (2026-10-21).**
+
+- **Agents run in terminal tabs first.** The Claude, Codex and Antigravity
+  buttons open a tab that runs `$SHELL -i -c '<cli>; exec $SHELL -i'` in the
+  project's folder. The agent gets the operator's own PATH, rc files and
+  login, and quitting it leaves a shell in the tab. That is the operator's
+  "even just a terminal emulator" request, and it works with every CLI today.
+  WX-4's native chat comes on top of it; it does not replace it.
+- **New tabs know where they are.** `MUSIALIZER_BIN` (this binary),
+  `MUSIALIZER_PROJECT`, `MUSIALIZER_TRACK` and `MUSIALIZER_GUIDE` (the
+  directing guide, when the binary sits in its checkout) are set. A new tab
+  starts in the project's folder, else the track's, else `$HOME`.
+- **The tab the dock opens by itself does not take the keyboard.** Tabs the
+  user asks for do. Without this, a dock restored open at launch would swallow
+  the first Space meant for the transport. The gate's negative control (the
+  same run without `dock-focus=`) caught this on its first run.
+- **Hide is not close.** Hiding the dock keeps its terminals running. Only a
+  tab's `×` hangs up on it, and quitting hangs up on all of them.
+- **Not done yet:** mouse reporting to full-screen programs (wheel scrolling
+  in the alternate screen works through arrow keys, as alacritty does), and
+  bold as a weight (it draws as a brighter colour). The terminal draws in
+  egui's bundled Hack face. A glyph Hack and egui's fallbacks lack draws as
+  a box.

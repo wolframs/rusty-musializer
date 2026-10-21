@@ -26,6 +26,7 @@ pub mod preset_files;
 pub mod process;
 pub mod project_files;
 pub mod support;
+pub mod terminal;
 pub mod transition;
 
 pub use raylib;

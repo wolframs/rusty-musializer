@@ -16,6 +16,7 @@
 //! fixed by the ownership map and this geometry belongs to nobody else.
 
 pub mod assist_settings;
+pub mod dock;
 pub mod egui_backend;
 pub mod egui_editor;
 pub mod icons;

@@ -32,6 +32,9 @@ serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
 clap = { version = "4", features = ["derive"] }
+# WX-2: the dock terminal's VT state machine and PTY. Alacritty's own terminal
+# core (Apache-2.0); rendering stays ours, in egui. See docs/WORKSTATION.md.
+alacritty_terminal = "0.26"
 
 # Optimize dev builds, because the evidence in this repository is *captures*,
 # and every capture is a real application launch. `tools/headless_check.sh` makes

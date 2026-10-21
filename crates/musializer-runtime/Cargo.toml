@@ -14,6 +14,7 @@ raylib-sys.workspace = true
 # emits no link directives of its own.
 raylib-link.workspace = true
 thiserror.workspace = true
+alacritty_terminal.workspace = true
 
 # No tempfile: it was added in anticipation of transactional staging and turned
 # out to be the wrong tool. `rename(2)` cannot cross filesystems, so staging must

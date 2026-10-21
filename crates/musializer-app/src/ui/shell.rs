@@ -449,6 +449,12 @@ pub struct ToolbarResult {
 pub struct Shell {
     /// Egui editor dialog. Its modal input boundary protects legacy text fields.
     pub editor_open: bool,
+    /// The right-hand dock: terminals and agents (WX-1). Not modal; the
+    /// workspace lays itself out beside it.
+    pub dock_open: bool,
+    /// Whether a dock surface holds the keyboard this frame. Written by the
+    /// composition root, read by [`Shell::text_entry_has_focus`].
+    pub dock_keyboard: bool,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -928,10 +934,14 @@ pub(crate) enum TextEntrySurface {
     FontQuery,
     /// A Tune inspector value chip being typed into (UX0-B09).
     TuneValue,
+    /// The dock's terminal (WX-2). A shell is useless if Space pauses the
+    /// song, so while it holds the keyboard every global stands down.
+    Dock,
 }
 
 impl TextEntrySurface {
-    pub(crate) const ALL: [Self; 3] = [Self::LyricCue, Self::FontQuery, Self::TuneValue];
+    pub(crate) const ALL: [Self; 4] =
+        [Self::LyricCue, Self::FontQuery, Self::TuneValue, Self::Dock];
 }
 
 /// The keys one frame of the shell can act on, read out of raylib in one place.
@@ -1062,6 +1072,8 @@ impl Shell {
         // headless capture is what showed.
         Self {
             editor_open: false,
+            dock_open: ui_preferences.dock_open,
+            dock_keyboard: false,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -2457,6 +2469,7 @@ impl Shell {
             icons::LYRICS,
             icons::ASSIST,
             icons::EDITOR,
+            icons::DOCK,
         ];
         let seek = [icons::SEEK_START, icons::SEEK_BACK, icons::SEEK_FORWARD];
 
@@ -2536,6 +2549,7 @@ impl Shell {
                 c if *c == icons::SEEK_FORWARD => (widgets::id::SEEK, 2, false),
                 c if *c == icons::TUNE => (widgets::id::TOOLBAR, 1, self.inspector_open),
                 c if *c == icons::EDITOR => (widgets::id::TOOLBAR, 5, self.editor_open),
+                c if *c == icons::DOCK => (widgets::id::TOOLBAR, 6, self.dock_open),
                 c if *c == icons::EXPORT => {
                     (widgets::id::TOOLBAR, 2, self.panel == UiPanel::Export)
                 }
@@ -2608,6 +2622,7 @@ impl Shell {
                         self.editor_open = true;
                     }
                 }
+                c if *c == icons::DOCK => commands.push(self.toggle_dock()),
                 // The three bottom panels share one guard, as they do in the
                 // oracle's own panel row (`plug.c:2905-2906`): leaving the lyrics
                 // editor with a half-typed cue is a context change like any other,
@@ -3239,6 +3254,17 @@ impl Shell {
         }
     }
 
+    /// Opens or hides the dock and remembers the choice. Hiding keeps its
+    /// terminals running; only closing a tab ends one.
+    pub fn toggle_dock(&mut self) -> ShellCommand {
+        self.dock_open = !self.dock_open;
+        if !self.dock_open {
+            self.dock_keyboard = false;
+        }
+        self.ui_preferences.dock_open = self.dock_open;
+        ShellCommand::SaveUiPreferences(self.ui_preferences)
+    }
+
     /// Whether any text field is taking keystrokes.
     ///
     /// The shell reads the keyboard before any panel is drawn, so a panel with a
@@ -3274,6 +3300,9 @@ impl Shell {
             // rest of the session. `T` closes the inspector without asking the
             // panel first, which is exactly that case.
             TextEntrySurface::TuneValue => self.inspector_open && self.tune_value_typing(),
+            // Set by the composition root from the dock's own focus, every
+            // frame; paired with the dock being open for the reason above.
+            TextEntrySurface::Dock => self.dock_open && self.dock_keyboard,
         }
     }
 
@@ -6318,6 +6347,10 @@ mod tests {
             }
             TextEntrySurface::FontQuery => shell.font_browser.focus_query_for_test(),
             TextEntrySurface::TuneValue => shell.focus_tune_value_for_test(),
+            TextEntrySurface::Dock => {
+                shell.dock_open = true;
+                shell.dock_keyboard = true;
+            }
         }
     }
 
@@ -6457,6 +6490,9 @@ mod tests {
             // a Tune value chip holding the keyboard forever (PX6).
             shell.panel = UiPanel::None;
             shell.inspector_open = false;
+            // The dock hides without the composition root clearing its flag
+            // first, which is the same stranded state one surface over (WX-1).
+            shell.dock_open = false;
             shell.begin_frame(UiScale::default(), false);
 
             assert!(

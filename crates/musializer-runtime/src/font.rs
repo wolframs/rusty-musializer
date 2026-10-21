@@ -180,13 +180,15 @@ pub enum Icon {
     Magic,
     /// The toolkit editor.
     Pencil,
+    /// The dock: terminals and agents (WX-1).
+    Terminal,
     /// The diagnostic readout toggle.
     Info,
 }
 
 impl Icon {
     /// Every icon, which is exactly what the atlas is built over.
-    pub const ALL: [Icon; 16] = [
+    pub const ALL: [Icon; 17] = [
         Icon::Play,
         Icon::Pause,
         Icon::Film,
@@ -202,6 +204,7 @@ impl Icon {
         Icon::FileText,
         Icon::Magic,
         Icon::Pencil,
+        Icon::Terminal,
         Icon::Info,
     ];
 
@@ -224,6 +227,7 @@ impl Icon {
             Icon::FileText => 0xF0F6,
             Icon::Magic => 0xF0D0,
             Icon::Pencil => 0xF040,
+            Icon::Terminal => 0xF120,
             Icon::Info => 0xF05A,
         }
     }

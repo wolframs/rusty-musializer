@@ -172,6 +172,7 @@ finish_queued_steps
 if [ "$QUICK" -eq 0 ]; then
     if command -v Xvfb >/dev/null 2>&1; then
         step "headless gate (window, audio, Spectrum)" tools/headless_check.sh
+        step "dock gate (terminal in the window)" tools/dock_check.sh
     else
         printf '\n\033[33mskipped\033[0m  headless gate: Xvfb not installed\n'
     fi

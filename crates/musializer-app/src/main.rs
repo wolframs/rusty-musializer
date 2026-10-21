@@ -428,6 +428,12 @@ fn run(
     let mut editor_backend = ui::egui_backend::EguiBackend::default();
     let mut editor = ui::egui_editor::EditorState::default();
     let mut editor_was_active = false;
+    // WX-1/2: terminals and agents beside the workspace. Declared after the
+    // egui backend, so it drops (and hangs up on its shells) first.
+    let mut dock = ui::dock::Dock::default();
+    if let Some(probe) = options.ui_probe.as_ref() {
+        app.shell.dock_open |= probe.dock;
+    }
     editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
     ui::theme::set_current(editor.theme);
     // Batch/probe runs never touch the operator's state directory. Tests that
@@ -1281,6 +1287,37 @@ fn run(
             &mut caption_font_request,
             music.as_ref(),
         );
+        // The dock (WX-1) takes the right edge; the workspace believes the
+        // window is that much narrower, so every panel lays itself out beside
+        // it. Hidden in fullscreen, which is a viewing mode.
+        //
+        // Ctrl+` toggles it from anywhere. While a terminal holds the keyboard
+        // the terminal reports the chord itself (`DockOutput::toggle`), so the
+        // key means one thing whether or not the dock has focus.
+        let mut dock_commands: Vec<ShellCommand> = Vec::new();
+        if !dock.wants_keyboard()
+            && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
+            && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+                || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
+        {
+            dock_commands.push(app.shell.toggle_dock());
+            if app.shell.dock_open {
+                dock.focus_active();
+            }
+        }
+        let full_logical = ui_scale.logical_size(physical_window);
+        let dock_rect = (app.shell.dock_open && !app.shell.fullscreen)
+            .then(|| {
+                ui::dock::Dock::rect(
+                    full_logical,
+                    dock.dragged_width().or(app.shell.ui_preferences.dock_width),
+                )
+            })
+            .flatten();
+        let workspace_window = dock_rect.map_or(full_logical, |rect| (rect.x, full_logical.1));
+        if dock_rect.is_none() {
+            app.shell.dock_keyboard = false;
+        }
         // Reasserted every frame rather than set once, so the tooltip a capture is
         // after is in the shot regardless of how many frames the run lasts — and
         // so a window that only gets its geometry after the first frame cannot
@@ -1566,43 +1603,76 @@ fn run(
             }
         }
         editor_was_active = editor_active;
-        if editor_active {
-            editor_backend.begin_frame(&mut rl, ui_scale.value(), true);
-            let logical = ui_scale.logical_size(physical_window);
-            let bounds = ui::shell_layout::editor_rect(logical);
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(bounds.x, bounds.y),
-                egui::vec2(bounds.width, bounds.height),
-            );
-            editor_output = editor.show(
-                editor_backend.ctx(),
-                rect,
-                app.workspace.current(),
-                app.scene.id(),
-                app.workspace.current_index(),
-                time_seconds,
-                playing,
-            );
-            editor_backend.end_frame(&mut rl);
-            if let Some(theme) = editor_output.theme {
-                editor_output.commands.push(app.shell.set_appearance(theme));
-            }
-        }
-
         let welcome_theme_active = app.workspace.current().is_none() && !editor_active;
         let mut welcome_input_blocked = false;
-        if welcome_theme_active {
-            editor_backend.begin_frame(&mut rl, ui_scale.value(), true);
-            let (theme, owns_input) = ui::egui_editor::welcome_theme(
-                editor_backend.ctx(),
-                ui_scale.logical_size(physical_window),
-                &mut editor.theme,
+        // One egui pass for every toolkit surface on screen: the dock, the
+        // Editor and the welcome theme picker. The dock is built first, so
+        // keys a terminal used are gone before the Editor reads its Escape.
+        let egui_active = editor_active || welcome_theme_active || dock_rect.is_some();
+        if egui_active {
+            editor_backend.begin_frame(
+                &mut rl,
+                ui_scale.value(),
+                editor_active || welcome_theme_active || dock.wants_keyboard(),
             );
-            if let Some(theme) = theme {
-                editor_output.commands.push(app.shell.set_appearance(theme));
+            if let Some(bounds) = dock_rect {
+                ui::egui_editor::apply_theme(editor_backend.ctx(), editor.theme);
+                let context = dock_context(&app);
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(bounds.x, bounds.y),
+                    egui::vec2(bounds.width, bounds.height),
+                );
+                if let Some(probe) = options.ui_probe.as_ref() {
+                    if report.frames == 20 {
+                        if let Some(command) = probe.dock_run.as_deref() {
+                            dock.probe_write(&format!("{command}\r"));
+                        }
+                        if probe.dock_focus {
+                            dock.focus_active();
+                        }
+                    }
+                }
+                let output = dock.show(editor_backend.ctx(), rect, &context);
+                if output.toggle {
+                    dock_commands.push(app.shell.toggle_dock());
+                }
+                if let Some(width) = output.resized {
+                    app.shell.ui_preferences.dock_width = Some(width.round());
+                    dock_commands.push(ShellCommand::SaveUiPreferences(app.shell.ui_preferences));
+                }
+            }
+            app.shell.dock_keyboard = app.shell.dock_open && dock.wants_keyboard();
+            if editor_active {
+                let bounds = ui::shell_layout::editor_rect(workspace_window);
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(bounds.x, bounds.y),
+                    egui::vec2(bounds.width, bounds.height),
+                );
+                editor_output = editor.show(
+                    editor_backend.ctx(),
+                    rect,
+                    app.workspace.current(),
+                    app.scene.id(),
+                    app.workspace.current_index(),
+                    time_seconds,
+                    playing,
+                );
+                if let Some(theme) = editor_output.theme {
+                    editor_output.commands.push(app.shell.set_appearance(theme));
+                }
+            }
+            if welcome_theme_active {
+                let (theme, owns_input) = ui::egui_editor::welcome_theme(
+                    editor_backend.ctx(),
+                    workspace_window,
+                    &mut editor.theme,
+                );
+                if let Some(theme) = theme {
+                    editor_output.commands.push(app.shell.set_appearance(theme));
+                }
+                welcome_input_blocked = owns_input;
             }
             editor_backend.end_frame(&mut rl);
-            welcome_input_blocked = owns_input;
         }
 
         // The shape the export will actually be (EX2). Falls back to the default
@@ -1630,7 +1700,7 @@ fn run(
                     }
                 });
 
-        report.logical_window = ui_scale.logical_size(physical_window);
+        report.logical_window = workspace_window;
         report.timeline = app.shell.describe_timeline(duration_seconds);
         report.click_at = click_at;
         let shell_input = ShellInput {
@@ -1681,7 +1751,7 @@ fn run(
                 .shell
                 .draw_welcome(&mut ui_draw, &shell_input, welcome_input_blocked);
             drop(ui_draw);
-            if editor_active || welcome_theme_active {
+            if egui_active {
                 if let Err(error) = editor_backend.draw(&mut d, &thread) {
                     eprintln!("editor rendering: {error}");
                 }
@@ -1819,7 +1889,7 @@ fn run(
                 );
             }
             drop(ui_draw);
-            if editor_active {
+            if egui_active {
                 if let Err(error) = editor_backend.draw(&mut d, &thread) {
                     eprintln!("editor rendering: {error}");
                 }
@@ -1831,6 +1901,7 @@ fn run(
             commands.clear();
         }
         commands.append(&mut editor_output.commands);
+        commands.append(&mut dock_commands);
         if editor_output.close_requested {
             app.shell.editor_open = false;
         }
@@ -2587,6 +2658,8 @@ fn run(
         eprintln!("warning: the Assist helper could not be reaped promptly");
     }
     close_audio(&mut music, &mut app, &mut scratch);
+    report.dock = dock.describe(app.shell.dock_open);
+    dock.shutdown();
 
     report.print(
         raylib_version,
@@ -4765,6 +4838,54 @@ fn recover_session<'audio>(
     Ok(())
 }
 
+/// Where a new dock tab starts and what it is told (WX-2): the project's
+/// folder, else the track's, else home; and the paths an agent started there
+/// needs to direct this window from the command line.
+fn dock_context(app: &App) -> ui::dock::DockContext {
+    let mut env = std::collections::HashMap::new();
+    if let Ok(exe) = std::env::current_exe() {
+        env.insert("MUSIALIZER_BIN".to_string(), exe.display().to_string());
+    }
+    // The directing guide, when this binary still sits in its checkout.
+    let guide = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/MUSIC_VIDEO_CLI.md");
+    if let Ok(guide) = guide.canonicalize() {
+        env.insert("MUSIALIZER_GUIDE".to_string(), guide.display().to_string());
+    }
+    let mut directory = None;
+    if let Some(track) = app.workspace.current() {
+        env.insert(
+            "MUSIALIZER_TRACK".to_string(),
+            track.file_path.display().to_string(),
+        );
+        if let Some(project) = track.project_path.as_ref() {
+            env.insert(
+                "MUSIALIZER_PROJECT".to_string(),
+                project.display().to_string(),
+            );
+            directory = project.parent().map(Path::to_path_buf);
+        }
+        if directory.is_none() {
+            directory = track.file_path.parent().map(Path::to_path_buf);
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let directory = directory.or_else(|| home.clone());
+    let place = match (&directory, &home) {
+        (Some(dir), Some(home)) => match dir.strip_prefix(home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => dir.display().to_string(),
+        },
+        (Some(dir), None) => dir.display().to_string(),
+        (None, _) => String::new(),
+    };
+    ui::dock::DockContext {
+        working_directory: directory,
+        env,
+        place,
+    }
+}
+
 /// Whether this invocation is a user session rather than a batch job (UX0-C06).
 ///
 /// `--probe-frames` exits after a fixed frame count, `--render` after an export
@@ -5265,6 +5386,9 @@ struct Report {
     /// the window has closed. The chrome line is what proves a save affordance
     /// was on screen in every panel configuration (review 1.12).
     logical_window: (f32, f32),
+    /// The dock's tabs and the active terminal's screen (WX-2), filled once
+    /// after the loop so a capture can assert what the terminal shows.
+    dock: String,
     /// The last drawn frame's shared timeline span, kept for the same reason
     /// and by the same trick as `logical_window` above: `close_audio` resets the
     /// view to nothing on the way out, so reading it off the shell at print time
@@ -5332,6 +5456,7 @@ impl Default for Report {
             flux_seen: 0.0,
             frame_lanes: FrameLaneStatus::default(),
             logical_window: (0.0, 0.0),
+            dock: String::new(),
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
             click_at: None,
@@ -5850,6 +5975,7 @@ impl Report {
         // capture could not tell a lane that accepted the notch from one that
         // ignored it — both draw a perfectly plausible timeline.
         println!("timeline:        {}", self.timeline);
+        println!("dock:            {}", self.dock);
         // The size invariant `EndTextureMode` does not restore. A frame that ends
         // with rlgl's pair still pointing at a caption blur buffer or an export
         // target scales the next scene panel by that ratio, and the result is a
