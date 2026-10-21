@@ -151,7 +151,7 @@ a CX ruling, not a preference.
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 | 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
 | 10 | **The compositor's work, moved into the renderer** — all of MV9 landed 2026-10-21; editing it in the window is the one follow-up | MV9-l | medium, UI |
-| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; design and part status in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-1…WX-6 | large; in progress |
+| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-4 landed; the next sessions' briefs are in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-5a/b/c, WX-4 follow-ups | one session each |
 | 12 | **Generated video as material** — scoping only: five 1080p+ picks from OpenRouter, all with first/last-frame input, prices and image inputs in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md); `tools/openrouter_video_prices.py --hd` refreshes them. Building it spends money and needs the Assist consent route | VG | not started; operator interest 2026-10-21 |
 
 ### The items, in one line each
@@ -418,8 +418,9 @@ one real video with it found these, each from a contact sheet:
 
 - **WX — the window as a directing workstation** (2026-10-21). Parts, order,
   decisions and status live in [`docs/WORKSTATION.md`](docs/WORKSTATION.md);
-  that file is updated as each part lands. WX-5 (the restyle) waits on the
-  operator's reaction to the WX-0 mockup.
+  that file is updated as each part lands. WX-0 to WX-4 landed 2026-10-21;
+  the operator approved the mockup's direction and asked for one session per
+  step from here. The briefs are under "Next sessions" in that file.
 
 One measurement for **LT2**, from the same session and not yet acted on: on a
 3:59 track with an embedded 27-line sheet, the normal local route

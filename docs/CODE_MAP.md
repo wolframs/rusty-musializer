@@ -368,6 +368,7 @@ generated build output, fixtures, and media assets are intentionally excluded.
 | [`tools/ui_ux_check.sh`](../tools/ui_ux_check.sh) | Targeted visual UX captures. Every app process is muted, denied the desktop audio sink, isolated from Wayland, and given private preferences/config. |
 | [`tools/verify.sh`](../tools/verify.sh) | Everything that can check itself, in one command. |
 | [`tools/welcome_theme_check.sh`](../tools/welcome_theme_check.sh) | Startup appearance, persistence and handoff checked with real X11 input. Playback is muted per process, with private display/config and no audio sink. |
+| [`tools/wx_mockup.py`](../tools/wx_mockup.py) | WX-0: the mockup of the window as a directing workstation (docs/WORKSTATION.md). tools/wx_mockup.py PROJECT.musi STILLS_DIR OUT_DIR [--now SECONDS] Built from a real project: its scene plan and lyric timing from the `.musi`, its waveform from the project's own audio (ffmpeg), and frames from a directory of stills named like `n_0023.80.png` (the seconds they show), as `--still`/`--contact-sheet` runs write them. Writes `wx_mockup.html` into OUT_DIR and, when headless Chromium is installed, `wx_mockup.png` beside it. The operator approved the direction on 2026-10-21 ("That mockup is sick looking"); `docs/images/wx-mockup.jpg` is that render, of Door, No Room. A direction, not a pixel spec. Fonts are the application's own. |
 
 ### Differential and policy tests
 

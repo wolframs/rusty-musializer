@@ -22,9 +22,13 @@ and the status of each part.
 
 ## The mockup (WX-0)
 
-`build/wx/make_mock.py` writes `build/wx/wx_mockup.html` and a 1640 px
-screenshot. It uses real frames, the real 70-section plan and the real lyric
-timing of Door, No Room. It is a direction, not a pixel spec:
+![The WX mockup](images/wx-mockup.jpg)
+
+**Approved by the operator, 2026-10-21: "That mockup is sick looking :O".**
+`tools/wx_mockup.py PROJECT.musi STILLS_DIR OUT_DIR` regenerates it from any
+project. It uses that project's frames, scene plan, lyric timing and
+waveform; the image above is Door, No Room. It is a direction, not a pixel
+spec:
 
 - **One accent, meaning "now".** The playhead, the current section and the
   primary action. Today the same amber marks the track, the selected scene,
@@ -49,7 +53,7 @@ timing of Door, No Room. It is a direction, not a pixel spec:
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
-| WX-5 | The restyle the mockup proposes | open; wants the operator's reaction to the mockup |
+| WX-5 | The restyle the mockup proposes | direction approved 2026-10-21; next, in its own sessions (below) |
 | WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
 
 ### WX-1 — the dock
@@ -138,6 +142,54 @@ tokens first (visible everywhere, cheap), then the plan lane, then the rail.
 scripted `/bin/sh` command, and the capture is checked for its output and its
 colours. Agent sessions run against **fake agent executables** that replay
 recorded NDJSON. The gate never starts a real agent and never spends credits.
+
+## Next sessions
+
+The operator, 2026-10-21, after WX-0 to WX-4 landed: *"let's consolidate
+ourselves here first. I'm thinking that we should do separate sessions for
+the different steps following from here."* Each entry is one session's
+brief: what to build, where it touches, and how a session knows it is done.
+They are independent unless a line says otherwise. Every one finishes with
+`tools/verify.sh` green and `cargo build --release`.
+
+1. **WX-5a: tokens and type.** One accent that means *now* (the playhead,
+   the current section, the primary action), quiet selected states
+   (outline plus tint, not a solid amber slab), one type scale, and the
+   mockup's surfaces. Lives in `ui/theme.rs` (palette and egui visuals) and
+   the shell's draw calls. It touches both themes. Expect the headless gate's
+   colour assertions to move: update them on purpose, never loosen them
+   (see "The headless gate runs on the GPU" in `AGENTS.md`). Done when a capture of Door, No Room
+   at 1920x1080 reads like the mockup's chrome.
+2. **WX-5b: the plan lane as runs.** Consecutive sections of one scene
+   merge into one block with a frame from that scene, cut hairlines, a
+   transition edge and a grade bar. The lyric lane shows its words, and
+   the waveform is grey and warms behind the playhead. Lives in
+   `ui/panels/scene_timeline.rs` and the timeline view. It needs per-scene
+   thumbnails, which is CX-5's poster-frame service: build that here or
+   take it from CX-5. Done when the 70-section Door plan reads as runs in a
+   capture, and `scene marks:` still counts the same marks.
+3. **WX-5c: the rail and the big preview.** The tracks sidebar and scene
+   browser become a narrow icon rail with flyouts, and the preview takes the
+   space. Biggest layout change; `core::ui::workspace_layout` and its
+   `differential_layout.sh` harness are the contract. Update the harness on
+   purpose, with a recorded reason, as `AGENTS.md` requires. Do this after
+   5a, so the flyouts are drawn in the new tokens.
+4. **WX-4 follow-ups**, small and independent:
+   - inline images in a chat (a contact sheet or still the agent wrote);
+   - a model picker per chat;
+   - resuming a Codex thread after its process dies (`thread/resume`);
+   - a "Follow a treatment…" picker in the dock;
+   - a first real Codex and Antigravity turn through the dock. Both have
+     only been exercised through their protocol probes, so far.
+5. **VG: generated video as material.** Scoped in
+   `docs/VIDEO_GENERATION.md`: five 1080p picks on OpenRouter, all with
+   first and last frames. Building it spends money, so it starts with the
+   consent and price-first route, then a treatment feature (a clip section,
+   or a generated bridge between two sections' frames).
+6. **Repair `tools/welcome_theme_check.sh`.** It fails on a fixed-pixel
+   assertion ("editor did not replace the welcome step marker") at the
+   commit before WX too. It predates this work and is not in
+   `tools/verify.sh`.
 
 ## Decisions recorded along the way
 
