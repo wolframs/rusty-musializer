@@ -3603,7 +3603,7 @@ fn apply_treatment<'audio>(
     use musializer_core::treatment::{format_time, Treatment};
 
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
+    let mut treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
 
     if let Some(declared) = &treatment.audio {
         let declared_path = Path::new(&declared.path);
@@ -3644,6 +3644,34 @@ fn apply_treatment<'audio>(
                         .map_err(|error| error.to_string())?;
                 }
                 open_track(audio, &canonical, analysis, music, app, scratch, play)?;
+            }
+        }
+    }
+
+    // Lines timed by `tools/align_lyrics.py` (MV9-g), named by path. Read
+    // relative to the treatment like its audio, and refused when they were
+    // aligned against a different file: their times belong to that audio.
+    if let Some(file) = treatment.lyrics_file().map(str::to_owned) {
+        let declared = Path::new(&file);
+        let resolved = if declared.is_absolute() {
+            declared.to_path_buf()
+        } else {
+            path.parent().unwrap_or(Path::new(".")).join(declared)
+        };
+        let lyrics = std::fs::read(&resolved)
+            .map_err(|error| format!("lyrics {}: {error}", resolved.display()))?;
+        let aligned_to = treatment
+            .attach_lyrics(&lyrics)
+            .map_err(|error| error.to_string())?;
+        if let (Some(aligned_to), Some(track)) = (aligned_to, app.workspace.current()) {
+            if !track.audio_sha256.is_empty()
+                && !aligned_to.eq_ignore_ascii_case(&track.audio_sha256)
+            {
+                return Err(format!(
+                    "lyrics {}: aligned against audio {aligned_to}, but the track is {}",
+                    resolved.display(),
+                    track.audio_sha256
+                ));
             }
         }
     }

@@ -154,11 +154,45 @@ struct TreatmentWire {
     /// The finish over every frame (MV9-a): `"film"`, or an object.
     #[serde(default)]
     finish: Option<Value>,
+    /// Timed lines, or the path of an aligned-lyrics file (MV9-g).
     #[serde(default)]
-    lyrics: Option<Vec<LyricWire>>,
+    lyrics: Option<Value>,
     #[serde(default)]
     events: Option<Vec<EventWire>>,
 }
+
+/// `tools/align_lyrics.py`'s output (MV9-g). Its lines carry a score and the
+/// sung end as well as `at`/`until`; both are evidence for the reader and
+/// ignored here.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AlignedWire {
+    schema: String,
+    #[serde(default)]
+    audio_sha256: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    source: Option<Value>,
+    lines: Vec<AlignedLineWire>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AlignedLineWire {
+    at: Value,
+    #[serde(default)]
+    until: Option<Value>,
+    text: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    end: Option<Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    score: Option<f64>,
+}
+
+/// The schema `tools/align_lyrics.py` writes.
+pub const ALIGNED_LYRICS_SCHEMA: &str = "musializer.aligned-lyrics/v1";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -391,6 +425,9 @@ pub struct Treatment {
     /// `None` when the file has no `lyrics` key at all, which is different
     /// from an empty list: see [`CompiledTreatment::lyrics`].
     lyrics: Option<Vec<LyricLine>>,
+    /// A lyrics file the application has to read and [`Treatment::attach_lyrics`]
+    /// before compiling (MV9-g).
+    lyrics_file: Option<String>,
     events: Option<Vec<EventMark>>,
 }
 
@@ -583,67 +620,32 @@ impl Treatment {
             None => Finish::NONE,
         };
 
-        let wire_lyrics = wire.lyrics.as_deref().unwrap_or(&[]);
-        if wire_lyrics.len() > lyrics::CUE_CAPACITY {
-            return Err(invalid(
-                "lyrics",
-                format!(
-                    "at most {} lines, this treatment has {}",
-                    lyrics::CUE_CAPACITY,
-                    wire_lyrics.len()
-                ),
-            ));
-        }
-        let mut lines: Vec<LyricLine> = Vec::with_capacity(wire_lyrics.len());
-        for (index, line) in wire_lyrics.iter().enumerate() {
-            let at = parse_time(&format!("lyrics[{index}].at"), &line.at)?;
-            let place = format!("lyrics[{index}] ({})", format_time(at));
-            let until = line
-                .until
-                .as_ref()
-                .map(|value| parse_time(&format!("{place}.until"), value))
-                .transpose()?;
-            if let Some(until) = until {
-                if until < at + MIN_LYRIC_SECONDS {
-                    return Err(invalid(
-                        &place,
-                        format!(
-                            "`until` ({}) must be at least {MIN_LYRIC_SECONDS} s after `at`",
-                            format_time(until)
-                        ),
-                    ));
+        let (lines, lyrics_file) = match wire.lyrics {
+            None => (None, None),
+            Some(Value::String(path)) => {
+                if path.is_empty() || path.len() > MAX_PATH_BYTES {
+                    return Err(invalid("lyrics", "a lyrics file path is 1..=4096 bytes"));
                 }
+                (None, Some(path))
             }
-            if let Some(previous) = lines.last() {
-                // Ascending rather than sorted for the author. A line listed
-                // out of order is almost always a mistyped minute, and sorting
-                // it into place would time the wrong words confidently.
-                if at < previous.at {
-                    return Err(invalid(
-                        &place,
-                        format!(
-                            "starts before the line ahead of it ({}); lines are \
-                             listed in singing order",
-                            format_time(previous.at)
-                        ),
-                    ));
-                }
+            Some(value @ Value::Array(_)) => {
+                // A shape error inside the list is the same kind of error it
+                // was when the list was typed directly: a JSON one.
+                let wire_lyrics: Vec<LyricWire> = serde_json::from_value(value)
+                    .map_err(|error| TreatmentError::Json(format!("lyrics: {error}")))?;
+                let timed: Vec<(Value, Option<Value>, String)> = wire_lyrics
+                    .into_iter()
+                    .map(|line| (line.at, line.until, line.text))
+                    .collect();
+                (Some(parse_lyric_lines("lyrics", &timed)?), None)
             }
-            lyrics::validate_text(&line.text).map_err(|error| {
-                invalid(
-                    &place,
-                    format!(
-                        "text is not usable ({error}); a line is 1..={} bytes",
-                        lyrics::TEXT_MAX_BYTES
-                    ),
-                )
-            })?;
-            lines.push(LyricLine {
-                at,
-                until,
-                text: line.text.clone(),
-            });
-        }
+            Some(_) => {
+                return Err(invalid(
+                    "lyrics",
+                    "must be a list of lines or the path of an aligned-lyrics file",
+                ))
+            }
+        };
 
         let wire_events = wire.events.as_deref().unwrap_or(&[]);
         if wire_events.len() > crate::scene::events::TIMELINE_CAPACITY {
@@ -695,9 +697,48 @@ impl Treatment {
             route_count,
             segments,
             outro,
-            lyrics: wire.lyrics.is_some().then_some(lines),
+            lyrics: lines,
+            lyrics_file,
             events: wire.events.is_some().then_some(events),
         })
+    }
+
+    /// The aligned-lyrics file the treatment's `lyrics` names, relative to the
+    /// treatment, when it names one instead of listing lines.
+    #[must_use]
+    pub fn lyrics_file(&self) -> Option<&str> {
+        self.lyrics_file.as_deref()
+    }
+
+    /// Reads the lines out of an aligned-lyrics file's bytes (MV9-g) and
+    /// returns the audio digest the file was aligned against, if it names one,
+    /// for the caller to check against the track.
+    ///
+    /// # Errors
+    ///
+    /// The same refusals inline lines get, named by place in the file, plus a
+    /// wrong schema.
+    pub fn attach_lyrics(&mut self, bytes: &[u8]) -> Result<Option<String>, TreatmentError> {
+        let place = self.lyrics_file.clone().unwrap_or_else(|| "lyrics".into());
+        let wire: AlignedWire = serde_json::from_slice(bytes)
+            .map_err(|error| invalid(&place, format!("not an aligned-lyrics file: {error}")))?;
+        if wire.schema != ALIGNED_LYRICS_SCHEMA {
+            return Err(invalid(
+                &place,
+                format!(
+                    "schema {:?}; expected {ALIGNED_LYRICS_SCHEMA:?}",
+                    wire.schema
+                ),
+            ));
+        }
+        let timed: Vec<(Value, Option<Value>, String)> = wire
+            .lines
+            .into_iter()
+            .map(|line| (line.at, line.until, line.text))
+            .collect();
+        self.lyrics = Some(parse_lyric_lines(&place, &timed)?);
+        self.lyrics_file = None;
+        Ok(wire.audio_sha256)
     }
 
     /// How many sections the treatment has. Never zero.
@@ -722,6 +763,12 @@ impl Treatment {
     pub fn compile(&self, duration_seconds: f64) -> Result<CompiledTreatment, TreatmentError> {
         if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
             return Err(invalid("audio", "the track has no usable duration"));
+        }
+        if let Some(file) = &self.lyrics_file {
+            return Err(invalid(
+                "lyrics",
+                format!("names {file:?}, which has not been read"),
+            ));
         }
         let end = format_time(duration_seconds);
 
@@ -868,6 +915,73 @@ impl Treatment {
 }
 
 // -- field parsers ---------------------------------------------------------------
+
+/// Validates timed lines, wherever they came from: inline or an aligned file.
+fn parse_lyric_lines(
+    root: &str,
+    wire_lyrics: &[(Value, Option<Value>, String)],
+) -> Result<Vec<LyricLine>, TreatmentError> {
+    if wire_lyrics.len() > lyrics::CUE_CAPACITY {
+        return Err(invalid(
+            root,
+            format!(
+                "at most {} lines, this treatment has {}",
+                lyrics::CUE_CAPACITY,
+                wire_lyrics.len()
+            ),
+        ));
+    }
+    let mut lines: Vec<LyricLine> = Vec::with_capacity(wire_lyrics.len());
+    for (index, (at_value, until_value, text)) in wire_lyrics.iter().enumerate() {
+        let at = parse_time(&format!("{root}[{index}].at"), at_value)?;
+        let place = format!("{root}[{index}] ({})", format_time(at));
+        let until = until_value
+            .as_ref()
+            .map(|value| parse_time(&format!("{place}.until"), value))
+            .transpose()?;
+        if let Some(until) = until {
+            if until < at + MIN_LYRIC_SECONDS {
+                return Err(invalid(
+                    &place,
+                    format!(
+                        "`until` ({}) must be at least {MIN_LYRIC_SECONDS} s after `at`",
+                        format_time(until)
+                    ),
+                ));
+            }
+        }
+        if let Some(previous) = lines.last() {
+            // Ascending rather than sorted for the author. A line listed
+            // out of order is almost always a mistyped minute, and sorting
+            // it into place would time the wrong words confidently.
+            if at < previous.at {
+                return Err(invalid(
+                    &place,
+                    format!(
+                        "starts before the line ahead of it ({}); lines are \
+                         listed in singing order",
+                        format_time(previous.at)
+                    ),
+                ));
+            }
+        }
+        lyrics::validate_text(text).map_err(|error| {
+            invalid(
+                &place,
+                format!(
+                    "text is not usable ({error}); a line is 1..={} bytes",
+                    lyrics::TEXT_MAX_BYTES
+                ),
+            )
+        })?;
+        lines.push(LyricLine {
+            at,
+            until,
+            text: text.clone(),
+        });
+    }
+    Ok(lines)
+}
 
 /// A palette lock (MV9-b): a palette's name alone (`"night-door"`, at the
 /// default strength), `"none"`, or an object —
@@ -2639,6 +2753,58 @@ mod tests {
         assert!(refuse("", r#","finish":"glossy""#).contains("not a finish"));
         assert!(refuse("", r#","finish":{"grain":3}"#).contains("outside 0..1"));
         assert!(refuse("", r#","finish":{"sparkle":1}"#).contains("unknown field"));
+    }
+
+    #[test]
+    fn lyrics_can_come_from_an_aligned_file_named_by_path() {
+        let mut treatment = parse(
+            r#"{"schema":"musializer.treatment/v1","lyrics":"song.lyrics.json",
+                "segments":[{"at":0,"scene":"cadence"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(treatment.lyrics_file(), Some("song.lyrics.json"));
+        let unread = treatment.compile(60.0).unwrap_err().to_string();
+        assert!(unread.contains("has not been read"), "{unread}");
+
+        let aligned = br#"{"schema":"musializer.aligned-lyrics/v1","audio_sha256":"ab",
+            "source":{"lyrics":"embedded:lyrics-eng"},
+            "lines":[{"at":1.0,"end":2.0,"until":2.5,"text":"one","score":0.9},
+                     {"at":3.0,"end":4.0,"until":5.0,"text":"two","score":0.2}]}"#;
+        assert_eq!(
+            treatment.attach_lyrics(aligned).unwrap().as_deref(),
+            Some("ab")
+        );
+        let compiled = treatment.compile(60.0).unwrap();
+        assert_eq!(compiled.summary.lyrics, Some(2));
+        let cues = compiled.lyrics.unwrap();
+        assert_eq!(cues.cues()[1].start_seconds, 3.0);
+        assert_eq!(cues.cues()[1].end_seconds, 5.0);
+
+        // A wrong schema, and a line out of order, are refused by place.
+        let mut again = parse(
+            r#"{"schema":"musializer.treatment/v1","lyrics":"x.json","segments":[{"at":0,"scene":"cadence"}]}"#,
+        )
+        .unwrap();
+        let schema = again
+            .attach_lyrics(br#"{"schema":"other","lines":[]}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            schema.contains("x.json") && schema.contains("aligned-lyrics/v1"),
+            "{schema}"
+        );
+        let order = again
+            .attach_lyrics(
+                br#"{"schema":"musializer.aligned-lyrics/v1","lines":[{"at":5,"text":"b"},{"at":1,"text":"a"}]}"#,
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            order.contains("x.json[1]") && order.contains("singing order"),
+            "{order}"
+        );
+        assert!(refusal(r#"{"schema":"musializer.treatment/v1","lyrics":7,"segments":[{"at":0,"scene":"atlas"}]}"#)
+            .contains("list of lines or the path"));
     }
 
     #[test]
