@@ -150,7 +150,7 @@ a CX ruling, not a preference.
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 | 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
-| 10 | **The compositor's work, moved into the renderer** — a, b, c, d, f, g landed 2026-10-21; the rest are small follow-ups | MV9-e, h, i, j, k | small each |
+| 10 | **The compositor's work, moved into the renderer** — all of MV9 landed 2026-10-21; editing it in the window is the one follow-up | MV9-l | medium, UI |
 
 ### The items, in one line each
 
@@ -364,11 +364,10 @@ one real video with it found these, each from a contact sheet:
 - **MV3 — transitions**, landed 2026-10-12: twelve kinds, an intro out of
   black and an outro into it, authored in a treatment, saved in the `.musi`,
   drawn by preview and export alike (`docs/MUSIC_VIDEO_CLI.md`). Still open:
-  - **MV3-a — nothing in the window shows or edits them.** The scene lane
-    draws a section boundary the same whether it cuts or burns. A cue's
-    transition wants a mark on the boundary and a picker; the outro wants one
-    at the end of the lane. Until then a project that has them says so nowhere
-    on screen, which is the state "missing beats pretending" exists to prevent.
+  - **MV3-a — nothing in the window edits them.** Since MV9-k the scene
+    lane shows each segment's transition as a light band across its length
+    and the outro as a dark band; a picker on the boundary is still open
+    (with MV9-l).
   - **MV3-b — the outgoing picture is a held frame.** Invisible under half a
     second, visible in a long dissolve out of a busy scene. Two live scenes
     need a second settings table, a second route evaluation and scene state
@@ -407,23 +406,13 @@ one real video with it found these, each from a contact sheet:
     it wants named buttons.
 
 - **MV9 — the "Door, No Room" compositor's work, moved into the renderer.**
-  a (finish), b (grade), c (glide), d (threshold with a live nested scene),
-  f (caption entrance) and g (`tools/align_lyrics.py`, lyrics by path) landed
-  2026-10-21; the record is in the archive under MV9. Still open:
-  - **MV9-e — a `portal` transition kind**: the door shape over any section
-    change. Lower value now that the threshold walks into a scene.
-  - **MV9-h — a per-line `voice` tag** driving palette. A director's
-    statement, not an inference: the listening relay's voice assignment was
-    inconsistent across three choruses.
-  - **MV9-i — transitions longer than 8 s.** A long intro is threshold
-    sections with glides instead, so this may close as not needed.
-  - **MV9-j — the doorway's scene is tuned only by the `scenes` block.** It
-    has no section of its own while nested, so a section of the same scene
-    after the cut must repeat that tuning or the cut shows a jump. Tuning it
-    from its nearest section (as its grade already is) would remove the rule.
-  - **MV9-k — nothing in the window shows grades, glides, the finish or the
-    threshold's beyond.** Same shape as MV3-a: a project that has them says so
-    nowhere on screen.
+  Landed 2026-10-21 in full (a–k; the record is in the archive under MV9).
+  One follow-up stays open:
+  - **MV9-l — authoring the look in the window.** Grades, glides, the finish,
+    voices, a threshold's beyond and transitions come from a treatment; the
+    scene lane now *shows* all of them (MV9-k) but nothing edits them. Wants
+    a segment inspector, which is UI the operator called horrible outside the
+    main screen and said they barely use — so lowest priority.
 
 One measurement for **LT2**, from the same session and not yet acted on: on a
 3:59 track with an embedded 27-line sheet, the normal local route

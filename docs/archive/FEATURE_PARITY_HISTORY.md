@@ -4835,7 +4835,37 @@ married to the musializer's current UI and functionalities, I barely use it
   restarted instance is the same picture — and the gate was moved to Loom,
   which keeps the cloth it weaves. A check that cannot fail was passing.
 
-**Left open** (in the queue): MV9-e portal transition, MV9-h voice tags,
-MV9-i long transitions, MV9-j nested tuning from the nearest section, MV9-k
-nothing in the window shows any of it.
+**The second half, the same day** (operator: "Feel free to go ahead with the
+still open stuff ;)").
+
+- **MV9-j** (`7566e91`): the doorway's scene wears its nearest section's
+  tuning and routes, overlaid on the frame's table in `App::frame_settings` /
+  `routed_settings`, so a section after the cut needs no repeated tuning. The
+  gate's Loom moved its tuning onto its own section; with the overlay removed
+  (scratch binary, reverted) the doorway-to-beyond check fell from 10.4 dB
+  over the control to 6.0 and failed, and its bound went from 6 to 8 dB.
+- **MV9-i** (`ba42f79`): transitions up to 30 s (were 8).
+- **MV9-e** (`e26d5d5`): `portal`, kind 13 — a door of light opens in the held
+  picture and the camera rushes through it. The first version left both jambs
+  standing at the frame's edges after the cut (its final opening was narrower
+  than a 16:9 frame); it now ends 1.36 half-widths wide. Gate: a portal intro
+  draws its door, 45.6 luma against 2.4 in the corner.
+- **MV9-h** (`d1a0969`): named voices on the lyrics document and a voice per
+  line; Cadence's type and Stage's accent take the voice's colour, the caption
+  its ink and glow. Two defects found by the first contact sheet, both worth
+  keeping: the voices vanished between treatment and frame because
+  `LyricsDocument::replace` and `normalize_duration` copy cue lists and did
+  not know about them (the reason assignments live beside the cues, keyed by
+  id, rather than on `LyricCue`, whose 54 construction sites would each have
+  been one more place to forget); and one hue *offset* painted one voice
+  lavender in Cadence and red in Stage, because each scene's offset starts at
+  a different colour — so a voice's hue is absolute and each scene maps it
+  from its own base (Cadence's ink 323°, Stage's accent 68°).
+- **MV9-k** (`20b3709`): the scene lane draws each segment's transition band,
+  glide ramp and palette strip, a dark band for the outro, and a selected
+  segment's details (a threshold's beyond among them) in the name field;
+  `scene marks:` counts them. On the native Door project: `graded=34
+  glides=7 transitions=25 outro=fade finish=on`.
+
+**Left open:** MV9-l, editing any of it in the window.
 
