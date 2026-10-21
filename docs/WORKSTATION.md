@@ -1,0 +1,144 @@
+# WX — the window as a directing workstation
+
+Opened 2026-10-21. The operator opened "Door, No Room" in the window, said the
+interface was ugly ("MAN IS THIS INTERFACE UGLY, WHAT WAS I THINKING :D"), and
+then asked for this:
+
+> maybe it's feasible to take inspiration from `pingdotgg/t3-code` and implement
+> Claude Code, Codex and Antigravity *into* the musializer main window. Or even
+> just having a terminal emulator in there to run coding agents next to the work
+> window would be good. … Best to split this into parts, set up a planning file,
+> and progress through it :)
+
+Earlier the same day they said they barely use the window by hand any more and
+are "not married to the musializer's current UI". Videos are now directed by
+agents writing treatments (`docs/MUSIC_VIDEO_CLI.md`). So the window's job
+changes. It used to be a dense editor. Now it is where you **watch** a video
+being directed and **talk** to whoever directs it. Editing by hand stays
+possible, but it is no longer the main thing the window is for.
+
+The queue row is WX in `FEATURE_PARITY_PLAN.md`. This file is the design record
+and the status of each part.
+
+## The mockup (WX-0)
+
+`build/wx/make_mock.py` writes `build/wx/wx_mockup.html` and a 1640 px
+screenshot. It uses real frames, the real 70-section plan and the real lyric
+timing of Door, No Room. It is a direction, not a pixel spec:
+
+- **One accent, meaning "now".** The playhead, the current section and the
+  primary action. Today the same amber marks the track, the selected scene,
+  Auto, the waveform and the progress bar, so nothing stands out.
+- **The preview is the largest thing on screen.** The tracks sidebar and its
+  mostly empty panel become a narrow rail with flyouts.
+- **The plan lane shows runs.** Consecutive sections of one scene become one
+  block with a frame from that scene. A hairline marks each cut, a light edge
+  marks an arriving transition, and a bar underneath shows the grade. In the
+  mockup, 70 sections read as 21 shapes instead of a barcode.
+- **The lyric lane carries its words; the waveform is grey** and warms where
+  it has played.
+- **A dock on the right**, with tabs for Claude, Codex, Antigravity and a
+  terminal.
+
+## Parts, in build order
+
+| Id | Part | Status |
+| --- | --- | --- |
+| WX-0 | Plan and mockup | done 2026-10-21 |
+| WX-1 | The dock: a right-hand region the workspace makes room for | open |
+| WX-2 | A real terminal in the dock | open |
+| WX-3 | The window follows a treatment file live | open |
+| WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | open |
+| WX-5 | The restyle the mockup proposes | open; wants the operator's reaction to the mockup |
+| WX-6 | A headless gate for all of it | grows with each part |
+
+### WX-1 — the dock
+
+- It sits beside the workspace. It is **not modal**, unlike the egui Editor.
+  The workspace lays itself out in a narrower window (`ShellInput.window`
+  loses the dock's width), so no panel is covered and no hit test changes.
+- It is egui, drawn in the same pass as the Editor and the welcome theme
+  picker. There is one egui pass per frame, whatever is open.
+- **Keyboard ownership is explicit.** While a dock surface has focus, every
+  shell global stands down: Space, the arrows, `T`/`M`/`S`/`F`/`H`, Enter and
+  Escape. A terminal is useless if Space pauses the song. A click anywhere in
+  the workspace hands the keyboard back.
+- It is toggled by a toolbar button and `` Ctrl+` ``. It can be resized by
+  dragging its left edge. Whether it is open, and its width, persist in
+  `ui.json`.
+
+### WX-2 — the terminal
+
+- `alacritty_terminal` provides the VT state machine and the PTY. Rendering is
+  ours: one egui galley per row, in egui's bundled monospace face. Alacritty's
+  terminal crate is what `egui_term` and Zed's terminal are built on. Writing
+  our own VT parser would mean rediscovering 30 years of escape-code edge
+  cases.
+- The terminal runs `$SHELL` in the **project's folder** (or the track's
+  folder, or `$HOME`). It sets `MUSIALIZER_PROJECT`, `MUSIALIZER_TRACK`,
+  `MUSIALIZER_TREATMENT` when one is followed, and `MUSIALIZER_BIN`, so an
+  agent started in it knows what the window is showing.
+- It has tabs, scrollback, wheel scrolling (arrow keys in the alternate screen,
+  as alacritty does), selection and copy (`Ctrl+Shift+C`), and paste
+  (`Ctrl+Shift+V`).
+- On close and on quit, the PTY's process group gets `SIGHUP` and is reaped.
+  Agents run inside the terminal, so no stray agent outlives the window.
+
+### WX-3 — live treatment
+
+The useful loop: an agent edits a treatment in the dock, and the preview shows
+it at once.
+
+- When a session is started with `--treatment FILE`, the window **follows**
+  that file. When its modification time changes, the file is recompiled and
+  applied to the open track. The playhead, play state and selection stay where
+  they are.
+- A treatment that fails to compile changes nothing. The refusal goes to the
+  notice tray, naming the field the same way the CLI does. The last good state
+  stays on screen.
+- The dock header shows the file being followed and when it was last applied.
+
+### WX-4 — native agent sessions
+
+Each of the three CLIs installed here speaks a structured protocol over stdio.
+That is how t3-code drives them, so the dock can host them without running a
+TUI inside a terminal:
+
+| Agent | Transport |
+| --- | --- |
+| Claude Code | `claude -p --input-format stream-json --output-format stream-json --verbose` |
+| Antigravity | `agy -p --input-format stream-json --output-format stream-json` (the same NDJSON shape) |
+| Codex | `codex app-server` (JSON-RPC over stdio) |
+
+- The transcript model lives in `musializer-core`: pure, and fed by recorded
+  streams in tests. The process lives in `musializer-runtime`, under the
+  existing supervise-and-reap machinery. The chat view lives in the app.
+- Context chips attach the playhead, the selected section and the followed
+  treatment to a message. A short system note points the agent at
+  `docs/MUSIC_VIDEO_CLI.md` and `tools/headless_run.sh`.
+- A tool call shows as a one-line chip. Edits to the followed treatment
+  trigger WX-3 by themselves; nothing extra is needed.
+- Permissions: sessions start in the project folder, in the CLI's
+  edit-accepting mode, without the dangerous skip flags. A permission prompt
+  the protocol surfaces becomes an Allow / Deny row in the chat.
+- **Credentials are never seen here.** Each CLI uses its own login. The
+  OpenRouter E1 scrub (`runtime::assist::env`) already keeps the app's own key
+  out of children.
+
+### WX-5 — the restyle
+
+What the mockup shows, moved onto egui panel by panel, through the command
+boundary `docs/UI_TOOLKIT.md` describes. This overlaps with the open toolkit
+follow-through and with CX-5 (scene thumbnails). Order: the colour and type
+tokens first (visible everywhere, cheap), then the plan lane, then the rail.
+
+### WX-6 — gate
+
+`tools/dock_check.sh`, using the gate's usual isolation. The terminal runs a
+scripted `/bin/sh` command, and the capture is checked for its output and its
+colours. Agent sessions run against **fake agent executables** that replay
+recorded NDJSON. The gate never starts a real agent and never spends credits.
+
+## Decisions recorded along the way
+
+(Appended as parts land.)

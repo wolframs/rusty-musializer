@@ -20,6 +20,7 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 - [`OPENAI_KNOT.md`](OPENAI_KNOT.md) — procedural weave, audio response and muted scene checks.
 
 - [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — toolkit editor, appearance, migration boundary and real-input checks.
+- [`WORKSTATION.md`](WORKSTATION.md) — WX: the dock, the terminal, native agent sessions, live treatments and the restyle; parts and status.
 - [`RAYLIB_6_UPGRADE.md`](RAYLIB_6_UPGRADE.md) — raylib provenance and compatibility changes.
 
 - [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md) — crate boundaries, state
