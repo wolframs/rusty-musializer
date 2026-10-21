@@ -241,9 +241,11 @@ on the first section opens it.
 | `ripple` | A ring of light spreads from the centre and carries the old picture off |
 | `dip` | Down to black and back up, half **before** the change and half after |
 
-`--vocabulary` prints the same list under `transitions`. Lengths run 0.05 to 8
+`--vocabulary` prints the same list under `transitions`. Lengths run 0.05 to 30
 seconds, and a transition never outlasts the section it brings in: asked for
-two seconds into a one-second section, it gets the one.
+two seconds into a one-second section, it gets the one. Long ones belong out of
+black — the intro and the outro — or under a slow `fade`: anywhere else the
+outgoing picture is a still frame for that long (see below).
 
 Three things to know before trusting one:
 

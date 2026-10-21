@@ -1127,7 +1127,7 @@
         "seconds": {
           "type": "number",
           "minimum": 0.05,
-          "maximum": 8
+          "maximum": 30
         }
       },
       "description": "How a section arrives, or how the track ends. Post-legacy (2026-10-12); a cut is spelled by omitting the member, so projects without transitions are unchanged."

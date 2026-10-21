@@ -22,7 +22,12 @@
 use std::fmt;
 
 /// Longest transition a plan may ask for, in seconds.
-pub const MAX_SECONDS: f32 = 8.0;
+///
+/// Was 8 until 2026-10-21 (MV9-i): a spoken intro wanted 25 s out of black.
+/// Raising a bound loads every file that loaded before. A long transition
+/// out of a *held* frame shows a still picture for that long — fine out of
+/// black, at the very start or end, or under a slow dissolve; the guide says so.
+pub const MAX_SECONDS: f32 = 30.0;
 /// Shortest one that is still a transition rather than a cut.
 pub const MIN_SECONDS: f32 = 0.05;
 /// What a kind runs for when the author names it and gives no length.
@@ -454,7 +459,11 @@ mod tests {
         assert!(Transition::CUT.is_valid());
         assert!(Transition::new(TransitionKind::Fade, 0.6).is_valid());
         assert!(!Transition::new(TransitionKind::Fade, 0.0).is_valid());
-        assert!(!Transition::new(TransitionKind::Fade, 9.0).is_valid());
+        assert!(
+            Transition::new(TransitionKind::Fade, 24.0).is_valid(),
+            "a long intro (MV9-i)"
+        );
+        assert!(!Transition::new(TransitionKind::Fade, 31.0).is_valid());
         assert!(!Transition::new(TransitionKind::Fade, f32::NAN).is_valid());
     }
 

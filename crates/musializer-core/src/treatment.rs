@@ -2894,7 +2894,7 @@ mod tests {
             unknown.contains("is not a transition") && unknown.contains("burn"),
             "{unknown}"
         );
-        assert!(refuse("{\"kind\":\"burn\",\"seconds\":30}").contains("outside"));
+        assert!(refuse("{\"kind\":\"burn\",\"seconds\":31}").contains("outside"));
         assert!(refuse("{\"kind\":\"burn\",\"length\":1}").contains("unknown field"));
         assert!(refuse("{\"seconds\":1}").contains("kind"));
         assert!(refuse("7").contains("must be a transition's name"));
