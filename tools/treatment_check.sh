@@ -296,6 +296,14 @@ run --treatment "$OUT/plain.treatment.json" --still 8 "$OUT/plain-beyond.png" \
     --still 1.15 "$OUT/plain-entering.png" > "$OUT/plain.log" 2>&1
 run --treatment "$OUT/continuous.treatment.json" --still 8 "$OUT/continuous-beyond.png" \
     > "$OUT/continuous.log" 2>&1
+# The portal out of black: a lit doorway in the dark a second in.
+cat > "$OUT/portal.treatment.json" <<'EOF'
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 30, "quality": "balanced" },
+  "segments": [ { "at": 0, "scene": "loom", "transition": { "kind": "portal", "seconds": 4 } } ] }
+EOF
+run --treatment "$OUT/portal.treatment.json" --still 1 "$OUT/portal.png" \
+    > "$OUT/portal.log" 2>&1
 run --project "$OUT/look.musi" --save-project "$OUT/look-again.musi" \
     > "$OUT/look-reopen.log" 2>&1
 

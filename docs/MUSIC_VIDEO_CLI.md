@@ -240,6 +240,7 @@ on the first section opens it.
 | `blinds` | Vertical blinds turn open |
 | `ripple` | A ring of light spreads from the centre and carries the old picture off |
 | `dip` | Down to black and back up, half **before** the change and half after |
+| `portal` | A door of light opens in the old picture and the camera rushes through it; out of black, a lit doorway opening on the video. Its door is framed where the `threshold` scene puts its own |
 
 `--vocabulary` prints the same list under `transitions`. Lengths run 0.05 to 30
 seconds, and a transition never outlasts the section it brings in: asked for
@@ -448,8 +449,6 @@ Said here so nobody looks for a flag:
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
-- A `portal` transition (the door shape over any change) and transitions longer
-  than 8 s. A long intro is a few threshold sections with glides instead.
 - A per-line `voice` that picks a palette.
 - Authoring a transition in the window. They come from a treatment, are saved
   in the `.musi` and play in the preview, and no panel shows or edits them yet.

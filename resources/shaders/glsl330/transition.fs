@@ -223,6 +223,35 @@ void main()
         color = held(q)*(1.0 + wave*0.8);
         cover = smoothstep(front - 0.06, front + 0.02, d);
         glow = vec3(0.75, 0.9, 1.0)*wave*0.3*sin(t*3.14159);
+    } else if (k == 13) {
+        // portal (MV9-e): a door of light opens in the old picture and the
+        // camera rushes through it. The door is a portrait rectangle a little
+        // above centre, as the threshold scene frames its doorway; the held
+        // picture zooms toward it while the opening grows faster than the
+        // zoom, so the cut lands on the new scene filling the frame. The
+        // opening ends wider than any frame shape (2.9 half-heights is 1.36
+        // half-widths, past a 16:9 frame's 0.89), or its jambs would linger.
+        float e = pow(t, 2.2);
+        vec2 doorCentre = vec2(0.0, 0.03);
+        float halfHeight = mix(0.16, 2.9, e);
+        float halfWidth = halfHeight*0.47;
+        vec2 d = c - doorCentre;
+        // Push: the old picture scales up about the door.
+        vec2 q = 0.5 + doorCentre*vec2(1.0/aspect, 1.0) + (p - 0.5 - doorCentre*vec2(1.0/aspect, 1.0))/(1.0 + 1.6*e);
+        color = held(q);
+        float dx = abs(d.x) - halfWidth;
+        float dy = abs(d.y) - halfHeight;
+        float outside = max(dx, dy);
+        float soft = 0.004 + 0.01*e;
+        cover = smoothstep(-soft, soft, outside);
+        // Light from beyond: a warm lip on the frame, a glow spilling onto the
+        // old picture around it, and haze inside that thins as the way opens.
+        float rim = exp(-pow(outside/0.012, 2.0));
+        float spill = exp(-max(outside, 0.0)/0.18)*cover;
+        vec3 warm = vec3(1.0, 0.86, 0.58);
+        color = mix(color, color + warm*0.35, spill*(1.0 - e));
+        float haze = (1.0 - cover)*(1.0 - smoothstep(0.0, 0.7, t))*exp(-pow(d.x/(halfWidth + 0.001), 2.0)*1.5);
+        glow = warm*(rim*0.9*(1.0 - e) + haze*0.8);
     } else {
         // cut, dip (resolved to a fade before it gets here) and anything
         // unknown: nothing held.

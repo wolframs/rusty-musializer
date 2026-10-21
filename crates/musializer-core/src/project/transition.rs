@@ -66,11 +66,14 @@ pub enum TransitionKind {
     Blinds = 11,
     /// A ring of light ripples out from the centre and takes the picture with it.
     Ripple = 12,
+    /// A door of light opens in the picture and the camera rushes through it
+    /// (post-legacy, MV9-e).
+    Portal = 13,
 }
 
 impl TransitionKind {
     /// Every kind, in shader order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Cut,
         Self::Fade,
         Self::Flash,
@@ -84,6 +87,7 @@ impl TransitionKind {
         Self::Dip,
         Self::Blinds,
         Self::Ripple,
+        Self::Portal,
     ];
 
     /// The persisted token, and the one a treatment names.
@@ -103,6 +107,7 @@ impl TransitionKind {
             Self::Dip => "dip",
             Self::Blinds => "blinds",
             Self::Ripple => "ripple",
+            Self::Portal => "portal",
         }
     }
 
@@ -137,6 +142,10 @@ impl TransitionKind {
             Self::Blinds => "Vertical blinds turn open onto the new picture.",
             Self::Ripple => {
                 "A ring of light spreads from the centre and carries the old picture off."
+            }
+            Self::Portal => {
+                "A door of light opens in the old picture and the camera rushes through \
+                 it onto the new one. Out of black, a lit doorway opening on the video."
             }
         }
     }

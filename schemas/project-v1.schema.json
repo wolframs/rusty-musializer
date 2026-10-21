@@ -1121,7 +1121,8 @@
             "pixel",
             "dip",
             "blinds",
-            "ripple"
+            "ripple",
+            "portal"
           ]
         },
         "seconds": {

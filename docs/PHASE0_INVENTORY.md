@@ -1060,7 +1060,7 @@ numbers, `maxItems 12`, default `[]`, "Empty only for early v1 projects").
 **Post-legacy (2026-10-12, MV3):** a cue may carry `transition` and the block
 may carry `outro`, both a **`scene_transition`**: required `kind` (one of
 `fade`, `flash`, `wipe`, `iris`, `zoom`, `slices`, `glitch`, `burn`, `pixel`,
-`dip`, `blinds`, `ripple`) and `seconds` (0.05..30; 0.05..8 before 2026-10-21). A cut is spelled by leaving
+`dip`, `blinds`, `ripple`, and since 2026-10-21 `portal`) and `seconds` (0.05..30; 0.05..8 before 2026-10-21). A cut is spelled by leaving
 the member out and is never written, so a project with no transitions is
 byte-identical to one saved before they existed; an explicit `"cut"`, an unknown
 kind and a length out of bounds are refused. The frozen C cannot read a file

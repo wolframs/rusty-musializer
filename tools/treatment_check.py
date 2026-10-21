@@ -532,6 +532,17 @@ def check_look(out: Path) -> None:
     plain_entering = rgb(out / "plain-entering.png")
     print(f"look: a line 0.15 s into a 1 s entrance vs an instant caption: {psnr(entering, plain_entering):.1f} dB")
 
+    portal_line = report_line(read(out / "portal.log"), "transition")
+    check("last=portal@" in portal_line and "from black" in portal_line,
+          f"the portal did not composite: {portal_line!r}")
+    portal = rgb(out / "portal.png")
+    # The doorway and its lit frame, a second into a four-second portal out of
+    # black: the frame is the light (a black intro masks the haze inside).
+    doorway_luma = region_mean(portal, 260, 80, 120, 220)
+    corner_luma = region_mean(portal, 10, 10, 80, 60)
+    print(f"portal: doorway {doorway_luma:.1f}, corner {corner_luma:.1f}")
+    check(doorway_luma > corner_luma + 25.0, f"the portal opened no door: {doorway_luma:.1f} vs {corner_luma:.1f}")
+
     saved = read(out / "look.musi")
     for member in ('"grade":{"stops":', '"glide":2', '"finish":{"bloom":'):
         check(member in saved, f"the saved project lacks {member}")
