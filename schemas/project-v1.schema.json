@@ -976,6 +976,16 @@
         "transition": {
           "$ref": "#/$defs/scene_transition",
           "description": "How this section arrives. On the first cue it plays out of black."
+        },
+        "grade": {
+          "$ref": "#/$defs/scene_grade",
+          "description": "The palette this section is held to (post-legacy, MV9-b). Omitted when there is none."
+        },
+        "glide": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "description": "Seconds over which this section's tuning eases in from the section before it when both are the same scene (post-legacy, MV9-c). Omitted when zero."
         }
       }
     },
@@ -1000,6 +1010,10 @@
         "outro": {
           "$ref": "#/$defs/scene_transition",
           "description": "Played backwards into black over the final seconds of the track."
+        },
+        "finish": {
+          "$ref": "#/$defs/finish",
+          "description": "The finish over every frame of the track (post-legacy, MV9-a). Omitted when there is none."
         }
       },
       "description": "Suggested scene sequence. Nonempty cues form contiguous full-duration coverage; enabled is the durable user opt-in."
@@ -1105,6 +1119,111 @@
         }
       },
       "description": "How a section arrives, or how the track ends. Post-legacy (2026-10-12); a cut is spelled by omitting the member, so projects without transitions are unchanged."
+    },
+    "scene_grade": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stops",
+        "map",
+        "shift_from",
+        "shift_by",
+        "shift_width"
+      ],
+      "properties": {
+        "stops": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{6}$"
+          },
+          "description": "Gradient colours, darkest first, evenly spaced."
+        },
+        "map": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "shift_from": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 360
+        },
+        "shift_by": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "shift_width": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 90
+        }
+      },
+      "description": "A luminance gradient map mixed over the section's picture by map, and a selective hue turn. Post-legacy (2026-10-21)."
+    },
+    "finish": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bloom",
+        "bloom_threshold",
+        "bloom_radius",
+        "shoulder",
+        "tone",
+        "shadow_rgb",
+        "highlight_rgb",
+        "vignette",
+        "grain"
+      ],
+      "properties": {
+        "bloom": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "bloom_threshold": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "bloom_radius": {
+          "type": "number",
+          "minimum": 0.002,
+          "maximum": 0.08
+        },
+        "shoulder": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "tone": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "shadow_rgb": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{6}$"
+        },
+        "highlight_rgb": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{6}$"
+        },
+        "vignette": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "grain": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "description": "Bloom, split toning, vignette, highlight shoulder and grain over every frame. Post-legacy (2026-10-21); never written when every strength is zero."
     }
   }
 }

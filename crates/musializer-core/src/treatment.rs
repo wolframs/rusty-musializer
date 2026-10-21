@@ -49,6 +49,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::project::event_timeline::EventTimeline;
+use crate::project::look::{self, Finish, Grade, Palette};
 use crate::project::lyrics::{self, CueOrigin, LyricCue, LyricsDocument};
 use crate::project::model::{
     caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, EffectDrive,
@@ -150,6 +151,9 @@ struct TreatmentWire {
     /// How the track ends: a transition kind played backwards into black.
     #[serde(default)]
     outro: Option<Value>,
+    /// The finish over every frame (MV9-a): `"film"`, or an object.
+    #[serde(default)]
+    finish: Option<Value>,
     #[serde(default)]
     lyrics: Option<Vec<LyricWire>>,
     #[serde(default)]
@@ -182,6 +186,10 @@ struct SceneWire {
     settings: BTreeMap<String, Value>,
     #[serde(default)]
     routes: Vec<Value>,
+    /// The palette every section of this scene is held to unless the section
+    /// says otherwise (MV9-b).
+    #[serde(default)]
+    grade: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,6 +202,13 @@ struct SegmentWire {
     /// How this section arrives. On the first section it is the video's intro.
     #[serde(default)]
     transition: Option<Value>,
+    /// This section's palette lock; `"none"` clears its scene's (MV9-b).
+    #[serde(default)]
+    grade: Option<Value>,
+    /// Seconds over which this section's tuning eases in from the section
+    /// before it, when that is the same scene (MV9-c).
+    #[serde(default)]
+    glide: Option<Value>,
     #[serde(default)]
     #[allow(dead_code)]
     note: Option<Value>,
@@ -338,6 +353,8 @@ struct Segment {
     /// per-scene base, then this segment's own overrides.
     settings: SceneSettings,
     transition: Transition,
+    grade: Option<Grade>,
+    glide: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -363,6 +380,9 @@ pub struct Treatment {
     pub seed: Option<u64>,
     /// `None` leaves the track's own style alone.
     pub caption_style: Option<CaptionStyle>,
+    /// The finish over every frame (MV9-a). A treatment's plan replaces the
+    /// track's, and so does its finish: absent is no finish.
+    pub finish: Finish,
     scene_settings: SceneSettings,
     scene_routes: RouteTable,
     route_count: usize,
@@ -459,9 +479,15 @@ impl Treatment {
         let mut scene_settings = SceneSettings::new();
         let mut scene_routes = RouteTable::new();
         let mut route_count = 0usize;
+        let mut scene_grades: BTreeMap<SceneId, Grade> = BTreeMap::new();
         for (name, block) in &wire.scenes {
             let place = format!("scenes.{name}");
             let scene = resolve_scene(&place, name)?;
+            if let Some(value) = &block.grade {
+                if let Some(grade) = parse_grade(&format!("{place}.grade"), value)? {
+                    scene_grades.insert(scene, grade);
+                }
+            }
             apply_settings(
                 &format!("{place}.settings"),
                 scene,
@@ -531,16 +557,30 @@ impl Treatment {
                 Some(value) => parse_transition(&format!("{place}.transition"), value)?,
                 None => Transition::CUT,
             };
+            let grade = match &segment.grade {
+                Some(value) => parse_grade(&format!("{place}.grade"), value)?,
+                None => scene_grades.get(&scene).copied(),
+            };
+            let glide = match &segment.glide {
+                Some(value) => parse_glide(&format!("{place}.glide"), value)?,
+                None => 0.0,
+            };
             segments.push(Segment {
                 at,
                 scene,
                 settings: table,
                 transition,
+                grade,
+                glide,
             });
         }
         let outro = match &wire.outro {
             Some(value) => parse_transition("outro", value)?,
             None => Transition::CUT,
+        };
+        let finish = match &wire.finish {
+            Some(value) => parse_finish("finish", value)?,
+            None => Finish::NONE,
         };
 
         let wire_lyrics = wire.lyrics.as_deref().unwrap_or(&[]);
@@ -649,6 +689,7 @@ impl Treatment {
             output,
             seed: wire.seed,
             caption_style,
+            finish,
             scene_settings,
             scene_routes,
             route_count,
@@ -712,6 +753,8 @@ impl Treatment {
                 strength: 1.0,
                 settings: snapshot,
                 transition: segment.transition,
+                grade: segment.grade,
+                glide: segment.glide,
             });
         }
         let mut scene_switches = SceneSwitchTimeline::new();
@@ -720,6 +763,7 @@ impl Treatment {
             .map_err(|error| invalid("segments", format!("the plan was refused: {error}")))?;
         scene_switches.enabled = true;
         scene_switches.outro = self.outro;
+        scene_switches.finish = self.finish;
 
         let mut document = LyricsDocument::new(duration_seconds)
             .map_err(|error| invalid("lyrics", error.to_string()))?;
@@ -824,6 +868,188 @@ impl Treatment {
 }
 
 // -- field parsers ---------------------------------------------------------------
+
+/// A palette lock (MV9-b): a palette's name alone (`"night-door"`, at the
+/// default strength), `"none"`, or an object —
+/// `{"palette": "ember" | ["#rrggbb", …], "map": 0.8, "shift_from": 125,
+/// "shift_by": 52, "shift_width": 32}` — every member optional but the palette.
+/// `None` is `"none"`: no grade, which also clears a scene-level one.
+fn parse_grade(place: &str, value: &Value) -> Result<Option<Grade>, TreatmentError> {
+    let palette_names = || Palette::ALL.map(Palette::name).join(", ");
+    let named = |name: &str| {
+        Palette::from_name(name).ok_or_else(|| {
+            invalid(
+                place,
+                format!(
+                    "\"{name}\" is not a palette; use one of {}, or a list of colours",
+                    palette_names()
+                ),
+            )
+        })
+    };
+    let grade = match value {
+        Value::String(name) if name == "none" => return Ok(None),
+        Value::String(name) => Grade::from_palette(named(name)?, DEFAULT_GRADE_MAP),
+        Value::Object(members) => {
+            let mut grade = match members.get("palette") {
+                Some(Value::String(name)) => Grade::from_palette(named(name)?, DEFAULT_GRADE_MAP),
+                Some(Value::Array(colours)) => {
+                    if !(look::MIN_STOPS..=look::MAX_STOPS).contains(&colours.len()) {
+                        return Err(invalid(
+                            format!("{place}.palette"),
+                            format!(
+                                "a palette has {}..={} colours, darkest first",
+                                look::MIN_STOPS,
+                                look::MAX_STOPS
+                            ),
+                        ));
+                    }
+                    let mut grade = Grade::from_palette(Palette::Mono, DEFAULT_GRADE_MAP);
+                    for (index, colour) in colours.iter().enumerate() {
+                        let text = colour.as_str().ok_or_else(|| {
+                            invalid(format!("{place}.palette[{index}]"), "must be \"#rrggbb\"")
+                        })?;
+                        let rgba = parse_rgba(&format!("{place}.palette[{index}]"), text)?;
+                        grade.stops[index] = rgba >> 8;
+                    }
+                    grade.stop_count = colours.len() as u8;
+                    grade
+                }
+                _ => {
+                    return Err(invalid(
+                        place,
+                        format!(
+                            "needs a \"palette\": one of {}, or a list of colours",
+                            palette_names()
+                        ),
+                    ))
+                }
+            };
+            for (key, member) in members {
+                let number = |bounds: (f32, f32)| -> Result<f32, TreatmentError> {
+                    let at = format!("{place}.{key}");
+                    let value = member
+                        .as_f64()
+                        .ok_or_else(|| invalid(&at, "must be a number"))?;
+                    Ok(bounded(&at, value, f64::from(bounds.0), f64::from(bounds.1))? as f32)
+                };
+                match key.as_str() {
+                    "palette" => {}
+                    "map" => grade.map = number(look::grade_bounds::MAP)?,
+                    "shift_from" => grade.shift_from = number(look::grade_bounds::SHIFT_FROM)?,
+                    "shift_by" => grade.shift_by = number(look::grade_bounds::SHIFT_BY)?,
+                    "shift_width" => grade.shift_width = number(look::grade_bounds::SHIFT_WIDTH)?,
+                    unknown => {
+                        return Err(invalid(
+                            place,
+                            format!(
+                                "unknown field \"{unknown}\"; a grade has palette, map, \
+                                 shift_from, shift_by and shift_width"
+                            ),
+                        ))
+                    }
+                }
+            }
+            grade
+        }
+        _ => {
+            return Err(invalid(
+                place,
+                "must be a palette's name, \"none\", or {\"palette\": ..., \"map\": ...}",
+            ))
+        }
+    };
+    if !grade.is_valid() {
+        return Err(invalid(place, "is outside its bounds"));
+    }
+    Ok(Some(grade))
+}
+
+/// What a grade named by palette alone maps at: most of the way, leaving a
+/// little of the music's own colour swing in the picture.
+pub const DEFAULT_GRADE_MAP: f32 = 0.82;
+
+/// A glide in seconds, `0..=30`.
+fn parse_glide(place: &str, value: &Value) -> Result<f32, TreatmentError> {
+    let seconds = value
+        .as_f64()
+        .ok_or_else(|| invalid(place, "must be a number of seconds"))?;
+    Ok(bounded(
+        place,
+        seconds,
+        0.0,
+        f64::from(scene_switch::MAX_GLIDE_SECONDS),
+    )? as f32)
+}
+
+/// The finish (MV9-a): `"film"`, `"none"`, or an object whose members are each
+/// optional and start from `"base"` (`"film"` or `"none"`, default none).
+fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
+    let base = |name: &str| match name {
+        "film" => Ok(Finish::FILM),
+        "none" => Ok(Finish::NONE),
+        other => Err(invalid(
+            place,
+            format!("\"{other}\" is not a finish; use \"film\", \"none\" or an object"),
+        )),
+    };
+    let finish = match value {
+        Value::String(name) => base(name)?,
+        Value::Object(members) => {
+            let mut finish = match members.get("base") {
+                Some(Value::String(name)) => base(name)?,
+                Some(_) => {
+                    return Err(invalid(
+                        format!("{place}.base"),
+                        "must be \"film\" or \"none\"",
+                    ))
+                }
+                None => Finish::NONE,
+            };
+            for (key, member) in members {
+                let at = format!("{place}.{key}");
+                let number = |bounds: (f32, f32)| -> Result<f32, TreatmentError> {
+                    let value = member
+                        .as_f64()
+                        .ok_or_else(|| invalid(&at, "must be a number"))?;
+                    Ok(bounded(&at, value, f64::from(bounds.0), f64::from(bounds.1))? as f32)
+                };
+                let colour = || -> Result<u32, TreatmentError> {
+                    let text = member
+                        .as_str()
+                        .ok_or_else(|| invalid(&at, "must be \"#rrggbb\""))?;
+                    Ok(parse_rgba(&at, text)? >> 8)
+                };
+                use look::finish_bounds::*;
+                match key.as_str() {
+                    "base" => {}
+                    "bloom" => finish.bloom = number(BLOOM)?,
+                    "bloom_threshold" => finish.bloom_threshold = number(BLOOM_THRESHOLD)?,
+                    "bloom_radius" => finish.bloom_radius = number(BLOOM_RADIUS)?,
+                    "shoulder" => finish.shoulder = number(UNIT)?,
+                    "tone" => finish.tone = number(UNIT)?,
+                    "shadow" => finish.shadow_rgb = colour()?,
+                    "highlight" => finish.highlight_rgb = colour()?,
+                    "vignette" => finish.vignette = number(UNIT)?,
+                    "grain" => finish.grain = number(UNIT)?,
+                    unknown => {
+                        return Err(invalid(
+                            place,
+                            format!(
+                                "unknown field \"{unknown}\"; a finish has base, bloom, \
+                                 bloom_threshold, bloom_radius, shoulder, tone, shadow, \
+                                 highlight, vignette and grain"
+                            ),
+                        ))
+                    }
+                }
+            }
+            finish
+        }
+        _ => return Err(invalid(place, "must be \"film\", \"none\" or an object")),
+    };
+    Ok(finish)
+}
 
 /// A transition: a kind's name alone (`"burn"`, at the default length), or
 /// `{"kind": "burn", "seconds": 0.8}`. `"cut"` is accepted and means none.
@@ -1543,6 +1769,51 @@ pub fn vocabulary() -> Value {
             "maximum_seconds": transition::MAX_SECONDS,
             "kinds": TransitionKind::ALL
                 .map(|kind| json!({ "name": kind.name(), "look": kind.look() })),
+        },
+        "look": {
+            "grade": {
+                "where": "a section's \"grade\", or a scene's in the \"scenes\" block, holds \
+                          the picture to a palette: its luminance mapped through the \
+                          palette's colours (darkest first) and mixed over the scene's own \
+                          colour by \"map\"; hues near \"shift_from\" turn by \"shift_by\". \
+                          Applied before the section's transition and under the caption.",
+                "spell": "a palette's name, \"none\", or {\"palette\": name or [\"#rrggbb\", ...], \"map\": ..., \"shift_from\": ..., \"shift_by\": ..., \"shift_width\": ...}",
+                "palettes": Palette::ALL.map(|palette| json!({
+                    "name": palette.name(),
+                    "colours": palette.stops().iter().map(|stop| format!("#{stop:06x}")).collect::<Vec<_>>(),
+                })),
+                "stops": [look::MIN_STOPS, look::MAX_STOPS],
+                "map": range(f64::from(look::grade_bounds::MAP.0), f64::from(look::grade_bounds::MAP.1), f64::from(DEFAULT_GRADE_MAP)),
+                "shift_from": range(f64::from(look::grade_bounds::SHIFT_FROM.0), f64::from(look::grade_bounds::SHIFT_FROM.1), 125.0),
+                "shift_by": range(f64::from(look::grade_bounds::SHIFT_BY.0), f64::from(look::grade_bounds::SHIFT_BY.1), 0.0),
+                "shift_width": range(f64::from(look::grade_bounds::SHIFT_WIDTH.0), f64::from(look::grade_bounds::SHIFT_WIDTH.1), 32.0),
+            },
+            "finish": {
+                "where": "the top-level \"finish\" is applied to every frame, last: over the \
+                          caption and over a fade to black",
+                "spell": "\"film\", \"none\", or an object whose members are each optional, \
+                          starting from \"base\" (\"film\" or \"none\", default none)",
+                "film": {
+                    "bloom": tidy(Finish::FILM.bloom), "bloom_threshold": tidy(Finish::FILM.bloom_threshold),
+                    "bloom_radius": tidy(Finish::FILM.bloom_radius), "shoulder": tidy(Finish::FILM.shoulder),
+                    "tone": tidy(Finish::FILM.tone), "shadow": format!("#{:06x}", Finish::FILM.shadow_rgb),
+                    "highlight": format!("#{:06x}", Finish::FILM.highlight_rgb),
+                    "vignette": tidy(Finish::FILM.vignette), "grain": tidy(Finish::FILM.grain),
+                },
+                "bloom": [look::finish_bounds::BLOOM.0, look::finish_bounds::BLOOM.1],
+                "bloom_threshold": [look::finish_bounds::BLOOM_THRESHOLD.0, look::finish_bounds::BLOOM_THRESHOLD.1],
+                "bloom_radius": "a fraction of the frame's short edge, 0.002..0.08",
+                "shoulder": "highlight roll-off, 0..1",
+                "tone": "split toning toward \"shadow\" and \"highlight\" (\"#rrggbb\"), 0..1",
+                "vignette": "0..1",
+                "grain": "0..1",
+            },
+            "glide": {
+                "where": "a section's \"glide\": seconds over which its tuning eases in from \
+                          the section before it, when that is the same scene. Toggles and \
+                          whole-number choices (a layout, a field) snap; quantities ease.",
+                "maximum_seconds": scene_switch::MAX_GLIDE_SECONDS,
+            },
         },
         "routes": {
             "sources": AnalysisSource::ALL.map(AnalysisSource::canonical_name),
@@ -2289,6 +2560,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn grades_glides_and_the_finish_compile_onto_the_plan() {
+        let treatment = parse(
+            r##"{"schema":"musializer.treatment/v1",
+                "finish":{"base":"film","grain":0.1,"shadow":"#102030"},
+                "scenes":{"constellation":{"grade":"night-door"}},
+                "segments":[
+                  {"at":0,"scene":"constellation"},
+                  {"at":10,"scene":"constellation","grade":"none"},
+                  {"at":20,"scene":"constellation","glide":3,
+                   "grade":{"palette":["#000000","#ff8800","#ffffff"],"map":0.5,"shift_by":40}},
+                  {"at":30,"scene":"loom"}]}"##,
+        )
+        .unwrap();
+        let compiled = treatment.compile(60.0).unwrap();
+        let cues = compiled.scene_switches.cues();
+        assert_eq!(
+            cues[0].grade,
+            Some(Grade::from_palette(Palette::NightDoor, DEFAULT_GRADE_MAP))
+        );
+        assert_eq!(cues[1].grade, None, "\"none\" clears the scene's grade");
+        let custom = cues[2].grade.unwrap();
+        assert_eq!(custom.stops(), &[0x000000, 0xff8800, 0xffffff]);
+        assert_eq!((custom.map, custom.shift_by), (0.5, 40.0));
+        assert_eq!(cues[2].glide, 3.0);
+        assert_eq!(
+            cues[3].grade, None,
+            "a scene with no grade in the block has none"
+        );
+        let finish = compiled.scene_switches.finish;
+        assert_eq!(finish.grain, 0.1);
+        assert_eq!(finish.shadow_rgb, 0x102030);
+        assert_eq!(
+            finish.bloom,
+            Finish::FILM.bloom,
+            "base film fills what the object omits"
+        );
+        assert!(
+            !parse(MINIMAL).unwrap().finish.is_active(),
+            "no finish unless asked"
+        );
+    }
+
+    #[test]
+    fn a_bad_grade_glide_or_finish_is_refused_by_name() {
+        let refuse = |segment: &str, top: &str| {
+            refusal(&format!(
+                r##"{{"schema":"musializer.treatment/v1"{top},
+                    "segments":[{{"at":0,"scene":"atlas"{segment}}}]}}"##
+            ))
+        };
+        let unknown = refuse(r#","grade":"teal""#, "");
+        assert!(
+            unknown.contains("not a palette") && unknown.contains("night-door"),
+            "{unknown}"
+        );
+        assert!(refuse(r#","grade":{"palette":"ember","map":2}"#, "").contains("outside 0..1"));
+        assert!(refuse(r##","grade":{"palette":["#000000"]}"##, "").contains("2..=8 colours"));
+        assert!(refuse(r#","grade":{"palette":"ember","hue":3}"#, "").contains("unknown field"));
+        assert!(refuse(r#","grade":{"map":0.5}"#, "").contains("needs a \"palette\""));
+        assert!(refuse(r#","glide":31"#, "").contains("outside 0..30"));
+        assert!(refuse(r#","glide":"slow""#, "").contains("number of seconds"));
+        assert!(refuse("", r#","finish":"glossy""#).contains("not a finish"));
+        assert!(refuse("", r#","finish":{"grain":3}"#).contains("outside 0..1"));
+        assert!(refuse("", r#","finish":{"sparkle":1}"#).contains("unknown field"));
+    }
+
+    #[test]
+    fn the_vocabulary_lists_every_palette_the_parser_takes() {
+        let document = vocabulary();
+        let palettes = document["look"]["grade"]["palettes"].as_array().unwrap();
+        assert_eq!(palettes.len(), Palette::ALL.len());
+        for palette in palettes {
+            let name = palette["name"].as_str().unwrap();
+            let text = format!(
+                r#"{{"schema":"musializer.treatment/v1","segments":[{{"at":0,"scene":"atlas","grade":"{name}"}}]}}"#
+            );
+            assert!(parse(&text).is_ok(), "{name}");
+        }
+        assert_eq!(document["look"]["glide"]["maximum_seconds"], 30.0);
     }
 
     #[test]

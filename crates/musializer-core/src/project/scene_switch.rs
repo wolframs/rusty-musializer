@@ -13,8 +13,9 @@
 //! it was. This is also the model-output staging rule in miniature: nothing mutates
 //! because an operation started, only because it finished and validated.
 
+use super::look::{Finish, Grade};
 use super::transition::{self, Active, Section, Transition};
-use crate::scene::settings::{SettingsSnapshot, MAX_CONTROLS};
+use crate::scene::settings::{SceneSettings, SettingsSnapshot, MAX_CONTROLS};
 use crate::scene::SceneId;
 
 /// `SCENE_SWITCH_CAPACITY` (`scene_switch.h:10`).
@@ -27,6 +28,31 @@ pub const CAPACITY: usize = 256;
 /// enforced only by the editing entry points: applying it in
 /// [`SceneSwitchTimeline::replace`] would reject already-saved projects.
 pub const MIN_CUE_SECONDS: f64 = 0.001;
+
+/// Longest glide a section may ask for, in seconds (post-legacy, MV9-c).
+pub const MAX_GLIDE_SECONDS: f32 = 30.0;
+
+/// Whether a glide is a value a plan may hold: zero (none), or a finite length
+/// up to [`MAX_GLIDE_SECONDS`].
+#[must_use]
+pub fn glide_is_valid(seconds: f32) -> bool {
+    seconds.is_finite() && (0.0..=MAX_GLIDE_SECONDS).contains(&seconds)
+}
+
+/// A whole-number control with fewer steps than this across its range is a
+/// choice and snaps during a glide; see [`SceneSwitchTimeline::glided_settings`].
+pub const GLIDE_CHOICE_STEPS: f32 = 16.0;
+
+fn glides(descriptor: &crate::scene::SettingDescriptor) -> bool {
+    use crate::scene::SettingKind;
+    match descriptor.kind {
+        SettingKind::Toggle => false,
+        SettingKind::Slider => {
+            descriptor.precision > 0
+                || descriptor.maximum - descriptor.minimum >= GLIDE_CHOICE_STEPS
+        }
+    }
+}
 
 /// Coverage drift the C tolerates (`scene_switch.c:55`, `:61`).
 const COVERAGE_TOLERANCE: f64 = 0.001;
@@ -70,6 +96,11 @@ pub struct SceneSwitchCue {
     /// How this section arrives (post-legacy, MV3). A cut by default, which is
     /// the C's plan and what nothing serializes.
     pub transition: Transition,
+    /// The palette this section is held to (post-legacy, MV9-b).
+    pub grade: Option<Grade>,
+    /// Seconds over which this section's tuning eases in from the section
+    /// before it, when both are the same scene (post-legacy, MV9-c).
+    pub glide: f32,
 }
 
 impl Default for SceneSwitchCue {
@@ -82,6 +113,8 @@ impl Default for SceneSwitchCue {
             strength: 0.0,
             settings: SettingsSnapshot::default(),
             transition: Transition::CUT,
+            grade: None,
+            glide: 0.0,
         }
     }
 }
@@ -95,6 +128,10 @@ pub struct SceneSwitchTimeline {
     /// black over the final seconds. Independent of the cues, so a track with
     /// no plan can still end softly.
     pub outro: Transition,
+    /// The finish over every frame of the track (post-legacy, MV9-a). Like the
+    /// outro it is the track's own, so it applies whether or not the plan is
+    /// switched on.
+    pub finish: Finish,
     active_index: Option<usize>,
     cues: Vec<SceneSwitchCue>,
 }
@@ -175,6 +212,98 @@ impl SceneSwitchTimeline {
             .collect()
     }
 
+    /// The cue covering `time_seconds`, while the plan is on.
+    #[must_use]
+    pub fn cue_covering(&self, time_seconds: f64) -> Option<&SceneSwitchCue> {
+        if !self.enabled {
+            return None;
+        }
+        self.cues
+            .iter()
+            .find(|cue| cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds)
+            .or_else(|| {
+                // The last frame of the track sits exactly on the last cue's end.
+                self.cues.last().filter(|cue| {
+                    time_seconds >= cue.start_seconds && time_seconds <= cue.end_seconds
+                })
+            })
+    }
+
+    /// The palette lock in force at `time_seconds` (MV9-b): the covering
+    /// section's, while the plan is on.
+    #[must_use]
+    pub fn grade_at(&self, time_seconds: f64) -> Option<Grade> {
+        self.cue_covering(time_seconds)
+            .and_then(|cue| cue.grade)
+            .filter(|grade| !grade.is_identity())
+    }
+
+    /// The tuning in force while a section glides in (MV9-c), or `None` when
+    /// nothing is gliding at `time_seconds`.
+    ///
+    /// `base` is the track's per-scene table, the one a cue's snapshot is
+    /// applied over. A section glides only from a section **of the same
+    /// scene** directly before it — a different scene starts fresh, so there
+    /// is nothing to ease from. The ease is a smoothstep over `glide` seconds
+    /// from the section's start.
+    ///
+    /// Not every control eases. A toggle snaps, and so does a whole-number
+    /// control whose range spans fewer than [`GLIDE_CHOICE_STEPS`] steps: that
+    /// is a *choice* (Stage's `layout`, Phosphor's `field`, a cat count), and
+    /// passing through the choices between two of them would show pictures
+    /// nobody asked for. A whole-number control with a wide range — a hue in
+    /// degrees, a ring count — is a quantity, and eases.
+    #[must_use]
+    pub fn glided_settings(
+        &self,
+        base: &SceneSettings,
+        time_seconds: f64,
+    ) -> Option<SceneSettings> {
+        if !self.enabled {
+            return None;
+        }
+        let index = self
+            .cues
+            .iter()
+            .position(|cue| cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds)?;
+        let cue = &self.cues[index];
+        if index == 0 || cue.glide <= 0.0 {
+            return None;
+        }
+        let elapsed = time_seconds - cue.start_seconds;
+        if elapsed >= f64::from(cue.glide) {
+            return None;
+        }
+        let previous = &self.cues[index - 1];
+        if previous.scene_index != cue.scene_index {
+            return None;
+        }
+        let scene = SceneId::from_index(cue.scene_index as usize)?;
+        let resolve = |snapshot: &SettingsSnapshot| {
+            let mut table = *base;
+            if snapshot.captured {
+                table.apply_snapshot(scene, snapshot);
+            }
+            table
+        };
+        let from = resolve(&previous.settings);
+        let mut to = resolve(&cue.settings);
+        let t = (elapsed / f64::from(cue.glide)).clamp(0.0, 1.0) as f32;
+        let k = t * t * (3.0 - 2.0 * t);
+        for (control, descriptor) in crate::scene::settings::descriptors(scene)
+            .iter()
+            .enumerate()
+        {
+            if !glides(descriptor) {
+                continue;
+            }
+            let a = from.get(scene, control);
+            let b = to.get(scene, control);
+            to.set(scene, control, a + (b - a) * k);
+        }
+        Some(to)
+    }
+
     /// Sets how one section arrives. Refuses an unknown id or a transition
     /// outside its bounds, and changes nothing when it refuses.
     pub fn set_transition(&mut self, cue_id: u64, transition: Transition) -> bool {
@@ -226,6 +355,8 @@ impl SceneSwitchTimeline {
                 || !cue.strength.is_finite()
                 || !(0.0..=1.0).contains(&cue.strength)
                 || !cue.transition.is_valid()
+                || cue.grade.is_some_and(|grade| !grade.is_valid())
+                || !glide_is_valid(cue.glide)
             {
                 return Err(SceneSwitchError::Cue);
             }
@@ -321,6 +452,8 @@ impl SceneSwitchTimeline {
                 strength,
                 settings: *settings,
                 transition: crate::project::transition::Transition::CUT,
+                grade: None,
+                glide: 0.0,
             });
         } else {
             let selected = staged
@@ -512,6 +645,8 @@ mod tests {
             strength: 0.5,
             settings: SettingsSnapshot::default(),
             transition: Transition::CUT,
+            grade: None,
+            glide: 0.0,
         }
     }
 
@@ -530,6 +665,106 @@ mod tests {
             .unwrap();
         timeline.enabled = true;
         timeline
+    }
+
+    #[test]
+    fn a_section_glides_in_from_the_same_scene_before_it_and_choices_snap() {
+        use crate::scene::settings::index::stage;
+        let scene = SceneId::Stage;
+        let mut first = SceneSettings::new();
+        first.set(scene, stage::LAYOUT, 0.0);
+        first.set(scene, stage::HUE, -100.0);
+        first.set(scene, stage::SCALE, 0.6);
+        first.set(scene, stage::FAMILIAR, 0.0);
+        let mut second = first;
+        second.set(scene, stage::LAYOUT, 4.0);
+        second.set(scene, stage::HUE, 100.0);
+        second.set(scene, stage::SCALE, 1.4);
+        second.set(scene, stage::FAMILIAR, 1.0);
+        let index = scene.index() as u32;
+        let mut a = cue(1, 0.0, 20.0, index);
+        a.settings = first.capture(scene).unwrap();
+        let mut b = cue(2, 20.0, 40.0, index);
+        b.settings = second.capture(scene).unwrap();
+        b.glide = 4.0;
+        let c = cue(3, 40.0, 60.0, SceneId::Loom.index() as u32);
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline.replace(&[a, b, c], DURATION, SCENES).unwrap();
+        timeline.enabled = true;
+        let base = SceneSettings::new();
+
+        assert!(
+            timeline.glided_settings(&base, 10.0).is_none(),
+            "not gliding"
+        );
+        assert!(
+            timeline.glided_settings(&base, 24.0).is_none(),
+            "glide over"
+        );
+        let mid = timeline.glided_settings(&base, 22.0).expect("halfway in");
+        // Smoothstep at one half is one half.
+        assert!((mid.get(scene, stage::SCALE) - 1.0).abs() < 1.0e-5);
+        assert!(
+            mid.get(scene, stage::HUE).abs() < 1.0e-3,
+            "a hue in degrees eases"
+        );
+        assert_eq!(
+            mid.get(scene, stage::LAYOUT),
+            4.0,
+            "a layout is a choice and snaps"
+        );
+        assert_eq!(mid.get(scene, stage::FAMILIAR), 1.0, "a toggle snaps");
+        let start = timeline.glided_settings(&base, 20.0).unwrap();
+        assert!(
+            (start.get(scene, stage::SCALE) - 0.6).abs() < 1.0e-5,
+            "continuous at the cut"
+        );
+
+        // A different scene before it: nothing to ease from.
+        let mut d = cue(3, 40.0, 60.0, SceneId::Loom.index() as u32);
+        d.glide = 4.0;
+        let mut other = SceneSwitchTimeline::new();
+        other
+            .replace(&[a, cue(2, 20.0, 40.0, index), d], DURATION, SCENES)
+            .unwrap();
+        other.enabled = true;
+        assert!(other.glided_settings(&base, 41.0).is_none());
+
+        // A plan switched off glides nothing.
+        timeline.enabled = false;
+        assert!(timeline.glided_settings(&base, 22.0).is_none());
+    }
+
+    #[test]
+    fn the_grade_in_force_is_the_covering_sections() {
+        use crate::project::look::{Grade, Palette};
+        let mut a = cue(1, 0.0, 30.0, 0);
+        a.grade = Some(Grade::from_palette(Palette::Ember, 0.5));
+        let mut b = cue(2, 30.0, 60.0, 0);
+        b.grade = Some(Grade::from_palette(Palette::Mono, 0.0));
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline.replace(&[a, b], DURATION, SCENES).unwrap();
+        timeline.enabled = true;
+        assert_eq!(timeline.grade_at(10.0), a.grade);
+        assert_eq!(
+            timeline.grade_at(40.0),
+            None,
+            "an identity grade is no grade"
+        );
+        assert_eq!(
+            timeline.grade_at(DURATION),
+            None,
+            "the last frame is the last cue's"
+        );
+        let mut bad = a;
+        bad.grade = Some(Grade {
+            map: 2.0,
+            ..Grade::from_palette(Palette::Ember, 0.5)
+        });
+        assert_eq!(
+            timeline.replace(&[bad, b], DURATION, SCENES),
+            Err(SceneSwitchError::Cue)
+        );
     }
 
     #[test]

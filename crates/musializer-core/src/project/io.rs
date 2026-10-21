@@ -36,6 +36,7 @@
 //! guarantees, the transaction filename policy, and the path-shape rules the
 //! resolver applies before it ever touches a disk.
 
+use super::look::{Finish, Grade, MAX_STOPS, MIN_STOPS};
 use super::transition::{Transition, TransitionKind};
 use crate::project::assets;
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
@@ -527,12 +528,26 @@ fn write_project(out: &mut String, project: &Project) {
             out.push_str(",\"transition\":");
             write_transition(out, cue.transition);
         }
+        // Post-legacy (MV9). Same rule: absent means the C's plan, and a
+        // project that uses neither is byte-identical to one saved before.
+        if let Some(grade) = &cue.grade {
+            out.push_str(",\"grade\":");
+            write_grade(out, grade);
+        }
+        if cue.glide > 0.0 {
+            out.push_str(",\"glide\":");
+            write_f32_short(out, cue.glide);
+        }
         out.push('}');
     }
     out.push(']');
     if !project.scene_switches.outro.is_cut() {
         out.push_str(",\"outro\":");
         write_transition(out, project.scene_switches.outro);
+    }
+    if project.scene_switches.finish.is_active() {
+        out.push_str(",\"finish\":");
+        write_finish(out, &project.scene_switches.finish);
     }
 
     out.push_str("},\"scene_presets\":[");
@@ -844,6 +859,25 @@ impl<'a> Parser<'a> {
     ///
     /// Accepting `"#fff"` or uppercase would make two spellings of one colour, and
     /// the format promises exact identity.
+    /// Six lowercase hex digits: a colour with no alpha (MV9 grade stops and
+    /// finish tones, which are always opaque).
+    fn rgb(&mut self) -> Parsed<u32> {
+        let text = self.string(15)?;
+        if text.len() != 6 {
+            return Err(ProjectIoError::String);
+        }
+        let mut value = 0u32;
+        for byte in text.bytes() {
+            let digit = match byte {
+                b'0'..=b'9' => u32::from(byte - b'0'),
+                b'a'..=b'f' => u32::from(byte - b'a') + 10,
+                _ => return Err(ProjectIoError::String),
+            };
+            value = (value << 4) | digit;
+        }
+        Ok(value)
+    }
+
     fn rgba(&mut self) -> Parsed<u32> {
         let text = self.string(15)?;
         if text.len() != 8 {
@@ -1302,7 +1336,7 @@ fn parse_f32_array(parser: &mut Parser<'_>, capacity: usize) -> Parsed<Vec<f32>>
 /// `parse_switch` (`project_io.c:224-225`): `settings` is optional and defaults to
 /// empty, which is how early v1 projects are spelled.
 fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
-    const NAMES: [&str; 7] = [
+    const NAMES: [&str; 9] = [
         "id",
         "start_seconds",
         "end_seconds",
@@ -1310,6 +1344,8 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
         "strength",
         "settings",
         "transition",
+        "grade",
+        "glide",
     ];
     let mut cue = SceneSwitchSuggestion::default();
     let mut seen = Seen::default();
@@ -1323,7 +1359,15 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
             3 => cue.scene_name = parser.string(capacity::TYPE)?,
             4 => cue.strength = parser.f32()?,
             5 => cue.settings = parse_f32_array(parser, MAX_CONTROLS)?,
-            _ => cue.transition = parse_transition(parser)?,
+            6 => cue.transition = parse_transition(parser)?,
+            7 => cue.grade = Some(parse_grade(parser)?),
+            _ => {
+                cue.glide = parser.f32()?;
+                // Zero is spelled by leaving the member out, like a cut.
+                if cue.glide <= 0.0 {
+                    return Err(ProjectIoError::MissingField);
+                }
+            }
         }
         Ok(())
     })?;
@@ -1363,8 +1407,136 @@ fn parse_transition(parser: &mut Parser<'_>) -> Parsed<Transition> {
     Ok(transition)
 }
 
+/// An `f32` in its shortest round-tripping spelling (`0.45`, not
+/// `0.44999998807907104`). Post-legacy members only: the C-era ones keep the
+/// C's widening spelling, which the codec harness pins.
+fn write_f32_short(out: &mut String, value: f32) {
+    out.push_str(&format!("{value}"));
+}
+
+fn write_rgb(out: &mut String, value: u32) {
+    out.push_str(&format!("\"{:06x}\"", value & 0x00ff_ffff));
+}
+
+/// A section's palette lock (MV9-b): every member required, because a
+/// `.musi` is a file the application round-trips and a half-written grade
+/// would mix intent with defaults silently.
+fn write_grade(out: &mut String, grade: &Grade) {
+    out.push_str("{\"stops\":[");
+    for (index, stop) in grade.stops().iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_rgb(out, *stop);
+    }
+    out.push_str("],\"map\":");
+    write_f32_short(out, grade.map);
+    out.push_str(",\"shift_from\":");
+    write_f32_short(out, grade.shift_from);
+    out.push_str(",\"shift_by\":");
+    write_f32_short(out, grade.shift_by);
+    out.push_str(",\"shift_width\":");
+    write_f32_short(out, grade.shift_width);
+    out.push('}');
+}
+
+fn parse_grade(parser: &mut Parser<'_>) -> Parsed<Grade> {
+    const NAMES: [&str; 5] = ["stops", "map", "shift_from", "shift_by", "shift_width"];
+    let mut grade = Grade::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => {
+                let mut count = 0usize;
+                let stops = &mut grade.stops;
+                parser.array(MAX_STOPS, |parser, index| {
+                    stops[index] = parser.rgb()?;
+                    count = index + 1;
+                    Ok(())
+                })?;
+                if count < MIN_STOPS {
+                    return Err(ProjectIoError::MissingField);
+                }
+                grade.stop_count = count as u8;
+            }
+            1 => grade.map = parser.f32()?,
+            2 => grade.shift_from = parser.f32()?,
+            3 => grade.shift_by = parser.f32()?,
+            _ => grade.shift_width = parser.f32()?,
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x1f) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(grade)
+}
+
+/// The plan's finish (MV9-a), every member required for the same reason.
+fn write_finish(out: &mut String, finish: &Finish) {
+    let number = |out: &mut String, name: &str, value: f32, first: bool| {
+        if !first {
+            out.push(',');
+        }
+        write_string(out, name);
+        out.push(':');
+        write_f32_short(out, value);
+    };
+    out.push('{');
+    number(out, "bloom", finish.bloom, true);
+    number(out, "bloom_threshold", finish.bloom_threshold, false);
+    number(out, "bloom_radius", finish.bloom_radius, false);
+    number(out, "shoulder", finish.shoulder, false);
+    number(out, "tone", finish.tone, false);
+    out.push_str(",\"shadow_rgb\":");
+    write_rgb(out, finish.shadow_rgb);
+    out.push_str(",\"highlight_rgb\":");
+    write_rgb(out, finish.highlight_rgb);
+    number(out, "vignette", finish.vignette, false);
+    number(out, "grain", finish.grain, false);
+    out.push('}');
+}
+
+fn parse_finish(parser: &mut Parser<'_>) -> Parsed<Finish> {
+    const NAMES: [&str; 9] = [
+        "bloom",
+        "bloom_threshold",
+        "bloom_radius",
+        "shoulder",
+        "tone",
+        "shadow_rgb",
+        "highlight_rgb",
+        "vignette",
+        "grain",
+    ];
+    let mut finish = Finish::NONE;
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => finish.bloom = parser.f32()?,
+            1 => finish.bloom_threshold = parser.f32()?,
+            2 => finish.bloom_radius = parser.f32()?,
+            3 => finish.shoulder = parser.f32()?,
+            4 => finish.tone = parser.f32()?,
+            5 => finish.shadow_rgb = parser.rgb()?,
+            6 => finish.highlight_rgb = parser.rgb()?,
+            7 => finish.vignette = parser.f32()?,
+            _ => finish.grain = parser.f32()?,
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x1ff) || !finish.is_active() {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(finish)
+}
+
 fn parse_switches(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestions> {
-    const NAMES: [&str; 3] = ["enabled", "cues", "outro"];
+    const NAMES: [&str; 4] = ["enabled", "cues", "outro", "finish"];
     let mut switches = SceneSwitchSuggestions::default();
     let mut seen = Seen::default();
     parser.object(|parser, key| {
@@ -1374,6 +1546,8 @@ fn parse_switches(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestions> {
             switches.enabled = parser.bool()?;
         } else if field == 2 {
             switches.outro = parse_transition(parser)?;
+        } else if field == 3 {
+            switches.finish = parse_finish(parser)?;
         } else {
             let cues = &mut switches.cues;
             parser.array(SCENE_SWITCH_CAPACITY, |parser, _| {
@@ -2904,11 +3078,14 @@ mod tests {
             strength: 1.0,
             settings: Vec::new(),
             transition,
+            grade: None,
+            glide: 0.0,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
             cues: vec![switch(1, 0.0, 60.0, Transition::CUT)],
             outro: Transition::CUT,
+            finish: crate::project::look::Finish::NONE,
         };
         let plain = serialize(&project).unwrap();
         assert!(!plain.contains("transition") && !plain.contains("outro"));
@@ -2937,6 +3114,72 @@ mod tests {
     }
 
     #[test]
+    fn grades_glides_and_the_finish_round_trip_and_their_absence_is_never_written() {
+        use crate::project::look::{Finish, Grade, Palette};
+        let mut project = valid_project();
+        let switch = |id, start, end, grade, glide| SceneSwitchSuggestion {
+            id,
+            start_seconds: start,
+            end_seconds: end,
+            scene_name: "constellation".into(),
+            strength: 1.0,
+            settings: Vec::new(),
+            transition: Transition::CUT,
+            grade,
+            glide,
+        };
+        project.scene_switches = SceneSwitchSuggestions {
+            enabled: true,
+            cues: vec![switch(1, 0.0, 60.0, None, 0.0)],
+            outro: Transition::CUT,
+            finish: Finish::NONE,
+        };
+        let plain = serialize(&project).unwrap();
+        assert!(
+            !plain.contains("grade") && !plain.contains("glide") && !plain.contains("finish"),
+            "a project that uses none of them is byte-identical to one saved before"
+        );
+
+        let grade = Grade {
+            shift_by: 52.0,
+            ..Grade::from_palette(Palette::NightDoor, 0.82)
+        };
+        project.scene_switches.cues = vec![
+            switch(1, 0.0, 30.0, Some(grade), 0.0),
+            switch(2, 30.0, 60.0, None, 2.5),
+        ];
+        project.scene_switches.finish = Finish::FILM;
+        let text = serialize(&project).unwrap();
+        assert!(text.contains("\"stops\":[\"05080b\",\"0b1a1e\""), "{text}");
+        assert!(text.contains("\"glide\":2.5"));
+        assert!(text.contains("\"finish\":{\"bloom\":0.45"));
+        let reopened = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(reopened.scene_switches, project.scene_switches);
+        assert_eq!(serialize(&reopened).unwrap(), text);
+
+        // Each spelling of "none" is leaving the member out; written out, it is
+        // refused rather than read back as something else.
+        for broken in [
+            text.replace("\"glide\":2.5", "\"glide\":0"),
+            text.replace("\"glide\":2.5", "\"glide\":31"),
+            text.replace("\"map\":0.82", "\"map\":1.5"),
+            text.replace("\"05080b\"", "\"#05080b\""),
+            text.replace("\"shift_width\":32", "\"shift_width\":32,\"extra\":1"),
+            text.replace("\"grain\":0.4", "\"grain\":2"),
+        ] {
+            assert!(deserialize(broken.as_bytes()).is_err(), "{broken}");
+        }
+        // A grade with one stop cannot be a map.
+        let one_stop = text.replacen(
+            "[\"05080b\",\"0b1a1e\",\"1d2f3a\",\"4a3f72\",\"9d8ad0\",\"e9c27a\",\"fff7e6\"]",
+            "[\"05080b\"]",
+            1,
+        );
+        assert_ne!(one_stop, text);
+        assert!(deserialize(one_stop.as_bytes()).is_err());
+    }
+
+    #[test]
     fn opening_a_project_never_rewrites_it() {
         // The invariant, as a test: parse, do nothing, re-serialize, compare. Any
         // "helpful" normalization in the reader shows up here.
@@ -2951,8 +3194,11 @@ mod tests {
                 strength: 0.75,
                 settings: vec![0.5, 0.25],
                 transition: Transition::CUT,
+                grade: None,
+                glide: 0.0,
             }],
             outro: Transition::CUT,
+            finish: crate::project::look::Finish::NONE,
         };
         project.scene_presets = vec![ScenePreset {
             id: 1,

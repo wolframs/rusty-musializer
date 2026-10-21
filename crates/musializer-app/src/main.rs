@@ -1519,7 +1519,7 @@ fn run(
         // `app.scene.update` or `app.shell.draw` would deny those the `&mut` they
         // need. A `SceneSettings` is 480 bytes of `f32`, and `apply` already
         // produces a whole copy whenever a route fires.
-        let base = *app.settings();
+        let base = app.frame_settings(time_seconds);
         let routed = app.routes().apply(app.scene.id(), &sources, &base);
         let effective = routed.as_ref().unwrap_or(&base);
 
@@ -2718,6 +2718,24 @@ impl App {
             Some(track) if track.cue_settings_active => &track.playback_scene_settings,
             Some(track) => &track.scene_settings,
         }
+    }
+
+    /// The tuning a frame at `time_seconds` draws with: [`Self::settings`],
+    /// except while a plan section glides in from the one before it (MV9-c),
+    /// when it is the eased table. Read by the preview and the export alike,
+    /// so a glide is the same in both; never an edit target.
+    fn frame_settings(&self, time_seconds: f64) -> SceneSettings {
+        if let Some(track) = self.workspace.current() {
+            if track.cue_settings_active {
+                if let Some(glided) = track
+                    .scene_switches
+                    .glided_settings(&track.scene_settings, time_seconds)
+                {
+                    return glided;
+                }
+            }
+        }
+        *self.settings()
     }
 
     fn settings_mut(&mut self) -> &mut SceneSettings {
@@ -5321,6 +5339,7 @@ impl Report {
         // refused shader, a refused buffer, no frame held — is the same picture
         // as a plan that asked for a cut.
         println!("transition:      {}", renderer.describe_transition());
+        println!("look:            {}", renderer.describe_look());
         // Phosphor Dream's own line, for the same reason the two above have one.
         // This scene can draw a good-looking frame in several wrong states — the
         // wrong field, a collapsed grid, a bloom that never built — and none of

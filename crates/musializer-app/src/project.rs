@@ -249,9 +249,12 @@ pub fn build_project(
                     Vec::new()
                 },
                 transition: cue.transition,
+                grade: cue.grade,
+                glide: cue.glide,
             })
             .collect(),
         outro: track.scene_switches.outro,
+        finish: track.scene_switches.finish,
     };
 
     project.scene_presets = Vec::new();
@@ -722,6 +725,7 @@ fn hydrate_scene_switches(
     let mut timeline = SceneSwitchTimeline::new();
     if suggestions.cues.is_empty() {
         timeline.outro = suggestions.outro;
+        timeline.finish = suggestions.finish;
         timeline.enabled = suggestions.enabled;
         return Ok(timeline);
     }
@@ -748,6 +752,8 @@ fn hydrate_scene_switches(
             strength: suggestion.strength,
             settings,
             transition: suggestion.transition,
+            grade: suggestion.grade,
+            glide: suggestion.glide,
         });
     }
     timeline
@@ -755,6 +761,7 @@ fn hydrate_scene_switches(
         .map_err(|error| ProjectError::Build(error.to_string()))?;
     timeline.enabled = suggestions.enabled;
     timeline.outro = suggestions.outro;
+    timeline.finish = suggestions.finish;
     Ok(timeline)
 }
 

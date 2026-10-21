@@ -749,6 +749,11 @@ pub struct SceneSwitchSuggestion {
     pub settings: Vec<f32>,
     /// How the section arrives (post-legacy, MV3). A cut is never written.
     pub transition: super::transition::Transition,
+    /// The section's palette lock (post-legacy, MV9-b). `None` is never written.
+    pub grade: Option<super::look::Grade>,
+    /// Seconds over which this section's tuning eases in from the previous
+    /// same-scene section's (post-legacy, MV9-c). Zero is never written.
+    pub glide: f32,
 }
 
 /// The imported switch plan (`Musi_Scene_Switch_Suggestions`, `project.h:273-277`).
@@ -759,6 +764,9 @@ pub struct SceneSwitchSuggestions {
     pub cues: Vec<SceneSwitchSuggestion>,
     /// How the track ends (post-legacy, MV3). A cut is never written.
     pub outro: super::transition::Transition,
+    /// The finish over every frame (post-legacy, MV9-a). No finish is never
+    /// written.
+    pub finish: super::look::Finish,
 }
 
 /// A saved tuning preset (`Musi_Scene_Preset`, `project.h:279-285`).
@@ -1146,6 +1154,7 @@ impl Project {
         if switches.cues.len() > SCENE_SWITCH_CAPACITY
             || (switches.enabled && switches.cues.is_empty())
             || !switches.outro.is_valid()
+            || !switches.finish.is_valid()
         {
             return Err(fail(ProjectError::SceneSwitch, 0, 0));
         }
@@ -1166,6 +1175,8 @@ impl Project {
                 || cue.strength > 1.0
                 || cue.settings.len() > MAX_CONTROLS
                 || !cue.transition.is_valid()
+                || cue.grade.is_some_and(|grade| !grade.is_valid())
+                || !super::scene_switch::glide_is_valid(cue.glide)
             {
                 return Err(fail(ProjectError::SceneSwitch, index, 0));
             }
@@ -1920,6 +1931,8 @@ mod tests {
             strength: 0.5,
             settings: Vec::new(),
             transition: crate::project::transition::Transition::CUT,
+            grade: None,
+            glide: 0.0,
         };
         project.scene_switches.cues = vec![switch(1, 0.0, 30.0), switch(2, 30.0, 60.0)];
         assert_eq!(project.validate(), Ok(()));
@@ -1943,6 +1956,7 @@ mod tests {
             enabled: true,
             cues: Vec::new(),
             outro: crate::project::transition::Transition::CUT,
+            finish: crate::project::look::Finish::NONE,
         };
         assert_eq!(
             project.validate().unwrap_err().error,

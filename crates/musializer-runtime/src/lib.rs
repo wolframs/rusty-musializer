@@ -20,6 +20,8 @@ pub mod draw;
 pub mod feedback;
 pub mod font;
 pub mod halo;
+pub mod offscreen;
+pub mod post;
 pub mod preset_files;
 pub mod process;
 pub mod project_files;

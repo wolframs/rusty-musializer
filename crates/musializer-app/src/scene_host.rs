@@ -32,6 +32,7 @@ use musializer_core::scenes as core_scenes;
 use musializer_runtime::draw;
 use musializer_runtime::font::Faces;
 use musializer_runtime::halo::HaloBlur;
+use musializer_runtime::post::Post;
 use musializer_runtime::transition::HeldFrame;
 use raylib::prelude::{
     BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibScissorModeExt,
@@ -300,6 +301,8 @@ pub struct SceneRenderer {
     /// picture as a plan that asked for a cut.
     transition_last: TransitionOutcome,
     transition_frames: u64,
+    /// The palette lock and the finish (MV9-a/b).
+    post: Post,
 }
 
 /// What [`SceneRenderer::draw`] did about the plan's transition on one frame.
@@ -352,6 +355,7 @@ impl SceneRenderer {
             held: HeldFrame::new(),
             transition_last: TransitionOutcome::Idle,
             transition_frames: 0,
+            post: Post::load(rl, thread),
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
             sdf_text,
@@ -425,6 +429,14 @@ impl SceneRenderer {
             "shader={shader}, last={last}, composited-frames={}",
             self.transition_frames
         )
+    }
+
+    /// One line naming what the last frame did about the grade and the finish
+    /// (MV9). A pass that silently failed is the same picture as a project
+    /// that asked for none.
+    #[must_use]
+    pub fn describe_look(&self) -> String {
+        self.post.describe()
     }
 
     /// Composites one transition over what the scene just drew.
@@ -800,13 +812,21 @@ impl SceneRenderer {
                 }
             }
         }
+        // The section's palette lock (MV9-b), on what the scene drew and
+        // *before* the transition: the held picture of an outgoing section
+        // then carries its own grade, and a transition's own light — a flash
+        // to white — is never pushed through a palette.
+        let plan = assets.scene_plan;
+        self.post.idle();
+        if let Some(grade) = plan.and_then(|plan| plan.grade_at(frame.time_seconds)) {
+            self.post.grade(d, boundary, &grade);
+        }
         // The plan's transition (MV3). The held picture of the outgoing section
         // goes over the scene and *under* the caption, which belongs to the new
         // moment; black — the video's own beginning and end, or a dip — goes
         // over everything, further down. Outside any transition the frame just
         // drawn is copied aside, so the one before the next cut is always the
         // one held. The scene clip is closed by now, which the copy requires.
-        let plan = assets.scene_plan;
         let active =
             plan.and_then(|plan| plan.transition_at(frame.time_seconds, frame.duration_seconds));
         let keeps = plan.is_some_and(|plan| transition::needs_previous(&plan.sections()));
@@ -851,6 +871,14 @@ impl SceneRenderer {
         }
         if let Some(active) = active.filter(|active| active.source == Source::Black) {
             self.transition_last = self.composite(d, active, boundary);
+        }
+        // The finish (MV9-a), last: over the caption and over a fade to black,
+        // so the type gets the bloom and the grain the picture under it does.
+        if let Some(finish) = plan
+            .map(|plan| plan.finish)
+            .filter(|finish| finish.is_active())
+        {
+            self.post.finish(d, boundary, &finish, frame.time_seconds);
         }
     }
 }

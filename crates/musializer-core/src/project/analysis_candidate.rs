@@ -1164,6 +1164,8 @@ impl AnalysisCandidate {
                     strength: f32::from(section.transition_strength_milli) / 1000.0,
                     settings: SettingsSnapshot::default(),
                     transition: crate::project::transition::Transition::CUT,
+                    grade: None,
+                    glide: 0.0,
                 })
                 .collect();
             candidate
@@ -1480,6 +1482,8 @@ mod tests {
                     strength: 0.5,
                     settings: SettingsSnapshot::default(),
                     transition: crate::project::transition::Transition::CUT,
+                    grade: None,
+                    glide: 0.0,
                 }],
                 DURATION,
                 SCENES,
