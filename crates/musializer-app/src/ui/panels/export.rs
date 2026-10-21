@@ -2046,8 +2046,8 @@ fn with_export_frame<R>(
     app.apply_auto_scene_switch(time_seconds);
     let sources = RouteSources::from_audio(&audio_frame, time_seconds);
     let base = app.frame_settings(time_seconds);
-    let routed = app.routes().apply(app.scene.id(), &sources, &base);
-    let effective = routed.as_ref().unwrap_or(&base);
+    let routed = app.routed_settings(&sources, base);
+    let effective = &routed;
     let frame_lanes = crate::project_frame_lanes(app.workspace.current(), time_seconds);
     let lane_status = frame_lanes.status();
     let frame = frame_lanes.scene_frame(

@@ -247,6 +247,17 @@ impl SceneSwitchTimeline {
     /// seamless instead of a palette jump.
     #[must_use]
     pub fn grade_near(&self, time_seconds: f64, scene: SceneId) -> Option<Grade> {
+        self.cue_near(time_seconds, scene)
+            .and_then(|cue| cue.grade)
+            .filter(|grade| !grade.is_identity())
+    }
+
+    /// The section of `scene` nearest in time to `time_seconds`, while the
+    /// plan is on (MV9-d/j): what a scene shown inside the threshold's
+    /// doorway takes its tuning and its grade from, having no section of its
+    /// own at that moment.
+    #[must_use]
+    pub fn cue_near(&self, time_seconds: f64, scene: SceneId) -> Option<&SceneSwitchCue> {
         if !self.enabled {
             return None;
         }
@@ -266,8 +277,6 @@ impl SceneSwitchTimeline {
                 };
                 distance(a).total_cmp(&distance(b))
             })
-            .and_then(|cue| cue.grade)
-            .filter(|grade| !grade.is_identity())
     }
 
     /// The tuning in force while a section glides in (MV9-c), or `None` when

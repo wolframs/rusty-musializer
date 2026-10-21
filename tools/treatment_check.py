@@ -514,7 +514,10 @@ def check_look(out: Path) -> None:
     check(graded < 30.0, f"the grade and finish changed nothing: {graded:.1f} dB")
     # The walk ends on the scene it was showing: the last threshold frame and
     # a frame of that scene are far closer than the room seen from across it.
-    check(walked > control + 6.0, f"the doorway does not arrive at the beyond: {walked:.1f} vs {control:.1f} dB")
+    # Loom is tuned only on its own section, so this also says the doorway
+    # wore that section's tuning (MV9-j): without it, 6.0 dB over the control
+    # where it measures 10.4.
+    check(walked > control + 8.0, f"the doorway does not arrive at the beyond: {walked:.1f} vs {control:.1f} dB")
 
     # The hand-over: the Loom walked into through the doorway is the *same*
     # Loom, advanced by every frame since zero inside the threshold, so after

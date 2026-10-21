@@ -312,8 +312,9 @@ in the doorway.
 
 `beyond` names the scene the doorway shows — **live**, not a picture of it.
 `0` is the doorway's own fog; `n` is the n-th scene in `--vocabulary`'s list
-(7 is `constellation`). That scene runs inside the threshold, tuned by its own
-`scenes.<name>.settings` and wearing its own nearest section's grade. Far away
+(7 is `constellation`). That scene runs inside the threshold wearing the tuning,
+the routes and the grade of its own nearest section — the section you cut to
+after the walk — so it needs no tuning of its own. Far away
 it is fitted to the doorway; at `distance` 0 it is exactly the full frame. So:
 
 ```json
@@ -328,10 +329,8 @@ showing — and the cut is invisible, because the running constellation is
 section whose `beyond` is the scene on screen takes that scene in at
 `distance` 0, and a glide back out pulls the camera into the room.
 
-Give the beyond scene's tuning in `scenes`, not in a section of its own: inside
-the doorway it has no section, and a section after the cut tuned differently is
-a visible jump. The `threshold:` report line names the camera, the door and
-whether the doorway's scene was live.
+The `threshold:` report line names the camera, the door and whether the
+doorway's scene was live.
 
 ### `routes`
 

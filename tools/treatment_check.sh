@@ -246,7 +246,8 @@ run --treatment "$OUT/staged.treatment.json" --still 11.5 "$OUT/staged-empty.png
 
 # --- the look, a glide, and a walk through the threshold's door (MV9) ----------
 # The threshold shows Loom live; its distance glides to the doorway and the
-# plan cuts to Loom on the arrival. Loom because it weaves a column per moment
+# plan cuts to Loom on the arrival. Loom's tuning is on its own section only:
+# inside the doorway it has no section, and must wear its nearest one's. Loom because it weaves a column per moment
 # and keeps it: a doorway that cut to a *fresh* Loom would land on a different
 # cloth, so this walk can tell a hand-over from a restart, where a scene drawn
 # from time alone could not. The same treatment without grades or finish is
@@ -254,19 +255,19 @@ run --treatment "$OUT/staged.treatment.json" --still 11.5 "$OUT/staged-empty.png
 python3 - "$OUT" <<'EOF'
 import json, sys
 out = sys.argv[1]
+tuned = {"density": 1.4, "weight": 1.3}
 def plan(look):
-    tuned = {"density": 1.4, "weight": 1.3}
     doc = {
         "schema": "musializer.treatment/v1",
         "audio": {"path": "fixture.wav"},
         "output": {"resolution": "640x360", "fps": 30, "quality": "balanced"},
         "seed": 2012,
-        "scenes": {"loom": {"settings": tuned},
+        "scenes": {"loom": {},
                    "threshold": {"settings": {"beyond": 9, "open": 0.8, "light": 1.0}}},
         "segments": [
             {"at": 0, "scene": "threshold", "settings": {"distance": 0.9}},
             {"at": 4, "scene": "threshold", "settings": {"distance": 0.0, "haze": 0.0}, "glide": 2},
-            {"at": 6.5, "scene": "loom"},
+            {"at": 6.5, "scene": "loom", "settings": tuned},
         ],
         "lyrics": [{"at": 1.0, "until": 3.0, "text": "a line arrives"}],
     }
@@ -279,7 +280,7 @@ json.dump(plan(True), open(f"{out}/look.treatment.json", "w"), indent=2)
 json.dump(plan(False), open(f"{out}/plain.treatment.json", "w"), indent=2)
 # The reference for the hand-over: the same Loom, on screen from the start.
 continuous = plan(True)
-continuous["segments"] = [{"at": 0, "scene": "loom"}]
+continuous["segments"] = [{"at": 0, "scene": "loom", "settings": tuned}]
 json.dump(continuous, open(f"{out}/continuous.treatment.json", "w"), indent=2)
 EOF
 run --treatment "$OUT/look.treatment.json" --save-project "$OUT/look.musi" \

@@ -11,8 +11,9 @@
 //! `beyond` names a scene (or `0` for the doorway's own luminous fog). That
 //! scene runs **inside** this one: this state owns its instance and advances
 //! it with the same frame, and the drawing half renders it offscreen and
-//! samples it through the doorway. Its tuning is the track's per-scene table
-//! for that scene — what a treatment's `scenes` block sets.
+//! samples it through the doorway. Having no section of its own while nested,
+//! it wears the tuning, routes and grade of its nearest section — the
+//! composition root overlays them on the frame's table (MV9-j).
 //!
 //! The doorway does not show the beyond at the size it would be at the far
 //! end of a deep room. It shows the beyond *fitted to the doorway* while the

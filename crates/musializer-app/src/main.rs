@@ -1520,8 +1520,8 @@ fn run(
         // need. A `SceneSettings` is 480 bytes of `f32`, and `apply` already
         // produces a whole copy whenever a route fires.
         let base = app.frame_settings(time_seconds);
-        let routed = app.routes().apply(app.scene.id(), &sources, &base);
-        let effective = routed.as_ref().unwrap_or(&base);
+        let routed = app.routed_settings(&sources, base);
+        let effective = &routed;
 
         let frame_lanes = project_frame_lanes(app.workspace.current(), time_seconds);
         report.frame_lanes = frame_lanes.status();
@@ -1639,7 +1639,7 @@ fn run(
             fonts: &fonts,
             scene: app.scene.id(),
             settings: &base,
-            routed: routed.as_ref(),
+            routed: Some(&routed),
             time_seconds,
             duration_seconds,
             playing,
@@ -2725,17 +2725,58 @@ impl App {
     /// when it is the eased table. Read by the preview and the export alike,
     /// so a glide is the same in both; never an edit target.
     fn frame_settings(&self, time_seconds: f64) -> SceneSettings {
+        let mut table = *self.settings();
         if let Some(track) = self.workspace.current() {
             if track.cue_settings_active {
                 if let Some(glided) = track
                     .scene_switches
                     .glided_settings(&track.scene_settings, time_seconds)
                 {
-                    return glided;
+                    table = glided;
+                }
+            }
+            // The threshold's doorway scene has no section of its own while it
+            // is nested, so it wears its nearest section's tuning (MV9-j) —
+            // the tuning the section after the cut will have, which is what
+            // makes walking through the door seamless without repeating that
+            // tuning in the treatment's `scenes` block.
+            if let Some(nested) = self.nested_scene(&table) {
+                if let Some(cue) = track.scene_switches.cue_near(time_seconds, nested) {
+                    if cue.settings.captured {
+                        table.apply_snapshot(nested, &cue.settings);
+                    }
                 }
             }
         }
-        *self.settings()
+        table
+    }
+
+    /// The scene the threshold on screen runs in its doorway, if it does.
+    fn nested_scene(&self, table: &SceneSettings) -> Option<SceneId> {
+        (self.scene.id() == SceneId::Threshold)
+            .then(|| {
+                musializer_core::scenes::threshold::beyond_scene(table.get(
+                    SceneId::Threshold,
+                    musializer_core::scene::settings::index::threshold::BEYOND,
+                ))
+            })
+            .flatten()
+    }
+
+    /// Routes evaluated over a frame's tuning: the scene's own, then — for a
+    /// threshold — the doorway scene's, so a routed control moves inside the
+    /// door as it will after the cut.
+    fn routed_settings(&self, sources: &RouteSources<'_>, base: SceneSettings) -> SceneSettings {
+        let mut table = self
+            .routes()
+            .apply(self.scene.id(), sources, &base)
+            .unwrap_or(base);
+        if let Some(nested) = self.nested_scene(&table) {
+            if let Some(routed) = self.routes().apply(nested, sources, &table) {
+                table = routed;
+            }
+        }
+        table
     }
 
     fn settings_mut(&mut self) -> &mut SceneSettings {
