@@ -91,6 +91,17 @@ pub struct DockContext {
     pub env: HashMap<String, String>,
     /// Shown in the header, so it is clear which folder a new tab opens in.
     pub place: String,
+    /// The treatment the window follows (WX-3), if any.
+    pub following: Option<Following>,
+}
+
+/// What the header says about the followed treatment.
+#[derive(Clone, Debug, Default)]
+pub struct Following {
+    pub name: String,
+    pub applied: u32,
+    /// Why the last change was refused, while it still stands.
+    pub error: Option<String>,
 }
 
 struct Tab {
@@ -146,6 +157,8 @@ pub struct DockOutput {
     pub toggle: bool,
     /// The user finished dragging the dock to this width.
     pub resized: Option<f32>,
+    /// Stop following the treatment (WX-3).
+    pub stop_following: bool,
 }
 
 #[derive(Default)]
@@ -344,7 +357,7 @@ impl Dock {
                         .max_rect(inner.shrink2(egui::vec2(10.0, 8.0)))
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
-                self.header(&mut child, context);
+                output.stop_following = self.header(&mut child, context);
                 child.add_space(6.0);
                 let body = child.available_rect_before_wrap();
                 let mut keyboard = false;
@@ -409,7 +422,9 @@ impl Dock {
         self.dragging
     }
 
-    fn header(&mut self, ui: &mut egui::Ui, context: &DockContext) {
+    /// Returns whether "stop following" was pressed.
+    fn header(&mut self, ui: &mut egui::Ui, context: &DockContext) -> bool {
+        let mut stop = false;
         let mut close = None;
         let mut open: Option<Option<Agent>> = None;
         ui.horizontal_wrapped(|ui| {
@@ -464,12 +479,47 @@ impl Dock {
             .truncate(),
         )
         .on_hover_text("New tabs start in this folder");
+        if let Some(following) = &context.following {
+            ui.horizontal(|ui| {
+                let (text, colour) = match &following.error {
+                    Some(_) => (
+                        format!("following {} · last change refused", following.name),
+                        Color32::from_rgb(0xd0, 0x6f, 0x63),
+                    ),
+                    None => (
+                        format!(
+                            "following {} · {}",
+                            following.name,
+                            match following.applied {
+                                0 => "applies on save".to_string(),
+                                1 => "applied once".to_string(),
+                                n => format!("applied {n} times"),
+                            }
+                        ),
+                        Color32::from_rgb(0x8f, 0xb8, 0x7c),
+                    ),
+                };
+                let label =
+                    ui.add(egui::Label::new(RichText::new(text).small().color(colour)).truncate());
+                let hover = following.error.clone().unwrap_or_else(|| {
+                    "Saving this file applies it to the preview at the playhead. \
+                     It is also in $MUSIALIZER_TREATMENT for new tabs."
+                        .to_string()
+                });
+                label.on_hover_text(hover);
+                stop = ui
+                    .small_button("stop")
+                    .on_hover_text("Stop following; the preview keeps what was applied")
+                    .clicked();
+            });
+        }
         if let Some(index) = close {
             self.close_tab(index);
         }
         if let Some(agent) = open {
             self.open_tab(agent, context, true);
         }
+        stop
     }
 }
 

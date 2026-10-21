@@ -185,6 +185,9 @@ pub enum ShellCommand {
     /// extension can never be audio or an image, and a bare `.json` still
     /// takes the oracle's else branch into the audio decoder.
     OpenDroppedProtocol(PathBuf),
+    /// Apply a `*.treatment.json` now and again whenever it changes (WX-3).
+    FollowTreatment(PathBuf),
+    StopFollowingTreatment,
     /// One keystroke of a running feedback protocol (HX-2). A command because
     /// every consequence — applying a snapshot, seeking the stream, appending
     /// the answer line — needs owners the shell may not hold.
@@ -293,6 +296,11 @@ impl ShellCommand {
             // contract is explicit that exporting must not dirty the project.
             ShellCommand::ImportLyrics => true,
             ShellCommand::ExportLyrics => false,
+            // Following is a session choice; each time the file applies, the
+            // handler marks the track dirty itself (WX-3), because the apply
+            // happens on a later frame than the command.
+            ShellCommand::FollowTreatment(_) => true,
+            ShellCommand::StopFollowingTreatment => false,
             // A protocol session is a session artifact (HX-1's whole argument
             // for the sidecar): answers append to `*.answers.jsonl`, and the
             // snapshots it applies are auditions, not authored work.
@@ -323,6 +331,9 @@ pub enum DropKind {
     /// `.json`: a bare `.json` is not a protocol and keeps taking the audio
     /// branch, exactly as the oracle's else arm would.
     Protocol,
+    /// `*.treatment.json` (WX-3): applied to the open track and then
+    /// followed, so an agent's edits show up as it saves them.
+    Treatment,
 }
 
 impl DropKind {
@@ -335,6 +346,7 @@ impl DropKind {
             DropKind::Image => "image",
             DropKind::Audio => "audio file",
             DropKind::Protocol => "protocol",
+            DropKind::Treatment => "treatment",
         }
     }
 }
@@ -358,6 +370,9 @@ pub fn classify_drop(path: &Path) -> DropKind {
     if name.ends_with(".protocol.json") {
         return DropKind::Protocol;
     }
+    if name.ends_with(".treatment.json") {
+        return DropKind::Treatment;
+    }
     let extension = path
         .extension()
         .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
@@ -378,6 +393,7 @@ fn drop_command(path: &Path) -> ShellCommand {
         DropKind::Image => ShellCommand::ImportAsciiImage(path),
         DropKind::Audio => ShellCommand::LoadTrack(path),
         DropKind::Protocol => ShellCommand::OpenDroppedProtocol(path),
+        DropKind::Treatment => ShellCommand::FollowTreatment(path),
     }
 }
 
@@ -6203,13 +6219,16 @@ mod tests {
     #[test]
     fn a_dropped_file_is_dispatched_by_what_it_is() {
         use std::path::PathBuf;
-        let cases: [(&str, DropKind); 20] = [
+        let cases: [(&str, DropKind); 22] = [
             // The protocol branch (HX-2): the double extension, case blind,
             // and never a bare `.json` — which stays on the oracle's audio
             // else-branch below.
             ("/tmp/cx4.protocol.json", DropKind::Protocol),
             ("/tmp/CX4.PROTOCOL.JSON", DropKind::Protocol),
             ("session.protocol.json", DropKind::Protocol),
+            // WX-3, the same double-extension rule.
+            ("/tmp/door.treatment.json", DropKind::Treatment),
+            ("/tmp/DOOR.TREATMENT.JSON", DropKind::Treatment),
             ("/tmp/settings.json", DropKind::Audio),
             // The project branch (`plug.c:7542`).
             ("/tmp/song.musi", DropKind::Project),
@@ -6245,6 +6264,7 @@ mod tests {
                 DropKind::Image => ShellCommand::ImportAsciiImage(path.clone()),
                 DropKind::Audio => ShellCommand::LoadTrack(path.clone()),
                 DropKind::Protocol => ShellCommand::OpenDroppedProtocol(path.clone()),
+                DropKind::Treatment => ShellCommand::FollowTreatment(path.clone()),
             };
             assert_eq!(command, expected_command, "{}", path.display());
         }
@@ -6257,13 +6277,14 @@ mod tests {
     /// derived from the same match, which is why this asserts the commands are
     /// pairwise distinct instead.
     #[test]
-    fn the_four_drop_arms_are_four_different_commands() {
+    fn the_five_drop_arms_are_five_different_commands() {
         use std::path::Path;
         let project = drop_command(Path::new("/tmp/a.musi"));
         let image = drop_command(Path::new("/tmp/a.png"));
         let audio = drop_command(Path::new("/tmp/a.wav"));
         let protocol = drop_command(Path::new("/tmp/a.protocol.json"));
-        let commands = [project, image, audio, protocol];
+        let treatment = drop_command(Path::new("/tmp/a.treatment.json"));
+        let commands = [project, image, audio, protocol, treatment];
         for (index, left) in commands.iter().enumerate() {
             for right in commands.iter().skip(index + 1) {
                 assert_ne!(left, right);
@@ -6276,9 +6297,10 @@ mod tests {
             DropKind::Image.attempted_noun(),
             DropKind::Audio.attempted_noun(),
             DropKind::Protocol.attempted_noun(),
+            DropKind::Treatment.attempted_noun(),
         ];
         let distinct: std::collections::HashSet<&str> = nouns.into_iter().collect();
-        assert_eq!(distinct.len(), 4, "two branches report the same noun");
+        assert_eq!(distinct.len(), 5, "two branches report the same noun");
     }
 
     /// The image picker's filter and the drop classifier must agree (D2).

@@ -47,10 +47,10 @@ timing of Door, No Room. It is a direction, not a pixel spec:
 | WX-0 | Plan and mockup | done 2026-10-21 |
 | WX-1 | The dock: a right-hand region the workspace makes room for | done 2026-10-21 |
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
-| WX-3 | The window follows a treatment file live | open |
+| WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | open |
 | WX-5 | The restyle the mockup proposes | open; wants the operator's reaction to the mockup |
-| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1/2; grows with each part |
+| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1/2/3; grows with each part |
 
 ### WX-1 — the dock
 
@@ -164,3 +164,18 @@ recorded NDJSON. The gate never starts a real agent and never spends credits.
   bold as a weight (it draws as a brighter colour). The terminal draws in
   egui's bundled Hack face. A glyph Hack and egui's fallbacks lack draws as
   a box.
+
+**WX-3 (2026-10-21).**
+
+- `--treatment` follows the file in a **session** only. A render, still,
+  sheet or probe applies it once, because an export must not change under
+  itself. `--ui-probe follow=1` opts a probe run in for the gate.
+- **Audio identity is content.** A followed treatment written next to
+  `door.mp3` directs `Door, No Room.musi`, whose audio is the bundled
+  `Door, No Room.assets/audio/<sha>.mp3`. Without this, every project in
+  `~/Music` would refuse the treatment that made it.
+- Each apply marks the project modified, so autosave writes the `.musi`.
+  The treatment is the source; the project follows it.
+- **Not done yet:** a "Follow a treatment…" picker in the dock. For now the
+  ways in are `--treatment` and dropping the file on the window.
+

@@ -103,6 +103,37 @@ Measured on this machine (RTX 3090, release build, through
 A look costs seconds and a draft costs half the track's length, which is the
 whole argument for sheeting before rendering.
 
+## Directing live, next to the window (WX-3)
+
+The loop above runs blind: an agent writes, renders a sheet and looks at it.
+When the operator has the window open, the window can follow the file instead:
+
+```sh
+musializer --project "Door, No Room.musi" --treatment door.treatment.json
+```
+
+In a session, as opposed to a render, still, sheet or probe run, `--treatment`
+**follows** the file. Each time it is saved, it is compiled again and applied
+to the open track **at the playhead**, and a notice says what applied. A file
+that does not compile changes nothing. The notice names the field, as the
+command line does, and the last version that applied stays on screen.
+Dropping a `*.treatment.json` on the window does the same. A treatment may
+direct a project whose audio is a bundled copy (`Song.assets/audio/<sha>.mp3`):
+the audio block matches by **content**, so the file the treatment was written
+beside and the project's copy are the same track.
+
+Changes are debounced: one is applied after the file has held still for a
+quarter of a second, so a half-written save is never read. Each change marks
+the project modified, so autosave keeps the `.musi` in step with the treatment.
+
+The dock (`Ctrl+\``, or the terminal button on the transport row) runs agents
+next to the window. Its tabs get `MUSIALIZER_TREATMENT` (the followed file),
+`MUSIALIZER_PROJECT`, `MUSIALIZER_TRACK`, `MUSIALIZER_BIN` and
+`MUSIALIZER_GUIDE` (this file), and start in the project's folder. An agent
+told "edit `$MUSIALIZER_TREATMENT`" directs the preview the operator is
+watching. Contact sheets and stills still go through `tools/headless_run.sh`,
+in a separate process; they never disturb the window.
+
 ## `tools/headless_run.sh`
 
 The application needs an X display even to export offline, so a caller without

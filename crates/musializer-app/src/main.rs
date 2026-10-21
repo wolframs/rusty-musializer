@@ -673,6 +673,7 @@ fn run(
                 &mut app,
                 &mut scratch,
                 play,
+                0.0,
             ) {
                 // The line a caller checks against the file it wrote. A
                 // treatment that applied and one that applied nothing both exit
@@ -691,6 +692,15 @@ fn run(
                     options.error = true;
                 }
             }
+        }
+    }
+
+    // WX-3: a session started with `--treatment` follows the file. A batch run
+    // (render, still, sheet, probe) applies it once, as before.
+    let mut follow: Option<TreatmentFollow> = None;
+    if let Some(path) = options.treatment.as_ref() {
+        if is_session_run(&options) || options.ui_probe.as_ref().is_some_and(|probe| probe.follow) {
+            follow = Some(TreatmentFollow::new(path));
         }
     }
 
@@ -1617,7 +1627,7 @@ fn run(
             );
             if let Some(bounds) = dock_rect {
                 ui::egui_editor::apply_theme(editor_backend.ctx(), editor.theme);
-                let context = dock_context(&app);
+                let context = dock_context(&app, follow.as_ref());
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
@@ -1635,6 +1645,9 @@ fn run(
                 let output = dock.show(editor_backend.ctx(), rect, &context);
                 if output.toggle {
                     dock_commands.push(app.shell.toggle_dock());
+                }
+                if output.stop_following {
+                    dock_commands.push(ShellCommand::StopFollowingTreatment);
                 }
                 if let Some(width) = output.resized {
                     app.shell.ui_preferences.dock_width = Some(width.round());
@@ -2019,8 +2032,59 @@ fn run(
             }
         }
 
+        // WX-3: the followed treatment, re-applied when it changes on disk.
+        let follow_due = follow
+            .as_mut()
+            .is_some_and(|follow| follow.poll(report.frames));
+        if follow_due {
+            if let Some(state) = follow.as_mut() {
+                let path = state.path.clone();
+                match apply_treatment(
+                    &path,
+                    &audio,
+                    &mut analysis,
+                    &mut music,
+                    &mut app,
+                    &mut scratch,
+                    false,
+                    time_seconds,
+                ) {
+                    Ok(line) => {
+                        state.applied += 1;
+                        state.last_error = None;
+                        if let Some(track) = app.workspace.current_mut() {
+                            track.mark_dirty(rl.get_time());
+                        }
+                        let summary = line.split(" — ").next().unwrap_or(&line).to_string();
+                        app.shell.notify(
+                            Severity::Success,
+                            &format!("Treatment applied: {}", state.name()),
+                            &summary,
+                        );
+                    }
+                    Err(error) => {
+                        state.refused += 1;
+                        app.shell.notify(
+                            Severity::Error,
+                            &format!("Treatment not applied: {}", state.name()),
+                            &format!("{error}. The preview keeps the last version that applied."),
+                        );
+                        state.last_error = Some(error);
+                    }
+                }
+            }
+        }
+
         for command in commands {
             match command {
+                ShellCommand::FollowTreatment(path) => {
+                    let mut state = TreatmentFollow::new(&path);
+                    // Applied now, not on the next change: a dropped file is a
+                    // request to see it.
+                    state.force();
+                    follow = Some(state);
+                }
+                ShellCommand::StopFollowingTreatment => follow = None,
                 ShellCommand::SetVolume(value) => {
                     volume = value.clamp(0.0, 1.0);
                     // Moving the slider unmutes. A slider that visibly moved while
@@ -2659,6 +2723,7 @@ fn run(
     }
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
+    report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
 
     report.print(
@@ -3704,6 +3769,10 @@ fn protocol_apply_activation(
 /// rule protocols and project assets use — and a pinned digest is checked
 /// before the file is opened. A treatment with no `audio` block directs
 /// whatever track the command line already opened.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the audio graph is split across the composition root's locals; bundling them for one function would be a struct nothing else uses"
+)]
 fn apply_treatment<'audio>(
     path: &Path,
     audio: &'audio RaylibAudio,
@@ -3712,6 +3781,7 @@ fn apply_treatment<'audio>(
     app: &mut App,
     scratch: &mut [f32],
     play: bool,
+    at_seconds: f64,
 ) -> Result<String, String> {
     use musializer_core::project::model::Metadata;
     use musializer_core::treatment::{format_time, Treatment};
@@ -3737,6 +3807,20 @@ fn apply_treatment<'audio>(
                         .verify_digest(&track.audio_sha256)
                         .map_err(|error| error.to_string())?;
                 }
+            }
+            // The same audio at another path: a project's bundled copy
+            // (`Song.assets/audio/<sha>.mp3`) and the file the treatment was
+            // written beside. Identity is the content, as it is for a
+            // protocol's track (WX-3, where a followed treatment directs the
+            // project that is open).
+            Some(track)
+                if !track.audio_sha256.is_empty()
+                    && project_files::sha256_file_hex(&canonical)
+                        .is_ok_and(|digest| digest.eq_ignore_ascii_case(&track.audio_sha256)) =>
+            {
+                declared
+                    .verify_digest(&track.audio_sha256)
+                    .map_err(|error| error.to_string())?;
             }
             // Opening a second track would not make it the current one
             // (`open_track` binds audio only to the first), so the treatment
@@ -3894,7 +3978,10 @@ fn apply_treatment<'audio>(
     );
 
     app.scene = SceneInstance::new(scene_host::descriptor(compiled.base_scene), seed);
-    app.apply_auto_scene_switch(0.0);
+    // The playhead the treatment lands at: 0 at startup, wherever the user is
+    // when a followed file changes (WX-3), so the preview shows the section
+    // under the playhead rather than jumping to the first.
+    app.apply_auto_scene_switch(at_seconds);
 
     let summary = compiled.summary;
     let lane = |count: Option<usize>, noun: &str| match count {
@@ -4838,11 +4925,111 @@ fn recover_session<'audio>(
     Ok(())
 }
 
+/// A treatment file the window follows (WX-3): when it changes on disk it is
+/// compiled again and applied to the open track at the playhead.
+///
+/// **Debounced on a quiet poll.** Polled every [`TreatmentFollow::EVERY`]
+/// frames; a change is applied once the file's size and modification time
+/// have held still for one whole poll. An editor or an agent that writes in
+/// more than one step would otherwise be read half-written, and the refusal
+/// that produced would be noise about a file that was about to be fine.
+struct TreatmentFollow {
+    path: PathBuf,
+    seen: Option<(std::time::SystemTime, u64)>,
+    pending: Option<(std::time::SystemTime, u64)>,
+    applied: u32,
+    refused: u32,
+    last_error: Option<String>,
+    forced: bool,
+}
+
+impl TreatmentFollow {
+    const EVERY: u64 = 15;
+
+    fn new(path: &Path) -> Self {
+        let mut follow = Self {
+            path: path.to_path_buf(),
+            seen: None,
+            pending: None,
+            applied: 0,
+            refused: 0,
+            last_error: None,
+            forced: false,
+        };
+        // What is on disk now is what startup applied.
+        follow.seen = follow.stamp();
+        follow
+    }
+
+    fn stamp(&self) -> Option<(std::time::SystemTime, u64)> {
+        let metadata = std::fs::metadata(&self.path).ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }
+
+    fn force(&mut self) {
+        self.forced = true;
+    }
+
+    fn name(&self) -> String {
+        self.path.file_name().map_or_else(
+            || self.path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
+
+    /// Whether the file should be applied this frame.
+    fn poll(&mut self, frame: u64) -> bool {
+        if std::mem::take(&mut self.forced) {
+            self.seen = self.stamp();
+            self.pending = None;
+            return true;
+        }
+        if !frame.is_multiple_of(Self::EVERY) {
+            return false;
+        }
+        let now = self.stamp();
+        if now.is_none() || now == self.seen {
+            self.pending = None;
+            return false;
+        }
+        if self.pending == now {
+            self.pending = None;
+            self.seen = now;
+            return true;
+        }
+        self.pending = now;
+        false
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "{} applied={} refused={}{}",
+            self.path.display(),
+            self.applied,
+            self.refused,
+            self.last_error
+                .as_deref()
+                .map_or_else(String::new, |error| format!(" last-error={error:?}"))
+        )
+    }
+}
+
 /// Where a new dock tab starts and what it is told (WX-2): the project's
 /// folder, else the track's, else home; and the paths an agent started there
 /// needs to direct this window from the command line.
-fn dock_context(app: &App) -> ui::dock::DockContext {
+fn dock_context(app: &App, follow: Option<&TreatmentFollow>) -> ui::dock::DockContext {
     let mut env = std::collections::HashMap::new();
+    let following = follow.map(|follow| {
+        env.insert(
+            "MUSIALIZER_TREATMENT".to_string(),
+            follow.path.display().to_string(),
+        );
+        ui::dock::Following {
+            name: follow.name(),
+            applied: follow.applied,
+            error: follow.last_error.clone(),
+        }
+    });
     if let Ok(exe) = std::env::current_exe() {
         env.insert("MUSIALIZER_BIN".to_string(), exe.display().to_string());
     }
@@ -4883,6 +5070,7 @@ fn dock_context(app: &App) -> ui::dock::DockContext {
         working_directory: directory,
         env,
         place,
+        following,
     }
 }
 
@@ -5389,6 +5577,8 @@ struct Report {
     /// The dock's tabs and the active terminal's screen (WX-2), filled once
     /// after the loop so a capture can assert what the terminal shows.
     dock: String,
+    /// The followed treatment's counts (WX-3), `None` when nothing is followed.
+    follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
     /// and by the same trick as `logical_window` above: `close_audio` resets the
     /// view to nothing on the way out, so reading it off the shell at print time
@@ -5457,6 +5647,7 @@ impl Default for Report {
             frame_lanes: FrameLaneStatus::default(),
             logical_window: (0.0, 0.0),
             dock: String::new(),
+            follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
             click_at: None,
@@ -5976,6 +6167,10 @@ impl Report {
         // ignored it — both draw a perfectly plausible timeline.
         println!("timeline:        {}", self.timeline);
         println!("dock:            {}", self.dock);
+        println!(
+            "treatment follow: {}",
+            self.follow.as_deref().unwrap_or("none")
+        );
         // The size invariant `EndTextureMode` does not restore. A frame that ends
         // with rlgl's pair still pointing at a caption blur buffer or an export
         // target scales the next scene panel by that ratio, and the result is a

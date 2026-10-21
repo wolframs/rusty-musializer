@@ -86,6 +86,32 @@ if pgrep -f 'echo dock-\$\(\(6\*7\)\)' >/dev/null 2>&1; then
     fail "a dock shell survived its window"
 fi
 
+# 5. WX-3: the window follows a treatment. Started on one plan, the file is
+#    rewritten mid-run to another, then to something that does not parse.
+#    The second must apply at the playhead; the third must be refused and
+#    leave the second on screen.
+treatment() {
+    printf '{"schema":"musializer.treatment/v1","audio":{"path":"fixture.wav"},"segments":[{"at":0,"scene":"%s"}]}\n' "$1"
+}
+treatment spectrum >"$OUT/live.treatment.json"
+( sleep 2.5; treatment loom >"$OUT/live.treatment.json.tmp" && mv "$OUT/live.treatment.json.tmp" "$OUT/live.treatment.json"
+  sleep 1.5; printf '{"schema": "musializer.treatment/v1", "segments": [' >"$OUT/live.treatment.json" ) &
+writer=$!
+tools/headless_run.sh --treatment "$OUT/live.treatment.json" \
+    --ui-probe 'follow=1' --probe-frames 420 >"$OUT/follow.log" 2>&1 || true
+wait "$writer" || true
+follow_line="$(grep -E '^treatment follow: ' "$OUT/follow.log" || true)"
+segments_line="$(grep -E '^scene segments: ' "$OUT/follow.log" || true)"
+printf '%s\n%s\n' "${follow_line:0:200}" "$segments_line"
+case "$follow_line" in
+    *"applied=1 refused=1"*) ;;
+    *) fail "the followed treatment did not apply once and refuse once" ;;
+esac
+case "$segments_line" in
+    *"loom"*) ;;
+    *) fail "the plan on screen is not the rewritten one (loom)" ;;
+esac
+
 if [ "$failures" -gt 0 ]; then
     printf '%d dock check(s) failed; logs in %s\n' "$failures" "$OUT"
     exit 1

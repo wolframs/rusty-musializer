@@ -339,6 +339,9 @@ pub struct UiProbe {
     /// on frame 20. Invented, WX-2: Xvfb has no keyboard, and a terminal that
     /// never ran anything photographs as an empty dark rectangle.
     pub dock_run: Option<String>,
+    /// `follow=1`: follow `--treatment` in a probe run too (WX-3). A batch
+    /// run applies it once; this lets the gate edit the file mid-run.
+    pub follow: bool,
     /// `dock-focus=1`: give the terminal the keyboard on frame 20, so the
     /// report can show the shell's shortcuts standing down.
     pub dock_focus: bool,
@@ -1241,6 +1244,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
         "tune-seed" => probe.tune_seed = Some(value.parse().ok()?),
         "dock" => probe.dock = parse_probe_flag(value)?,
+        "follow" => probe.follow = parse_probe_flag(value)?,
         "dock-run" => {
             probe.dock = true;
             probe.dock_run = Some(value.to_string());
