@@ -3538,7 +3538,7 @@ in a `.musi`, a rendered MP4, a number, or the documented CLI grammar.
 
 #### The repository has remotes now
 
-`origin` → Forgejo (`git@192.168.128.108:wolfram/rusty-musializer.git`, private),
+`origin` → Forgejo (his private, LAN-only instance),
 `github` → `https://github.com/wolframs/rusty-musializer.git` (public). Same
 convention as the C repository, per `../forgejo-sync-prompt.md`. The
 `worktree-agent-*` branches from the fan-out are **local only** and deliberately

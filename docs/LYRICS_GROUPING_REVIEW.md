@@ -8,7 +8,7 @@ adjudication is recorded separately for the next scoring pass.
 ## Listen and score
 
 On a device connected to the same Tailscale network, open
-[the prepared listening session](http://100.102.37.124:4180/).
+the prepared listening session (served on the workstation's Tailscale address, port 4180).
 It uses the existing Listening Lab. **Compare the timed lyrics** shows
 synchronized one-phrase and two-phrase caption previews above the answer form.
 Their timelines share the playhead, label cue edges in original-track time, and
