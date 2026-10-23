@@ -1016,11 +1016,26 @@ impl SceneRenderer {
         if let Some(active) = active.filter(|active| active.source == Source::Black) {
             self.transition_last = self.composite(d, active, boundary);
         }
+        // The pixel cartridge (2026-10-24), the finish's first step: over the
+        // caption, the transition and the fade to black, because a cartridge
+        // has one framebuffer — a smooth iris or an anti-aliased serif on top
+        // of the pixels is the cheap-mosaic look it exists to avoid. The kick
+        // it answers is read from this frame's own bands, like the caption's
+        // drives, so a still jolts as its video frame does.
+        let pixel = plan.map(|plan| plan.pixel_at(frame.time_seconds));
+        if let Some(pixel) = pixel.filter(|pixel| pixel.is_on()) {
+            let hit = musializer_core::project::pixel::hit_strength(
+                frame.audio.bands,
+                frame.audio.trails,
+            );
+            self.post
+                .pixel(d, boundary, &pixel, hit, frame.time_seconds, pixel_scale);
+        }
         // The finish (MV9-a), last: over the caption and over a fade to black,
         // so the type gets the bloom and the grain the picture under it does.
         if let Some(finish) = plan
             .map(|plan| plan.finish)
-            .filter(|finish| finish.is_active())
+            .filter(|finish| finish.shades())
         {
             self.post.finish(d, boundary, &finish, frame.time_seconds);
         }
