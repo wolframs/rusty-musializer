@@ -5559,8 +5559,8 @@ echo "--- D2: the ASCII image import and clear controls ---"
 # getting nothing — a picture cannot distinguish "absent" from "drawn in the
 # background colour", and this is the assertion that can.
 entry_capture "ascii-empty" "$ENTRY_DIR/store-ignored.json" \
-    "$ENTRY_DIR/source.wav" --ui-probe "click=150x400" || true
-entry_expect "ascii-empty" "click probe" "at=150x400 claimed=nothing"
+    "$ENTRY_DIR/source.wav" --ui-probe "click=282x403" || true
+entry_expect "ascii-empty" "click probe" "at=282x403 claimed=nothing"
 entry_expect "ascii-empty" "ascii" "none (procedural mode)"
 
 # Populated, through the command line rather than a picker, so the state is
@@ -5572,32 +5572,21 @@ entry_expect_contains "ascii-populated" "ascii" "54x54 glyphs from"
 # Cleared: the same seat now claims Clear, and the grid goes back to procedural.
 # Path, digest, cells and dimensions are one `Option`, so they cannot part ways.
 #
-# These two y coordinates sit *below the scene tile grid*, so they move by one
-# tile row when the scene grid reflows. SX1's eleventh scene moved them from
-# 375/400 to 377/402, and the first failure was worth more than the two pixels:
-# the click was landing on a scene tile, because eleven tiles no longer fit two
-# columns and the browser was *silently dropping* the last one. The scene was
-# selectable by `--scene phosphor` and invisible in the picker.
-#
-# If this fails after a registry change, re-measure — and measure it the way the
-# gate runs it, or you will get different numbers:
-#   - under `PATH="$ENTRY_NO_DIALOG_PATH"`, or pressing Import opens a real file
-#     dialog on the operator's desktop;
-#   - under this script's hermetic `XDG_CONFIG_HOME`, or the app reads the
-#     operator's own `ui.json` and lays the sidebar out at *their* width.
-# Both of those cost a round trip in the session that introduced this comment.
+# The grouped picker keeps Import and Clear on one row. Measured at 1280x720
+# under the gate's private config: Import x150, Clear x282, both y403. Clear
+# retains its widget id; only its seat changes. Keep the no-dialog guards below.
 entry_capture "ascii-cleared" "$ENTRY_DIR/store-ignored.json" \
     "$ENTRY_DIR/source.wav" --ascii-image "$ENTRY_DIR/picture.png" \
-    --ui-probe "click=150x402" || true
-entry_expect "ascii-cleared" "click probe" "at=150x402 claimed=0xd00000002"
+    --ui-probe "click=282x403" || true
+entry_expect "ascii-cleared" "click probe" "at=282x403 claimed=0xd00000002"
 entry_expect "ascii-cleared" "ascii" "none (procedural mode)"
 
 # Import takes the press and reaches the picker. Run with no backend on PATH, so
 # the refusal is deterministic and no modal is drawn on the capture display.
 ENTRY_PATH_OVERRIDE="$ENTRY_NO_DIALOG_PATH" \
     entry_capture "ascii-import-click" "$ENTRY_DIR/store-ignored.json" \
-        "$ENTRY_DIR/source.wav" --ui-probe "click=150x377" || true
-entry_expect "ascii-import-click" "click probe" "at=150x377 claimed=0xd00000001"
+        "$ENTRY_DIR/source.wav" --ui-probe "click=150x403" || true
+entry_expect "ascii-import-click" "click probe" "at=150x403 claimed=0xd00000001"
 
 # Staged with no track: the fourth state D2 asks for, and the one where the
 # scene browser is not even on screen. The frame is the evidence that the

@@ -79,7 +79,7 @@ BRIDGE_VERSION = "MUSIALIZER_BRIDGE\t1"
 SCENES = (
     "spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium",
     "constellation", "cadence", "loom", "pentagram", "phosphor", "clawd", "knot", "stage",
-    "threshold",
+    "threshold", "fluid", "chrome", "aurora", "metaballs", "tunnel", "voronoi", "iridescent",
 )
 
 # Keep the orchestrator's measured-cache contract dependency-free. These are

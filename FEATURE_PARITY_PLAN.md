@@ -66,6 +66,26 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**Scene families and native gallery — built, ready for operator review (2026-10-23).**
+Six compact family tabs keep 22 scenes reachable with readable tiles in the same
+sidebar. Liquid Chrome, Aurora Veil, Metaball Garden, Neon Tunnel, Voronoi Bloom
+and Iridescent Pool each have eight Tune controls, routes and persistence.
+All 22 tiles pass actual minimum-size clicks; the six scenes pass musical,
+portrait, project and export checks, and real-track release playback has no
+PCM drops or output underruns. Two Sol review rounds resolved shader portability
+and codec-test objections. Prior ids/settings and Fluid Ink are preserved.
+See [`docs/SCENE_GALLERY.md`](docs/SCENE_GALLERY.md) for design, reproduction,
+the corrected older picker fixtures and the exact verification boundary.
+The release is rebuilt; operator aesthetic judgment remains open.
+
+**Fluid Ink — built, ready for operator review (2026-10-23).** The requested
+music-stirred luminous fluid is selectable in Scenes, with eight Tune controls,
+routes and project persistence. Synthetic visual/replay checks and the disabled-
+response negative control pass; a muted release run entered through the scene
+tile on a real track has zero dropped PCM frames and zero output underruns.
+See [`docs/FLUID_INK.md`](docs/FLUID_INK.md) for the design, live-seek policy,
+measurements and reproduction commands. Aesthetic judgment remains the operator's.
+
 **LT2 — lyrics Assist repair, resumed for the recorded local-route failure (2026-09-08).**
 The frozen elapsed counter is repaired and verified during playback, pause and
 seeking; the release is rebuilt. The recorded local run freshly generated only

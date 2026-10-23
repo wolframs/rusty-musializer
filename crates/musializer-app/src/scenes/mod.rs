@@ -19,6 +19,13 @@ pub mod song_atlas;
 pub mod spectral_terrarium;
 pub mod spectrum;
 
+pub mod aurora_veil;
+pub mod fluid_ink;
+pub mod iridescent_pool;
+pub mod liquid_chrome;
+pub mod metaball_garden;
+pub mod neon_tunnel;
 pub mod openai_knot;
 pub mod stage;
 pub mod threshold;
+pub mod voronoi_bloom;

@@ -33,6 +33,7 @@ DEFAULT_FILES = [
     "tools/headless_run.sh",
     "tools/treatment_check.sh",
     "tools/dock_check.sh",
+    "tools/fluid_ink_check.sh",
 ]
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 

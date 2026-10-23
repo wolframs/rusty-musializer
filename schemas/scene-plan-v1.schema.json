@@ -21,7 +21,7 @@
           "id": {"type": "string", "pattern": "^section-[0-9]{4}$"},
           "start_seconds": {"type": "number", "minimum": 0},
           "end_seconds": {"type": "number", "exclusiveMinimum": 0},
-          "recommended_scene": {"enum": ["spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium", "constellation", "cadence", "loom", "pentagram"]},
+          "recommended_scene": {"enum": ["spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium", "constellation", "cadence", "loom", "pentagram", "phosphor", "clawd", "knot", "stage", "threshold", "fluid", "chrome", "aurora", "metaballs", "tunnel", "voronoi", "iridescent"]},
           "transition_strength": {"type": "number", "minimum": 0, "maximum": 1},
           "reasons": {"type": "array", "minItems": 1, "items": {"type": "object"}}
         }

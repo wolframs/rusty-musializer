@@ -276,6 +276,83 @@ pub mod index {
         pub const PACE: usize = 9;
         pub const FAMILIAR: usize = 10;
     }
+    /// Website-inspired scene controls, appended in persisted order.
+    pub mod chrome {
+        pub const FLOW: usize = 0;
+        pub const SCALE: usize = 1;
+        pub const RIPPLE: usize = 2;
+        pub const RESPONSE: usize = 3;
+        pub const HUE: usize = 4;
+        pub const SHINE: usize = 5;
+        pub const CONTRAST: usize = 6;
+        pub const GRAIN: usize = 7;
+    }
+    /// Website-inspired scene controls, appended in persisted order.
+    pub mod aurora {
+        pub const FLOW: usize = 0;
+        pub const HEIGHT: usize = 1;
+        pub const FOLDS: usize = 2;
+        pub const RESPONSE: usize = 3;
+        pub const HUE: usize = 4;
+        pub const GLOW: usize = 5;
+        pub const STARS: usize = 6;
+        pub const SPREAD: usize = 7;
+    }
+    /// Website-inspired scene controls, appended in persisted order.
+    pub mod metaballs {
+        pub const FLOW: usize = 0;
+        pub const COUNT: usize = 1;
+        pub const SIZE: usize = 2;
+        pub const RESPONSE: usize = 3;
+        pub const HUE: usize = 4;
+        pub const METAL: usize = 5;
+        pub const GLOW: usize = 6;
+        pub const ORBIT: usize = 7;
+    }
+    /// Website-inspired scene controls, appended in persisted order.
+    pub mod tunnel {
+        pub const SPEED: usize = 0;
+        pub const TWIST: usize = 1;
+        pub const SIDES: usize = 2;
+        pub const RESPONSE: usize = 3;
+        pub const HUE: usize = 4;
+        pub const GLOW: usize = 5;
+        pub const DEPTH: usize = 6;
+        pub const WIDTH: usize = 7;
+    }
+    /// Website-inspired scene controls, appended in persisted order.
+    pub mod voronoi {
+        pub const FLOW: usize = 0;
+        pub const CELLS: usize = 1;
+        pub const EDGES: usize = 2;
+        pub const RESPONSE: usize = 3;
+        pub const HUE: usize = 4;
+        pub const GLOW: usize = 5;
+        pub const DRIFT: usize = 6;
+        pub const FACET: usize = 7;
+    }
+    /// Website-inspired scene controls, appended in persisted order.
+    pub mod iridescent {
+        pub const FLOW: usize = 0;
+        pub const SCALE: usize = 1;
+        pub const RIPPLE: usize = 2;
+        pub const RESPONSE: usize = 3;
+        pub const HUE: usize = 4;
+        pub const SHIMMER: usize = 5;
+        pub const LIGHT: usize = 6;
+        pub const SPREAD: usize = 7;
+    }
+    /// Fluid Ink: persisted control order, append only.
+    pub mod fluid {
+        pub const FLOW: usize = 0;
+        pub const CURL: usize = 1;
+        pub const RADIUS: usize = 2;
+        pub const LIFETIME: usize = 3;
+        pub const RESPONSE: usize = 4;
+        pub const HUE: usize = 5;
+        pub const GLOW: usize = 6;
+        pub const RELIEF: usize = 7;
+    }
     /// Threshold (post-legacy, 2026-10-21, MV9-d).
     pub mod threshold {
         /// Camera distance from the door: 1 across the room, 0 in the doorway.
@@ -558,23 +635,107 @@ const STAGE: &[SettingDescriptor] = &[
     D::toggle("settings.stage.familiar", "Cat familiar", 0.0),
 ];
 
-/// Threshold (MV9-d). `beyond` is a scene index plus one, so its maximum is
-/// the index of the last scene before the threshold itself plus one; a scene
-/// appended later raises it, which is a deliberate re-pin of the post-legacy
-/// harness file rather than a drift.
+/// Threshold (MV9-d). `beyond` is a scene index plus one; all registered scenes
+/// except Threshold itself may be nested. New scenes raise this maximum
+/// without changing any previously valid selection.
 #[rustfmt::skip]
 const THRESHOLD: &[SettingDescriptor] = &[
     D::slider("settings.threshold.distance", "Camera distance", 0.00, 1.00, 1.00, 2),
     D::slider("settings.threshold.open", "Door open", 0.00, 1.00, 0.00, 2),
     D::slider("settings.threshold.light", "Light", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.haze", "Doorway haze", 0.00, 1.00, 0.60, 2),
-    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 14.00, 0.00, 0),
+    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 22.00, 0.00, 0),
     D::slider("settings.threshold.presences", "Presences", 0.00, 2.00, 0.00, 0),
     D::slider("settings.threshold.motes", "Motes", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.mist", "Mist", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.hue", "Light hue (deg)", -180.0, 180.0, 0.0, 0),
     D::slider("settings.threshold.sway", "Camera sway", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.reflection", "Floor reflection", 0.00, 1.00, 0.60, 2),
+];
+
+/// Fluid Ink (2026-10-23). Lifetime is the dye half-life in track seconds.
+#[rustfmt::skip]
+const FLUID: &[SettingDescriptor] = &[
+    D::slider("settings.fluid.flow", "Flow speed", 0.10, 2.50, 1.00, 2),
+    D::slider("settings.fluid.curl", "Curl", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.fluid.radius", "Ink size", 0.015, 0.12, 0.045, 3),
+    D::slider("settings.fluid.lifetime", "Ink life (s)", 0.50, 12.0, 3.50, 2),
+    D::slider("settings.fluid.response", "Music response", 0.00, 2.00, 1.00, 2),
+    D::slider("settings.fluid.hue", "Ink hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.fluid.glow", "Luminous ink", 0.00, 2.00, 0.85, 2),
+    D::slider("settings.fluid.relief", "Surface light", 0.00, 2.00, 0.80, 2),
+];
+
+#[rustfmt::skip]
+const CHROME: &[SettingDescriptor] = &[
+    D::slider("settings.chrome.flow", "Flow speed", 0.0, 2.0, 0.65, 2),
+    D::slider("settings.chrome.scale", "Fold scale", 0.3, 3.0, 1.0, 2),
+    D::slider("settings.chrome.ripple", "Ripples", 0.0, 2.0, 0.8, 2),
+    D::slider("settings.chrome.response", "Music response", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.chrome.hue", "Highlight hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.chrome.shine", "Shine", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.chrome.contrast", "Contrast", 0.3, 2.0, 1.0, 2),
+    D::slider("settings.chrome.grain", "Grain", 0.0, 1.0, 0.12, 2),
+];
+
+#[rustfmt::skip]
+const AURORA: &[SettingDescriptor] = &[
+    D::slider("settings.aurora.flow", "Flow speed", 0.0, 2.0, 0.5, 2),
+    D::slider("settings.aurora.height", "Curtain height", 0.2, 1.5, 0.8, 2),
+    D::slider("settings.aurora.folds", "Curtain folds", 1.0, 12.0, 5.0, 0),
+    D::slider("settings.aurora.response", "Music response", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.aurora.hue", "Aurora hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.aurora.glow", "Glow", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.aurora.stars", "Stars", 0.0, 1.0, 0.35, 2),
+    D::slider("settings.aurora.spread", "Curtain spread", 0.3, 2.0, 1.0, 2),
+];
+
+#[rustfmt::skip]
+const METABALLS: &[SettingDescriptor] = &[
+    D::slider("settings.metaballs.flow", "Flow speed", 0.0, 2.0, 0.65, 2),
+    D::slider("settings.metaballs.count", "Blobs", 3.0, 9.0, 6.0, 0),
+    D::slider("settings.metaballs.size", "Blob size", 0.35, 1.5, 0.8, 2),
+    D::slider("settings.metaballs.response", "Music response", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.metaballs.hue", "Material hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.metaballs.metal", "Metal", 0.0, 1.0, 0.45, 2),
+    D::slider("settings.metaballs.glow", "Glow", 0.0, 2.0, 0.5, 2),
+    D::slider("settings.metaballs.orbit", "Orbit", 0.0, 2.0, 1.0, 2),
+];
+
+#[rustfmt::skip]
+const TUNNEL: &[SettingDescriptor] = &[
+    D::slider("settings.tunnel.speed", "Travel speed", 0.0, 3.0, 0.75, 2),
+    D::slider("settings.tunnel.twist", "Twist", -2.0, 2.0, 0.6, 2),
+    D::slider("settings.tunnel.sides", "Sides", 3.0, 12.0, 6.0, 0),
+    D::slider("settings.tunnel.response", "Music response", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.tunnel.hue", "Neon hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.tunnel.glow", "Glow", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.tunnel.depth", "Depth", 0.5, 3.0, 1.0, 2),
+    D::slider("settings.tunnel.width", "Aperture", 0.4, 1.6, 1.0, 2),
+];
+
+#[rustfmt::skip]
+const VORONOI: &[SettingDescriptor] = &[
+    D::slider("settings.voronoi.flow", "Flow speed", 0.0, 2.0, 0.5, 2),
+    D::slider("settings.voronoi.cells", "Cell density", 3.0, 14.0, 7.0, 0),
+    D::slider("settings.voronoi.edges", "Seams", 0.0, 1.0, 0.35, 2),
+    D::slider("settings.voronoi.response", "Music response", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.voronoi.hue", "Glass hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.voronoi.glow", "Glow", 0.0, 2.0, 0.65, 2),
+    D::slider("settings.voronoi.drift", "Site drift", 0.0, 2.0, 0.8, 2),
+    D::slider("settings.voronoi.facet", "Facets", 0.0, 1.0, 0.5, 2),
+];
+
+#[rustfmt::skip]
+const IRIDESCENT: &[SettingDescriptor] = &[
+    D::slider("settings.iridescent.flow", "Flow speed", 0.0, 2.0, 0.5, 2),
+    D::slider("settings.iridescent.scale", "Film scale", 0.3, 3.0, 1.0, 2),
+    D::slider("settings.iridescent.ripple", "Ripples", 0.0, 2.0, 0.7, 2),
+    D::slider("settings.iridescent.response", "Music response", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.iridescent.hue", "Film hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.iridescent.shimmer", "Shimmer", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.iridescent.light", "Grazing light", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.iridescent.spread", "Ripple spread", 0.3, 2.0, 1.0, 2),
 ];
 
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
@@ -593,6 +754,13 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     KNOT,
     STAGE,
     THRESHOLD,
+    FLUID,
+    CHROME,
+    AURORA,
+    METABALLS,
+    TUNNEL,
+    VORONOI,
+    IRIDESCENT,
 ];
 
 /// Descriptors for one scene.
@@ -832,7 +1000,15 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         // shape to admit.
         SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream | SceneId::Clawd => false,
         SceneId::OpenAiKnot => count == 8,
-        SceneId::Stage | SceneId::Threshold => false,
+        SceneId::Stage
+        | SceneId::Threshold
+        | SceneId::FluidInk
+        | SceneId::LiquidChrome
+        | SceneId::AuroraVeil
+        | SceneId::MetaballGarden
+        | SceneId::NeonTunnel
+        | SceneId::VoronoiBloom
+        | SceneId::IridescentPool => false,
     }
 }
 

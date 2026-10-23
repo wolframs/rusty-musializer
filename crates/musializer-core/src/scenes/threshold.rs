@@ -280,10 +280,7 @@ mod tests {
         let bound = crate::scene::settings::descriptor(SceneId::Threshold, control::BEYOND)
             .unwrap()
             .maximum;
-        assert_eq!(
-            beyond_scene(bound),
-            SceneId::from_index(SceneId::Threshold.index() - 1)
-        );
+        assert_eq!(beyond_scene(bound), Some(SceneId::IridescentPool));
     }
 
     #[test]

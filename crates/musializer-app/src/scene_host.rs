@@ -104,6 +104,13 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::OpenAiKnot => |_| Box::new(StatelessScene::new(SceneId::OpenAiKnot)),
             SceneId::Stage => |_| Box::new(StatelessScene::new(SceneId::Stage)),
             SceneId::Threshold => |_| Box::new(StatelessScene::new(SceneId::Threshold)),
+            SceneId::FluidInk => |_| Box::new(StatelessScene::new(SceneId::FluidInk)),
+            SceneId::LiquidChrome => |_| Box::new(StatelessScene::new(SceneId::LiquidChrome)),
+            SceneId::AuroraVeil => |_| Box::new(StatelessScene::new(SceneId::AuroraVeil)),
+            SceneId::MetaballGarden => |_| Box::new(StatelessScene::new(SceneId::MetaballGarden)),
+            SceneId::NeonTunnel => |_| Box::new(StatelessScene::new(SceneId::NeonTunnel)),
+            SceneId::VoronoiBloom => |_| Box::new(StatelessScene::new(SceneId::VoronoiBloom)),
+            SceneId::IridescentPool => |_| Box::new(StatelessScene::new(SceneId::IridescentPool)),
         },
     }
 }
@@ -153,7 +160,19 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         SceneId::OpenAiKnot => "(no oracle: post-legacy addition)",
         SceneId::Stage => "(no oracle: post-legacy addition)",
         SceneId::Threshold => "(no oracle: post-legacy addition)",
+        SceneId::FluidInk => "(no oracle: post-legacy addition)",
+        SceneId::LiquidChrome => "(no oracle: post-legacy addition)",
+        SceneId::AuroraVeil => "(no oracle: post-legacy addition)",
+        SceneId::MetaballGarden => "(no oracle: post-legacy addition)",
+        SceneId::NeonTunnel => "(no oracle: post-legacy addition)",
+        SceneId::VoronoiBloom => "(no oracle: post-legacy addition)",
+        SceneId::IridescentPool => "(no oracle: post-legacy addition)",
     }
+}
+
+/// The scene's current directing vocabulary doubles as its picker tooltip.
+pub fn scene_picker_hint(id: SceneId) -> &'static str {
+    musializer_core::treatment::scene_look(id)
 }
 
 /// GPU resources the drawing halves share.
@@ -250,6 +269,13 @@ pub struct SceneRenderer {
     post: Post,
     /// The threshold's shader and report (MV9-d).
     threshold: scenes::threshold::ThresholdResources,
+    fluid: scenes::fluid_ink::FluidResources,
+    chrome: scenes::liquid_chrome::Resources,
+    aurora: scenes::aurora_veil::Resources,
+    metaballs: scenes::metaball_garden::Resources,
+    tunnel: scenes::neon_tunnel::Resources,
+    voronoi: scenes::voronoi_bloom::Resources,
+    iridescent: scenes::iridescent_pool::Resources,
     /// Where the threshold's doorway scene is drawn each frame.
     beyond: Canvas,
 }
@@ -306,6 +332,13 @@ impl SceneRenderer {
             transition_frames: 0,
             post: Post::load(rl, thread),
             threshold: scenes::threshold::ThresholdResources::load(rl, thread),
+            fluid: scenes::fluid_ink::FluidResources::load(rl, thread),
+            chrome: scenes::liquid_chrome::Resources::load(rl, thread),
+            aurora: scenes::aurora_veil::Resources::load(rl, thread),
+            metaballs: scenes::metaball_garden::Resources::load(rl, thread),
+            tunnel: scenes::neon_tunnel::Resources::load(rl, thread),
+            voronoi: scenes::voronoi_bloom::Resources::load(rl, thread),
+            iridescent: scenes::iridescent_pool::Resources::load(rl, thread),
             beyond: Canvas::new(),
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
@@ -507,6 +540,24 @@ impl SceneRenderer {
     #[must_use]
     pub fn describe_stage(&self) -> String {
         self.stage.describe()
+    }
+
+    /// Last draw status of a website-inspired scene, including resource refusal.
+    pub fn describe_new_scene(&self, id: SceneId) -> &str {
+        match id {
+            SceneId::LiquidChrome => &self.chrome.report,
+            SceneId::AuroraVeil => &self.aurora.report,
+            SceneId::MetaballGarden => &self.metaballs.report,
+            SceneId::NeonTunnel => &self.tunnel.report,
+            SceneId::VoronoiBloom => &self.voronoi.report,
+            SceneId::IridescentPool => &self.iridescent.report,
+            _ => "not a website scene",
+        }
+    }
+
+    /// Whether Fluid Ink uploaded its dye and drew through its display shader.
+    pub fn describe_fluid(&self) -> &str {
+        &self.fluid.report
     }
 
     /// One line naming what Threshold last drew: the camera, the door, and
@@ -813,6 +864,53 @@ impl SceneRenderer {
                             scenes::stage::draw(d, fonts, frame, state, boundary, pixel_scale);
                     }
                 }
+                SceneId::LiquidChrome => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::liquid_chrome::draw(d, &mut self.chrome, state, frame, boundary);
+                    }
+                }
+                SceneId::AuroraVeil => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::aurora_veil::draw(d, &mut self.aurora, state, frame, boundary);
+                    }
+                }
+                SceneId::MetaballGarden => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::metaball_garden::draw(
+                            d,
+                            &mut self.metaballs,
+                            state,
+                            frame,
+                            boundary,
+                        );
+                    }
+                }
+                SceneId::NeonTunnel => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::neon_tunnel::draw(d, &mut self.tunnel, state, frame, boundary);
+                    }
+                }
+                SceneId::VoronoiBloom => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::voronoi_bloom::draw(d, &mut self.voronoi, state, frame, boundary);
+                    }
+                }
+                SceneId::IridescentPool => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::iridescent_pool::draw(
+                            d,
+                            &mut self.iridescent,
+                            state,
+                            frame,
+                            boundary,
+                        );
+                    }
+                }
+                SceneId::FluidInk => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::fluid_ink::draw(d, &mut self.fluid, state, frame, boundary);
+                    }
+                }
                 SceneId::Threshold => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::threshold::draw(
@@ -1070,6 +1168,13 @@ mod tests {
                 "knot",
                 "stage",
                 "threshold",
+                "fluid",
+                "chrome",
+                "aurora",
+                "metaballs",
+                "tunnel",
+                "voronoi",
+                "iridescent",
             ]
         );
     }
@@ -1102,6 +1207,13 @@ mod tests {
                 SceneId::OpenAiKnot => any.is::<cs::openai_knot::KnotState>(),
                 SceneId::Stage => any.is::<cs::stage::StageState>(),
                 SceneId::Threshold => any.is::<cs::threshold::ThresholdState>(),
+                SceneId::FluidInk => any.is::<cs::fluid_ink::FluidInkState>(),
+                SceneId::LiquidChrome => any.is::<cs::liquid_chrome::LiquidChromeState>(),
+                SceneId::AuroraVeil => any.is::<cs::aurora_veil::AuroraVeilState>(),
+                SceneId::MetaballGarden => any.is::<cs::metaball_garden::MetaballGardenState>(),
+                SceneId::NeonTunnel => any.is::<cs::neon_tunnel::NeonTunnelState>(),
+                SceneId::VoronoiBloom => any.is::<cs::voronoi_bloom::VoronoiBloomState>(),
+                SceneId::IridescentPool => any.is::<cs::iridescent_pool::IridescentPoolState>(),
             };
             assert!(
                 recovered,

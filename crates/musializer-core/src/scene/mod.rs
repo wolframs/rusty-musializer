@@ -56,6 +56,14 @@ pub enum SceneId {
     Stage = 13,
     /// A room, a door, and another scene through it (2026-10-21, MV9-d).
     Threshold = 14,
+    /// Music-stirred luminous dye (2026-10-23).
+    FluidInk = 15,
+    LiquidChrome = 16,
+    AuroraVeil = 17,
+    MetaballGarden = 18,
+    NeonTunnel = 19,
+    VoronoiBloom = 20,
+    IridescentPool = 21,
 }
 
 /// Number of scenes.
@@ -81,7 +89,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = SceneId::Threshold as usize + 1;
+pub const SCENE_COUNT: usize = SceneId::IridescentPool as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -109,6 +117,13 @@ impl SceneId {
         SceneId::OpenAiKnot,
         SceneId::Stage,
         SceneId::Threshold,
+        SceneId::FluidInk,
+        SceneId::LiquidChrome,
+        SceneId::AuroraVeil,
+        SceneId::MetaballGarden,
+        SceneId::NeonTunnel,
+        SceneId::VoronoiBloom,
+        SceneId::IridescentPool,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -164,6 +179,13 @@ impl SceneId {
             SceneId::OpenAiKnot => "OpenAI Knot",
             SceneId::Stage => "Stage",
             SceneId::Threshold => "Threshold",
+            SceneId::FluidInk => "Fluid Ink",
+            SceneId::LiquidChrome => "Liquid Chrome",
+            SceneId::AuroraVeil => "Aurora Veil",
+            SceneId::MetaballGarden => "Metaball Garden",
+            SceneId::NeonTunnel => "Neon Tunnel",
+            SceneId::VoronoiBloom => "Voronoi Bloom",
+            SceneId::IridescentPool => "Iridescent Pool",
         }
     }
 
@@ -194,6 +216,13 @@ impl SceneId {
             SceneId::OpenAiKnot => "knot",
             SceneId::Stage => "stage",
             SceneId::Threshold => "threshold",
+            SceneId::FluidInk => "fluid",
+            SceneId::LiquidChrome => "chrome",
+            SceneId::AuroraVeil => "aurora",
+            SceneId::MetaballGarden => "metaballs",
+            SceneId::NeonTunnel => "tunnel",
+            SceneId::VoronoiBloom => "voronoi",
+            SceneId::IridescentPool => "iridescent",
         }
     }
 
@@ -726,6 +755,13 @@ mod tests {
         assert_eq!(SceneId::OpenAiKnot as u32, 12);
         assert_eq!(SceneId::Stage as u32, 13);
         assert_eq!(SceneId::Threshold as u32, 14);
+        assert_eq!(SceneId::FluidInk as u32, 15);
+        assert_eq!(SceneId::LiquidChrome as u32, 16);
+        assert_eq!(SceneId::AuroraVeil as u32, 17);
+        assert_eq!(SceneId::MetaballGarden as u32, 18);
+        assert_eq!(SceneId::NeonTunnel as u32, 19);
+        assert_eq!(SceneId::VoronoiBloom as u32, 20);
+        assert_eq!(SceneId::IridescentPool as u32, 21);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
         assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
         assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);
@@ -759,6 +795,13 @@ mod tests {
             "knot",
             "stage",
             "threshold",
+            "fluid",
+            "chrome",
+            "aurora",
+            "metaballs",
+            "tunnel",
+            "voronoi",
+            "iridescent",
         ];
         for (id, name) in SceneId::ALL.into_iter().zip(expected) {
             assert_eq!(id.stable_name(), name);

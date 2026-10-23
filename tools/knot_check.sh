@@ -41,8 +41,10 @@ launch "$OUT/phrase.wav" --scene knot --hud=0 --size 1280x720 \
     --probe-frames 160 --probe-shot "$OUT/preview.png" > "$OUT/preview.log" 2>&1
 launch "$OUT/phrase.wav" --scene knot --hud=0 --size 1280x720 --ui-probe play=0,time=0 \
     --probe-frames 4 --probe-shot "$OUT/idle.png" > "$OUT/idle.log" 2>&1
+# Browse Geometry first, then press the knot's stable tile at minimum size.
+# The old flat-grid coordinate now belongs to Song Atlas.
 launch "$OUT/phrase.wav" --scene spectrum --hud=0 --size 960x640 \
-    --ui-probe play=1,click=42x260 --probe-frames 16 --probe-shot "$OUT/minimum.png" > "$OUT/minimum.log" 2>&1
+    --ui-probe play=1,scene-family=geometry,click=82x252 --probe-frames 16 --probe-shot "$OUT/minimum.png" > "$OUT/minimum.log" 2>&1
 # Warm preview versus cold export: both must reconstruct identical scene state.
 for mode in warm cold; do
     args=()

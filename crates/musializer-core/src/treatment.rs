@@ -674,7 +674,7 @@ impl Treatment {
                 return Err(invalid(
                     "lyrics",
                     "must be a list of lines or the path of an aligned-lyrics file",
-                ))
+                ));
             }
         };
 
@@ -1131,7 +1131,7 @@ fn parse_grade(place: &str, value: &Value) -> Result<Option<Grade>, TreatmentErr
                             "needs a \"palette\": one of {}, or a list of colours",
                             palette_names()
                         ),
-                    ))
+                    ));
                 }
             };
             for (key, member) in members {
@@ -1155,7 +1155,7 @@ fn parse_grade(place: &str, value: &Value) -> Result<Option<Grade>, TreatmentErr
                                 "unknown field \"{unknown}\"; a grade has palette, map, \
                                  shift_from, shift_by and shift_width"
                             ),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1165,7 +1165,7 @@ fn parse_grade(place: &str, value: &Value) -> Result<Option<Grade>, TreatmentErr
             return Err(invalid(
                 place,
                 "must be a palette's name, \"none\", or {\"palette\": ..., \"map\": ...}",
-            ))
+            ));
         }
     };
     if !grade.is_valid() {
@@ -1211,7 +1211,7 @@ fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
                     return Err(invalid(
                         format!("{place}.base"),
                         "must be \"film\" or \"none\"",
-                    ))
+                    ));
                 }
                 None => Finish::NONE,
             };
@@ -1249,7 +1249,7 @@ fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
                                  bloom_threshold, bloom_radius, shoulder, tone, shadow, \
                                  highlight, vignette and grain"
                             ),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1303,7 +1303,7 @@ fn parse_transition(place: &str, value: &Value) -> Result<Transition, TreatmentE
             return Err(invalid(
                 place,
                 "must be a transition's name or {\"kind\": ..., \"seconds\": ...}",
-            ))
+            ));
         }
     };
     let transition = Transition::new(kind, seconds);
@@ -1852,6 +1852,34 @@ fn parse_caption_style(wire: CaptionStyleWire) -> Result<CaptionStyle, Treatment
 #[must_use]
 pub fn scene_look(scene: SceneId) -> &'static str {
     match scene {
+        SceneId::LiquidChrome => {
+            "Flowing reflective chrome folds with broad moving highlights. Bass bends the material and transients ripple it; flow, scale, shine and contrast direct the surface."
+        }
+        SceneId::AuroraVeil => {
+            "Layered northern-light curtains over a dark starfield, with folding luminous filaments. Track-relative energy lifts the curtains and bass shapes their breadth."
+        }
+        SceneId::MetaballGarden => {
+            "A glossy three-dimensional sculpture of blobs that merge and pull apart. Bass swells their mass; count, size, orbit and metal change the sculpture."
+        }
+        SceneId::NeonTunnel => {
+            "Forward travel through twisted polygonal neon ribs. Bass opens the aperture and spectral energy lights the depth. Speed, sides, twist and glow direct the flight."
+        }
+        SceneId::VoronoiBloom => {
+            "A drifting stained-glass mosaic with moving cells and luminous seams. The music lights cells and facets; density, edges and site drift change its structure."
+        }
+        SceneId::IridescentPool => {
+            "Thin-film interference colours over dark rippling water. Transients disturb the film; scale, shimmer and grazing light reveal its prismatic rings."
+        }
+        SceneId::FluidInk => {
+            "Luminous lime, turquoise and orchid dye curling through a fluid. Bass \
+             pushes broad plumes; loudness and transients stir the other moving jets. \
+             `flow` changes speed, `curl` the eddies, `radius` the ink jets and \
+             `lifetime` how long their colour hangs in the water. `response` controls \
+             musical force; zero leaves a slow ambient flow. `hue`, `glow` and \
+             `relief` set the light. Persistent deterministic history, including \
+             during offline still/clip replay. Portrait crops the vessel without \
+             stretching the vortices."
+        }
         SceneId::Spectrum => {
             "Log-frequency bars with glowing caps standing on a reflective floor. The \
              plainest reading of the mix: silent bands are simply absent."
@@ -1984,6 +2012,7 @@ pub fn vocabulary() -> Value {
             json!({
                 "name": scene.stable_name(),
                 "display_name": scene.display_name(),
+                "family": crate::ui::scene_browser::SceneFamily::of(scene).stable_name(),
                 "look": scene_look(scene),
                 "settings": controls,
             })

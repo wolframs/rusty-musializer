@@ -59,10 +59,73 @@ scene 14 count 11
 14 1 settings.threshold.open|Door open|0|1|0|2|0
 14 2 settings.threshold.light|Light|0|2|1|2|0
 14 3 settings.threshold.haze|Doorway haze|0|1|0.600000024|2|0
-14 4 settings.threshold.beyond|Beyond (0 = haze)|0|14|0|0|0
+14 4 settings.threshold.beyond|Beyond (0 = haze)|0|22|0|0|0
 14 5 settings.threshold.presences|Presences|0|2|0|0|0
 14 6 settings.threshold.motes|Motes|0|2|1|2|0
 14 7 settings.threshold.mist|Mist|0|2|1|2|0
 14 8 settings.threshold.hue|Light hue (deg)|-180|180|0|0|0
 14 9 settings.threshold.sway|Camera sway|0|2|1|2|0
 14 10 settings.threshold.reflection|Floor reflection|0|1|0.600000024|2|0
+scene 15 count 8
+15 0 settings.fluid.flow|Flow speed|0.100000001|2.5|1|2|0
+15 1 settings.fluid.curl|Curl|0|2|1|2|0
+15 2 settings.fluid.radius|Ink size|0.0149999997|0.119999997|0.0450000018|3|0
+15 3 settings.fluid.lifetime|Ink life (s)|0.5|12|3.5|2|0
+15 4 settings.fluid.response|Music response|0|2|1|2|0
+15 5 settings.fluid.hue|Ink hue (deg)|-180|180|0|0|0
+15 6 settings.fluid.glow|Luminous ink|0|2|0.850000024|2|0
+15 7 settings.fluid.relief|Surface light|0|2|0.800000012|2|0
+scene 16 count 8
+16 0 settings.chrome.flow|Flow speed|0|2|0.649999976|2|0
+16 1 settings.chrome.scale|Fold scale|0.300000012|3|1|2|0
+16 2 settings.chrome.ripple|Ripples|0|2|0.800000012|2|0
+16 3 settings.chrome.response|Music response|0|2|1|2|0
+16 4 settings.chrome.hue|Highlight hue (deg)|-180|180|0|0|0
+16 5 settings.chrome.shine|Shine|0|2|1|2|0
+16 6 settings.chrome.contrast|Contrast|0.300000012|2|1|2|0
+16 7 settings.chrome.grain|Grain|0|1|0.119999997|2|0
+scene 17 count 8
+17 0 settings.aurora.flow|Flow speed|0|2|0.5|2|0
+17 1 settings.aurora.height|Curtain height|0.200000003|1.5|0.800000012|2|0
+17 2 settings.aurora.folds|Curtain folds|1|12|5|0|0
+17 3 settings.aurora.response|Music response|0|2|1|2|0
+17 4 settings.aurora.hue|Aurora hue (deg)|-180|180|0|0|0
+17 5 settings.aurora.glow|Glow|0|2|1|2|0
+17 6 settings.aurora.stars|Stars|0|1|0.349999994|2|0
+17 7 settings.aurora.spread|Curtain spread|0.300000012|2|1|2|0
+scene 18 count 8
+18 0 settings.metaballs.flow|Flow speed|0|2|0.649999976|2|0
+18 1 settings.metaballs.count|Blobs|3|9|6|0|0
+18 2 settings.metaballs.size|Blob size|0.349999994|1.5|0.800000012|2|0
+18 3 settings.metaballs.response|Music response|0|2|1|2|0
+18 4 settings.metaballs.hue|Material hue (deg)|-180|180|0|0|0
+18 5 settings.metaballs.metal|Metal|0|1|0.449999988|2|0
+18 6 settings.metaballs.glow|Glow|0|2|0.5|2|0
+18 7 settings.metaballs.orbit|Orbit|0|2|1|2|0
+scene 19 count 8
+19 0 settings.tunnel.speed|Travel speed|0|3|0.75|2|0
+19 1 settings.tunnel.twist|Twist|-2|2|0.600000024|2|0
+19 2 settings.tunnel.sides|Sides|3|12|6|0|0
+19 3 settings.tunnel.response|Music response|0|2|1|2|0
+19 4 settings.tunnel.hue|Neon hue (deg)|-180|180|0|0|0
+19 5 settings.tunnel.glow|Glow|0|2|1|2|0
+19 6 settings.tunnel.depth|Depth|0.5|3|1|2|0
+19 7 settings.tunnel.width|Aperture|0.400000006|1.60000002|1|2|0
+scene 20 count 8
+20 0 settings.voronoi.flow|Flow speed|0|2|0.5|2|0
+20 1 settings.voronoi.cells|Cell density|3|14|7|0|0
+20 2 settings.voronoi.edges|Seams|0|1|0.349999994|2|0
+20 3 settings.voronoi.response|Music response|0|2|1|2|0
+20 4 settings.voronoi.hue|Glass hue (deg)|-180|180|0|0|0
+20 5 settings.voronoi.glow|Glow|0|2|0.649999976|2|0
+20 6 settings.voronoi.drift|Site drift|0|2|0.800000012|2|0
+20 7 settings.voronoi.facet|Facets|0|1|0.5|2|0
+scene 21 count 8
+21 0 settings.iridescent.flow|Flow speed|0|2|0.5|2|0
+21 1 settings.iridescent.scale|Film scale|0.300000012|3|1|2|0
+21 2 settings.iridescent.ripple|Ripples|0|2|0.699999988|2|0
+21 3 settings.iridescent.response|Music response|0|2|1|2|0
+21 4 settings.iridescent.hue|Film hue (deg)|-180|180|0|0|0
+21 5 settings.iridescent.shimmer|Shimmer|0|2|1|2|0
+21 6 settings.iridescent.light|Grazing light|0|2|1|2|0
+21 7 settings.iridescent.spread|Ripple spread|0.300000012|2|1|2|0

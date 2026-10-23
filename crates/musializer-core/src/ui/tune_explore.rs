@@ -726,12 +726,8 @@ mod tests {
         // If a scene gains a control this fails and every sweep below is
         // knowingly re-scoped rather than silently narrowed.
         //
-        // Two numbers now, because the tree has scenes the oracle does not.
-        // 81 is what `differential_settings.sh` still diffs against the frozen C
-        // and must not move; 116 is what this module sweeps (81 + phosphor's 12
-        // + clawd's 12 + knot's 11 + stage's 11 + threshold's 11), and it moves whenever a post-legacy scene is added or
-        // changed — or when a C-era scene grows past the oracle, as Cadence
-        // did by five on 2026-10-12.
+        // The C-era prefix stays fixed; all registered controls, including
+        // Fluid Ink's eight, participate in the full exploration sweep.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
             .map(settings::oracle_count)
@@ -740,7 +736,7 @@ mod tests {
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 143);
+        assert_eq!(all_descriptors().len(), 199);
     }
 
     // -- conform / step / parse ------------------------------------------------

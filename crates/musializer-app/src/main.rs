@@ -1172,6 +1172,9 @@ fn run(
             if let Some(id) = probe.scene_pick {
                 app.select_scene_interactive(id, probe.seek_seconds.unwrap_or(0.0), 0.0);
             }
+            if let Some(family) = probe.scene_family {
+                app.shell.browse_scene_family(family, app.scene.id());
+            }
         }
     }
 
@@ -4795,7 +4798,9 @@ fn confirm_close(
                 return true;
             }
             *already_warned = true;
-            eprintln!("warning: {dirty} unsaved project(s), and no dialog is available to confirm: {error}");
+            eprintln!(
+                "warning: {dirty} unsaved project(s), and no dialog is available to confirm: {error}"
+            );
             app.shell.notify(
                 Severity::Warning,
                 "Unresolved work",
@@ -5881,6 +5886,32 @@ impl Report {
         println!("stage:           {}", renderer.describe_stage());
         // Threshold: the camera, the door, and whether the doorway was live.
         println!("threshold:       {}", renderer.describe_threshold());
+        println!("fluid ink:       {}", renderer.describe_fluid());
+        println!("scene picker:    {}", app.shell.describe_scene_picker());
+        println!(
+            "chrome: {}",
+            renderer.describe_new_scene(SceneId::LiquidChrome)
+        );
+        println!(
+            "aurora: {}",
+            renderer.describe_new_scene(SceneId::AuroraVeil)
+        );
+        println!(
+            "metaballs: {}",
+            renderer.describe_new_scene(SceneId::MetaballGarden)
+        );
+        println!(
+            "tunnel: {}",
+            renderer.describe_new_scene(SceneId::NeonTunnel)
+        );
+        println!(
+            "voronoi: {}",
+            renderer.describe_new_scene(SceneId::VoronoiBloom)
+        );
+        println!(
+            "iridescent: {}",
+            renderer.describe_new_scene(SceneId::IridescentPool)
+        );
         // Which encoder an export from this run would use. Evidence rather than
         // assertion: an NVENC file and an x264 file of the same frames are
         // different bytes, so a capture that compares two exports has to be able

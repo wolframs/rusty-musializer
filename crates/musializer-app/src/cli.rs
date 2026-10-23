@@ -332,6 +332,8 @@ pub struct UiProbe {
     /// `time=` has parked the playhead and the segment it targets is the one a
     /// capture will show.
     pub scene_pick: Option<SceneId>,
+    /// Browse a family without changing the active scene or scene plan.
+    pub scene_family: Option<musializer_core::ui::scene_browser::SceneFamily>,
     /// `dock=1`: open the dock (WX-1) with a shell tab, whatever `ui.json`
     /// says.
     pub dock: bool,
@@ -671,15 +673,23 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         "openai-knot" => Some(SceneId::OpenAiKnot),
         // What the threshold is a picture of.
         "door" => Some(SceneId::Threshold),
+        "fluid-ink" => Some(SceneId::FluidInk),
+        "liquid-chrome" => Some(SceneId::LiquidChrome),
+        "aurora-veil" => Some(SceneId::AuroraVeil),
+        "metaball-garden" => Some(SceneId::MetaballGarden),
+        "neon-tunnel" => Some(SceneId::NeonTunnel),
+        "voronoi-bloom" => Some(SceneId::VoronoiBloom),
+        "iridescent-pool" => Some(SceneId::IridescentPool),
         other => SceneId::from_stable_name(other),
     }
 }
 
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
-constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold (also pulse-field, \
+constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold, fluid, chrome, aurora, metaballs, tunnel, voronoi, iridescent (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
-phosphor-dream, claude, openai-knot, door)";
+phosphor-dream, claude, openai-knot, door, fluid-ink, liquid-chrome, aurora-veil, \
+metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool)";
 
 /// The pre-pass, then the main loop. Mirrors `main` (`musializer.c:315-561`).
 pub fn parse<I, S>(arguments: I) -> Outcome
@@ -1251,6 +1261,11 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
+        "scene-family" => {
+            probe.scene_family = Some(musializer_core::ui::scene_browser::SceneFamily::from_name(
+                value,
+            )?)
+        }
         "tune-seed" => probe.tune_seed = Some(value.parse().ok()?),
         "dock" => probe.dock = parse_probe_flag(value)?,
         "follow" => probe.follow = parse_probe_flag(value)?,
@@ -1457,6 +1472,8 @@ Diagnostics:
                           for reproducible headless UI capture. SPEC is
                           comma-separated key=value pairs:
                           panel=none|tune|export|lyrics|assist,
+                          scene-family=sound|geometry|atmosphere|materials|living|type-stage,
+                          scene-pick=NAME selects a scene through the normal edit path,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
                           sidebar=PX, inspector=PX, timeline-height=PX
                           set logical split positions for capture,
@@ -1619,6 +1636,17 @@ mod tests {
     }
 
     #[test]
+    fn family_probes_only_accept_known_navigation_names() {
+        use musializer_core::ui::scene_browser::SceneFamily;
+        for family in SceneFamily::ALL {
+            let probe = parse_ui_probe(&format!("scene-family={}", family.stable_name())).unwrap();
+            assert_eq!(probe.scene_family, Some(family));
+            assert_eq!(probe.scene_pick, None);
+        }
+        assert!(parse_ui_probe("scene-family=unknown").is_none());
+    }
+
+    #[test]
     fn a_scene_pick_probe_resolves_through_the_same_names_as_the_scene_flag() {
         assert_eq!(
             parse_ui_probe("scene-pick=pentagram")
@@ -1737,6 +1765,20 @@ mod tests {
             ("stage", SceneId::Stage),
             ("threshold", SceneId::Threshold),
             ("door", SceneId::Threshold),
+            ("fluid", SceneId::FluidInk),
+            ("fluid-ink", SceneId::FluidInk),
+            ("chrome", SceneId::LiquidChrome),
+            ("liquid-chrome", SceneId::LiquidChrome),
+            ("aurora", SceneId::AuroraVeil),
+            ("aurora-veil", SceneId::AuroraVeil),
+            ("metaballs", SceneId::MetaballGarden),
+            ("metaball-garden", SceneId::MetaballGarden),
+            ("tunnel", SceneId::NeonTunnel),
+            ("neon-tunnel", SceneId::NeonTunnel),
+            ("voronoi", SceneId::VoronoiBloom),
+            ("voronoi-bloom", SceneId::VoronoiBloom),
+            ("iridescent", SceneId::IridescentPool),
+            ("iridescent-pool", SceneId::IridescentPool),
             ("claude", SceneId::Clawd),
         ];
         for (name, id) in expected {

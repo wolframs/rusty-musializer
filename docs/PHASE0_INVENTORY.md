@@ -249,6 +249,13 @@ short names **and six long aliases**:
 | `knot`, `openai-knot` | OpenAI Knot (post-legacy, id 12) |
 | `stage` | Stage (post-legacy, id 13) |
 | `threshold`, `door` | Threshold (post-legacy, id 14) |
+| `fluid`, `fluid-ink` | Fluid Ink (post-legacy, id 15) |
+| `chrome`, `liquid-chrome` | Liquid Chrome (post-legacy, id 16) |
+| `aurora`, `aurora-veil` | Aurora Veil (post-legacy, id 17) |
+| `metaballs`, `metaball-garden` | Metaball Garden (post-legacy, id 18) |
+| `tunnel`, `neon-tunnel` | Neon Tunnel (post-legacy, id 19) |
+| `voronoi`, `voronoi-bloom` | Voronoi Bloom (post-legacy, id 20) |
+| `iridescent`, `iridescent-pool` | Iridescent Pool (post-legacy, id 21) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -494,6 +501,14 @@ Threshold — id 14, stable name `threshold`, display name `Threshold`, eleven
 controls — was added on 2026-10-21 (MV9-d). A room with a door; its `beyond`
 control runs another scene live inside it. The scene registry itself moved to
 `musializer-core::scenes::descriptor` so a scene can construct another.
+
+Fluid Ink — id 15, stable name `fluid`, display name `Fluid Ink`, eight controls —
+was added on 2026-10-23. Persistent music-stirred dye; see [`FLUID_INK.md`](FLUID_INK.md).
+
+The native gallery appends ids 16–21 on 2026-10-23: Liquid Chrome, Aurora Veil,
+Metaball Garden, Neon Tunnel, Voronoi Bloom and Iridescent Pool, each with eight
+controls. Families are UI navigation only; they do not reorder ids. See
+[`SCENE_GALLERY.md`](SCENE_GALLERY.md).
 
 Two behaviours of the registry that are still contract, whatever the count is:
 
@@ -765,7 +780,7 @@ Post-legacy, 2026-10-21, id 14 (MV9-d).
 | 1 | `settings.threshold.open` | Door open | 0.00 | 1.00 | 0.00 | 2 | slider |
 | 2 | `settings.threshold.light` | Light | 0.00 | 2.00 | 1.00 | 2 | slider |
 | 3 | `settings.threshold.haze` | Doorway haze | 0.00 | 1.00 | 0.60 | 2 | slider |
-| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 14 | 0 | 0 | slider |
+| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 22 | 0 | 0 | slider |
 | 5 | `settings.threshold.presences` | Presences | 0 | 2 | 0 | 0 | slider |
 | 6 | `settings.threshold.motes` | Motes | 0.00 | 2.00 | 1.00 | 2 | slider |
 | 7 | `settings.threshold.mist` | Mist | 0.00 | 2.00 | 1.00 | 2 | slider |
@@ -774,8 +789,113 @@ Post-legacy, 2026-10-21, id 14 (MV9-d).
 | 10 | `settings.threshold.reflection` | Floor reflection | 0.00 | 1.00 | 0.60 | 2 | slider |
 
 `beyond` is a scene index plus one (0 is the doorway's own fog; the threshold
-never nests itself), so its maximum is the threshold's own id and grows if a
-scene is appended — a deliberate re-pin of `settings_post_legacy.txt`.
+never nests itself). Its maximum is now 22, selecting Iridescent Pool; 15 refuses
+Threshold itself. This is a deliberate re-pin of `settings_post_legacy.txt`.
+
+### `fluid` — Fluid Ink (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 15. All sliders; keys and order are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.fluid.flow` | Flow speed | 0.10 | 2.50 | 1.00 | 2 | slider |
+| 1 | `settings.fluid.curl` | Curl | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 2 | `settings.fluid.radius` | Ink size | 0.015 | 0.12 | 0.045 | 3 | slider |
+| 3 | `settings.fluid.lifetime` | Ink life (s) | 0.50 | 12.0 | 3.50 | 2 | slider |
+| 4 | `settings.fluid.response` | Music response | 0.00 | 2.00 | 1.00 | 2 | slider |
+| 5 | `settings.fluid.hue` | Ink hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 6 | `settings.fluid.glow` | Luminous ink | 0.00 | 2.00 | 0.85 | 2 | slider |
+| 7 | `settings.fluid.relief` | Surface light | 0.00 | 2.00 | 0.80 | 2 | slider |
+
+### `chrome` — Liquid Chrome (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 16. All sliders; indices are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.chrome.flow` | Flow speed | 0 | 2 | 0.65 | 2 | slider |
+| 1 | `settings.chrome.scale` | Fold scale | 0.3 | 3 | 1 | 2 | slider |
+| 2 | `settings.chrome.ripple` | Ripples | 0 | 2 | 0.8 | 2 | slider |
+| 3 | `settings.chrome.response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `settings.chrome.hue` | Highlight hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 5 | `settings.chrome.shine` | Shine | 0 | 2 | 1 | 2 | slider |
+| 6 | `settings.chrome.contrast` | Contrast | 0.3 | 2 | 1 | 2 | slider |
+| 7 | `settings.chrome.grain` | Grain | 0 | 1 | 0.12 | 2 | slider |
+
+### `aurora` — Aurora Veil (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 17. All sliders; indices are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.aurora.flow` | Flow speed | 0 | 2 | 0.5 | 2 | slider |
+| 1 | `settings.aurora.height` | Curtain height | 0.2 | 1.5 | 0.8 | 2 | slider |
+| 2 | `settings.aurora.folds` | Curtain folds | 1 | 12 | 5 | 0 | slider |
+| 3 | `settings.aurora.response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `settings.aurora.hue` | Aurora hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 5 | `settings.aurora.glow` | Glow | 0 | 2 | 1 | 2 | slider |
+| 6 | `settings.aurora.stars` | Stars | 0 | 1 | 0.35 | 2 | slider |
+| 7 | `settings.aurora.spread` | Curtain spread | 0.3 | 2 | 1 | 2 | slider |
+
+### `metaballs` — Metaball Garden (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 18. All sliders; indices are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.metaballs.flow` | Flow speed | 0 | 2 | 0.65 | 2 | slider |
+| 1 | `settings.metaballs.count` | Blobs | 3 | 9 | 6 | 0 | slider |
+| 2 | `settings.metaballs.size` | Blob size | 0.35 | 1.5 | 0.8 | 2 | slider |
+| 3 | `settings.metaballs.response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `settings.metaballs.hue` | Material hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 5 | `settings.metaballs.metal` | Metal | 0 | 1 | 0.45 | 2 | slider |
+| 6 | `settings.metaballs.glow` | Glow | 0 | 2 | 0.5 | 2 | slider |
+| 7 | `settings.metaballs.orbit` | Orbit | 0 | 2 | 1 | 2 | slider |
+
+### `tunnel` — Neon Tunnel (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 19. All sliders; indices are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.tunnel.speed` | Travel speed | 0 | 3 | 0.75 | 2 | slider |
+| 1 | `settings.tunnel.twist` | Twist | -2 | 2 | 0.6 | 2 | slider |
+| 2 | `settings.tunnel.sides` | Sides | 3 | 12 | 6 | 0 | slider |
+| 3 | `settings.tunnel.response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `settings.tunnel.hue` | Neon hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 5 | `settings.tunnel.glow` | Glow | 0 | 2 | 1 | 2 | slider |
+| 6 | `settings.tunnel.depth` | Depth | 0.5 | 3 | 1 | 2 | slider |
+| 7 | `settings.tunnel.width` | Aperture | 0.4 | 1.6 | 1 | 2 | slider |
+
+### `voronoi` — Voronoi Bloom (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 20. All sliders; indices are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.voronoi.flow` | Flow speed | 0 | 2 | 0.5 | 2 | slider |
+| 1 | `settings.voronoi.cells` | Cell density | 3 | 14 | 7 | 0 | slider |
+| 2 | `settings.voronoi.edges` | Seams | 0 | 1 | 0.35 | 2 | slider |
+| 3 | `settings.voronoi.response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `settings.voronoi.hue` | Glass hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 5 | `settings.voronoi.glow` | Glow | 0 | 2 | 0.65 | 2 | slider |
+| 6 | `settings.voronoi.drift` | Site drift | 0 | 2 | 0.8 | 2 | slider |
+| 7 | `settings.voronoi.facet` | Facets | 0 | 1 | 0.5 | 2 | slider |
+
+### `iridescent` — Iridescent Pool (8 controls, no C counterpart)
+
+Post-legacy, 2026-10-23, id 21. All sliders; indices are persisted.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.iridescent.flow` | Flow speed | 0 | 2 | 0.5 | 2 | slider |
+| 1 | `settings.iridescent.scale` | Film scale | 0.3 | 3 | 1 | 2 | slider |
+| 2 | `settings.iridescent.ripple` | Ripples | 0 | 2 | 0.7 | 2 | slider |
+| 3 | `settings.iridescent.response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `settings.iridescent.hue` | Film hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 5 | `settings.iridescent.shimmer` | Shimmer | 0 | 2 | 1 | 2 | slider |
+| 6 | `settings.iridescent.light` | Grazing light | 0 | 2 | 1 | 2 | slider |
+| 7 | `settings.iridescent.spread` | Ripple spread | 0.3 | 2 | 1 | 2 | slider |
 
 ### `knot` — OpenAI Knot (11 controls, no C counterpart)
 

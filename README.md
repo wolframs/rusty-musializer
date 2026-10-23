@@ -26,9 +26,13 @@ workspace, with playback and preview beside the controls as you work.
 
 ## Make it yours
 
-**Fourteen scenes to explore.** Try the luminous bars of Spectrum, the shifting
+**Find a look for your track.** Try the luminous bars of Spectrum, the shifting
 characters of Phosphor Dream, the landscapes of Song Atlas, or Cadence's animated
-letterforms. Each scene has its own controls and responds to your track.
+letterforms. [Fluid Ink](docs/FLUID_INK.md) stirs luminous dye into curling plumes
+with the music. The [scene gallery](docs/SCENE_GALLERY.md) adds reflective chrome,
+northern lights, merging blobs, a neon tunnel, stained glass and iridescent water.
+Family tabs keep the picker compact, with room to read the scene names. Each
+scene has its own controls and responds to your track.
 
 **Arrange the whole song.** Split the timeline into scenes, save different tuning
 for each section, and place markers for moments you want to emphasize. Connect

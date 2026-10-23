@@ -47,6 +47,12 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 
 ## Operations and evidence
 
+- [`SCENE_GALLERY.md`](SCENE_GALLERY.md) — compact scene families, six native
+  website-inspired scenes, compatibility and the visible gallery gate.
+
+- [`FLUID_INK.md`](FLUID_INK.md) — music-stirred ink, directing controls,
+  persistent simulation and visible verification.
+
 - [`LYRICS_GROUPING_REVIEW.md`](LYRICS_GROUPING_REVIEW.md) — two pending lyric
   phrase judgments, browser audition, portable protocol bundle and resume state.
 - [`LYRICS_ASSIST_REPAIR_2026-09-06.md`](LYRICS_ASSIST_REPAIR_2026-09-06.md) —

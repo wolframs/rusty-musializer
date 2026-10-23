@@ -19,6 +19,7 @@ use musializer_core::scene::routes::{ParameterMapping, RouteSources};
 use musializer_core::scene::{SceneId, SceneSettings};
 use musializer_core::ui::notice::{self, NoticeQueue, NoticeSpec, Severity};
 use musializer_core::ui::row_typography;
+use musializer_core::ui::scene_browser::{PickerLayout, PickerState, SceneFamily};
 use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
@@ -614,6 +615,8 @@ pub struct Shell {
     pub lyrics: super::panels::lyrics::LyricEditor,
     /// Selection and in-flight boundary preview for the scene-plan lane.
     pub scene_lane: super::panels::scene_timeline::SceneLaneEditor,
+    scene_picker: PickerState,
+    scene_picker_report: String,
     /// The export panel's clip window: which part of the track the next export
     /// covers (UX0-C01).
     ///
@@ -809,15 +812,9 @@ const _: () = assert!(lyrics::LANE_GAP == metric::LANE_GAP);
 /// One button in the scene browser's ASCII image footer (D2).
 const ASCII_BUTTON_HEIGHT: f32 = 22.0;
 const ASCII_FOOTER_GAP: f32 = 4.0;
-/// The height the footer reserves, which is **both** buttons whether or not
-/// Clear is drawn.
-///
-/// Reserving the same height either way is the point: sizing the tile grid from
-/// the reservation means importing an image cannot make ten scene tiles jump a
-/// row, and clearing it cannot make them jump back. A footer that reserved only
-/// what it drew would resize the thing above it as a side effect of an unrelated
-/// action.
-const ASCII_FOOTER_HEIGHT: f32 = ASCII_BUTTON_HEIGHT * 2.0 + ASCII_FOOTER_GAP;
+/// Import and Clear share a single row. It reserves the same height with or
+/// without an image so importing never makes the family grid jump.
+const ASCII_FOOTER_HEIGHT: f32 = ASCII_BUTTON_HEIGHT;
 
 /// Header has already been removed by widgets::panel. Keep this shared with
 /// the minimum-size regression so extra vertical reservations cannot hide tiles.
@@ -1126,6 +1123,8 @@ impl Shell {
             font_browser: super::panels::fonts::FontBrowser::new(),
             lyrics: super::panels::lyrics::LyricEditor::new(),
             scene_lane: super::panels::scene_timeline::SceneLaneEditor::default(),
+            scene_picker: PickerState::default(),
+            scene_picker_report: "not drawn".into(),
             export_clip: musializer_core::timing::render_export::ClipSelection::full_track(),
             export_share_frame_seconds: None,
             ui_preferences,
@@ -4063,6 +4062,15 @@ impl Shell {
         }
     }
 
+    pub fn browse_scene_family(&mut self, family: SceneFamily, active: SceneId) {
+        self.scene_picker.observe_scene(active);
+        self.scene_picker.browse(family);
+    }
+
+    pub fn describe_scene_picker(&self) -> &str {
+        &self.scene_picker_report
+    }
+
     /// The scene browser (`scene_browser`, `plug.c`).
     ///
     /// Its content floor is why the sidebar serves it first: it has no collapsed
@@ -4082,7 +4090,8 @@ impl Shell {
         if boundary.is_empty() {
             return;
         }
-        let content = widgets::panel(d, input.fonts.ui(), boundary, "SCENES");
+        let heading = format!("SCENES · {}", input.scene.display_name());
+        let content = widgets::panel(d, input.fonts.ui(), boundary, &heading);
         let padding = 6.0f32;
         // The ASCII footer's seat, reserved before the tiles are sized (D2). A
         // panel that reserves height it never draws steals it from something
@@ -4094,87 +4103,139 @@ impl Shell {
         if available_height <= 0.0 {
             return;
         }
-        let gap = 4.0f32;
-        // Two columns is the C's layout, and ten scenes fit it. **An eleventh
-        // does not** (SX1, 2026-08-08): the grid goes to six rows, six rows at
-        // the 24 px floor exceed the panel at 720p, and the loop below silently
-        // skips any tile that would fall outside the panel. The result was a
-        // scene that `--scene phosphor` could select and the picker could not —
-        // reachable by flag, invisible to a user, and a perfectly plausible
-        // screenshot either way.
-        //
-        // Widen the grid rather than drop tiles or shrink past legibility. The
-        // floor stays 24 px because that is what `WORKSPACE_SCENES_MINIMUM` is
-        // for, and the search stops at four columns because the longest label
-        // ("Spectral Terrarium") stops being readable below a quarter width.
-        let mut columns = 2usize;
-        let fits = |columns: usize| {
-            let rows = SceneId::ALL.len().div_ceil(columns) as f32;
-            rows * 24.0 + (rows - 1.0) * gap <= available_height
-        };
-        while columns < 4 && !fits(columns) {
-            columns += 1;
-        }
-        let rows = SceneId::ALL.len().div_ceil(columns);
-        // Tiles clamp to a 24 px floor and a 52 px cap, the numbers
-        // WORKSPACE_SCENES_MINIMUM and _MAXIMUM are derived from
-        // (`workspace_layout.h:55-62`). Raising one without the other changes
-        // nothing, which is why they are written down together there.
-        let tile_height =
-            ((available_height - gap * (rows - 1) as f32) / rows as f32).clamp(24.0, 52.0);
-        let tile_width =
-            (content.width - padding * 2.0 - gap * (columns - 1) as f32) / columns as f32;
-
-        let labels: Vec<&str> = SceneId::ALL.iter().map(|id| id.display_name()).collect();
-        let widths = vec![tile_width; labels.len()];
-        let font = input.fonts.ui();
-        let font_size = widgets::row_font_size(font, &labels, &widths, tile_height);
-        let plan_is_driving = input
-            .workspace
-            .current()
-            .is_some_and(|track| track.scene_switches.enabled && !track.scene_switches.is_empty());
-
-        for (index, id) in SceneId::ALL.into_iter().enumerate() {
-            let column = index % columns;
-            let row = index / columns;
-            let boundary = UiRect::new(
-                content.x + padding + column as f32 * (tile_width + gap),
-                content.y + padding + row as f32 * (tile_height + gap),
-                tile_width,
-                tile_height,
-            );
-            // A tile that does not fit inside the panel is not drawn. The panel
-            // is what owns those pixels; drawing past it is how the C stole
-            // clicks.
-            if !content.contains(boundary) {
-                continue;
-            }
-            let widget = widgets::widget_id(widgets::id::SCENE_BROWSER, index as u32);
+        self.scene_picker.observe_scene(input.scene);
+        let area = UiRect::new(
+            content.x + padding,
+            content.y + padding,
+            content.width - padding * 2.0,
+            available_height,
+        );
+        let mut scenes = self.scene_picker.family.scenes();
+        let mut layout = PickerLayout::new(area, scenes.len());
+        let tab_labels: Vec<_> = SceneFamily::ALL
+            .iter()
+            .map(|family| family.label())
+            .collect();
+        let tab_widths = vec![layout.tab(0).width; tab_labels.len()];
+        let tab_font = widgets::row_font_size(input.fonts.ui(), &tab_labels, &tab_widths, 22.0);
+        for (index, family) in SceneFamily::ALL.into_iter().enumerate() {
+            let rect = layout.tab(index);
+            let widget = widgets::widget_id(widgets::id::SCENE_FAMILY, index as u32);
             let state = self.widgets.text_button(
                 d,
                 input.fonts.ui(),
                 widget,
-                boundary,
-                id.display_name(),
-                id == input.scene,
+                rect,
+                family.label(),
+                family == self.scene_picker.family,
                 ButtonStyle::Neutral,
-                Some(font_size),
+                Some(tab_font),
             );
-            // Deliberately not guarded on the lyric draft (review 1.3), and the
-            // oracle does not guard it either. A scene change stays on the same
-            // track, so the draft it leaves behind is still bound to the document
-            // it came from and the cue list it edits is still on screen. Adding a
-            // refusal here would be friction with no defect behind it.
-            // The `id != input.scene` half is a no-op guard against reselecting
-            // what is already on screen — but it is wrong while a plan is
-            // running (LX3-a), where the click retargets a *segment*: the
-            // segment the user selected in the lane is very often not the one
-            // playing, and giving it the live scene is a legal edit the guard
-            // would swallow silently.
-            if state.clicked && (id != input.scene || plan_is_driving) {
-                commands.push(ShellCommand::SelectScene(id));
+            let names = family
+                .scenes()
+                .iter()
+                .map(|scene| scene.display_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            self.widgets.hint(
+                d,
+                state,
+                widget,
+                rect,
+                &format!("{}: {}", family.label(), names),
+            );
+            if state.clicked {
+                self.scene_picker.browse(family);
             }
         }
+        // Category clicks change navigation only. They never retarget the
+        // selected timeline segment or the currently playing scene.
+        scenes = self.scene_picker.family.scenes();
+        layout = PickerLayout::new(area, scenes.len());
+        self.scene_picker.clamp(layout);
+        let mouse = input.ui_scale.mouse(d);
+        let input_allowed = !self.editor_open && !self.assist_settings.is_open();
+        if layout.viewport.contains_point(mouse.x, mouse.y) && input_allowed {
+            let wheel = self.wheel_delta(d);
+            self.scene_picker.wheel(wheel, layout);
+        }
+        if let Some(bar) = layout.scrollbar() {
+            let id = widgets::widget_id(widgets::id::SCENE_FAMILY, 20);
+            let state = self.widgets.button(d, id, bar);
+            if state.pressed && input_allowed {
+                let thumb_height = layout
+                    .thumb(self.scene_picker.offset)
+                    .map_or(0.0, |thumb| thumb.height);
+                let fraction =
+                    (mouse.y - bar.y - thumb_height * 0.5) / (bar.height - thumb_height).max(1.0);
+                self.scene_picker.scrollbar_to(fraction, layout);
+            }
+        }
+        let labels: Vec<_> = scenes.iter().map(|scene| scene.display_name()).collect();
+        let widths = vec![layout.tile_width; labels.len()];
+        let font_size =
+            widgets::row_font_size(input.fonts.ui(), &labels, &widths, layout.tile_height);
+        let plan_is_driving = input
+            .workspace
+            .current()
+            .is_some_and(|track| track.scene_switches.enabled && !track.scene_switches.is_empty());
+        let mut visible = Vec::new();
+        let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
+        {
+            let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
+            for (index, id) in scenes.iter().copied().enumerate() {
+                let rect = layout.tile(index, self.scene_picker.offset);
+                let hit = rect.intersect(layout.viewport);
+                if hit.is_empty() {
+                    continue;
+                }
+                visible.push(id.stable_name());
+                // Stable scene widget ids survive grouping, scrolling and the
+                // addition of a new family. Hidden pixels cannot claim a click.
+                let widget = widgets::widget_id(widgets::id::SCENE_BROWSER, id.index() as u32);
+                let state = self.widgets.text_button_in(
+                    &mut clip,
+                    input.fonts.ui(),
+                    widget,
+                    rect,
+                    hit,
+                    id.display_name(),
+                    id == input.scene,
+                    ButtonStyle::Neutral,
+                    Some(font_size),
+                );
+                self.widgets.hint(
+                    &mut clip,
+                    state,
+                    widget,
+                    hit,
+                    crate::scene_host::scene_picker_hint(id),
+                );
+                if state.clicked && (id != input.scene || plan_is_driving) {
+                    commands.push(ShellCommand::SelectScene(id));
+                }
+            }
+        }
+        self.widgets.set_input_clip(old_clip);
+        if let Some(bar) = layout.scrollbar() {
+            widgets::fill(d, bar, color::ui_rule());
+            if let Some(thumb) = layout.thumb(self.scene_picker.offset) {
+                widgets::fill(d, thumb, color::ui_muted());
+            }
+        }
+        self.scene_picker_report = format!(
+            "family={} active={} visible=[{}] offset={:.1}/{:.1} viewport={:.0}x{:.0}@{:.0},{:.0} font={:.1}",
+            self.scene_picker.family.stable_name(),
+            input.scene.stable_name(),
+            visible.join(","),
+            self.scene_picker.offset,
+            layout.max_scroll,
+            layout.viewport.width,
+            layout.viewport.height,
+            layout.viewport.x,
+            layout.viewport.y,
+            font_size
+        );
 
         self.ascii_image_footer(d, input, content, padding, commands);
     }
@@ -4207,11 +4268,11 @@ impl Shell {
         let top = content.y + content.height - ASCII_FOOTER_HEIGHT;
         let x = content.x + padding;
 
-        // Two rows rather than two columns. The sidebar is 320 px at its widest
-        // and routinely 240, so a side-by-side pair would put "Import image →
-        // ASCII" into ~110 px and shrink it to an unreadable size — the label is
-        // what makes this control findable at all.
-        let import = UiRect::new(x, top, width, ASCII_BUTTON_HEIGHT);
+        let clear_width = 64.0;
+        // Keep the absent Clear seat inert. Import must not grow underneath
+        // it and turn a previously harmless press into a file-dialog launch.
+        let import_width = width - clear_width - ASCII_FOOTER_GAP;
+        let import = UiRect::new(x, top, import_width, ASCII_BUTTON_HEIGHT);
         let import_id = widgets::widget_id(widgets::id::SCENE_ASCII, 0);
         let state = self.widgets.text_button(
             d,
@@ -4235,9 +4296,9 @@ impl Shell {
         }
 
         let clear = UiRect::new(
-            x,
-            top + ASCII_BUTTON_HEIGHT + ASCII_FOOTER_GAP,
-            width,
+            x + width - clear_width,
+            top,
+            clear_width,
             ASCII_BUTTON_HEIGHT,
         );
         if !has_image {
@@ -4249,7 +4310,7 @@ impl Shell {
             font,
             clear_id,
             clear,
-            "Clear image",
+            "Clear",
             false,
             ButtonStyle::Neutral,
             Some(metric::UI_FONT_CAPTION),
@@ -5587,50 +5648,24 @@ fn draw_splitter(
 
 #[cfg(test)]
 mod tests {
-    /// Every scene must have a seat in the browser at the smallest window.
-    ///
-    /// The regression this pins (SX1, 2026-08-08): the grid was a hard two
-    /// columns, eleven scenes made it six rows, six rows at the 24 px floor no
-    /// longer fit the panel, and `scene_browser`'s "a tile that does not fit is
-    /// not drawn" guard silently dropped the last one. `--scene phosphor` still
-    /// worked, so nothing failed — the scene was simply unreachable from the
-    /// only surface a user has for picking one, and both screenshots are
-    /// plausible.
-    ///
-    /// This is the arithmetic, not the draw, because the draw needs a window.
-    /// It is the same expression `scene_browser` uses, so a change to the floor
-    /// or the gap fails here rather than in a capture nobody looks at.
     #[test]
-    fn every_scene_gets_a_tile_at_the_narrowest_layout() {
-        const TILE_FLOOR: f32 = 24.0;
-        const GAP: f32 = 4.0;
-        // The tightest the panel gets: the 720p minimum window, sidebar at its
-        // automatic width, with the ASCII footer's seat already reserved.
-        for old_available in [80.0f32, 100.0, 112.0, 160.0] {
-            // Same panel sizes as the original regression, before the duplicated
-            // header reservation was removed and padding was tightened.
-            let content_height = old_available + 8.0 * 3.0 + 24.0 + ASCII_FOOTER_HEIGHT;
-            let available_height = scene_browser_available_height(content_height);
-            let mut columns = 2usize;
-            let fits = |columns: usize| {
-                let rows = SceneId::ALL.len().div_ceil(columns) as f32;
-                rows * TILE_FLOOR + (rows - 1.0) * GAP <= available_height
-            };
-            while columns < 4 && !fits(columns) {
-                columns += 1;
+    fn every_family_fits_the_minimum_scene_panel_without_small_tiles() {
+        let available = scene_browser_available_height(188.0);
+        for family in SceneFamily::ALL {
+            let layout = PickerLayout::new(
+                UiRect::new(6.0, 6.0, 228.0, available),
+                family.scenes().len(),
+            );
+            assert_eq!(
+                layout.max_scroll,
+                0.0,
+                "{} should fit in the unchanged 215px panel",
+                family.label()
+            );
+            for i in 0..family.scenes().len() {
+                assert!(layout.viewport.contains(layout.tile(i, 0.0)));
             }
-            let rows = SceneId::ALL.len().div_ceil(columns);
-            assert!(
-                columns * rows >= SceneId::ALL.len(),
-                "{available_height}px: {columns}x{rows} cannot seat {} scenes",
-                SceneId::ALL.len()
-            );
-            let needed = rows as f32 * TILE_FLOOR + (rows as f32 - 1.0) * GAP;
-            assert!(
-                needed <= available_height,
-                "{available_height}px: {rows} rows need {needed}px, so tiles \
-                 would be silently dropped"
-            );
+            assert!(layout.tile_height >= 24.0);
         }
     }
 

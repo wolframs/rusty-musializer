@@ -24,10 +24,18 @@ pub mod song_atlas;
 pub mod spectral_terrarium;
 pub mod spectrum;
 
+pub mod aurora_veil;
+/// Persistent, deterministic music-stirred fluid (2026-10-23).
+pub mod fluid_ink;
+pub mod iridescent_pool;
+pub mod liquid_chrome;
+pub mod metaball_garden;
+pub mod neon_tunnel;
 pub mod openai_knot;
 pub mod stage;
 /// Post-legacy (2026-10-21, MV9-d): a room, a door, and a scene nested in it.
 pub mod threshold;
+pub mod voronoi_bloom;
 
 use crate::scene::{SceneDescriptor, SceneId, StatelessScene};
 
@@ -67,5 +75,12 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
         SceneId::OpenAiKnot => openai_knot::descriptor(),
         SceneId::Stage => stage::descriptor(),
         SceneId::Threshold => threshold::descriptor(),
+        SceneId::FluidInk => fluid_ink::descriptor(),
+        SceneId::LiquidChrome => liquid_chrome::descriptor(),
+        SceneId::AuroraVeil => aurora_veil::descriptor(),
+        SceneId::MetaballGarden => metaball_garden::descriptor(),
+        SceneId::NeonTunnel => neon_tunnel::descriptor(),
+        SceneId::VoronoiBloom => voronoi_bloom::descriptor(),
+        SceneId::IridescentPool => iridescent_pool::descriptor(),
     }
 }

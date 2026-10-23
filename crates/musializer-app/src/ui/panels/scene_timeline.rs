@@ -100,6 +100,13 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         SceneId::Stage => (214, 92, 148),
         // The door's lavender.
         SceneId::Threshold => (156, 144, 200),
+        SceneId::FluidInk => (100, 210, 160),
+        SceneId::LiquidChrome => (180, 194, 218),
+        SceneId::AuroraVeil => (100, 210, 185),
+        SceneId::MetaballGarden => (225, 140, 185),
+        SceneId::NeonTunnel => (160, 130, 240),
+        SceneId::VoronoiBloom => (220, 177, 94),
+        SceneId::IridescentPool => (120, 185, 235),
     };
     Color::new(r, g, b, alpha)
 }

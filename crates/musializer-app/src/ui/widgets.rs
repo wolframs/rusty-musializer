@@ -1628,6 +1628,8 @@ pub mod id {
     /// Not [`SCENE_BROWSER`] indices, because those are `SceneId::ALL`'s own
     /// positions — an eleventh scene would silently inherit Import's id.
     pub const SCENE_ASCII: u32 = 13;
+    /// Family navigation and its scrollbar; never aliases a scene tile.
+    pub const SCENE_FAMILY: u32 = 66;
     /// One per merged event marker over the waveform lane, indexed by the
     /// marker's position in the merged view (D4). A namespace of its own rather
     /// than more [`TIMELINE`] indices, because that namespace's indices are the
@@ -1666,7 +1668,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 22] = [
+    pub const ALL: [(&str, u32); 23] = [
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),
@@ -1680,6 +1682,7 @@ pub mod id {
         ("EVENT_PRESET", EVENT_PRESET),
         ("WELCOME_RECENT", WELCOME_RECENT),
         ("SCENE_ASCII", SCENE_ASCII),
+        ("SCENE_FAMILY", SCENE_FAMILY),
         ("TIMELINE_EVENTS", TIMELINE_EVENTS),
         ("LYRICS_ACTIONS", LYRICS_ACTIONS),
         ("LYRICS_FORM", LYRICS_FORM),
@@ -1889,6 +1892,7 @@ mod tests {
             ("EVENT_PRESET", id::EVENT_PRESET),
             ("WELCOME_RECENT", id::WELCOME_RECENT),
             ("SCENE_ASCII", id::SCENE_ASCII),
+            ("SCENE_FAMILY", id::SCENE_FAMILY),
             ("TIMELINE_EVENTS", id::TIMELINE_EVENTS),
             ("LYRICS_ACTIONS", id::LYRICS_ACTIONS),
             ("LYRICS_FORM", id::LYRICS_FORM),
