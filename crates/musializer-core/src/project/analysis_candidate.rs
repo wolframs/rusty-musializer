@@ -1166,6 +1166,7 @@ impl AnalysisCandidate {
                     transition: crate::project::transition::Transition::CUT,
                     grade: None,
                     glide: 0.0,
+                    pixel: None,
                 })
                 .collect();
             candidate
@@ -1484,6 +1485,7 @@ mod tests {
                     transition: crate::project::transition::Transition::CUT,
                     grade: None,
                     glide: 0.0,
+                    pixel: None,
                 }],
                 DURATION,
                 SCENES,

@@ -141,6 +141,13 @@ pub fn segment_summary(
             parts.push("hue-shifted".to_owned());
         }
     }
+    if let Some(look) = cue.pixel {
+        parts.push(if look.is_on() {
+            format!("pixel {} {}", look.palette_label(), look.pixels)
+        } else {
+            "pixel off".to_owned()
+        });
+    }
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
@@ -174,6 +181,23 @@ mod tests {
             segment_summary(&dressed, &base).as_deref(),
             Some("arrives by portal 0.8 s · glides 2.6 s · graded 82%")
         );
+        use crate::project::pixel::Pixel;
+        let pixelled = SceneSwitchCue {
+            pixel: Some(Pixel::on()),
+            ..plain
+        };
+        assert_eq!(
+            segment_summary(&pixelled, &base).as_deref(),
+            Some("pixel handheld 180")
+        );
+        let unpixelled = SceneSwitchCue {
+            pixel: Some(Pixel::OFF),
+            ..plain
+        };
+        assert_eq!(
+            segment_summary(&unpixelled, &base).as_deref(),
+            Some("pixel off")
+        );
         let mut tuned = base;
         tuned.set(SceneId::Threshold, threshold::BEYOND, 7.0);
         let door = SceneSwitchCue {
@@ -203,6 +227,7 @@ mod tests {
                 transition: crate::project::transition::Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             },
             SceneSwitchCue {
                 id: 20,
@@ -214,6 +239,7 @@ mod tests {
                 transition: crate::project::transition::Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             },
         ];
         let mut plan = SceneSwitchTimeline::new();

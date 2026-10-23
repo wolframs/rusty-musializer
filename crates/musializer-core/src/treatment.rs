@@ -54,6 +54,7 @@ use crate::project::lyrics::{self, CueOrigin, LyricCue, LyricsDocument};
 use crate::project::model::{
     caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, EffectDrive,
 };
+use crate::project::pixel::{self, Matching, Pixel, PixelPalette};
 use crate::project::scene_switch::{self, SceneSwitchCue, SceneSwitchTimeline};
 use crate::project::sha256;
 use crate::project::transition::{self, Transition, TransitionKind};
@@ -229,6 +230,10 @@ struct SceneWire {
     /// says otherwise (MV9-b).
     #[serde(default)]
     grade: Option<Value>,
+    /// The pixel look every section of this scene wears unless the section
+    /// says otherwise (2026-10-24).
+    #[serde(default)]
+    pixel: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +253,10 @@ struct SegmentWire {
     /// before it, when that is the same scene (MV9-c).
     #[serde(default)]
     glide: Option<Value>,
+    /// This section's pixel look: `"off"`, a palette, or an object over the
+    /// video's (2026-10-24).
+    #[serde(default)]
+    pixel: Option<Value>,
     #[serde(default)]
     #[allow(dead_code)]
     note: Option<Value>,
@@ -417,6 +426,8 @@ struct Segment {
     transition: Transition,
     grade: Option<Grade>,
     glide: f32,
+    /// `None` wears the finish's.
+    pixel: Option<Pixel>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -543,11 +554,19 @@ impl Treatment {
         let output = wire.output.map(parse_output).transpose()?;
         let caption_style = wire.caption_style.map(parse_caption_style).transpose()?;
 
+        // The finish first: a scene's or a section's pixel look is written
+        // over the video's.
+        let finish = match &wire.finish {
+            Some(value) => parse_finish("finish", value)?,
+            None => Finish::NONE,
+        };
+
         // The per-scene base: defaults, then whatever `scenes` says.
         let mut scene_settings = SceneSettings::new();
         let mut scene_routes = RouteTable::new();
         let mut route_count = 0usize;
         let mut scene_grades: BTreeMap<SceneId, Grade> = BTreeMap::new();
+        let mut scene_pixels: BTreeMap<SceneId, Option<Pixel>> = BTreeMap::new();
         for (name, block) in &wire.scenes {
             let place = format!("scenes.{name}");
             let scene = resolve_scene(&place, name)?;
@@ -555,6 +574,10 @@ impl Treatment {
                 if let Some(grade) = parse_grade(&format!("{place}.grade"), value)? {
                     scene_grades.insert(scene, grade);
                 }
+            }
+            if let Some(value) = &block.pixel {
+                let look = parse_pixel(&format!("{place}.pixel"), value, finish.pixel)?;
+                scene_pixels.insert(scene, look.filter(|look| *look != finish.pixel));
             }
             apply_settings(
                 &format!("{place}.settings"),
@@ -633,6 +656,19 @@ impl Treatment {
                 Some(value) => parse_glide(&format!("{place}.glide"), value)?,
                 None => 0.0,
             };
+            // A section's look is written over its scene's, which is written
+            // over the video's; one that comes out as the video's own is
+            // stored as "the video's", so it follows the finish.
+            let scene_pixel = scene_pixels.get(&scene).copied().flatten();
+            let pixel = match &segment.pixel {
+                Some(value) => parse_pixel(
+                    &format!("{place}.pixel"),
+                    value,
+                    scene_pixel.unwrap_or(finish.pixel),
+                )?,
+                None => scene_pixel,
+            }
+            .filter(|look| *look != finish.pixel);
             segments.push(Segment {
                 at,
                 scene,
@@ -640,15 +676,12 @@ impl Treatment {
                 transition,
                 grade,
                 glide,
+                pixel,
             });
         }
         let outro = match &wire.outro {
             Some(value) => parse_transition("outro", value)?,
             None => Transition::CUT,
-        };
-        let finish = match &wire.finish {
-            Some(value) => parse_finish("finish", value)?,
-            None => Finish::NONE,
         };
 
         let (lines, lyrics_file) = match wire.lyrics {
@@ -873,6 +906,7 @@ impl Treatment {
                 transition: segment.transition,
                 grade: segment.grade,
                 glide: segment.glide,
+                pixel: segment.pixel,
             });
         }
         let mut scene_switches = SceneSwitchTimeline::new();
@@ -1191,15 +1225,19 @@ fn parse_glide(place: &str, value: &Value) -> Result<f32, TreatmentError> {
     )? as f32)
 }
 
-/// The finish (MV9-a): `"film"`, `"none"`, or an object whose members are each
-/// optional and start from `"base"` (`"film"` or `"none"`, default none).
+/// The finish (MV9-a): `"film"`, `"cartridge"`, `"none"`, or an object whose
+/// members are each optional and start from `"base"` (one of those three,
+/// default none). Its `pixel` member is a [`parse_pixel`] look.
 fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
     let base = |name: &str| match name {
         "film" => Ok(Finish::FILM),
+        "cartridge" => Ok(Finish::cartridge()),
         "none" => Ok(Finish::NONE),
         other => Err(invalid(
             place,
-            format!("\"{other}\" is not a finish; use \"film\", \"none\" or an object"),
+            format!(
+                "\"{other}\" is not a finish; use \"film\", \"cartridge\", \"none\" or an object"
+            ),
         )),
     };
     let finish = match value {
@@ -1210,7 +1248,7 @@ fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
                 Some(_) => {
                     return Err(invalid(
                         format!("{place}.base"),
-                        "must be \"film\" or \"none\"",
+                        "must be \"film\", \"cartridge\" or \"none\"",
                     ));
                 }
                 None => Finish::NONE,
@@ -1241,13 +1279,23 @@ fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
                     "highlight" => finish.highlight_rgb = colour()?,
                     "vignette" => finish.vignette = number(UNIT)?,
                     "grain" => finish.grain = number(UNIT)?,
+                    "pixel" => {
+                        // "video" has nothing to inherit from here.
+                        finish.pixel =
+                            parse_pixel(&at, member, finish.pixel)?.ok_or_else(|| {
+                                invalid(
+                                    &at,
+                                    "the finish is the video's own look; use \"off\" or a look",
+                                )
+                            })?;
+                    }
                     unknown => {
                         return Err(invalid(
                             place,
                             format!(
                                 "unknown field \"{unknown}\"; a finish has base, bloom, \
                                  bloom_threshold, bloom_radius, shoulder, tone, shadow, \
-                                 highlight, vignette and grain"
+                                 highlight, vignette, grain and pixel"
                             ),
                         ));
                     }
@@ -1255,9 +1303,183 @@ fn parse_finish(place: &str, value: &Value) -> Result<Finish, TreatmentError> {
             }
             finish
         }
-        _ => return Err(invalid(place, "must be \"film\", \"none\" or an object")),
+        _ => {
+            return Err(invalid(
+                place,
+                "must be \"film\", \"cartridge\", \"none\" or an object",
+            ))
+        }
     };
     Ok(finish)
+}
+
+/// The words a pixel look may be spelled with besides an object.
+const PIXEL_WORDS: &str = "\"off\", \"on\", \"video\", \"cartridge\", \"none\", \"levels\", \
+                           \"handheld\", \"grey\", \"home\", \"fantasy\"";
+
+/// A pixel look (2026-10-24), written over `base` — the look the place
+/// inherits: the video's for a scene or the finish, the scene's for a
+/// section. `None` is `"video"`: wear the video's own.
+///
+/// - `"off"`: no pixel look here; `"video"`: the video's, whatever it is.
+/// - `"on"`: `base` if it is on, else the shipped look; `"cartridge"`: the
+///   shipped look with the hit responses.
+/// - A palette's name (`"handheld"`, `"home"`, …), `"none"` (pixels in full
+///   colour) or `"levels"`: `base`, or the shipped look, held to it.
+/// - An object, every member optional, over the same start: `pixels`,
+///   `palette` (a name, `"none"`, `"levels"`, or 2..=16 `"#rrggbb"` — a list
+///   is a ramp, darkest first, unless `match` is `"nearest"`), `match`,
+///   `levels`, `dither`, `grid`, `scanlines`, `curvature`, `glow`, `split`,
+///   `shake`, `zoom`.
+fn parse_pixel(place: &str, value: &Value, base: Pixel) -> Result<Option<Pixel>, TreatmentError> {
+    let start = if base.is_on() { base } else { Pixel::on() };
+    let palette_names = || PixelPalette::ALL.map(PixelPalette::name).join(", ");
+    // A palette word: a named set, "none" or "levels".
+    let worded = |look: Pixel, at: &str, word: &str| -> Result<Pixel, TreatmentError> {
+        match word {
+            "none" => Ok(look.without_colours(Matching::None)),
+            "levels" => Ok(look.without_colours(Matching::Levels)),
+            name => PixelPalette::from_name(name)
+                .map(|palette| look.with_palette(palette))
+                .ok_or_else(|| {
+                    invalid(
+                        at,
+                        format!(
+                            "\"{name}\" is not a pixel palette; use one of {}, \"none\", \
+                             \"levels\" or a list of colours",
+                            palette_names()
+                        ),
+                    )
+                }),
+        }
+    };
+    let look = match value {
+        Value::String(word) => match word.as_str() {
+            "off" => Pixel::OFF,
+            "video" => return Ok(None),
+            "on" => start,
+            "cartridge" => Pixel::cartridge(),
+            other => {
+                if PixelPalette::from_name(other).is_none() && !matches!(other, "none" | "levels") {
+                    return Err(invalid(
+                        place,
+                        format!("\"{other}\" is not a pixel look; use {PIXEL_WORDS} or an object"),
+                    ));
+                }
+                worded(start, place, other)?
+            }
+        },
+        Value::Object(members) => {
+            let mut look = start;
+            // The palette first, so `match` and the numbers apply to it.
+            if let Some(palette) = members.get("palette") {
+                let at = format!("{place}.palette");
+                look =
+                    match palette {
+                        Value::String(word) => worded(look, &at, word)?,
+                        Value::Array(colours) => {
+                            if !(pixel::MIN_COLOURS..=pixel::MAX_COLOURS).contains(&colours.len()) {
+                                return Err(invalid(
+                                    &at,
+                                    format!(
+                                        "a pixel palette has {}..={} colours",
+                                        pixel::MIN_COLOURS,
+                                        pixel::MAX_COLOURS
+                                    ),
+                                ));
+                            }
+                            let mut listed = look;
+                            listed.colours = [0; pixel::MAX_COLOURS];
+                            for (index, colour) in colours.iter().enumerate() {
+                                let at = format!("{at}[{index}]");
+                                let text = colour
+                                    .as_str()
+                                    .ok_or_else(|| invalid(&at, "must be \"#rrggbb\""))?;
+                                listed.colours[index] = parse_rgba(&at, text)? >> 8;
+                            }
+                            listed.colour_count = colours.len() as u8;
+                            listed.matching = Matching::Ramp;
+                            listed
+                        }
+                        _ => return Err(invalid(
+                            &at,
+                            "must be a palette's name, \"none\", \"levels\" or a list of colours",
+                        )),
+                    };
+            }
+            for (key, member) in members {
+                let at = format!("{place}.{key}");
+                let unit = || -> Result<f32, TreatmentError> {
+                    let value = member
+                        .as_f64()
+                        .ok_or_else(|| invalid(&at, "must be a number"))?;
+                    let (low, high) = pixel::pixel_bounds::UNIT;
+                    Ok(bounded(&at, value, f64::from(low), f64::from(high))? as f32)
+                };
+                let whole = |low: f64, high: f64| -> Result<f64, TreatmentError> {
+                    let value = member
+                        .as_f64()
+                        .filter(|value| value.fract() == 0.0)
+                        .ok_or_else(|| invalid(&at, "must be a whole number"))?;
+                    bounded(&at, value, low, high)
+                };
+                match key.as_str() {
+                    "palette" => {}
+                    "pixels" => {
+                        let (low, high) = pixel::pixel_bounds::PIXELS;
+                        look.pixels = whole(f64::from(low), f64::from(high))? as u16;
+                    }
+                    "levels" => {
+                        let (low, high) = pixel::pixel_bounds::LEVELS;
+                        look.levels = whole(f64::from(low), f64::from(high))? as u8;
+                    }
+                    "match" => {
+                        let matching = member
+                            .as_str()
+                            .and_then(Matching::from_name)
+                            .filter(|matching| matching.uses_colours())
+                            .ok_or_else(|| invalid(&at, "must be \"ramp\" or \"nearest\""))?;
+                        if !look.matching.uses_colours() {
+                            return Err(invalid(
+                                &at,
+                                "matches a palette's colours, and this look has none",
+                            ));
+                        }
+                        look.matching = matching;
+                    }
+                    "dither" => look.dither = unit()?,
+                    "grid" => look.grid = unit()?,
+                    "scanlines" => look.scanlines = unit()?,
+                    "curvature" => look.curvature = unit()?,
+                    "glow" => look.glow = unit()?,
+                    "split" => look.split = unit()?,
+                    "shake" => look.shake = unit()?,
+                    "zoom" => look.zoom = unit()?,
+                    unknown => {
+                        return Err(invalid(
+                            place,
+                            format!(
+                                "unknown field \"{unknown}\"; a pixel look has pixels, palette, \
+                                 match, levels, dither, grid, scanlines, curvature, glow, split, \
+                                 shake and zoom"
+                            ),
+                        ))
+                    }
+                }
+            }
+            look
+        }
+        _ => {
+            return Err(invalid(
+                place,
+                format!("must be {PIXEL_WORDS} or an object"),
+            ))
+        }
+    };
+    if !look.is_valid() {
+        return Err(invalid(place, "is outside its bounds"));
+    }
+    Ok(Some(look))
 }
 
 /// A transition: a kind's name alone (`"burn"`, at the default length), or
@@ -1980,6 +2202,58 @@ fn range(minimum: f64, maximum: f64, default: f64) -> Value {
     json!({ "minimum": minimum, "maximum": maximum, "default": default })
 }
 
+/// The pixel look's part of `--vocabulary`: where it goes, how to spell it,
+/// every palette with its colours, and every member with its bounds and the
+/// value a look turned on starts from.
+fn pixel_vocabulary() -> Value {
+    let on = Pixel::on();
+    let cartridge = Pixel::cartridge();
+    let unit = |default: f32| json!({ "minimum": 0, "maximum": 1, "default": tidy(default) });
+    json!({
+        "where": "the finish's \"pixel\" draws every frame of the video at a low resolution, \
+                  through a palette and a screen; a scene's or a section's \"pixel\" overrides \
+                  it there. Applied after the caption and the fade to black, before the rest \
+                  of the finish. Two sections whose looks differ dissolve cell by cell across \
+                  the second one's transition, or across its glide when it arrives by a cut \
+                  (the way to unlock colour over a scene that carries on); otherwise it snaps.",
+        "spell": PIXEL_WORDS,
+        "words": {
+            "off": "no pixel look here",
+            "video": "the video's own look (clears a scene's)",
+            "on": "the inherited look, or the shipped one when there is none",
+            "cartridge": "the shipped look with the hit responses on",
+            "none": "pixels in the scene's own colours",
+            "levels": "each channel held to \"levels\" steps",
+        },
+        "palettes": PixelPalette::ALL.map(|palette| json!({
+            "name": palette.name(),
+            "look": palette.look(),
+            "match": palette.matching().name(),
+            "colours": palette.colours().iter().map(|colour| format!("#{colour:06x}")).collect::<Vec<_>>(),
+        })),
+        "object": {
+            "pixels": { "minimum": pixel::pixel_bounds::PIXELS.0, "maximum": pixel::pixel_bounds::PIXELS.1, "default": on.pixels,
+                        "means": "pixels across the frame's short edge; each is a whole number of output pixels" },
+            "palette": "a palette's name, \"none\", \"levels\", or 2..16 \"#rrggbb\" (a ramp, darkest first, unless \"match\" is \"nearest\")",
+            "match": ["ramp", "nearest"],
+            "levels": { "minimum": pixel::pixel_bounds::LEVELS.0, "maximum": pixel::pixel_bounds::LEVELS.1, "default": on.levels },
+            "dither": unit(on.dither),
+            "grid": unit(on.grid),
+            "scanlines": unit(on.scanlines),
+            "curvature": unit(on.curvature),
+            "glow": unit(on.glow),
+            "split": unit(on.split),
+            "shake": unit(on.shake),
+            "zoom": unit(on.zoom),
+        },
+        "cartridge": {
+            "split": tidy(cartridge.split), "shake": tidy(cartridge.shake), "zoom": tidy(cartridge.zoom),
+        },
+        "hits": "split, shake and zoom answer the kick: the low bands' rise over their own trails, \
+                 whole pixels only, the same in a still and in the video",
+    })
+}
+
 /// Every name a treatment or a `--route` may use, as one JSON document.
 ///
 /// Generated from the descriptor tables and the enums themselves rather than
@@ -2073,7 +2347,10 @@ pub fn vocabulary() -> Value {
                 "tone": "split toning toward \"shadow\" and \"highlight\" (\"#rrggbb\"), 0..1",
                 "vignette": "0..1",
                 "grain": "0..1",
+                "pixel": "a pixel look (see \"pixel\"); \"cartridge\" as a whole finish is the \
+                          look \"cartridge\" with a vignette of 0.3",
             },
+            "pixel": pixel_vocabulary(),
             "glide": {
                 "where": "a section's \"glide\": seconds over which its tuning eases in from \
                           the section before it, when that is the same scene. Toggles and \
@@ -2907,6 +3184,139 @@ mod tests {
         assert!(refuse("", r#","finish":"glossy""#).contains("not a finish"));
         assert!(refuse("", r#","finish":{"grain":3}"#).contains("outside 0..1"));
         assert!(refuse("", r#","finish":{"sparkle":1}"#).contains("unknown field"));
+    }
+
+    #[test]
+    fn pixel_looks_compile_onto_the_finish_and_the_sections_over_it() {
+        use crate::project::pixel::{Matching, Pixel, PixelPalette};
+        let compiled = parse(
+            r##"{"schema":"musializer.treatment/v1",
+                "finish":{"base":"cartridge","pixel":{"pixels":144,"grid":0.5}},
+                "scenes":{"clawd":{"pixel":"grey"},"cadence":{"pixel":"off"}},
+                "segments":[
+                  {"at":0,"scene":"stage"},
+                  {"at":10,"scene":"stage","pixel":"none","transition":{"kind":"fade","seconds":1}},
+                  {"at":20,"scene":"clawd"},
+                  {"at":30,"scene":"clawd","pixel":{"dither":0}},
+                  {"at":40,"scene":"clawd","pixel":"video"},
+                  {"at":45,"scene":"cadence"},
+                  {"at":50,"scene":"stage","pixel":{"palette":["#220000","#ff4400","#ffee88"],"pixels":96}}
+                ]}"##,
+        )
+        .unwrap()
+        .compile(60.0)
+        .unwrap();
+        let plan = &compiled.scene_switches;
+        let video = plan.finish.pixel;
+        assert_eq!(video.pixels, 144);
+        assert_eq!(video.grid, 0.5);
+        assert_eq!(video.named_palette(), Some(PixelPalette::Handheld));
+        assert_eq!(video.split, Pixel::cartridge().split, "the base's hits");
+        assert_eq!(plan.finish.vignette, 0.3, "the cartridge's frame");
+        let cues = plan.cues();
+        assert_eq!(cues[0].pixel, None, "no word, the video's look");
+        let unlocked = cues[1].pixel.unwrap();
+        assert_eq!(unlocked.matching, Matching::None);
+        assert_eq!(
+            unlocked.pixels, 144,
+            "a palette word keeps the inherited pixels"
+        );
+        assert_eq!(
+            cues[2].pixel.unwrap().named_palette(),
+            Some(PixelPalette::Grey)
+        );
+        let undithered = cues[3].pixel.unwrap();
+        assert_eq!(
+            (undithered.dither, undithered.named_palette()),
+            (0.0, Some(PixelPalette::Grey)),
+            "a section's object is written over its scene's look"
+        );
+        assert_eq!(cues[4].pixel, None, "\"video\" clears the scene's");
+        assert_eq!(cues[5].pixel, Some(Pixel::OFF));
+        let listed = cues[6].pixel.unwrap();
+        assert_eq!(
+            (listed.matching, listed.colour_count, listed.pixels),
+            (Matching::Ramp, 3, 96)
+        );
+        assert_eq!(listed.colours[1], 0xff4400);
+        // The unlock dissolves across the fade.
+        let midway = plan.pixel_at(10.5);
+        assert_eq!((midway.from, midway.to), (video, unlocked));
+
+        // A look named alone on a video with none starts from the shipped one.
+        let plain = parse(
+            r#"{"schema":"musializer.treatment/v1",
+                "segments":[{"at":0,"scene":"atlas","pixel":"home"}]}"#,
+        )
+        .unwrap()
+        .compile(10.0)
+        .unwrap();
+        let look = plain.scene_switches.cues()[0].pixel.unwrap();
+        assert_eq!(look.pixels, crate::project::pixel::DEFAULT_PIXELS);
+        assert_eq!(look.named_palette(), Some(PixelPalette::Home));
+        assert!(!plain.scene_switches.finish.is_active());
+    }
+
+    #[test]
+    fn a_bad_pixel_look_is_refused_by_name() {
+        let refuse = |segment: &str, top: &str| {
+            refusal(&format!(
+                r##"{{"schema":"musializer.treatment/v1"{top},
+                    "segments":[{{"at":0,"scene":"atlas"{segment}}}]}}"##
+            ))
+        };
+        let unknown = refuse(r#","pixel":"gameboy""#, "");
+        assert!(
+            unknown.contains("segments[0] (0:00.000).pixel")
+                && unknown.contains("not a pixel look")
+                && unknown.contains("handheld"),
+            "{unknown}"
+        );
+        let palette = refuse(r#","pixel":{"palette":"sepia"}"#, "");
+        assert!(
+            palette.contains("pixel.palette") && palette.contains("fantasy"),
+            "{palette}"
+        );
+        assert!(refuse(r#","pixel":{"pixels":12}"#, "").contains("outside 48..720"));
+        assert!(refuse(r#","pixel":{"pixels":180.5}"#, "").contains("whole number"));
+        assert!(refuse(r#","pixel":{"glow":2}"#, "").contains("outside 0..1"));
+        assert!(refuse(r##","pixel":{"palette":["#000000"]}"##, "").contains("2..=16 colours"));
+        assert!(refuse(r#","pixel":{"sparkle":1}"#, "").contains("unknown field \"sparkle\""));
+        assert!(refuse(r#","pixel":{"palette":"none","match":"ramp"}"#, "").contains("has none"));
+        assert!(refuse(r#","pixel":{"match":"mosaic"}"#, "").contains("\"ramp\" or \"nearest\""));
+        assert!(refuse(r#","pixel":3"#, "").contains("or an object"));
+        assert!(refuse("", r#","finish":{"pixel":"video"}"#).contains("finish.pixel"));
+        assert!(refuse("", r#","finish":{"pixel":{"levels":40}}"#).contains("outside 2..16"));
+        let scene = refusal(
+            r#"{"schema":"musializer.treatment/v1","scenes":{"loom":{"pixel":"blocky"}},
+                "segments":[{"at":0,"scene":"loom"}]}"#,
+        );
+        assert!(scene.contains("scenes.loom.pixel"), "{scene}");
+    }
+
+    #[test]
+    fn the_vocabulary_lists_every_pixel_palette_the_parser_takes() {
+        use crate::project::pixel::PixelPalette;
+        let document = vocabulary();
+        let palettes = document["look"]["pixel"]["palettes"].as_array().unwrap();
+        assert_eq!(palettes.len(), PixelPalette::ALL.len());
+        for entry in palettes {
+            let name = entry["name"].as_str().unwrap();
+            let text = format!(
+                r#"{{"schema":"musializer.treatment/v1","finish":{{"pixel":"{name}"}},"segments":[{{"at":0,"scene":"atlas","pixel":{{"palette":"{name}"}}}}]}}"#
+            );
+            assert!(parse(&text).is_ok(), "{name}");
+        }
+        for word in document["look"]["pixel"]["words"]
+            .as_object()
+            .unwrap()
+            .keys()
+        {
+            let text = format!(
+                r#"{{"schema":"musializer.treatment/v1","segments":[{{"at":0,"scene":"atlas","pixel":"{word}"}}]}}"#
+            );
+            assert!(parse(&text).is_ok(), "{word}");
+        }
     }
 
     #[test]

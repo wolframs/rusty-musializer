@@ -37,6 +37,7 @@
 //! resolver applies before it ever touches a disk.
 
 use super::look::{Finish, Grade, MAX_STOPS, MIN_STOPS};
+use super::pixel::{self, Matching, Pixel};
 use super::transition::{Transition, TransitionKind};
 use crate::project::assets;
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
@@ -578,6 +579,16 @@ fn write_project(out: &mut String, project: &Project) {
         if cue.glide > 0.0 {
             out.push_str(",\"glide\":");
             write_f32_short(out, cue.glide);
+        }
+        // Post-legacy (2026-10-24). `None` wears the finish's look and is
+        // never written; a section that switches it off says so in a word.
+        if let Some(look) = &cue.pixel {
+            out.push_str(",\"pixel\":");
+            if look.is_on() {
+                write_pixel(out, look);
+            } else {
+                out.push_str("\"off\"");
+            }
         }
         out.push('}');
     }
@@ -1429,7 +1440,7 @@ fn parse_f32_array(parser: &mut Parser<'_>, capacity: usize) -> Parsed<Vec<f32>>
 /// `parse_switch` (`project_io.c:224-225`): `settings` is optional and defaults to
 /// empty, which is how early v1 projects are spelled.
 fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
-    const NAMES: [&str; 9] = [
+    const NAMES: [&str; 10] = [
         "id",
         "start_seconds",
         "end_seconds",
@@ -1439,6 +1450,7 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
         "transition",
         "grade",
         "glide",
+        "pixel",
     ];
     let mut cue = SceneSwitchSuggestion::default();
     let mut seen = Seen::default();
@@ -1454,6 +1466,7 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
             5 => cue.settings = parse_f32_array(parser, MAX_CONTROLS)?,
             6 => cue.transition = parse_transition(parser)?,
             7 => cue.grade = Some(parse_grade(parser)?),
+            9 => cue.pixel = Some(parse_section_pixel(parser)?),
             _ => {
                 cue.glide = parser.f32()?;
                 // Zero is spelled by leaving the member out, like a cut.
@@ -1589,11 +1602,116 @@ fn write_finish(out: &mut String, finish: &Finish) {
     write_rgb(out, finish.highlight_rgb);
     number(out, "vignette", finish.vignette, false);
     number(out, "grain", finish.grain, false);
+    // Post-legacy (2026-10-24): off is leaving the member out.
+    if finish.pixel.is_on() {
+        out.push_str(",\"pixel\":");
+        write_pixel(out, &finish.pixel);
+    }
     out.push('}');
 }
 
+/// A pixel look (2026-10-24), every member required for the grade's reason:
+/// a half-written look would mix intent with defaults silently. The colours
+/// are written as the look holds them, never as a palette's name, so a file
+/// does not change meaning if a named set is ever retuned.
+fn write_pixel(out: &mut String, look: &Pixel) {
+    out.push_str(&format!("{{\"pixels\":{},\"match\":", look.pixels));
+    write_string(out, look.matching.name());
+    out.push_str(",\"colours\":[");
+    for (index, colour) in look.colours().iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        write_rgb(out, *colour);
+    }
+    out.push_str(&format!("],\"levels\":{}", look.levels));
+    for (name, value) in [
+        ("dither", look.dither),
+        ("grid", look.grid),
+        ("scanlines", look.scanlines),
+        ("curvature", look.curvature),
+        ("glow", look.glow),
+        ("split", look.split),
+        ("shake", look.shake),
+        ("zoom", look.zoom),
+    ] {
+        out.push(',');
+        write_string(out, name);
+        out.push(':');
+        write_f32_short(out, value);
+    }
+    out.push('}');
+}
+
+/// A pixel look's object. Its bounds are the model's to check
+/// ([`Pixel::is_valid`]), like every other number here; what this refuses is
+/// a missing or repeated member, a colour list longer than any palette, and
+/// an object that says "off" (`pixels` 0), which is spelled by leaving the
+/// member out or, on a section, `"off"`.
+fn parse_pixel(parser: &mut Parser<'_>) -> Parsed<Pixel> {
+    const NAMES: [&str; 12] = [
+        "pixels",
+        "match",
+        "colours",
+        "levels",
+        "dither",
+        "grid",
+        "scanlines",
+        "curvature",
+        "glow",
+        "split",
+        "shake",
+        "zoom",
+    ];
+    let mut look = Pixel::OFF;
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => look.pixels = parser.bounded_u16()?,
+            1 => look.matching = parser.enum_value(Matching::from_name)?,
+            2 => {
+                let mut count = 0usize;
+                let colours = &mut look.colours;
+                parser.array(pixel::MAX_COLOURS, |parser, index| {
+                    colours[index] = parser.rgb()?;
+                    count = index + 1;
+                    Ok(())
+                })?;
+                look.colour_count = count as u8;
+            }
+            3 => {
+                look.levels =
+                    u8::try_from(parser.bounded_u16()?).map_err(|_| ProjectIoError::Number)?;
+            }
+            4 => look.dither = parser.f32()?,
+            5 => look.grid = parser.f32()?,
+            6 => look.scanlines = parser.f32()?,
+            7 => look.curvature = parser.f32()?,
+            8 => look.glow = parser.f32()?,
+            9 => look.split = parser.f32()?,
+            10 => look.shake = parser.f32()?,
+            _ => look.zoom = parser.f32()?,
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0xfff) || !look.is_on() {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(look)
+}
+
+/// A section's `pixel`: the word `"off"`, or a look.
+fn parse_section_pixel(parser: &mut Parser<'_>) -> Parsed<Pixel> {
+    if parser.peek() == Some(b'"') {
+        return parser.enum_value(|word| (word == "off").then_some(Pixel::OFF));
+    }
+    parse_pixel(parser)
+}
+
 fn parse_finish(parser: &mut Parser<'_>) -> Parsed<Finish> {
-    const NAMES: [&str; 9] = [
+    const NAMES: [&str; 10] = [
         "bloom",
         "bloom_threshold",
         "bloom_radius",
@@ -1603,6 +1721,7 @@ fn parse_finish(parser: &mut Parser<'_>) -> Parsed<Finish> {
         "highlight_rgb",
         "vignette",
         "grain",
+        "pixel",
     ];
     let mut finish = Finish::NONE;
     let mut seen = Seen::default();
@@ -1618,7 +1737,8 @@ fn parse_finish(parser: &mut Parser<'_>) -> Parsed<Finish> {
             5 => finish.shadow_rgb = parser.rgb()?,
             6 => finish.highlight_rgb = parser.rgb()?,
             7 => finish.vignette = parser.f32()?,
-            _ => finish.grain = parser.f32()?,
+            8 => finish.grain = parser.f32()?,
+            _ => finish.pixel = parse_pixel(parser)?,
         }
         Ok(())
     })?;
@@ -3183,6 +3303,7 @@ mod tests {
             transition,
             grade: None,
             glide: 0.0,
+            pixel: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
@@ -3230,6 +3351,7 @@ mod tests {
             transition: Transition::CUT,
             grade,
             glide,
+            pixel: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
@@ -3280,6 +3402,90 @@ mod tests {
         );
         assert_ne!(one_stop, text);
         assert!(deserialize(one_stop.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn pixel_looks_round_trip_and_off_is_never_written() {
+        use crate::project::look::Finish;
+        use crate::project::pixel::{Matching, Pixel, PixelPalette};
+        let mut project = valid_project();
+        let switch = |id, start, end, pixel| SceneSwitchSuggestion {
+            id,
+            start_seconds: start,
+            end_seconds: end,
+            scene_name: "stage".into(),
+            strength: 1.0,
+            settings: Vec::new(),
+            transition: Transition::CUT,
+            grade: None,
+            glide: 0.0,
+            pixel,
+        };
+        project.scene_switches = SceneSwitchSuggestions {
+            enabled: true,
+            cues: vec![switch(1, 0.0, 60.0, None)],
+            outro: Transition::CUT,
+            finish: Finish::FILM,
+        };
+        let plain = serialize(&project).unwrap();
+        assert!(
+            !plain.contains("pixel"),
+            "a project without a pixel look is byte-identical to one saved before"
+        );
+
+        project.scene_switches.finish = Finish::cartridge();
+        project.scene_switches.cues = vec![
+            switch(1, 0.0, 20.0, None),
+            switch(
+                2,
+                20.0,
+                40.0,
+                Some(Pixel::on().with_palette(PixelPalette::Fantasy)),
+            ),
+            switch(3, 40.0, 50.0, Some(Pixel::OFF)),
+            switch(
+                4,
+                50.0,
+                60.0,
+                Some(Pixel {
+                    levels: 4,
+                    ..Pixel::on().without_colours(Matching::Levels)
+                }),
+            ),
+        ];
+        let text = serialize(&project).unwrap();
+        assert!(
+            text.contains(
+                "\"pixel\":{\"pixels\":180,\"match\":\"ramp\",\"colours\":[\"081820\",\"346856\",\"88c070\",\"e0f8d0\"],\"levels\":8,\"dither\":0.35"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\"pixel\":\"off\""));
+        assert!(text.contains("\"match\":\"levels\",\"colours\":[],\"levels\":4"));
+        // A finish with nothing but the pixel look is a finish.
+        assert!(text.contains("\"finish\":{\"bloom\":0,"));
+        let reopened = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(reopened.scene_switches, project.scene_switches);
+        assert_eq!(serialize(&reopened).unwrap(), text);
+
+        for broken in [
+            text.replace("\"pixel\":\"off\"", "\"pixel\":\"on\""),
+            text.replace("\"pixels\":180", "\"pixels\":0"),
+            text.replacen("\"pixels\":180", "\"pixels\":9000", 1),
+            text.replacen("\"match\":\"ramp\"", "\"match\":\"mosaic\"", 1),
+            text.replacen("\"dither\":0.35", "\"dither\":1.5", 1),
+            text.replacen(",\"zoom\":0.4", "", 1),
+            text.replacen("\"zoom\":0.4", "\"zoom\":0.4,\"sparkle\":1", 1),
+            text.replacen("\"levels\":8", "\"levels\":1", 1),
+            // Colours on a look that matches none of them.
+            text.replace(
+                "\"colours\":[],\"levels\":4",
+                "\"colours\":[\"000000\"],\"levels\":4",
+            ),
+        ] {
+            assert_ne!(broken, text);
+            assert!(deserialize(broken.as_bytes()).is_err(), "{broken}");
+        }
     }
 
     #[test]
@@ -3370,6 +3576,7 @@ mod tests {
                 transition: Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             }],
             outro: Transition::CUT,
             finish: crate::project::look::Finish::NONE,

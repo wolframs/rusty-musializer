@@ -251,6 +251,7 @@ pub fn build_project(
                 transition: cue.transition,
                 grade: cue.grade,
                 glide: cue.glide,
+                pixel: cue.pixel,
             })
             .collect(),
         outro: track.scene_switches.outro,
@@ -754,6 +755,7 @@ fn hydrate_scene_switches(
             transition: suggestion.transition,
             grade: suggestion.grade,
             glide: suggestion.glide,
+            pixel: suggestion.pixel,
         });
     }
     timeline

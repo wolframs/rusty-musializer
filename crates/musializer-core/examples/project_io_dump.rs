@@ -863,6 +863,7 @@ fn build_fixture() -> Project {
                 transition: musializer_core::project::transition::Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             },
             SceneSwitchSuggestion {
                 id: 22,
@@ -886,6 +887,7 @@ fn build_fixture() -> Project {
                 transition: musializer_core::project::transition::Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             },
             SceneSwitchSuggestion {
                 id: 33,
@@ -897,6 +899,7 @@ fn build_fixture() -> Project {
                 transition: musializer_core::project::transition::Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             },
         ],
         outro: musializer_core::project::transition::Transition::CUT,

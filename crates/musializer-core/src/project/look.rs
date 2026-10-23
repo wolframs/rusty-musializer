@@ -25,10 +25,15 @@
 //! never of a frame counter or an ambient RNG, so an export, a still and a
 //! clip of the same moment draw the same specks.
 //!
+//! The pixel cartridge ([`super::pixel`]) is part of the finish: the first
+//! step of it, before the bloom.
+//!
 //! Everything here is data and arithmetic. The shaders that read it are
 //! `resources/shaders/glsl330/post_grade.fs` and `post_finish.fs`; the CPU
 //! reference functions below ([`Grade::apply`], [`shoulder`]) restate their
 //! formulas so the semantics are pinned by tests rather than only by pictures.
+
+use super::pixel::Pixel;
 
 /// Most stops a gradient map may have.
 pub const MAX_STOPS: usize = 8;
@@ -267,6 +272,11 @@ pub struct Finish {
     pub vignette: f32,
     /// Film grain, `0..=1`.
     pub grain: f32,
+    /// The pixel cartridge (2026-10-24): the frame drawn at a low resolution
+    /// through a palette and a screen, before everything above. Off by
+    /// default, and never written when off. A section may override it
+    /// ([`super::pixel::PixelFrame`]).
+    pub pixel: Pixel,
 }
 
 /// Bounds a [`Finish`] is validated against.
@@ -298,6 +308,7 @@ impl Finish {
         highlight_rgb: 0xffd9a0,
         vignette: 0.0,
         grain: 0.0,
+        pixel: Pixel::OFF,
     };
 
     /// The finish the "Door, No Room" compositor applied, restated in these
@@ -312,7 +323,21 @@ impl Finish {
         highlight_rgb: 0xffd9a0,
         vignette: 0.45,
         grain: 0.4,
+        pixel: Pixel::OFF,
     };
+
+    /// The pixel cartridge as a whole finish (`"finish": "cartridge"`): the
+    /// look [`Pixel::cartridge`] names, framed by a soft vignette. No bloom
+    /// and no grain — the screen's own glow does the first, and film grain
+    /// over whole pixels reads as a dirty lens rather than a screen.
+    #[must_use]
+    pub fn cartridge() -> Self {
+        Self {
+            vignette: 0.3,
+            pixel: Pixel::cartridge(),
+            ..Self::NONE
+        }
+    }
 
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -321,6 +346,18 @@ impl Finish {
             || self.tone > 0.0
             || self.vignette > 0.0
             || self.grain > 0.0
+            || self.pixel.is_on()
+    }
+
+    /// Whether the finish's own shader has work: everything but the pixel
+    /// look, which has its own pass.
+    #[must_use]
+    pub fn shades(&self) -> bool {
+        Self {
+            pixel: Pixel::OFF,
+            ..*self
+        }
+        .is_active()
     }
 
     #[must_use]
@@ -338,6 +375,7 @@ impl Finish {
             && within(self.grain, UNIT)
             && self.shadow_rgb <= 0x00ff_ffff
             && self.highlight_rgb <= 0x00ff_ffff
+            && self.pixel.is_valid()
     }
 
     /// The shoulder's knee for this strength: 1.0 (no roll-off) at zero.

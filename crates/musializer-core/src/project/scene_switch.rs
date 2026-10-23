@@ -14,6 +14,7 @@
 //! because an operation started, only because it finished and validated.
 
 use super::look::{Finish, Grade};
+use super::pixel::{Pixel, PixelFrame};
 use super::transition::{self, Active, Section, Transition};
 use crate::scene::settings::{SceneSettings, SettingsSnapshot, MAX_CONTROLS};
 use crate::scene::SceneId;
@@ -101,6 +102,9 @@ pub struct SceneSwitchCue {
     /// Seconds over which this section's tuning eases in from the section
     /// before it, when both are the same scene (post-legacy, MV9-c).
     pub glide: f32,
+    /// This section's pixel look, over the finish's (2026-10-24): `None`
+    /// wears the video's, `Some(Pixel::OFF)` switches it off here.
+    pub pixel: Option<Pixel>,
 }
 
 impl Default for SceneSwitchCue {
@@ -115,6 +119,7 @@ impl Default for SceneSwitchCue {
             transition: Transition::CUT,
             grade: None,
             glide: 0.0,
+            pixel: None,
         }
     }
 }
@@ -250,6 +255,84 @@ impl SceneSwitchTimeline {
         self.cue_near(time_seconds, scene)
             .and_then(|cue| cue.grade)
             .filter(|grade| !grade.is_identity())
+    }
+
+    /// The pixel look in force at `time_seconds` (2026-10-24): the covering
+    /// section's own, else the finish's.
+    ///
+    /// When a section's look differs from the one before it, the two
+    /// dissolve cell by cell in Bayer order — how a cartridge cross-fades —
+    /// across the section's **transition**, or, when it arrives by a cut,
+    /// across its **glide**. The glide is the one to reach for when the scene
+    /// carries on: two sections of one scene, the second with `"levels"` and
+    /// a glide of 0.9, unlock a four-shade world into colour over a live
+    /// picture, where a transition would dissolve out of a held still. With
+    /// neither it snaps, which is what a drop wants. A `dip` hides the change
+    /// in its black, so it snaps there too. Pure arithmetic over the
+    /// playhead, so a preview, a still and an export agree.
+    #[must_use]
+    pub fn pixel_at(&self, time_seconds: f64) -> PixelFrame {
+        let base = self.finish.pixel;
+        if !self.enabled {
+            return PixelFrame::steady(base);
+        }
+        let Some(index) = self.covering_index(time_seconds) else {
+            return PixelFrame::steady(base);
+        };
+        let cue = &self.cues[index];
+        let to = cue.pixel.unwrap_or(base);
+        if index == 0 || cue.transition.kind == super::transition::TransitionKind::Dip {
+            return PixelFrame::steady(to);
+        }
+        let from = self.cues[index - 1].pixel.unwrap_or(base);
+        let room = cue.end_seconds - cue.start_seconds;
+        let length = if cue.transition.is_cut() {
+            f64::from(cue.glide).min(room)
+        } else {
+            transition::fitted_seconds(cue.transition, room)
+        };
+        let elapsed = time_seconds - cue.start_seconds;
+        if from == to || length <= 0.0 || elapsed >= length {
+            return PixelFrame::steady(to);
+        }
+        PixelFrame {
+            from,
+            to,
+            mix: (elapsed / length).clamp(0.0, 1.0) as f32,
+        }
+    }
+
+    /// The index of the cue covering `time_seconds`, while the plan is on —
+    /// [`Self::cue_covering`]'s rule, including the last frame.
+    fn covering_index(&self, time_seconds: f64) -> Option<usize> {
+        if !self.enabled {
+            return None;
+        }
+        self.cues
+            .iter()
+            .position(|cue| cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds)
+            .or_else(|| {
+                let last = self.cues.len().checked_sub(1)?;
+                let cue = &self.cues[last];
+                (time_seconds >= cue.start_seconds && time_seconds <= cue.end_seconds)
+                    .then_some(last)
+            })
+    }
+
+    /// Sets one section's pixel look (`None` wears the video's). Refuses an
+    /// unknown id or a look outside its bounds, and changes nothing when it
+    /// refuses.
+    pub fn set_pixel(&mut self, cue_id: u64, pixel: Option<Pixel>) -> bool {
+        if pixel.is_some_and(|pixel| !pixel.is_valid()) {
+            return false;
+        }
+        match self.cues.iter_mut().find(|cue| cue.id == cue_id) {
+            Some(cue) => {
+                cue.pixel = pixel;
+                true
+            }
+            None => false,
+        }
     }
 
     /// The section of `scene` nearest in time to `time_seconds`, while the
@@ -398,6 +481,7 @@ impl SceneSwitchTimeline {
                 || !cue.transition.is_valid()
                 || cue.grade.is_some_and(|grade| !grade.is_valid())
                 || !glide_is_valid(cue.glide)
+                || cue.pixel.is_some_and(|pixel| !pixel.is_valid())
             {
                 return Err(SceneSwitchError::Cue);
             }
@@ -495,6 +579,7 @@ impl SceneSwitchTimeline {
                 transition: crate::project::transition::Transition::CUT,
                 grade: None,
                 glide: 0.0,
+                pixel: None,
             });
         } else {
             let selected = staged
@@ -688,6 +773,7 @@ mod tests {
             transition: Transition::CUT,
             grade: None,
             glide: 0.0,
+            pixel: None,
         }
     }
 
@@ -794,6 +880,70 @@ mod tests {
         assert_eq!(timeline.grade_near(42.0, SceneId::Constellation), b.grade);
         assert_eq!(timeline.grade_near(48.0, SceneId::Constellation), e.grade);
         assert_eq!(timeline.grade_near(5.0, SceneId::Loom), None);
+    }
+
+    #[test]
+    fn the_pixel_look_is_the_sections_else_the_finishs_and_dissolves_on_a_transition() {
+        use crate::project::pixel::{Matching, Pixel, PixelPalette};
+        use crate::project::transition::{Transition, TransitionKind};
+        let green = Pixel::on();
+        let colour = Pixel::on().without_colours(Matching::None);
+        let a = cue(1, 0.0, 20.0, 0);
+        let mut b = cue(2, 20.0, 40.0, 0);
+        b.pixel = Some(colour);
+        b.transition = Transition::new(TransitionKind::Fade, 2.0);
+        let mut c = cue(3, 40.0, 50.0, 0);
+        c.pixel = Some(Pixel::OFF);
+        let mut d = cue(4, 50.0, 55.0, 0);
+        d.transition = Transition::new(TransitionKind::Dip, 2.0);
+        // Same scene, a cut and a glide: the look dissolves over a live
+        // picture.
+        let mut e = cue(5, 55.0, 60.0, 0);
+        e.pixel = Some(colour);
+        e.glide = 1.0;
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline
+            .replace(&[a, b, c, d, e], DURATION, SCENES)
+            .unwrap();
+        timeline.finish.pixel = green;
+
+        // A plan switched off wears the finish's, whatever its sections say.
+        assert_eq!(timeline.pixel_at(45.0), PixelFrame::steady(green));
+        timeline.enabled = true;
+        assert_eq!(timeline.pixel_at(10.0), PixelFrame::steady(green));
+        // The unlock: half way through the fade, half the cells are colour.
+        let unlocking = timeline.pixel_at(21.0);
+        assert_eq!((unlocking.from, unlocking.to), (green, colour));
+        assert!((unlocking.mix - 0.5).abs() < 1.0e-6);
+        assert_eq!(timeline.pixel_at(23.0), PixelFrame::steady(colour));
+        // A cut snaps, and `off` is a look a section may ask for.
+        assert_eq!(timeline.pixel_at(40.0), PixelFrame::steady(Pixel::OFF));
+        assert!(!timeline.pixel_at(41.0).is_on());
+        // A dip hides the change in its black.
+        assert_eq!(timeline.pixel_at(50.5), PixelFrame::steady(green));
+        // A glide dissolves on a cut.
+        let gliding = timeline.pixel_at(55.25);
+        assert_eq!((gliding.from, gliding.to), (green, colour));
+        assert!((gliding.mix - 0.25).abs() < 1.0e-6);
+        assert_eq!(timeline.pixel_at(DURATION), PixelFrame::steady(colour));
+
+        // Editing one section's look validates it and leaves the rest.
+        assert!(timeline.set_pixel(4, Some(green.with_palette(PixelPalette::Grey))));
+        assert!(!timeline.set_pixel(4, Some(Pixel { pixels: 9, ..green })));
+        assert!(!timeline.set_pixel(99, None));
+        assert_eq!(
+            timeline.cues()[3].pixel.map(|pixel| pixel.named_palette()),
+            Some(Some(PixelPalette::Grey))
+        );
+        let mut bad = cue(1, 0.0, DURATION, 0);
+        bad.pixel = Some(Pixel {
+            dither: 2.0,
+            ..green
+        });
+        assert_eq!(
+            SceneSwitchTimeline::new().replace(&[bad], DURATION, SCENES),
+            Err(SceneSwitchError::Cue)
+        );
     }
 
     #[test]

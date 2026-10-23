@@ -15,6 +15,7 @@ pub mod io;
 pub mod look;
 pub mod lyrics;
 pub mod model;
+pub mod pixel;
 pub mod preset_store;
 pub mod scene_switch;
 pub mod semantic_lane;

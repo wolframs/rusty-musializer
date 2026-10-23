@@ -774,6 +774,9 @@ pub struct SceneSwitchSuggestion {
     /// Seconds over which this section's tuning eases in from the previous
     /// same-scene section's (post-legacy, MV9-c). Zero is never written.
     pub glide: f32,
+    /// This section's pixel look over the finish's (2026-10-24). `None` is
+    /// never written; `Some(Pixel::OFF)` is written as `"off"`.
+    pub pixel: Option<super::pixel::Pixel>,
 }
 
 /// The imported switch plan (`Musi_Scene_Switch_Suggestions`, `project.h:273-277`).
@@ -1197,6 +1200,7 @@ impl Project {
                 || !cue.transition.is_valid()
                 || cue.grade.is_some_and(|grade| !grade.is_valid())
                 || !super::scene_switch::glide_is_valid(cue.glide)
+                || cue.pixel.is_some_and(|pixel| !pixel.is_valid())
             {
                 return Err(fail(ProjectError::SceneSwitch, index, 0));
             }
@@ -1953,6 +1957,7 @@ mod tests {
             transition: crate::project::transition::Transition::CUT,
             grade: None,
             glide: 0.0,
+            pixel: None,
         };
         project.scene_switches.cues = vec![switch(1, 0.0, 30.0), switch(2, 30.0, 60.0)];
         assert_eq!(project.validate(), Ok(()));
