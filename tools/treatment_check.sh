@@ -307,6 +307,67 @@ run --treatment "$OUT/portal.treatment.json" --still 1 "$OUT/portal.png" \
 run --project "$OUT/look.musi" --save-project "$OUT/look-again.musi" \
     > "$OUT/look-reopen.log" 2>&1
 
+# --- the pixel cartridge (2026-10-24) ------------------------------------------
+# A four-shade handheld with the screen turned off (no grid, scanlines or glow,
+# no other finish), so a still's colours are the palette's exactly and every
+# cell is a flat square; then the same scene unlocking into per-channel levels
+# over a one-second glide, then the look switched off for a section. The plan
+# with no pixel look at all is the control: the same still must be neither
+# blocky nor four colours. 160 pixels on a 360-pixel edge rounds to a 2-pixel
+# cell, and 160 rather than 180 on purpose: on the 2x target a grid worked out
+# from the framebuffer instead of the output would round 4.5 up to a 5-pixel
+# cell, which no box downsample can land on whole pixels; 180 divides both
+# sizes and could not tell the two rules apart.
+cat > "$OUT/pixel.treatment.json" <<'EOF'
+{
+  "schema": "musializer.treatment/v1",
+  "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 30, "quality": "balanced" },
+  "seed": 2012,
+  "finish": { "pixel": { "pixels": 160, "palette": "handheld", "grid": 0, "scanlines": 0, "glow": 0 } },
+  "segments": [
+    { "at": 0, "scene": "spectrum" },
+    { "at": 6, "scene": "spectrum", "pixel": "levels", "glide": 1 },
+    { "at": 9, "scene": "spectrum", "pixel": "off" }
+  ]
+}
+EOF
+python3 - "$OUT/pixel.treatment.json" "$OUT/pixel-plain.treatment.json" <<'EOF'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+plan.pop("finish")
+for segment in plan["segments"]:
+    segment.pop("pixel", None)
+    segment.pop("glide", None)
+json.dump(plan, open(sys.argv[2], "w"), indent=2)
+EOF
+run --treatment "$OUT/pixel.treatment.json" --save-project "$OUT/pixel.musi" \
+    --still 4 "$OUT/pixel-handheld.png" --still 8 "$OUT/pixel-levels.png" \
+    --still 10 "$OUT/pixel-off.png" > "$OUT/pixel.log" 2>&1
+# Each moment's own report line: drew, dissolving, and off.
+run --treatment "$OUT/pixel.treatment.json" --still 6.5 "$OUT/pixel-unlocking.png" \
+    > "$OUT/pixel-unlocking.log" 2>&1
+run --treatment "$OUT/pixel.treatment.json" --still 10 "$OUT/pixel-off-alone.png" \
+    > "$OUT/pixel-off.log" 2>&1
+# The same moment from a fresh process: the dither and the grid are a function
+# of the cell and the moment, so it must be the same bytes.
+run --treatment "$OUT/pixel.treatment.json" --still 4 "$OUT/pixel-handheld-alone.png" \
+    > "$OUT/pixel-alone.log" 2>&1
+# 2x supersampled: the cells must land on whole output pixels after the box
+# downsample, or a crisp 2-pixel cell would blur into a third colour.
+run --treatment "$OUT/pixel.treatment.json" --quality high \
+    --still 4 "$OUT/pixel-handheld-2x.png" > "$OUT/pixel-2x.log" 2>&1
+run --treatment "$OUT/pixel-plain.treatment.json" --still 4 "$OUT/pixel-plain.png" \
+    > "$OUT/pixel-plain.log" 2>&1
+# A still is the video frame, with a neighbouring moment as the control.
+run --treatment "$OUT/pixel.treatment.json" --render-window 4 0.2 \
+    --render "$OUT/pixel-at-four.mp4" > "$OUT/pixel-export.log" 2>&1
+ffmpeg -v error -y -i "$OUT/pixel-at-four.mp4" -frames:v 1 "$OUT/pixel-at-four.png"
+run --treatment "$OUT/pixel.treatment.json" --still 3.5 "$OUT/pixel-neighbour.png" \
+    > "$OUT/pixel-neighbour.log" 2>&1
+run --project "$OUT/pixel.musi" --save-project "$OUT/pixel-again.musi" \
+    > "$OUT/pixel-reopen.log" 2>&1
+
 # --- the saved project is an ordinary project ----------------------------------
 run --project "$OUT/full.musi" --save-project "$OUT/full-again.musi" \
     > "$OUT/reopen.log" 2>&1

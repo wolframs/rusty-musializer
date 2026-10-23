@@ -550,6 +550,138 @@ def check_look(out: Path) -> None:
           "reopening the look project and saving it changed it")
 
 
+# The handheld palette and the per-channel levels, restated rather than read
+# from --vocabulary: `pixel.rs` is under test.
+HANDHELD = [(0x08, 0x18, 0x20), (0x34, 0x68, 0x56), (0x88, 0xC0, 0x70), (0xE0, 0xF8, 0xD0)]
+LEVELS8 = sorted({round(255 * (step / 7) ** 2) for step in range(8)})
+
+
+def pixels_of(image: tuple[int, int, bytes]) -> list[tuple[int, int, int]]:
+    raw = image[2]
+    return [tuple(raw[index : index + 3]) for index in range(0, len(raw), 3)]
+
+
+def near(value: tuple[int, int, int], palette: list[tuple[int, int, int]], slack: int) -> bool:
+    return any(all(abs(a - b) <= slack for a, b in zip(value, colour)) for colour in palette)
+
+
+def inner_edges(image: tuple[int, int, bytes], cell: int) -> float:
+    """Of the horizontally adjacent pixel pairs that differ, the share that
+    lie *inside* a `cell`-wide column rather than across a cell boundary.
+
+    Zero for a picture made of flat cells; about (cell - 1) / cell for any
+    other, however flat its background — which is why this, and not a count
+    of flat blocks, is the control's measure: a dark scene is mostly flat
+    blocks with or without a pixel pass."""
+    width, height, raw = image
+    inside = across = 0
+    for y in range(height):
+        row = y * width * 3
+        for x in range(width - 1):
+            a = row + x * 3
+            if raw[a : a + 3] != raw[a + 3 : a + 6]:
+                if x % cell == cell - 1:
+                    across += 1
+                else:
+                    inside += 1
+    return inside / max(inside + across, 1)
+
+
+def ragged_cells(image: tuple[int, int, bytes], cell: int, slack: int) -> float:
+    """The share of `cell`-square blocks, counted from the top left, whose
+    pixels are not one colour (within `slack` per channel)."""
+    width, height, raw = image
+    ragged = total = 0
+    for top in range(0, height - cell + 1, cell):
+        for left in range(0, width - cell + 1, cell):
+            first = (top * width + left) * 3
+            reference = raw[first : first + 3]
+            flat = True
+            for y in range(top, top + cell):
+                for x in range(left, left + cell):
+                    at = (y * width + x) * 3
+                    if any(abs(raw[at + c] - reference[c]) > slack for c in range(3)):
+                        flat = False
+                        break
+                if not flat:
+                    break
+            ragged += 0 if flat else 1
+            total += 1
+    return ragged / max(total, 1)
+
+
+def check_pixel(out: Path) -> None:
+    log = read(out / "pixel.log")
+    check("panicked" not in log, "the pixel treatment panicked")
+    look = report_line(read(out / "pixel-alone.log"), "look")
+    check("pixel=drew" in look and "320x180 cells of 2 px, handheld" in look,
+          f"the pixel pass did not draw a 160-pixel handheld grid: {look!r}")
+    plain_look = report_line(read(out / "pixel-plain.log"), "look")
+    check("pixel=off (0 frames" in plain_look, f"a plan with no pixel look drew one: {plain_look!r}")
+    unlocking = report_line(read(out / "pixel-unlocking.log"), "look")
+    # Half a second into a one-second glide from handheld to levels.
+    check("dissolving 0.50" in unlocking, f"the glide did not dissolve the look: {unlocking!r}")
+    off = report_line(read(out / "pixel-off.log"), "look")
+    check("pixel=off" in off, f"a section switched off still drew the pixel look: {off!r}")
+    twice = report_line(read(out / "pixel-2x.log"), "look")
+    check("320x180 cells of 4 px" in twice, f"a 2x export's cells are not twice a 1x render's: {twice!r}")
+
+    handheld = rgb(out / "pixel-handheld.png")
+    plain = rgb(out / "pixel-plain.png")
+    levels = rgb(out / "pixel-levels.png")
+    switched_off = rgb(out / "pixel-off.png")
+    handheld_colours = set(pixels_of(handheld))
+    plain_colours = set(pixels_of(plain))
+    print(f"pixel: handheld still {len(handheld_colours)} colours, the plain control {len(plain_colours)}")
+    check(len(handheld_colours) <= 4 and all(near(c, HANDHELD, 0) for c in handheld_colours),
+          f"the handheld still is not the four shades: {sorted(handheld_colours)[:8]}")
+    check(len(plain_colours) > 40, f"the control has too few colours to prove anything: {len(plain_colours)}")
+    ragged_handheld = ragged_cells(handheld, 2, 0)
+    inner_handheld = inner_edges(handheld, 2)
+    inner_plain = inner_edges(plain, 2)
+    print(f"pixel: ragged 2x2 cells {ragged_handheld:.4f}; edges inside a cell, "
+          f"handheld {inner_handheld:.4f}, plain {inner_plain:.4f}")
+    check(ragged_handheld == 0.0 and inner_handheld == 0.0,
+          f"a handheld cell is not one colour: {ragged_handheld:.4f}, {inner_handheld:.4f}")
+    check(inner_plain > 0.25, f"the control is blocky too, so blockiness proves nothing: {inner_plain:.4f}")
+    channel_values = {value for colour in pixels_of(levels) for value in colour}
+    check(all(min(abs(value - step) for step in LEVELS8) <= 1 for value in channel_values),
+          f"the levels still has values off the eight root-spaced steps: {sorted(channel_values)[:20]}")
+    check(inner_edges(levels, 2) == 0.0, "a levels cell is not one colour")
+    check(inner_edges(switched_off, 2) > 0.25, "a section switched off is still blocky")
+
+    # 2x supersampled: the box downsample keeps every cell flat and every
+    # colour a shade, give or take the linear-light round trip.
+    twice_image = rgb(out / "pixel-handheld-2x.png")
+    twice_colours = set(pixels_of(twice_image))
+    check(all(near(c, HANDHELD, 2) for c in twice_colours),
+          f"the 2x still blurred a cell edge into another colour: {len(twice_colours)} colours")
+    check(ragged_cells(twice_image, 2, 2) == 0.0, "a 2x still's cell straddles an output pixel")
+    print(f"pixel: the 2x still has {len(twice_colours)} colours")
+
+    for name in ("pixel-handheld", "pixel-levels"):
+        low, high = png_alpha_extrema(out / f"{name}.png")
+        check(low == 255 == high, f"{name}: the pixel pass left the alpha at {low}..{high}")
+    check((out / "pixel-handheld.png").read_bytes() == (out / "pixel-handheld-alone.png").read_bytes(),
+          "the same pixel moment from a fresh process is not the same bytes")
+
+    frame = rgb(out / "pixel-at-four.png")
+    matched = psnr(handheld, frame)
+    neighbour = psnr(rgb(out / "pixel-neighbour.png"), frame)
+    print(f"pixel: still vs its video frame {matched:.2f} dB, a neighbouring moment {neighbour:.2f} dB")
+    # Flat cells and a dither pattern are hard for x264 (31.6 dB measured,
+    # against 39 for the plain fixture), so the floor sits lower than the
+    # plain still check's and the neighbour margin carries the claim.
+    check(matched > 28.0 and matched > neighbour + 6.0,
+          f"the pixel still is not the video frame: {matched:.2f} vs {neighbour:.2f} dB")
+
+    saved = read(out / "pixel.musi")
+    for member in ('"pixel":{"pixels":160,"match":"ramp"', '"pixel":"off"', '"match":"levels"'):
+        check(member in saved, f"the saved project lacks {member}")
+    check(saved == read(out / "pixel-again.musi").replace("pixel-again", "pixel"),
+          "reopening the pixel project and saving it changed it")
+
+
 def check_refusals(out: Path) -> None:
     expected = {
         "bad-setting": ["segments[0]", "loom has no setting \"wieght\"", "weight"],
@@ -594,6 +726,7 @@ def main() -> int:
     check_transitions(out)
     check_stage(out)
     check_look(out)
+    check_pixel(out)
     check_refusals(out)
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed", file=sys.stderr)
