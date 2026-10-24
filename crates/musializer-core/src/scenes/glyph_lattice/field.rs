@@ -178,6 +178,9 @@ struct Seg {
     tb: f32,
     /// Path distance of the edge's two ends along each wave's path.
     paths: [[f32; 2]; WAVES],
+    /// Heat the whole piece carries at its core, besides its waves: a word
+    /// igniting, or warming on a kick.
+    heat: f32,
 }
 
 impl Seg {
@@ -244,6 +247,11 @@ pub struct Field {
     warm: Vec<f32>,
     /// The wide bloom: light pooling where strokes cross and pulses run.
     pool: Vec<f32>,
+    /// Extra halo source the line's strokes write: letters are thinner than
+    /// a solid's edges and would otherwise throw less glow.
+    halo: Vec<f32>,
+    /// How strongly the strokes being drawn write `halo` (the line's only).
+    halo_gain: f32,
     sum: Vec<f32>,
     max: Vec<f32>,
     pulse: Vec<f32>,
@@ -274,6 +282,8 @@ impl Field {
             bloom: Vec::new(),
             warm: Vec::new(),
             pool: Vec::new(),
+            halo: Vec::new(),
+            halo_gain: 0.0,
             sum: Vec::new(),
             max: Vec::new(),
             pulse: Vec::new(),
@@ -328,6 +338,7 @@ impl Field {
             &mut self.bloom,
             &mut self.warm,
             &mut self.pool,
+            &mut self.halo,
             &mut self.sum,
             &mut self.max,
             &mut self.pulse,
@@ -409,12 +420,20 @@ impl Field {
                     continue;
                 }
                 let main = value * weights.main;
-                let mut hot = 0.0f32;
+                if self.halo_gain > 0.0 {
+                    let h = main * self.halo_gain;
+                    if h > self.halo[index] {
+                        self.halo[index] = h;
+                    }
+                }
+                let mut hot = seg.heat;
                 if !waves.is_empty() {
                     let te = seg.ta + (seg.tb - seg.ta) * t;
                     for (i, wave) in waves.iter().enumerate() {
                         hot = hot.max(wave.at(seg.path(i, wave.graph, te)));
                     }
+                }
+                if hot > 0.0 {
                     hot *= (1.0 - smoothstep(0.3, 0.85, u)) * weights.main;
                 }
                 if self.group_value[index] == 0.0 && self.group_heat[index] == 0.0 {
@@ -668,6 +687,7 @@ impl Field {
                     ta: t0,
                     tb: t1,
                     paths,
+                    heat: 0.0,
                 };
                 self.splat(&seg, &wave_list, weights);
             }
@@ -952,9 +972,13 @@ fn intersect(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> Option<[f32;
         .then(|| [a[0] + r[0] * t, a[1] + r[1] * t])
 }
 
-/// Sets the remembered line: stroke by stroke over the start of its cue,
-/// tilting gently in depth, swept by kicks; dissolving into the ghosts once
-/// its cue is over.
+/// Sets the remembered line. The whole line stands in its place in the
+/// ghost tone from the cue's start, then lights word by word in reading order
+/// over the start of the cue, each word igniting hot and cooling, so nothing
+/// ever appears anywhere but where it ends up. Its junctions and sharp corners
+/// gather warm light like a solid's vertices and run hot on the kicks, which
+/// also sweep left to right through it. It tilts gently in depth and
+/// dissolves into the ghosts once its cue is over.
 fn draw_line(
     state: &GlyphLatticeState,
     frame: &SceneFrame<'_>,
@@ -980,7 +1004,8 @@ fn draw_line(
     let pitch = 0.1 * sway * (drift * 0.67 + 1.0).sin();
     let (sy, cy) = yaw.sin_cos();
     let (sp, cp) = pitch.sin_cos();
-    let grow = 1.0 + 0.035 * state.punch();
+    let punch = state.punch();
+    let grow = 1.0 + 0.035 * punch;
     let place = |p: [f32; 2]| -> ([f32; 2], f32) {
         let (x, y) = (p[0] * unit * grow, p[1] * unit * grow);
         // Yaw about the vertical, then pitch about the horizontal.
@@ -992,22 +1017,26 @@ fn draw_line(
     let duration = (line.end - line.start).max(0.05);
     let span = (duration * 0.38).clamp(0.25, 1.15);
     let since = frame.time_seconds - line.start;
-    let total = set.strokes.len();
-    report.strokes_total = total;
+    report.strokes_total = set.strokes.len();
     report.line = Some(line.text.clone());
     let live = state.line_live();
-    let weights = if live {
-        Weights {
-            main: presence,
-            ghost: 0.0,
+    // How far each word has lit (0 waits in the ghost tone) and how hot it
+    // still is from lighting.
+    let per_word = span / set.words.max(1) as f64;
+    let word_light = |word: usize| -> (f32, f32) {
+        if !live {
+            return (1.0, 0.0);
         }
-    } else {
-        Weights {
-            main: 0.0,
-            ghost: presence * 0.95,
-        }
+        let age = since - per_word * word as f64;
+        let lit = (age / 0.12).clamp(0.0, 1.0) as f32;
+        let flash = if age >= 0.0 {
+            (-(age as f32) / 0.32).exp()
+        } else {
+            0.0
+        };
+        (lit, flash)
     };
-    let width = (lattice.pitch * 1.7).max(strokes::CAP * unit * 0.12)
+    let width = (lattice.pitch * 1.7).max(strokes::CAP * unit * 0.135)
         * frame.setting(SceneId::GlyphLattice, control::STROKE).sqrt();
     // Kicks sweep left to right through the letters.
     let mut waves = Vec::new();
@@ -1021,65 +1050,77 @@ fn draw_line(
         waves.push(Wave {
             front,
             width: 1.4,
-            tail: 2.0,
-            strength: pulse.strength * 0.6,
+            tail: 2.4,
+            strength: pulse.strength * 0.8,
             graph: false,
         });
     }
-    for (k, stroke) in set.strokes.iter().enumerate() {
-        // Stroke k appears at k/total through the reveal span and grows over
-        // a seventh of a second.
-        let appear = span * k as f64 / total as f64;
-        let grown = if live || since < duration {
-            ((since - appear) / 0.14).clamp(0.0, 1.0) as f32
-        } else {
-            1.0
-        };
-        if grown <= 0.0 {
-            continue;
-        }
-        report.strokes_drawn += 1;
-        let lengths: Vec<f32> = stroke
-            .points
-            .windows(2)
-            .map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt())
-            .collect();
-        let length: f32 = lengths.iter().sum();
-        let mut remaining = length * grown;
-        for (pair, piece) in stroke.points.windows(2).zip(&lengths) {
-            if remaining <= 0.0 {
-                break;
+    // Large letters glow like a solid's edges; small ones less, or the halo
+    // bridges the gaps between them and the line goes soft.
+    let cap_cells = strokes::CAP * unit / lattice.pitch;
+    let size_gain = (cap_cells / 28.0).clamp(0.35, 1.0);
+    field.halo_gain = size_gain;
+    for stroke in &set.strokes {
+        let (lit, flash) = word_light(stroke.word);
+        let weights = if live {
+            Weights {
+                main: presence * lit,
+                ghost: presence * (1.0 - lit) * 0.85,
             }
-            let t1 = if *piece > 0.0 {
-                (remaining / piece).min(1.0)
-            } else {
-                1.0
-            };
-            remaining -= piece;
-            let end = [
-                pair[0][0] + (pair[1][0] - pair[0][0]) * t1,
-                pair[0][1] + (pair[1][1] - pair[0][1]) * t1,
-            ];
+        } else {
+            Weights {
+                main: 0.0,
+                ghost: presence * 0.95,
+            }
+        };
+        if lit > 0.0 && live {
+            report.strokes_drawn += 1;
+        }
+        let heat = (0.85 * flash).max(0.3 * punch);
+        // Each word breathes with a band of the spectrum, as a solid's edges
+        // do: the line's first word low, its last high.
+        let band = band_at(
+            state,
+            stroke.word as f32 / set.words.saturating_sub(1).max(1) as f32,
+        );
+        let rb = look.response.min(1.0);
+        let bright = 1.12 + (0.92 + 0.42 * band.powf(0.8) - 1.12) * rb;
+        for pair in stroke.points.windows(2) {
             let (a, sa) = place(pair[0]);
-            let (b, sb) = place(end);
+            let (b, sb) = place(pair[1]);
             let mut paths = [[0.0f32; 2]; WAVES];
             for slot in paths.iter_mut().take(waves.len()) {
-                *slot = [pair[0][0], end[0]];
+                *slot = [pair[0][0], pair[1][0]];
             }
             let seg = Seg {
                 a,
                 b,
-                ka: 0.95 * sa.min(1.15),
-                kb: 0.95 * sb.min(1.15),
+                ka: bright * sa.min(1.15),
+                kb: bright * sb.min(1.15),
                 wa: width * sa,
                 wb: width * sb,
                 ta: 0.0,
                 tb: 1.0,
                 paths,
+                heat,
             };
             field.splat(&seg, &waves, weights);
         }
         field.flush();
+    }
+    field.halo_gain = 0.0;
+    // The letters' vertices: warm where strokes meet, hot on the kick.
+    if live {
+        for (point, word) in strokes::joints(&set) {
+            let (lit, _) = word_light(word);
+            if lit <= 0.0 {
+                continue;
+            }
+            let (at, persp) = place(point);
+            let strength =
+                (0.46 + 0.55 * punch).min(0.95) * lit * presence * (0.55 + 0.45 * size_gain);
+            field.heat_spot(at, width * persp * 1.2, strength);
+        }
     }
 }
 
@@ -1140,7 +1181,9 @@ fn finish(
     let glow = frame.setting(SceneId::GlyphLattice, control::GLOW).max(0.0);
     for i in 0..cols * rows {
         let lit = field.lit[i];
-        field.bloom[i] = lit * lit * 0.4 + field.heat[i] * 0.5 + field.wash[i] * 0.05;
+        let halo = field.halo[i];
+        field.bloom[i] =
+            lit * lit * 0.4 + halo * halo * 0.55 + field.heat[i] * 0.5 + field.wash[i] * 0.05;
         field.warm[i] = field.heat[i];
         field.pool[i] = field.heat[i] * 1.2 + lit * lit * 0.03;
     }

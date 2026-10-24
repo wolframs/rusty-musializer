@@ -102,7 +102,7 @@ same down its three-fold axis. The dodecahedron has no such view.
 | Bass | The halo, the pool and the aura swell | Weight |
 | Treble | Glyph flicker depth | Hats as glitter |
 | Hat ticks (the same detector on the top quarter of the bands) and onsets | A ripple from the centre: a faint ring of light crosses the lattice, and every glyph it passes turns over to another of its tier | Real mixes rarely reach the absolute onset lane (16 times in the first 67 s of *Door, No Room*), so the hats drive it, at most once every half second |
-| The lyric line (`words`) | Set in stroke capitals, stroke by stroke over the cue's first 38 % (at most 1.15 s); kicks sweep left to right through it; it dissolves into the ghosts when its cue ends | See below |
+| The lyric line (`words`) | Set in stroke capitals, standing in place in the ghost tone from the cue's first frame, then lit word by word over the cue's first 38 % (at most 1.15 s), each word igniting hot and cooling; kicks sweep left to right through it and heat its joints; it dissolves into the ghosts when its cue ends | See below |
 
 `response` scales every coupling. Toward 0 loudness leans to a neutral middle,
 so 0 is a steady mid-weight solid on the ambient clock, byte-identical for any
@@ -118,7 +118,25 @@ else is dropped, never drawn as a box. The block wraps to the row count that
 makes the letters largest: up to six rows, using portrait's height. It tilts
 gently in depth and swells a little on kicks. While a line is set, the solid
 steps back into the ghost tone, 30 % larger. Between lines it comes forward
-again. The caption overlay is not drawn over this scene while `words` is on.
+again.
+
+**The reveal lays the whole line out first.** From the cue's first frame
+every word stands in its final place in the dim ghost tone. The words then
+light in reading order, each over 0.12 s with a flash of heat that cools over
+about a third of a second, so a word sparks as it is sung. The first version
+grew stroke after stroke, and a long row could show a lone `I` and half an
+`N` at its left end, outside the block above it: a stray mark, not a word
+arriving.
+
+**The letters glow like the solids' edges.** A letter's junctions (a stroke
+ending on or crossing another, as in T, E, H, X) and its sharp corners (as
+in L, V, M; the 45-degree cut corners are not) gather warm light, the way a
+solid's vertices do, and run hot on the kicks (`strokes::joints`). Each word
+breathes with a band of the spectrum, the line's first word low and its last
+high. Letter strokes also write their own halo source, because they are
+thinner than a solid's edges and would otherwise throw less glow. Halo and
+joint heat scale with letter size, so a long line in small letters stays
+sharp instead of going soft between rows. The caption overlay is not drawn over this scene while `words` is on.
 A line with a voice turns the palette to the voice's hue (MV9-h; the
 palette's own hue is 174 degrees).
 
@@ -176,7 +194,7 @@ time, a measurement and never an input.
 
 ## Evidence
 
-- **Core tests (22, `scenes::glyph_lattice`).**
+- **Core tests (24, `scenes::glyph_lattice`).**
   - The lattice depends on the aspect, not the pixels.
   - Every cell is its own nearest cell.
   - Seeded replay draws the same cells.
@@ -186,7 +204,9 @@ time, a measurement and never an input.
   - A new solid assembles while the old one exhales.
   - The cycle moves on at a drop.
   - Bass and treble light opposite halves of the cube.
-  - The line is set stroke by stroke and dissolves.
+  - On a cue's first frame the whole line is laid out in the ghost tone and
+    no word has lit. It lights word by word and dissolves.
+  - Each letter's joints are where its strokes meet and its corners turn.
   - `words` off never sets it.
   - Onsets ripple and wash cells.
   - Pause freezes everything.
@@ -223,6 +243,8 @@ Contact sheets and stills are under `build/glyphs/` (gitignored):
 - 9:16 (`v7-portrait.png`, `v20-portrait.png`).
 - The lyric line on its real timing (`v10-words.png`, `v11-50.png`).
 - A morph between two sections (`v21-morph.png`).
+- A line's reveal at 0.1 s steps (`v28-reveal.png`), and text frames beside
+  the loud cube (`v27-sheet.png`, `v27-portrait.png`).
 - Comets over one second (`v13-motion.png`).
 - The reference beside a frame (`v9-compare.png`).
 

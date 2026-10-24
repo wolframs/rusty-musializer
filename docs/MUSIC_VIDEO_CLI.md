@@ -293,9 +293,11 @@ scene at once:
   the background. 0 leaves it to the scene, which moves on at a drop or after
   about twenty seconds. Pin it when the cut matters: a drop on the tesseract, a
   breakdown on the knot.
-- **`words`** (on by default) sets the sung line in glowing stroke capitals,
-  stroke by stroke as it starts, with the solid stepping back behind it; kicks
-  sweep through the letters. Between lines the solid comes forward again. Turn
+- **`words`** (on by default) sets the sung line in glowing stroke capitals.
+  The whole line stands in place, dim, from the cue's start and lights word by
+  word over the cue's first stretch, each word sparking as it comes on, with
+  the solid stepping back behind it. Kicks sweep through the letters and heat
+  their joints. Between lines the solid comes forward again. Turn
   it off for an instrumental section, or to keep your own caption style: with
   `words` on, the caption overlay is not drawn over this scene.
 

@@ -144,6 +144,8 @@ pub struct SetStroke {
     pub points: Vec<[f32; 2]>,
     /// Index of the letter it belongs to, in reading order.
     pub letter: usize,
+    /// Index of the word it belongs to, in reading order.
+    pub word: usize,
 }
 
 /// A line set in rows, centred on the origin.
@@ -151,6 +153,7 @@ pub struct SetStroke {
 pub struct SetLine {
     pub strokes: Vec<SetStroke>,
     pub letters: usize,
+    pub words: usize,
     pub rows: usize,
     /// The block's extent on the grid.
     pub width: f32,
@@ -234,6 +237,7 @@ pub fn set_line(text: &str, aspect: f32) -> (SetLine, f32) {
     let height = CAP + LEADING * (rows.len() - 1) as f32;
     let mut line = SetLine {
         rows: rows.len(),
+        words: words.len(),
         height,
         ..SetLine::default()
     };
@@ -256,6 +260,7 @@ pub fn set_line(text: &str, aspect: f32) -> (SetLine, f32) {
                             .map(|(px, py)| [x + px, baseline + py])
                             .collect(),
                         letter: line.letters,
+                        word,
                     });
                 }
                 line.letters += 1;
@@ -265,6 +270,90 @@ pub fn set_line(text: &str, aspect: f32) -> (SetLine, f32) {
         }
     }
     (line, scale)
+}
+
+/// Where a set line's light collects: each letter's junctions (a stroke
+/// ending on or crossing another, as in T, E, H, X) and its sharp corners
+/// (a turn of 80 degrees or more, as in L, V, M; the 45-degree cut corners
+/// are not), with the word each belongs to. The letters' answer to a solid's
+/// vertices.
+#[must_use]
+pub fn joints(line: &SetLine) -> Vec<([f32; 2], usize)> {
+    let mut found: Vec<([f32; 2], usize)> = Vec::new();
+    let mut add = |point: [f32; 2], word: usize| {
+        let near = found
+            .iter()
+            .any(|(p, _)| (p[0] - point[0]).powi(2) + (p[1] - point[1]).powi(2) < 0.36);
+        if !near {
+            found.push((point, word));
+        }
+    };
+    let mut start = 0;
+    while start < line.strokes.len() {
+        let letter = line.strokes[start].letter;
+        let end = line.strokes[start..]
+            .iter()
+            .position(|s| s.letter != letter)
+            .map_or(line.strokes.len(), |n| start + n);
+        let strokes = &line.strokes[start..end];
+        for (i, stroke) in strokes.iter().enumerate() {
+            for w in stroke.points.windows(3) {
+                let (a, b) = (
+                    [w[1][0] - w[0][0], w[1][1] - w[0][1]],
+                    [w[2][0] - w[1][0], w[2][1] - w[1][1]],
+                );
+                let (la, lb) = (
+                    (a[0] * a[0] + a[1] * a[1]).sqrt(),
+                    (b[0] * b[0] + b[1] * b[1]).sqrt(),
+                );
+                if la > 0.0 && lb > 0.0 && (a[0] * b[0] + a[1] * b[1]) / (la * lb) < 0.18 {
+                    add(w[1], stroke.word);
+                }
+            }
+            for other in &strokes[i + 1..] {
+                for p in stroke.points.windows(2) {
+                    for q in other.points.windows(2) {
+                        if let Some(x) = meet(p[0], p[1], q[0], q[1]) {
+                            add(x, stroke.word);
+                        }
+                    }
+                }
+            }
+        }
+        start = end;
+    }
+    found
+}
+
+/// Where two segments meet: they cross, or an end of one lies within a
+/// fifth of a grid unit of the other.
+fn meet(a: [f32; 2], b: [f32; 2], c: [f32; 2], d: [f32; 2]) -> Option<[f32; 2]> {
+    let near = |p: [f32; 2], s: [f32; 2], e: [f32; 2]| -> bool {
+        let v = [e[0] - s[0], e[1] - s[1]];
+        let len2 = v[0] * v[0] + v[1] * v[1];
+        let t = if len2 > 0.0 {
+            (((p[0] - s[0]) * v[0] + (p[1] - s[1]) * v[1]) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p[0] - s[0] - v[0] * t).powi(2) + (p[1] - s[1] - v[1] * t).powi(2) < 0.04
+    };
+    for (p, s, e) in [(a, c, d), (b, c, d), (c, a, b), (d, a, b)] {
+        if near(p, s, e) {
+            return Some(p);
+        }
+    }
+    let r = [b[0] - a[0], b[1] - a[1]];
+    let s = [d[0] - c[0], d[1] - c[1]];
+    let denom = r[0] * s[1] - r[1] * s[0];
+    if denom.abs() < 1.0e-9 {
+        return None;
+    }
+    let q = [c[0] - a[0], c[1] - a[1]];
+    let t = (q[0] * s[1] - q[1] * s[0]) / denom;
+    let u = (q[0] * r[1] - q[1] * r[0]) / denom;
+    ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u))
+        .then(|| [a[0] + r[0] * t, a[1] + r[1] * t])
 }
 
 #[cfg(test)]
@@ -284,6 +373,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn joints_are_where_strokes_meet_and_corners_turn() {
+        let count = |text: &str| joints(&set_line(text, 4.0).0).len();
+        assert_eq!(count("O"), 0, "cut corners and curves collect nothing");
+        assert_eq!(count("S"), 0);
+        assert_eq!(count("T"), 1, "the stem meets the bar");
+        assert_eq!(count("L"), 1, "one right angle");
+        assert_eq!(count("X"), 1, "one crossing");
+        assert_eq!(count("H"), 2);
+        assert_eq!(count("E"), 3, "two corners and the arm on the spine");
+        let (set, _) = set_line("THE END", 4.0);
+        assert_eq!(set.words, 2);
+        let words: std::collections::BTreeSet<usize> =
+            joints(&set).into_iter().map(|(_, word)| word).collect();
+        assert_eq!(words.into_iter().collect::<Vec<_>>(), vec![0, 1]);
     }
 
     #[test]

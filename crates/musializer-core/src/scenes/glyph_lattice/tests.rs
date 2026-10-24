@@ -227,7 +227,7 @@ fn the_spectrum_lights_the_edges_by_height() {
 }
 
 #[test]
-fn the_line_is_set_stroke_by_stroke_and_dissolves() {
+fn the_line_lights_word_by_word_and_dissolves() {
     let settings = settings();
     let cue = LyricCue {
         id: 4,
@@ -270,6 +270,51 @@ fn the_line_is_set_stroke_by_stroke_and_dissolves() {
     assert!(
         state.line().is_none(),
         "the line dissolved by seven seconds"
+    );
+}
+
+#[test]
+fn the_whole_line_stands_in_place_before_a_word_lights() {
+    // Nothing appears anywhere but where it ends up: on the cue's first
+    // frame every stroke of the line is already laid out, in the ghost tone,
+    // and no word has lit yet.
+    let cue = LyricCue {
+        id: 9,
+        start_seconds: 2.0,
+        end_seconds: 6.0,
+        text: "for this small interval".into(),
+        voice: None,
+    };
+    let run = |words: bool| {
+        let mut settings = settings();
+        settings.set(
+            SceneId::GlyphLattice,
+            control::WORDS,
+            if words { 1.0 } else { 0.0 },
+        );
+        settings.set(SceneId::GlyphLattice, control::GHOSTS, 0.0);
+        let mut state = GlyphLatticeState::new(2);
+        let mut f = SceneFrame::idle(&settings);
+        f.delta_seconds = 1.0 / 30.0;
+        for tick in 0..=60 {
+            f.time_seconds = f64::from(tick as f32 / 30.0);
+            f.lyric = (f.time_seconds >= cue.start_seconds).then_some(&cue);
+            state.update(&f);
+        }
+        let mut field = Field::new();
+        let report = render(&state, &f, 1920.0, 1080.0, &mut field);
+        (report, f.time_seconds)
+    };
+    let (with_line, at) = run(true);
+    let (without, _) = run(false);
+    assert!((at - 2.0).abs() < 1.0e-9, "the cue's first frame: {at}");
+    assert_eq!(with_line.strokes_drawn, 0, "no word lit yet");
+    assert!(with_line.strokes_total > 20);
+    assert!(
+        with_line.ghost > without.ghost + 800,
+        "the line is laid out in the ghost tone: {} vs {}",
+        with_line.ghost,
+        without.ghost
     );
 }
 
