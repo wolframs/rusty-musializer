@@ -125,7 +125,10 @@ rules it encodes:
 - **Selection is an outline and a tint** (`ui_selected` + `ui_selected_edge`,
   `widgets::button_look`, `widgets::selected_fill`), focus rings use the same
   outline, and a filled amount — slider, meter, scrub bar, the played waveform —
-  is `ui_level`, a warm grey.
+  is `ui_level`, a warm grey. egui sliders go through
+  `egui_editor::level_slider`, which scopes the rail to `ui_control_edge` and
+  its trailing fill to `ui_level`: egui paints a rail in the button rest fill,
+  which with the palette applied was the panel's own colour.
 - **Controls are rounded** (`metric::UI_RADIUS`, `widgets::control_box`); lanes
   and list rows stay square because they are data on an axis.
 - **One type scale** for both toolkits, in logical pixels (egui points):

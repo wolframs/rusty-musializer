@@ -82,6 +82,15 @@ def stop(p):
 p=launch('light-blue', parked=True)
 try:
     shot('01-light-tune')
+    # The slider rail is drawn the way the raylib chrome draws one (WX-5a
+    # polish, `egui_editor::level_slider`): the filled amount in `ui_level`
+    # left of the knob, the groove in `ui_control_edge` right of it. Before,
+    # both read as the panel's own white, so this fails on that build.
+    from PIL import Image
+    tune=Image.open(out/'01-light-tune.png').convert('RGB')
+    near=lambda pixel, rgb: all(abs(c-t) <= 3 for c,t in zip(pixel, rgb))
+    assert near(tune.getpixel((760,452)), (0x8A,0x7F,0x6E)), ('slider fill', tune.getpixel((760,452)))
+    assert near(tune.getpixel((1100,452)), (0xD2,0xD2,0xD6)), ('slider groove', tune.getpixel((1100,452)))
     # Fixed 1280x900 logical pixels, scale1; these target visible toolkit widgets.
     # Interaction coordinates are kept explicit so captures expose layout drift.
     # Re-measured for WX-5a's type scale and spacing (the Editor draws in Space

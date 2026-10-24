@@ -205,6 +205,32 @@ pub fn apply_theme(ctx: &Context, theme: UiTheme) {
     ctx.set_style_of(selected, style);
 }
 
+/// An egui slider drawn the way the raylib chrome draws one (WX-5a polish): a
+/// groove in [`super::theme::Palette::ui_control_edge`] with the filled amount
+/// in `ui_level`.
+///
+/// egui paints a slider's rail in `widgets.inactive.bg_fill`, the same role a
+/// button's rest fill comes from, so with the palette applied the rail was the
+/// panel's own colour (1.1:1 in both appearances) and a slider read as a
+/// floating knob. The scope changes only what the rail and its trailing fill
+/// read: buttons, combo boxes and a drag value paint with `weak_bg_fill`, which
+/// is untouched. The value box is kept *outside* the scope (callers pass
+/// `show_value(false)` and add their own `DragValue`), because inside it the
+/// trailing fill's `selection.bg_fill` would also become the text-selection
+/// highlight while a value is typed, ink on warm grey.
+fn level_slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    use super::theme::color32::of;
+    let p = super::theme::palette();
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.bg_fill = of(p.ui_control_edge);
+        visuals.selection.bg_fill = of(p.ui_level);
+        visuals.slider_trailing_fill = true;
+        ui.add(slider)
+    })
+    .inner
+}
+
 /// Puts the interface face — Space Grotesk, the one the raylib chrome draws in
 /// — at the front of egui's proportional family, once per context.
 ///
@@ -467,11 +493,27 @@ impl EditorState {
                     }
                     SettingKind::Slider => {
                         ui.label(descriptor.label);
-                        ui.add(
-                            egui::Slider::new(&mut value, descriptor.minimum..=descriptor.maximum)
-                                .fixed_decimals(descriptor.precision as usize),
-                        )
-                        .changed()
+                        let range = descriptor.minimum..=descriptor.maximum;
+                        ui.horizontal(|ui| {
+                            let moved = level_slider(
+                                ui,
+                                egui::Slider::new(&mut value, range.clone()).show_value(false),
+                            )
+                            .changed();
+                            let typed = ui
+                                .add(
+                                    egui::DragValue::new(&mut value)
+                                        .range(range)
+                                        .speed(
+                                            (descriptor.maximum - descriptor.minimum)
+                                                / ui.spacing().slider_width.max(1.0),
+                                        )
+                                        .fixed_decimals(descriptor.precision as usize),
+                                )
+                                .changed();
+                            moved || typed
+                        })
+                        .inner
                     }
                 };
                 if changed {
@@ -806,13 +848,19 @@ fn pixel_controls(
         ui.spacing_mut().slider_width = 180.0;
         let (low, high) = pixel::pixel_bounds::PIXELS;
         let mut pixels = look.pixels;
-        if ui
-            .add(egui::Slider::new(&mut pixels, low..=high).text("pixels tall"))
-            .on_hover_text(
-                "Pixels across the frame's short edge: 144 is a handheld, 180 a 16:9 cartridge",
-            )
-            .changed()
-        {
+        let moved = level_slider(
+            ui,
+            egui::Slider::new(&mut pixels, low..=high).show_value(false),
+        )
+        .on_hover_text(
+            "Pixels across the frame's short edge: 144 is a handheld, 180 a 16:9 cartridge",
+        )
+        .changed();
+        let typed = ui
+            .add(egui::DragValue::new(&mut pixels).range(low..=high))
+            .changed();
+        ui.label("pixels tall");
+        if moved || typed {
             changed = Some(Some(Pixel { pixels, ..look }));
         }
         let mut kicks = look.split > 0.0 || look.shake > 0.0 || look.zoom > 0.0;

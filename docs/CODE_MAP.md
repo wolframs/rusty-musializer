@@ -13,7 +13,7 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 67 | 79,974 | 544 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 67 | 80,053 | 544 |
 | [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `atmosphere_probe` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `fluid_probe` (example), `layout_dump` (example), `listening_defaults` (example), `organic_probe` (example), `pixel_cats_bench` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 133 | 86,285 | 1,224 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 32 | 18,472 | 200 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 109 | 0 |
@@ -107,17 +107,17 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/egui_backend/renderer.rs`](../crates/musializer-app/src/ui/egui_backend/renderer.rs) | 61 | 0 | Egui triangle and clipping submission into raylib’s normal 2D pass. |
 | [`src/ui/egui_backend/textures.rs`](../crates/musializer-app/src/ui/egui_backend/textures.rs) | 132 | 0 | Egui-owned texture allocation, patching and sampler updates. |
 | [`src/ui/egui_backend.rs`](../crates/musializer-app/src/ui/egui_backend.rs) | 91 | 0 | Egui's frame/input/texture bridge into the application's existing raylib window. |
-| [`src/ui/egui_editor.rs`](../crates/musializer-app/src/ui/egui_editor.rs) | 1,280 | 10 | Toolkit-owned controls for the scene inspector and lyric draft editor. |
+| [`src/ui/egui_editor.rs`](../crates/musializer-app/src/ui/egui_editor.rs) | 1,328 | 10 | Toolkit-owned controls for the scene inspector and lyric draft editor. |
 | [`src/ui/icons.rs`](../crates/musializer-app/src/ui/icons.rs) | 187 | 2 | The transport row's control vocabulary: an icon, a text fallback, and the tooltip that names both. |
 | [`src/ui/mapping_editor.rs`](../crates/musializer-app/src/ui/mapping_editor.rs) | 278 | 2 | Shared mapping-editor componentry (UX0-C14). |
 | [`src/ui/mod.rs`](../crates/musializer-app/src/ui/mod.rs) | 33 | 0 | The workspace shell: drawing, input, and the palette. |
-| [`src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,731 | 65 | The Assist confirmation panel, and the job it supervises. |
+| [`src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,750 | 65 | The Assist confirmation panel, and the job it supervises. |
 | [`src/ui/panels/events.rs`](../crates/musializer-app/src/ui/panels/events.rs) | 668 | 3 | The manual event row, and the shared preset controls. |
 | [`src/ui/panels/export.rs`](../crates/musializer-app/src/ui/panels/export.rs) | 3,160 | 8 | The export panel, the progress screen, and the session that drives them. |
 | [`src/ui/panels/fonts.rs`](../crates/musializer-app/src/ui/panels/fonts.rs) | 963 | 6 | The font browser pane, and the faces it adds. |
 | [`src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,842 | 57 | The three-pane lyrics editor: cue list, cue form, caption typography. |
 | [`src/ui/panels/mod.rs`](../crates/musializer-app/src/ui/panels/mod.rs) | 38 | 0 | One file per bottom panel and per inspector pane. |
-| [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 1,311 | 4 | The always-visible scene-plan lane and its compact editing controls. |
+| [`src/ui/panels/scene_timeline.rs`](../crates/musializer-app/src/ui/panels/scene_timeline.rs) | 1,323 | 4 | The always-visible scene-plan lane and its compact editing controls. |
 | [`src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,224 | 29 | The tuning inspector, and the route editor row inside it. |
 | [`src/ui/preferences.rs`](../crates/musializer-app/src/ui/preferences.rs) | 871 | 19 | Per-user shell scale and split preferences. |
 | [`src/ui/protocol.rs`](../crates/musializer-app/src/ui/protocol.rs) | 775 | 8 | The in-app protocol runner (HX-2): markers, the question card, and the session state machine. |
@@ -323,7 +323,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-app/src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,600 | 66 |
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 8,842 | 57 |
 | [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,168 | 47 |
-| [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,731 | 65 |
+| [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,750 | 65 |
 | [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 6,598 | 3 |
 | [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,764 | 46 |
 | [`crates/musializer-core/src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 3,606 | 39 |

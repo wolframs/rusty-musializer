@@ -252,9 +252,9 @@ fn scene_rgb(scene: SceneId) -> (u8, u8, u8) {
 
 /// The run's poster in its slot, fading into the run across its right 40 %.
 ///
-/// Drawn with a negative source height: a poster is a render target's colour
-/// attachment, which OpenGL stores bottom row first (the same flip the still
-/// path's readback undoes).
+/// Drawn with a *positive* source height: the service flips each finished
+/// poster to top row first (`posters::PosterView`), so it is an ordinary
+/// texture here. `tools/poster_check.sh` checks it lands upright.
 #[allow(
     clippy::too_many_arguments,
     reason = "one poster's draw: the texture, its shape, its slot, and the fade"
@@ -273,10 +273,6 @@ fn draw_poster(
     if width < 2.0 || height < 2.0 {
         return;
     }
-    // The service stores a finished poster top row first, with mipmaps
-    // (`posters::PosterView`): an ordinary texture, so the source height is
-    // positive. A render target's own colour buffer would be bottom row first
-    // and want a negative one; this is not that.
     let texture: &raylib::ffi::Texture2D = poster.as_ref();
     let source_width = texture.width as f32;
     let source_height = texture.height as f32;
@@ -929,16 +925,32 @@ impl Shell {
             }
             d.draw_rectangle_lines_ex(widgets::rectangle(rect), 1.0, look.edge);
 
-            // The scene's name, if it fits beside the poster.
+            // The scene's name, if it fits beside the poster. It sits on the
+            // run's fill, but internal-cut hairlines, transition edges and a
+            // pixel mark all cross that fill, so the name carries a one-pixel
+            // shadow in the panel's own tone (dark under light ink, light under
+            // dark ink). A shadow rather than a plate: an opaque plate would
+            // blank the hairlines' columns under the name, and the gate counts
+            // hairlines by exact colour down the whole run body.
             let label = run.scene.display_name();
             let label_width = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION);
             if text_left + label_width + 6.0 <= rect.x + rect.width {
+                let label_y = rect.y + rect.height - metric::UI_FONT_CAPTION - 7.0;
+                widgets::draw_text(
+                    d,
+                    input.fonts.ui(),
+                    label,
+                    text_left + 1.0,
+                    label_y + 1.0,
+                    metric::UI_FONT_CAPTION,
+                    widgets::alpha(color::ui_surface(), 0.8),
+                );
                 widgets::draw_text(
                     d,
                     input.fonts.ui(),
                     label,
                     text_left,
-                    rect.y + rect.height - metric::UI_FONT_CAPTION - 7.0,
+                    label_y,
                     metric::UI_FONT_CAPTION,
                     color::ui_ink(),
                 );

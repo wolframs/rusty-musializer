@@ -3495,7 +3495,26 @@ impl Shell {
         let font = input.fonts.ui();
 
         widgets::fill(d, boundary, color::ui_surface());
-        d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_warning());
+        // The warning outline marks the two states that are waiting on the user
+        // (WX-5b polish): a confirmation, which is the data boundary a run is
+        // about to cross, and a candidate, which stays staged until it is
+        // applied. Every other state draws the panel's quiet rule. It used to be
+        // orange always, which on the dark workspace made an idle Assist panel
+        // the loudest outline on screen and left nothing to say when it did
+        // need attention.
+        let waiting = matches!(
+            panel_content,
+            AssistPanelContent::Confirmation | AssistPanelContent::Candidate
+        );
+        d.draw_rectangle_lines_ex(
+            widgets::rectangle(boundary),
+            1.0,
+            if waiting {
+                color::ui_warning()
+            } else {
+                color::ui_rule()
+            },
+        );
 
         // The oracle refuses to draw below 80 px (`plug.c:3132`): a panel that
         // cannot host its own mode row would register buttons nobody can see and
