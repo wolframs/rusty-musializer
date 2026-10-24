@@ -36,6 +36,7 @@ uniform float musicLight;       // fast loudness
 uniform float sectionEnergy;    // slow loudness
 uniform float highLight;        // treble
 uniform float accent;           // kick flash
+uniform float wobble;           // jelly quiver after a kick, 0..1
 uniform float gardenTime;
 
 const float FLOOR_Y = -1.35;
@@ -67,6 +68,11 @@ float goo(vec3 p) {
         float b = length(q - gardenBlobs[i].xyz) - gardenBlobs[i].w;
         float h = clamp(0.5 + 0.5 * (d - b) / gooRadius, 0.0, 1.0);
         d = mix(d, b, h) - gooRadius * h * (1.0 - h);
+    }
+    // After a kick the jelly quivers: a small travelling ripple over the
+    // surface, sized so the march's 0.9 step factor still holds.
+    if (wobble > 0.001) {
+        d += wobble * 0.03 * sin(q.x * 9.0 + gardenTime * 7.0) * sin(q.y * 8.0 - gardenTime * 5.0) * sin(q.z * 9.0 + 1.3);
     }
     return d * squashScale();
 }
@@ -285,6 +291,10 @@ vec3 shadeFloor(vec3 p, vec3 rd, float dist) {
         spill += toLinear(gardenTints[i].rgb) * gardenBlobs[i].w * exp(-d * 2.4);
     }
     col += spill * (0.05 + 0.13 * gardenGlow) * (0.6 + 0.8 * musicLight) * contact;
+    // Translucent candy tints its own shadow: light that made it through the
+    // blob lands coloured where the shade is.
+    float tint = (1.0 - shadow) * pool;
+    col += spill / max(max(spill.r, max(spill.g, spill.b)), 1e-3) * tint * (0.012 + 0.03 * gardenGlow) * (0.7 + 0.6 * musicLight);
     // Lacquer: a blurred mirror. The reflection fades with the height of what
     // it reflects, which is what a slightly rough coat does.
     vec3 r = reflect(rd, vec3(0.0, 1.0, 0.0));
@@ -319,8 +329,8 @@ vec3 glints(vec2 uv, vec3 ro, vec3 fw, vec3 rt, vec3 up, float hitT) {
         float size = (0.007 + 0.006 * gardenGlow) * (0.5 + 0.5 * power);
         float core = exp(-dot(d, d) / (size * size * 0.35));
         vec2 a = abs(d);
-        float arms = exp(-a.x / (size * 6.0)) * exp(-a.y / (size * 0.18))
-                   + exp(-a.y / (size * 6.0)) * exp(-a.x / (size * 0.18));
+        float arms = exp(-a.x / (size * 4.5)) * exp(-a.y / (size * 0.18))
+                   + exp(-a.y / (size * 4.5)) * exp(-a.x / (size * 0.18));
         vec2 r = abs(vec2(d.x + d.y, d.x - d.y)) * 0.7071;
         arms += 0.45 * (exp(-r.x / (size * 3.0)) * exp(-r.y / (size * 0.16))
                       + exp(-r.y / (size * 3.0)) * exp(-r.x / (size * 0.16)));

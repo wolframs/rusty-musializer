@@ -7,7 +7,7 @@
 // cathedral glass lit from behind through its ripples, seeds and streaks, the
 // lead came over the seams as a rounded bevel with solder at the joints, and
 // in front of it all the light that came through the glass scattered by haze
-// into coloured shafts radiating from the sun (28 samples marched toward it,
+// into coloured shafts radiating from the sun (22 samples marched toward it,
 // each a 9-candidate cell lookup), with dust turning in the beams.
 //
 // Integer hashes throughout, never `fract` of a large product (AGENTS.md: two
@@ -75,9 +75,9 @@ vec3 hueRotate(vec3 c, float a) {
 
 // ------------------------------------------------------------- the cells
 
-vec2 driftOffset() {
-    return vec2(0.16 * sin(bloomTime * 0.09), 0.12 * cos(bloomTime * 0.071)) * driftAmount;
-}
+// The slow pan of the whole window, set once per pixel at the top of main.
+vec2 gDrift = vec2(0.0);
+vec2 driftOffset() { return gDrift; }
 vec2 site(ivec2 cell) {
     vec2 r = random2(cell);
     return vec2(cell) + 0.5 + 0.3 * sin(r * 6.28318 + bloomTime * 0.22 * driftAmount * vec2(0.83, 1.0));
@@ -151,7 +151,7 @@ Cell voronoi(vec2 p) {
 
 // The cheap lookup the shafts use: nearest cell and the bisector distance to
 // the second-nearest site, which is the true seam distance almost everywhere.
-void quickCell(vec2 p, out ivec2 id, out float seam) {
+void quickCell(vec2 p, out ivec2 id, out float seam, out vec2 nearest) {
     ivec2 base = ivec2(floor(p));
     float d1 = 1e9, d2 = 1e9;
     vec2 s1 = vec2(0), s2 = vec2(0);
@@ -165,6 +165,7 @@ void quickCell(vec2 p, out ivec2 id, out float seam) {
         else if (d < d2) { d2 = d; s2 = s; }
     }
     seam = (d2 - d1) / max(2.0 * length(s2 - s1), 1e-4);
+    nearest = s1;
 }
 
 // ------------------------------------------------------------- light
@@ -182,8 +183,8 @@ vec3 backlight(vec2 q) {
 
 // How bright a pane is: its spectral voice (bass at the centre of the
 // window, treble at the rim), the bloom waves passing it, and the section.
-float paneLight(ivec2 id, out float wavefront) {
-    vec2 at = toFrame(site(id));
+float paneLight(ivec2 id, vec2 siteGlass, out float wavefront) {
+    vec2 at = toFrame(siteGlass);
     float jitter = random1(id, 23u);
     float f = clamp(length(at) / 0.92 * 11.0 + (jitter - 0.5) * 1.6, 0.0, 11.0);
     int i = int(floor(f));
@@ -207,10 +208,11 @@ float paneLight(ivec2 id, out float wavefront) {
 vec3 transmitted(vec2 q) {
     ivec2 id;
     float seam;
-    quickCell(q * cellScale + driftOffset(), id, seam);
+    vec2 siteGlass;
+    quickCell(q * cellScale + driftOffset(), id, seam, siteGlass);
     float lead = smoothstep(0.016 + edgeWeight * 0.08, 0.0, seam);
     float front;
-    float lit = paneLight(id, front);
+    float lit = paneLight(id, siteGlass, front);
     // The sun's disc is clamped here so the shafts are made of the panes,
     // not a veil of the sun itself.
     return glassColour(id) * lit * min(backlight(q), vec3(1.4)) * (1.0 - lead);
@@ -226,7 +228,8 @@ float crackLight(vec2 uv, ivec2 id, out float flash, out float shadow) {
     if (shatter.w <= 0.0) return 0.0;
     ivec2 hitId;
     float unused;
-    quickCell(shatter.xy * cellScale + driftOffset(), hitId, unused);
+    vec2 unusedSite;
+    quickCell(shatter.xy * cellScale + driftOffset(), hitId, unused, unusedSite);
     if (hitId != id) return 0.0;
     vec2 d = uv - shatter.xy;
     float r = length(d);
@@ -265,6 +268,7 @@ float crackLight(vec2 uv, ivec2 id, out float flash, out float shadow) {
 void main() {
     vec2 uv = (fragTexCoord - 0.5) * resolution / min(resolution.x, resolution.y);
     uv.y = -uv.y;
+    gDrift = vec2(0.16 * sin(bloomTime * 0.09), 0.12 * cos(bloomTime * 0.071)) * driftAmount;
     vec2 p = uv * cellScale + driftOffset();
     Cell c = voronoi(p);
     float aa = max(fwidth(c.border), 1e-4);
@@ -283,7 +287,7 @@ void main() {
     density *= mix(1.0, 0.82 + 0.36 * streak, grain);
     vec2 refracted = uv + ripple * 0.14 * grain;
     float front;
-    float lit = paneLight(c.id, front);
+    float lit = paneLight(c.id, p + c.toSite, front);
     vec3 col = glass * backlight(refracted) * lit * mix(1.0, density, grain);
     // Seeds: trapped air bubbles that focus a bright point and ring dark.
     vec2 bubbleGrid = p * 9.0;
@@ -326,7 +330,7 @@ void main() {
 
     // --- haze: shafts and dust ------------------------------------------
     vec2 toSun = sun.xy - uv;
-    const int STEPS = 28;
+    const int STEPS = 22;
     float dither = random1(ivec2(gl_FragCoord.xy), 71u);
     vec2 stepv = toSun / float(STEPS) * 0.95;
     vec2 q = uv + stepv * dither;

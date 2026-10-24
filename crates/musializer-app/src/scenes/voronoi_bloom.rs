@@ -99,7 +99,7 @@ pub fn draw(
         )
     });
     resources.report = format!(
-        "surface=shader, lattice=9+25, shafts=28x9, cells={}, voices=12, kicks={}, waves={} live, \
+        "surface=shader, lattice=9+25, shafts=22x9, cells={}, voices=12, kicks={}, waves={} live, \
          crack={}, sun={:.2}@({:.2},{:.2}), light={:.3}, bass={:.3}, energy={:.3}, clock={:.3}, dyn={}",
         setting(control::CELLS).round(),
         state.kick_count(),

@@ -85,7 +85,7 @@ pub fn draw(
     let total = mains + drops;
     let centre = state.centre();
     let ring = state.ring(orbit);
-    let camera = state.camera();
+    let camera = state.camera(size, orbit);
     let squash = state.squash();
     // Everything the march may meet sits inside this sphere about the centre;
     // the squash stretches the goo by at most ~18 %, the goo radius pads necks.
@@ -137,6 +137,7 @@ pub fn draw(
         ("sectionEnergy", state.energy()),
         ("highLight", state.high()),
         ("accent", state.accent()),
+        ("wobble", state.wobble()),
         ("gardenTime", state.clock()),
     ] {
         let location = shader.get_shader_location(name);

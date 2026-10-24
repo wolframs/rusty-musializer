@@ -201,6 +201,15 @@ impl MetaballGardenState {
     pub fn accent(&self) -> f32 {
         self.accent
     }
+    /// How hard the goo's surface is quivering, 0..1: the two springs' speeds.
+    /// A kick sets the jelly rippling and it calms as the springs settle.
+    #[must_use]
+    pub fn wobble(&self) -> f32 {
+        let tau = std::f32::consts::TAU;
+        let squash = (self.squash.v.abs() / (tau * SQUASH_HZ)).min(1.0);
+        let burst = (self.burst.v.abs() / (tau * BURST_HZ)).min(1.0);
+        (0.6 * squash + 0.6 * burst).min(1.0)
+    }
     #[must_use]
     pub fn kick_count(&self) -> u64 {
         self.kick_count
@@ -277,7 +286,8 @@ impl MetaballGardenState {
         let mass = size.clamp(0.35, 1.5) * (1.0 + self.bass * 0.2);
         std::array::from_fn(|j| {
             let a = seed + j as f32 * 2.094_395 + (j / 3) as f32 * 1.047;
-            let q = a + t * (0.33 + j as f32 * 0.041) * if j.is_multiple_of(2) { 1.0 } else { -1.0 };
+            let q =
+                a + t * (0.33 + j as f32 * 0.041) * if j.is_multiple_of(2) { 1.0 } else { -1.0 };
             let tilt = 0.45 + 0.35 * (a * 1.7).sin();
             let r = reach * (0.9 + 0.2 * (a * 3.1).cos());
             [
@@ -332,13 +342,16 @@ impl MetaballGardenState {
 
     /// A slow dolly: the camera drifts around the sculpture and off its axis so
     /// the frame composes instead of centring, and pushes in on loud sections.
+    /// It backs off for a larger sculpture or a wider ring (`size`, `orbit`), so
+    /// no setting pushes the ring out of the frame.
     #[must_use]
-    pub fn camera(&self) -> Camera {
+    pub fn camera(&self, size: f32, orbit: f32) -> Camera {
         let t = self.clock as f32;
         let s = phase(self.seed ^ 0x9e37_79b9);
         let azimuth = 0.42 * (t * 0.047 + s).sin() + 0.12 * (t * 0.019).sin();
         let elevation = 0.27 + 0.06 * (t * 0.031 + s * 0.5).sin();
-        let distance = 6.6 - 0.75 * self.energy + 0.12 * self.squash().max(0.0);
+        let scale = (size.clamp(0.35, 1.5) - 0.8).max(0.0) * 1.6 + orbit.clamp(0.0, 2.0) * 0.55;
+        let distance = 6.05 + scale - 0.75 * self.energy + 0.12 * self.squash().max(0.0);
         let c = self.centre();
         let target = [0.32 * (t * 0.037 + s).sin(), -0.28 + 0.4 * c[1], 0.0];
         Camera {
@@ -733,7 +746,7 @@ mod tests {
         };
         assert!(spread(&loud) < spread(&quiet));
         let distance = |s: &MetaballGardenState| {
-            let cam = s.camera();
+            let cam = s.camera(0.8, 1.0);
             (0..3)
                 .map(|i| (cam.position[i] - cam.target[i]).powi(2))
                 .sum::<f32>()
@@ -770,7 +783,7 @@ mod tests {
         for b in ring.beads {
             assert!(b.iter().all(|v| v.is_finite()));
         }
-        let cam = state.camera();
+        let cam = state.camera(1.5, 2.0);
         assert!(
             cam.position[1] > FLOOR_Y + 1.0,
             "the camera stays above the floor"
