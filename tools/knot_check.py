@@ -23,7 +23,7 @@ for name in ('preview', 'idle', 'reopen', 'minimum'):
         assert float(match[1]) == 0 and max(bands) == 0, 'idle is not quiet'
 picker = (root/'minimum.log').read_text()
 assert re.search(r'^scene:\s+knot \(OpenAI Knot\)', picker, re.M), 'minimum-size picker did not select knot'
-assert 'at=82x252 claimed=0x20000000d' in picker, 'scene tile did not receive the click'
+assert 'at=82x231 claimed=0x20000000d' in picker, 'scene tile did not receive the click'
 assert 'family=geometry active=knot' in picker, 'grouped picker did not reveal the selected knot'
 # Preview includes chrome; inspect the exported scene to avoid counting UI text.
 im = Image.open(root / 'portrait.png').convert('RGB')
