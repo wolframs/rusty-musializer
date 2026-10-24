@@ -1035,6 +1035,17 @@
           "exclusiveMinimum": 0,
           "maximum": 30,
           "description": "Seconds over which this section's tuning eases in from the section before it when both are the same scene (post-legacy, MV9-c). Omitted when zero."
+        },
+        "pixel": {
+          "oneOf": [
+            {
+              "const": "off"
+            },
+            {
+              "$ref": "#/$defs/pixel_look"
+            }
+          ],
+          "description": "This section's pixel look over the finish's (2026-10-24): \"off\" switches it off here; omitted when the section wears the video's."
         }
       }
     },
@@ -1271,9 +1282,104 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        },
+        "pixel": {
+          "$ref": "#/$defs/pixel_look",
+          "description": "The whole video's pixel look, applied after the caption and the fade to black and before the rest of the finish. Omitted when off."
         }
       },
       "description": "Bloom, split toning, vignette, highlight shoulder and grain over every frame. Post-legacy (2026-10-21); never written when every strength is zero."
+    },
+    "pixel_look": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pixels",
+        "match",
+        "colours",
+        "levels",
+        "dither",
+        "grid",
+        "scanlines",
+        "curvature",
+        "glow",
+        "split",
+        "shake",
+        "zoom"
+      ],
+      "properties": {
+        "pixels": {
+          "type": "integer",
+          "minimum": 48,
+          "maximum": 720,
+          "description": "Pixels across the frame's short edge; each is a whole number of output pixels."
+        },
+        "match": {
+          "type": "string",
+          "enum": [
+            "none",
+            "ramp",
+            "nearest",
+            "levels"
+          ],
+          "description": "none: pixels only. ramp: colours are a dark-to-light ramp picked by luminance. nearest: the nearest colour of the set. levels: each channel held to `levels` steps, evenly spaced in the square root of the value."
+        },
+        "colours": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{6}$"
+          },
+          "description": "2..16 colours for ramp (darkest first) and nearest; empty for none and levels."
+        },
+        "levels": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 16
+        },
+        "dither": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "grid": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "scanlines": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "curvature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "glow": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "split": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "shake": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "zoom": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "description": "The pixel cartridge: the frame drawn at a low resolution through a palette with ordered dithering and shown through a screen; split, shake and zoom answer the kick. Post-legacy (2026-10-24); never written when off."
     }
   }
 }

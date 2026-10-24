@@ -1201,6 +1201,25 @@ the block `finish`, on the same never-written-when-default rule.
   `highlight_rgb` (six hex digits), `vignette`, `grain` (0..1); refused when
   every strength is zero, because "no finish" is leaving the member out.
 
+**Post-legacy (2026-10-24, the pixel cartridge):** the `finish` block may carry
+`pixel`, and a cue may carry `pixel`, on the same rule.
+
+- **`pixel_look`**: required `pixels` (integer 48..720, the short edge's count),
+  `match` (`none` | `ramp` | `nearest` | `levels`), `colours` (six lowercase hex
+  digits each; 2..16 for `ramp`, darkest first, and `nearest`; empty for `none`
+  and `levels`), `levels` (integer 2..16, carried whatever the match), and
+  `dither`, `grid`, `scanlines`, `curvature`, `glow`, `split`, `shake`, `zoom`
+  (each 0..1). Off is leaving the member out; an object with `pixels` 0 is
+  refused. Colours are written as the look holds them, never as a palette's
+  name.
+- **`finish.pixel`**: a `pixel_look`, the whole video's. A finish whose only
+  content is a pixel look is written (its nine other members at their zero
+  strengths), because the look is content.
+- **cue `pixel`**: the word `"off"` (the look switched off for this section),
+  or a `pixel_look`. Absent wears the finish's.
+
+`schema_version` stays 1, the caption `effects` precedent.
+
 Post-legacy floats in these blocks are written in their shortest round-trip
 spelling (`0.45`), not the C-era widened one.
 

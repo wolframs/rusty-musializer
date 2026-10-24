@@ -178,16 +178,16 @@ goes missing.
 | `output` | `{ "resolution": "1920x1080", "fps": 30, "quality": "high" }`, each optional. `--resolution`, `--fps` and `--quality` on the command line override it |
 | `seed` | The deterministic seed scenes are built from |
 | `caption_style` | The `.musi` member names, each optional here (see below) |
-| `scenes` | Per scene name: `settings` (the base tuning for every section of that scene), `routes`, and a `grade` every section of that scene wears |
+| `scenes` | Per scene name: `settings` (the base tuning for every section of that scene), `routes`, and a `grade` and a `pixel` look every section of that scene wears |
 | `segments` | The plan. Required |
 | `outro` | How the track ends: a transition, played backwards into black |
-| `finish` | The finish over every frame: `"film"`, or an object (see *The look*) |
+| `finish` | The finish over every frame: `"film"`, `"cartridge"`, or an object (see *The look* and *The pixel cartridge*) |
 | `lyrics` | Timed lines, or the path of a `tools/align_lyrics.py` file |
 | `events` | Authored markers; Constellation flares on them |
 
 ### `segments`
 
-Each has `at`, `scene`, and optionally `settings`, a `transition`, a `grade`, a `glide` and a `note`. Sections are
+Each has `at`, `scene`, and optionally `settings`, a `transition`, a `grade`, a `glide`, a `pixel` look and a `note`. Sections are
 listed in playing order, the first starts at 0, and each runs until the next one
 starts; the last runs to the end of the track. There is nothing to keep
 contiguous by hand.
@@ -334,6 +334,65 @@ a still and a clip of one moment grain alike.
 report line says whether the grade and the finish drew, and how many frames:
 a pass that silently failed is the same picture as a video that asked for
 none.
+
+### The pixel cartridge: `pixel`
+
+Any scene can be drawn as if a handheld console drew it: the frame at a low
+resolution, its colours held to a palette with ordered dithering, shown through
+a pixel grid, scanlines and phosphor glow, and answering the kick with a jolt, a
+punch-in and the colours parting — by whole pixels, never a flash. It is the
+finish's first step, so the caption, a transition and the fade to black go
+through it too: a cartridge has one framebuffer.
+
+```json
+"finish": "cartridge"
+"finish": { "pixel": "handheld" }
+"finish": { "base": "cartridge", "pixel": { "pixels": 144, "palette": "grey", "curvature": 0.3 } }
+"segments": [ { "at": 0,     "scene": "clawd" },
+              { "at": 11.25, "scene": "clawd", "pixel": "levels", "glide": 0.9 },
+              { "at": 40,    "scene": "stage", "pixel": "off" },
+              { "at": 60,    "scene": "spectrum", "pixel": { "palette": ["#220000", "#ff4400", "#ffee88"], "pixels": 96 } } ]
+```
+
+| Member | Meaning |
+| --- | --- |
+| `pixels` | Pixels across the frame's short edge, 48..720 (default 180: a 320x180 frame at 16:9). Each is a whole number of output pixels, worked out on the export's size, so a 2x supersampled export lands on exactly the 1x cells and a 9:16 export has the same pixel size |
+| `palette` | `handheld` (four greens), `grey` (four greys), `home` (16 home-computer colours), `fantasy` (16 fantasy-console colours), `levels` (each channel held to `levels` steps — a 16-bit console's colour depth), `none` (pixels in the scene's own colours), or 2..16 `"#rrggbb"`: a ramp, darkest first, picked by luminance, unless `match` is `"nearest"` |
+| `levels` | Steps a channel for `levels`, 2..16 (default 8), spaced in the square root of the value so dark scenes keep their glow |
+| `dither` | Ordered 4x4 Bayer dithering, 0..1 (default 0.35: only tones near the middle of a step break up, so a flat backdrop stays flat) |
+| `grid`, `scanlines`, `glow`, `curvature` | The screen, each 0..1: a dark line between cells, rows that read as a beam, lit cells bleeding light over both, a curved tube (0 keeps every pixel straight) |
+| `split`, `shake`, `zoom` | The kick, each 0..1, off unless asked for: the red and blue part by whole pixels, the screen jumps by whole pixels, the picture punches in. The kick is the low bands' rise over their own trails in that frame, so a still jolts as its video frame does |
+
+A string is a shortcut: `"off"`, `"on"` (the inherited look, or the shipped
+one), `"video"` (the video's own — clears a scene's), `"cartridge"` (the shipped
+look with the kick on), or a palette's name over the inherited look. An object's
+members are written over the inherited look: the video's for `finish.pixel` and
+`scenes.<name>.pixel`, the scene's for a section. `"finish": "cartridge"` is the
+cartridge look with a vignette of 0.3 and nothing else.
+
+**How a section's look arrives.** Two sections whose looks differ dissolve cell
+by cell in Bayer order — how a cartridge cross-fades — across the second one's
+`transition`, or across its `glide` when it arrives by a cut. The glide is the
+one for the unlock: two sections of the *same* scene, the second with
+`"pixel": "levels"` and a glide, turn a four-shade world into colour over a live
+picture, where a transition would dissolve out of a held still. With neither it
+snaps, which is what a drop wants; a `dip` hides the change in its black.
+
+The `look:` line gains `pixel=drew (N frames, shaders ok/ok, 320x180 cells of 6
+px, handheld)`, `pixel=off` or `pixel=UNAVAILABLE`, and says `dissolving 0.50`
+mid-dissolve. `scene marks:` counts the sections with a look of their own.
+
+In the window, the Editor's Tune tab (the pencil button, or `--editor-ui`) picks
+the look for the whole video and for the section under the playhead, with its
+pixel size and whether it answers the kick; the scene lane marks a section's
+own look with a checker of its palette. Both write the same fields a treatment
+does, saved in the `.musi`.
+
+Things to know: a caption goes through the pixels, so give it a size that
+survives them (`size_scale` 0.07 or more at 180 pixels); film grain over whole
+pixels reads as a dirty lens, which is why `cartridge` has none; and a smooth
+`fade` between two different scenes is mid-grey for its middle, which a
+four-shade ramp shows as a field of dither — cut, or use the `pixel` transition.
 
 ### A room with a scene through its door: `threshold`
 
@@ -499,7 +558,8 @@ Said here so nobody looks for a flag:
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
-- Authoring a transition, a grade, a glide, the finish or voices in the window.
+- Authoring a transition, a grade, a glide, the rest of the finish or voices in
+  the window (the pixel look is the exception: the Editor's Tune tab picks it).
   They come from a treatment and are saved in the `.musi`. The scene lane
   *shows* them — a light band for how a segment arrives, a ramp for a glide, a
   palette strip for a grade, a dark band for the outro, and a selected
@@ -529,7 +589,7 @@ rather than against the report line that claims them. Among them:
   frame, with a neighbouring moment at 21.55 dB as the control.
 - Each refusal exits 1, names the place, and leaves no project and no sheet.
 
-Three negative controls were run when it was written, each on a scratch binary
+Negative controls were run when each part was written, each on a scratch binary
 (`TREATMENT_BIN`), each reverted byte-for-byte:
 
 | Perturbation | The gate | The unit tests |
@@ -537,6 +597,9 @@ Three negative controls were run when it was written, each on a scratch binary
 | The persistence buffer is not reset between captures | the two-still equality fails | n/a — it needs a renderer |
 | The frame outputs are not gated on an earlier error | `past-end: a sheet was rendered after the refusal` | n/a |
 | A section's own `settings` are dropped | three applied-value checks fail | 4 of 28 fail |
+| The pixel grid worked out on the framebuffer, not the output | the 2x still: 256x144 cells of 5 px, 23 colours, cells straddling pixels | 1 of 12 pixel tests fails |
+| The console skips the palette | the handheld still has 679 colours; the levels still is off its steps | n/a |
+| The screen upscales filtered, not by whole cells | six checks fail, among them 34 % of colour edges inside a cell | n/a |
 
 The first is the instructive one. The two stills had to be moved inside the one
 scene that keeps light between frames, with the first before the second's
