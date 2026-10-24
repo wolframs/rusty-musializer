@@ -2,7 +2,7 @@
 
 use musializer_core::scene::settings::index::aurora as control;
 use musializer_core::scene::{SceneFrame, SceneId};
-use musializer_core::scenes::aurora_veil::AuroraVeilState;
+use musializer_core::scenes::aurora_veil::{AuroraVeilState, PULSE_SECONDS};
 use musializer_runtime::draw;
 use raylib::prelude::*;
 
@@ -50,31 +50,50 @@ pub fn draw(
         resources.report = "shader=REFUSED, fallback=labelled unavailable scene".into();
         return;
     };
+    let setting = |index| frame.setting(SceneId::AuroraVeil, index);
     let mut set = |name: &str, value: f32| {
         let location = shader.get_shader_location(name);
         shader.set_shader_value(location, value);
     };
     set("auroraTime", state.clock());
     set("seedPhase", state.phase());
-    set(
-        "curtainHeight",
-        frame.setting(SceneId::AuroraVeil, control::HEIGHT),
-    );
-    set("folds", frame.setting(SceneId::AuroraVeil, control::FOLDS));
-    set("hueTurn", frame.setting(SceneId::AuroraVeil, control::HUE));
-    set("glow", frame.setting(SceneId::AuroraVeil, control::GLOW));
-    set("stars", frame.setting(SceneId::AuroraVeil, control::STARS));
-    set(
-        "spread",
-        frame.setting(SceneId::AuroraVeil, control::SPREAD),
-    );
-    let location = shader.get_shader_location("resolution");
-    shader.set_shader_value(location, Vector2::new(boundary.width, boundary.height));
-    let location = shader.get_shader_location("auroraMusic");
+    set("shimmer", state.shimmer());
+    // Grain only: a tick of track time, never a frame counter, so two renders
+    // of one moment draw the same specks.
+    set("trackTime", (frame.time_seconds % 3600.0) as f32);
+    set("curtainHeight", setting(control::HEIGHT));
+    set("folds", setting(control::FOLDS));
+    set("hueTurn", setting(control::HUE));
+    set("glow", setting(control::GLOW));
+    set("stars", setting(control::STARS));
+    set("spread", setting(control::SPREAD));
+    set("response", setting(control::RESPONSE));
+    let mut vec2 = |name: &str, value: Vector2| {
+        let location = shader.get_shader_location(name);
+        shader.set_shader_value(location, value);
+    };
+    vec2("resolution", Vector2::new(boundary.width, boundary.height));
+    let lift = state.lift();
+    vec2("auroraLift", Vector2::new(lift[0], lift[1]));
+    let meteor = state.meteor();
+    vec2("meteor", Vector2::new(meteor[0], meteor[1]));
     let music = state.music();
-    shader.set_shader_value(
-        location,
+    let pulses = state.pulses();
+    let mut vec4 = |name: &str, value: Vector4| {
+        let location = shader.get_shader_location(name);
+        shader.set_shader_value(location, value);
+    };
+    vec4(
+        "auroraMusic",
         Vector4::new(music[0], music[1], music[2], music[3]),
+    );
+    vec4(
+        "pulseAge",
+        Vector4::new(pulses[0][0], pulses[1][0], pulses[2][0], pulses[3][0]),
+    );
+    vec4(
+        "pulseStrength",
+        Vector4::new(pulses[0][1], pulses[1][1], pulses[2][1], pulses[3][1]),
     );
     let texture = draw::default_texture();
     d.draw_shader_mode(shader, |mut pass| {
@@ -88,13 +107,22 @@ pub fn draw(
             Color::WHITE,
         );
     });
+    let flaming = pulses
+        .iter()
+        .filter(|pulse| pulse[0] < PULSE_SECONDS && pulse[1] > 0.0)
+        .count();
     resources.report = format!(
-        "shader=drawn, clock={:.3}, bass={:.3}, loudness={:.3}, mids={:.3}, treble={:.3}, dynamics={}",
+        "shader=drawn, clock={:.3}, bass={:.3}, activity={:.3}, mids={:.3}, treble={:.3}, \
+         surge={:.3}, kicks={}, flaming={}, meteors={}, dynamics={}",
         state.clock(),
         music[0],
         music[1],
         music[2],
         music[3],
+        lift[1],
+        state.kicks(),
+        flaming,
+        state.meteors(),
         if frame.dynamics.is_some() {
             "track"
         } else {
