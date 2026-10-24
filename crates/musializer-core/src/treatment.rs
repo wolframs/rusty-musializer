@@ -1853,7 +1853,7 @@ fn parse_caption_style(wire: CaptionStyleWire) -> Result<CaptionStyle, Treatment
 pub fn scene_look(scene: SceneId) -> &'static str {
     match scene {
         SceneId::LiquidChrome => {
-            "Flowing reflective chrome folds with broad moving highlights. Bass bends the material and transients ripple it; flow, scale, shine and contrast direct the surface."
+            "A mercury sea in a dark studio with a chrome ring standing in it, softbox streaks broken on the waves. Bass rolls a heavy swell, kicks send wave fronts out from the ring and bulges up it, loudness lights the gels; quiet goes glassy. hue turns the gels, shine the softboxes."
         }
         SceneId::AuroraVeil => {
             "Layered northern-light curtains over a dark starfield, with folding luminous filaments. Track-relative energy lifts the curtains and bass shapes their breadth."
@@ -1868,7 +1868,7 @@ pub fn scene_look(scene: SceneId) -> &'static str {
             "A drifting stained-glass mosaic with moving cells and luminous seams. The music lights cells and facets; density, edges and site drift change its structure."
         }
         SceneId::IridescentPool => {
-            "Thin-film interference colours over dark rippling water. Transients disturb the film; scale, shimmer and grazing light reveal its prismatic rings."
+            "An oil slick on dark, deep water seen from above, banded magenta, blue, green and gold. Kicks tear holes in the oil with ring trains and caustics on the floor, other transients are rain, bass rolls a slow swell. scale sets the marbling, shimmer the film, light the reflections."
         }
         SceneId::FluidInk => {
             "Luminous lime, turquoise and orchid dye curling through a fluid. Bass \

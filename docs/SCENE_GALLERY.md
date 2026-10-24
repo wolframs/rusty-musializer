@@ -32,12 +32,12 @@ copy their source, add dependencies or introduce unsafe blocks.
 
 | Scene | Token / id | Look | Design and evidence |
 | --- | --- | --- | --- |
-| Liquid Chrome | `chrome` / 16 | Flowing reflective silver folds, musical pressure and moving studio highlights | [Materials](MATERIAL_SCENES.md) |
+| Liquid Chrome | `chrome` / 16 | A mercury sea in a dark studio with a liquid chrome ring standing in it | [Materials](MATERIAL_SCENES.md) |
 | Aurora Veil | `aurora` / 17 | Layered northern-light curtains and a restrained starfield | [Atmospheres](ATMOSPHERE_SCENES.md) |
 | Metaball Garden | `metaballs` / 18 | Glossy merging blobs in a slowly moving sculpture | [Organic scenes](ORGANIC_SCENES.md) |
 | Neon Tunnel | `tunnel` / 19 | Forward travel through twisting polygonal neon ribs | [Atmospheres](ATMOSPHERE_SCENES.md) |
 | Voronoi Bloom | `voronoi` / 20 | Moving stained-glass cells, lit seams and faceted colour | [Organic scenes](ORGANIC_SCENES.md) |
-| Iridescent Pool | `iridescent` / 21 | Dark water, thin-film colour and transient ripple packets | [Materials](MATERIAL_SCENES.md) |
+| Iridescent Pool | `iridescent` / 21 | An oil slick on dark, deep water, torn open by the kick | [Materials](MATERIAL_SCENES.md) |
 
 Each has eight ordinary Tune controls, routes, presets and section tuning. Music
 response zero leaves an intentional ambient picture. Core state owns seeded
@@ -84,7 +84,10 @@ The encoder is lossy YUV 4:2:0. Iridescent Pool's fine colour contours measured
 already measured 35.12 dB. High quality raises the comparison while project
 reopen remains pixel-identical. The gate preserves a fixed codec tolerance and
 records both still/video and full/clip scores in `measurements.json`; it does not
-call a compressed frame pixel-identical.
+call a compressed frame pixel-identical. After the 2026-10-24 rework the Pool's
+oil bands sit below the 33 dB floor even at High (31.0 dB NVENC, 32.0 dB x264)
+while luma measures 39.7 dB and reopen stays identical; see
+[Materials](MATERIAL_SCENES.md#verification-2026-10-24).
 
 An independent Sol review caught negative bases in GLSL `pow` calls in Chrome,
 Pool and Tunnel. Even squared exponents require nonnegative bases in GLSL;
