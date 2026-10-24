@@ -438,7 +438,7 @@ fn run(
     // Poster frames for the plan lane's runs (WX-5b). A local of the loop, not
     // part of `Shell`, so the shell can borrow it while it draws; see
     // `posters.rs` for the seam and the rules on both sides of it.
-    let mut posters = posters::PosterBoard::default();
+    let mut posters = posters::PosterBoard::from_env();
     if let Some(probe) = options.ui_probe.as_ref() {
         posters.configure(probe.posters, probe.poster_dump.clone());
         app.shell.probe_run_open = probe.run_open;
@@ -1279,6 +1279,11 @@ fn run(
             }
         }
     }
+    // The poster service's renderer compiles its shaders here, before the
+    // first frame, rather than inside a frame the frame budget counts.
+    if running && export.is_none() {
+        posters.preload(&mut rl, &thread);
+    }
     // Set once the close guard has warned with no dialog available; see
     // `confirm_close`.
     let mut close_warned = false;
@@ -1945,7 +1950,14 @@ fn run(
             // Poster work, last in the drawing pair (WX-5b): the shell no
             // longer borrows the board, egui has left ordinary 2D state on the
             // default framebuffer, and no texture mode or scissor is active.
-            posters.step(&mut d, &thread, playing);
+            posters.step(
+                &mut d,
+                &thread,
+                &fonts,
+                &app.workspace,
+                time_seconds,
+                playing,
+            );
         }
         posters.enqueue(app.shell.take_poster_requests());
         // A held legacy gesture may predate opening the editor with F8.
@@ -3240,6 +3252,8 @@ impl App {
 fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
     track.timeline_waveform = None;
     track.track_dynamics = None;
+    track.poster_audio = None;
+    let decode_started = std::time::Instant::now();
     let Some(decoded) = musializer_runtime::decode::whole_track(audio, &track.file_path) else {
         eprintln!(
             "warning: waveform preview could not decode {}",
@@ -3265,6 +3279,17 @@ fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
     // already runs for every track at load, so the numbers are free.
     track.audio_sample_rate = decoded.sample_rate;
     track.audio_channels = u16::try_from(decoded.channels).unwrap_or(2);
+    let decoded_in = decode_started.elapsed();
+    let kept_started = std::time::Instant::now();
+    track.poster_audio = posters::PosterAudio::from_decoded(&decoded);
+    if std::env::var_os("MUSIALIZER_POSTER_BENCH").is_some() {
+        println!(
+            "poster bench: decode={:.1}ms keep-channel-0={:.1}ms frames={}",
+            decoded_in.as_secs_f64() * 1000.0,
+            kept_started.elapsed().as_secs_f64() * 1000.0,
+            decoded.frame_count(),
+        );
+    }
     let waveform = musializer_core::timing::track_timeline::Waveform::build(
         &decoded.samples,
         decoded.channels,

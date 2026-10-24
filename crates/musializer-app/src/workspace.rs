@@ -193,6 +193,10 @@ pub struct Track {
     /// on *this track's* quiet and loud; `None` (failed decode, near-silent
     /// file) means scenes fall back to absolute gates and report it.
     pub track_dynamics: Option<musializer_core::audio::track_dynamics::TrackDynamics>,
+    /// Channel 0 of the same load-time decode, kept for the poster service
+    /// (WX-5b) so a poster never decodes the track a second time. `None` until
+    /// the decode ran, or when it failed; the lane then says so per run.
+    pub poster_audio: Option<crate::posters::PosterAudio>,
 
     // ---- captions -------------------------------------------------------
     /// Preview and export read this same struct, so what the workspace shows is
@@ -448,6 +452,7 @@ impl Track {
             song_atlas_map_attempted: false,
             ascii: None,
             track_dynamics: None,
+            poster_audio: None,
             caption_style: CaptionStyle::default(),
             caption_font_path: None,
             caption_licence_path: None,

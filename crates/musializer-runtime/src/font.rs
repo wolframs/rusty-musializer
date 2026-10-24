@@ -1047,6 +1047,14 @@ impl Faces {
         }
     }
 
+    /// Whether Cadence's SDF atlas has been built (successfully or not) for
+    /// any text yet. The poster service (WX-5b) asks so that it never pays
+    /// the first ~300 ms build in a frame while the song plays.
+    #[must_use]
+    pub fn cadence_sdf_built(&self) -> bool {
+        self.atlases.sdf.borrow().is_some()
+    }
+
     /// Alegreya as a signed-distance-field atlas, for Cadence.
     ///
     /// Cadence animates per-glyph scale continuously as a word pops in, so no

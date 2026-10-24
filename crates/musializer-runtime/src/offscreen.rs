@@ -71,6 +71,21 @@ impl Canvas {
         (self.width, self.height)
     }
 
+    /// The buffer itself, for a caller that hands its colour texture out by
+    /// reference (the poster service's lane view, WX-5b). Same orientation
+    /// rule as [`Self::texture`].
+    #[must_use]
+    pub fn render_texture(&self) -> Option<&RenderTexture2D> {
+        self.target.as_ref()
+    }
+
+    /// Mutable access to the same buffer, for a caller that sets its
+    /// sampling (mipmaps, filter) after drawing into it.
+    #[must_use]
+    pub fn render_texture_mut(&mut self) -> Option<&mut RenderTexture2D> {
+        self.target.as_mut()
+    }
+
     /// The colour texture, upright in GL's bottom-up convention like every
     /// render texture: draw it with a negative source height.
     #[must_use]
