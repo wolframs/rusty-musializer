@@ -83,6 +83,19 @@ it, and it clicks all six Pixel cats tiles at the minimum.
 Threshold's `beyond` maximum grows again, from 22 to 28, so the doorway can
 show a pixel scene. Both post-legacy expectation files gain only the new rows.
 
+## Glyph Lattice, 2026-10-24
+
+A wireframe solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28), after a
+hero animation the operator saw on a website, reimplemented from its visible
+behaviour. It joins *Geometry*, which now holds six scenes, the most a family
+shows unscrolled at the 215 px panel minimum. See
+[GLYPH_LATTICE.md](GLYPH_LATTICE.md).
+
+`scene_gallery_check.py` renders it with the other native scenes and also reads
+its report line (tiers, pulses, kicks, ripples, `dyn=track`). `--only NAME`
+restricts the scene renders to one scene; the picker clicks still run.
+Threshold's `beyond` maximum grows from 28 to 29.
+
 ## Verification
 
 Run `tools/scene_gallery_check.py`. It uses a synthetic sustained multiband phrase

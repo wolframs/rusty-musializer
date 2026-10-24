@@ -33,7 +33,9 @@ with the music. The [scene gallery](docs/SCENE_GALLERY.md) adds reflective chrom
 northern lights, merging blobs, a neon tunnel, stained glass and iridescent water.
 [Pixel cats](docs/PIXEL_CATS.md) stages each line as a pixel-art gag behind a CRT:
 a boot screen, a lyric editor, a side-scroller, a barbershop quartet, monks under
-a rose window and a gabber tunnel.
+a rose window and a gabber tunnel. [Glyph Lattice](docs/GLYPH_LATTICE.md) turns a
+solid of light on a honeycomb of tiny glyphs, kicks running along its edges, and
+can set the sung line in the same glowing cells.
 Family tabs keep the picker compact, with room to read the scene names. Each
 scene has its own controls and responds to your track.
 

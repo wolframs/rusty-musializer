@@ -57,6 +57,10 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
   one scene family: the gags, the shared settings, the CPU canvas and its
   evidence.
 
+- [`GLYPH_LATTICE.md`](GLYPH_LATTICE.md) — a wireframe solid lit on a honeycomb
+  of tiny glyphs: the reference and its boundary, what the music drives, the
+  lyric line in stroke capitals, the CPU lattice and its evidence.
+
 - [`LYRICS_GROUPING_REVIEW.md`](LYRICS_GROUPING_REVIEW.md) — two pending lyric
   phrase judgments, browser audition, portable protocol bundle and resume state.
 - [`LYRICS_ASSIST_REPAIR_2026-09-06.md`](LYRICS_ASSIST_REPAIR_2026-09-06.md) —

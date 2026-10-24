@@ -66,6 +66,14 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
+solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
+after the modal.com hero the operator wanted in his own form. Kicks run comets
+along the edges, solids morph per section, and `words` sets the sung line in
+the same cells. The gallery check, its negative control, the differential
+pins and live playback pass (`build/glyphs/`). Open: the operator's look at it,
+and whether `words` should default on. See [`docs/GLYPH_LATTICE.md`](docs/GLYPH_LATTICE.md).
+
 **Pixel Cats — built, ready for operator review (2026-10-24).** Six pixel-art
 stagings of the lyric line as one scene family (`pixel-boot`, `pixel-shell`,
 `pixel-run`, `pixel-quartet`, `pixel-chapel`, `pixel-rave`, ids 22–27), after

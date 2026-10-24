@@ -262,6 +262,7 @@ short names **and six long aliases**:
 | `pixel-quartet` | Barbershop (post-legacy, id 25) |
 | `pixel-chapel` | Rose Window (post-legacy, id 26) |
 | `pixel-rave` | Gabber Tunnel (post-legacy, id 27) |
+| `glyphs`, `glyph-lattice` | Glyph Lattice (post-legacy, id 28) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -522,6 +523,10 @@ Shell (`pixel-shell`), Side Scroller (`pixel-run`), Barbershop
 (`pixel-rave`). Each has the same ten controls under its own token; they share
 one implementation and the *Pixel cats* family. See
 [`PIXEL_CATS.md`](PIXEL_CATS.md).
+
+Glyph Lattice appends id 28 on 2026-10-24 (`glyphs`): a wireframe solid lit on
+a honeycomb of tiny glyphs, twelve controls, in the *Geometry* family. See
+[`GLYPH_LATTICE.md`](GLYPH_LATTICE.md).
 
 Two behaviours of the registry that are still contract, whatever the count is:
 
@@ -793,7 +798,7 @@ Post-legacy, 2026-10-21, id 14 (MV9-d).
 | 1 | `settings.threshold.open` | Door open | 0.00 | 1.00 | 0.00 | 2 | slider |
 | 2 | `settings.threshold.light` | Light | 0.00 | 2.00 | 1.00 | 2 | slider |
 | 3 | `settings.threshold.haze` | Doorway haze | 0.00 | 1.00 | 0.60 | 2 | slider |
-| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 28 | 0 | 0 | slider |
+| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 29 | 0 | 0 | slider |
 | 5 | `settings.threshold.presences` | Presences | 0 | 2 | 0 | 0 | slider |
 | 6 | `settings.threshold.motes` | Motes | 0.00 | 2.00 | 1.00 | 2 | slider |
 | 7 | `settings.threshold.mist` | Mist | 0.00 | 2.00 | 1.00 | 2 | slider |
@@ -802,9 +807,9 @@ Post-legacy, 2026-10-21, id 14 (MV9-d).
 | 10 | `settings.threshold.reflection` | Floor reflection | 0.00 | 1.00 | 0.60 | 2 | slider |
 
 `beyond` is a scene index plus one (0 is the doorway's own fog; the threshold
-never nests itself). Its maximum is now 28, selecting Gabber Tunnel; 15 refuses
+never nests itself). Its maximum is now 29, selecting Glyph Lattice; 15 refuses
 Threshold itself. This is a deliberate re-pin of `settings_post_legacy.txt`
-(22 when the gallery landed, 28 since Pixel Cats).
+(22 when the gallery landed, 28 since Pixel Cats, 29 since Glyph Lattice).
 
 ### `fluid` — Fluid Ink (8 controls, no C counterpart)
 
@@ -934,6 +939,30 @@ added later is appended to all six at once.
 
 `palette` is a persisted index: 0 handheld, 1 colour, 2 pocket, 3 arcade,
 4 virtual, 5 dusk. Append, never reorder.
+
+### `glyphs` — Glyph Lattice (12 controls, no C counterpart)
+
+Post-legacy, 2026-10-24, id 28. Twelve controls, the cap. Indices are
+persisted, append only.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.glyphs.solid` | Solid (0 = cycle) | 0 | 6 | 0 | 0 | slider |
+| 1 | `settings.glyphs.words` | Lyric line | 0 | 1 | 1 | 0 | toggle |
+| 2 | `settings.glyphs.spin` | Spin | 0 | 2 | 1 | 2 | slider |
+| 3 | `settings.glyphs.size` | Size | 0.5 | 1.6 | 1 | 2 | slider |
+| 4 | `settings.glyphs.density` | Cells across | 60 | 200 | 120 | 0 | slider |
+| 5 | `settings.glyphs.stroke` | Stroke | 0.5 | 2 | 1 | 2 | slider |
+| 6 | `settings.glyphs.glow` | Glow | 0 | 2 | 1 | 2 | slider |
+| 7 | `settings.glyphs.ghosts` | Ghosts | 0 | 1 | 0.6 | 2 | slider |
+| 8 | `settings.glyphs.flicker` | Flicker | 0 | 1 | 0.5 | 2 | slider |
+| 9 | `settings.glyphs.hue` | Hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 10 | `settings.glyphs.saturation` | Saturation | 0 | 1.5 | 1 | 2 | slider |
+| 11 | `settings.glyphs.response` | Music response | 0 | 2 | 1 | 2 | slider |
+
+`solid` is a persisted index: 0 the automatic cycle, 1 cube, 2 octahedron,
+3 dodecahedron, 4 icosahedron, 5 tesseract, 6 trefoil knot. Append, never
+reorder.
 
 ### `knot` — OpenAI Knot (11 controls, no C counterpart)
 

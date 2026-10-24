@@ -278,6 +278,39 @@ these scenes draw the line themselves and the caption overlay is not drawn over
 them. Cut one section per line, or per phrase, and give each the staging its
 words ask for.
 
+### A solid of light: `glyphs`
+
+`glyphs` (Glyph Lattice) draws a wireframe solid on a honeycomb of tiny glyphs:
+kicks run comets of light along its edges, the spectrum lights its edges by
+height, and onsets ripple through the lattice and turn the glyphs over
+([`GLYPH_LATTICE.md`](GLYPH_LATTICE.md)). It is a reactive scene and a lyric
+scene at once:
+
+- **`solid`** picks the subject per section — 1 cube, 2 octahedron,
+  3 dodecahedron, 4 icosahedron, 5 tesseract (it turns inside out on the
+  kicks), 6 trefoil knot — and a change between two sections of this scene
+  morphs: the new solid assembles from a vertex while the old one exhales into
+  the background. 0 leaves it to the scene, which moves on at a drop or after
+  about twenty seconds. Pin it when the cut matters: a drop on the tesseract, a
+  breakdown on the knot.
+- **`words`** (on by default) sets the sung line in glowing stroke capitals,
+  stroke by stroke as it starts, with the solid stepping back behind it; kicks
+  sweep through the letters. Between lines the solid comes forward again. Turn
+  it off for an instrumental section, or to keep your own caption style: with
+  `words` on, the caption overlay is not drawn over this scene.
+
+```json
+{ "at": 0,    "scene": "glyphs", "settings": { "solid": 1, "words": 0 } },
+{ "at": 32.3, "scene": "glyphs", "settings": { "solid": 3 } },
+{ "at": 96.0, "scene": "glyphs", "settings": { "solid": 5, "words": 0, "glow": 1.5, "hue": -40 } }
+```
+
+`hue` turns the aqua palette (its heat stays warm), `density` is the cells
+across the short side (fewer is chunkier glyphs), `stroke` the line weight,
+`ghosts` the echoes and the two giants behind, `response` 0 keeps it turning
+on its own clock. A line with a `voice` turns the palette to the voice's hue
+while it is set.
+
 ### `transition` and `outro`
 
 A section's `transition` is how that section **arrives**. It is a kind's name,
