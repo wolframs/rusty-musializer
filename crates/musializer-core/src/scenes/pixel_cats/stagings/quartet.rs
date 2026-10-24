@@ -11,7 +11,7 @@ use super::super::font;
 use super::super::raster::{Raster, Rgb};
 use super::super::sprites::{self, Look};
 use super::super::{Ask, Moment, PixelReport};
-use super::{blinking, cat, say, say_centred, typed_block_centred};
+use super::{blinking, cat, risers, say, say_centred, typed_block_centred};
 
 const VALANCE: Rgb = Rgb::new(122, 16, 30);
 const GOLD: Rgb = Rgb::new(224, 182, 82);
@@ -266,6 +266,19 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
             );
         }
     }
+    // A note rises over one of the singers on each onset.
+    let heads: Vec<(i32, i32)> = xs.iter().map(|&x| (x + 13, floor - 50)).collect();
+    let note = font::NOTE.to_string();
+    risers(
+        raster,
+        report,
+        moment,
+        &heads,
+        &note,
+        Rgb::new(255, 236, 160),
+        0.9,
+        22.0,
+    );
     report.detail = format!("poles={speed:.2} drum={radius:.1}");
     Ask {
         shake: 0.3,

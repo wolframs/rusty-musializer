@@ -10,7 +10,7 @@ use super::super::font;
 use super::super::raster::{Raster, Rgb};
 use super::super::sprites::{self, Look};
 use super::super::{unit, Ask, Moment, PixelReport};
-use super::{cat, say, say_centred, stars, typed_block_centred};
+use super::{cat, risers, say, say_centred, stars, typed_block_centred};
 
 const SKY_TOP: Rgb = Rgb::new(24, 10, 52);
 const SKY_LOW: Rgb = Rgb::new(78, 34, 116);
@@ -180,6 +180,10 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
         false,
         &look,
     );
+
+    // Every onset scores: a +9 rises over the cat.
+    let over = [(cat_x + 14, ground - 30 - jump as i32)];
+    risers(raster, report, moment, &over, "+9", GOLD, 0.6, 16.0);
 
     // HUD.
     let score = (moment.clock * 37.0) as u64 + moment.onset_count * 9;

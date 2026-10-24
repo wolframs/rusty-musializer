@@ -421,21 +421,29 @@ fn the_set_powers_off_at_the_end_of_the_track_only_with_the_crt_on() {
 }
 
 #[test]
-fn onsets_pop_words_and_the_toggle_stops_them() {
-    let settings = SceneSettings::new();
+fn onsets_pop_in_the_stagings_that_have_pops_and_the_toggle_stops_them() {
     let line = cue("meow meow meow meow", 0.2, 4.0);
-    // Sample several moments so at least one lands inside a pop's life.
-    let popped: usize = [1.02, 1.36, 1.69, 2.02]
-        .into_iter()
-        .map(|t| run(Staging::Rave, true, &settings, Some(&line), t).2.pops)
-        .sum();
-    assert!(popped > 0, "no pops on onsets");
-    let off = with(SceneId::PixelRave, control::POPS, 0.0);
-    let none: usize = [1.02, 1.36, 1.69, 2.02]
-        .into_iter()
-        .map(|t| run(Staging::Rave, true, &off, Some(&line), t).2.pops)
-        .sum();
-    assert_eq!(none, 0);
+    // Several moments, so at least one lands inside a pop's life.
+    let moments = [1.02, 1.36, 1.69, 2.02];
+    for staging in [
+        Staging::Rave,
+        Staging::Runner,
+        Staging::Quartet,
+        Staging::Chapel,
+    ] {
+        let scene = staging.scene();
+        let count = |settings: &SceneSettings| -> usize {
+            moments
+                .into_iter()
+                .map(|t| run(staging, true, settings, Some(&line), t).2.pops)
+                .sum()
+        };
+        assert!(
+            count(&SceneSettings::new()) > 0,
+            "{staging:?}: no pops on onsets"
+        );
+        assert_eq!(count(&with(scene, control::POPS, 0.0)), 0, "{staging:?}");
+    }
 }
 
 #[test]

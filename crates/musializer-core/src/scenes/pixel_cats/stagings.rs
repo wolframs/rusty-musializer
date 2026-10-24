@@ -276,6 +276,38 @@ fn cat(
     }
 }
 
+/// Small risers: one `text` per recent onset, rising from one of `anchors`
+/// (chosen by the onset's own hash) and drifting sideways as it goes, gone
+/// after `life` seconds. Notes over singers, a score over a runner. Returns
+/// how many drew.
+#[allow(clippy::too_many_arguments)]
+fn risers(
+    raster: &mut Raster,
+    report: &mut PixelReport,
+    moment: &Moment,
+    anchors: &[(i32, i32)],
+    text: &str,
+    color: Rgb,
+    life: f32,
+    rise: f32,
+) -> usize {
+    if !moment.pops || anchors.is_empty() {
+        return 0;
+    }
+    let mut drew = 0;
+    for event in moment.onsets.iter().filter(|event| event.age < life) {
+        let (ax, ay) = anchors[(event.key % anchors.len() as u64) as usize];
+        let t = event.age / life;
+        let x = ax + ((t * 6.0 + unit(event.key, 9) * 6.3).sin() * 3.0) as i32;
+        let y = ay - (t * rise) as i32;
+        let tint = color.mix(Rgb::hsv(unit(event.key, 6) * 360.0, 0.5, 1.0), 0.35);
+        report.glyphs += font::shadowed(raster, text, x, y, 1, 1, tint, Rgb::new(12, 8, 18));
+        drew += 1;
+    }
+    report.pops += drew;
+    drew
+}
+
 /// Twinkling stars over `0..height` rows, hashed from their index; each
 /// brightens and dims on its own phase.
 fn stars(raster: &mut Raster, moment: &Moment, count: usize, height: i32, color: Rgb, drift: f32) {

@@ -11,7 +11,7 @@ use super::super::font;
 use super::super::raster::{Raster, Rgb};
 use super::super::sprites::{self, Face, Look};
 use super::super::{mix, unit, Ask, Line, Moment, PixelReport};
-use super::{blinking, cat, say_centred};
+use super::{blinking, cat, risers, say_centred};
 
 const STONE: Rgb = Rgb::new(34, 36, 54);
 const MORTAR: Rgb = Rgb::new(24, 26, 40);
@@ -140,6 +140,21 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
             &look,
         );
     }
+    // A note drifts up from a monk on each onset, slowly: a hymn, not a rave.
+    let hoods: Vec<(i32, i32)> = (0..count)
+        .map(|k| ((20.0 + pitch * (k as f32 + 0.5)) as i32 - 2, monk_y - 4))
+        .collect();
+    let note = font::NOTE.to_string();
+    risers(
+        raster,
+        report,
+        moment,
+        &hoods,
+        &note,
+        Rgb::new(255, 224, 150),
+        1.4,
+        18.0,
+    );
     for k in 0..=count {
         let x = (20.0 + pitch * k as f32) as i32 - 1;
         let y = h - 14;

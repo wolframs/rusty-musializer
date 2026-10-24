@@ -128,7 +128,7 @@ def check_picker(base, vocabulary):
     groups = {}
     for scene in vocabulary['scenes']:
         groups.setdefault(scene['family'], []).append(scene['name'])
-    assert len(groups) == 6
+    assert len(groups) == 7
     # Click probes settle three frames, then press/hold/release. Leave a
     # following frame for the deferred command to redraw its new selection.
     for family, members in groups.items():
@@ -155,10 +155,15 @@ def check_picker(base, vocabulary):
         print(f'picker {family}: all {len(members)} tiles clicked at 960x640 / 240px sidebar', flush=True)
     # One real tab click proves family navigation reaches the same state as the
     # parked probe, without changing playback or silently selecting a scene.
-    # Materials is fourth in the two-row tab strip.
+    # Materials is fourth on the top row of the two-row tab strip, whose tabs
+    # are as wide as their labels plus three characters of padding
+    # (`scene_browser::tab_slot`): Sound, Geometry, Atmosphere, Materials.
     width, _, x, y = map(int, re.search(r'viewport=(\d+)x(\d+)@(\d+),(\d+)', report).groups())
-    cx = round(x+(width-8)/6)
-    cy = y-52+26+11
+    weights = [len(label)+3 for label in ('Sound', 'Geometry', 'Atmosphere', 'Materials')]
+    free = width-4*(len(weights)-1)
+    left = x+sum(weights[:3])/sum(weights)*free+3*4
+    cx = round(left+weights[3]/sum(weights)*free/2)
+    cy = y-52+11
     app(out, 'category-click', base/'pulse.wav', '--size', '960x640', '--hud=0',
         '--probe-frames', '12', '--probe-shot', out/'category-click.png',
         '--ui-probe', f'play=0,sidebar=240,click={cx}x{cy}')
