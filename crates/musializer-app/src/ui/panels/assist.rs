@@ -3146,7 +3146,7 @@ fn draw_lyrics_review(
     } else {
         format!("Lines to check ({})", review.policy)
     };
-    widgets::draw_text(d, font, &heading, x, y, REASON_FONT_SIZE, color::accent());
+    widgets::draw_text(d, font, &heading, x, y, REASON_FONT_SIZE, color::ui_ink());
 
     // The Reveal control takes the heading row's right edge, and the fix hint
     // gives way to it rather than sharing: the hint is a footnote and the button
@@ -3241,7 +3241,15 @@ fn draw_lyrics_review(
             x,
             row_y,
             REVIEW_FONT_SIZE,
-            color::ui_muted(),
+            // A clean run is a result, so it reads in the success tone. Until
+            // WX-5a the block's only colour was its heading in the accent; the
+            // heading is ink now, and the gate's saturation check for this
+            // state measures the sentence instead.
+            if review.is_clear() {
+                color::ui_success()
+            } else {
+                color::ui_muted()
+            },
         );
         return ReviewFrame {
             drawn: ReviewDraw {
@@ -3294,7 +3302,7 @@ fn draw_lyrics_review(
         if state.hovered {
             // Drawn behind the text, and the same fill a track row uses, so the
             // interface has one hover vocabulary rather than a private one here.
-            widgets::fill(d, row, color::track_button_hoverover());
+            widgets::fill(d, row, color::ui_hover());
         }
         let cue = document.and_then(|document| review_entry_cue(entry, document));
         widgets_state.hint(d, state, id, row, &review_row_hint(entry, cue));
@@ -3394,7 +3402,8 @@ fn draw_blocking_reason(
             rect.x,
             top + index as f32 * line_height,
             REASON_FONT_SIZE,
-            color::accent(),
+            // Why a control will not press is a caution, not "now" (WX-5a).
+            color::ui_warning(),
         );
     }
 }
@@ -3501,7 +3510,7 @@ impl Shell {
                 boundary.x + padding,
                 boundary.y + 6.0,
                 metric::UI_FONT_CAPTION,
-                color::accent(),
+                color::ui_ink(),
             );
             widgets::draw_text(
                 d,
@@ -3535,7 +3544,7 @@ impl Shell {
             boundary.x + padding,
             boundary.y + padding,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         // The **AI settings** entry point (tranche AP3). Drawn from the heading
         // row rather than from a workflow card, and drawn before the body
@@ -3593,7 +3602,7 @@ impl Shell {
                     15.0,
                     0.0,
                     if self.assist_settings.is_open() {
-                        color::on_accent()
+                        color::ui_ink()
                     } else {
                         color::ui_muted()
                     },
@@ -3830,7 +3839,9 @@ impl Shell {
             16.0,
             match tone {
                 AssistStatusTone::Ink => color::ui_ink(),
-                AssistStatusTone::Accent => color::accent(),
+                // Core still calls a running job's tone "accent"; since WX-5a
+                // the accent means *now* (the playhead), so it draws as ink.
+                AssistStatusTone::Accent => color::ui_ink(),
                 AssistStatusTone::Warning => color::ui_warning(),
                 AssistStatusTone::Danger => color::ui_danger(),
                 AssistStatusTone::Success => color::ui_success(),

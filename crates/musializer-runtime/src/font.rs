@@ -129,6 +129,10 @@ pub const IMPORTED_FACE_BYTE_LIMIT: u64 = 32 * 1024 * 1024;
 /// Space Grotesk Regular, SIL OFL 1.1. See `resources/fonts/SpaceGrotesk-OFL.txt`.
 const SPACE_GROTESK: &[u8] = include_bytes!("../../../resources/fonts/SpaceGrotesk-Regular.otf");
 
+/// The interface face's bytes, for the egui surfaces (the dock, the Editor),
+/// so they draw in the face the raylib chrome draws in (WX-5a).
+pub const INTERFACE_FACE: &[u8] = SPACE_GROTESK;
+
 /// Alegreya Regular, SIL OFL 1.1. See `resources/fonts/OFL.txt`.
 const ALEGREYA: &[u8] = include_bytes!("../../../resources/fonts/Alegreya-Regular.ttf");
 

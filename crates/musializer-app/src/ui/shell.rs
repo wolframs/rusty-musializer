@@ -1756,7 +1756,9 @@ impl Shell {
             frame.step_number.x,
             frame.step_number.y,
             84.0,
-            color::accent(),
+            // A large faint numeral, not the accent: on this screen the one
+            // thing that is "now" is the action it exists for (WX-5a).
+            color::ui_disabled(),
         );
 
         widgets::draw_text(
@@ -1787,8 +1789,9 @@ impl Shell {
             color::ui_muted(),
         );
 
-        // `Open audio` is drawn selected — accent fill, white label — which is how
-        // the C marks the one action the screen exists for (`plug.c:7790`). A
+        // `Open audio` is the primary action — the accent fill — which is how
+        // the C marks the one action the screen exists for (`plug.c:7790`); since
+        // WX-5a that is `ButtonStyle::Primary` rather than a selected state. A
         // recovery generation changes that priority: opening another session
         // before deciding its fate could eventually replace the only recovery
         // copy, so both entry points stay visibly unavailable until Recover or
@@ -1807,8 +1810,8 @@ impl Shell {
                     widgets::widget_id(widgets::id::WELCOME, 0),
                     frame.open_audio,
                     "Open audio",
-                    true,
-                    ButtonStyle::Neutral,
+                    false,
+                    ButtonStyle::Primary,
                     None,
                 )
                 .clicked
@@ -1841,8 +1844,8 @@ impl Shell {
                     widgets::widget_id(widgets::id::WELCOME, 2),
                     recovery.recover,
                     "Recover session",
-                    true,
-                    ButtonStyle::Neutral,
+                    false,
+                    ButtonStyle::Primary,
                     None,
                 )
                 .clicked
@@ -1913,7 +1916,7 @@ impl Shell {
                     column.x,
                     column.y,
                     28.0,
-                    color::accent(),
+                    color::ui_muted(),
                 );
                 widgets::draw_text(
                     d,
@@ -2117,11 +2120,11 @@ impl Shell {
             // misses.
             let state = self.widgets.button(d, open_id, open_area);
             if state.hovered && !missing {
-                widgets::fill(d, row, widgets::alpha(color::accent(), 0.10));
+                widgets::fill(d, row, color::ui_hover());
                 widgets::fill(
                     d,
                     UiRect::new(row.x - 6.0, row.y, 2.0, row.height),
-                    color::accent(),
+                    color::ui_selected_edge(),
                 );
             }
             // A missing file's row is *not* clickable, and that is the difference
@@ -2667,14 +2670,30 @@ impl Shell {
         // exact mistake `timeline_layout.h` was written to stop.
         let timecode_inline = band.timecode_inline && !band.timecode.is_empty();
         if timecode_inline {
+            // The position in ink and the length in muted grey (WX-5a, the
+            // mockup's `3:12.00 / 5:22.52`): the number that moves is the one
+            // to read. Split at the separator; tabular widths are a per-glyph
+            // sum, so the two halves land exactly where the whole string did.
+            let y = band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5;
+            let split = timecode.find(" / ").unwrap_or(timecode.len());
+            let (now, total) = timecode.split_at(split);
             widgets::draw_text_tabular(
                 d,
                 font,
-                &timecode,
+                now,
                 band.timecode.x,
-                band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5,
+                y,
                 metric::UI_FONT_VALUE,
                 color::ui_ink(),
+            );
+            widgets::draw_text_tabular(
+                d,
+                font,
+                total,
+                band.timecode.x + widgets::measure_tabular(font, now, metric::UI_FONT_VALUE),
+                y,
+                metric::UI_FONT_VALUE,
+                color::ui_muted(),
             );
         }
 
@@ -2744,7 +2763,7 @@ impl Shell {
             && input.duration_seconds.is_finite()
             && input.duration_seconds > 0.0;
 
-        widgets::fill(d, scrub.track, color::ui_rule());
+        widgets::fill(d, scrub.track, color::ui_control_edge());
 
         // The id lives in the fine-seek namespace rather than a new one: this bar
         // *is* a seek control, and slots 0-2 are the three buttons beside it.
@@ -2784,8 +2803,10 @@ impl Shell {
                 scrub.track.width * fraction,
                 scrub.track.height,
             ),
+            // The played part is a filled amount, so it is the level tone; the
+            // handle below is the playhead, so it is the accent (WX-5a).
             if seekable {
-                color::accent()
+                color::ui_level()
             } else {
                 color::ui_disabled()
             },
@@ -4390,6 +4411,9 @@ impl Shell {
 
         let columns = (strip.width.floor() as usize).clamp(1, 4096);
         let amplitude = (strip.height * 0.43).max(1.0);
+        // Where the playhead line is drawn, which follows a scrub before the
+        // decoder does, so the warm part ends exactly under it.
+        let playhead = self.timeline_playhead_seconds(input.time_seconds);
         let bins_per_second = bins.len() as f64 / duration;
         for column in 0..columns {
             let start = self.timeline.seconds_at(
@@ -4426,9 +4450,17 @@ impl Shell {
             }
             let x = strip.x + (column as f32 + 0.5) * strip.width / columns as f32;
             let peak = minimum.abs().max(maximum.abs()).min(1.0);
+            // Grey ahead of the playhead, warm behind it (WX-5a, the mockup's
+            // waveform). It used to be the accent, which made the largest
+            // coloured area on screen the one thing that is never "now".
+            let played = end <= playhead;
             let colour = widgets::alpha(
-                widgets::brightness(color::accent(), -0.18 + peak * 0.24),
-                0.38 + peak * 0.48,
+                if played {
+                    color::ui_level()
+                } else {
+                    color::ui_waveform()
+                },
+                0.62 + peak * 0.38,
             );
             d.draw_line_ex(
                 Vector2::new(x, centre - maximum * amplitude),
@@ -5623,7 +5655,7 @@ fn draw_splitter(
 ) {
     let selected = active == Some(kind);
     let tint = if selected {
-        color::accent()
+        color::ui_selected_edge()
     } else {
         color::ui_rule()
     };

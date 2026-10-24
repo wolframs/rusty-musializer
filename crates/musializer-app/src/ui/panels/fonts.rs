@@ -368,7 +368,7 @@ fn draw_search_field(
         widgets::rectangle(search),
         if browser.view.query_active { 2.0 } else { 1.0 },
         if browser.view.query_active {
-            color::accent()
+            color::ui_selected_edge()
         } else {
             color::ui_rule()
         },
@@ -453,16 +453,22 @@ fn draw_family_list(
         // The C tints a selected row with a bare `GetColor(0xE7ECFAFF)`
         // (`lyrics_editor_ui.c:779`) — a literal that is not in `ui_palette.h`
         // and is therefore invisible to the contrast suite that header exists
-        // for. The palette's accent is used instead, with the white label the
-        // rest of this shell pairs with it; that pair *is* contrast-checked.
-        let background = if selected {
-            color::accent()
-        } else if state.hovered {
-            color::track_button_hoverover()
+        // for. The palette's selected tint and outline are used instead
+        // (WX-5a; this was an accent slab with a white label before), and the
+        // sweep measures every chrome label on that tint.
+        if selected {
+            widgets::selected_fill(d, boundary);
         } else {
-            color::ui_raised()
-        };
-        widgets::fill(d, boundary, background);
+            widgets::fill(
+                d,
+                boundary,
+                if state.hovered {
+                    color::ui_hover()
+                } else {
+                    color::ui_raised()
+                },
+            );
+        }
         widgets::draw_text(
             d,
             font,
@@ -470,11 +476,7 @@ fn draw_family_list(
             boundary.x + 8.0,
             boundary.y + 4.0,
             15.0,
-            if selected {
-                color::on_accent()
-            } else {
-                color::ui_ink()
-            },
+            color::ui_ink(),
         );
         let note = format!(
             "{}  -  {}",
@@ -493,11 +495,7 @@ fn draw_family_list(
                 note_x,
                 boundary.y + 6.0,
                 12.0,
-                if selected {
-                    color::on_accent()
-                } else {
-                    color::ui_muted()
-                },
+                color::ui_muted(),
             );
         }
         if state.clicked {

@@ -1829,6 +1829,8 @@ fn run(
                 let framed = layout.preview.fit_aspect(preview_aspect);
                 report.preview_panel = (layout.preview.width, layout.preview.height);
                 report.preview_framed = (framed.width, framed.height);
+                let physical = ui_scale.physical_rect(layout.preview);
+                report.preview_pixels = (physical.x, physical.y, physical.width, physical.height);
                 let inset =
                     framed.width < layout.preview.width || framed.height < layout.preview.height;
                 if inset {
@@ -5762,6 +5764,9 @@ struct Report {
     /// Field's fixed grid looked like before EX2.
     preview_panel: (f32, f32),
     preview_framed: (f32, f32),
+    /// The scene panel in framebuffer pixels, so a capture check can tell the
+    /// chrome from the picture (WX-5a's accent census reads it).
+    preview_pixels: (f32, f32, f32, f32),
     reopened: Option<Reopen>,
 }
 
@@ -5805,6 +5810,7 @@ impl Default for Report {
             frames_over_budget: 0,
             peak_ring_fill: 0.0,
             preview_panel: (0.0, 0.0),
+            preview_pixels: (0.0, 0.0, 0.0, 0.0),
             preview_framed: (0.0, 0.0),
             reopened: None,
         }
@@ -5956,6 +5962,29 @@ impl Report {
                 "CPU"
             }
         );
+        // Which appearance the chrome drew in, with the roles a capture check
+        // classifies pixels by (WX-5a). Two appearances photograph as two
+        // different sets of numbers, and a check calibrated on one reading a
+        // capture of the other fails in ways that look like a layout bug; this
+        // line is what lets the gate say which it was given.
+        {
+            let theme = ui::theme::current();
+            let p = theme.palette();
+            println!(
+                "appearance:      {} accent=#{:06X} surface=#{:06X} raised=#{:06X} trough=#{:06X} rule=#{:06X} selected=#{:06X}/#{:06X}",
+                match theme {
+                    ui::theme::UiTheme::BlackAmber => "black-amber",
+                    ui::theme::UiTheme::LightBlue => "light-blue",
+                },
+                p.accent >> 8,
+                p.ui_surface >> 8,
+                p.ui_raised >> 8,
+                p.ui_lane_trough >> 8,
+                p.ui_rule >> 8,
+                p.ui_selected >> 8,
+                p.ui_selected_edge >> 8,
+            );
+        }
         println!(
             "ui layout:       scale={} sidebar={} inspector={} timeline={}",
             (fonts.ui().scale() * 100.0).round() as u16,
@@ -6273,9 +6302,11 @@ impl Report {
             } else {
                 "full"
             };
+            let (px, py, pw, ph) = self.preview_pixels;
             println!(
                 "preview frame:   panel {panel_width:.0}x{panel_height:.0}, \
-                 framed {framed_width:.0}x{framed_height:.0} ({framing})"
+                 framed {framed_width:.0}x{framed_height:.0} ({framing}) \
+                 pixels {px:.0},{py:.0},{pw:.0},{ph:.0}"
             );
         }
         // The export geometry a click on the SIZE row is supposed to move

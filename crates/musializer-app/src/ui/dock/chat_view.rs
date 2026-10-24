@@ -16,11 +16,12 @@
 //! `--append-system-prompt`, Codex's thread `developerInstructions`, and the
 //! first message for Antigravity, which takes neither.
 
-use egui::{Color32, Key, Modifiers, RichText, Stroke};
+use egui::{Key, Modifiers, RichText, Stroke};
 use musializer_core::agent::{Entry, Protocol, ToolState, Transcript};
 use musializer_runtime::agent_process::{AgentProcess, Launch, Output};
 
 use super::{Agent, DockContext};
+use crate::ui::theme::{self, color32};
 
 /// Whether this protocol's tool permissions can be asked for in a chat.
 const fn asks_permission(protocol: Protocol) -> bool {
@@ -284,10 +285,13 @@ impl ChatTab {
 
     pub fn show(&mut self, ui: &mut egui::Ui, context: &DockContext) -> ChatOutput {
         let mut output = ChatOutput::default();
+        // The palette's roles (WX-5a), not literals: these sit on the dock's
+        // surface, which is a different colour in each appearance.
         let weak = ui.visuals().weak_text_color();
-        let accent = ui.visuals().selection.stroke.color;
-        let danger = Color32::from_rgb(0xd0, 0x6f, 0x63);
-        let good = Color32::from_rgb(0x8f, 0xb8, 0x7c);
+        let ink = color32::ui_ink();
+        let waiting = color32::of(theme::palette().ui_warning);
+        let danger = color32::ui_danger();
+        let good = color32::ui_success();
 
         // Status line.
         ui.horizontal(|ui| {
@@ -296,9 +300,9 @@ impl ChatTab {
             } else if self.process.as_ref().is_some_and(AgentProcess::has_exited) {
                 RichText::new("stopped · sending starts it again").color(weak)
             } else if self.transcript.awaiting_permission() {
-                RichText::new("waiting for you").color(accent)
+                RichText::new("waiting for you").color(waiting)
             } else if self.transcript.busy {
-                RichText::new("working…").color(accent)
+                RichText::new("working…").color(ink)
             } else {
                 RichText::new("ready").color(good)
             };
@@ -390,7 +394,7 @@ impl ChatTab {
                             // Glyphs every bundled egui face has: a check
                             // mark is not among them and drew as a box.
                             let (glyph, colour) = match state {
-                                ToolState::Running => ("…", accent),
+                                ToolState::Running => ("…", ink),
                                 ToolState::Done => ("•", good),
                                 ToolState::Failed => ("×", danger),
                             };
@@ -428,7 +432,7 @@ impl ChatTab {
                             ..
                         } => {
                             egui::Frame::new()
-                                .stroke(Stroke::new(1.0, accent))
+                                .stroke(Stroke::new(1.0, waiting))
                                 .corner_radius(6.0)
                                 .inner_margin(8.0)
                                 .show(ui, |ui| {

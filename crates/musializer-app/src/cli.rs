@@ -888,7 +888,7 @@ where
             "--editor-ui" => cli.editor_ui = true,
             "--ui-theme" => match value_of(&argv, i).and_then(crate::ui::theme::UiTheme::parse) {
                 Some(theme) => cli.ui_theme = Some(theme),
-                None => cli.warn("--ui-theme wants light-blue or black-amber"),
+                None => cli.warn("--ui-theme wants dark or light (black-amber or light-blue)"),
             },
             "--ui-scale" => match value_of(&argv, i).and_then(UiScalePreference::parse) {
                 Some(scale) => cli.ui_scale = Some(scale),
@@ -1466,7 +1466,8 @@ Export:
 Diagnostics:
   --mute                  Start with the output volume at zero
   --editor-ui             Open the Tune / Lyrics editor
-  --ui-theme NAME         Appearance: light-blue or black-amber (this launch)
+  --ui-theme NAME         Appearance this launch: dark (the default) or light;
+                          black-amber and light-blue name the same two
   --ui-scale VALUE        Shell scale: auto, 100, 125, 150, 175, or 200
                           (Ctrl+- / Ctrl+0 / Ctrl++ also adjust it)
   --hud[=0|1]             Draw the diagnostic readout over the preview (also H)

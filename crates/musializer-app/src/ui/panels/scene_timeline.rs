@@ -146,10 +146,10 @@ fn scene_text_color(scene: SceneId, enabled: bool) -> Color {
         return color::ui_ink();
     }
     let fill = packed(scene_color(scene, 255));
-    if contrast::ratio(rgba::WHITE, fill) >= contrast::ratio(rgba::UI_INK, fill) {
+    if contrast::ratio(rgba::WHITE, fill) >= contrast::ratio(rgba::INK_ON_CONTENT, fill) {
         color::white()
     } else {
-        Color::get_color(rgba::UI_INK)
+        Color::get_color(rgba::INK_ON_CONTENT)
     }
 }
 
@@ -611,6 +611,10 @@ impl Shell {
         );
 
         let drag = self.scene_lane.drag;
+        // The section under the playhead wears the accent as an inset outline
+        // (WX-5a, the mockup's `.run.now`): it is the "current section" the
+        // accent exists to mark, read off the same playhead the lane draws.
+        let playhead = self.timeline_playhead_seconds(input.time_seconds);
         for (index, cue) in track.scene_switches.cues().iter().enumerate() {
             let mut start = cue.start_seconds;
             let mut end = cue.end_seconds;
@@ -658,6 +662,22 @@ impl Shell {
                 if selected { 2.0 } else { 1.0 },
                 text_color,
             );
+            let now = track.scene_switches.enabled
+                && cue.start_seconds <= playhead
+                && playhead < cue.end_seconds;
+            if now && rect.width > 4.0 {
+                let inset = if selected { 2.0 } else { 1.0 };
+                d.draw_rectangle_lines_ex(
+                    widgets::rectangle(UiRect::new(
+                        rect.x + inset,
+                        rect.y + inset,
+                        rect.width - inset * 2.0,
+                        rect.height - inset * 2.0,
+                    )),
+                    1.0,
+                    color::accent(),
+                );
+            }
             let label = scene.display_name();
             let label_width = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION);
             if label_width + 10.0 <= rect.width {
@@ -857,6 +877,7 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::palette;
 
     #[test]
     fn every_scene_label_clears_body_text_contrast_enabled_and_disabled() {
@@ -869,12 +890,18 @@ mod tests {
                 scene.display_name()
             );
 
-            let disabled = contrast::blend(fill, rgba::UI_RAISED, 92.0 / 255.0);
-            assert!(
-                contrast::ratio(rgba::UI_INK, disabled) >= contrast::AA_TEXT,
-                "{} disabled label",
-                scene.display_name()
-            );
+            // A disabled plan draws its blocks translucent over the lane, so
+            // the label is measured against that blend — in both appearances,
+            // because the lane is a different colour in each (WX-5a).
+            for palette in [&palette::DARK, &palette::LIGHT] {
+                let disabled = contrast::blend(fill, palette.ui_raised, 92.0 / 255.0);
+                assert!(
+                    contrast::ratio(palette.ui_ink, disabled) >= contrast::AA_TEXT,
+                    "{} disabled label on {:06X}",
+                    scene.display_name(),
+                    palette.ui_raised >> 8
+                );
+            }
         }
     }
 

@@ -47,13 +47,14 @@ pub fn window_position(input_min: f64, input_max: f64, live: f64) -> f32 {
     (((live - input_min) / span) as f32).clamp(0.0, 1.0)
 }
 
-/// The live-source meter bar: a rule-coloured track with an accent fill.
+/// The live-source meter bar: a groove with a level fill (WX-5a: a filled
+/// amount is the level tone, not the accent).
 pub fn meter(d: &mut RaylibDrawHandle<'_>, bar: UiRect, fill: f32) {
-    widgets::fill(d, bar, color::ui_rule());
+    widgets::fill(d, bar, color::ui_control_edge());
     widgets::fill(
         d,
         UiRect::new(bar.x, bar.y, bar.width * fill.clamp(0.0, 1.0), bar.height),
-        color::accent(),
+        color::ui_level(),
     );
 }
 
@@ -209,8 +210,8 @@ pub fn transfer_graph(
     let window_left = input_window.0.clamp(0.0, 1.0) as f32;
     let window_right = input_window.1.clamp(0.0, 1.0) as f32;
     if window_right > window_left {
-        let mut shade = color::accent();
-        shade.a = (0.12 * 255.0) as u8;
+        let mut shade = color::ui_level();
+        shade.a = (0.16 * 255.0) as u8;
         widgets::fill(
             d,
             UiRect::new(
@@ -237,7 +238,7 @@ pub fn transfer_graph(
             plot.y + plot.height * (1.0 - ((value - floor) / span) as f32),
         );
         if let Some(from) = previous {
-            d.draw_line_ex(from, point, 2.0, color::accent());
+            d.draw_line_ex(from, point, 2.0, color::ui_ink());
         }
         previous = Some(point);
     }
@@ -248,8 +249,10 @@ pub fn transfer_graph(
                 plot.x + plot.width * live.clamp(0.0, 1.0) as f32,
                 plot.y + plot.height * (1.0 - ((mapped - floor) / span) as f32),
             );
-            d.draw_circle_v(dot, 4.0, color::ui_ink());
-            d.draw_circle_v(dot, 2.5, color::accent());
+            // The live reading is the one thing on this plot that is *now*,
+            // so it keeps the accent; the curve it rides is ink.
+            d.draw_circle_v(dot, 4.0, color::ui_surface());
+            d.draw_circle_v(dot, 3.0, color::accent());
         }
     }
 }

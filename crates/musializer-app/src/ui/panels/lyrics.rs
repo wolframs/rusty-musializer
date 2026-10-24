@@ -507,9 +507,6 @@ const fn lyric_clipboard_keys_allowed(
     !style_pane && !font_pane && !text_focused
 }
 
-/// The pale wash behind a selected row (`GetColor(0xE7ECFAFF)`, `:1238`).
-const SELECTED_ROW: u32 = 0xE7EC_FAFF;
-
 /// One change the editor wants made to the model.
 ///
 /// Applied by `main.rs` through [`Self::apply`], which is why the variants carry
@@ -3455,7 +3452,7 @@ impl Shell {
             list.x,
             list.y,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         let count = format!("{} / {}", track.lyrics.len(), lyrics::CUE_CAPACITY);
         let count_width = widgets::measure(font, &count, metric::UI_FONT_VALUE);
@@ -3540,15 +3537,23 @@ impl Shell {
             let state = self.widgets.button(d, id, boundary);
             let selected = cue.id == editor.selected_id;
             let current = cue.start_seconds <= playhead && playhead < cue.end_seconds;
-            let background = if state.hovered {
-                color::track_button_hoverover()
-            } else if selected {
-                Color::get_color(SELECTED_ROW)
+            // The C washes a selected row in a bare `GetColor(0xE7ECFAFF)`
+            // (`:1238`); since WX-5a it is the palette's selected tint and
+            // outline, which a dark appearance can read and the sweep measures.
+            if selected {
+                widgets::selected_fill(d, boundary);
             } else {
-                color::ui_raised()
-            };
-            widgets::fill(d, boundary, background);
-            d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
+                widgets::fill(
+                    d,
+                    boundary,
+                    if state.hovered {
+                        color::ui_hover()
+                    } else {
+                        color::ui_raised()
+                    },
+                );
+                d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
+            }
             if current {
                 widgets::fill(
                     d,
@@ -3634,7 +3639,7 @@ impl Shell {
                     3.0,
                     thumb,
                 ),
-                color::accent(),
+                color::ui_muted(),
             );
         }
 
@@ -3722,7 +3727,7 @@ impl Shell {
                 header_x,
                 form.y,
                 metric::UI_FONT_HEADER,
-                color::accent(),
+                color::ui_ink(),
             );
         }
 
@@ -4056,7 +4061,7 @@ impl Shell {
             .then(|| shadow_notice(&track.lyrics, editor.selected_id))
             .flatten();
         let (line, tint) = match (tap_status.as_deref(), notice.as_deref()) {
-            (Some(status), _) => (status, color::accent()),
+            (Some(status), _) => (status, color::ui_ink()),
             (None, Some(warning)) => (warning, color::ui_warning()),
             (None, None) => (
                 "Ctrl+Enter taps  |  Ctrl+Z undoes  |  Ctrl+B splits  |  Ctrl+J merges  |  Del removes",
@@ -4249,7 +4254,7 @@ impl Shell {
         if !editing {
             let state = self.widgets.button(d, id, boundary);
             if state.hovered {
-                widgets::fill(d, boundary, color::track_button_hoverover());
+                widgets::fill(d, boundary, color::ui_hover());
             }
             widgets::draw_text(
                 d,
@@ -4384,7 +4389,7 @@ impl Shell {
             toggle.x + toggle.width + 8.0,
             list.y,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         // The Style/Effects flip, hidden while the browser is up because the
         // browser's Back already means "return to where you were".
@@ -4812,7 +4817,7 @@ impl Shell {
                 d,
                 rect,
                 if anchor_index == value {
-                    color::accent()
+                    color::ui_selected_edge()
                 } else {
                     color::ui_raised()
                 },
@@ -4919,7 +4924,7 @@ impl Shell {
             picker.heading.x,
             picker.heading.y,
             12.0,
-            color::accent(),
+            color::ui_ink(),
         );
         if self
             .widgets
@@ -5702,7 +5707,7 @@ impl Shell {
                 widgets::rectangle(box_rect),
                 if selected { 2.0 } else { 1.0 },
                 if selected {
-                    color::accent()
+                    color::ui_ink()
                 } else {
                     color::ui_rule()
                 },
@@ -6451,12 +6456,12 @@ fn caption_slider(
         Vector2::new(left, track_rect.y + radius),
         Vector2::new(handle_x, track_rect.y + radius),
         2.0,
-        color::accent(),
+        color::ui_level(),
     );
     d.draw_circle_v(
         Vector2::new(handle_x, track_rect.y + radius),
         radius * 0.62,
-        color::accent(),
+        color::ui_ink(),
     );
 
     let mouse = ui_scale.mouse(d);
