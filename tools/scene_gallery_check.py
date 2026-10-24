@@ -52,8 +52,22 @@ def image(path):
     return data[:, :, :3].astype(float)
 
 
-def compare(out, a, b, floor):
-    mse = np.mean((image(out/a)-image(out/b))**2)
+def compare(out, a, b, floor, luma=False):
+    """PSNR between two captures, refused at or below `floor`.
+
+    `luma=True` compares BT.709 luma only. That is the right measure when one
+    side is a decoded video frame: the encoder stores colour at half
+    resolution (4:2:0), so a scene whose look *is* saturated fine colour
+    bands (Iridescent Pool's thin film) loses decibels in chroma that say
+    nothing about whether the same picture was drawn. Measured 2026-10-24:
+    the pool's still against its own video frame was 31-32 dB in RGB and
+    39.7 dB in luma; a replay that drew a different moment moves luma too.
+    """
+    x, y = image(out/a), image(out/b)
+    if luma:
+        weights = np.array([0.2126, 0.7152, 0.0722])
+        x, y = x @ weights, y @ weights
+    mse = np.mean((x-y)**2)
     psnr = 10*math.log10(255**2/mse) if mse else math.inf
     assert psnr > floor, f'{out.name}: {a}/{b} replay changed ({psnr:.2f} dB)'
     return round(psnr, 3) if math.isfinite(psnr) else 'identical'
@@ -98,8 +112,8 @@ def check_scene(base, name, encoder, negative):
     frame(out/'clip.mp4', out/'clip.png', 0)
     result = dict(response_mad=round(mad, 3), motion_mad=round(motion, 3),
                   project=compare(out, 'music.png', 'reopen.png', 60),
-                  still_video_db=compare(out, 'music.png', 'video.png', 33),
-                  full_clip_db=compare(out, 'video.png', 'clip.png', 33))
+                  still_video_db=compare(out, 'music.png', 'video.png', 33, luma=True),
+                  full_clip_db=compare(out, 'video.png', 'clip.png', 33, luma=True))
     print(name, json.dumps(result), flush=True)
     return result
 
