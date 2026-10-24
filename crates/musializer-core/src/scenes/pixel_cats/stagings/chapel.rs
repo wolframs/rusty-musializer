@@ -39,20 +39,31 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
         raster.rect(cx - 8, 0, 2, h, Rgb::new(70, 70, 92));
     }
 
-    // The rose window.
-    let radius = if portrait {
+    // Layout, bottom up when it has to be: the monks keep the floor, the
+    // staff sits on them, and a line long enough to need a second stave takes
+    // its room from the window rather than pushing the monks off the screen.
+    let staves = moment
+        .line
+        .as_ref()
+        .map_or(1, |line| stave_words(line, w).len().min(3) as i32);
+    let monk_y = h - 58;
+    let mut radius = if portrait {
         w as f32 * 0.30
     } else {
         h as f32 * 0.20
     };
-    let (wcx, wcy) = (
-        w as f32 * 0.5,
-        if portrait {
-            h as f32 * 0.17
-        } else {
-            h as f32 * 0.27
-        },
-    );
+    let mut wcy = if portrait {
+        h as f32 * 0.17
+    } else {
+        h as f32 * 0.27
+    };
+    let mut banner_top = (wcy + radius * 1.12 + 4.0) as i32;
+    if banner_top + staves * 34 > monk_y - 2 {
+        banner_top = monk_y - 2 - staves * 34;
+        radius = radius.min(((banner_top - 8) as f32 / 2.24).max(10.0));
+        wcy = banner_top as f32 - 4.0 - radius * 1.12;
+    }
+    let wcx = w as f32 * 0.5;
     let bright = 0.62 + 0.5 * moment.vocal;
     let hue0 = moment.clock * 12.0;
     let turn = moment.clock * 0.15;
@@ -95,7 +106,6 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
     }
 
     // The chant staff.
-    let banner_top = (wcy + radius * 1.12 + 4.0) as i32;
     let staves = match &moment.line {
         Some(line) => staff(raster, report, moment, line, banner_top),
         None => {
@@ -103,12 +113,10 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
             1
         }
     };
-    let below = banner_top + staves * 34;
 
     // Monks and candles.
     let count = ((w - 40) / 38).clamp(3, 9);
     let pitch = (w - 40) as f32 / count as f32;
-    let monk_y = (h - 58).max(below + 2);
     let eyes = Rgb::new(255, 230, 120).scale((0.4 + 0.9 * moment.vocal).clamp(0.25, 1.4));
     for k in 0..count {
         let x = (20.0 + pitch * (k as f32 + 0.5)) as i32 - 16;
@@ -207,6 +215,26 @@ fn rose(raster: &mut Raster, cx: f32, cy: f32, radius: f32, hue0: f32, bright: f
     }
 }
 
+/// The line's words on staves: greedy, each word at least as wide as its
+/// neume pair.
+fn stave_words(line: &Line, width: i32) -> Vec<Vec<usize>> {
+    let inner = width - 44 - 16;
+    let mut staves: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut used = 0;
+    for index in 0..line.words.len() {
+        let width = font::width(line.word(index), 1).max(10) + 8;
+        if used + width > inner && !staves.last().is_some_and(Vec::is_empty) {
+            staves.push(Vec::new());
+            used = 0;
+        }
+        if let Some(stave) = staves.last_mut() {
+            stave.push(index);
+        }
+        used += width;
+    }
+    staves
+}
+
 fn blank_staff(raster: &mut Raster, x: i32, y: i32, width: i32, staves: i32) {
     raster.rect(x, y, width, 32 * staves + 2 * (staves - 1), PARCHMENT);
     raster.rect(x, y, width, 1, Rgb::new(150, 120, 70));
@@ -234,20 +262,7 @@ fn staff(
 ) -> i32 {
     let w = moment.width;
     let inner = w - 44 - 16;
-    // Words to staves: greedy, each word at least as wide as its neume pair.
-    let mut staves: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut used = 0;
-    for index in 0..line.words.len() {
-        let width = font::width(line.word(index), 1).max(10) + 8;
-        if used + width > inner && !staves.last().is_some_and(Vec::is_empty) {
-            staves.push(Vec::new());
-            used = 0;
-        }
-        if let Some(stave) = staves.last_mut() {
-            stave.push(index);
-        }
-        used += width;
-    }
+    let staves = stave_words(line, w);
     let count = staves.len().min(3) as i32;
     blank_staff(raster, 22, top, w - 44, count);
     for (s, words) in staves.iter().take(3).enumerate() {

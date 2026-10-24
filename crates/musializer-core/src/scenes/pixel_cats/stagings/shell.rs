@@ -176,6 +176,48 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
                 (wx + jolt, wy, ww, wh),
             );
         }
+        _ if moment
+            .history
+            .last()
+            .is_some_and(|sung| sung.tag.as_deref() == Some("LOGOUT")) =>
+        {
+            // Logged out: a login prompt nobody answers, and the ASCII cat
+            // asleep in the middle of the screen.
+            let end = say(raster, report, "LOGIN: ", content_x, y, 1, 1, GREEN);
+            if cursor_lit(moment, false) {
+                raster.rect(content_x + end + 1, y, 5, 7, GREEN);
+            }
+            let scale = if content_w >= font::width("/\\_/\\", 3) + 20 {
+                3
+            } else {
+                2
+            };
+            let middle = (y + font::LINE + bottom) / 2 - font::LINE * scale;
+            let centre = content_x + content_w / 2;
+            say_centred(
+                raster,
+                report,
+                sprites::ASCII_CAT[0],
+                centre,
+                middle,
+                scale,
+                scale,
+                GREEN,
+                None,
+            );
+            say_centred(
+                raster,
+                report,
+                sprites::ASCII_ASLEEP,
+                centre,
+                middle + (font::LINE - 1) * scale,
+                scale,
+                scale,
+                GREEN,
+                None,
+            );
+            report.cats += 1;
+        }
         _ if moment.quiet < 2.5 && !moment.history.is_empty() => {
             // Between two lines: the prompt waits for the next one.
             let end = say(raster, report, "CAT@CATOS:~$ ", content_x, y, 1, 1, GREEN);

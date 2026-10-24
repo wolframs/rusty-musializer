@@ -60,7 +60,8 @@ pub(super) fn draw(raster: &mut Raster, moment: &Moment, report: &mut PixelRepor
         let word = line.sung_word();
         if !word.is_empty() && line.typed > 0 {
             let (scale, _) = font::fit(word, w * 9 / 10, (h as f32 * 0.2) as i32, 1, 6);
-            let landing = line.sung_since < 0.1;
+            // A word lands one size up, unless that size would leave the frame.
+            let landing = line.sung_since < 0.1 && font::width(word, scale + 1) <= w - 4;
             let s = if landing { scale + 1 } else { scale };
             say_centred(
                 raster,
