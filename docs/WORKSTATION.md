@@ -152,6 +152,17 @@ brief: what to build, where it touches, and how a session knows it is done.
 They are independent unless a line says otherwise. Every one finishes with
 `tools/verify.sh` green and `cargo build --release`.
 
+0. **First thing, before any WX-5 work** (operator, 2026-10-24: "first thing
+   next session before the redesign"). Two small fixes left over from the
+   scene upgrades:
+   - A treatment value exactly at a bound is refused: `scale` 0.3 reports
+     "0.3 is outside 0.3..3". This looks like float precision in the
+     treatment's bounds check (`core::treatment`). Fix it with a test at
+     both ends of a few descriptors.
+   - Aurora Veil's curtains still read bar-like at full intensity: their
+     tops break into vertical blocks (`resources/shaders/glsl330/aurora_veil.fs`).
+     Soften them into folds without losing the ray structure. Judge from a
+     contact sheet of a loud passage.
 1. **WX-5a: tokens and type.** One accent that means *now* (the playhead,
    the current section, the primary action), quiet selected states
    (outline plus tint, not a solid amber slab), one type scale, and the
@@ -174,6 +185,12 @@ They are independent unless a line says otherwise. Every one finishes with
    `differential_layout.sh` harness are the contract. Update the harness on
    purpose, with a recorded reason, as `AGENTS.md` requires. Do this after
    5a, so the flyouts are drawn in the new tokens.
+   The redesign also owns two picker decisions from the Pixel Cats merge
+   (operator, 2026-10-24: "we'll fix it in the UI redesign"). Pixel Cats
+   stopped at six stagings, because six is what a family shows without
+   scrolling at the minimum picker size; the progress bar, pause menu,
+   handheld and music box are unbuilt. And the family tabs became two rows
+   of label-width tabs so a seventh family fits.
 4. **WX-4 follow-ups**, small and independent:
    - inline images in a chat (a contact sheet or still the agent wrote);
    - a model picker per chat;
