@@ -256,6 +256,12 @@ short names **and six long aliases**:
 | `tunnel`, `neon-tunnel` | Neon Tunnel (post-legacy, id 19) |
 | `voronoi`, `voronoi-bloom` | Voronoi Bloom (post-legacy, id 20) |
 | `iridescent`, `iridescent-pool` | Iridescent Pool (post-legacy, id 21) |
+| `pixel-boot` | Boot Screen (post-legacy, id 22) |
+| `pixel-shell` | Root Shell (post-legacy, id 23) |
+| `pixel-run`, `pixel-runner`, `pixel-scroller` | Side Scroller (post-legacy, id 24) |
+| `pixel-quartet` | Barbershop (post-legacy, id 25) |
+| `pixel-chapel` | Rose Window (post-legacy, id 26) |
+| `pixel-rave` | Gabber Tunnel (post-legacy, id 27) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -509,6 +515,13 @@ The native gallery appends ids 16–21 on 2026-10-23: Liquid Chrome, Aurora Veil
 Metaball Garden, Neon Tunnel, Voronoi Bloom and Iridescent Pool, each with eight
 controls. Families are UI navigation only; they do not reorder ids. See
 [`SCENE_GALLERY.md`](SCENE_GALLERY.md).
+
+Pixel Cats appends ids 22–27 on 2026-10-24: Boot Screen (`pixel-boot`), Root
+Shell (`pixel-shell`), Side Scroller (`pixel-run`), Barbershop
+(`pixel-quartet`), Rose Window (`pixel-chapel`) and Gabber Tunnel
+(`pixel-rave`). Each has the same ten controls under its own token; they share
+one implementation and the *Pixel cats* family. See
+[`PIXEL_CATS.md`](PIXEL_CATS.md).
 
 Two behaviours of the registry that are still contract, whatever the count is:
 
@@ -780,7 +793,7 @@ Post-legacy, 2026-10-21, id 14 (MV9-d).
 | 1 | `settings.threshold.open` | Door open | 0.00 | 1.00 | 0.00 | 2 | slider |
 | 2 | `settings.threshold.light` | Light | 0.00 | 2.00 | 1.00 | 2 | slider |
 | 3 | `settings.threshold.haze` | Doorway haze | 0.00 | 1.00 | 0.60 | 2 | slider |
-| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 22 | 0 | 0 | slider |
+| 4 | `settings.threshold.beyond` | Beyond (0 = haze) | 0 | 28 | 0 | 0 | slider |
 | 5 | `settings.threshold.presences` | Presences | 0 | 2 | 0 | 0 | slider |
 | 6 | `settings.threshold.motes` | Motes | 0.00 | 2.00 | 1.00 | 2 | slider |
 | 7 | `settings.threshold.mist` | Mist | 0.00 | 2.00 | 1.00 | 2 | slider |
@@ -789,8 +802,9 @@ Post-legacy, 2026-10-21, id 14 (MV9-d).
 | 10 | `settings.threshold.reflection` | Floor reflection | 0.00 | 1.00 | 0.60 | 2 | slider |
 
 `beyond` is a scene index plus one (0 is the doorway's own fog; the threshold
-never nests itself). Its maximum is now 22, selecting Iridescent Pool; 15 refuses
-Threshold itself. This is a deliberate re-pin of `settings_post_legacy.txt`.
+never nests itself). Its maximum is now 28, selecting Gabber Tunnel; 15 refuses
+Threshold itself. This is a deliberate re-pin of `settings_post_legacy.txt`
+(22 when the gallery landed, 28 since Pixel Cats).
 
 ### `fluid` — Fluid Ink (8 controls, no C counterpart)
 
@@ -896,6 +910,30 @@ Post-legacy, 2026-10-23, id 21. All sliders; indices are persisted.
 | 5 | `settings.iridescent.shimmer` | Shimmer | 0 | 2 | 1 | 2 | slider |
 | 6 | `settings.iridescent.light` | Grazing light | 0 | 2 | 1 | 2 | slider |
 | 7 | `settings.iridescent.spread` | Ripple spread | 0.3 | 2 | 1 | 2 | slider |
+
+### `pixel-*` — the six Pixel Cats scenes (10 controls each, no C counterpart)
+
+Post-legacy, 2026-10-24, ids 22–27. One shape stamped per scene: the keys are
+`settings.<token>.<name>` for each of `pixel-boot`, `pixel-shell`, `pixel-run`,
+`pixel-quartet`, `pixel-chapel` and `pixel-rave`, and only `palette`'s default
+differs (0 for `pixel-boot`, 1 for the rest). Indices are persisted; a control
+added later is appended to all six at once.
+
+| # | Name | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `palette` | Palette | 0 | 5 | 1 (boot 0) | 0 | slider |
+| 1 | `hue` | Hue (deg) | -180 | 180 | 0 | 0 | slider |
+| 2 | `crt` | CRT | 0 | 1 | 0.6 | 2 | slider |
+| 3 | `response` | Music response | 0 | 2 | 1 | 2 | slider |
+| 4 | `shake` | Hit shake | 0 | 2 | 1 | 2 | slider |
+| 5 | `pace` | Typing pace | 0.5 | 3 | 1 | 2 | slider |
+| 6 | `pops` | Onset pops | 0 | 1 | 1 | 0 | toggle |
+| 7 | `glitch` | Glitch | 0 | 1 | 0.5 | 2 | slider |
+| 8 | `pixels` | Pixel rows | 120 | 320 | 180 | 0 | slider |
+| 9 | `motion` | Motion | 0 | 2 | 1 | 2 | slider |
+
+`palette` is a persisted index: 0 handheld, 1 colour, 2 pocket, 3 arcade,
+4 virtual, 5 dusk. Append, never reorder.
 
 ### `knot` — OpenAI Knot (11 controls, no C counterpart)
 

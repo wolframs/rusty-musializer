@@ -56,6 +56,33 @@ so every new scene can also live in its doorway; 15 still refuses Threshold
 self-nesting. Both post-legacy expectation files pin the added controls and
 mapping rows. The project and treatment document structures are unchanged.
 
+## Pixel cats, 2026-10-24
+
+A seventh family: six pixel-art stagings of the lyric line, ids 22–27, one
+implementation and one settings shape. See [PIXEL_CATS.md](PIXEL_CATS.md).
+
+| Scene | Token / id | Look |
+| --- | --- | --- |
+| Boot Screen | `pixel-boot` / 22 | A handheld boot screen; the line drops in as its logo |
+| Root Shell | `pixel-shell` / 23 | A lyric editor whose music-written tags restyle each line |
+| Side Scroller | `pixel-run` / 24 | A cat running over keycaps that spell the line |
+| Barbershop | `pixel-quartet` / 25 | A quartet of cats on a curtained stage, the line on a marquee |
+| Rose Window | `pixel-chapel` / 26 | Monk cats under stained glass, the line on a chant staff |
+| Gabber Tunnel | `pixel-rave` / 27 | A giant cat face in a rushing tunnel, the sung word slammed in |
+
+A seventh family needed a seventh tab without costing tile height. The tabs
+stay in two rows, four over three, and each tab is as wide as its label plus a
+fixed allowance (`scene_browser::tab_slot`). The shell fits one font size over
+those widths, so the longest label in a row is no longer the one squeezed. The
+tab strip keeps its height, so every family's tiles keep the viewport they had.
+Six scenes is also the most a family can show without scrolling at the 215 px
+panel minimum, and that set the count. `scene_gallery_check.py` now expects
+seven families. It finds Materials by computing where the label-sized tabs put
+it, and it clicks all six Pixel cats tiles at the minimum.
+
+Threshold's `beyond` maximum grows again, from 22 to 28, so the doorway can
+show a pixel scene. Both post-legacy expectation files gain only the new rows.
+
 ## Verification
 
 Run `tools/scene_gallery_check.py`. It uses a synthetic sustained multiband phrase

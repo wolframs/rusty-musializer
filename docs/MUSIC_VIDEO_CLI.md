@@ -243,6 +243,41 @@ so a still from the back half of a cue always shows the whole line. With no
 line on screen `stage` draws only its ground; return to a reactive scene for an
 instrumental stretch longer than a couple of seconds.
 
+### Staging a line in pixels: the `pixel-*` scenes
+
+Six scenes draw the line as a pixel-art gag at about 180 rows, scaled up behind
+a CRT grid. They are one family, *Pixel cats*, and one implementation, so the
+same ten settings work in each ([`PIXEL_CATS.md`](PIXEL_CATS.md)):
+
+| Scene | Staging | Reach for it when the line… |
+| --- | --- | --- |
+| `pixel-boot` | the line drops in as a handheld's boot logo; ASCII cat, `PRESS START` | opens the video, is a title, is shouted (`SUDO MEOW`) |
+| `pixel-shell` | typed into a lyric editor; the music tags each line and the tag restyles it | talks about typing, code, commands; `sudo` gets `ACCESS GRANTED`, `logout` puts the cat to sleep |
+| `pixel-run` | a cat runs over keycaps that spell the line, jumping on the hats | travels, counts, runs on (`one paw at a time`) |
+| `pixel-quartet` | a barbershop quartet of cats on a stage, the line on the marquee | is sung in harmony, a verse that tells a story |
+| `pixel-chapel` | monk cats under a rose window, the line on a chant staff | is a choir, a chant, a prayer, anything slow |
+| `pixel-rave` | a giant cat face in a gabber tunnel, the sung word slammed in | is a drop, a hook repeated, a chorus of meows |
+
+```json
+{ "at": 68.0, "scene": "pixel-shell", "settings": { "palette": 0 }, "transition": { "kind": "glitch", "seconds": 0.15 } },
+{ "at": 109.8, "scene": "pixel-rave", "settings": { "hue": 30, "palette": 5 } }
+```
+
+`palette` maps the finished frame (0 handheld green, 1 colour, 2 pocket grey,
+3 arcade, 4 virtual red, 5 dusk) and `hue` turns it: give neighbouring sections
+of one scene different ones and the repeat reads as a progression. `pixels`
+sets the chunkiness, `crt` the screen (with it on, the set powers off in the
+track's last 0.7 s), `response` 0 keeps the picture on its own clock, `shake`
+scales the kick hits.
+
+In `pixel-shell` a lyric line can name its own stage direction by starting
+with it: `"[BELTED] I typed belted and you BELTED"` is set large and red,
+`[WHISPERED]` fades, `[FALSETTO]` stretches tall, and any other tag is printed
+as written. Without one the music picks it as the line starts. Like `stage`,
+these scenes draw the line themselves and the caption overlay is not drawn over
+them. Cut one section per line, or per phrase, and give each the staging its
+words ask for.
+
 ### `transition` and `outro`
 
 A section's `transition` is how that section **arrives**. It is a kind's name,

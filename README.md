@@ -31,6 +31,9 @@ characters of Phosphor Dream, the landscapes of Song Atlas, or Cadence's animate
 letterforms. [Fluid Ink](docs/FLUID_INK.md) stirs luminous dye into curling plumes
 with the music. The [scene gallery](docs/SCENE_GALLERY.md) adds reflective chrome,
 northern lights, merging blobs, a neon tunnel, stained glass and iridescent water.
+[Pixel cats](docs/PIXEL_CATS.md) stages each line as a pixel-art gag behind a CRT:
+a boot screen, a lyric editor, a side-scroller, a barbershop quartet, monks under
+a rose window and a gabber tunnel.
 Family tabs keep the picker compact, with room to read the scene names. Each
 scene has its own controls and responds to your track.
 

@@ -66,6 +66,16 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**Pixel Cats — built, ready for operator review (2026-10-24).** Six pixel-art
+stagings of the lyric line as one scene family (`pixel-boot`, `pixel-shell`,
+`pixel-run`, `pixel-quartet`, `pixel-chapel`, `pixel-rave`, ids 22–27), after
+the model-made video for the meow track. Each draws its line, reacts to the
+music and is byte-identical without it at `response` 0. The scene check and its
+negative control pass, as do the picker clicks for all seven families and a
+treatment of the meow track and of one other song (`build/pixel-scene/`). Open:
+the operator's look at it, and the stagings the picker had no room for (progress
+bar, pause menu, handheld, music box). See [`docs/PIXEL_CATS.md`](docs/PIXEL_CATS.md).
+
 **Scene families and native gallery — built, ready for operator review (2026-10-23).**
 Six compact family tabs keep 22 scenes reachable with readable tiles in the same
 sidebar. Liquid Chrome, Aurora Veil, Metaball Garden, Neon Tunnel, Voronoi Bloom

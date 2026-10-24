@@ -53,6 +53,10 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 - [`FLUID_INK.md`](FLUID_INK.md) — music-stirred ink, directing controls,
   persistent simulation and visible verification.
 
+- [`PIXEL_CATS.md`](PIXEL_CATS.md) — six pixel-art stagings of the lyric line as
+  one scene family: the gags, the shared settings, the CPU canvas and its
+  evidence.
+
 - [`LYRICS_GROUPING_REVIEW.md`](LYRICS_GROUPING_REVIEW.md) — two pending lyric
   phrase judgments, browser audition, portable protocol bundle and resume state.
 - [`LYRICS_ASSIST_REPAIR_2026-09-06.md`](LYRICS_ASSIST_REPAIR_2026-09-06.md) —
