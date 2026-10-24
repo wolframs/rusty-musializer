@@ -965,7 +965,8 @@ fn draw_line(
     report: &mut FieldReport,
 ) {
     let lattice = field.lattice;
-    let (box_w, box_h) = (lattice.frame[0] * 0.86, 0.58f32.min(lattice.frame[1] * 0.7));
+    // Landscape sets a wide block; portrait uses its height for more rows.
+    let (box_w, box_h) = (lattice.frame[0] * 0.86, (lattice.frame[1] * 0.58).min(1.05));
     let (set, scale) = strokes::set_line(&line.text, box_w / box_h);
     if set.strokes.is_empty() {
         return;
@@ -1019,9 +1020,9 @@ fn draw_line(
         }
         waves.push(Wave {
             front,
-            width: 1.6,
-            tail: 3.5,
-            strength: pulse.strength * 0.9,
+            width: 1.4,
+            tail: 2.0,
+            strength: pulse.strength * 0.6,
             graph: false,
         });
     }

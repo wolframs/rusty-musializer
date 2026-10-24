@@ -137,6 +137,9 @@ pub struct GlyphLatticeState {
     line: Option<LineMemory>,
     line_live: bool,
     presence: f32,
+    /// Whether an update has run yet: the opening assembly is decided by the
+    /// first one.
+    started: bool,
 }
 
 fn mix64(seed: u64) -> u64 {
@@ -182,7 +185,9 @@ impl GlyphLatticeState {
             head: 0,
             written: 0,
             form: cycle[0],
-            form_since: 0.0,
+            // Assembled already: a scene picked while paused shows its solid.
+            // Playback from the top of the track builds it (`update`).
+            form_since: -ASSEMBLE_SECONDS - 1.0,
             previous: None,
             previous_since: -FADE_SECONDS,
             cycle,
@@ -191,6 +196,7 @@ impl GlyphLatticeState {
             line: None,
             line_live: false,
             presence: 0.0,
+            started: false,
         }
     }
 
@@ -393,6 +399,14 @@ impl SceneState for GlyphLatticeState {
         }
         let dt = frame.delta_seconds.min(0.25);
         let id = self.id();
+        if !self.started {
+            self.started = true;
+            // From the top of the track the first solid assembles as the
+            // video opens; entered mid-track it is simply there.
+            if frame.time_seconds < 0.5 {
+                self.form_since = self.clock;
+            }
+        }
         let response = frame.setting(id, control::RESPONSE).clamp(0.0, 2.0);
         let spin = frame.setting(id, control::SPIN).max(0.0);
         let words = frame.setting(id, control::WORDS) > 0.5;

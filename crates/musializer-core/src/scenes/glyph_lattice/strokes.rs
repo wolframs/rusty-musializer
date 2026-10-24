@@ -190,7 +190,7 @@ fn wrap(words: &[Vec<char>], limit: f32) -> Vec<Vec<usize>> {
     rows
 }
 
-/// Sets `text` into at most four rows inside a box `aspect` times as wide as
+/// Sets `text` into at most six rows inside a box `aspect` times as wide as
 /// it is tall, choosing the row count that lets the letters be largest.
 /// Returns the layout and the grid-to-box scale (box height 1).
 #[must_use]
@@ -208,10 +208,10 @@ pub fn set_line(text: &str, aspect: f32) -> (SetLine, f32) {
         + SPACE * (words.len().saturating_sub(1)) as f32;
     let widest = words.iter().map(|w| word_width(w)).fold(0.0f32, f32::max);
     let mut best: Option<(f32, Vec<Vec<usize>>)> = None;
-    for count in 1..=4usize {
+    for count in 1..=6usize {
         let limit = (total / count as f32).max(widest) + 0.01;
         let rows = wrap(&words, limit);
-        if rows.len() > 4 {
+        if rows.len() > 6 {
             continue;
         }
         let width = rows

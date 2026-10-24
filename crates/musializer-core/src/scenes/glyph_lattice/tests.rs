@@ -374,3 +374,28 @@ fn every_solid_draws_and_portrait_composes() {
         }
     }
 }
+
+#[test]
+fn a_fresh_scene_shows_its_solid_and_the_top_of_a_track_builds_it() {
+    let settings = settings();
+    let frame = frame_at(&settings);
+    let mut field = Field::new();
+    // Picked while paused: never updated, and the solid is there.
+    let fresh = GlyphLatticeState::new(8);
+    let report = render(&fresh, &frame, 1920.0, 1080.0, &mut field);
+    assert_eq!(report.assembled, 1.0);
+    assert!(report.mid + report.bright > 200, "{report:?}");
+    // Played from the top: it assembles.
+    let mut opening = fresh.clone();
+    let mut f = SceneFrame::idle(&settings);
+    f.delta_seconds = 1.0 / 30.0;
+    opening.update(&f);
+    let report = render(&opening, &f, 1920.0, 1080.0, &mut field);
+    assert!(report.assembled < 0.1, "{report:?}");
+    // Entered mid-track: no assembly.
+    let mut midway = fresh.clone();
+    f.time_seconds = 92.0;
+    midway.update(&f);
+    let report = render(&midway, &f, 1920.0, 1080.0, &mut field);
+    assert_eq!(report.assembled, 1.0);
+}
