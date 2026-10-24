@@ -175,6 +175,7 @@ if [ "$QUICK" -eq 0 ]; then
         step "dock gate (terminal in the window)" tools/dock_check.sh
         step "fluid ink gate (audio and persistent replay)" tools/fluid_ink_check.sh
         step "scene gallery (families, audio, replay)" tools/scene_gallery_check.py
+        step "pixel cats (six stagings, audio, replay)" tools/pixel_cats_check.py
     else
         printf '\n\033[33mskipped\033[0m  headless gate: Xvfb not installed\n'
     fi
