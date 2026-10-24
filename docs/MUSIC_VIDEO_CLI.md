@@ -597,7 +597,7 @@ Negative controls were run when each part was written, each on a scratch binary
 | The persistence buffer is not reset between captures | the two-still equality fails | n/a — it needs a renderer |
 | The frame outputs are not gated on an earlier error | `past-end: a sheet was rendered after the refusal` | n/a |
 | A section's own `settings` are dropped | three applied-value checks fail | 4 of 28 fail |
-| The pixel grid worked out on the framebuffer, not the output | the 2x still: 256x144 cells of 5 px, 23 colours, cells straddling pixels | 1 of 12 pixel tests fails |
+| The pixel grid worked out on the framebuffer, not the output | the 2x still: 256x144 cells of 5 px, 23 colours, cells straddling pixels | 1 of the 10 `pixel.rs` tests fails |
 | The console skips the palette | the handheld still has 679 colours; the levels still is off its steps | n/a |
 | The screen upscales filtered, not by whole cells | six checks fail, among them 34 % of colour edges inside a cell | n/a |
 
