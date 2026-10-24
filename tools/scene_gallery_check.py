@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-NEW = ('chrome', 'aurora', 'metaballs', 'tunnel', 'voronoi', 'iridescent')
+NEW = ('chrome', 'aurora', 'metaballs', 'tunnel', 'voronoi', 'iridescent', 'glyphs')
 
 
 def command(argv, log=None, timeout=120):
@@ -78,6 +78,35 @@ def frame(video, target, index):
              '-frames:v', '1', '-y', target])
 
 
+def check_glyphs_line(line, music):
+    """What Glyph Lattice's report line has to say on the pulse fixture.
+
+    A lattice with no core, a detector that never fired, a pulse that never
+    ran and a lost track profile each still draw a plausible honeycomb, so
+    the line is read rather than the picture. With the music shut out
+    (`response` 0) the ambient clock still fires pulses, but the detector
+    hears nothing.
+    """
+    def number(key):
+        match = re.search(rf'\b{key}=(\d+)', line)
+        assert match, f'glyphs: no {key}= in {line}'
+        return int(match[1])
+    tiers = re.search(r'lit=dim (\d+)/body (\d+)/core (\d+)/hot (\d+)', line)
+    assert tiers, f'glyphs: no tiers in {line}'
+    dim, body, core, hot = map(int, tiers.groups())
+    assert core > 100 and body > 100 and dim > 20, f'glyphs: lattice tiers {tiers[0]}'
+    assert 'form=cube(cycle)' in line, f'glyphs: the cycle should open on the cube: {line}'
+    assert re.search(r'lattice=\d+x\d+', line), line
+    assert number('giants') == 2 and number('echoes') == 3, f'glyphs: ghosts missing: {line}'
+    assert number('pulses') >= 2, f'glyphs: no pulses fired: {line}'
+    if music:
+        assert number('kicks') >= 3, f'glyphs: the kick detector heard nothing: {line}'
+        assert number('onsets') >= 1, f'glyphs: no onset ripples: {line}'
+        assert 'dyn=track' in line, f'glyphs: the track profile was lost: {line}'
+    else:
+        assert number('kicks') == 0, f'glyphs: audio leaked through response 0: {line}'
+
+
 def check_scene(base, name, encoder, negative):
     out = base/name
     out.mkdir(parents=True, exist_ok=True)
@@ -102,6 +131,8 @@ def check_scene(base, name, encoder, negative):
     log = (out/'music.log').read_text()
     line = next(line for line in log.splitlines() if line.startswith(f'{name}:'))
     assert ('shader=drawn' in line or 'surface=shader' in line) and 'REFUSED' not in line, line
+    if name == 'glyphs':
+        check_glyphs_line(line, music=not negative)
     app(out, 'reopen', out/'scene.musi', '--still', '4', out/'reopen.png',
         '--encoder', encoder, '--render-window', '4', '1', '--render', out/'clip.mp4')
     app(out, 'portrait', '--treatment', out/'music.treatment.json',
@@ -175,6 +206,8 @@ def main():
     parser.add_argument('--output', type=Path, default=ROOT/'build/scene-gallery-check')
     parser.add_argument('--negative-control', action='store_true')
     parser.add_argument('--picker-only', action='store_true')
+    parser.add_argument('--only', action='append', choices=NEW,
+                        help='check only this scene (repeatable); the picker still runs')
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -202,7 +235,8 @@ def main():
     encoder = 'nvenc' if probe.returncode == 0 else 'x264'
     print(f'encoder={encoder}', flush=True)
     if not args.picker_only:
-        results = {name: check_scene(out, name, encoder, args.negative_control) for name in NEW}
+        names = args.only or NEW
+        results = {name: check_scene(out, name, encoder, args.negative_control) for name in names}
         (out/'measurements.json').write_text(json.dumps(results, indent=2)+'\n')
     app(out, 'vocabulary', '--vocabulary')
     vocabulary=(out/'vocabulary.log').read_text()
