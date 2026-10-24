@@ -6,4 +6,5 @@
 //! test with no window, no context and no encoder.
 
 pub mod contact_sheet;
+pub mod poster;
 pub mod resolve;
