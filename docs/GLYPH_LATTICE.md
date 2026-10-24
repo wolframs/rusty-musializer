@@ -196,12 +196,13 @@ time, a measurement and never an input.
   - Shape tests: edge counts, hops, walks that never repeat an edge, rotations.
   - Font tests: every letter inside its cell, accent folding, wrapping.
 - **`tools/scene_gallery_check.py --only glyphs`**:
-  - Response MAD 9.47, motion MAD 9.55.
+  - Response MAD 10.22, motion MAD 10.56.
   - Project reopen identical.
-  - Still against its NVENC video frame 42.24 dB luma; full against clip
-    43.69 dB.
+  - Still against its NVENC video frame 42.10 dB luma; full against clip
+    43.56 dB.
   - The report line is read: tiers, ghosts, pulses, kicks, ripples,
     `dyn=track`.
+  - The full `tools/verify.sh` passed on `:80`, 13 of 13.
   - All six Geometry tiles click at the 960×640 / 240 px minimum.
   - `--negative-control` fails with MAD 0.0000.
 - **Differential.** `settings_post_legacy.txt` and

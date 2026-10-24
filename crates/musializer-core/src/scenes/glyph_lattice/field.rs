@@ -1007,7 +1007,7 @@ fn draw_line(
             ghost: presence * 0.95,
         }
     };
-    let width = (lattice.pitch * 1.7).max(strokes::CAP * unit * 0.095)
+    let width = (lattice.pitch * 1.7).max(strokes::CAP * unit * 0.12)
         * frame.setting(SceneId::GlyphLattice, control::STROKE).sqrt();
     // Kicks sweep left to right through the letters.
     let mut waves = Vec::new();
