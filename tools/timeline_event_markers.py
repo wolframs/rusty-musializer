@@ -65,14 +65,16 @@ CLUSTER_GAP = 12
 # alpha and so lands nowhere near the exact colour. Only the head is opaque.
 MIN_HEAD_PIXELS = 12
 
-# The manual event row draws a 4 px category swatch down the left edge of each of
+# The manual event row draws a category swatch inside the left edge of each of
 # its buttons, in the *same four colours* — so a naive colour search finds three
 # extra "markers" above the lane and reports nine where there are six. That was
 # not predicted; it came out of running the tool.
 #
 # The discriminator is shape, not position: a marker head is a disc clipped at
 # the lane's top edge, so it is about 10 columns by 5 rows — wider than it is
-# tall. A swatch is 4 columns by the button's full height. Requiring width >= height
+# tall. A swatch is 3 columns by 44 % of the button's height (4 columns by its
+# full height before WX-5a; `panels::events` keeps it taller than wide on purpose
+# and says so). Requiring width >= height
 # separates them at every UI scale, which a hard-coded y band would not.
 def _is_head(width, height):
     return width >= height

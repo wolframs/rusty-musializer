@@ -374,6 +374,10 @@ pub mod rgba {
     /// clear AA against the card.
     /// `the_light_chrome_severities_would_fail_the_dark_sweep` keeps the old
     /// numbers as a negative control.
+    ///
+    /// Since WX-5a the tray draws an INFO notice in [`UI_OVERLAY_MUTED`]
+    /// instead: in the light appearance this blue sits six degrees of hue from
+    /// the accent. The protocol card and its pennants still use it.
     pub const NOTICE_INFO_ON_DARK: u32 = 0x8AB4_F8FF;
     pub const NOTICE_SUCCESS_ON_DARK: u32 = 0x6FDB_A0FF;
     /// Orange rather than the amber it was (`0xF2B441`) since WX-5a: that amber
@@ -529,6 +533,7 @@ pub mod color32 {
     themed! {
         ui_ink;
         ui_danger;
+        ui_warning;
         ui_success;
     }
 }
@@ -564,6 +569,14 @@ pub mod metric {
     /// say "Phosphor Dream" at 27 physical pixels; chrome text is never larger
     /// than a heading.
     pub const UI_FONT_ROW_MAX: f32 = UI_FONT_HEADER;
+    /// A track row's name, which is the user's own words and so is drawn in the
+    /// authored face (Alegreya, review 1.5) rather than the interface face.
+    /// Alegreya is a small-eyed serif: at [`UI_FONT_LABEL`] its capitals stood
+    /// 9 px tall in a 1920x1080 capture, beside action buttons whose 16 px
+    /// Space Grotesk stands 11, and the one thing in the sidebar that names the
+    /// work read as its smallest print. This is the optical match for the
+    /// buttons above it, not a larger size.
+    pub const UI_FONT_AUTHORED_ROW: f32 = 18.0;
     /// The corner radius of a control and a dialog (WX-5a), as in the mockup.
     pub const UI_RADIUS: f32 = 4.0;
     pub const UI_PANEL_PADDING: f32 = 10.0;

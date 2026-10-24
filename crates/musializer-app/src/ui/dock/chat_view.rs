@@ -21,7 +21,7 @@ use musializer_core::agent::{Entry, Protocol, ToolState, Transcript};
 use musializer_runtime::agent_process::{AgentProcess, Launch, Output};
 
 use super::{Agent, DockContext};
-use crate::ui::theme::{self, color32};
+use crate::ui::theme::color32;
 
 /// Whether this protocol's tool permissions can be asked for in a chat.
 const fn asks_permission(protocol: Protocol) -> bool {
@@ -289,7 +289,7 @@ impl ChatTab {
         // surface, which is a different colour in each appearance.
         let weak = ui.visuals().weak_text_color();
         let ink = color32::ui_ink();
-        let waiting = color32::of(theme::palette().ui_warning);
+        let waiting = color32::ui_warning();
         let danger = color32::ui_danger();
         let good = color32::ui_success();
 

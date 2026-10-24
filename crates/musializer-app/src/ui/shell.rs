@@ -4030,7 +4030,7 @@ impl Shell {
                 name,
                 selected,
                 ButtonStyle::Neutral,
-                Some(metric::UI_FONT_LABEL),
+                Some(metric::UI_FONT_AUTHORED_ROW),
             );
             // A state dot at the row's right edge (UX0-B01). The header names the
             // *current* track's state in words; this is the only thing that says
@@ -5345,7 +5345,12 @@ impl Shell {
             }
             let boundary = UiRect::new(preview.x + 12.0, y, width, height);
             let accent = match notice.severity {
-                Severity::Info => color::notice_info_on_dark(),
+                // Neutral, not blue (WX-5a). An info notice asks nothing of
+                // the user, and in the light appearance a blue stripe and label
+                // shared the accent's hue six degrees apart, so "project opened"
+                // read as *now*. The three severities that do ask something
+                // keep their colours.
+                Severity::Info => color::ui_overlay_muted(),
                 Severity::Success => color::notice_success_on_dark(),
                 Severity::Warning => color::notice_warning_on_dark(),
                 Severity::Error => color::notice_error_on_dark(),
