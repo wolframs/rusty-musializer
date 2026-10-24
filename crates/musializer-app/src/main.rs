@@ -5918,6 +5918,10 @@ impl Report {
         // Pixel Cats: which staging, which palette, how far the line typed,
         // how many cats and pops drew, and whether the CRT shader carried it.
         println!("pixel cats:      {}", renderer.describe_pixel());
+        // Glyph Lattice: the solid, the cells by tier, the pulses, ripples
+        // and ghosts, and the line it is setting. A dead pulse, a lattice with
+        // no core and a line that never drew are each a plausible frame.
+        println!("glyphs: {}", renderer.describe_glyphs());
         println!("scene picker:    {}", app.shell.describe_scene_picker());
         println!(
             "chrome: {}",

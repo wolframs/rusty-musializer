@@ -77,6 +77,8 @@ pub enum SceneId {
     PixelChapel = 26,
     /// Pixel Cats: a gabber tunnel with a giant cat face.
     PixelRave = 27,
+    /// A wireframe solid lit on a honeycomb of tiny glyphs (2026-10-24).
+    GlyphLattice = 28,
 }
 
 /// Number of scenes.
@@ -102,7 +104,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = SceneId::PixelRave as usize + 1;
+pub const SCENE_COUNT: usize = SceneId::GlyphLattice as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -143,6 +145,7 @@ impl SceneId {
         SceneId::PixelQuartet,
         SceneId::PixelChapel,
         SceneId::PixelRave,
+        SceneId::GlyphLattice,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -211,6 +214,7 @@ impl SceneId {
             SceneId::PixelQuartet => "Barbershop",
             SceneId::PixelChapel => "Rose Window",
             SceneId::PixelRave => "Gabber Tunnel",
+            SceneId::GlyphLattice => "Glyph Lattice",
         }
     }
 
@@ -256,6 +260,7 @@ impl SceneId {
             SceneId::PixelQuartet => "pixel-quartet",
             SceneId::PixelChapel => "pixel-chapel",
             SceneId::PixelRave => "pixel-rave",
+            SceneId::GlyphLattice => "glyphs",
         }
     }
 

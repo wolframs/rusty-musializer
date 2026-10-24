@@ -682,6 +682,7 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         "iridescent-pool" => Some(SceneId::IridescentPool),
         // The one Pixel Cats token that is not its staging's own word.
         "pixel-runner" | "pixel-scroller" => Some(SceneId::PixelRunner),
+        "glyph-lattice" => Some(SceneId::GlyphLattice),
         other => SceneId::from_stable_name(other),
     }
 }
@@ -689,10 +690,11 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
 constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold, fluid, chrome, aurora, metaballs, tunnel, voronoi, iridescent, \
-pixel-boot, pixel-shell, pixel-run, pixel-quartet, pixel-chapel, pixel-rave (also pulse-field, \
+pixel-boot, pixel-shell, pixel-run, pixel-quartet, pixel-chapel, pixel-rave, glyphs (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
 phosphor-dream, claude, openai-knot, door, fluid-ink, liquid-chrome, aurora-veil, \
-metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool, pixel-runner, pixel-scroller)";
+metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool, pixel-runner, pixel-scroller, \
+glyph-lattice)";
 
 /// The pre-pass, then the main loop. Mirrors `main` (`musializer.c:315-561`).
 pub fn parse<I, S>(arguments: I) -> Outcome
@@ -1790,6 +1792,8 @@ mod tests {
             ("pixel-quartet", SceneId::PixelQuartet),
             ("pixel-chapel", SceneId::PixelChapel),
             ("pixel-rave", SceneId::PixelRave),
+            ("glyphs", SceneId::GlyphLattice),
+            ("glyph-lattice", SceneId::GlyphLattice),
             ("claude", SceneId::Clawd),
         ];
         for (name, id) in expected {

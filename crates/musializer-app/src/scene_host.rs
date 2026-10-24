@@ -117,6 +117,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::PixelQuartet => |_| Box::new(StatelessScene::new(SceneId::PixelQuartet)),
             SceneId::PixelChapel => |_| Box::new(StatelessScene::new(SceneId::PixelChapel)),
             SceneId::PixelRave => |_| Box::new(StatelessScene::new(SceneId::PixelRave)),
+            SceneId::GlyphLattice => |_| Box::new(StatelessScene::new(SceneId::GlyphLattice)),
         },
     }
 }
@@ -179,6 +180,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         | SceneId::PixelQuartet
         | SceneId::PixelChapel
         | SceneId::PixelRave => "(no oracle: post-legacy addition)",
+        SceneId::GlyphLattice => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -290,6 +292,8 @@ pub struct SceneRenderer {
     iridescent: scenes::iridescent_pool::Resources,
     /// The six Pixel Cats scenes' one texture, CRT shader and report.
     pixel: scenes::pixel_cats::PixelResources,
+    /// Glyph Lattice's atlas, field buffers, shader and report.
+    glyphs: scenes::glyph_lattice::Resources,
     /// Where the threshold's doorway scene is drawn each frame.
     beyond: Canvas,
 }
@@ -354,6 +358,7 @@ impl SceneRenderer {
             voronoi: scenes::voronoi_bloom::Resources::load(rl, thread),
             iridescent: scenes::iridescent_pool::Resources::load(rl, thread),
             pixel: scenes::pixel_cats::PixelResources::load(rl, thread),
+            glyphs: scenes::glyph_lattice::Resources::load(rl, thread),
             beyond: Canvas::new(),
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
@@ -578,6 +583,16 @@ impl SceneRenderer {
     #[must_use]
     pub fn describe_pixel(&self) -> String {
         self.pixel.describe()
+    }
+
+    /// One line naming what the last Glyph Lattice frame lit: the solid and
+    /// its assembly, the lattice, the cells by tier, the ghosts, the pulses
+    /// and ripples, the line being set, and the music figures behind them. A
+    /// solid with no pulses, a lattice with no core and a line that never
+    /// drew are each a plausible picture.
+    #[must_use]
+    pub fn describe_glyphs(&self) -> String {
+        self.glyphs.describe()
     }
 
     /// Whether Fluid Ink uploaded its dye and drew through its display shader.
@@ -946,6 +961,11 @@ impl SceneRenderer {
                         scenes::pixel_cats::draw(d, &mut self.pixel, state, frame, boundary);
                     }
                 }
+                SceneId::GlyphLattice => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::glyph_lattice::draw(d, &mut self.glyphs, state, frame, boundary);
+                    }
+                }
                 SceneId::Threshold => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::threshold::draw(
@@ -1024,9 +1044,12 @@ impl SceneRenderer {
         };
         // Cadence, Stage and the Pixel Cats stagings draw the line
         // themselves; a caption over any of them would say everything twice.
+        // Glyph Lattice does when its `words` control is on.
         let draws_its_line = id == SceneId::Cadence
             || id == SceneId::Stage
-            || core_scenes::pixel_cats::Staging::of(id).is_some();
+            || core_scenes::pixel_cats::Staging::of(id).is_some()
+            || (id == SceneId::GlyphLattice
+                && frame.setting(id, musializer_core::scene::settings::index::glyphs::WORDS) > 0.5);
         if !draws_its_line {
             if let Some(style) = assets.caption_style {
                 // The effect drives read the same frame the scene just drew
@@ -1234,6 +1257,7 @@ mod tests {
                 "pixel-quartet",
                 "pixel-chapel",
                 "pixel-rave",
+                "glyphs",
             ]
         );
     }
@@ -1281,6 +1305,7 @@ mod tests {
                 | SceneId::PixelRave => any
                     .downcast_ref::<cs::pixel_cats::PixelCatsState>()
                     .is_some_and(|state| state.staging().scene() == id),
+                SceneId::GlyphLattice => any.is::<cs::glyph_lattice::GlyphLatticeState>(),
             };
             assert!(
                 recovered,

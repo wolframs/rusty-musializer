@@ -59,7 +59,7 @@ scene 14 count 11
 14 1 settings.threshold.open|Door open|0|1|0|2|0
 14 2 settings.threshold.light|Light|0|2|1|2|0
 14 3 settings.threshold.haze|Doorway haze|0|1|0.600000024|2|0
-14 4 settings.threshold.beyond|Beyond (0 = haze)|0|28|0|0|0
+14 4 settings.threshold.beyond|Beyond (0 = haze)|0|29|0|0|0
 14 5 settings.threshold.presences|Presences|0|2|0|0|0
 14 6 settings.threshold.motes|Motes|0|2|1|2|0
 14 7 settings.threshold.mist|Mist|0|2|1|2|0
@@ -195,3 +195,16 @@ scene 27 count 10
 27 7 settings.pixel-rave.glitch|Glitch|0|1|0.5|2|0
 27 8 settings.pixel-rave.pixels|Pixel rows|120|320|180|0|0
 27 9 settings.pixel-rave.motion|Motion|0|2|1|2|0
+scene 28 count 12
+28 0 settings.glyphs.solid|Solid (0 = cycle)|0|6|0|0|0
+28 1 settings.glyphs.words|Lyric line|0|1|1|0|1
+28 2 settings.glyphs.spin|Spin|0|2|1|2|0
+28 3 settings.glyphs.size|Size|0.5|1.60000002|1|2|0
+28 4 settings.glyphs.density|Cells across|60|200|120|0|0
+28 5 settings.glyphs.stroke|Stroke|0.5|2|1|2|0
+28 6 settings.glyphs.glow|Glow|0|2|1|2|0
+28 7 settings.glyphs.ghosts|Ghosts|0|1|0.600000024|2|0
+28 8 settings.glyphs.flicker|Flicker|0|1|0.5|2|0
+28 9 settings.glyphs.hue|Hue (deg)|-180|180|0|0|0
+28 10 settings.glyphs.saturation|Saturation|0|1.5|1|2|0
+28 11 settings.glyphs.response|Music response|0|2|1|2|0

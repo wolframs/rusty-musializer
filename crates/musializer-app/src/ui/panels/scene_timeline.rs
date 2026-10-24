@@ -137,6 +137,8 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         SceneId::PixelQuartet => (230, 120, 110),
         SceneId::PixelChapel => (220, 190, 120),
         SceneId::PixelRave => (240, 110, 200),
+        // The lattice's own aqua.
+        SceneId::GlyphLattice => (96, 222, 200),
     };
     Color::new(r, g, b, alpha)
 }

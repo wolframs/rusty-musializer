@@ -404,6 +404,26 @@ pub mod index {
         /// Scrolling, turning and idle animation speed.
         pub const MOTION: usize = 9;
     }
+    /// Glyph Lattice (post-legacy, 2026-10-24): persisted order, append only.
+    pub mod glyphs {
+        /// 0 cycles on its own; 1 cube, 2 octahedron, 3 dodecahedron, 4 icosahedron,
+        /// 5 tesseract, 6 knot. A persisted index: append, never reorder.
+        pub const SOLID: usize = 0;
+        /// The lyric line set into the lattice in stroke capitals.
+        pub const WORDS: usize = 1;
+        pub const SPIN: usize = 2;
+        pub const SIZE: usize = 3;
+        /// Cells across the frame's short side.
+        pub const DENSITY: usize = 4;
+        pub const STROKE: usize = 5;
+        pub const GLOW: usize = 6;
+        /// Echoes, the exhaling previous solid and the giants behind.
+        pub const GHOSTS: usize = 7;
+        pub const FLICKER: usize = 8;
+        pub const HUE: usize = 9;
+        pub const SATURATION: usize = 10;
+        pub const RESPONSE: usize = 11;
+    }
     /// OpenAI Knot: the persisted control order; new finish controls are appended.
     pub mod knot {
         pub const SIZE: usize = 0;
@@ -670,7 +690,7 @@ const THRESHOLD: &[SettingDescriptor] = &[
     D::slider("settings.threshold.open", "Door open", 0.00, 1.00, 0.00, 2),
     D::slider("settings.threshold.light", "Light", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.haze", "Doorway haze", 0.00, 1.00, 0.60, 2),
-    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 28.00, 0.00, 0),
+    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 29.00, 0.00, 0),
     D::slider("settings.threshold.presences", "Presences", 0.00, 2.00, 0.00, 0),
     D::slider("settings.threshold.motes", "Motes", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.mist", "Mist", 0.00, 2.00, 1.00, 2),
@@ -790,6 +810,23 @@ pixel_cats!(PIXEL_QUARTET, "pixel-quartet", 1.0);
 pixel_cats!(PIXEL_CHAPEL, "pixel-chapel", 1.0);
 pixel_cats!(PIXEL_RAVE, "pixel-rave", 1.0);
 
+/// Glyph Lattice (post-legacy, 2026-10-24): twelve controls, the cap.
+#[rustfmt::skip]
+const GLYPHS: &[SettingDescriptor] = &[
+    D::slider("settings.glyphs.solid", "Solid (0 = cycle)", 0.0, 6.0, 0.0, 0),
+    D::toggle("settings.glyphs.words", "Lyric line", 1.0),
+    D::slider("settings.glyphs.spin", "Spin", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.glyphs.size", "Size", 0.5, 1.6, 1.0, 2),
+    D::slider("settings.glyphs.density", "Cells across", 60.0, 200.0, 120.0, 0),
+    D::slider("settings.glyphs.stroke", "Stroke", 0.5, 2.0, 1.0, 2),
+    D::slider("settings.glyphs.glow", "Glow", 0.0, 2.0, 1.0, 2),
+    D::slider("settings.glyphs.ghosts", "Ghosts", 0.0, 1.0, 0.6, 2),
+    D::slider("settings.glyphs.flicker", "Flicker", 0.0, 1.0, 0.5, 2),
+    D::slider("settings.glyphs.hue", "Hue (deg)", -180.0, 180.0, 0.0, 0),
+    D::slider("settings.glyphs.saturation", "Saturation", 0.0, 1.5, 1.0, 2),
+    D::slider("settings.glyphs.response", "Music response", 0.0, 2.0, 1.0, 2),
+];
+
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     SPECTRUM,
     PULSE,
@@ -819,6 +856,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     PIXEL_QUARTET,
     PIXEL_CHAPEL,
     PIXEL_RAVE,
+    GLYPHS,
 ];
 
 /// Descriptors for one scene.
@@ -1072,7 +1110,8 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         | SceneId::PixelRunner
         | SceneId::PixelQuartet
         | SceneId::PixelChapel
-        | SceneId::PixelRave => false,
+        | SceneId::PixelRave
+        | SceneId::GlyphLattice => false,
     }
 }
 

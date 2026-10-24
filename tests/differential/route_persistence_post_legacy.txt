@@ -1,4 +1,4 @@
-post-constant-count 178
+post-constant-count 190
 post-constant 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
@@ -355,7 +355,31 @@ post-constant 176 settings.pixel-rave.pixels 0 0 0 1 180 180 1 1
 post-constant-is-constant 176 1
 post-constant 177 settings.pixel-rave.motion 0 0 0 1 1 1 1 1
 post-constant-is-constant 177 1
-post-routed-count 178
+post-constant 178 settings.glyphs.solid 0 0 0 1 0 0 1 1
+post-constant-is-constant 178 1
+post-constant 179 settings.glyphs.words 0 0 0 1 1 1 1 1
+post-constant-is-constant 179 1
+post-constant 180 settings.glyphs.spin 0 0 0 1 1 1 1 1
+post-constant-is-constant 180 1
+post-constant 181 settings.glyphs.size 0 0 0 1 1 1 1 1
+post-constant-is-constant 181 1
+post-constant 182 settings.glyphs.density 0 0 0 1 120 120 1 1
+post-constant-is-constant 182 1
+post-constant 183 settings.glyphs.stroke 0 0 0 1 1 1 1 1
+post-constant-is-constant 183 1
+post-constant 184 settings.glyphs.glow 0 0 0 1 1 1 1 1
+post-constant-is-constant 184 1
+post-constant 185 settings.glyphs.ghosts 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 185 1
+post-constant 186 settings.glyphs.flicker 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 186 1
+post-constant 187 settings.glyphs.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 187 1
+post-constant 188 settings.glyphs.saturation 0 0 0 1 1 1 1 1
+post-constant-is-constant 188 1
+post-constant 189 settings.glyphs.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 189 1
+post-routed-count 190
 post-routed 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-routed 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
 post-routed 2 settings.cadence.halo 0 0 0 1 0.200000003 0.200000003 1 1
@@ -534,6 +558,18 @@ post-routed 174 settings.pixel-rave.pops 0 0 0 1 1 1 1 1
 post-routed 175 settings.pixel-rave.glitch 0 0 0 1 0.5 0.5 1 1
 post-routed 176 settings.pixel-rave.pixels 0 0 0 1 180 180 1 1
 post-routed 177 settings.pixel-rave.motion 0 0 0 1 1 1 1 1
+post-routed 178 settings.glyphs.solid 0 0 0 1 0 0 1 1
+post-routed 179 settings.glyphs.words 0 0 0 1 1 1 1 1
+post-routed 180 settings.glyphs.spin 0 0 0 1 1 1 1 1
+post-routed 181 settings.glyphs.size 0 0 0 1 1 1 1 1
+post-routed 182 settings.glyphs.density 0 0 0 1 120 120 1 1
+post-routed 183 settings.glyphs.stroke 0 0 0 1 1 1 1 1
+post-routed 184 settings.glyphs.glow 0 0 0 1 1 1 1 1
+post-routed 185 settings.glyphs.ghosts 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 186 settings.glyphs.flicker 0 0 0 1 0.5 0.5 1 1
+post-routed 187 settings.glyphs.hue 0 0 0 1 0 0 1 1
+post-routed 188 settings.glyphs.saturation 0 0 0 1 1 1 1 1
+post-routed 189 settings.glyphs.response 0 0 0 1 1 1 1 1
 post-import-value 7 7 108
 post-import-value 7 8 2
 post-import-value 7 9 0.200000003
@@ -712,3 +748,15 @@ post-import-value 27 6 1
 post-import-value 27 7 0.5
 post-import-value 27 8 180
 post-import-value 27 9 1
+post-import-value 28 0 0
+post-import-value 28 1 1
+post-import-value 28 2 1
+post-import-value 28 3 1
+post-import-value 28 4 120
+post-import-value 28 5 1
+post-import-value 28 6 1
+post-import-value 28 7 0.600000024
+post-import-value 28 8 0.5
+post-import-value 28 9 0
+post-import-value 28 10 1
+post-import-value 28 11 1

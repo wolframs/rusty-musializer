@@ -310,6 +310,7 @@ const CYCLIC_KEYS: &[&str] = &[
     "settings.pixel-quartet.hue",
     "settings.pixel-chapel.hue",
     "settings.pixel-rave.hue",
+    "settings.glyphs.hue",
 ];
 
 /// Descriptors whose **low** end is a designed value rather than a degenerate:
@@ -743,8 +744,8 @@ mod tests {
         // knowingly re-scoped rather than silently narrowed.
         //
         // The C-era prefix stays fixed; all registered controls, including
-        // Fluid Ink's eight and the six Pixel Cats scenes' ten each,
-        // participate in the full exploration sweep.
+        // Fluid Ink's eight, the six Pixel Cats scenes' ten each and Glyph
+        // Lattice's twelve, participate in the full exploration sweep.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
             .map(settings::oracle_count)
@@ -753,7 +754,7 @@ mod tests {
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 259);
+        assert_eq!(all_descriptors().len(), 271);
     }
 
     // -- conform / step / parse ------------------------------------------------

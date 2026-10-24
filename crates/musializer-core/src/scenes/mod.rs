@@ -27,6 +27,8 @@ pub mod spectrum;
 pub mod aurora_veil;
 /// Persistent, deterministic music-stirred fluid (2026-10-23).
 pub mod fluid_ink;
+/// Post-legacy (2026-10-24): a wireframe solid lit on a honeycomb of glyphs.
+pub mod glyph_lattice;
 pub mod iridescent_pool;
 pub mod liquid_chrome;
 pub mod metaball_garden;
@@ -94,5 +96,6 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             Some(staging) => pixel_cats::descriptor(staging),
             None => unreachable!("every pixel scene id names a staging"),
         },
+        SceneId::GlyphLattice => glyph_lattice::descriptor(),
     }
 }

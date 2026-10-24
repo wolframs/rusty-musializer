@@ -21,6 +21,8 @@ pub mod spectrum;
 
 pub mod aurora_veil;
 pub mod fluid_ink;
+/// Post-legacy (2026-10-24): a wireframe solid lit on a honeycomb of glyphs.
+pub mod glyph_lattice;
 pub mod iridescent_pool;
 pub mod liquid_chrome;
 pub mod metaball_garden;
