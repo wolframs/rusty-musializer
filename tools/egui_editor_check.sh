@@ -84,28 +84,30 @@ try:
     shot('01-light-tune')
     # Fixed 1280x900 logical pixels, scale1; these target visible toolkit widgets.
     # Interaction coordinates are kept explicit so captures expose layout drift.
-    click(970,337)
+    # Re-measured for WX-5a's type scale and spacing (the Editor draws in Space
+    # Grotesk at 14 with 26-point rows since then); every one was moved on purpose.
+    click(970,452)
     shot('02-setting-changed')
     xd('mousemove','--sync',1100,600)
     xd('click','--repeat',5,'--delay',100,5); time.sleep(.4)
     shot('02b-tune-scrolled')
     xd('click','--repeat',10,'--delay',100,4); time.sleep(.4)
-    click(804,87)
+    click(805,81)
     shot('03-lyrics')
     # Actual cue navigation must round-trip to the same cue before editing.
-    click(827,253); click(754,253)
+    click(826,229); click(754,229)
     shot('03b-cue-navigation')
-    click(975,358); key('ctrl+a'); text('Verified toolkit phrase')
+    click(975,324); key('ctrl+a'); text('Verified toolkit phrase')
     shot('04-text-draft')
-    click(852,393); click(852,393); key('ctrl+a'); text('1.250'); key('Return')
+    click(858,357); click(858,357); key('ctrl+a'); text('1.250'); key('Return')
     # Closing and reopening through the legacy shortcut must retain the draft
     # and selected cue. Apply only after reopening so persistence proves it.
-    click(1223,46); key('F8')
+    click(1222,45); key('F8')
     shot('04b-draft-after-close-reopen')
-    click(760,500)
+    click(759,454)
     shot('05-cue-applied')
     # Save from inside the editor rather than relying only on the legacy key.
-    click(1200,212)
+    click(1198,193)
     time.sleep(.5)
     changed=json.loads(project.read_text())
     (out/'after-apply.json').write_text(json.dumps(changed,indent=2)+'\n')
@@ -115,7 +117,7 @@ try:
     assert changed['scenes'] != doc['scenes'], 'scene setting click did not persist'
     # The real legacy undo shortcut must share the new editor's history after
     # focus returns to the workspace.
-    click(1223,46); key('ctrl+z'); key('ctrl+s'); time.sleep(.5)
+    click(1222,45); key('ctrl+z'); key('ctrl+s'); time.sleep(.5)
     undone=json.loads(project.read_text())
     assert undone['lyrics']['cues']==doc['lyrics']['cues'], undone['lyrics']
     shot('06-legacy-undo')
@@ -128,8 +130,9 @@ finally:
 
 p=launch('light-blue')
 try:
-    click(785,128); time.sleep(.2); shot('07-theme-menu')
-    click(785,207); time.sleep(.5); shot('08-black-amber')
+    # The menu lists Dark first since WX-5a (it is the default appearance).
+    click(765,117); time.sleep(.2); shot('07-theme-menu')
+    click(765,147); time.sleep(.5); shot('08-black-amber')
     assert json.loads((out/'ui.json').read_text())['theme']=='black-amber'
 finally:
     stop(p)
@@ -137,14 +140,41 @@ p=launch()
 try:
     shot('09-reloaded-theme')
     from PIL import Image
+    # The dark appearance's own roles (`theme::palette::DARK`): the Editor's
+    # panel is `ui_surface` and the selected Tune tab `ui_selected`. Until WX-5a
+    # the tab was an amber fill; a selection is a tint now, and the accent means
+    # *now*. Exact to a few levels, because both are opaque egui fills.
+    def dark_editor(picture):
+        near=lambda pixel, rgb: all(abs(c-t) <= 3 for c,t in zip(pixel, rgb))
+        return (near(picture.getpixel((1240,600)), (0x11,0x13,0x17))
+                and near(picture.getpixel((742,90)), (0x22,0x26,0x2D)))
     picture=Image.open(out/'09-reloaded-theme.png').convert('RGB')
     assert max(picture.getpixel((20,225))) < 40, 'reloaded shell background is not dark'
-    r,g,b=picture.getpixel((740,87))
-    assert r > 60 and r > g * 1.2 and b < 40, 'reloaded selected Tune tab is not amber'
+    assert dark_editor(picture), ('reloaded Editor is not the dark appearance',
+        picture.getpixel((1240,600)), picture.getpixel((742,90)))
+    # The negative control: the same probe on the light launch's first capture.
+    assert not dark_editor(Image.open(out/'01-light-tune.png').convert('RGB')), \
+        'the dark-appearance probe also accepts the light Editor'
     assert json.loads((out/'ui.json').read_text())['theme']=='black-amber'
+    # Since WX-5a dark is also the default, so the reload above cannot tell a
+    # persisted `black-amber` from a preferences file nobody read. Switch to
+    # the non-default Light here and restart once more: that reload can only be
+    # light if the file was read.
+    click(765,117); time.sleep(.2)
+    click(765,186); time.sleep(.5); shot('10-light-again')
+    assert json.loads((out/'ui.json').read_text())['theme']=='light-blue'
+finally:
+    stop(p)
+p=launch()
+try:
+    shot('11-reloaded-light')
+    picture=Image.open(out/'11-reloaded-light.png').convert('RGB')
+    assert not dark_editor(picture), 'the light choice did not survive a restart'
+    assert all(c >= 240 for c in picture.getpixel((1240,600))), \
+        ('reloaded Editor panel is not the light surface', picture.getpixel((1240,600)))
 finally:
     stop(p)
 (out/'result.json').write_text(json.dumps({'status':'passed','input':'real X11 mouse and keyboard',
-    'checks':['modal transport input blocked at 0.8 seconds','scene setting saved','lyric text and edge applied','legacy undo','theme persisted and reloaded']},indent=2)+'\n')
+    'checks':['modal transport input blocked at 0.8 seconds','scene setting saved','lyric text and edge applied','legacy undo','theme persisted and reloaded, both ways']},indent=2)+'\n')
 print(f'OK: egui editor real-input evidence: {out}')
 PY

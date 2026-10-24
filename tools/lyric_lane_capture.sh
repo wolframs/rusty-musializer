@@ -132,17 +132,28 @@ capture() {
 FAILED=0
 
 echo "=== the lane at both heights, at both gate sizes ==="
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
+# Every measurement below reads the *light* appearance's numbers — the white lane
+# surface, the (230,230,234) trough — so every preferences file pins it, as
+# tools/headless_check.sh does for its own light measurements. WX-5a made the dark
+# look the default; without the pin this script measured a dark frame against
+# light constants and failed in ways that read as a lane bug.
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
 capture lane-base-1280x720 1280x720 "panel=lyrics" || FAILED=1
 capture lane-base-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
+# The pin is asserted, not assumed: a preferences schema that stopped reading
+# `theme` would silently photograph the dark default.
+if ! grep -q '^appearance: *light-blue ' "$OUT_DIR/lane-base-1280x720.txt"; then
+    echo "FAIL: the light pin did not hold: $(grep '^appearance:' "$OUT_DIR/lane-base-1280x720.txt" || echo '<no appearance line>')" >&2
+    FAILED=1
+fi
 
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"lyric_lane_height":66.0}\n' >"$PREFS"
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"lyric_lane_height":66.0}\n' >"$PREFS"
 capture lane-max-1280x720 1280x720 "panel=lyrics,play=1" || FAILED=1
 capture lane-max-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
 capture lane-max-1920x1080 1920x1080 "panel=lyrics,play=1" || FAILED=1
 
 echo "=== the tooltip, parked over the middle of the overlap cluster ==="
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
 # The hover point is *found*, not guessed: the lane's position depends on the
 # window, the UI scale and the cue count, and a hard-coded pair is how
 # `--ui-probe hover=` silently photographs the wrong thing.

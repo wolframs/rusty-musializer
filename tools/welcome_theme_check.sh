@@ -55,7 +55,8 @@ p=launch('light-blue')
 try:
     shot('01-welcome-light')
     click(850,40); shot('02-theme-menu')
-    click(835,118); im=shot('03-welcome-amber')
+    # Dark is listed first since WX-5a, so the two menu rows swapped places.
+    click(835,72); im=shot('03-welcome-amber')
     assert json.loads((out/'ui.json').read_text())['theme']=='black-amber'
     assert max(im.getpixel((20,120)))<40
     (out/'picker-called').unlink(missing_ok=True)
@@ -74,10 +75,18 @@ try:
     im=shot('05-welcome-reloaded')
     assert max(im.getpixel((20,120)))<40, 'startup did not restore theme'
     click(850,40); shot('06-reloaded-menu')
-    click(835,76); im=shot('07-welcome-light-again')
+    click(835,107); im=shot('07-welcome-light-again')
     assert json.loads((out/'ui.json').read_text())['theme']=='light-blue'
     assert min(im.getpixel((20,120)))>230
 finally: stop(p)
-(out/'result.json').write_text(json.dumps({'status':'passed','checks':['welcome theme toggles both ways','selection persisted across restart','opening audio and Editor preserves theme']},indent=2)+'\n')
+# Since WX-5a the dark look is also the default, so the reload above cannot tell
+# a persisted `black-amber` from a preferences file nobody read. Light is the
+# non-default value, and restarting on it is what proves the file is read.
+p=launch()
+try:
+    im=shot('08-light-reloaded')
+    assert min(im.getpixel((20,120)))>230, 'startup did not restore the light theme'
+finally: stop(p)
+(out/'result.json').write_text(json.dumps({'status':'passed','checks':['welcome theme toggles both ways','selection persisted across restart, both ways','opening audio and Editor preserves theme']},indent=2)+'\n')
 print('PASS: welcome theme, restart and editor handoff')
 PY
