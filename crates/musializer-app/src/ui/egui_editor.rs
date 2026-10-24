@@ -8,10 +8,12 @@ use std::path::PathBuf;
 
 use egui::{Color32, Context, RichText, Stroke};
 use musializer_core::project::lyrics::{validate_text, LyricCue};
+use musializer_core::project::pixel::{self, Matching, Pixel, PixelPalette};
 use musializer_core::scene::settings::{self, SettingKind};
 use musializer_core::scene::SceneId;
 
 use super::panels::lyrics::LyricsEdit;
+use super::panels::scene_timeline::ScenePlanEdit;
 use super::shell::ShellCommand;
 use super::theme::UiTheme;
 use crate::workspace::{SaveState, Track};
@@ -396,7 +398,9 @@ impl EditorState {
                                 .id_salt("editor_body")
                                 .max_height(body_height)
                                 .show(ui, |ui| match self.tab {
-                                    Tab::Tune => self.tune(ui, track, scene, &mut output),
+                                    Tab::Tune => {
+                                        self.tune(ui, track, scene, playhead, &mut output);
+                                    }
                                     Tab::Lyrics => self.lyrics(ui, track, playhead, &mut output),
                                 });
                         } else {
@@ -410,7 +414,16 @@ impl EditorState {
         output
     }
 
-    fn tune(&self, ui: &mut egui::Ui, track: &Track, scene: SceneId, output: &mut EditorOutput) {
+    fn tune(
+        &self,
+        ui: &mut egui::Ui,
+        track: &Track,
+        scene: SceneId,
+        playhead: f64,
+        output: &mut EditorOutput,
+    ) {
+        pixel_look(ui, track, playhead, output);
+        ui.separator();
         ui.heading(scene.display_name());
         ui.label(RichText::new("Changes update the preview immediately.").small());
         ui.spacing_mut().slider_width = (ui.available_width() - 80.0).max(80.0);
@@ -603,6 +616,201 @@ impl EditorState {
         });
         ui.label(RichText::new("Close Editor and use Ctrl+Z to undo applied changes. Closing keeps unapplied changes.").small());
     }
+}
+
+/// What a pixel-look picker can say (2026-10-24).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PixelChoice {
+    /// A section wearing the video's look.
+    Video,
+    Off,
+    Palette(PixelPalette),
+    Levels,
+    /// Pixels in the scene's own colours.
+    Bare,
+    /// A colour list a treatment wrote; shown, never offered.
+    Listed,
+}
+
+impl PixelChoice {
+    fn of(look: &Pixel) -> Self {
+        if !look.is_on() {
+            return Self::Off;
+        }
+        if let Some(palette) = look.named_palette() {
+            return Self::Palette(palette);
+        }
+        match look.matching {
+            Matching::None => Self::Bare,
+            Matching::Levels => Self::Levels,
+            Matching::Ramp | Matching::Nearest => Self::Listed,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Video => "The video's look",
+            Self::Off => "Off",
+            Self::Palette(PixelPalette::Handheld) => "Handheld green",
+            Self::Palette(PixelPalette::Grey) => "Handheld grey",
+            Self::Palette(PixelPalette::Home) => "Home computer",
+            Self::Palette(PixelPalette::Fantasy) => "Fantasy console",
+            Self::Levels => "Console colour",
+            Self::Bare => "Pixels only",
+            Self::Listed => "Listed colours",
+        }
+    }
+}
+
+/// The pixel look, at the top of the Tune tab: one picker for the whole video
+/// and one for the section under the playhead, each with its pixel size and
+/// whether it answers the kick. Every change is a [`ScenePlanEdit`], so it is
+/// the field a treatment writes, saved in the `.musi`, and marked dirty by the
+/// same boundary as any plan edit.
+fn pixel_look(ui: &mut egui::Ui, track: &Track, playhead: f64, output: &mut EditorOutput) {
+    ui.heading("Pixel look");
+    ui.label(
+        RichText::new(
+            "Draws every frame at a low resolution through a palette and a screen, \
+             over any scene. A section can unlock into colour or switch it off.",
+        )
+        .small(),
+    );
+    let plan = &track.scene_switches;
+    let video = plan.finish.pixel;
+    if let Some(next) = pixel_controls(ui, "video_pixel", "Whole video", Some(video), video, false)
+    {
+        output
+            .commands
+            .push(ShellCommand::ScenePlan(ScenePlanEdit::SetVideoPixel(
+                next.unwrap_or(Pixel::OFF),
+            )));
+    }
+    let covering = plan.cue_covering(playhead).zip(
+        plan.cue_covering(playhead)
+            .and_then(|cue| plan.cues().iter().position(|other| other.id == cue.id)),
+    );
+    match covering {
+        Some((cue, index)) => {
+            let label = format!("Section {} of {}", index + 1, plan.len());
+            if let Some(next) = pixel_controls(ui, "section_pixel", &label, cue.pixel, video, true)
+            {
+                output
+                    .commands
+                    .push(ShellCommand::ScenePlan(ScenePlanEdit::SetPixel {
+                        cue_id: cue.id,
+                        pixel: next,
+                    }));
+            }
+        }
+        None => {
+            ui.label(
+                RichText::new("With a scene plan on, each section can choose its own look.")
+                    .small(),
+            );
+        }
+    }
+}
+
+/// One place's picker. `current` is the place's own look (`None`: the
+/// video's, only where `inherits`), `video` the look it would inherit.
+/// Returns the new value when the user changed something.
+fn pixel_controls(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    current: Option<Pixel>,
+    video: Pixel,
+    inherits: bool,
+) -> Option<Option<Pixel>> {
+    let effective = current.unwrap_or(video);
+    let shown = match current {
+        None if inherits => PixelChoice::Video,
+        _ => PixelChoice::of(&effective),
+    };
+    let mut picked = shown;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(id)
+            .selected_text(shown.label())
+            // Tall enough for every choice: a picker that scrolls hides the
+            // colour modes under the palettes.
+            .height(320.0)
+            .show_ui(ui, |ui| {
+                let mut offered = Vec::new();
+                if inherits {
+                    offered.push(PixelChoice::Video);
+                }
+                offered.push(PixelChoice::Off);
+                offered.extend(PixelPalette::ALL.map(PixelChoice::Palette));
+                offered.extend([PixelChoice::Levels, PixelChoice::Bare]);
+                for choice in offered {
+                    ui.selectable_value(&mut picked, choice, choice.label());
+                }
+            })
+            .response
+            .on_hover_text(match shown {
+                PixelChoice::Video => "This section wears the whole video's pixel look",
+                PixelChoice::Off => "No pixel look here",
+                _ => "The palette every frame is held to",
+            });
+    });
+    // A new palette keeps the pixel size, screen and kick of whatever look is
+    // nearest: this place's, else the video's, else the shipped one.
+    let start = [effective, video]
+        .into_iter()
+        .find(Pixel::is_on)
+        .unwrap_or_else(Pixel::on);
+    if picked != shown {
+        return Some(match picked {
+            PixelChoice::Video => None,
+            PixelChoice::Off => Some(Pixel::OFF),
+            PixelChoice::Palette(palette) => Some(start.with_palette(palette)),
+            PixelChoice::Levels => Some(start.without_colours(Matching::Levels)),
+            PixelChoice::Bare => Some(start.without_colours(Matching::None)),
+            PixelChoice::Listed => Some(effective),
+        });
+    }
+    // Size and kick belong to a look this place owns.
+    let owned = if inherits { current } else { Some(effective) };
+    let look = owned.filter(Pixel::is_on)?;
+    let mut changed = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().slider_width = 180.0;
+        let (low, high) = pixel::pixel_bounds::PIXELS;
+        let mut pixels = look.pixels;
+        if ui
+            .add(egui::Slider::new(&mut pixels, low..=high).text("pixels tall"))
+            .on_hover_text(
+                "Pixels across the frame's short edge: 144 is a handheld, 180 a 16:9 cartridge",
+            )
+            .changed()
+        {
+            changed = Some(Some(Pixel { pixels, ..look }));
+        }
+        let mut kicks = look.split > 0.0 || look.shake > 0.0 || look.zoom > 0.0;
+        if ui
+            .checkbox(&mut kicks, "Answer the kick")
+            .on_hover_text(
+                "On each kick the screen jolts, punches in and its colours part, by whole pixels",
+            )
+            .changed()
+        {
+            let cartridge = Pixel::cartridge();
+            let (split, shake, zoom) = if kicks {
+                (cartridge.split, cartridge.shake, cartridge.zoom)
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            changed = Some(Some(Pixel {
+                split,
+                shake,
+                zoom,
+                ..look
+            }));
+        }
+    });
+    changed
 }
 
 #[cfg(test)]
@@ -812,6 +1020,82 @@ mod tests {
         let label = text_point(&frame, first.label);
         let result = click(&mut editor, &ctx, &track, egui::pos2(250.0, label.y + 27.0));
         assert!(result.commands.iter().any(|command| matches!(command, ShellCommand::SetSetting { scene: SceneId::Spectrum, index: 0, value } if first.accepts(*value) && *value != first.default_value)));
+    }
+
+    /// Opens a combo by clicking its shown text, then picks `item` from the
+    /// popup — the two presses a user makes.
+    fn pick(
+        editor: &mut EditorState,
+        ctx: &Context,
+        track: &Track,
+        shown: egui::Pos2,
+        item: &str,
+    ) -> EditorOutput {
+        let opened = click(editor, ctx, track, shown);
+        assert!(
+            opened.commands.is_empty(),
+            "opening a picker changes nothing"
+        );
+        let (frame, _) = draw(editor, ctx, track, vec![]);
+        click(editor, ctx, track, text_point(&frame, item))
+    }
+
+    #[test]
+    fn the_pixel_look_is_picked_for_the_video_and_for_the_section_under_the_playhead() {
+        use musializer_core::project::scene_switch::SceneSwitchCue;
+        let ctx = Context::default();
+        let mut editor = EditorState::default();
+        let mut track =
+            Track::new(PathBuf::from("/test/song.wav"), 10.0, SceneId::Spectrum, 7).unwrap();
+        draw(&mut editor, &ctx, &track, vec![]);
+        let (frame, _) = draw(&mut editor, &ctx, &track, vec![]);
+        // No plan: the whole video's picker only, and it says Off.
+        let picked = pick(
+            &mut editor,
+            &ctx,
+            &track,
+            text_point(&frame, "Off"),
+            "Handheld green",
+        );
+        assert_eq!(
+            picked.commands,
+            vec![ShellCommand::ScenePlan(ScenePlanEdit::SetVideoPixel(
+                Pixel::on()
+            ))]
+        );
+
+        // The video wears the handheld; a plan's section under the playhead
+        // (1.5 s) unlocks into console colour and keeps the video's size.
+        track.scene_switches.finish.pixel = Pixel {
+            pixels: 144,
+            ..Pixel::on()
+        };
+        let cue = SceneSwitchCue {
+            id: 7,
+            start_seconds: 0.0,
+            end_seconds: 10.0,
+            ..SceneSwitchCue::default()
+        };
+        track
+            .scene_switches
+            .replace(&[cue], 10.0, SceneId::ALL.len() as u32)
+            .unwrap();
+        track.scene_switches.enabled = true;
+        draw(&mut editor, &ctx, &track, vec![]);
+        let (frame, _) = draw(&mut editor, &ctx, &track, vec![]);
+        let section = text_point(&frame, "The video's look");
+        let picked = pick(&mut editor, &ctx, &track, section, "Console colour");
+        let expected = Pixel {
+            pixels: 144,
+            ..Pixel::on().without_colours(Matching::Levels)
+        };
+        assert_eq!(
+            picked.commands,
+            vec![ShellCommand::ScenePlan(ScenePlanEdit::SetPixel {
+                cue_id: 7,
+                pixel: Some(expected),
+            })]
+        );
     }
 
     #[test]

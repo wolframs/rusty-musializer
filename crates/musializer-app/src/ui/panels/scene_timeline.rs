@@ -46,12 +46,34 @@ pub const SCENE_SECTION_HEIGHT: f32 = SCENE_LANE_OFFSET + SCENE_LANE_HEIGHT + me
 /// vector indexes do not, because split and delete renumber them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScenePlanEdit {
-    SplitAt { seconds: f64 },
-    RetimeBoundary { right_cue_id: u64, seconds: f64 },
-    Retarget { cue_id: u64, scene: SceneId },
-    CaptureTuning { cue_id: u64 },
-    Remove { cue_id: u64 },
+    SplitAt {
+        seconds: f64,
+    },
+    RetimeBoundary {
+        right_cue_id: u64,
+        seconds: f64,
+    },
+    Retarget {
+        cue_id: u64,
+        scene: SceneId,
+    },
+    CaptureTuning {
+        cue_id: u64,
+    },
+    Remove {
+        cue_id: u64,
+    },
     SetEnabled(bool),
+    /// One section's pixel look (2026-10-24): `None` wears the video's,
+    /// `Some(Pixel::OFF)` switches it off there. Written by the Editor's Tune
+    /// tab; the same field a treatment's section `pixel` compiles into.
+    SetPixel {
+        cue_id: u64,
+        pixel: Option<musializer_core::project::pixel::Pixel>,
+    },
+    /// The whole video's pixel look: the finish's `pixel`, which applies with
+    /// or without a plan.
+    SetVideoPixel(musializer_core::project::pixel::Pixel),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -206,6 +228,55 @@ fn draw_segment_marks(
                 3,
                 Color::new(channel(r0), channel(g0), channel(b0), alpha),
                 Color::new(channel(r1), channel(g1), channel(b1), alpha),
+            );
+        }
+    }
+    // The section's own pixel look (2026-10-24): a little checker of its
+    // palette in the block's top-right corner, so a lane reads "this is where
+    // the four-shade world unlocks" at a glance; a hollow square for a section
+    // that switches the look off. A section wearing the video's look has no
+    // mark — the finish is the whole lane's, and says so in the name field.
+    if let Some(look) = cue.pixel {
+        let size = 4.0f32;
+        let x = rect.x + rect.width - size * 3.0 - 3.0;
+        let y = rect.y + 3.0;
+        if rect.width < size * 5.0 {
+            return;
+        }
+        if look.is_on() {
+            let colours = look.colours();
+            let shade = |index: usize| -> Color {
+                let packed = match colours.len() {
+                    0 => [0x000000, 0x555555, 0xaaaaaa, 0xffffff][index],
+                    count => colours[(index * (count - 1)) / 3],
+                };
+                let [r, g, b] = musializer_core::project::look::rgb(packed);
+                let channel = |value: f32| (value * 255.0).round() as u8;
+                Color::new(channel(r), channel(g), channel(b), alpha)
+            };
+            for (column, row, index) in [
+                (0, 0, 0),
+                (1, 0, 3),
+                (2, 0, 1),
+                (0, 1, 3),
+                (1, 1, 2),
+                (2, 1, 3),
+            ] {
+                d.draw_rectangle(
+                    (x + size * column as f32) as i32,
+                    (y + size * row as f32) as i32,
+                    size as i32,
+                    size as i32,
+                    shade(index),
+                );
+            }
+        } else {
+            d.draw_rectangle_lines(
+                x as i32,
+                y as i32,
+                (size * 3.0) as i32,
+                (size * 2.0) as i32,
+                Color::new(255, 255, 255, alpha),
             );
         }
     }
@@ -408,6 +479,14 @@ impl Shell {
         let name_owned = match (selected_scene, detail) {
             (Some(scene), Some(detail)) => format!("{} · {detail}", scene.display_name()),
             (Some(scene), None) => scene.display_name().to_owned(),
+            (None, _) if track.scene_switches.finish.pixel.is_on() => {
+                let look = track.scene_switches.finish.pixel;
+                format!(
+                    "Select a segment · pixel look {} {}",
+                    look.palette_label(),
+                    look.pixels
+                )
+            }
             (None, _) if track.scene_switches.finish.is_active() => {
                 "Select a segment · film finish on".to_owned()
             }

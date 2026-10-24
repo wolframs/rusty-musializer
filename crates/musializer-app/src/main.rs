@@ -4551,6 +4551,25 @@ fn handle_scene_plan_edit(
             Edit::Retarget { cue_id, scene } => track.retarget_scene_cue(cue_id, scene),
             Edit::CaptureTuning { cue_id } => track.capture_scene_cue_settings(cue_id),
             Edit::Remove { cue_id } => track.remove_scene_cue(cue_id),
+            // The pixel look (2026-10-24): the model validates, and a refusal
+            // changes nothing, like every other edit here.
+            Edit::SetPixel { cue_id, pixel } => {
+                if track.scene_switches.set_pixel(cue_id, pixel) {
+                    Ok(())
+                } else {
+                    Err(workspace::SceneCueError::Plan(
+                        musializer_core::project::scene_switch::SceneSwitchError::Cue,
+                    ))
+                }
+            }
+            Edit::SetVideoPixel(pixel) => {
+                if pixel.is_valid() {
+                    track.scene_switches.finish.pixel = pixel;
+                    Ok(())
+                } else {
+                    Err(workspace::SceneCueError::Settings)
+                }
+            }
             Edit::SetEnabled(_) => unreachable!("handled above"),
         };
         if result.is_ok() {
@@ -4591,6 +4610,15 @@ fn handle_scene_plan_edit(
                         "The selected segment captured the current tuning."
                     }
                     Edit::Remove { .. } => "The segment was removed and its span was merged.",
+                    Edit::SetPixel { pixel: None, .. } => {
+                        "The section now wears the video's pixel look."
+                    }
+                    Edit::SetPixel {
+                        pixel: Some(look), ..
+                    } if !look.is_on() => "The pixel look is off for this section.",
+                    Edit::SetPixel { .. } => "The section has its own pixel look.",
+                    Edit::SetVideoPixel(look) if !look.is_on() => "The video's pixel look is off.",
+                    Edit::SetVideoPixel(_) => "The whole video now has a pixel look.",
                     Edit::SetEnabled(_) => unreachable!("handled above"),
                 },
             );
@@ -6094,8 +6122,17 @@ impl Report {
             // a plan that has none.
             let cues = track.scene_switches.cues();
             let plan = &track.scene_switches;
+            // Sections with a look of their own, and whether the video has
+            // one: a lane mark nothing drew looks like no look.
+            let pixel_sections = cues.iter().filter(|cue| cue.pixel.is_some()).count();
+            let pixel_video = if plan.finish.pixel.is_on() {
+                "video"
+            } else {
+                "none"
+            };
             println!(
-                "scene marks:     graded={} glides={} transitions={} outro={} finish={}",
+                "scene marks:     graded={} glides={} transitions={} outro={} finish={} \
+                 pixel={pixel_sections}/{pixel_video}",
                 cues.iter()
                     .filter(|cue| cue.grade.is_some_and(|grade| !grade.is_identity()))
                     .count(),
