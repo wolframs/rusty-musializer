@@ -5172,7 +5172,13 @@ if [ ! -f "$LYRIC_PROJECT" ]; then
     echo "FAIL: the generated project the run lane is seeded from is unavailable" >&2
     RUN_FAILED=1
 else
-    run_capture runs runs "panel=none,time=2.5,play=0" || RUN_FAILED=1
+    # Settled, so the poster count on the report line is a fact rather than
+    # however many arrived in 30 paused frames (since the poster service merged,
+    # WX-5b: the gate first read 0/4 here, written before there was a service,
+    # and then 4/4 on a loaded machine). The hairline and grade-step checks
+    # below read this capture with its posters drawn, which is the lane a user
+    # sees.
+    run_capture runs runs "panel=none,time=2.5,play=0,posters=settle" || RUN_FAILED=1
     run_capture runs-alternating alternating "panel=none,time=2.5,play=0" || RUN_FAILED=1
     run_capture runs-same-grade same-grade "panel=none,time=2.5,play=0" || RUN_FAILED=1
     run_capture runs-open runs "panel=none,time=2.5,play=0,run-open=2" || RUN_FAILED=1
@@ -5180,7 +5186,7 @@ else
 
     # The fold, as the report states it.
     case "$(run_line runs)" in
-        "runs=4 sections=7 cuts=3 hairlines=3 arriving=1 graded=2 now=run 2/4 section 3 (stage) selected=none opened=none posters=0/4 unavailable=0 "*) ;;
+        "runs=4 sections=7 cuts=3 hairlines=3 arriving=1 graded=2 now=run 2/4 section 3 (stage) selected=none opened=none posters=4/4 unavailable=0 "*) ;;
         *) echo "FAIL: the run plan did not fold to four runs: $(run_line runs)" >&2; RUN_FAILED=1 ;;
     esac
     case "$(run_line runs-alternating)" in
