@@ -7304,18 +7304,22 @@ mod tests {
         let sidebar_floor = lyrics_editor_layout::LYRIC_EDITOR_SIDEBAR_MINIMUM;
         let mut editor = LyricEditor::new();
         editor.cue_count = 6;
-        // 758 px is where the arithmetic first has room for all of it: the
+        // 795 px is where the arithmetic first has room for all of it: the
         // sidebar floor, the scene section, this panel's fixed chrome, the base
         // lane and the form's 223 px. Below that the form wins and the sidebar
         // yields, which is the oracle's own documented behaviour at 640 — see
         // `lyrics_editor_layout`'s module comment. Sweeping from 700 would be
         // asserting a guarantee no window that short can keep.
+        //
+        // It was 775 until WX-5b grew the scene section from 60 to 80 logical
+        // px (the plan lane 24 → 44, for a poster beside each run's name), which
+        // moves the first window that fits by the same 20 px.
         let first_window_that_fits = sidebar_floor
             + SCENE_SECTION_ABOVE_BAND
             + LANE_FIXED_CHROME
             + LANE_HEIGHT
             + lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM;
-        assert_eq!(first_window_that_fits, 775.0);
+        assert_eq!(first_window_that_fits, 795.0);
         let mut window = first_window_that_fits;
         while window <= 2160.0 {
             for requested in [0.0f32, LANE_HEIGHT, 40.0, LANE_HEIGHT_MAX, 400.0] {
@@ -7338,13 +7342,14 @@ mod tests {
         // protect the sidebar even at the base lane — that is the oracle's own
         // documented yield at 640 — so the sidebar bound stops applying and the
         // *band* bound takes over: at 640 the lane itself gives way to 46 so the
-        // editing form still gets its promised 223 px. Between there and 791 the
-        // lane sits at its 2.25x default and cannot be dragged; from 791 up the
-        // full 3x is reachable.
+        // editing form still gets its promised 223 px. Between there and 811 the
+        // lane sits at its 2.25x default and cannot be dragged; from 811 up the
+        // full 3x is reachable. (791 before WX-5b's 20 px taller scene section;
+        // the band bound at 640 does not read the section, so 46 stands.)
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 640.0), 46.0);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 720.0), LANE_HEIGHT);
-        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 771.0), LANE_HEIGHT);
-        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 791.0), LANE_HEIGHT_MAX);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 791.0), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 811.0), LANE_HEIGHT_MAX);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 1080.0), LANE_HEIGHT_MAX);
         // The operator's own window, which is the one this revision was asked
         // for: the 2.25x default, draggable to the full 3x.
