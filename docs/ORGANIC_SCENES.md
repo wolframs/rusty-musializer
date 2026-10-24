@@ -1,135 +1,251 @@
 # Metaball Garden and Voronoi Bloom
 
-These are original Rust and embedded GLSL330 scenes inspired by the visible
-Teknium demos, with no third-party source, assets or dependencies copied.
+Original Rust and embedded GLSL330 scenes. They take their look from Teknium
+demos, worked out from what the demos show on screen. No third-party source,
+asset or dependency was read or copied.
 
-- [Molten metaballs](https://webdev.teknium.io/d/gl3/demos/three-raymarcher-metaballs/): the sculptural smooth unions and broad glossy reflections.
-- [Paper loading states](https://webdev.teknium.io/d/paper/demos/paper-loading-states/): quiet, continuous organic motion.
-- [Voronoi glass](https://webdev.teknium.io/d/code/demos/pts-voronoi-glass/) and [microscope](https://webdev.teknium.io/d/css3/demos/houdini-voronoi-microscope/): drifting cellular structure.
+- [Molten SDF metaballs](https://webdev.teknium.io/d/gl3/demos/three-raymarcher-metaballs/):
+  candy-finished goo beside a chrome ring.
+- [Wobbly candy blobs](https://webdev.teknium.io/d/scene2/demos/tresjs-wobble-blobs/):
+  sweets on a dark floor with sparkles and contact shadows.
+- [Procedural clear-coated blob](https://webdev.teknium.io/d/scene/demos/three-tsl-node-material/)
+  and the [Shader Park sculpture](https://webdev.teknium.io/d/fx/demos/shader-park-sdf-sculpture/):
+  a coat over colour, and a thin-film sheen.
+- [Perforated godrays lantern](https://webdev.teknium.io/d/gl3/demos/good-godrays-lattice/):
+  light shafts cut by a lattice into haze.
+- [Refractive glass](https://webdev.teknium.io/d/scene/demos/drei-transmission-glass/)
+  and the [css-doodle patterns](https://webdev.teknium.io/d/fx/demos/css-doodle-patterns/):
+  refraction, and a pattern built with intent rather than at random.
 
-## The two looks
+The 2026-10-24 rework replaced the first versions, which the operator judged
+too plain: "didn't quite go all out with the scene design and all the bells
+and whistles". The first Metaballs was four glossy spheres on a flat void. The
+first Voronoi was flat teal and orange cells with no light or depth. Both still
+use the same ids, tokens and settings descriptors (keys, bounds, defaults,
+precision). Saved projects still open but **look different, on purpose**.
+`state_version` is 2 for both.
 
-**Metaball Garden** (`metaballs`, scene 18) is a little sea-glass and orchid
-sculpture floating above a velvet floor. Buoyant spheres pull into necks and
-separate again. Bass increases their radius, track-relative loudness fills their
-light, and treble strengthens the broad warm and cool studio reflections.
-The default stays coloured and dimensional before music starts.
+## Metaball Garden (`metaballs`, scene 18)
 
-`flow` controls the sculpture clock; `count` selects 3–9 spheres; `size` changes
-their mass; `response` scales the musical followers; `hue` turns the material;
-`metal`, `glow` and `orbit` shape the surface and separation. Flow zero stops
-motion while music can still change the sculpture. Response zero leaves ambient
-motion and removes music from the followers once they decay.
+**The look.** A molten candy sculpture in a dark plum studio. The main blobs
+come in several sizes, from one big mother blob down to small ones. Satellite
+droplets orbit further out. All of them merge through one smooth union. Each
+blob keeps its own colour, and colours mix only where the goo meets. The main
+mass uses a warm family (hot pink, tangerine, orchid, coral), because those mix
+cleanly where lobes merge; pink and lime would turn grey. The droplets use cool
+accents (aqua, lime, cornflower), so they read as separate sweets. The material
+is a clear coat over colour:
 
-**Voronoi Bloom** (`voronoi`, scene 20) is a field of petrol, sea-glass and amber
-cells. Dark lead seams, directional bevels and etched inner contours make the
-picture read as glass rather than flat noise. Twelve followed spectral regions
-light different cells; bass lights their centres and track-relative loudness
-provides the wider breathing light. Seeded sites drift gracefully without audio.
+- wrapped diffuse light, and thin necks and droplets that let light through;
+- reflections of four rectangular softboxes, which make the window highlights
+  of a photographed sweet;
+- a sharp key highlight, and a rim light that flares on kicks.
 
-`cells` is density along the short axis, so a portrait retains the same glass
-scale as a landscape. `edges` thickens the seams; `facet` controls the directional
-face and bevel; `glow` lights the seams; `drift` sets the site excursion rate;
-`flow`, `response` and `hue` serve the same purposes as in Metaballs.
+A tilted chrome ring, with a thin-film sheen and three black glass beads, turns
+slowly around the sculpture. The lacquer floor shows:
+
+- a soft shadow from the key light;
+- contact occlusion where the goo comes close to the floor;
+- colour that each blob spills onto the floor below it;
+- a shadow tinted by the translucent candy;
+- a reflection that blurs with the height of what it reflects.
+
+Behind it all is a cyclorama that glows behind the sculpture and falls to
+black.
+
+**What it does with the music.** It feels like mass, not a meter.
+
+- **Kicks** use the bass-transient detector that Clawd measured on real mixes
+  (`clawd::KICK_THRESHOLD`, the positive excursion of the lowest quarter of the
+  bands over their trails). Each kick hits two damped springs:
+  - The *squash* spring (3 Hz, underdamped) presses the sculpture flat toward
+    the floor. It bulges sideways, then rebounds once into a stretch. The
+    contact shadow tightens as it drops.
+  - The *burst* spring (1.5 Hz) flings the droplets clear and pushes the main
+    blobs apart, so the goo splits. It then pulls them back and they merge
+    again with a wobble.
+  - While both springs move, the jelly surface quivers. The ripple amplitude is
+    `wobble()`, taken from the springs' speeds.
+- **Sustained bass** swells every blob and loosens the goo, through a larger
+  smooth-union radius.
+- **Track-relative loudness** is followed twice:
+  - A fast follower drives the key light and the magenta softbox.
+  - A slow *section energy* follower changes the whole scene. In loud sections
+    the blobs gather into one molten mass, the camera dollies in about 0.75
+    units, and the clock runs at 130 %. In the track's own quiet the blobs
+    drift apart into separate droplets, the clock slows to 70 %, and the studio
+    dims.
+- **Treble transients** use the same excursion measure over the top third of
+  the spectrum. Each one strikes one or two star glints on the surface of a
+  blob, toward the camera and the light. Glints flare in 40 ms and fade within
+  0.6 s.
+
+`examples/organic_probe.rs` measured this on *Door, No Room*: 468 kicks
+(about 1.5 per second), around 950 glints, and squash peaks of 0.25 to 0.48.
+The glint gate (`HAT_THRESHOLD` = 0.045) fires a few times a second in busy
+sections and almost never in pads.
+
+**Controls.** Keys, bounds and defaults are unchanged.
+
+| Control | What it does now |
+| --- | --- |
+| `flow` | Speed of the sculpture's clock (orbits, ring, camera drift). 0 freezes motion; kicks still squash it. |
+| `count` | Main blobs, 3 to 9. Up to six droplets join them. |
+| `size` | Mass of every blob. The camera backs off for a large sculpture. |
+| `response` | Scales every musical term. 0 keeps the ambient sculpture and removes kicks, glints, swell and section energy. |
+| `hue` | Turns both palettes about the grey axis. |
+| `metal` | 0 is candy under a clear coat. 1 is liquid metal: the studio reflected, tinted by the pigment and a thin film. Default 0.45 is a glossy candy. |
+| `glow` | Translucency of thin parts, rim light, colour spilled on the floor, the tinted shadow, and glint size. |
+| `orbit` | How far blobs and droplets spread, and the ring's radius. The camera backs off so the ring stays in frame. |
+
+## Voronoi Bloom (`voronoi`, scene 20)
+
+**The look.** A leaded stained-glass window with the sun behind it and haze in
+front. The palette is composed, not scattered:
+
+- a warm heart of gold, ruby, rose and pale amber around the window's centre;
+- a field of cobalt, violet and emerald toward the rim, with rare pale blue.
+
+The family comes from each pane's lattice cell, not from its moving site, so a
+pane never changes colour as it drifts.
+
+Each pane is rolled cathedral glass. It has a low ripple that bends the sun
+behind it, density mottling, streaks along a direction set per pane, and seed
+bubbles that focus a point of light inside a dark ring.
+
+The lead came is a rounded bevel lit by the room, with solder blobs at the
+joints, and the glass darkens slightly under its edge. In front of the window,
+haze scatters the light that came through into coloured shafts radiating from
+the sun. Dust drifts in the beams, and the lens blooms around the sun.
+
+**What it does with the music.**
+
+- **Twelve followed spectral voices** light the window like a rose window: bass
+  at the centre, treble at the rim. Each pane takes the value between two
+  voices from its distance to the centre, so a pane never jumps between them.
+  A contrast curve keeps a sounding band apart from a quiet one, even in a
+  dense mix.
+- **Kicks** (the same detector):
+  - flare the sun and pulse the shafts;
+  - start a *bloom wave* from a beat seed, alternately the sun and a seeded
+    pane. Each pane lights when the wave front reaches it and fades behind it,
+    so a kick reads as a disc of light growing outward with a bright rim, as
+    if the glass were growing.
+- **The hardest kicks of a loud section** crack one pane near the light:
+  - Nine zig-zag fractures and two rings spread from the impact.
+  - Each fracture has a bright core and a darker seam, and light pours through.
+  - The pane flares, then heals over 2.4 s.
+  - The gate is a kick excursion of at least 0.13 (`SHATTER_KICK`) with section
+    energy of at least 0.5 and a 4 s cooldown.
+  - The probe counted 15 cracks across *Door, No Room*, all in loud sections
+    and none in the breakdowns.
+- **Bass** swells the sun and thickens the haze.
+- **Section energy** works as in Metaballs. On loud sections the sun rises and
+  brightens and the drift runs faster. In quiet sections the sun sinks and dims
+  and the glass deepens to cobalt, with the dust in the last light.
+
+**Controls.** Keys, bounds and defaults are unchanged.
+
+| Control | What it does now |
+| --- | --- |
+| `flow` | Speed of the window's clock (site drift, the sun's path, the haze). |
+| `cells` | Panes along the short axis, so a portrait keeps the scale of a landscape. |
+| `edges` | Width of the lead came. Even 0 keeps a thin came; real glass is never seamless. |
+| `response` | Scales every musical term. 0 keeps the ambient window with no voices, waves or cracks. |
+| `hue` | Turns the glass palette. The sun stays warm. |
+| `glow` | Strength of the shafts, the halation around the sun, and the dust. 0 is a clean window. |
+| `drift` | How far each site wanders and how far the window pans. |
+| `facet` | Glass texture: ripple refraction, mottling, streaks and seeds. 0 is smooth glass. |
 
 ## State and rendering contracts
 
-Each core module exposes its named state with `new(seed: u64)`, `SceneState`,
-and `descriptor()`. Each app module exposes `Resources { pub report: String, .. }`,
-`Resources::load(&mut RaylibHandle, &RaylibThread) -> Self`, and:
+Each core module has its named state with `new(seed: u64)`, implements
+`SceneState`, and has a `descriptor()`. Core holds every piece of history: the
+clocks, the followers, the springs, the wave and glint ring buffers, and the
+crack. Each app module has `Resources { pub report: String, .. }`,
+`Resources::load`, and `draw(d, resources, state, frame, boundary)`. It uploads
+uniforms and keeps no time of its own, which is why a still, a clip and a full
+export draw the same picture. The springs integrate at a fixed 1/240 s step, so
+a preview at 60 fps and an export at 30 fps move them the same way (a unit test
+pins this). Only a positive, finite scene delta advances state, so pause
+freezes everything.
 
-```rust
-pub fn draw(
-    d: &mut RaylibDrawHandle<'_>,
-    resources: &mut Resources,
-    state: &NamedState,
-    frame: &SceneFrame<'_>,
-    boundary: Rectangle,
-)
-```
+Core has no GPU, filesystem or OS state. Loudness uses `TrackDynamics` when
+present and a bounded absolute fallback when it is absent. The reports say
+`dyn=track` or `dyn=none`, so the fallback cannot hide.
 
-Core has no GPU, filesystem or OS state. Only a finite positive scene delta
-advances the clock or audio followers; pause freezes all history. A seed and
-input sequence replay exactly without drawing. Bass uses shared `EffectInputs`;
-loudness uses `TrackDynamics` when present and a bounded absolute fallback when
-absent. Reports name `dyn=track` or `dyn=none` so the fallback cannot hide.
-Drawing uploads only a few uniforms. No new unsafe blocks or render feedback.
+The shaders run on fixed budgets:
 
-Metaballs bounds the primary raymarch to 64 steps over at most nine spheres,
-with four normal taps and analytic ground shadows; it never launches secondary
-shadow or reflection marches. Voronoi uses nine nearest-site candidates and 25
-edge candidates per pixel, independent of cell density, with integer lattice
-hashes. Both use coordinates relative to the shorter image axis and output
-opaque pixels. Both reject raylib's fallback shader by checking distinctive
-uniform locations, visibly name an unavailable scene, and report a fallback
-separately from `surface=shader`.
+- **Metaballs:** at most 112 primary steps over up to 15 spheres, a ring and
+  three beads, inside a bounding sphere that core computes. The floor
+  reflection uses 40 steps and the soft shadow 20.
+- **Voronoi:** 9 nearest-site candidates, then 25 for the two nearest seams,
+  plus 22 shaft samples of 9 candidates each.
 
-## Verification
+Every hash is an integer hash, never `fract` of a large product. Every `pow`
+has a non-negative base. Colours are lit in linear light, tone-mapped and
+written opaque. Both shaders reject raylib's fallback shader by checking
+distinctive uniform locations, and visibly name an unavailable scene.
 
-The core tests exercise seeded replay, different seeds, ambient clock motion,
-independent bass/treble response, track-relative light (Metaballs), separate
-low/high spectral voices (Voronoi), response zero, and exact pause preservation.
-Render evidence and performance measurements are recorded below. The integration
-owner performs the final release build.
+The report lines name what the frame held, because a scene that stopped hearing
+kicks still photographs as a plausible scene:
 
-### 2026-10-23 leaf acceptance
+- **metaballs:** `blobs=6+6, kicks=N, glints=K live, squash=, burst=, light=, energy=, treble=, clock=, dyn=`
+- **voronoi:** `kicks=N, waves=K live, crack=0.70s|none, sun=strength@(x,y), light=, bass=, energy=, clock=, dyn=`
 
-- `cargo test -p musializer-core scenes::metaball_garden -- --nocapture`: 2 passed
-  (repeated after the default mass/spacing adjustment).
-- `cargo test -p musializer-core scenes::voronoi_bloom -- --nocapture`: 2 passed.
-- `cargo build -p musializer-app`: passed against the parent's shared wiring.
-  Only the four owned Rust leaves were formatted with standalone `rustfmt`.
-- All application launches used `tools/headless_run.sh`, the debug binary,
-  isolated state directories, private Xvfb/VirtualGL and the wrapper's mute and
-  invalid audio-sink guards. Real decoded music remained the analyzer input.
-- Real-music review: the existing local `you-opening-0-20.mp3` clip, seed 42,
-  seconds 4–10, 1280×720, 30 fps, balanced quality, NVENC. Each output has 180
-  video frames. The two `*-review.mp4` deliverables have **only a video stream**;
-  their soundtracks were removed with `-map 0:v:0 -c:v copy -an` and `ffprobe`
-  verified the absence of audio. No user audio or generated output is staged.
-- Final landscape stills: `build/organic-scenes/metaballs-final.png` and
-  `voronoi-final.png`. Portrait real-music stills:
-  `metaballs-music-portrait.png` and `voronoi-music-portrait.png` (540×960).
-  All four were pixel-inspected; every alpha byte is 255.
-- Same seed/time, real music versus response zero: mean absolute RGB difference
-  3.856/255 for Metaballs and 41.069/255 for Voronoi. These measure visible
-  coupling, not aesthetic quality. Zero-response stills (`*-zero.png`) retain a
-  complete ambient picture. The separate core tests establish frozen history
-  on pause and repeatable input-sequence replay.
-- Reports say `surface=shader` and `dyn=track`, with nonzero followed musical
-  values. Final still logs: `metaballs-final.log`, `voronoi-final.log`; review
-  logs: `metaballs-music.log`, `voronoi-music.log`.
+Both lines keep `surface=shader`, which `tools/scene_gallery_check.py` checks
+for.
 
-The first physical Metaballs capture found a defect that compilation missed:
-negative bases passed to GLSL `pow` made the sculpture black except for isolated
-highlights. Using absolute values before the even powers fixed it. The initial
-image is intentionally replaced by the corrected evidence, and the report is
-still checked separately so a fallback could not earn visual acceptance.
+## Verification (2026-10-24)
 
-Creative judgment: Metaballs now reads as a buoyant glazed sculpture, with
-clearly merging necks, coloured studio reflections and a restrained floor shadow;
-Voronoi reads as illuminated leaded glass, with a quiet structural drift and
-individual notes lighting distinct cells. Both remain composed in portrait.
-These are an implementation review, not operator listening acceptance.
+- **Core tests:** `cargo test -p musializer-core --lib -- scenes::metaball_garden scenes::voronoi_bloom`,
+  10 passed. They cover:
+  - seeded replay, and different seeds;
+  - ambient motion, the bass swell, and the track-relative light;
+  - a kick that squashes, splits, rebounds and settles;
+  - a spring that does not depend on the replay frame rate;
+  - glints that spawn and expire;
+  - quiet sections that slow the clock while loud ones gather the blobs and
+    dolly in;
+  - low and high voices kept apart;
+  - bloom waves that travel outward;
+  - a crack only on a hard kick in a loud section, once per cooldown, and
+    healing;
+  - the sun rising with the section;
+  - response zero, and exact pause preservation.
 
-Reference-browser limitation: all four assigned URLs were visited in a private
-T3 tab created with `reuseExistingTab=false`. Metaball canvas pixels were inspected
-successfully without reading source. T3 snapshots repeatedly returned
-`Preview automation snapshot timed out after 15000ms.` The Pts canvas stayed
-blank and Paper's canvases reported 0×0 even after an explicit viewport resize;
-the microscope's visible labels were readable but its CSS picture could not be
-captured. Those three effects therefore do not have a completed pixel review.
-No third-party script, shader, CSS implementation or asset was read or copied.
+  The full `cargo test` passed.
+- **`tools/scene_gallery_check.py`'s per-scene check** ran for these two scenes
+  only, through a wrapper. It uses the same fixture and assertions; the tool has
+  no scene filter.
 
-Performance is bounded by the fixed shader loops, but this is not a portable
-frame-rate guarantee. The two initial six-second exports ran concurrently on the
-RTX 3090 and each took about 4.5 seconds wall including decode/startup/encoding;
-that is end-to-end export evidence, not isolated GPU timing. A final Metaballs
-export after widening its safe bounding sphere is timed in
-`metaballs-render.time`. Preview's frame-budget line reports zero frames for
-these offline exports and is not being used as a performance measurement.
+  | | metaballs | voronoi |
+  | --- | --- | --- |
+  | response MAD | 18.3 | 60.9 |
+  | motion MAD | 11.5 | 14.4 |
+  | project reopen | identical | identical |
+  | still vs video | 38.7 dB | 35.7 dB |
+  | full vs clip | 42.9 dB | 40.2 dB |
 
-The integration owner owns the required final `cargo build --release`, broad
-checks, compact scene picker and release acceptance. This leaf task changes only
-its assigned seven source/document files and gitignored evidence; no commit,
-reset, stash or shared-file edit was performed.
+  Its `--negative-control` fails both scenes with `music response missing (MAD 0.0000)`, as it must.
+- **CPU against GPU:** the same 640x360 still through llvmpipe
+  (`MZ_GL_LAUNCH=""`) and through the RTX 3090 agrees at 62.9 dB (Metaballs,
+  mid-kick) and 63.4 dB (Voronoi, mid-crack).
+- **Cost:** a 10 s windowed export at 1920x1080 High (2x supersampled) on the
+  RTX 3090 took the following wall time, compared with Spectrum at 20.2 s:
+  - Metaballs 22.0 s (+1.8 s), about 4.6 ms per 3840x2160 frame for the
+    scene;
+  - Voronoi 22.4 s (+2.2 s), about 5.6 ms per frame.
+
+  Both are a small fraction of a 16.7 ms preview frame at full-window preview
+  sizes. The live preview's `frame budget:` line (release build, 600 frames
+  playing a loud passage) showed no stalls past 25 ms for either scene in an
+  unloaded run, at the default 1280x720 window and at 1920x1080 in Full. That
+  line is noisy while other renders share the GPU: Spectrum itself logged 6
+  stalls in one such run.
+- **Judged by eye** on contact sheets of 12 moments across *Door, No Room*
+  (quiet intro, build, drops, breakdown, finale), sheets of beat sequences, a
+  sweep of every control's extremes, and 540x960 portraits. The upgrade's
+  before and after sheets are in the gitignored `build/scene-upgrade/organic/`.
+  This is the implementation's own review, not the operator's listening
+  acceptance.

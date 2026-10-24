@@ -2081,13 +2081,13 @@ pub fn scene_look(scene: SceneId) -> &'static str {
             "Layered northern-light curtains over a dark starfield, with folding luminous filaments. Track-relative energy lifts the curtains and bass shapes their breadth."
         }
         SceneId::MetaballGarden => {
-            "A glossy three-dimensional sculpture of blobs that merge and pull apart. Bass swells their mass; count, size, orbit and metal change the sculpture."
+            "A molten candy sculpture in a dark studio: glossy blobs and droplets merging and splitting inside a precessing chrome ring, over a lacquer floor that carries their shadow, colour and reflection. Kicks press it to the floor and fling the goo apart before it re-merges; bass swells it; loud sections gather it and push the camera in, quiet ones let it drift apart; hats strike star glints. count, size, orbit and metal shape it; hue turns the candy."
         }
         SceneId::NeonTunnel => {
             "Forward travel through twisted polygonal neon ribs. Bass opens the aperture and spectral energy lights the depth. Speed, sides, twist and glow direct the flight."
         }
         SceneId::VoronoiBloom => {
-            "A drifting stained-glass mosaic with moving cells and luminous seams. The music lights cells and facets; density, edges and site drift change its structure."
+            "A leaded stained-glass window with the sun behind it and haze in front: a warm heart of gold and ruby in a cobalt field, rippled glass, lead came, coloured light shafts and dust in the beams. Bass lights the centre and treble the rim; kicks flare the sun and bloom the glass outward from a beat seed; the hardest hits of a loud section crack a pane. cells, edges (lead), facet (glass texture), glow (shafts) and drift direct it."
         }
         SceneId::IridescentPool => {
             "An oil slick on dark, deep water seen from above, banded magenta, blue, green and gold. Kicks tear holes in the oil with ring trains and caustics on the floor, other transients are rain, bass rolls a slow swell. scale sets the marbling, shimmer the film, light the reflections."
