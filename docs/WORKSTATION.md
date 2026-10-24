@@ -53,7 +53,7 @@ spec:
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
-| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b's lane done 2026-10-24, its poster service in its own branch; 5c (rail and big preview) next |
+| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail and big preview) next |
 | WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
 
 ### WX-1 — the dock
@@ -152,9 +152,8 @@ are in `docs/UI_TOOLKIT.md` ("Tokens and type"); the decisions are below.
 
 **WX-5b, the lane, done 2026-10-24.** The plan lane draws **runs**: consecutive
 sections of one scene folded into one block (`core::ui::plan_runs`), the scene
-colour mixed toward the ground, a poster slot at its left (the poster service,
-`posters.rs`, is built in its own branch; until it lands every run shows its
-fill and name), a hairline at each internal cut, and each section's transition
+colour mixed toward the ground, a poster frame at its left (the poster
+service, `posters.rs`, `docs/POSTER_FRAMES.md`, merged 2026-10-24), a hairline at each internal cut, and each section's transition
 edge, glide ramp, grade bar and pixel mark inside its own span. The run under
 the playhead has an inset accent outline and its section an accent tick.
 Hit testing is unchanged and per section, so every gesture still works;
@@ -199,8 +198,8 @@ They are independent unless a line says otherwise. Every one finishes with
    colour assertions to move: update them on purpose, never loosen them
    (see "The headless gate runs on the GPU" in `AGENTS.md`). Done when a capture of Door, No Room
    at 1920x1080 reads like the mockup's chrome.
-2. **WX-5b: the plan lane as runs.** *The lane is done (2026-10-24); the
-   poster service is its own branch.* Consecutive sections of one scene
+2. **WX-5b: the plan lane as runs.** *Done 2026-10-24, lane and poster
+   service together.* Consecutive sections of one scene
    merge into one block with a frame from that scene, cut hairlines, a
    transition edge and a grade bar. The lyric lane shows its words, and
    the waveform is grey and warms behind the playhead. Lives in
@@ -325,9 +324,9 @@ They are independent unless a line says otherwise. Every one finishes with
   unreachable from any probe.
 - **The poster slot is reserved whether or not a poster has arrived**, so the
   scene name does not jump when one does; with the service off
-  (`posters=off`) the name takes the slot. The service is built separately
-  (`posters.rs`, its own branch); until it merges every run shows fill and
-  name.
+  (`posters=off`) the name takes the slot. The service (`posters.rs`) merged
+  onto the lane on 2026-10-24; `tools/poster_check.sh` checks that each slot
+  shows its run's poster upright.
 - **Gate.** A new section seeds a seven-section plan with a known answer
   (`seed_lyric_fixture.py --run-plan`) and checks `scene runs:` and
   `scene marks:` exactly, counts exact-colour hairlines and the grade bar's

@@ -18,7 +18,7 @@
 #                   so equality is not a property of blank tiles.
 #   2. Isolation    paused inside the Clawd run and inside the Threshold run,
 #                   the frame the posters are drawn in is byte-equal to the
-#                   posters-off frame, and 38 frames later the preview crop
+#                   posters-off frame outside the plan lane, and 38 frames later the preview crop
 #                   still is; control: the crops at the two moments differ.
 #   3. Invalidation a followed-treatment edit to one section re-renders exactly
 #                   that run (refreshed=1, one new dump, the others untouched);
@@ -27,6 +27,9 @@
 #                   step-worst <= the paused budget + the worst replay frame,
 #                   and no more frames stall than with posters off.
 #   5. GPU state    `gl framebuffer: mismatched-frames=0` with posters on.
+#   6. In the lane  each run's slot, settled, matches its dumped poster upright
+#                   better than flipped; control: the posters-off lane does
+#                   not match at all.
 #
 # POSTER_BIN names a different binary, for a negative control without
 # replacing the build. MUSIALIZER_CAPTURE_DISPLAY is not needed: headless_run
@@ -97,6 +100,18 @@ distinct="$(md5sum "$OUT"/dump-a/*.png 2>/dev/null | cut -d' ' -f1 | sort -u | w
 #    is long after, and its preview crop must still be equal: state the
 #    service touched would persist into it. (The whole frame at 40 differs
 #    once the lane draws its posters, which is the lane's check, not this.)
+outside_lane_equal() { # a.png b.png log -> exit status: equal outside the plan lane
+    python3 - "$1" "$2" "$3" <<'PY'
+import re, sys
+from PIL import Image, ImageChops
+match = re.search(r"^scene runs:.* lane=(\d+),(\d+),(\d+),(\d+)", open(sys.argv[3]).read(), re.M)
+x, y, w, h = map(int, match.groups())
+images = [Image.open(path).convert("RGB") for path in sys.argv[1:3]]
+for image in images:
+    image.paste((0, 0, 0), (x, y, x + w, y + h))
+sys.exit(0 if ImageChops.difference(*images).getbbox() is None else 1)
+PY
+}
 crop_equal() { # a.png b.png log -> exit status: preview crops equal
     python3 - "$1" "$2" "$3" <<'PY'
 import re, sys
@@ -115,8 +130,12 @@ for moment in 3.0 7.5; do
         [ "$(field rendered "$on")" = 4 ] ||
             fail "t=$moment frame $frames: the settled run rendered no posters, so it proves nothing: $on"
     done
-    cmp -s "$OUT/off-$moment-3.png" "$OUT/on-$moment-3.png" ||
-        fail "t=$moment: the frame the posters were drawn in differs from posters off"
+    # Everything but the plan lane: since the lane draws posters (WX-5b
+    #    merge), a poster finished in frame 2 is already on screen in it, and
+    #    that is the lane's job rather than a leak. A draw escaping the
+    #    offscreen buffers lands anywhere else in the frame and still fails.
+    outside_lane_equal "$OUT/off-$moment-3.png" "$OUT/on-$moment-3.png" "$OUT/on-$moment-3.log" ||
+        fail "t=$moment: outside the plan lane, the frame the posters were drawn in differs from posters off"
     crop_equal "$OUT/off-$moment-40.png" "$OUT/on-$moment-40.png" "$OUT/on-$moment-40.log" ||
         fail "t=$moment: the preview changed after the poster service ran (its state is not isolated)"
 done
@@ -174,6 +193,60 @@ printf 'frame budget: on %s, off %s\n' "$(line_of 'frame budget: ' "$OUT/budget-
     "$(line_of 'frame budget: ' "$OUT/budget-off.log" | cut -c18-)"
 [ -n "$stalled_on" ] && [ "$stalled_on" -le "${stalled_off:-0}" ] ||
     fail "posters stalled more frames ($stalled_on) than no posters ($stalled_off)"
+
+# 6. The lane draws them, upright. Each run's poster slot in the settled
+#    40-frame capture is matched against that run's dumped poster (the same
+#    recipe, dumped by dump-a): scaled to the slot, searched over a few pixels
+#    of placement, the upright poster must correlate better than the same
+#    poster flipped, and well. The service stores posters top row first while a
+#    render target's buffer is bottom row first; the lane was first written for
+#    the second and drew every poster upside down (merge, WX-5b). Spectrum's
+#    poster at 15 s is near-flat and proves nothing either way, so the three
+#    with structure are measured. Control: the posters-off frame, with the
+#    lane's plain run fills in the same slots, must not match.
+slots_match() { # shot.png log dumpdir -> prints per run, exit status: all upright
+    python3 - "$1" "$2" "$3" <<'PY'
+import glob, re, sys
+import numpy as np
+from PIL import Image
+shot_path, log_path, dump = sys.argv[1:4]
+log = open(log_path).read()
+x0, y0, w0, h0 = map(int, re.search(r"^scene runs:.* lane=(\d+),(\d+),(\d+),(\d+)", log, re.M).groups())
+start, end = map(float, re.search(r"^scene runs:.* view=([\d.]+)\.\.([\d.]+)", log, re.M).groups())
+shot = np.array(Image.open(shot_path).convert("L")).astype(float)
+ok = True
+for index, (name, at) in enumerate([("clawd", 0.0), ("threshold", 5.0), ("stage", 10.0)]):
+    files = glob.glob(f"{dump}/{name}-*.png")
+    if not files:
+        print(f"  {name}: no dumped poster"); ok = False; continue
+    poster = Image.open(files[0]).convert("L")
+    left = x0 + w0 * (at - start) / (end - start)
+    best = {"up": -2.0, "flipped": -2.0}
+    h = h0 - 2
+    for width in range(h * 16 // 9 - 6, h * 16 // 9 + 3):
+        scaled = np.array(poster.resize((width, h), Image.BILINEAR)).astype(float)
+        cols = int(width * 0.55)  # left of the fade into the run's fill
+        for dx in range(-3, 4):
+            for dy in range(-2, 3):
+                x, y = int(round(left)) + 1 + dx, y0 + 1 + dy
+                seen = shot[y + 4:y + h - 4, x + 4:x + cols].ravel()
+                if seen.std() < 1.0:
+                    continue
+                for tag, image in (("up", scaled), ("flipped", scaled[::-1])):
+                    r = np.corrcoef(image[4:h - 4, 4:cols].ravel(), seen)[0, 1]
+                    best[tag] = max(best[tag], r)
+    upright = best["up"] >= 0.6 and best["up"] > best["flipped"]
+    ok &= upright
+    print(f"  {name}: upright r={best['up']:.2f}, flipped r={best['flipped']:.2f}")
+sys.exit(0 if ok else 1)
+PY
+}
+echo "posters in the lane, settled:"
+slots_match "$OUT/on-3.0-40.png" "$OUT/on-3.0-40.log" "$OUT/dump-a" ||
+    fail "the lane does not draw each run's poster upright in its slot"
+echo "control, posters off:"
+slots_match "$OUT/off-3.0-40.png" "$OUT/on-3.0-40.log" "$OUT/dump-a" &&
+    fail "control: the posters-off lane matched the posters, so the comparison cannot fail"
 
 # 5. GPU state, on every run that drew posters.
 for log in "$OUT"/dump-a.log "$OUT"/on-3.0-40.log "$OUT"/on-7.5-40.log "$OUT"/edited.log "$OUT"/budget-on.log; do

@@ -261,7 +261,7 @@ fn scene_rgb(scene: SceneId) -> (u8, u8, u8) {
 )]
 fn draw_poster(
     d: &mut RaylibDrawHandle<'_>,
-    texture: &raylib::prelude::Texture2D,
+    poster: &raylib::prelude::RenderTexture2D,
     aspect: f32,
     rect: UiRect,
     slot_width: f32,
@@ -273,6 +273,11 @@ fn draw_poster(
     if width < 2.0 || height < 2.0 {
         return;
     }
+    // The service stores a finished poster top row first, with mipmaps
+    // (`posters::PosterView`): an ordinary texture, so the source height is
+    // positive. A render target's own colour buffer would be bottom row first
+    // and want a negative one; this is not that.
+    let texture: &raylib::ffi::Texture2D = poster.as_ref();
     let source_width = texture.width as f32;
     let source_height = texture.height as f32;
     // A slot narrower than the poster crops its right side rather than
@@ -280,8 +285,8 @@ fn draw_poster(
     let crop = (width / (height * aspect.max(0.1))).min(1.0);
     let dest = UiRect::new(rect.x + 1.0, rect.y + 1.0, width, height);
     d.draw_texture_pro(
-        texture,
-        raylib::prelude::Rectangle::new(0.0, 0.0, source_width * crop, -source_height),
+        poster,
+        raylib::prelude::Rectangle::new(0.0, 0.0, source_width * crop, source_height),
         widgets::rectangle(dest),
         Vector2::zero(),
         0.0,

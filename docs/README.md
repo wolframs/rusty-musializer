@@ -22,6 +22,9 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 - [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — toolkit editor, appearance, migration boundary and real-input checks.
 - [`VIDEO_GENERATION.md`](VIDEO_GENERATION.md) — VG: the five generated-video picks on OpenRouter, prices and image inputs.
 - [`WORKSTATION.md`](WORKSTATION.md) — WX: the dock, the terminal, native agent sessions, live treatments and the restyle; parts and status.
+- [`POSTER_FRAMES.md`](POSTER_FRAMES.md) — WX-5b's poster service: one frame per
+  plan-lane run from the track's own audio, its recipe key, budget, isolation
+  and measurements.
 - [`RAYLIB_6_UPGRADE.md`](RAYLIB_6_UPGRADE.md) — raylib provenance and compatibility changes.
 
 - [`CODE_ARCHITECTURE.md`](CODE_ARCHITECTURE.md) — crate boundaries, state

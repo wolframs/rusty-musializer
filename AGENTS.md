@@ -56,6 +56,7 @@ tools/headless_check.sh            # the self-check: private Xvfb, evidence
 tools/headless_check.sh --skip-render  # Assist/routing checks without render/export suites
 tools/headless_run.sh ARGS...      # run the app isolated, muted, on the GPU; args pass through
 tools/treatment_check.sh           # the directing gate: --treatment, sheets, stills
+tools/poster_check.sh              # poster frames: determinism, isolation, invalidation, budget, the lane
 tools/align_lyrics.py song.mp3 song.lyrics.json   # time known lyrics (MMS CTC) for a treatment
 tools/install-linux-launcher.sh    # per-user desktop entry; --uninstall removes it
 
@@ -517,6 +518,11 @@ Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
   the per-plane numbers before blaming the encoder — blurring both images
   changed that PSNR by 0.1 dB, which is what said the difference was not the
   grain it looked like.
+- **`--probe-shot` photographs the frame before the last.** It reads the
+  framebuffer after the swap. A check that wants the frame in which something
+  happened has to run one frame longer than that frame: the poster gate's
+  isolation check passed with a deliberate draw-to-screen leak in frame 2
+  until the shot moved to a 3-frame run (WX-5b).
 
 ## Before implementation work
 
@@ -766,6 +772,10 @@ in the tree:
 | Origin colours `#1F7A4D`/`#2563C7`/`#D07A00`/`#7C7C86`, measured against the white lane only | `#238A57`/`#2C75EB`/`#B16800`/`#7C7C86`, one set for both appearances, each ≥ 3.32:1 on all ten surfaces the marks touch (lane, trough, block, now, selected × dark, light) | The old blue read 2.65:1 on the dark *now* fill and the old amber 2.81:1 on the light block. A colour clears 3:1 from near-black to white only with relative luminance near 0.19, so each kept its hue and saturation and moved its value. One set means one gate mask for both appearances |
 | `AuthoredText` draws at the requested size | Alegreya draws at 1.154× the requested size, centred on the requested line box, in both `measure_text` and `draw_text`. Space Grotesk and the chrome bank stay at 1.0 | Its x-height is 13 % below Space Grotesk's at one raylib size, measured from the embedded `hhea`/`OS/2` tables, so the user's own words were the smallest print in every row. Centring keeps the baseline and x-height within 2 % of the size of the chrome's, so mixed rows share a baseline |
 | Song Atlas ochre (197,137,46), Voronoi Bloom gold (220,177,94), Pixel Chapel gold (220,190,120) | Olive (140,146,70), ruby (196,64,98), candle yellow (200,202,130) | The accent means *now*. Voronoi and Chapel failed `reads_apart` against the dark accent at 1.07:1 and 1.04:1. Song Atlas passed only by lightness, at 1.61:1 and 2° of hue, and a run re-lit toward its ground takes that lightness away |
+| — | **Poster frames** (WX-5b): one 256x144 frame per plan-lane run, replayed from this track's own audio by a **second `SceneRenderer`** with its own analyzer, beat tracker and `SceneInstance`, through the export's per-frame sequence, starting at the moment minus a 2 s analyzer pre-roll plus the scene's run-up (`core::render::poster`, `app::posters`, `docs/POSTER_FRAMES.md`) | CX-5's ruling: a thumbnail has to be *this* track at *that* moment, and a stale one confidently lies. **Not the still path**: `prepare_frames`/`with_preview_stopped` stop and reset the preview, and a replay from zero for each of ~21 runs is the cost the design existed to avoid. So a poster is close to its export frame, **not bit-identical**, and is never written as a still. The service never touches `app.scene`, the preview's analyzer, renderer, stream or plan cursor; the gate proves the frame is byte-equal with posters on and off. Invalidation is the recipe's key moving (FNV-1a over a `Debug`-derived recipe, so a new field is in the key by construction), never an edit event. **A poster is stored top row first, with mipmaps**: the lane draws it as an ordinary texture with a *positive* source height, and `tools/poster_check.sh` matches each slot against the dumped poster upright versus flipped, because the lane was first written for a render target's bottom-row-first buffer and drew every poster upside down |
+| — | Clawd's poster run-up is 1.0 s, not the export's 3.0 s; Fluid Ink's pre-roll is 1.0 s and it is replayed only while paused (`posters::recipe::scene_cap`) | Measured, release, GPU (WX-5b note §4a): every other scene costs 12–17 ms a poster; Clawd's drawn run-up cost 184 ms, Fluid Ink's CPU simulation 600 ms (~10 ms a frame, three times the playing budget). Capped: 66–115 ms and 300–340 ms. Fluid at 0.5 s was cheaper but showed blobs, not ink. Cadence posters also wait while the song plays until the shared SDF atlas exists (`Faces::cadence_sdf_built`), so its one-off ~300 ms build never lands in a playing frame. Do not "fix" these back to the export's numbers: the poster is a thumbnail, and the caps are what keeps every other run's poster arriving in a second |
+| Keep no samples after the load-time decode (`ensure_song_atlas_map`'s ~105 MB argument) | `Track::poster_audio`: channel 0 of that decode as `i16`, ~31 MB for a 5.4-minute track | The export's analyzer hears channel 0 only (`ChannelMode::Select(0)`), so the other channels are dead weight, and `i16` halves the rest; quantisation is 96 dB down. The alternative was a second whole-track decode (2.2 s for that track) the first time a poster is asked for |
+| — | `--ui-probe posters=settle\|off`, `poster-dump=DIR`, the `MUSIALIZER_POSTER_*` measurement knobs, and the `posters:` report line | Invented, WX-5b. A pending poster and a missing one draw the same lane, and a stale poster that never refreshed looks like a fresh one. `refreshed=` is the stale-then-ready path an edit takes; `step-worst`/`frame-worst` are what the budget claim is checked against |
 
 **SX4 design decision (2026-09-05).** The operator rejected Atlas's appearance
 and Cadence's discontinuous motion in the CX-4 listening session and authorized
