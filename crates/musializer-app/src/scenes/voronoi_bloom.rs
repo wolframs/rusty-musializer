@@ -1,4 +1,8 @@
-//! Voronoi Bloom's bounded cellular field; resources never advance its clock.
+//! Voronoi Bloom's backlit stained glass; resources never advance its clock.
+//!
+//! The report names what the frame held — kicks heard, bloom waves alive, a
+//! crack and its age — because a window that stopped hearing the music still
+//! photographs as a plausible window.
 use musializer_core::scene::settings::index::voronoi as control;
 use musializer_core::scene::{SceneFrame, SceneId};
 use musializer_core::scenes::voronoi_bloom::VoronoiBloomState;
@@ -47,6 +51,18 @@ pub fn draw(
     let setting = |i| frame.setting(SceneId::VoronoiBloom, i);
     let location = shader.get_shader_location("voices[0]");
     shader.set_shader_value_v(location, state.voices());
+    let waves = state.waves().map(|w| Vector4::new(w[0], w[1], w[2], w[3]));
+    let location = shader.get_shader_location("waves[0]");
+    shader.set_shader_value_v(location, &waves);
+    let sun = state.sun();
+    let location = shader.get_shader_location("sun");
+    shader.set_shader_value(location, Vector3::new(sun[0], sun[1], sun[2]));
+    let crack = state.shatter();
+    let location = shader.get_shader_location("shatter");
+    shader.set_shader_value(
+        location,
+        Vector4::new(crack[0], crack[1], crack[2], crack[3]),
+    );
     for (name, value) in [
         ("bloomSeed", state.seed()),
         ("bloomTime", state.clock()),
@@ -58,6 +74,9 @@ pub fn draw(
         ("hueTurn", setting(control::HUE).to_radians()),
         ("bassMass", state.bass()),
         ("musicLight", state.light()),
+        ("sectionEnergy", state.energy()),
+        ("trebleLight", state.high()),
+        ("accent", state.accent()),
     ] {
         let location = shader.get_shader_location(name);
         shader.set_shader_value(location, value);
@@ -80,10 +99,22 @@ pub fn draw(
         )
     });
     resources.report = format!(
-        "surface=shader, lattice=9+25, cells={}, voices=12, light={:.3}, bass={:.3}, clock={:.3}, dyn={}",
+        "surface=shader, lattice=9+25, shafts=28x9, cells={}, voices=12, kicks={}, waves={} live, \
+         crack={}, sun={:.2}@({:.2},{:.2}), light={:.3}, bass={:.3}, energy={:.3}, clock={:.3}, dyn={}",
         setting(control::CELLS).round(),
+        state.kick_count(),
+        state.live_waves(),
+        if crack[3] > 0.0 {
+            format!("{:.2}s", crack[2])
+        } else {
+            "none".into()
+        },
+        sun[2],
+        sun[0],
+        sun[1],
         state.light(),
         state.bass(),
+        state.energy(),
         state.clock(),
         if frame.dynamics.is_some() {
             "track"
