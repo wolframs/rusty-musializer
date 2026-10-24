@@ -1707,8 +1707,12 @@ fn apply_settings(
                 ));
             }
         } else if !number.is_finite()
-            || number < f64::from(descriptor.minimum)
-            || number > f64::from(descriptor.maximum)
+            // Judged in f32, which is what the table stores. Widening an f32
+            // bound is not the decimal a caller writes: `f64::from(0.3f32)` is
+            // 0.30000001192…, while the JSON `0.3` parses to the f64 just below
+            // it, so a value exactly at a bound was refused as outside it.
+            || (number as f32) < descriptor.minimum
+            || (number as f32) > descriptor.maximum
         {
             return Err(invalid(
                 &place,
@@ -1870,9 +1874,19 @@ fn parse_rgba(place: &str, text: &str) -> Result<u32, TreatmentError> {
         })
 }
 
+/// `value` inside `minimum..=maximum`, or a refusal naming the bounds.
+///
+/// Most callers pass an f32 bound widened to f64, and a widened f32 is not the
+/// decimal a caller writes: `f64::from(0.3f32)` is 0.30000001192…, while the
+/// JSON `0.3` parses to the f64 just below it. So a value that is inside the
+/// bounds once both are narrowed to f32 is accepted too, and clamped, so the
+/// caller gets the bound itself rather than a hair outside it.
 fn bounded(place: &str, value: f64, minimum: f64, maximum: f64) -> Result<f64, TreatmentError> {
-    if value.is_finite() && value >= minimum && value <= maximum {
-        Ok(value)
+    let narrowed = value as f32;
+    let inside = (value >= minimum && value <= maximum)
+        || (narrowed >= minimum as f32 && narrowed <= maximum as f32);
+    if value.is_finite() && inside {
+        Ok(value.clamp(minimum, maximum))
     } else {
         Err(invalid(
             place,
@@ -2638,6 +2652,50 @@ mod tests {
             message.contains(&format!("{}..{}", descriptor.minimum, descriptor.maximum)),
             "{message}"
         );
+    }
+
+    #[test]
+    fn every_slider_takes_its_own_bounds_written_as_decimals() {
+        // `scale` 0.3 was refused as "outside 0.3..3": the bound is an f32,
+        // widened it is a hair above the f64 the JSON `0.3` parses to.
+        for scene in SceneId::ALL {
+            for descriptor in settings::descriptors(scene) {
+                if descriptor.kind == SettingKind::Toggle {
+                    continue;
+                }
+                for bound in [descriptor.minimum, descriptor.maximum] {
+                    let text = format!(
+                        r#"{{ "schema": "musializer.treatment/v1",
+                             "segments": [ {{ "at": 0, "scene": "{}",
+                                              "settings": {{ "{}": {bound} }} }} ] }}"#,
+                        scene.stable_name(),
+                        descriptor.key,
+                    );
+                    let compiled = parse(&text)
+                        .unwrap_or_else(|error| panic!("{}={bound}: {error}", descriptor.key))
+                        .compile(5.0)
+                        .unwrap();
+                    let (_, index, _) = settings::descriptor_by_key(descriptor.key).unwrap();
+                    let stored = compiled.scene_switches.cues()[0].settings.values[index];
+                    assert!(
+                        (descriptor.minimum..=descriptor.maximum).contains(&stored),
+                        "{}={bound} stored {stored}",
+                        descriptor.key
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_widened_f32_bound_admits_its_decimal_and_hands_back_the_bound() {
+        let low = f64::from(0.3f32);
+        assert_eq!(bounded("x", 0.3, low, 3.0).unwrap(), low);
+        assert_eq!(bounded("x", 3.0, low, f64::from(3.0f32)).unwrap(), 3.0);
+        // Rounding is the only slack: a value one f32 step outside is refused.
+        let below = f64::from(f32::from_bits(0.3f32.to_bits() - 1));
+        assert!(bounded("x", below, low, 3.0).is_err());
+        assert!(bounded("x", f64::NAN, low, 3.0).is_err());
     }
 
     #[test]
