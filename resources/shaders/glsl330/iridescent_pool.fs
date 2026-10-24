@@ -140,8 +140,8 @@ float filmThickness(vec2 x, float h) {
         if (open < 0.01) continue;
         vec2 v = x - ring.xy;
         float r = length(v);
-        holes *= smoothstep(open*0.82, open*1.05, r);
-        float band = (r - open*1.15)/(0.3*open);
+        holes *= smoothstep(open*0.7, open*1.1, r);
+        float band = (r - open*1.2)/(0.4*open);
         rim += exp(-band*band)*ring.w;
         p -= v/max(r, 1e-3)*open*exp(-max(r - open, 0.0)/(0.8*open))*0.55*(0.55*surfaceScale);
     }
@@ -295,7 +295,9 @@ void main() {
     vec3 p = ro + rd*dist;
     // Surface detail fades with the pixel's footprint on the water.
     float footprint = dist*2.0/(1.6*min(resolution.x, resolution.y));
-    float detail = clamp(1.6 - footprint*90.0, 0.0, 1.0);
+    // Fine chop, capillary trains and glints are sub-pixel at small output
+    // sizes: there they only shimmer and cost the encoder, so they fade out.
+    float detail = clamp(1.5 - footprint*130.0, 0.0, 1.0);
     float e = max(0.004, footprint*1.5);
     float h = water(p.xz, detail);
     float hx0 = water(p.xz - vec2(e, 0.0), detail), hx1 = water(p.xz + vec2(e, 0.0), detail);
@@ -315,11 +317,11 @@ void main() {
     // colours; oil photographed on dark water reads stronger than that, so
     // the film is pushed away from its own grey before the hue turn.
     vec3 film = filmColour(thickness, cosI);
-    film = turnHue(max(mix(vec3(dot(film, vec3(0.2126, 0.7152, 0.0722))), film, 1.5), 0.0), hueTurn);
+    film = turnHue(max(mix(vec3(dot(film, vec3(0.2126, 0.7152, 0.0722))), film, 1.35), 0.0), hueTurn);
     float oil = smoothstep(20.0, 120.0, thickness);
     vec3 reflection = env*(fresnel + oil*film*(0.16 + 0.12*m)*shimmer);
     // Glints: the window's hot core on every facet that catches it.
-    float glint = pow(max(dot(r, KEY_DIR), 0.0), 900.0);
+    float glint = pow(max(dot(r, KEY_DIR), 0.0), mix(250.0, 900.0, detail))*mix(0.5, 1.0, detail);
     reflection += vec3(1.0, 0.95, 0.88)*glint*(2.0 + 2.0*pulse)*poolLight;
 
     // Refraction: down through the water to the pebbles, which are lit by
