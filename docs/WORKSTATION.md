@@ -155,14 +155,16 @@ They are independent unless a line says otherwise. Every one finishes with
 0. **First thing, before any WX-5 work** (operator, 2026-10-24: "first thing
    next session before the redesign"). Two small fixes left over from the
    scene upgrades:
-   - A treatment value exactly at a bound is refused: `scale` 0.3 reports
-     "0.3 is outside 0.3..3". This looks like float precision in the
-     treatment's bounds check (`core::treatment`). Fix it with a test at
-     both ends of a few descriptors.
-   - Aurora Veil's curtains still read bar-like at full intensity: their
-     tops break into vertical blocks (`resources/shaders/glsl330/aurora_veil.fs`).
-     Soften them into folds without losing the ray structure. Judge from a
-     contact sheet of a loud passage.
+   - **Done** (31e9c72). A treatment value exactly at a bound is refused:
+     `scale` 0.3 reports "0.3 is outside 0.3..3". This looks like float
+     precision in the treatment's bounds check (`core::treatment`). Fix it
+     with a test at both ends of a few descriptors.
+   - **Done** (2026-10-24). Aurora Veil's curtains still read bar-like at
+     full intensity: their tops break into vertical blocks
+     (`resources/shaders/glsl330/aurora_veil.fs`). Soften them into folds
+     without losing the ray structure. Judge from a contact sheet of a loud
+     passage. What caused it and what changed: `docs/ATMOSPHERE_SCENES.md`,
+     "Why the tops fray".
 1. **WX-5a: tokens and type.** One accent that means *now* (the playhead,
    the current section, the primary action), quiet selected states
    (outline plus tint, not a solid amber slab), one type scale, and the

@@ -36,9 +36,25 @@ piece of the walk (an erf difference), so the sheet never bands however few
 steps are taken. A ray grazing a fold collects a long path through the sheet,
 so the bright fold lines of a real aurora fall out of the geometry instead of
 being painted on. The curve's x coordinate is warped by depth, which lets it
-double back into S-folds and hooks. World-vertical rays converge toward the
-zenith by perspective alone. The same function is evaluated for the mirrored,
-rippled ray under the horizon, which is what puts the aurora in the lake.
+double back into S-folds and hooks. Rays converge toward the zenith by
+perspective alone. The same function is evaluated for the mirrored, rippled
+ray under the horizon, which is what puts the aurora in the lake.
+
+**Why the tops fray (2026-10-24).** At full intensity the first version's
+curtains read as bars: their tops broke into flat vertical blocks. Three
+causes, three fixes. The ray texture was value noise pushed through a hard
+clamp, which saturates into flat-topped plateaus with straight sides; it is
+now an exponential contrast with a finer octave, so rays are thin bright
+lines that never plateau. Every ray ended at the curtain's one top height;
+now each ray's colour envelope is stretched by its own noise and breaks up
+along its length, so the top is a frayed fringe. And a hook seen edge-on is
+crossed three times, which a linear sum drew as a hard-sided column of
+tripled light; in a full sky the nearer sheets thicken with height and what
+one curtain collects past a single crossing is compressed, so a fold glows
+instead of standing as a slab. The sheet also sways a little with altitude
+(`drape`), and its rays follow, so the curtain reads as drapery. The far
+arc, which is most of a quiet sky, keeps its crisp fold lines. Before/after
+sheets: `build/aurora-fix/` (gitignored).
 
 **What the music does.**
 

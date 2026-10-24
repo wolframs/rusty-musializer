@@ -7,8 +7,11 @@
 // over each linear piece of that walk (an erf difference), so a sheet never
 // bands however few steps there are, and a ray grazing a fold collects a long
 // path through it: the bright fold lines of a real aurora fall out of the
-// geometry rather than being painted on. World-vertical rays converge toward
-// the zenith by perspective alone.
+// geometry rather than being painted on. The sheets sway gently as they rise
+// and thicken toward their tops, the rays follow the sway and end at heights
+// of their own, so a curtain reads as folded drapery with a frayed top rather
+// than a row of columns. The rays converge toward the zenith by perspective
+// alone.
 //
 // Hashes are integer (uint multiply-xorshift) per the repository's fract trap;
 // no pow() of a possibly negative base.
@@ -100,11 +103,24 @@ float activity() { return auroraMusic.y + 0.5 * (1.0 - clamp(response, 0.0, 1.0)
 // the curve double back on itself: S-folds and hooks, not just a wavy line.
 float foldField(float x, float dz, float k, float amp, float t, float i) {
     float w = t * (0.42 + 0.11 * i) + seedPhase * (i + 1.0);
+    // `x` arrives already rippled with altitude (`drape`), so the sheet is a
+    // drapery whose folds travel and sway as it rises, not an extruded wall.
     float xw = x + 0.55 * amp * sin(dz * 1.9 / max(amp, 0.2) + x * k * 0.35 - t * 0.27 + i * 2.0);
     float f = 0.62 * sin(k * xw + w)
         + 0.30 * sin(2.13 * k * xw - t * (0.61 - 0.07 * i) + 1.7 + i)
         + 0.42 * (noise1(k * 0.37 * xw + t * 0.13 + i * 9.0, 77u + uint(i)) - 0.5);
     return dz - amp * f;
+}
+
+// How far along the sheet the curtain has swayed at altitude `y`: zero at the
+// lower border, growing with height, as two slow travelling waves. Used for
+// both the sheet's position and its rays, so the rays bend with the drapery
+// instead of standing as straight columns in front of it.
+float drape(float x, float y, float k, float t, float i, float amp, float act) {
+    float h = max(y - 0.9, 0.0);
+    float reach = amp * (0.07 + 0.09 * act) * (1.0 - exp(-h * 1.1));
+    return reach * (sin(x * k * 0.45 + y * 0.55 - t * 0.31 + i * 1.9)
+        + 0.5 * sin(x * k * 0.9 - y * 0.32 + t * 0.19 + i * 4.1));
 }
 
 // Light emitted by every curtain along direction d from the eye (y up).
@@ -144,61 +160,100 @@ vec3 aurora(vec3 d, float fine) {
         // distance: inside the fold band and inside the altitude band.
         float margin = amp * 1.35 + 8.0 * sigma;
         float s0 = max((zc - margin) / max(g.y, 0.05), (h0 - 0.35) / m);
-        float s1 = min((zc + margin) / max(g.y, 0.05), (h0 + span * 1.3) / m);
+        float s1 = min((zc + margin) / max(g.y, 0.05), (h0 + span * 1.6) / m);
         if (s1 <= s0) {
             continue;
         }
         float ds = (s1 - s0) / float(STEPS);
         float sa = s0;
-        float ga = foldField(sa * g.x, sa * g.y - zc, k, amp, t, i);
-        float ea = erfish(ga / sigma);
+        float ga = foldField(sa * g.x + drape(sa * g.x, sa * m, k, t, i, amp, act),
+                             sa * g.y - zc, k, amp, t, i);
         float eaw = erfish(ga / (sigma * 5.0));
         vec3 sheet = vec3(0.0);
+        float collected = 0.0;
+        // How full the sky is. The far arc keeps its crisp, bright fold
+        // lines, which are most of a quiet sky; the softening below is for
+        // the nearer curtains, whose hooks stand tall on screen.
+        float fullness = smoothstep(0.2, 0.7, act) * (c == 0 ? 0.3 : 1.0);
+        float thicken = 1.6 * fullness;
         for (int j = 0; j < STEPS; ++j) {
             float sb = sa + ds;
-            float gb = foldField(sb * g.x, sb * g.y - zc, k, amp, t, i);
-            float eb = erfish(gb / sigma);
+            float gb = foldField(sb * g.x + drape(sb * g.x, sb * m, k, t, i, amp, act),
+                                 sb * g.y - zc, k, amp, t, i);
+            // The sheet thickens as it rises: a crisp lower border, a
+            // diffuse top. Constant over one piece so the erf stays exact.
+            // It is what softens a fold's silhouette up high, where a hook
+            // seen edge-on otherwise stood as a hard-sided column of tripled
+            // light.
+            float up = ((sa + 0.5 * ds) * m - h0) / span;
+            float sg = sigma * (1.0 + thicken * smoothstep(0.15, 0.9, up));
+            float ea = erfish(ga / sg);
+            float eb = erfish(gb / sg);
             float ebw = erfish(gb / (sigma * 5.0));
             float slope = (gb - ga) / ds;
             float core;
             float halo;
-            if (abs(slope) * ds < 1.0e-3 * sigma) {
-                core = exp(-(ga * ga) / (sigma * sigma)) * ds;
+            if (abs(slope) * ds < 1.0e-3 * sg) {
+                core = exp(-(ga * ga) / (sg * sg)) * ds;
                 halo = exp(-(ga * ga) / (25.0 * sigma * sigma)) * ds;
             } else {
-                core = 0.886227 * sigma * abs(eb - ea) / abs(slope);
+                core = 0.886227 * sg * abs(eb - ea) / abs(slope);
                 halo = 0.886227 * sigma * 5.0 * abs(ebw - eaw) / abs(slope);
             }
             // Normalized so a perpendicular crossing is ~1; a fold collects
             // several times that, softened so it glows instead of clipping.
-            float dens = core / (0.886227 * sigma * 1.772454) + 0.16 * glow * halo
+            float dens = core / (0.886227 * sg * 1.772454) + 0.16 * glow * halo
                 / (0.886227 * sigma * 5.0 * 1.772454);
             if (dens > 1.0e-3) {
                 float sm = abs(slope) > 1.0e-5 ? clamp(sa - ga / slope, sa, sb) : sa + 0.5 * ds;
-                float x = sm * g.x;
                 float y = sm * m;
+                // Along-sheet coordinate: the rays and patches live on the
+                // drapery, so they sway with it.
+                float x = sm * g.x + drape(sm * g.x, y, k, t, i, amp, act);
                 float base = h0 + 0.07 * (noise1(x * 1.3 + t * 0.2 + i * 5.0, 31u) - 0.5);
                 float rel = y - base;
                 float u = rel / span;
+                // Rays: fine striations along the field lines, finer and
+                // livelier with the hats, drifting slowly along the sheet. A
+                // soft exponential contrast, never a clamp: a clamped noise
+                // saturates into flat-topped plateaus with hard sides, which
+                // is what read as rectangular bars.
+                float rayFreq = 70.0 / zc * fine;
+                // The rays are sampled on the sheet's ground curve (x and
+                // depth), not on x alone: where a fold turns to run away from
+                // the eye x barely changes, and an x-only texture stalls there
+                // into one flat smear.
+                vec2 q = vec2(x, sm * g.y - zc);
+                float n1 = noise2(q * rayFreq + vec2(shimmer * 1.9 + i * 13.0, 0.0), 11u + uint(c));
+                float n1f = noise2(q * rayFreq * 2.7 - vec2(shimmer * 1.1 - i * 7.0, 0.0), 13u + uint(c));
+                float n2 = noise2(q * rayFreq * 0.29 - vec2(shimmer * 0.55 - t * 0.05, 0.0), 19u + uint(c));
+                float n3 = noise1(x * rayFreq * 0.07 + y * 0.8 + t * 0.03, 23u + uint(c));
+                float r = mix(mix(n1, n1f, 0.3 * fine), n2, 0.4);
+                float contrast = 2.6 + 2.4 * auroraMusic.w;
+                float rays = exp(contrast * (r - 0.71));
+                rays = mix(0.55 + 0.45 * min(rays, 1.0), rays, smoothstep(0.0, 0.35, u));
+                // Each ray ends at its own height and feathers out: the top of
+                // a curtain is a frayed fringe, not a cut line. The fringe is
+                // smoother than the rays, so neighbouring rays fade together.
+                float nTop = noise2(q * rayFreq * 0.45 + vec2(31.0 + t * 0.04, 0.0), 53u + uint(c));
+                float nTop2 = noise1(x * rayFreq * 0.11 - t * 0.02 + i * 2.0, 59u + uint(c));
+                float ut = u / (0.62 + 0.55 * nTop + 0.35 * nTop2);
+                // And nothing reaches the end of the march, whatever the fringe.
+                float ceiling = 1.0 - smoothstep(1.05, 1.55, u);
+                // Rays thin and break up as they rise, at their own pace.
+                float streak = noise2(vec2(dot(q, vec2(1.0, 0.7)) * rayFreq * 0.8 + 3.0,
+                                           u * 2.6 - shimmer * 0.12 + i), 67u + uint(c));
+                rays *= mix(1.0, 0.25 + 1.2 * streak, smoothstep(0.1, 0.7, ut));
                 // Lower border: crisp from above, a soft nitrogen fringe below.
                 float border = smoothstep(-0.018, 0.012, rel);
                 float fringe = exp(-(rel * rel) / 0.0025) * (1.0 - 0.75 * border);
-                float green = border * exp(-max(u, 0.0) * 2.4) * (1.0 - smoothstep(0.6, 1.0, u));
-                float crimson = smoothstep(0.22, 0.62, u) * (1.0 - smoothstep(0.8, 1.22, u));
-                float violet = smoothstep(0.08, 0.45, u) * (1.0 - smoothstep(0.6, 0.95, u));
-                // Rays: world-vertical striations, finer and livelier with
-                // the hats, drifting slowly along the sheet.
-                float rayFreq = 70.0 / zc * fine;
-                float n1 = noise1(x * rayFreq + shimmer * 1.9 + i * 13.0, 11u + uint(c));
-                float n2 = noise1(x * rayFreq * 0.29 - shimmer * 0.55 + t * 0.05, 19u + uint(c));
-                float n3 = noise1(x * rayFreq * 0.07 + y * 0.8 + t * 0.03, 23u + uint(c));
-                float rays = mix(n1, n2, 0.45);
-                float contrast = 1.2 + 1.6 * auroraMusic.w;
-                rays = clamp(0.5 + (rays - 0.5) * contrast * 1.6, 0.0, 1.0);
-                rays = 0.12 + 0.88 * rays * rays;
-                rays = mix(0.55 + 0.45 * rays, rays, smoothstep(0.0, 0.35, u));
-                // Patches: a curtain is not lit evenly along its length.
-                float patchy = smoothstep(0.18, 0.72, noise1(x * k * 0.21 + t * 0.07 + i * 3.1, 41u))
+                float green = border * exp(-max(ut, 0.0) * 2.4) * (1.0 - smoothstep(0.45, 1.0, ut));
+                float crimson = smoothstep(0.22, 0.62, ut) * (1.0 - smoothstep(0.7, 1.25, ut));
+                float violet = smoothstep(0.08, 0.45, ut) * (1.0 - smoothstep(0.55, 0.95, ut));
+                // Patches: a curtain is not lit evenly along its length, and a
+                // patch leans with height, so lit and dark stretches meet on a
+                // slant instead of along a ray.
+                float patchy = smoothstep(0.18, 0.72, noise1(x * k * 0.21 + u * 0.6 + t * 0.07 + i * 3.1, 41u))
                     * (0.55 + 0.45 * n3);
                 float patches = mix(patchy, 1.0, 0.06 + 0.16 * act);
                 // Flaming: each kick sends a band of light up the rays.
@@ -214,15 +269,21 @@ vec3 aurora(vec3 d, float fine) {
                     + crimson * vec3(0.75, 0.06, 0.22) * (0.06 + 0.30 * act)
                     + violet * vec3(0.30, 0.16, 0.90) * (0.04 + 0.22 * auroraMusic.z)
                     + fringe * vec3(1.0, 0.18, 0.55) * 0.6 * bass * bass * bass;
-                col *= rays * patches * (lift + 2.2 * flame);
+                col *= rays * patches * ceiling * (lift + 2.2 * flame);
                 col += vec3(0.75, 1.0, 0.85) * flame * green * 0.6;
                 sheet += col * dens;
+                collected += dens;
             }
             sa = sb;
             ga = gb;
-            ea = eb;
             eaw = ebw;
         }
+        // Where a hook is seen edge-on the eye crosses the sheet three
+        // times, and linear sums made that a hard-sided column of tripled
+        // light. Compressing what one curtain collects past a single
+        // crossing keeps the fold brighter, but as a glow, not a slab.
+        float squeeze = 0.4 * fullness;
+        sheet *= (1.0 + squeeze) / (1.0 + squeeze * max(collected, 1.0));
         total += sheet * presence * (1.0 - 0.1 * i);
     }
     total = hueRotate(total, radians(hueTurn));
