@@ -59,7 +59,7 @@ scene 14 count 11
 14 1 settings.threshold.open|Door open|0|1|0|2|0
 14 2 settings.threshold.light|Light|0|2|1|2|0
 14 3 settings.threshold.haze|Doorway haze|0|1|0.600000024|2|0
-14 4 settings.threshold.beyond|Beyond (0 = haze)|0|22|0|0|0
+14 4 settings.threshold.beyond|Beyond (0 = haze)|0|28|0|0|0
 14 5 settings.threshold.presences|Presences|0|2|0|0|0
 14 6 settings.threshold.motes|Motes|0|2|1|2|0
 14 7 settings.threshold.mist|Mist|0|2|1|2|0
@@ -129,3 +129,69 @@ scene 21 count 8
 21 5 settings.iridescent.shimmer|Shimmer|0|2|1|2|0
 21 6 settings.iridescent.light|Grazing light|0|2|1|2|0
 21 7 settings.iridescent.spread|Ripple spread|0.300000012|2|1|2|0
+scene 22 count 10
+22 0 settings.pixel-boot.palette|Palette|0|5|0|0|0
+22 1 settings.pixel-boot.hue|Hue (deg)|-180|180|0|0|0
+22 2 settings.pixel-boot.crt|CRT|0|1|0.600000024|2|0
+22 3 settings.pixel-boot.response|Music response|0|2|1|2|0
+22 4 settings.pixel-boot.shake|Hit shake|0|2|1|2|0
+22 5 settings.pixel-boot.pace|Typing pace|0.5|3|1|2|0
+22 6 settings.pixel-boot.pops|Onset pops|0|1|1|0|1
+22 7 settings.pixel-boot.glitch|Glitch|0|1|0.5|2|0
+22 8 settings.pixel-boot.pixels|Pixel rows|120|320|180|0|0
+22 9 settings.pixel-boot.motion|Motion|0|2|1|2|0
+scene 23 count 10
+23 0 settings.pixel-shell.palette|Palette|0|5|1|0|0
+23 1 settings.pixel-shell.hue|Hue (deg)|-180|180|0|0|0
+23 2 settings.pixel-shell.crt|CRT|0|1|0.600000024|2|0
+23 3 settings.pixel-shell.response|Music response|0|2|1|2|0
+23 4 settings.pixel-shell.shake|Hit shake|0|2|1|2|0
+23 5 settings.pixel-shell.pace|Typing pace|0.5|3|1|2|0
+23 6 settings.pixel-shell.pops|Onset pops|0|1|1|0|1
+23 7 settings.pixel-shell.glitch|Glitch|0|1|0.5|2|0
+23 8 settings.pixel-shell.pixels|Pixel rows|120|320|180|0|0
+23 9 settings.pixel-shell.motion|Motion|0|2|1|2|0
+scene 24 count 10
+24 0 settings.pixel-run.palette|Palette|0|5|1|0|0
+24 1 settings.pixel-run.hue|Hue (deg)|-180|180|0|0|0
+24 2 settings.pixel-run.crt|CRT|0|1|0.600000024|2|0
+24 3 settings.pixel-run.response|Music response|0|2|1|2|0
+24 4 settings.pixel-run.shake|Hit shake|0|2|1|2|0
+24 5 settings.pixel-run.pace|Typing pace|0.5|3|1|2|0
+24 6 settings.pixel-run.pops|Onset pops|0|1|1|0|1
+24 7 settings.pixel-run.glitch|Glitch|0|1|0.5|2|0
+24 8 settings.pixel-run.pixels|Pixel rows|120|320|180|0|0
+24 9 settings.pixel-run.motion|Motion|0|2|1|2|0
+scene 25 count 10
+25 0 settings.pixel-quartet.palette|Palette|0|5|1|0|0
+25 1 settings.pixel-quartet.hue|Hue (deg)|-180|180|0|0|0
+25 2 settings.pixel-quartet.crt|CRT|0|1|0.600000024|2|0
+25 3 settings.pixel-quartet.response|Music response|0|2|1|2|0
+25 4 settings.pixel-quartet.shake|Hit shake|0|2|1|2|0
+25 5 settings.pixel-quartet.pace|Typing pace|0.5|3|1|2|0
+25 6 settings.pixel-quartet.pops|Onset pops|0|1|1|0|1
+25 7 settings.pixel-quartet.glitch|Glitch|0|1|0.5|2|0
+25 8 settings.pixel-quartet.pixels|Pixel rows|120|320|180|0|0
+25 9 settings.pixel-quartet.motion|Motion|0|2|1|2|0
+scene 26 count 10
+26 0 settings.pixel-chapel.palette|Palette|0|5|1|0|0
+26 1 settings.pixel-chapel.hue|Hue (deg)|-180|180|0|0|0
+26 2 settings.pixel-chapel.crt|CRT|0|1|0.600000024|2|0
+26 3 settings.pixel-chapel.response|Music response|0|2|1|2|0
+26 4 settings.pixel-chapel.shake|Hit shake|0|2|1|2|0
+26 5 settings.pixel-chapel.pace|Typing pace|0.5|3|1|2|0
+26 6 settings.pixel-chapel.pops|Onset pops|0|1|1|0|1
+26 7 settings.pixel-chapel.glitch|Glitch|0|1|0.5|2|0
+26 8 settings.pixel-chapel.pixels|Pixel rows|120|320|180|0|0
+26 9 settings.pixel-chapel.motion|Motion|0|2|1|2|0
+scene 27 count 10
+27 0 settings.pixel-rave.palette|Palette|0|5|1|0|0
+27 1 settings.pixel-rave.hue|Hue (deg)|-180|180|0|0|0
+27 2 settings.pixel-rave.crt|CRT|0|1|0.600000024|2|0
+27 3 settings.pixel-rave.response|Music response|0|2|1|2|0
+27 4 settings.pixel-rave.shake|Hit shake|0|2|1|2|0
+27 5 settings.pixel-rave.pace|Typing pace|0.5|3|1|2|0
+27 6 settings.pixel-rave.pops|Onset pops|0|1|1|0|1
+27 7 settings.pixel-rave.glitch|Glitch|0|1|0.5|2|0
+27 8 settings.pixel-rave.pixels|Pixel rows|120|320|180|0|0
+27 9 settings.pixel-rave.motion|Motion|0|2|1|2|0

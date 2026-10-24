@@ -26,6 +26,8 @@ pub mod liquid_chrome;
 pub mod metaball_garden;
 pub mod neon_tunnel;
 pub mod openai_knot;
+/// Post-legacy (2026-10-24): the six pixel-art stagings' shared drawing half.
+pub mod pixel_cats;
 pub mod stage;
 pub mod threshold;
 pub mod voronoi_bloom;

@@ -129,6 +129,14 @@ fn scene_color(scene: SceneId, alpha: u8) -> Color {
         SceneId::NeonTunnel => (160, 130, 240),
         SceneId::VoronoiBloom => (220, 177, 94),
         SceneId::IridescentPool => (120, 185, 235),
+        // The pixel stagings share the handheld's light green, stepped so
+        // neighbouring sections of the family still read as two.
+        SceneId::PixelBoot => (172, 200, 96),
+        SceneId::PixelShell => (120, 220, 140),
+        SceneId::PixelRunner => (200, 140, 230),
+        SceneId::PixelQuartet => (230, 120, 110),
+        SceneId::PixelChapel => (220, 190, 120),
+        SceneId::PixelRave => (240, 110, 200),
     };
     Color::new(r, g, b, alpha)
 }

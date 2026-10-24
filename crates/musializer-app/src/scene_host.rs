@@ -111,6 +111,12 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::NeonTunnel => |_| Box::new(StatelessScene::new(SceneId::NeonTunnel)),
             SceneId::VoronoiBloom => |_| Box::new(StatelessScene::new(SceneId::VoronoiBloom)),
             SceneId::IridescentPool => |_| Box::new(StatelessScene::new(SceneId::IridescentPool)),
+            SceneId::PixelBoot => |_| Box::new(StatelessScene::new(SceneId::PixelBoot)),
+            SceneId::PixelShell => |_| Box::new(StatelessScene::new(SceneId::PixelShell)),
+            SceneId::PixelRunner => |_| Box::new(StatelessScene::new(SceneId::PixelRunner)),
+            SceneId::PixelQuartet => |_| Box::new(StatelessScene::new(SceneId::PixelQuartet)),
+            SceneId::PixelChapel => |_| Box::new(StatelessScene::new(SceneId::PixelChapel)),
+            SceneId::PixelRave => |_| Box::new(StatelessScene::new(SceneId::PixelRave)),
         },
     }
 }
@@ -167,6 +173,12 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         SceneId::NeonTunnel => "(no oracle: post-legacy addition)",
         SceneId::VoronoiBloom => "(no oracle: post-legacy addition)",
         SceneId::IridescentPool => "(no oracle: post-legacy addition)",
+        SceneId::PixelBoot
+        | SceneId::PixelShell
+        | SceneId::PixelRunner
+        | SceneId::PixelQuartet
+        | SceneId::PixelChapel
+        | SceneId::PixelRave => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -276,6 +288,8 @@ pub struct SceneRenderer {
     tunnel: scenes::neon_tunnel::Resources,
     voronoi: scenes::voronoi_bloom::Resources,
     iridescent: scenes::iridescent_pool::Resources,
+    /// The six Pixel Cats scenes' one texture, CRT shader and report.
+    pixel: scenes::pixel_cats::PixelResources,
     /// Where the threshold's doorway scene is drawn each frame.
     beyond: Canvas,
 }
@@ -339,6 +353,7 @@ impl SceneRenderer {
             tunnel: scenes::neon_tunnel::Resources::load(rl, thread),
             voronoi: scenes::voronoi_bloom::Resources::load(rl, thread),
             iridescent: scenes::iridescent_pool::Resources::load(rl, thread),
+            pixel: scenes::pixel_cats::PixelResources::load(rl, thread),
             beyond: Canvas::new(),
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
@@ -553,6 +568,16 @@ impl SceneRenderer {
             SceneId::IridescentPool => &self.iridescent.report,
             _ => "not a website scene",
         }
+    }
+
+    /// One line naming what the last Pixel Cats frame staged: the staging,
+    /// the palette, the canvas, the line's typewriter, the cats, the pops and
+    /// the hits — and whether the canvas reached the screen through the CRT
+    /// shader. A staging with no line and one whose line never typed, or a
+    /// floor that should hold cats and an empty one, photograph alike.
+    #[must_use]
+    pub fn describe_pixel(&self) -> String {
+        self.pixel.describe()
     }
 
     /// Whether Fluid Ink uploaded its dye and drew through its display shader.
@@ -911,6 +936,16 @@ impl SceneRenderer {
                         scenes::fluid_ink::draw(d, &mut self.fluid, state, frame, boundary);
                     }
                 }
+                SceneId::PixelBoot
+                | SceneId::PixelShell
+                | SceneId::PixelRunner
+                | SceneId::PixelQuartet
+                | SceneId::PixelChapel
+                | SceneId::PixelRave => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::pixel_cats::draw(d, &mut self.pixel, state, frame, boundary);
+                    }
+                }
                 SceneId::Threshold => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::threshold::draw(
@@ -987,9 +1022,12 @@ impl SceneRenderer {
             }
             _ => TransitionOutcome::Idle,
         };
-        // Cadence and Stage draw the line themselves; a caption over either
-        // would say everything twice.
-        if id != SceneId::Cadence && id != SceneId::Stage {
+        // Cadence, Stage and the Pixel Cats stagings draw the line
+        // themselves; a caption over any of them would say everything twice.
+        let draws_its_line = id == SceneId::Cadence
+            || id == SceneId::Stage
+            || core_scenes::pixel_cats::Staging::of(id).is_some();
+        if !draws_its_line {
             if let Some(style) = assets.caption_style {
                 // The effect drives read the same frame the scene just drew
                 // from, which is what makes an export's glow pulse identical to
@@ -1190,6 +1228,12 @@ mod tests {
                 "tunnel",
                 "voronoi",
                 "iridescent",
+                "pixel-boot",
+                "pixel-shell",
+                "pixel-run",
+                "pixel-quartet",
+                "pixel-chapel",
+                "pixel-rave",
             ]
         );
     }
@@ -1229,6 +1273,14 @@ mod tests {
                 SceneId::NeonTunnel => any.is::<cs::neon_tunnel::NeonTunnelState>(),
                 SceneId::VoronoiBloom => any.is::<cs::voronoi_bloom::VoronoiBloomState>(),
                 SceneId::IridescentPool => any.is::<cs::iridescent_pool::IridescentPoolState>(),
+                SceneId::PixelBoot
+                | SceneId::PixelShell
+                | SceneId::PixelRunner
+                | SceneId::PixelQuartet
+                | SceneId::PixelChapel
+                | SceneId::PixelRave => any
+                    .downcast_ref::<cs::pixel_cats::PixelCatsState>()
+                    .is_some_and(|state| state.staging().scene() == id),
             };
             assert!(
                 recovered,

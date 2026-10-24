@@ -32,6 +32,9 @@ pub mod liquid_chrome;
 pub mod metaball_garden;
 pub mod neon_tunnel;
 pub mod openai_knot;
+/// Post-legacy (2026-10-24): six pixel-art stagings, one scene each, one
+/// implementation.
+pub mod pixel_cats;
 pub mod stage;
 /// Post-legacy (2026-10-21, MV9-d): a room, a door, and a scene nested in it.
 pub mod threshold;
@@ -82,5 +85,14 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
         SceneId::NeonTunnel => neon_tunnel::descriptor(),
         SceneId::VoronoiBloom => voronoi_bloom::descriptor(),
         SceneId::IridescentPool => iridescent_pool::descriptor(),
+        SceneId::PixelBoot
+        | SceneId::PixelShell
+        | SceneId::PixelRunner
+        | SceneId::PixelQuartet
+        | SceneId::PixelChapel
+        | SceneId::PixelRave => match pixel_cats::Staging::of(id) {
+            Some(staging) => pixel_cats::descriptor(staging),
+            None => unreachable!("every pixel scene id names a staging"),
+        },
     }
 }

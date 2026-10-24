@@ -16,15 +16,18 @@ pub enum SceneFamily {
     Materials,
     Living,
     TypeStage,
+    /// The pixel-art stagings (2026-10-24): one family, six scenes.
+    PixelCats,
 }
 impl SceneFamily {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Sound,
         Self::Geometry,
         Self::Atmosphere,
         Self::Materials,
         Self::Living,
         Self::TypeStage,
+        Self::PixelCats,
     ];
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -35,6 +38,7 @@ impl SceneFamily {
             Self::Materials => "Materials",
             Self::Living => "Living",
             Self::TypeStage => "Type & stage",
+            Self::PixelCats => "Pixel cats",
         }
     }
     #[must_use]
@@ -46,6 +50,7 @@ impl SceneFamily {
             Self::Materials => "materials",
             Self::Living => "living",
             Self::TypeStage => "type-stage",
+            Self::PixelCats => "pixel-cats",
         }
     }
     #[must_use]
@@ -76,6 +81,12 @@ impl SceneFamily {
             | SceneId::Cadence
             | SceneId::Stage
             | SceneId::Threshold => Self::TypeStage,
+            SceneId::PixelBoot
+            | SceneId::PixelShell
+            | SceneId::PixelRunner
+            | SceneId::PixelQuartet
+            | SceneId::PixelChapel
+            | SceneId::PixelRave => Self::PixelCats,
         }
     }
     #[must_use]
@@ -90,7 +101,37 @@ impl SceneFamily {
 pub const TAB_HEIGHT: f32 = 22.0;
 pub const GAP: f32 = 4.0;
 pub const TILE_FLOOR: f32 = 24.0;
-const TAB_COLUMNS: usize = 3;
+/// The family tabs sit in two rows whatever their number, so a new family
+/// costs tab width rather than tile height: the first half of
+/// [`SceneFamily::ALL`] (rounded up) on the top row, the rest below.
+const TAB_ROWS: usize = 2;
+
+/// Where a family tab sits: its row, its column in that row, how many tabs
+/// share the row, and the fraction of the row's free width before it and its
+/// own. Widths are proportional to the label's length plus a fixed allowance
+/// for the button's padding, so the longest label in a row is not the one
+/// squeezed. Character counts stand in for measured widths because this module
+/// has no font; the shell fits one font size over the widths this produces.
+fn tab_slot(index: usize) -> Option<(usize, usize, usize, f32, f32)> {
+    let count = SceneFamily::ALL.len();
+    if index >= count {
+        return None;
+    }
+    let per_row = count.div_ceil(TAB_ROWS);
+    let row = index / per_row;
+    let first = row * per_row;
+    let last = (first + per_row).min(count);
+    let weight = |i: usize| SceneFamily::ALL[i].label().chars().count() as f32 + 3.0;
+    let total: f32 = (first..last).map(weight).sum();
+    let before: f32 = (first..index).map(weight).sum();
+    Some((
+        row,
+        index - first,
+        last - first,
+        before / total,
+        weight(index) / total,
+    ))
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct PickerLayout {
@@ -106,7 +147,7 @@ pub struct PickerLayout {
 impl PickerLayout {
     #[must_use]
     pub fn new(area: UiRect, count: usize) -> Self {
-        let top = 2.0 * TAB_HEIGHT + GAP * 2.0;
+        let top = TAB_ROWS as f32 * TAB_HEIGHT + GAP * TAB_ROWS as f32;
         let viewport = UiRect::new(
             area.x,
             area.y + top,
@@ -135,11 +176,15 @@ impl PickerLayout {
     }
     #[must_use]
     pub fn tab(self, index: usize) -> UiRect {
-        let width = (self.area.width - GAP * 2.0) / 3.0;
+        let Some((row, column, in_row, start, share)) = tab_slot(index) else {
+            return UiRect::new(self.area.x, self.area.y, 0.0, 0.0);
+        };
+        let gaps = GAP * in_row.saturating_sub(1) as f32;
+        let free = (self.area.width - gaps).max(0.0);
         UiRect::new(
-            self.area.x + (index % TAB_COLUMNS) as f32 * (width + GAP),
-            self.area.y + (index / TAB_COLUMNS) as f32 * (TAB_HEIGHT + GAP),
-            width,
+            self.area.x + start * free + column as f32 * GAP,
+            self.area.y + row as f32 * (TAB_HEIGHT + GAP),
+            share * free,
             TAB_HEIGHT,
         )
     }
@@ -260,8 +305,15 @@ mod tests {
                     let area = UiRect::new(6.0, 30.0, width, height);
                     let layout = PickerLayout::new(area, count);
                     assert!(layout.tile_height >= 24.0);
-                    for i in 0..6 {
+                    for i in 0..SceneFamily::ALL.len() {
                         assert!(area.contains(layout.tab(i)));
+                        assert!(layout.tab(i).width > 0.0);
+                        for j in 0..i {
+                            assert!(
+                                layout.tab(i).intersect(layout.tab(j)).is_empty(),
+                                "tabs {i} and {j} overlap"
+                            );
+                        }
                     }
                     for i in 0..count {
                         let top = layout.tile(i, 0.0).y - layout.viewport.y;

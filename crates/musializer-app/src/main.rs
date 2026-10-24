@@ -5915,6 +5915,9 @@ impl Report {
         // Threshold: the camera, the door, and whether the doorway was live.
         println!("threshold:       {}", renderer.describe_threshold());
         println!("fluid ink:       {}", renderer.describe_fluid());
+        // Pixel Cats: which staging, which palette, how far the line typed,
+        // how many cats and pops drew, and whether the CRT shader carried it.
+        println!("pixel cats:      {}", renderer.describe_pixel());
         println!("scene picker:    {}", app.shell.describe_scene_picker());
         println!(
             "chrome: {}",

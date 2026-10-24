@@ -2071,9 +2071,59 @@ fn parse_caption_style(wire: CaptionStyleWire) -> Result<CaptionStyle, Treatment
 /// 2.2; they cannot say what the scene *is*, and a caller choosing between
 /// thirteen of them from a command line has never seen any. Exhaustive on
 /// purpose: adding a scene without describing it here is a compile error.
+/// Every Pixel Cats look ends with the controls the group shares.
+macro_rules! pixel_look {
+    ($look:literal) => {
+        concat!(
+            $look,
+            " Shared by every pixel-* scene: `palette` 0 handheld green, 1 colour, \
+             2 pocket grey, 3 arcade, 4 virtual red, 5 dusk; `hue` turns it; \
+             `pixels` is the canvas's short side (smaller is chunkier); `crt` the \
+             screen's grid and scanlines, and with it on the set powers off in the \
+             track's last 0.7 s; `response` 0 keeps time without the music; \
+             `shake` the kick hits; `pace` the typing; `glitch` the row tears. \
+             The caption overlay is not drawn on top: the scene draws the line."
+        )
+    };
+}
+
 #[must_use]
 pub fn scene_look(scene: SceneId) -> &'static str {
     match scene {
+        SceneId::PixelBoot => pixel_look!("Pixel Cats: a handheld's boot screen in four greens, drawn at about 180 \
+             pixel rows and scaled up behind a CRT grid. The lyric line drops in as \
+             the logo and lands with a shine (a long line: its first word, the rest \
+             typed under it); with no line the logo is MEOW. An ASCII cat assembles \
+             under it, blinks, and goes wide-eyed on a hard kick; PRESS START keeps \
+             the beat. An opener, or a reboot between sections."),
+        SceneId::PixelShell => pixel_look!("Pixel Cats: a lyric editor in a terminal. Each line is typed behind a \
+             line number while the lines already sung scroll up above it, and a cat \
+             at the keyboard taps on the hi-hats. The music writes a tag above a \
+             line as it starts and the tag takes the text over: [BELTED] large, red \
+             and shaking on the kicks; [WHISPERED] fading; [FALSETTO] tall and \
+             wobbling; [GABBER] colour-cycling. A line mentioning sudo or root gets \
+             ACCESS GRANTED; a line that starts with [TAG] names its own. With no \
+             line: a prompt and an ASCII spectrum meter."),
+        SceneId::PixelRunner => pixel_look!("Pixel Cats: a side-scroller at night. A black cat gallops in time over \
+             keyboard-key rooftops that spell the line, jumps on the hi-hats, and the \
+             ground runs faster as the track gets louder; keys light on the kicks. \
+             A keycap skyline drifts under a cat-head moon, a score counts the \
+             onsets, and the line is the level banner over the HUD."),
+        SceneId::PixelQuartet => pixel_look!("Pixel Cats: a barbershop quartet of cats in boaters and striped vests on \
+             a curtained stage. They bob in pairs on the beat and sing with the \
+             vocal; a drum kit's bass drum swells on the kicks, cymbals jump on the \
+             hats, barber poles spin with the loudness, and the line is typed onto a \
+             marquee whose bulbs chase on the beat. Notes pop on the onsets."),
+        SceneId::PixelChapel => pixel_look!("Pixel Cats: hooded monk cats under a turning rose window with a cat's \
+             face in it. The glass, the light it throws and every cat's eyes glow \
+             with the vocal; candles flicker. The line is laid on a parchment chant \
+             staff, each word under a square note, the sung word's note lit. For a \
+             choir, a hymn or anything sung slowly."),
+        SceneId::PixelRave => pixel_look!("Pixel Cats: a giant cat face at the end of a rushing square tunnel. \
+             Rings fly out faster on every kick; the face swells, sings with the \
+             vocal, goes wide-eyed on a hard kick and fires eye lasers on the \
+             hardest. The sung word slams in at the top, words pop on the onsets and \
+             the line runs as a subtitle. For a drop."),
         SceneId::LiquidChrome => {
             "A mercury sea in a dark studio with a chrome ring standing in it, softbox streaks broken on the waves. Bass rolls a heavy swell, kicks send wave fronts out from the ring and bulges up it, loudness lights the gels; quiet goes glassy. hue turns the gels, shine the softboxes."
         }

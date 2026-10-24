@@ -1,4 +1,4 @@
-post-constant-count 118
+post-constant-count 178
 post-constant 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
@@ -235,7 +235,127 @@ post-constant 116 settings.iridescent.light 0 0 0 1 1 1 1 1
 post-constant-is-constant 116 1
 post-constant 117 settings.iridescent.spread 0 0 0 1 1 1 1 1
 post-constant-is-constant 117 1
-post-routed-count 118
+post-constant 118 settings.pixel-boot.palette 0 0 0 1 0 0 1 1
+post-constant-is-constant 118 1
+post-constant 119 settings.pixel-boot.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 119 1
+post-constant 120 settings.pixel-boot.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 120 1
+post-constant 121 settings.pixel-boot.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 121 1
+post-constant 122 settings.pixel-boot.shake 0 0 0 1 1 1 1 1
+post-constant-is-constant 122 1
+post-constant 123 settings.pixel-boot.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 123 1
+post-constant 124 settings.pixel-boot.pops 0 0 0 1 1 1 1 1
+post-constant-is-constant 124 1
+post-constant 125 settings.pixel-boot.glitch 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 125 1
+post-constant 126 settings.pixel-boot.pixels 0 0 0 1 180 180 1 1
+post-constant-is-constant 126 1
+post-constant 127 settings.pixel-boot.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 127 1
+post-constant 128 settings.pixel-shell.palette 0 0 0 1 1 1 1 1
+post-constant-is-constant 128 1
+post-constant 129 settings.pixel-shell.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 129 1
+post-constant 130 settings.pixel-shell.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 130 1
+post-constant 131 settings.pixel-shell.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 131 1
+post-constant 132 settings.pixel-shell.shake 0 0 0 1 1 1 1 1
+post-constant-is-constant 132 1
+post-constant 133 settings.pixel-shell.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 133 1
+post-constant 134 settings.pixel-shell.pops 0 0 0 1 1 1 1 1
+post-constant-is-constant 134 1
+post-constant 135 settings.pixel-shell.glitch 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 135 1
+post-constant 136 settings.pixel-shell.pixels 0 0 0 1 180 180 1 1
+post-constant-is-constant 136 1
+post-constant 137 settings.pixel-shell.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 137 1
+post-constant 138 settings.pixel-run.palette 0 0 0 1 1 1 1 1
+post-constant-is-constant 138 1
+post-constant 139 settings.pixel-run.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 139 1
+post-constant 140 settings.pixel-run.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 140 1
+post-constant 141 settings.pixel-run.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 141 1
+post-constant 142 settings.pixel-run.shake 0 0 0 1 1 1 1 1
+post-constant-is-constant 142 1
+post-constant 143 settings.pixel-run.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 143 1
+post-constant 144 settings.pixel-run.pops 0 0 0 1 1 1 1 1
+post-constant-is-constant 144 1
+post-constant 145 settings.pixel-run.glitch 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 145 1
+post-constant 146 settings.pixel-run.pixels 0 0 0 1 180 180 1 1
+post-constant-is-constant 146 1
+post-constant 147 settings.pixel-run.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 147 1
+post-constant 148 settings.pixel-quartet.palette 0 0 0 1 1 1 1 1
+post-constant-is-constant 148 1
+post-constant 149 settings.pixel-quartet.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 149 1
+post-constant 150 settings.pixel-quartet.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 150 1
+post-constant 151 settings.pixel-quartet.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 151 1
+post-constant 152 settings.pixel-quartet.shake 0 0 0 1 1 1 1 1
+post-constant-is-constant 152 1
+post-constant 153 settings.pixel-quartet.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 153 1
+post-constant 154 settings.pixel-quartet.pops 0 0 0 1 1 1 1 1
+post-constant-is-constant 154 1
+post-constant 155 settings.pixel-quartet.glitch 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 155 1
+post-constant 156 settings.pixel-quartet.pixels 0 0 0 1 180 180 1 1
+post-constant-is-constant 156 1
+post-constant 157 settings.pixel-quartet.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 157 1
+post-constant 158 settings.pixel-chapel.palette 0 0 0 1 1 1 1 1
+post-constant-is-constant 158 1
+post-constant 159 settings.pixel-chapel.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 159 1
+post-constant 160 settings.pixel-chapel.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 160 1
+post-constant 161 settings.pixel-chapel.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 161 1
+post-constant 162 settings.pixel-chapel.shake 0 0 0 1 1 1 1 1
+post-constant-is-constant 162 1
+post-constant 163 settings.pixel-chapel.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 163 1
+post-constant 164 settings.pixel-chapel.pops 0 0 0 1 1 1 1 1
+post-constant-is-constant 164 1
+post-constant 165 settings.pixel-chapel.glitch 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 165 1
+post-constant 166 settings.pixel-chapel.pixels 0 0 0 1 180 180 1 1
+post-constant-is-constant 166 1
+post-constant 167 settings.pixel-chapel.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 167 1
+post-constant 168 settings.pixel-rave.palette 0 0 0 1 1 1 1 1
+post-constant-is-constant 168 1
+post-constant 169 settings.pixel-rave.hue 0 0 0 1 0 0 1 1
+post-constant-is-constant 169 1
+post-constant 170 settings.pixel-rave.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-constant-is-constant 170 1
+post-constant 171 settings.pixel-rave.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 171 1
+post-constant 172 settings.pixel-rave.shake 0 0 0 1 1 1 1 1
+post-constant-is-constant 172 1
+post-constant 173 settings.pixel-rave.pace 0 0 0 1 1 1 1 1
+post-constant-is-constant 173 1
+post-constant 174 settings.pixel-rave.pops 0 0 0 1 1 1 1 1
+post-constant-is-constant 174 1
+post-constant 175 settings.pixel-rave.glitch 0 0 0 1 0.5 0.5 1 1
+post-constant-is-constant 175 1
+post-constant 176 settings.pixel-rave.pixels 0 0 0 1 180 180 1 1
+post-constant-is-constant 176 1
+post-constant 177 settings.pixel-rave.motion 0 0 0 1 1 1 1 1
+post-constant-is-constant 177 1
+post-routed-count 178
 post-routed 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-routed 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
 post-routed 2 settings.cadence.halo 0 0 0 1 0.200000003 0.200000003 1 1
@@ -354,6 +474,66 @@ post-routed 114 settings.iridescent.hue 0 0 0 1 0 0 1 1
 post-routed 115 settings.iridescent.shimmer 0 0 0 1 1 1 1 1
 post-routed 116 settings.iridescent.light 0 0 0 1 1 1 1 1
 post-routed 117 settings.iridescent.spread 0 0 0 1 1 1 1 1
+post-routed 118 settings.pixel-boot.palette 0 0 0 1 0 0 1 1
+post-routed 119 settings.pixel-boot.hue 0 0 0 1 0 0 1 1
+post-routed 120 settings.pixel-boot.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 121 settings.pixel-boot.response 0 0 0 1 1 1 1 1
+post-routed 122 settings.pixel-boot.shake 0 0 0 1 1 1 1 1
+post-routed 123 settings.pixel-boot.pace 0 0 0 1 1 1 1 1
+post-routed 124 settings.pixel-boot.pops 0 0 0 1 1 1 1 1
+post-routed 125 settings.pixel-boot.glitch 0 0 0 1 0.5 0.5 1 1
+post-routed 126 settings.pixel-boot.pixels 0 0 0 1 180 180 1 1
+post-routed 127 settings.pixel-boot.motion 0 0 0 1 1 1 1 1
+post-routed 128 settings.pixel-shell.palette 0 0 0 1 1 1 1 1
+post-routed 129 settings.pixel-shell.hue 0 0 0 1 0 0 1 1
+post-routed 130 settings.pixel-shell.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 131 settings.pixel-shell.response 0 0 0 1 1 1 1 1
+post-routed 132 settings.pixel-shell.shake 0 0 0 1 1 1 1 1
+post-routed 133 settings.pixel-shell.pace 0 0 0 1 1 1 1 1
+post-routed 134 settings.pixel-shell.pops 0 0 0 1 1 1 1 1
+post-routed 135 settings.pixel-shell.glitch 0 0 0 1 0.5 0.5 1 1
+post-routed 136 settings.pixel-shell.pixels 0 0 0 1 180 180 1 1
+post-routed 137 settings.pixel-shell.motion 0 0 0 1 1 1 1 1
+post-routed 138 settings.pixel-run.palette 0 0 0 1 1 1 1 1
+post-routed 139 settings.pixel-run.hue 0 0 0 1 0 0 1 1
+post-routed 140 settings.pixel-run.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 141 settings.pixel-run.response 0 0 0 1 1 1 1 1
+post-routed 142 settings.pixel-run.shake 0 0 0 1 1 1 1 1
+post-routed 143 settings.pixel-run.pace 0 0 0 1 1 1 1 1
+post-routed 144 settings.pixel-run.pops 0 0 0 1 1 1 1 1
+post-routed 145 settings.pixel-run.glitch 0 0 0 1 0.5 0.5 1 1
+post-routed 146 settings.pixel-run.pixels 0 0 0 1 180 180 1 1
+post-routed 147 settings.pixel-run.motion 0 0 0 1 1 1 1 1
+post-routed 148 settings.pixel-quartet.palette 0 0 0 1 1 1 1 1
+post-routed 149 settings.pixel-quartet.hue 0 0 0 1 0 0 1 1
+post-routed 150 settings.pixel-quartet.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 151 settings.pixel-quartet.response 0 0 0 1 1 1 1 1
+post-routed 152 settings.pixel-quartet.shake 0 0 0 1 1 1 1 1
+post-routed 153 settings.pixel-quartet.pace 0 0 0 1 1 1 1 1
+post-routed 154 settings.pixel-quartet.pops 0 0 0 1 1 1 1 1
+post-routed 155 settings.pixel-quartet.glitch 0 0 0 1 0.5 0.5 1 1
+post-routed 156 settings.pixel-quartet.pixels 0 0 0 1 180 180 1 1
+post-routed 157 settings.pixel-quartet.motion 0 0 0 1 1 1 1 1
+post-routed 158 settings.pixel-chapel.palette 0 0 0 1 1 1 1 1
+post-routed 159 settings.pixel-chapel.hue 0 0 0 1 0 0 1 1
+post-routed 160 settings.pixel-chapel.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 161 settings.pixel-chapel.response 0 0 0 1 1 1 1 1
+post-routed 162 settings.pixel-chapel.shake 0 0 0 1 1 1 1 1
+post-routed 163 settings.pixel-chapel.pace 0 0 0 1 1 1 1 1
+post-routed 164 settings.pixel-chapel.pops 0 0 0 1 1 1 1 1
+post-routed 165 settings.pixel-chapel.glitch 0 0 0 1 0.5 0.5 1 1
+post-routed 166 settings.pixel-chapel.pixels 0 0 0 1 180 180 1 1
+post-routed 167 settings.pixel-chapel.motion 0 0 0 1 1 1 1 1
+post-routed 168 settings.pixel-rave.palette 0 0 0 1 1 1 1 1
+post-routed 169 settings.pixel-rave.hue 0 0 0 1 0 0 1 1
+post-routed 170 settings.pixel-rave.crt 0 0 0 1 0.600000024 0.600000024 1 1
+post-routed 171 settings.pixel-rave.response 0 0 0 1 1 1 1 1
+post-routed 172 settings.pixel-rave.shake 0 0 0 1 1 1 1 1
+post-routed 173 settings.pixel-rave.pace 0 0 0 1 1 1 1 1
+post-routed 174 settings.pixel-rave.pops 0 0 0 1 1 1 1 1
+post-routed 175 settings.pixel-rave.glitch 0 0 0 1 0.5 0.5 1 1
+post-routed 176 settings.pixel-rave.pixels 0 0 0 1 180 180 1 1
+post-routed 177 settings.pixel-rave.motion 0 0 0 1 1 1 1 1
 post-import-value 7 7 108
 post-import-value 7 8 2
 post-import-value 7 9 0.200000003
@@ -472,3 +652,63 @@ post-import-value 21 4 0
 post-import-value 21 5 1
 post-import-value 21 6 1
 post-import-value 21 7 1
+post-import-value 22 0 0
+post-import-value 22 1 0
+post-import-value 22 2 0.600000024
+post-import-value 22 3 1
+post-import-value 22 4 1
+post-import-value 22 5 1
+post-import-value 22 6 1
+post-import-value 22 7 0.5
+post-import-value 22 8 180
+post-import-value 22 9 1
+post-import-value 23 0 1
+post-import-value 23 1 0
+post-import-value 23 2 0.600000024
+post-import-value 23 3 1
+post-import-value 23 4 1
+post-import-value 23 5 1
+post-import-value 23 6 1
+post-import-value 23 7 0.5
+post-import-value 23 8 180
+post-import-value 23 9 1
+post-import-value 24 0 1
+post-import-value 24 1 0
+post-import-value 24 2 0.600000024
+post-import-value 24 3 1
+post-import-value 24 4 1
+post-import-value 24 5 1
+post-import-value 24 6 1
+post-import-value 24 7 0.5
+post-import-value 24 8 180
+post-import-value 24 9 1
+post-import-value 25 0 1
+post-import-value 25 1 0
+post-import-value 25 2 0.600000024
+post-import-value 25 3 1
+post-import-value 25 4 1
+post-import-value 25 5 1
+post-import-value 25 6 1
+post-import-value 25 7 0.5
+post-import-value 25 8 180
+post-import-value 25 9 1
+post-import-value 26 0 1
+post-import-value 26 1 0
+post-import-value 26 2 0.600000024
+post-import-value 26 3 1
+post-import-value 26 4 1
+post-import-value 26 5 1
+post-import-value 26 6 1
+post-import-value 26 7 0.5
+post-import-value 26 8 180
+post-import-value 26 9 1
+post-import-value 27 0 1
+post-import-value 27 1 0
+post-import-value 27 2 0.600000024
+post-import-value 27 3 1
+post-import-value 27 4 1
+post-import-value 27 5 1
+post-import-value 27 6 1
+post-import-value 27 7 0.5
+post-import-value 27 8 180
+post-import-value 27 9 1

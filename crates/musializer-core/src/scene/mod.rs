@@ -64,6 +64,19 @@ pub enum SceneId {
     NeonTunnel = 19,
     VoronoiBloom = 20,
     IridescentPool = 21,
+    /// Pixel Cats (2026-10-24): one staging per scene, one implementation in
+    /// `scenes::pixel_cats`. A handheld boot screen.
+    PixelBoot = 22,
+    /// Pixel Cats: a lyric editor in a terminal, tagged by the music.
+    PixelShell = 23,
+    /// Pixel Cats: a side-scroller over keycap rooftops.
+    PixelRunner = 24,
+    /// Pixel Cats: a barbershop quartet of cats.
+    PixelQuartet = 25,
+    /// Pixel Cats: monk cats under a rose window.
+    PixelChapel = 26,
+    /// Pixel Cats: a gabber tunnel with a giant cat face.
+    PixelRave = 27,
 }
 
 /// Number of scenes.
@@ -89,7 +102,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = SceneId::IridescentPool as usize + 1;
+pub const SCENE_COUNT: usize = SceneId::PixelRave as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -124,6 +137,12 @@ impl SceneId {
         SceneId::NeonTunnel,
         SceneId::VoronoiBloom,
         SceneId::IridescentPool,
+        SceneId::PixelBoot,
+        SceneId::PixelShell,
+        SceneId::PixelRunner,
+        SceneId::PixelQuartet,
+        SceneId::PixelChapel,
+        SceneId::PixelRave,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -186,6 +205,12 @@ impl SceneId {
             SceneId::NeonTunnel => "Neon Tunnel",
             SceneId::VoronoiBloom => "Voronoi Bloom",
             SceneId::IridescentPool => "Iridescent Pool",
+            SceneId::PixelBoot => "Boot Screen",
+            SceneId::PixelShell => "Root Shell",
+            SceneId::PixelRunner => "Side Scroller",
+            SceneId::PixelQuartet => "Barbershop",
+            SceneId::PixelChapel => "Rose Window",
+            SceneId::PixelRave => "Gabber Tunnel",
         }
     }
 
@@ -223,6 +248,14 @@ impl SceneId {
             SceneId::NeonTunnel => "tunnel",
             SceneId::VoronoiBloom => "voronoi",
             SceneId::IridescentPool => "iridescent",
+            // One family, one prefix: a treatment that says `pixel-` is
+            // asking for the pixel-art stagings, and nothing else starts so.
+            SceneId::PixelBoot => "pixel-boot",
+            SceneId::PixelShell => "pixel-shell",
+            SceneId::PixelRunner => "pixel-run",
+            SceneId::PixelQuartet => "pixel-quartet",
+            SceneId::PixelChapel => "pixel-chapel",
+            SceneId::PixelRave => "pixel-rave",
         }
     }
 

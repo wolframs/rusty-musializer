@@ -80,6 +80,7 @@ SCENES = (
     "spectrum", "pulse", "orbital", "ascii", "atlas", "terrarium",
     "constellation", "cadence", "loom", "pentagram", "phosphor", "clawd", "knot", "stage",
     "threshold", "fluid", "chrome", "aurora", "metaballs", "tunnel", "voronoi", "iridescent",
+    "pixel-boot", "pixel-shell", "pixel-run", "pixel-quartet", "pixel-chapel", "pixel-rave",
 )
 
 # Keep the orchestrator's measured-cache contract dependency-free. These are

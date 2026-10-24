@@ -304,6 +304,12 @@ const CYCLIC_KEYS: &[&str] = &[
     "settings.clawd.hue",
     "settings.stage.hue",
     "settings.threshold.hue",
+    "settings.pixel-boot.hue",
+    "settings.pixel-shell.hue",
+    "settings.pixel-run.hue",
+    "settings.pixel-quartet.hue",
+    "settings.pixel-chapel.hue",
+    "settings.pixel-rave.hue",
 ];
 
 /// Descriptors whose **low** end is a designed value rather than a degenerate:
@@ -448,7 +454,17 @@ pub fn explore(
         // descriptor with a zero-width range has nothing to offer and is not
         // worth an infinite loop.
         let pick = (rng.next_u64() as usize) % descriptors.len().max(1);
-        if let Some(descriptor) = descriptors.get(pick) {
+        if let Some(descriptor) = descriptors
+            .get(pick)
+            .filter(|d| d.kind == SettingKind::Toggle)
+        {
+            // A toggle has exactly one other value. Drawing for it at the
+            // Surprise flip chance failed all sixteen tries 7 % of the time
+            // (0.85^16), which the six Pixel Cats scenes — ten controls, one
+            // toggle — were the first to hit; the outcome is unchanged
+            // whenever a draw would have succeeded.
+            values[pick] = conform(descriptor, 1.0 - values[pick]);
+        } else if let Some(descriptor) = descriptors.get(pick) {
             for _ in 0..16 {
                 let candidate = explore_value(rng, descriptor, values[pick], Strength::Surprise);
                 if candidate.to_bits() != values[pick].to_bits() {
@@ -727,7 +743,8 @@ mod tests {
         // knowingly re-scoped rather than silently narrowed.
         //
         // The C-era prefix stays fixed; all registered controls, including
-        // Fluid Ink's eight, participate in the full exploration sweep.
+        // Fluid Ink's eight and the six Pixel Cats scenes' ten each,
+        // participate in the full exploration sweep.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
             .map(settings::oracle_count)
@@ -736,7 +753,7 @@ mod tests {
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 199);
+        assert_eq!(all_descriptors().len(), 259);
     }
 
     // -- conform / step / parse ------------------------------------------------

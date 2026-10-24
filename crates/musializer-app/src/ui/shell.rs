@@ -4116,7 +4116,11 @@ impl Shell {
             .iter()
             .map(|family| family.label())
             .collect();
-        let tab_widths = vec![layout.tab(0).width; tab_labels.len()];
+        // Tabs are as wide as their labels ask (`scene_browser::tab_slot`), so
+        // the font is fitted over each tab's own width.
+        let tab_widths: Vec<f32> = (0..tab_labels.len())
+            .map(|index| layout.tab(index).width)
+            .collect();
         let tab_font = widgets::row_font_size(input.fonts.ui(), &tab_labels, &tab_widths, 22.0);
         for (index, family) in SceneFamily::ALL.into_iter().enumerate() {
             let rect = layout.tab(index);

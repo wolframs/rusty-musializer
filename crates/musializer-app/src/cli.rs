@@ -680,16 +680,19 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         "neon-tunnel" => Some(SceneId::NeonTunnel),
         "voronoi-bloom" => Some(SceneId::VoronoiBloom),
         "iridescent-pool" => Some(SceneId::IridescentPool),
+        // The one Pixel Cats token that is not its staging's own word.
+        "pixel-runner" | "pixel-scroller" => Some(SceneId::PixelRunner),
         other => SceneId::from_stable_name(other),
     }
 }
 
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
-constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold, fluid, chrome, aurora, metaballs, tunnel, voronoi, iridescent (also pulse-field, \
+constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold, fluid, chrome, aurora, metaballs, tunnel, voronoi, iridescent, \
+pixel-boot, pixel-shell, pixel-run, pixel-quartet, pixel-chapel, pixel-rave (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
 phosphor-dream, claude, openai-knot, door, fluid-ink, liquid-chrome, aurora-veil, \
-metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool)";
+metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool, pixel-runner, pixel-scroller)";
 
 /// The pre-pass, then the main loop. Mirrors `main` (`musializer.c:315-561`).
 pub fn parse<I, S>(arguments: I) -> Outcome
@@ -1472,7 +1475,7 @@ Diagnostics:
                           for reproducible headless UI capture. SPEC is
                           comma-separated key=value pairs:
                           panel=none|tune|export|lyrics|assist,
-                          scene-family=sound|geometry|atmosphere|materials|living|type-stage,
+                          scene-family=sound|geometry|atmosphere|materials|living|type-stage|pixel-cats,
                           scene-pick=NAME selects a scene through the normal edit path,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
                           sidebar=PX, inspector=PX, timeline-height=PX
@@ -1779,6 +1782,14 @@ mod tests {
             ("voronoi-bloom", SceneId::VoronoiBloom),
             ("iridescent", SceneId::IridescentPool),
             ("iridescent-pool", SceneId::IridescentPool),
+            ("pixel-boot", SceneId::PixelBoot),
+            ("pixel-shell", SceneId::PixelShell),
+            ("pixel-run", SceneId::PixelRunner),
+            ("pixel-runner", SceneId::PixelRunner),
+            ("pixel-scroller", SceneId::PixelRunner),
+            ("pixel-quartet", SceneId::PixelQuartet),
+            ("pixel-chapel", SceneId::PixelChapel),
+            ("pixel-rave", SceneId::PixelRave),
             ("claude", SceneId::Clawd),
         ];
         for (name, id) in expected {

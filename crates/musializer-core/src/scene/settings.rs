@@ -378,6 +378,32 @@ pub mod index {
         /// How much the wet floor reflects.
         pub const REFLECTION: usize = 10;
     }
+    /// Pixel Cats (post-legacy, 2026-10-24): one shape for all six stagings,
+    /// `settings.pixel-boot.*` through `settings.pixel-rave.*`. Persisted
+    /// order, append only — and append to every staging at once, so the group
+    /// keeps one shape.
+    pub mod pixel {
+        /// 0 handheld, 1 colour, 2 pocket, 3 arcade, 4 virtual, 5 dusk.
+        pub const PALETTE: usize = 0;
+        pub const HUE: usize = 1;
+        /// Pixel grid, scanlines and vignette; also whether the set powers off
+        /// at the end of the track.
+        pub const CRT: usize = 2;
+        /// How far the music reaches the picture; 0 keeps time on its own.
+        pub const RESPONSE: usize = 3;
+        /// How hard a kick shakes, punches in and splits the colour.
+        pub const SHAKE: usize = 4;
+        /// How fast a line is typed.
+        pub const PACE: usize = 5;
+        /// Words and notes popping on the onsets, in the stagings that have them.
+        pub const POPS: usize = 6;
+        /// Row tears on a cut, a new line and every fourth bar.
+        pub const GLITCH: usize = 7;
+        /// The canvas's short side, in pixels: smaller is chunkier.
+        pub const PIXELS: usize = 8;
+        /// Scrolling, turning and idle animation speed.
+        pub const MOTION: usize = 9;
+    }
     /// OpenAI Knot: the persisted control order; new finish controls are appended.
     pub mod knot {
         pub const SIZE: usize = 0;
@@ -644,7 +670,7 @@ const THRESHOLD: &[SettingDescriptor] = &[
     D::slider("settings.threshold.open", "Door open", 0.00, 1.00, 0.00, 2),
     D::slider("settings.threshold.light", "Light", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.haze", "Doorway haze", 0.00, 1.00, 0.60, 2),
-    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 22.00, 0.00, 0),
+    D::slider("settings.threshold.beyond", "Beyond (0 = haze)", 0.00, 28.00, 0.00, 0),
     D::slider("settings.threshold.presences", "Presences", 0.00, 2.00, 0.00, 0),
     D::slider("settings.threshold.motes", "Motes", 0.00, 2.00, 1.00, 2),
     D::slider("settings.threshold.mist", "Mist", 0.00, 2.00, 1.00, 2),
@@ -738,6 +764,32 @@ const IRIDESCENT: &[SettingDescriptor] = &[
     D::slider("settings.iridescent.spread", "Ripple spread", 0.3, 2.0, 1.0, 2),
 ];
 
+/// The Pixel Cats shape, stamped once per staging so the six cannot drift.
+/// Only the default palette differs: the boot screen is a handheld's.
+macro_rules! pixel_cats {
+    ($name:ident, $token:literal, $palette:expr) => {
+        #[rustfmt::skip]
+        const $name: &[SettingDescriptor] = &[
+            D::slider(concat!("settings.", $token, ".palette"), "Palette", 0.0, 5.0, $palette, 0),
+            D::slider(concat!("settings.", $token, ".hue"), "Hue (deg)", -180.0, 180.0, 0.0, 0),
+            D::slider(concat!("settings.", $token, ".crt"), "CRT", 0.0, 1.0, 0.6, 2),
+            D::slider(concat!("settings.", $token, ".response"), "Music response", 0.0, 2.0, 1.0, 2),
+            D::slider(concat!("settings.", $token, ".shake"), "Hit shake", 0.0, 2.0, 1.0, 2),
+            D::slider(concat!("settings.", $token, ".pace"), "Typing pace", 0.5, 3.0, 1.0, 2),
+            D::toggle(concat!("settings.", $token, ".pops"), "Onset pops", 1.0),
+            D::slider(concat!("settings.", $token, ".glitch"), "Glitch", 0.0, 1.0, 0.5, 2),
+            D::slider(concat!("settings.", $token, ".pixels"), "Pixel rows", 120.0, 320.0, 180.0, 0),
+            D::slider(concat!("settings.", $token, ".motion"), "Motion", 0.0, 2.0, 1.0, 2),
+        ];
+    };
+}
+pixel_cats!(PIXEL_BOOT, "pixel-boot", 0.0);
+pixel_cats!(PIXEL_SHELL, "pixel-shell", 1.0);
+pixel_cats!(PIXEL_RUN, "pixel-run", 1.0);
+pixel_cats!(PIXEL_QUARTET, "pixel-quartet", 1.0);
+pixel_cats!(PIXEL_CHAPEL, "pixel-chapel", 1.0);
+pixel_cats!(PIXEL_RAVE, "pixel-rave", 1.0);
+
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     SPECTRUM,
     PULSE,
@@ -761,6 +813,12 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     TUNNEL,
     VORONOI,
     IRIDESCENT,
+    PIXEL_BOOT,
+    PIXEL_SHELL,
+    PIXEL_RUN,
+    PIXEL_QUARTET,
+    PIXEL_CHAPEL,
+    PIXEL_RAVE,
 ];
 
 /// Descriptors for one scene.
@@ -1008,7 +1066,13 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         | SceneId::MetaballGarden
         | SceneId::NeonTunnel
         | SceneId::VoronoiBloom
-        | SceneId::IridescentPool => false,
+        | SceneId::IridescentPool
+        | SceneId::PixelBoot
+        | SceneId::PixelShell
+        | SceneId::PixelRunner
+        | SceneId::PixelQuartet
+        | SceneId::PixelChapel
+        | SceneId::PixelRave => false,
     }
 }
 
