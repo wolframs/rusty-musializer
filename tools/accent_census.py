@@ -101,7 +101,9 @@ def census(png, report, primary=0):
     rest = mask & ~allowed
 
     problems = []
-    lane_bottom = group_top + int(34 * scale)
+    # The plan lane's bottom: 44 px since WX-5b (it was 24, and this was 34),
+    # plus the 2 px inset and a margin.
+    lane_bottom = group_top + int(50 * scale)
     shapes = []
     for pixels in components(rest):
         ys = [p[0] for p in pixels]

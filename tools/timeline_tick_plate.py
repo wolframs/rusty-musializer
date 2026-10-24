@@ -57,12 +57,17 @@ PLATE_PAD_Y = 1
 LABEL_BAND_ROWS = 30
 
 # A waveform column is a *tinted* grey since WX-5a: cool ahead of the playhead
-# (`ui_waveform`, #BAC2D6 on the light appearance: blue > green > red) and warm
+# (`ui_waveform`, #BDC1CB on the light appearance: blue > green > red) and warm
 # behind it (`ui_level`, #8A7F6E: red > green > blue), drawn at alpha 0.62..1.0
 # over the white lane. Blending toward white preserves the order of the three
-# channels, and both tokens keep a step of 7 or more between neighbours at the
-# lowest alpha, so the *order* is the classifier, with a floor on the red-blue
-# tint (WAVEFORM_TINT) and a ceiling on chroma (WAVEFORM_MAX_CHROMA).
+# channels, so the *order* is the classifier, with a floor on the red-blue tint
+# (WAVEFORM_TINT) and a ceiling on chroma (WAVEFORM_MAX_CHROMA).
+#
+# The cool tint was halved in WX-5b (#BAC2D6, red-blue 28, read as a blue cast
+# beside the light accent; #BDC1CB is 14). At the lowest alpha that leaves a
+# red-blue step of 8.7 and a green step of 2.5 either side, so the floor moved
+# from 8 to 5: still above every neutral glyph edge and the tick rule (4, and
+# not in either order), which is what the floor exists to refuse.
 #
 # Before WX-5a the envelope was the accent blue and this tested "markedly bluer
 # than red, and greener than red". The order does the same work: no neutral
@@ -72,7 +77,7 @@ LABEL_BAND_ROWS = 30
 # G>R>B, teal G>B>R). The purple case is the one that cost a wrong failure to
 # find, twice: a custom marker line across a label read as 27 waveform pixels
 # under the blue rule, and as 9 under a first tint-only version of this one.
-WAVEFORM_TINT = 8
+WAVEFORM_TINT = 5
 WAVEFORM_MAX_CHROMA = 40
 
 # Rows with at least this many waveform pixels are inside the lane. The envelope

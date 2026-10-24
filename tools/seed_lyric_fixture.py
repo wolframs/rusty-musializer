@@ -62,6 +62,44 @@ def bundle_font(project_path: pathlib.Path) -> dict:
     }
 
 
+# Two grades a pixel check can tell apart: a cold ramp and an ember one.
+COLD_GRADE = {"stops": ["05080b", "1d2f3a", "4a6f9c", "cfe6ff"], "map": 0.8,
+              "shift_from": 125, "shift_by": 0, "shift_width": 32}
+EMBER_GRADE = {"stops": ["0b0503", "5a1a0b", "d0641f", "ffe0a0"], "map": 0.8,
+               "shift_from": 125, "shift_by": 0, "shift_width": 32}
+
+
+def run_plan(kind: str, duration: float) -> dict:
+    """The WX-5b run-lane fixture: seven sections of one second (the last runs
+    to the end of the track), so at the whole-track view every cut is wide
+    enough to draw and to aim at."""
+    scenes = {
+        "runs": ["constellation", "constellation", "stage", "stage", "stage",
+                 "constellation", "cadence"],
+        "same-grade": ["constellation", "constellation", "stage", "stage", "stage",
+                       "constellation", "cadence"],
+        "alternating": ["constellation", "stage", "constellation", "stage",
+                        "constellation", "stage", "cadence"],
+    }[kind]
+    cues = []
+    for index, scene in enumerate(scenes):
+        start = float(index)
+        end = duration if index == len(scenes) - 1 else float(index + 1)
+        cues.append({
+            "id": 201 + index,
+            "start_seconds": start,
+            "end_seconds": round(end, 3),
+            "scene_name": scene,
+            "strength": 1.0,
+            "settings": [],
+        })
+    cues[0]["grade"] = COLD_GRADE
+    cues[1]["grade"] = COLD_GRADE if kind == "same-grade" else EMBER_GRADE
+    cues[1]["transition"] = {"kind": "burn", "seconds": 0.5}
+    cues[4]["glide"] = 1.0
+    return {"enabled": True, "cues": cues}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("project", type=pathlib.Path)
@@ -80,6 +118,19 @@ def parse_args() -> argparse.Namespace:
         "--scene-plan",
         action="store_true",
         help="seed a disabled two-cue automatic scene plan",
+    )
+    parser.add_argument(
+        "--run-plan",
+        choices=("runs", "alternating", "same-grade"),
+        help=(
+            "seed an enabled seven-section plan for the WX-5b run lane: "
+            "`runs` is C, C (graded differently, arriving by a burn), S, S, "
+            "S (gliding), C, K -- four runs, three internal cuts; "
+            "`alternating` gives every section a scene unlike its neighbours "
+            "(seven runs, no internal cut: the hairline control); "
+            "`same-grade` is `runs` with both C sections on one grade (the "
+            "grade-bar control)"
+        ),
     )
     parser.add_argument(
         "--effects",
@@ -221,6 +272,8 @@ def main() -> int:
                 },
             ],
         }
+    if args.run_plan:
+        project["scene_switches"] = run_plan(args.run_plan, duration)
     project["scenes"][0]["scene_type"] = args.scene
     project["output"].update(
         {
@@ -237,7 +290,7 @@ def main() -> int:
         f"{len(project['semantic_events'])} semantic events, "
         f"{len(project['manual_events'])} manual events, "
         f"box={args.box}, scene={args.scene}, drop={args.drop or 'none'}, "
-        f"scene_plan={'2 cues' if args.scene_plan else 'unchanged'}"
+        f"scene_plan={args.run_plan or ('2 cues' if args.scene_plan else 'unchanged')}"
     )
     return 0
 
