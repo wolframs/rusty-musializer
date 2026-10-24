@@ -221,6 +221,34 @@ They are independent unless a line says otherwise. Every one finishes with
    scrolling at the minimum picker size; the progress bar, pause menu,
    handheld and music box are unbuilt. And the family tabs became two rows
    of label-width tabs so a seventh family fits.
+   **Planned 2026-10-24, not started.** The plan is
+   [`WX5C_DESIGN.md`](WX5C_DESIGN.md), written by the 5a/5b designer and
+   accepted by the lead: a 46 px top bar over the workspace (not the dock,
+   which keeps its full height — lead's call), a 52 px rail beside the
+   preview and transport, Tracks/Scenes flyouts over the preview's left
+   edge, the picker as a family column plus a two-column tile grid (room
+   for ~20 tiles a family at 960x640), one 26 px lane head replacing the
+   event row and the segment-controls row, a round play button, and the
+   `WorkspaceSidebar` retired from `differential_layout.sh` with a
+   post-legacy `WorkspaceRail` section. Work it the way 5a/5b were worked:
+   a seam commit first, then the rail by one Opus and the top bar by a
+   parallel Opus in its own worktree (own capture display), then a critic
+   pass. Glyph Lattice (id 28) made Geometry six tiles; the picker must
+   lay out all 29 scenes.
+   - **Open for the operator:** whether `.musi`/treatments gain
+     `metadata.artist`. The mockup's top bar shows the artist; nothing on
+     disk stores one, so the slot stays out until they decide.
+3a. **Loose ends from WX-5a/5b**, small:
+   - The gate's pixel checks still run on the light look (a theme-only
+     `ui.json` in its private config); the dark default has its own
+     section. Converting the rest to both looks belongs with WX-6.
+   - `tools/lyric_lane_capture.sh` is pinned to the light look the same way.
+   - `tools/poster_check.sh`'s budget step saw one stalled frame in five
+     runs, under GPU contention from a parallel agent. Probably load; if
+     it recurs on a quiet machine, it is real.
+   - Retake the README screenshot after 5c.
+   - Idea, not asked for: the Glyph Lattice as the welcome screen's hero
+     (the Musializer mark on the honeycomb), with the secondary-panel wave.
 4. **WX-4 follow-ups**, small and independent:
    - inline images in a chat (a contact sheet or still the agent wrote);
    - a model picker per chat;
@@ -233,10 +261,8 @@ They are independent unless a line says otherwise. Every one finishes with
    first and last frames. Building it spends money, so it starts with the
    consent and price-first route, then a treatment feature (a clip section,
    or a generated bridge between two sections' frames).
-6. **Repair `tools/welcome_theme_check.sh`.** It fails on a fixed-pixel
-   assertion ("editor did not replace the welcome step marker") at the
-   commit before WX too. It predates this work and is not in
-   `tools/verify.sh`.
+6. ~~Repair `tools/welcome_theme_check.sh`.~~ Done in the WX-5a polish
+   (the theme menu's rows had swapped).
 
 ## Decisions recorded along the way
 
