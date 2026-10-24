@@ -520,7 +520,7 @@ pub struct Shell {
     timeline_pan: Option<TimelinePan>,
     /// A manual pan deliberately detaches the view from playback-follow until
     /// the user asks to Follow again.
-    timeline_manual_view: bool,
+    pub(crate) timeline_manual_view: bool,
     /// The wheel gesture captured over any timed lane by
     /// [`Shell::request_timeline_zoom`] and applied at the start of the next
     /// frame, before any aligned lane draws.
@@ -1456,26 +1456,16 @@ impl Shell {
         std::mem::take(&mut self.poster_requests)
     }
 
-    /// The `scene runs:` report line (WX-5b). The seam commit's version counts
-    /// runs and sections; the lane fills in the rest.
+    /// The `scene runs:` report line (WX-5b): what the plan lane drew in its
+    /// last frame, as runs, and the view it drew them in. Read from that frame
+    /// rather than from current state, because the report is printed at
+    /// shutdown, after the view has been let go.
     #[must_use]
     pub fn describe_runs(&self, workspace: &Workspace) -> String {
-        let Some(track) = workspace.current() else {
+        if workspace.current().is_none() {
             return "none".to_owned();
-        };
-        let cues = track.scene_switches.cues();
-        let runs = musializer_core::ui::plan_runs::fold_runs(cues);
-        let cuts: usize = runs
-            .iter()
-            .map(musializer_core::ui::plan_runs::RunSpan::internal_cuts)
-            .sum();
-        format!(
-            "runs={} sections={} cuts={cuts} open={}",
-            runs.len(),
-            cues.len(),
-            self.probe_run_open
-                .map_or_else(|| "none".to_owned(), |index| index.to_string()),
-        )
+        }
+        self.scene_lane.describe()
     }
 
     pub fn describe_timeline(&self, duration_seconds: f64) -> String {

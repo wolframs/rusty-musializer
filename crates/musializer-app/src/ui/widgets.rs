@@ -316,7 +316,11 @@ impl Widgets {
     /// One seam, so a probe cannot reach half the widgets: every control in the
     /// shell goes through [`Self::button`] or [`Self::slider`], and both read
     /// here.
-    fn pointer(&self, d: &RaylibDrawHandle<'_>) -> Pointer {
+    ///
+    /// `pub(crate)` for the surfaces that are not widgets but take presses —
+    /// the scene plan lane's select-and-drag (WX-5b) — so a `click=` probe
+    /// reaches them through the same seam a button's press does.
+    pub(crate) fn pointer(&self, d: &RaylibDrawHandle<'_>) -> Pointer {
         let mut pointer = Pointer::read(d, self.ui_scale);
         if let Some(probe) = self.pointer_probe {
             pointer.down = probe.down;

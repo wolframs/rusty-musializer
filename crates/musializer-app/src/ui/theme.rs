@@ -146,6 +146,18 @@ pub struct Palette {
     pub ui_waveform: u32,
     /// Selected text inside a text field.
     pub ui_text_highlight: u32,
+    /// A lyric cue block's fill in the cue lane (WX-5b, the mockup's `.ly`):
+    /// neutral, so the words carry the block and the origin colour is a stripe
+    /// rather than a slab.
+    pub ui_cue_block: u32,
+    /// The cue block under the playhead: a warm tint, not the accent (WX-5b,
+    /// the mockup's `.ly.now`). The accent is the playhead crossing it.
+    pub ui_cue_now: u32,
+    /// The hairline at a cut *inside* a plan-lane run (WX-5b). Opaque, so the
+    /// gate can count it by exact colour (AGENTS.md: opaque fills are the one
+    /// thing every renderer writes bit-exactly), and a colour nothing else in
+    /// the lane uses.
+    pub ui_run_cut: u32,
 }
 
 /// The two appearances.
@@ -183,6 +195,9 @@ pub mod palette {
         ui_level:           0x9A98_90FF,
         ui_waveform:        0x3D42_4BFF,
         ui_text_highlight:  0x3442_58FF,
+        ui_cue_block:       0x2024_2AFF,
+        ui_cue_now:         0x2B26_18FF,
+        ui_run_cut:         0x5A5E_66FF,
     };
 
     /// The light appearance: the pre-WX-5a light/blue palette moved onto the
@@ -212,8 +227,11 @@ pub mod palette {
         ui_success:         0x166E_47FF,
         ui_lane_trough:     0xE6E6_EAFF,
         ui_level:           0x8A7F_6EFF,
-        ui_waveform:        0xBAC2_D6FF,
+        ui_waveform:        0xBDC1_CBFF,
         ui_text_highlight:  0xD6DE_F5FF,
+        ui_cue_block:       0xEEEE_F2FF,
+        ui_cue_now:         0xF6EC_D8FF,
+        ui_run_cut:         0xFBFA_F7FF,
     };
 }
 
@@ -254,7 +272,7 @@ impl Palette {
         dead_code,
         reason = "the palette audit in this module's tests is its only reader"
     )]
-    pub const fn entries(&self) -> [(&'static str, u32, Surface); 23] {
+    pub const fn entries(&self) -> [(&'static str, u32, Surface); 26] {
         [
             ("accent", self.accent, Surface::Chrome),
             ("on_accent", self.on_accent, Surface::OnAccent),
@@ -279,6 +297,9 @@ impl Palette {
             ("ui_level", self.ui_level, Surface::Graphic),
             ("ui_waveform", self.ui_waveform, Surface::Fill),
             ("ui_text_highlight", self.ui_text_highlight, Surface::Fill),
+            ("ui_cue_block", self.ui_cue_block, Surface::Fill),
+            ("ui_cue_now", self.ui_cue_now, Surface::Fill),
+            ("ui_run_cut", self.ui_run_cut, Surface::Fill),
         ]
     }
 
@@ -389,11 +410,6 @@ pub mod rgba {
     /// design, so it is not a palette entry: nothing is ever measured against it.
     pub const SCRIM: u32 = 0x0A0B_0EBE;
 
-    /// Text drawn on a light scene-identity fill (a block in the scene plan
-    /// lane), where the label picks whichever of this and white reads better.
-    /// Content, not chrome, so it does not change with the appearance.
-    pub const INK_ON_CONTENT: u32 = 0x1414_14FF;
-
     /// The theme-independent entries, for the sweep.
     #[allow(
         dead_code,
@@ -489,6 +505,9 @@ pub mod color {
         ui_level;
         ui_waveform;
         ui_text_highlight;
+        ui_cue_block;
+        ui_cue_now;
+        ui_run_cut;
     }
 
     fixed! {
@@ -576,7 +595,12 @@ pub mod metric {
     /// Space Grotesk stands 11, and the one thing in the sidebar that names the
     /// work read as its smallest print. This is the optical match for the
     /// buttons above it, not a larger size.
-    pub const UI_FONT_AUTHORED_ROW: f32 = 18.0;
+    ///
+    /// 16 since WX-5b (it was 18): `AuthoredText` now applies Alegreya's own
+    /// optical size (1.154, measured from its tables) to every authored draw, so
+    /// 18 corrected twice and drew the name 11 % large. 16 x 1.154 lands its
+    /// capitals at 8.6 logical px beside the buttons' 8.8.
+    pub const UI_FONT_AUTHORED_ROW: f32 = 16.0;
     /// The corner radius of a control and a dialog (WX-5a), as in the mockup.
     pub const UI_RADIUS: f32 = 4.0;
     pub const UI_PANEL_PADDING: f32 = 10.0;
