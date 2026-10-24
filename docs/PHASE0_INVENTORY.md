@@ -59,9 +59,11 @@ inherited from `src/musializer.c` (parser at `:315-662`, four value parsers at
 `:19-250`).
 
 The toolkit editor adds `--editor-ui` (open at startup) and
-`--ui-theme light-blue|black-amber` (session appearance override). The Editor
-selector persists the same theme tokens in the workstation UI preference JSON;
-missing theme fields default to `light-blue`. Neither flag changes project or
+`--ui-theme light-blue|black-amber` (session appearance override; `light` and
+`dark` are accepted as aliases since WX-5a, 2026-10-24). The Editor selector
+persists the same theme tokens in the workstation UI preference JSON; a missing
+theme field defaults to `black-amber`, the dark appearance, which became the
+default with WX-5a (it was `light-blue` before). Neither flag changes project or
 export appearance. See [UI_TOOLKIT.md](UI_TOOLKIT.md).
 
 The directing flags — `--treatment`, `--vocabulary`, `--contact-sheet`,
