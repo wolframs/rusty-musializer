@@ -410,6 +410,10 @@ pub struct ShellInput<'a> {
     /// separate parameter so that no panel can measure a string with one face and
     /// draw it with another.
     pub fonts: &'a Faces,
+    /// The poster service's read side (WX-5b): what the plan lane draws for
+    /// each run. A shared borrow for the whole frame; requests go back through
+    /// [`Shell::take_poster_requests`], never through this.
+    pub posters: &'a crate::posters::PosterBoard,
     pub scene: SceneId,
     pub settings: &'a SceneSettings,
     /// The effective settings after routes, when they differ from `settings`.
@@ -472,6 +476,11 @@ pub struct Shell {
     /// Whether a dock surface holds the keyboard this frame. Written by the
     /// composition root, read by [`Shell::text_entry_has_focus`].
     pub dock_keyboard: bool,
+    /// The runs the plan lane drew this frame and wants posters for (WX-5b),
+    /// drained by the composition root after the frame.
+    pub(crate) poster_requests: Vec<crate::posters::PosterRequest>,
+    /// `--ui-probe run-open=N`, delivered by the lane once a track is open.
+    pub probe_run_open: Option<usize>,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -1087,6 +1096,8 @@ impl Shell {
             editor_open: false,
             dock_open: ui_preferences.dock_open,
             dock_keyboard: false,
+            poster_requests: Vec::new(),
+            probe_run_open: None,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1440,6 +1451,33 @@ impl Shell {
     /// rectangles — the case where a region test is wrong about which lane it
     /// names looks exactly like the case where it is right, in a picture.
     #[must_use]
+    /// This frame's poster requests, handed to the service after the frame.
+    pub fn take_poster_requests(&mut self) -> Vec<crate::posters::PosterRequest> {
+        std::mem::take(&mut self.poster_requests)
+    }
+
+    /// The `scene runs:` report line (WX-5b). The seam commit's version counts
+    /// runs and sections; the lane fills in the rest.
+    #[must_use]
+    pub fn describe_runs(&self, workspace: &Workspace) -> String {
+        let Some(track) = workspace.current() else {
+            return "none".to_owned();
+        };
+        let cues = track.scene_switches.cues();
+        let runs = musializer_core::ui::plan_runs::fold_runs(cues);
+        let cuts: usize = runs
+            .iter()
+            .map(musializer_core::ui::plan_runs::RunSpan::internal_cuts)
+            .sum();
+        format!(
+            "runs={} sections={} cuts={cuts} open={}",
+            runs.len(),
+            cues.len(),
+            self.probe_run_open
+                .map_or_else(|| "none".to_owned(), |index| index.to_string()),
+        )
+    }
+
     pub fn describe_timeline(&self, duration_seconds: f64) -> String {
         let zoom = if self.timeline.span_seconds > 0.0 {
             duration_seconds / self.timeline.span_seconds

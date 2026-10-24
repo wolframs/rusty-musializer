@@ -25,6 +25,7 @@ pub mod panels;
 pub mod preferences;
 pub mod protocol;
 pub mod scale;
+pub mod scene_colors;
 pub mod shell;
 pub mod shell_layout;
 pub mod text_input;

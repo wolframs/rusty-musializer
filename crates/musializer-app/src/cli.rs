@@ -356,6 +356,16 @@ pub struct UiProbe {
     /// `dock-focus=1`: give the terminal the keyboard on frame 20, so the
     /// report can show the shell's shortcuts standing down.
     pub dock_focus: bool,
+    /// `posters=settle|off` (WX-5b): finish every requested poster before the
+    /// shot, or switch the service off so the lane's fallback is photographed.
+    pub posters: Option<crate::posters::PosterProbe>,
+    /// `poster-dump=DIR` (WX-5b): write each ready poster there as a PNG, so
+    /// the gate can compare two of one recipe byte for byte.
+    pub poster_dump: Option<std::path::PathBuf>,
+    /// `run-open=N` (WX-5b): open plan-lane run N (zoom the view to it), the
+    /// same handler a double-click on the run calls. Addressed by index, never
+    /// by pixel.
+    pub run_open: Option<usize>,
     /// `tune-seed=N`: replace the Tune panel's Surprise/Nudge seed (PX6).
     ///
     /// **Invented, and it is what makes a random feature photographable at
@@ -1291,6 +1301,15 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             probe.dock = true;
             probe.dock_run = Some(value.to_string());
         }
+        "posters" => {
+            probe.posters = Some(match value {
+                "settle" => crate::posters::PosterProbe::Settle,
+                "off" => crate::posters::PosterProbe::Off,
+                _ => return None,
+            });
+        }
+        "poster-dump" => probe.poster_dump = Some(std::path::PathBuf::from(value)),
+        "run-open" => probe.run_open = Some(value.parse().ok()?),
         "dock-focus" => {
             probe.dock = true;
             probe.dock_focus = parse_probe_flag(value)?;
@@ -2436,6 +2455,23 @@ mod tests {
         assert!(cli.actions.is_empty());
         assert!(cli.routes.is_empty());
         assert_eq!(cli.exit_status(), 0);
+    }
+
+    #[test]
+    fn the_wx5b_poster_probe_keys_parse_and_refuse() {
+        let probe = parse_ui_probe_spec("posters=settle,poster-dump=build/p,run-open=2").unwrap();
+        assert_eq!(probe.posters, Some(crate::posters::PosterProbe::Settle));
+        assert_eq!(
+            probe.poster_dump.as_deref(),
+            Some(std::path::Path::new("build/p"))
+        );
+        assert_eq!(probe.run_open, Some(2));
+        assert_eq!(
+            parse_ui_probe_spec("posters=off").unwrap().posters,
+            Some(crate::posters::PosterProbe::Off)
+        );
+        assert!(parse_ui_probe_spec("posters=later").is_err());
+        assert!(parse_ui_probe_spec("run-open=first").is_err());
     }
 
     #[test]

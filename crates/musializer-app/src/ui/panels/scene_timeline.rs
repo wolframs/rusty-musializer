@@ -11,6 +11,7 @@ use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
+use super::super::scene_colors::scene_color;
 use super::super::shell::{Shell, ShellCommand, ShellInput, TimelineGesture};
 use super::super::theme::{color, metric, rgba};
 use super::super::widgets::{self, ButtonStyle};
@@ -95,50 +96,6 @@ pub struct SceneLaneEditor {
     /// A successful split is applied after drawing; resolve its new segment on
     /// the following frame without guessing the model's next id in the UI.
     pending_select_seconds: Option<f64>,
-}
-
-fn scene_color(scene: SceneId, alpha: u8) -> Color {
-    let (r, g, b) = match scene {
-        SceneId::Spectrum => (28, 117, 188),
-        SceneId::PulseField => (213, 83, 73),
-        SceneId::OrbitalLattice => (119, 82, 173),
-        SceneId::AsciiField => (50, 125, 82),
-        SceneId::SongAtlas => (197, 137, 46),
-        SceneId::SpectralTerrarium => (40, 151, 137),
-        SceneId::Constellation => (67, 91, 173),
-        SceneId::Cadence => (185, 73, 137),
-        SceneId::Loom => (139, 102, 55),
-        SceneId::Pentagram => (106, 106, 116),
-        // A phosphor cyan, deliberately clear of ASCII Field's green and
-        // Spectral Terrarium's teal: the scene lane identifies a segment by this
-        // swatch alone, so two scenes a glance cannot separate would make the
-        // plan unreadable.
-        SceneId::PhosphorDream => (0, 148, 176),
-        // The character's own terracotta. Clear of Pulse Field's red (213,83,73)
-        // by sitting well into orange, and of Song Atlas's ochre (197,137,46) by
-        // staying red of it — the swatch should *be* Clawd at a glance.
-        SceneId::Clawd => (222, 112, 68),
-        SceneId::OpenAiKnot => (131, 89, 230),
-        SceneId::Stage => (214, 92, 148),
-        // The door's lavender.
-        SceneId::Threshold => (156, 144, 200),
-        SceneId::FluidInk => (100, 210, 160),
-        SceneId::LiquidChrome => (180, 194, 218),
-        SceneId::AuroraVeil => (100, 210, 185),
-        SceneId::MetaballGarden => (225, 140, 185),
-        SceneId::NeonTunnel => (160, 130, 240),
-        SceneId::VoronoiBloom => (220, 177, 94),
-        SceneId::IridescentPool => (120, 185, 235),
-        // The pixel stagings share the handheld's light green, stepped so
-        // neighbouring sections of the family still read as two.
-        SceneId::PixelBoot => (172, 200, 96),
-        SceneId::PixelShell => (120, 220, 140),
-        SceneId::PixelRunner => (200, 140, 230),
-        SceneId::PixelQuartet => (230, 120, 110),
-        SceneId::PixelChapel => (220, 190, 120),
-        SceneId::PixelRave => (240, 110, 200),
-    };
-    Color::new(r, g, b, alpha)
 }
 
 fn scene_text_color(scene: SceneId, enabled: bool) -> Color {
@@ -692,6 +649,27 @@ impl Shell {
                 );
             }
             draw_segment_marks(d, &self.timeline, lane, rect, cue, start, alpha);
+        }
+        // The runs this lane will draw as runs (WX-5b), and a poster request
+        // for each. The seam commit only asks; drawing them is the lane's next
+        // step, and until the service lands every view is `Pending`, which is
+        // the lane exactly as drawn above.
+        if let Some(track_slot) = input.workspace.current_index() {
+            for run in musializer_core::ui::plan_runs::fold_runs(track.scene_switches.cues()) {
+                let left =
+                    self.timeline
+                        .x_at(run.start_seconds, f64::from(lane.x), f64::from(lane.width));
+                let right =
+                    self.timeline
+                        .x_at(run.end_seconds, f64::from(lane.x), f64::from(lane.width));
+                let visible = right > f64::from(lane.x) && left < f64::from(lane.x + lane.width);
+                let _ = input.posters.view(track, track_slot, &run);
+                self.poster_requests.push(crate::posters::PosterRequest {
+                    track_slot,
+                    run,
+                    visible,
+                });
+            }
         }
         // How the track ends (MV3): a band fading to black across the outro.
         let outro = track.scene_switches.outro;

@@ -54,6 +54,7 @@ use musializer_runtime::project_files;
 use raylib::prelude::*;
 
 mod cli;
+mod posters;
 mod project;
 mod recovery;
 mod scene_host;
@@ -433,6 +434,14 @@ fn run(
     let mut dock = ui::dock::Dock::default();
     if let Some(probe) = options.ui_probe.as_ref() {
         app.shell.dock_open |= probe.dock;
+    }
+    // Poster frames for the plan lane's runs (WX-5b). A local of the loop, not
+    // part of `Shell`, so the shell can borrow it while it draws; see
+    // `posters.rs` for the seam and the rules on both sides of it.
+    let mut posters = posters::PosterBoard::default();
+    if let Some(probe) = options.ui_probe.as_ref() {
+        posters.configure(probe.posters, probe.poster_dump.clone());
+        app.shell.probe_run_open = probe.run_open;
     }
     editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
     ui::theme::set_current(editor.theme);
@@ -1743,6 +1752,7 @@ fn run(
             window: report.logical_window,
             ui_scale,
             fonts: &fonts,
+            posters: &posters,
             scene: app.scene.id(),
             settings: &base,
             routed: Some(&routed),
@@ -1932,7 +1942,12 @@ fn run(
                     eprintln!("editor rendering: {error}");
                 }
             }
+            // Poster work, last in the drawing pair (WX-5b): the shell no
+            // longer borrows the board, egui has left ordinary 2D state on the
+            // default framebuffer, and no texture mode or scissor is active.
+            posters.step(&mut d, &thread, playing);
         }
+        posters.enqueue(app.shell.take_poster_requests());
         // A held legacy gesture may predate opening the editor with F8.
         // Only the modal owner's commands can cross the application boundary.
         if editor_active {
@@ -2748,6 +2763,8 @@ fn run(
     }
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
+    report.scene_runs = app.shell.describe_runs(&app.workspace);
+    report.posters = posters.describe();
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
 
@@ -5728,6 +5745,9 @@ struct Report {
     /// The dock's tabs and the active terminal's screen (WX-2), filled once
     /// after the loop so a capture can assert what the terminal shows.
     dock: String,
+    /// `scene runs:` and `posters:` (WX-5b), taken at shutdown like `dock:`.
+    scene_runs: String,
+    posters: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -5801,6 +5821,8 @@ impl Default for Report {
             frame_lanes: FrameLaneStatus::default(),
             logical_window: (0.0, 0.0),
             dock: String::new(),
+            scene_runs: String::new(),
+            posters: String::new(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -6385,6 +6407,10 @@ impl Report {
         // ignored it — both draw a perfectly plausible timeline.
         println!("timeline:        {}", self.timeline);
         println!("dock:            {}", self.dock);
+        // The plan lane folded into runs, and the posters it asked for
+        // (WX-5b). Two lines because two owners fill them in.
+        println!("scene runs:      {}", self.scene_runs);
+        println!("posters:         {}", self.posters);
         println!(
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")
