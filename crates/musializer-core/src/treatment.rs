@@ -2078,13 +2078,13 @@ pub fn scene_look(scene: SceneId) -> &'static str {
             "A mercury sea in a dark studio with a chrome ring standing in it, softbox streaks broken on the waves. Bass rolls a heavy swell, kicks send wave fronts out from the ring and bulges up it, loudness lights the gels; quiet goes glassy. hue turns the gels, shine the softboxes."
         }
         SceneId::AuroraVeil => {
-            "Layered northern-light curtains over a dark starfield, with folding luminous filaments. Track-relative energy lifts the curtains and bass shapes their breadth."
+            "A night lake under the northern lights: folded green curtains with crimson tops standing in perspective over a mountain ridge, mirrored in the water, under twinkling stars. Loudness fills the sky from one calm arc to three curtains overhead, bass drops and brightens the lower border, kicks send waves of light up the rays, and a strong hit in a quiet passage can launch a shooting star."
         }
         SceneId::MetaballGarden => {
             "A molten candy sculpture in a dark studio: glossy blobs and droplets merging and splitting inside a precessing chrome ring, over a lacquer floor that carries their shadow, colour and reflection. Kicks press it to the floor and fling the goo apart before it re-merges; bass swells it; loud sections gather it and push the camera in, quiet ones let it drift apart; hats strike star glints. count, size, orbit and metal shape it; hue turns the candy."
         }
         SceneId::NeonTunnel => {
-            "Forward travel through twisted polygonal neon ribs. Bass opens the aperture and spectral energy lights the depth. Speed, sides, twist and glow direct the flight."
+            "Flight through a dark, wet polygonal tunnel of neon rings, panel grid and corner rails, banking through gentle bends toward a glowing exit. Each ring carries the spectrum around it, bass on the floor and treble on the ceiling, as a wave fired down the tunnel; kicks lunge forward, punch the field of view and flash the exit, and the cruise speed rides the groove."
         }
         SceneId::VoronoiBloom => {
             "A leaded stained-glass window with the sun behind it and haze in front: a warm heart of gold and ruby in a cobalt field, rippled glass, lead came, coloured light shafts and dust in the beams. Bass lights the centre and treble the rim; kicks flare the sun and bloom the glass outward from a beat seed; the hardest hits of a loud section crack a pane. cells, edges (lead), facet (glass texture), glow (shafts) and drift direct it."

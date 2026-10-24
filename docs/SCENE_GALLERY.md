@@ -33,10 +33,10 @@ copy their source, add dependencies or introduce unsafe blocks.
 | Scene | Token / id | Look | Design and evidence |
 | --- | --- | --- | --- |
 | Liquid Chrome | `chrome` / 16 | A mercury sea in a dark studio with a liquid chrome ring standing in it | [Materials](MATERIAL_SCENES.md) |
-| Aurora Veil | `aurora` / 17 | Layered northern-light curtains and a restrained starfield | [Atmospheres](ATMOSPHERE_SCENES.md) |
-| Metaball Garden | `metaballs` / 18 | Glossy merging blobs in a slowly moving sculpture | [Organic scenes](ORGANIC_SCENES.md) |
-| Neon Tunnel | `tunnel` / 19 | Forward travel through twisting polygonal neon ribs | [Atmospheres](ATMOSPHERE_SCENES.md) |
-| Voronoi Bloom | `voronoi` / 20 | Moving stained-glass cells, lit seams and faceted colour | [Organic scenes](ORGANIC_SCENES.md) |
+| Aurora Veil | `aurora` / 17 | A night lake under folded aurora curtains, mountains and stars | [Atmospheres](ATMOSPHERE_SCENES.md) |
+| Metaball Garden | `metaballs` / 18 | A molten candy sculpture with a chrome ring, on a glossy studio floor | [Organic scenes](ORGANIC_SCENES.md) |
+| Neon Tunnel | `tunnel` / 19 | Flight through a wet neon tunnel whose rings carry the spectrum | [Atmospheres](ATMOSPHERE_SCENES.md) |
+| Voronoi Bloom | `voronoi` / 20 | Backlit stained glass with light shafts, blooms and kick-cracked panes | [Organic scenes](ORGANIC_SCENES.md) |
 | Iridescent Pool | `iridescent` / 21 | An oil slick on dark, deep water, torn open by the kick | [Materials](MATERIAL_SCENES.md) |
 
 Each has eight ordinary Tune controls, routes, presets and section tuning. Music
