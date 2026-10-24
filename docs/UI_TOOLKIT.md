@@ -6,9 +6,9 @@ for future launches. Editor uses the same picker and selection.
 
 Open **Editor** in the playback toolbar or press **F8**. The right-hand editor
 has Tune and Lyrics tabs, Play/Pause, five-second seek buttons, Save project,
-and a Light / blue or Black / amber appearance selector. Appearance saves in workstation UI preferences, independently
-of music projects and exported scenes. The amber palette also covers the existing
-workspace controls.
+and a Dark or Light appearance selector. Appearance saves in workstation UI
+preferences, independently of music projects and exported scenes. Dark is the
+default since WX-5a (2026-10-24); both appearances cover the whole workspace.
 
 This is the first representative migration to **egui 0.35**, retaining the raylib
 scene renderer, audio engine and export path. Tune uses the real scene setting
@@ -37,13 +37,18 @@ Closing restores the previous workspace layout.
 - `ui/egui_backend/` translates raylib input, textures and tessellated meshes.
   It adapts MIT-licensed egui-raylib code (license alongside the module), with
   deferred texture frees, atlas upload flushing, clipping and focus handling.
-- `ui/theme.rs` owns the appearance enum and a UI-thread palette compatibility
-  bridge for panels that have not moved yet. The pure core has no toolkit state.
+- `ui/theme.rs` owns the appearance enum, the `Palette` both appearances fill
+  in, and the type scale (`metric::UI_FONT_*`). raylib reads them through
+  `theme::color`, egui through `egui_editor::apply_theme`, which derives every
+  `Visuals` colour, text style and the interface face from them (WX-5a). Nothing
+  in egui carries a colour or size of its own. The pure core has no toolkit
+  state.
 - Draw egui last on the default framebuffer, after raylib mode guards finish.
   Its backend must drop before the window/context.
 
-`--editor-ui` opens the editor at startup. `--ui-theme light-blue|black-amber`
-sets a session override; changing the selector explicitly saves a preference.
+`--editor-ui` opens the editor at startup. `--ui-theme dark|light` (or the
+persisted names `black-amber|light-blue`, which mean the same) sets a session
+override; changing the selector explicitly saves a preference.
 These flags combine with normal track/project paths and `--ui-scale`.
 
 ## Checks
@@ -105,12 +110,45 @@ by Editor without reverting the skin. Its evidence is under
 `build/welcome-theme-check/`. Pointer ownership is restricted to the picker and
 its popup, so the startup actions stay interactive.
 
-The dark palette separates panel surfaces, raised rows, enabled controls, and
-hover fills. Enabled controls use stronger outlines than structural separators;
-disabled controls retain the panel fill and quiet rules. Shared dark tokens live
-in `ui/theme.rs` and are also used by egui. Tooltips use explicit opaque surface,
-text, and border colors, including the authored-text tooltip in the lyric lane.
-`tools/dark_theme_check.sh` captures both tooltip skins and the dark Editor under
-muted private Xvfb; evidence is written to `build/dark-theme-review/`. Palette
-tests cover text contrast and the dark control boundaries, with the original
-white-on-pale tooltip pairing retained as a failing contrast control.
+## Tokens and type (WX-5a, 2026-10-24)
+
+`ui/theme.rs` holds one `Palette` per appearance: the mockup's dark workstation
+(`docs/images/wx-mockup.jpg`) and the light appearance on the same roles. The
+rules it encodes:
+
+- **The accent means now.** The playhead, the scene section under it, the
+  current cue row, the live reading on a mapping plot, the render progress bar,
+  and the primary action (`ButtonStyle::Primary`: Render, Open audio, Recover
+  session). Nothing else wears it, and `the_accent_is_worn_by_nothing_else`
+  measures every other role, the notice severities and the event-type colours
+  against it.
+- **Selection is an outline and a tint** (`ui_selected` + `ui_selected_edge`,
+  `widgets::button_look`, `widgets::selected_fill`), focus rings use the same
+  outline, and a filled amount — slider, meter, scrub bar, the played waveform —
+  is `ui_level`, a warm grey. egui sliders go through
+  `egui_editor::level_slider`, which scopes the rail to `ui_control_edge` and
+  its trailing fill to `ui_level`: egui paints a rail in the button rest fill,
+  which with the palette applied was the panel's own colour.
+- **Controls are rounded** (`metric::UI_RADIUS`, `widgets::control_box`); lanes
+  and list rows stay square because they are data on an axis.
+- **One type scale** for both toolkits, in logical pixels (egui points):
+  header 16, label 14, value 14, caption 13, micro 11, and fitted button rows
+  capped at 16. egui draws in Space Grotesk, the face the raylib chrome uses;
+  its monospace stays Hack because the terminal grid depends on it.
+
+The contrast sweep walks every role in both palettes against every surface it
+can sit on, including the hover and selected tints, so a label cannot pass on a
+panel and fail on its own selected row. Its negative control is a grey that
+passes on the panel and fails on the selected tint, which the pre-WX-5a
+two-surface sweep let through.
+
+The terminal keeps its own dark palette in both appearances; its status bar
+draws with `palette::DARK`'s roles.
+
+WX-5b added three roles: `ui_cue_block` and `ui_cue_now` (the cue lane's
+neutral block and the warm tint of the cue under the playhead — not the
+accent; the playhead crossing it is), and `ui_run_cut`, the opaque hairline at
+a cut inside a plan-lane run, which the gate counts by exact colour. The light
+appearance's waveform ahead of the playhead lost half its blue cast
+(`#BAC2D6` → `#BDC1CB`); `tools/timeline_tick_plate.py` classifies the envelope
+by its channel order, so the two moved together.

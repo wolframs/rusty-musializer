@@ -132,17 +132,28 @@ capture() {
 FAILED=0
 
 echo "=== the lane at both heights, at both gate sizes ==="
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
+# Every measurement below reads the *light* appearance's numbers — the white lane
+# surface, the (230,230,234) trough — so every preferences file pins it, as
+# tools/headless_check.sh does for its own light measurements. WX-5a made the dark
+# look the default; without the pin this script measured a dark frame against
+# light constants and failed in ways that read as a lane bug.
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
 capture lane-base-1280x720 1280x720 "panel=lyrics" || FAILED=1
 capture lane-base-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
+# The pin is asserted, not assumed: a preferences schema that stopped reading
+# `theme` would silently photograph the dark default.
+if ! grep -q '^appearance: *light-blue ' "$OUT_DIR/lane-base-1280x720.txt"; then
+    echo "FAIL: the light pin did not hold: $(grep '^appearance:' "$OUT_DIR/lane-base-1280x720.txt" || echo '<no appearance line>')" >&2
+    FAILED=1
+fi
 
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"lyric_lane_height":66.0}\n' >"$PREFS"
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"lyric_lane_height":66.0}\n' >"$PREFS"
 capture lane-max-1280x720 1280x720 "panel=lyrics,play=1" || FAILED=1
 capture lane-max-960x640 960x640 "panel=lyrics,play=1" || FAILED=1
 capture lane-max-1920x1080 1920x1080 "panel=lyrics,play=1" || FAILED=1
 
 echo "=== the tooltip, parked over the middle of the overlap cluster ==="
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$PREFS"
 # The hover point is *found*, not guessed: the lane's position depends on the
 # window, the UI scale and the cue count, and a hard-coded pair is how
 # `--ui-probe hover=` silently photographs the wrong thing.
@@ -150,12 +161,13 @@ read -r LANE_TOP LANE_BOTTOM HOVER_X HOVER_Y BLOCK_LEFT BLOCK_RIGHT <<<"$(python
 import sys
 from PIL import Image
 
-BORDERS = {(0x1F, 0x7A, 0x4D), (0x25, 0x63, 0xC7), (0xD0, 0x7A, 0x00), (0x7C, 0x7C, 0x86)}
+# `origin_color`, WX-5b: the stripe and top line each block carries.
+BORDERS = {(0x23, 0x8A, 0x57), (0x2C, 0x75, 0xEB), (0xB1, 0x68, 0x00), (0x7C, 0x7C, 0x86)}
 image = Image.open(sys.argv[1]).convert("RGB")
 width, height = image.size
 pixels = image.load()
 
-# Every row that carries a block border, then the *first* contiguous run of them
+# Every row that carries a block's origin stripe, then the *first* contiguous run of them
 # from the top: that is the cue lane. The later runs are the cue list's own
 # per-row swatches and the legend, which share the palette on purpose.
 rows = [y for y in range(height) if any(pixels[x, y] in BORDERS for x in range(0, width, 2))]
@@ -306,9 +318,9 @@ from PIL import Image
 
 out = pathlib.Path(sys.argv[1])
 wanted = {
-    "user": (0x1F, 0x7A, 0x4D),
-    "certain": (0x25, 0x63, 0xC7),
-    "ambiguous": (0xD0, 0x7A, 0x00),
+    "user": (0x23, 0x8A, 0x57),
+    "certain": (0x2C, 0x75, 0xEB),
+    "ambiguous": (0xB1, 0x68, 0x00),
     "potential": (0x7C, 0x7C, 0x86),
 }
 failed = False
@@ -318,7 +330,8 @@ for name in ("lane-base-1280x720", "lane-max-1920x1080"):
     present = {colour for _, colour in counts}
     found = {}
     for token, base in wanted.items():
-        # Rows below the top one are shaded by 20 % a step, so accept the ladder.
+        # A stack row's marks may be shaded 20 % a step (`origin_mark` darkens
+        # them on the light lane), so accept the ladder.
         for step in range(5):
             shade = tuple(int(channel * (0.8 ** step)) for channel in base)
             if shade in present:
@@ -353,9 +366,10 @@ if rows.size == 0:
     sys.exit(1)
 print(f"changed rows {rows.min()}..{rows.max()}, cue lane rows {lane_top}..{lane_bottom}")
 
-# Inside the lane only the hovered block's own fill may change, and it changes
-# by the alpha step from 0.38 to 0.68 — a wash, not a plate. The tooltip is
-# white on near-black ink, so its rows carry a *wide* run of very dark pixels.
+# Inside the lane only the hovered block's grab bars may appear (WX-5b: a
+# hovered block keeps its fill; before, it washed from 0.38 to 0.68). The
+# tooltip is white on near-black ink, so its rows carry a *wide* run of very
+# dark pixels.
 #
 # A run rather than "any dark pixel", which is what this asked for until LX2
 # gave the hovered block near-black grab bars at both ends. Those are five
@@ -385,7 +399,7 @@ if ink:
 above = [y for y in rows if y < lane_top]
 print(
     f"the tooltip drew {len(above)} rows above the lane and no plate inside it; "
-    f"{len(inside)} lane rows changed, all of them the hover wash"
+    f"{len(inside)} lane rows changed, all of them the grab bars"
 )
 PY
 [ $? -ne 0 ] && FAILED=1
@@ -509,14 +523,18 @@ frames = {name: profile(name) for name in
 interior = float(np.median(frames["lane-base-1280x720"][left + 8 : left + 40]))
 floor = interior - 20
 
+# The base frame's start allowance is the 3 px origin stripe (WX-5b), which is
+# drawn on every block wide enough to carry words and is darker than the fill on
+# purpose; a grab band is the hit test's 5 px, so the hover frames must reach 5.
+# The end carries a 1 px seam in the lane's own white, which is never darker.
 for name, want_start, want_end in (
-    ("lane-base-1280x720", 2, 2),
-    ("lane-tip-1280x720", 4, 4),
-    ("lane-grab-1280x720", 4, 4),
+    ("lane-base-1280x720", 3, 2),
+    ("lane-tip-1280x720", 5, 4),
+    ("lane-grab-1280x720", 5, 4),
 ):
     lum = frames[name]
-    # The base frame's reference is its own fill; the hover frames darken the
-    # whole block, so each measures against its own interior.
+    # Each frame measures against its own interior, so a fill that changes
+    # with the hover state cannot move the reference.
     own = float(np.median(lum[left + 8 : left + 40]))
     start = run_from(lum, left, 1, own - 22)
     end = run_from(lum, right, -1, own - 22)

@@ -46,16 +46,91 @@ pub struct ButtonState {
     pub pressed: bool,
 }
 
-/// `Button_Style` (`ui_widgets.h:41-44`).
+/// `Button_Style` (`ui_widgets.h:41-44`), plus [`ButtonStyle::Primary`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonStyle {
+    /// Selected draws as an outline and a tint (WX-5a), never as a fill in the
+    /// accent: the accent means *now*, and a selected scene tile is not now.
     Neutral,
+    /// The primary action — Render — and nothing else: the one control that
+    /// wears the accent as a fill, selected or not (WX-5a).
+    Primary,
     // No caller yet. It is the style for a destructive action, and the two the
     // oracle has — `Clear manual` and Cancel export — are Agents L and H's. Kept
     // rather than deleted because it is half of the C's widget vocabulary and
     // re-deriving the colour ramp later would be worse than an allow here.
     #[allow(dead_code)]
     Danger,
+}
+
+/// How a button draws in one state: its fill, its outline and its label.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ButtonLook {
+    pub fill: Color,
+    pub edge: Color,
+    pub ink: Color,
+}
+
+/// The one table every labelled button reads (WX-5a).
+///
+/// Public so a surface that draws its own selectable rows — the font list, the
+/// cue list — can wear exactly what a button wears rather than inventing a
+/// third selected state. Pressed is applied on top by the caller, as a darker
+/// fill and a 2 px edge.
+#[must_use]
+pub fn button_look(style: ButtonStyle, selected: bool, hovered: bool) -> ButtonLook {
+    match style {
+        ButtonStyle::Primary => {
+            let accent = color::accent();
+            ButtonLook {
+                fill: if hovered {
+                    brightness(accent, 0.10)
+                } else {
+                    accent
+                },
+                edge: accent,
+                ink: color::on_accent(),
+            }
+        }
+        // An armed destructive control stays a solid slab: "this will delete"
+        // is a warning, not a selection, and it has to stop the eye.
+        ButtonStyle::Danger if selected => {
+            let danger = color::ui_danger();
+            let fill = if hovered {
+                brightness(danger, 0.12)
+            } else {
+                danger
+            };
+            ButtonLook {
+                fill,
+                edge: danger,
+                ink: contrasting_ink(fill),
+            }
+        }
+        ButtonStyle::Danger => ButtonLook {
+            fill: if hovered {
+                color::ui_hover()
+            } else {
+                color::ui_control()
+            },
+            edge: alpha(color::ui_danger(), 0.72),
+            ink: color::ui_ink(),
+        },
+        ButtonStyle::Neutral if selected => ButtonLook {
+            fill: color::ui_selected(),
+            edge: color::ui_selected_edge(),
+            ink: color::ui_ink(),
+        },
+        ButtonStyle::Neutral => ButtonLook {
+            fill: if hovered {
+                color::ui_hover()
+            } else {
+                color::ui_control()
+            },
+            edge: color::ui_control_edge(),
+            ink: color::ui_ink(),
+        },
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -241,7 +316,11 @@ impl Widgets {
     /// One seam, so a probe cannot reach half the widgets: every control in the
     /// shell goes through [`Self::button`] or [`Self::slider`], and both read
     /// here.
-    fn pointer(&self, d: &RaylibDrawHandle<'_>) -> Pointer {
+    ///
+    /// `pub(crate)` for the surfaces that are not widgets but take presses —
+    /// the scene plan lane's select-and-drag (WX-5b) — so a `click=` probe
+    /// reaches them through the same seam a button's press does.
+    pub(crate) fn pointer(&self, d: &RaylibDrawHandle<'_>) -> Pointer {
         let mut pointer = Pointer::read(d, self.ui_scale);
         if let Some(probe) = self.pointer_probe {
             pointer.down = probe.down;
@@ -513,38 +592,18 @@ impl Widgets {
         if boundary.is_empty() {
             return state;
         }
-        let signal = match style {
-            ButtonStyle::Danger => color::ui_danger(),
-            ButtonStyle::Neutral => color::track_button_selected(),
-        };
-        let mut background = if selected {
-            signal
+        let look = button_look(style, selected, state.hovered);
+        let background = if state.pressed {
+            brightness(look.fill, -0.08)
         } else {
-            color::track_button_background()
+            look.fill
         };
-        if state.hovered {
-            background = if selected {
-                brightness(signal, 0.12)
-            } else {
-                color::track_button_hoverover()
-            };
-        }
-        if state.pressed {
-            background = brightness(background, -0.08);
-        }
-        let rect = rectangle(boundary);
-        d.draw_rectangle_rec(rect, background);
-        d.draw_rectangle_lines_ex(
-            rect,
+        control_box(
+            d,
+            boundary,
+            background,
+            look.edge,
             if state.pressed { 2.0 } else { 1.0 },
-            if selected {
-                signal
-            } else {
-                match style {
-                    ButtonStyle::Danger => alpha(signal, 0.72),
-                    ButtonStyle::Neutral => color::ui_control_edge(),
-                }
-            },
         );
         draw_button_label(
             d,
@@ -553,14 +612,7 @@ impl Widgets {
             label,
             font_size,
             if state.pressed { 1.0 } else { 0.0 },
-            // The palette's WHITE, not raylib's: the pair (white on accent) is
-            // one of the contrast checks in `theme`, and it can only check the
-            // colour actually drawn.
-            if selected {
-                color::on_accent()
-            } else {
-                color::ui_ink()
-            },
+            look.ink,
         );
         state
     }
@@ -582,9 +634,7 @@ impl Widgets {
         if boundary.is_empty() {
             return;
         }
-        let rect = rectangle(boundary);
-        d.draw_rectangle_rec(rect, color::ui_surface());
-        d.draw_rectangle_lines_ex(rect, 1.0, color::ui_rule());
+        control_box(d, boundary, color::ui_surface(), color::ui_rule(), 1.0);
         draw_button_label(
             d,
             LabelFont::Ui(font),
@@ -608,9 +658,7 @@ impl Widgets {
         if boundary.is_empty() {
             return;
         }
-        let rect = rectangle(boundary);
-        d.draw_rectangle_rec(rect, color::ui_surface());
-        d.draw_rectangle_lines_ex(rect, 1.0, color::ui_rule());
+        control_box(d, boundary, color::ui_surface(), color::ui_rule(), 1.0);
         draw_button_label(
             d,
             LabelFont::Exact(font),
@@ -644,7 +692,10 @@ impl Widgets {
             boundary.width,
             6.0,
         );
-        d.draw_rectangle_rec(rectangle(track), color::ui_rule());
+        // A filled amount is the level tone and the knob is ink (WX-5a): a
+        // slider is not "now", and a row of accent sliders was half of why the
+        // old accent stopped meaning anything.
+        d.draw_rectangle_rec(rectangle(track), color::ui_control_edge());
         let filled = normalized.clamp(0.0, 1.0);
         d.draw_rectangle_rec(
             rectangle(UiRect::new(
@@ -653,7 +704,7 @@ impl Widgets {
                 track.width * filled,
                 track.height,
             )),
-            color::accent(),
+            color::ui_level(),
         );
 
         let state = self.button_at(id, boundary, pointer);
@@ -665,7 +716,7 @@ impl Widgets {
             } else {
                 SLIDER_KNOB_RADIUS - 2.0
             },
-            color::accent(),
+            color::ui_ink(),
         );
 
         // The claim rule matters here too: a drag that started on this slider
@@ -798,7 +849,11 @@ pub fn slider_value(x: f32, low: f32, high: f32) -> f32 {
 /// measured width into a fitted size.
 #[must_use]
 pub fn row_font_size(font: &UiFonts, labels: &[&str], widths: &[f32], box_height: f32) -> f32 {
-    let base = font.native_size(row_typography::base_font_size(box_height));
+    // Capped at the type scale's row ceiling (WX-5a). The C's base grows with
+    // the box to 22, which in a 54 px scene tile is a label shouting at the
+    // preview; the fitting itself is the C's and is unchanged below the cap.
+    let base =
+        font.native_size(row_typography::base_font_size(box_height).min(metric::UI_FONT_ROW_MAX));
     let fitted = row_typography::font_size(
         labels,
         widths,
@@ -885,9 +940,9 @@ fn draw_button_label(
             || row_font_size(font, &[label], &[boundary.width], boundary.height),
             |value| font.native_size(value),
         ),
-        LabelFont::Exact(_) | LabelFont::Authored(_) => {
-            font_size.filter(|value| *value > 0.0).unwrap_or(base)
-        }
+        LabelFont::Exact(_) | LabelFont::Authored(_) => font_size
+            .filter(|value| *value > 0.0)
+            .unwrap_or(base.min(metric::UI_FONT_ROW_MAX)),
     };
     let available = boundary.width - row_typography::UI_ROW_LABEL_PADDING;
     // Ellipsize rather than shrink without end. A box too narrow even for the
@@ -1237,13 +1292,16 @@ pub fn panel(
     if title.is_empty() {
         return boundary;
     }
-    draw_text(
+    // The mockup's section head (WX-5a): small, uppercase, tracked and muted,
+    // so a panel says what it is without competing with what is in it.
+    draw_text_tracked(
         d,
         font,
-        title,
+        &title.to_uppercase(),
         boundary.x + metric::UI_PANEL_PADDING,
-        boundary.y + 8.0,
-        metric::UI_FONT_CAPTION,
+        boundary.y + 9.0,
+        metric::UI_FONT_MICRO,
+        1.0,
         color::ui_muted(),
     );
     let rule_y = boundary.y + PANEL_HEADER_HEIGHT;
@@ -1271,6 +1329,60 @@ pub fn format_timestamp(seconds: f64) -> String {
     let minutes = (seconds / 60.0) as u32;
     let within_minute = seconds - f64::from(minutes) * 60.0;
     format!("{minutes:02}:{within_minute:06.3}")
+}
+
+/// A control's box: a fill and an outline with the type scale's corner radius
+/// (WX-5a, the mockup's controls). Lanes and list rows stay square — they are
+/// data laid on a time or list axis, and a rounded corner there would read as
+/// a gap in it — so this is for things you press.
+pub fn control_box<D: RaylibDraw>(
+    d: &mut D,
+    boundary: UiRect,
+    fill: Color,
+    edge: Color,
+    thickness: f32,
+) {
+    if boundary.is_empty() {
+        return;
+    }
+    let rect = rectangle(boundary);
+    let short = boundary.width.min(boundary.height);
+    if short < metric::UI_RADIUS * 4.0 {
+        d.draw_rectangle_rec(rect, fill);
+        d.draw_rectangle_lines_ex(rect, thickness, edge);
+        return;
+    }
+    // raylib's roundness is the radius as a fraction of half the short side.
+    let roundness = (metric::UI_RADIUS * 2.0 / short).clamp(0.0, 1.0);
+    d.draw_rectangle_rounded(rect, roundness, 4, fill);
+    // `DrawRectangleRoundedLinesEx` strokes *outside* its rectangle
+    // (`rshapes.c:1183`, `outerRadius = radius + lineThick` at `:1203`), unlike
+    // `DrawRectangleLinesEx`, which strokes inside. Handed the boundary itself,
+    // every rounded control grew by its stroke on each side — the AI dialog's
+    // rail measured 2 px closer to its divider than the dialog reported. So the
+    // stroke goes round a rectangle inset by its own width, at the radius that
+    // puts its outer edge on the fill's.
+    let inset = UiRect::new(
+        boundary.x + thickness,
+        boundary.y + thickness,
+        boundary.width - thickness * 2.0,
+        boundary.height - thickness * 2.0,
+    );
+    let inner_short = short - thickness * 2.0;
+    let inner_roundness =
+        ((metric::UI_RADIUS - thickness).max(0.0) * 2.0 / inner_short).clamp(0.0, 1.0);
+    d.draw_rectangle_rounded_lines_ex(rectangle(inset), inner_roundness, 4, thickness, edge);
+}
+
+/// A selected row or tile drawn by hand: the selected tint and its outline,
+/// exactly what [`button_look`] gives a selected button (WX-5a). For surfaces
+/// that cannot be a `text_button` because they carry more than one label.
+pub fn selected_fill<D: RaylibDraw>(d: &mut D, rect: UiRect) {
+    if rect.is_empty() {
+        return;
+    }
+    d.draw_rectangle_rec(rectangle(rect), color::ui_selected());
+    d.draw_rectangle_lines_ex(rectangle(rect), 1.0, color::ui_selected_edge());
 }
 
 /// A flat filled rectangle. The scrollbar thumb and any other plain block.

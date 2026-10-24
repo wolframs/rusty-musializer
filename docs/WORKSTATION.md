@@ -53,7 +53,7 @@ spec:
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
-| WX-5 | The restyle the mockup proposes | direction approved 2026-10-21; next, in its own sessions (below) |
+| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail and big preview) next |
 | WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
 
 ### WX-1 — the dock
@@ -136,6 +136,32 @@ boundary `docs/UI_TOOLKIT.md` describes. This overlaps with the open toolkit
 follow-through and with CX-5 (scene thumbnails). Order: the colour and type
 tokens first (visible everywhere, cheap), then the plan lane, then the rail.
 
+The operator's frame for the run (2026-10-24): 5a, 5b and 5c in one run; the
+secondary panels (Export, Tune, Lyrics, Assist, AI settings, protocol card,
+Editor, dock) are **re-skinned only**, their layouts restructured in a later
+wave; the dark mockup look becomes the default and the light appearance is kept
+on the same tokens; the mockup is the spine and the details are free. Fixed: one
+accent that means *now*, the plan lane as runs, the rail with flyouts, the
+preview as the largest thing on screen.
+
+**WX-5a, done 2026-10-24.** `ui/theme.rs` is the one source of colour and type:
+a `Palette` per appearance (the mockup's dark workstation, and the light one on
+the same roles), a type scale both toolkits read, and a corner radius for
+controls. egui's visuals, text styles and face are derived from it. The rules
+are in `docs/UI_TOOLKIT.md` ("Tokens and type"); the decisions are below.
+
+**WX-5b, the lane, done 2026-10-24.** The plan lane draws **runs**: consecutive
+sections of one scene folded into one block (`core::ui::plan_runs`), the scene
+colour mixed toward the ground, a poster frame at its left (the poster
+service, `posters.rs`, `docs/POSTER_FRAMES.md`, merged 2026-10-24), a hairline at each internal cut, and each section's transition
+edge, glide ramp, grade bar and pixel mark inside its own span. The run under
+the playhead has an inset accent outline and its section an accent tick.
+Hit testing is unchanged and per section, so every gesture still works;
+double-clicking a run zooms the view to it. The lane is 44 px (was 24). Split
+in two by design (`build/redesign/wx5b-design.md` in the main checkout): the
+lane here, the poster-frame service beside it, with a seam commit (`cbbe6b8`)
+both were built against.
+
 ### WX-6 — gate
 
 `tools/dock_check.sh`, using the gate's usual isolation. The terminal runs a
@@ -165,7 +191,8 @@ They are independent unless a line says otherwise. Every one finishes with
      without losing the ray structure. Judge from a contact sheet of a loud
      passage. What caused it and what changed: `docs/ATMOSPHERE_SCENES.md`,
      "Why the tops fray".
-1. **WX-5a: tokens and type.** One accent that means *now* (the playhead,
+1. **WX-5a: tokens and type.** *Done 2026-10-24; see the WX-5 section and
+   the WX-5a decisions below.* One accent that means *now* (the playhead,
    the current section, the primary action), quiet selected states
    (outline plus tint, not a solid amber slab), one type scale, and the
    mockup's surfaces. Lives in `ui/theme.rs` (palette and egui visuals) and
@@ -173,7 +200,8 @@ They are independent unless a line says otherwise. Every one finishes with
    colour assertions to move: update them on purpose, never loosen them
    (see "The headless gate runs on the GPU" in `AGENTS.md`). Done when a capture of Door, No Room
    at 1920x1080 reads like the mockup's chrome.
-2. **WX-5b: the plan lane as runs.** Consecutive sections of one scene
+2. **WX-5b: the plan lane as runs.** *Done 2026-10-24, lane and poster
+   service together.* Consecutive sections of one scene
    merge into one block with a frame from that scene, cut hairlines, a
    transition edge and a grade bar. The lyric lane shows its words, and
    the waveform is grey and warms behind the playhead. Lives in
@@ -211,6 +239,106 @@ They are independent unless a line says otherwise. Every one finishes with
    `tools/verify.sh`.
 
 ## Decisions recorded along the way
+
+**WX-5a (2026-10-24).**
+
+- **The persisted names stay; their meaning moved.** `black-amber` is now the
+  dark mockup look and the default, `light-blue` the light appearance. The
+  operator's own `ui.json` already says `black-amber`, so their window opens in
+  the new look; a `light-blue` file keeps the light one. `--ui-theme` also takes
+  `dark` and `light`. The labels are now "Dark" and "Light".
+- **The accent is worn by the playhead, the scene section under it (an inset
+  outline in the plan lane), the current cue row, the live reading on a mapping
+  plot, the render progress bar and the primary action** (Render, Open audio,
+  Recover session) — and by nothing else, which `the_accent_is_worn_by_nothing_else`
+  and the gate's accent census both measure. Everything that used to wear it
+  moved to a role of its own: selection and focus to an outline and a tint,
+  panel headings and emphasis to ink, filled amounts (sliders, meters, the scrub
+  bar, the played waveform) to a warm grey, a blocked control's reason to the
+  warning tone.
+- **Two content colours moved off the accent.** The semantic ("Feel") event
+  type was the C's amber `#F2BE42`, four degrees of hue from the new accent, so
+  two feel markers on the waveform read as two more playheads; it is
+  chartreuse now. The notice card's warning amber moved to orange for the same
+  reason. Scene identity colours are unchanged here: Song Atlas and Voronoi
+  Bloom sit near the accent's hue, which 5b's runs (darkened, with a poster
+  frame) are the place to answer.
+- **The waveform is grey ahead of the playhead and warm behind it** already in
+  5a, because "nothing else wears the accent" forced a recolour and the two
+  tones are the mockup's. 5b owns the lane itself.
+- **Quiet control borders.** The mockup's buttons are told apart by their fill
+  and label, and the old dark appearance's 6:1 control outlines made it read
+  as a form. The palette test that required 3:1 control edges was replaced by
+  one that requires the *selection* outline to clear 3:1 against the panels —
+  the state a border was carrying — and by a contrast sweep that measures every
+  chrome label on the hover and selected tints as well as on the panels.
+- **The type scale shrank toward the mockup's.** Header 19 → 16, label 16 →
+  14, value 15 → 14, a micro size of 11 for panel heads (uppercase, tracked),
+  and fitted button rows capped at 16 (they could reach 22, which is how a
+  scene tile said "Phosphor Dream" at 27 physical pixels). Caption stays 13
+  because the timeline band reserves it, and moving the band moves every lane
+  the gate measures. egui draws in Space Grotesk at the same sizes.
+- **Controls are rounded (4 px); lanes and list rows are not.** A rounded
+  corner on a time axis reads as a gap in it.
+- **The gate runs as a user who chose the light appearance**, and the dark
+  default has its own section. Every pixel threshold in `headless_check.sh` was
+  measured on the light appearance, and the first dark run showed what that
+  costs: the export panel's "darkest pixel under 200" ink check read the dark
+  panel's own fill and passed on nothing. Converting thirty-odd absolute
+  thresholds would have been a rewrite of checks that guard behaviour, not
+  colour; keeping their appearance keeps every one of them as strong as it was.
+  The new section checks the dark default for what it changed: the default
+  itself, one time axis (the lane checker's border classifier inverts there),
+  an accent census with a synthetic negative control, ink measured against the
+  panel's own fill, and a tooltip.
+- **The dark tooltip check found two light checks that had been passing on
+  nothing.** The mute-button tooltip checks (100 % and 125 %) aimed at the
+  transport row's old position, y=480 and y=599; the row had moved up, no tip
+  was drawn, and their crops sat on the light panel, whose 247 cleared "text
+  luma at least 180". Master's build does the same. They now aim at the row
+  (1121x388, 978x486), crop above it, and each has a bare twin that must fail
+  the brightness test and that the tip must add pixels to.
+- **The waveform's two greys are tinted on purpose**: cool ahead of the
+  playhead, warm behind it, in both appearances. The tick-plate check found
+  the envelope by "bluer than red" while it was the accent; it now finds it by
+  that channel order (blue > green > red, or red > green > blue), which no
+  glyph, rule or event-marker hue has.
+- **Negative controls run for this step:** the census fails a frame with an
+  accent slab painted into the sidebar (every gate run) and a Render-bearing
+  frame told it has no primary action; the dark lane check fails a light
+  capture; the focus-ring check reads 0 added pixels with the ring drawn
+  transparent against 560 with it (floor 132); the tick-plate check fails a
+  label with three columns of either waveform tone painted into it; the
+  dark export-ink check has a blank strip of the same panel as its control.
+
+**WX-5b, the lane (2026-10-24).**
+
+- **A run breaks on a scene change and nothing else.** Door, No Room's 70
+  sections fold to 27 runs (the mockup's 21 was drawn by hand). A grade,
+  transition, glide or pixel-look change stays a mark inside the run.
+- **Folding is drawing only.** The section hit test is unchanged, so a cut
+  inside a run is grabbed and dragged where its hairline is, and selection is
+  an ink outline over the section's span. Double-click on a run zooms the view
+  to it with 6 % either side ("open its sections"); `--ui-probe run-open=N`
+  does the same, N counting from 1 like the report.
+- **The lane reads the pointer through `Widgets::pointer`**, so `click=` can
+  press it; it used to read raylib directly, which left the lane's gestures
+  unreachable from any probe.
+- **The poster slot is reserved whether or not a poster has arrived**, so the
+  scene name does not jump when one does; with the service off
+  (`posters=off`) the name takes the slot. The service (`posters.rs`) merged
+  onto the lane on 2026-10-24; `tools/poster_check.sh` checks that each slot
+  shows its run's poster upright.
+- **Gate.** A new section seeds a seven-section plan with a known answer
+  (`seed_lyric_fixture.py --run-plan`) and checks `scene runs:` and
+  `scene marks:` exactly, counts exact-colour hairlines and the grade bar's
+  step off the pixels (`tools/run_lane_check.py`), opens a run and presses a
+  cut inside it from the report's own `lane=`/`view=`. Controls: an
+  alternating-scene plan (seven runs, no hairline) and a one-grade plan (no
+  step). Three older checks moved with the 20 px taller band and now read the
+  layout from the report instead of a constant: the Spectrum floor crop and
+  both mute-tooltip probes (whose bare twins caught the move on the first
+  run). The ASCII footer probes moved from y=403 to y=383.
 
 **WX-1/2 (2026-10-21).**
 

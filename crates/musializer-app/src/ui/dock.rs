@@ -29,7 +29,9 @@ pub mod terminal_view;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use egui::{Color32, Context, Rect, RichText, Stroke};
+use egui::{Context, Rect, RichText, Stroke};
+
+use crate::ui::theme::color32;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::terminal::{GridSize, Session, Spawn};
 
@@ -492,7 +494,7 @@ impl Dock {
                                         "Could not start the terminal: {}",
                                         terminal.error.as_deref().unwrap_or("unknown error")
                                     ))
-                                    .color(Color32::from_rgb(0xd0, 0x6f, 0x63)),
+                                    .color(color32::ui_danger()),
                                 );
                                 body_ui.button("Try again").clicked()
                             };
@@ -614,7 +616,7 @@ impl Dock {
                 let (text, colour) = match &following.error {
                     Some(_) => (
                         format!("following {} · last change refused", following.name),
-                        Color32::from_rgb(0xd0, 0x6f, 0x63),
+                        color32::ui_danger(),
                     ),
                     None => (
                         format!(
@@ -626,7 +628,7 @@ impl Dock {
                                 n => format!("applied {n} times"),
                             }
                         ),
-                        Color32::from_rgb(0x8f, 0xb8, 0x7c),
+                        color32::ui_success(),
                     ),
                 };
                 let label =

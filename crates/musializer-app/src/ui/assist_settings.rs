@@ -3371,7 +3371,7 @@ impl AssistSettingsDialog {
         // The scrim is opaque enough that the workspace behind it reads as
         // context rather than as content. It is not a widget: the shell's own
         // blocker already claimed this frame's press.
-        widgets::fill(d, layout.scrim, Color::new(10, 11, 14, 190));
+        widgets::fill(d, layout.scrim, color::scrim());
         widgets::fill(d, layout.dialog, color::ui_surface());
         d.draw_rectangle_lines_ex(widgets::rectangle(layout.dialog), 1.0, color::ui_rule());
 
@@ -3413,7 +3413,7 @@ impl AssistSettingsDialog {
             layout.dialog.x + DIALOG_PADDING,
             layout.dialog.y + 14.0,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         let subtitle = if self.is_dirty() {
             "Draft differs \u{00b7} Save to affect the next job"
@@ -3532,7 +3532,7 @@ impl AssistSettingsDialog {
             color::ui_rule(),
         );
         let (text, tint) = match (&self.status, &self.background) {
-            (_, Some(job)) => (format!("Working: {}\u{2026}", job.label()), color::accent()),
+            (_, Some(job)) => (format!("Working: {}\u{2026}", job.label()), color::ui_ink()),
             (Some((text, tint)), None) => (text.clone(), *tint),
             (None, None) => (
                 "Tab moves between controls \u{00b7} Enter activates \u{00b7} Esc closes"
@@ -3699,7 +3699,7 @@ impl AssistSettingsDialog {
                 boundary.height + 6.0,
             )),
             2.0,
-            color::accent(),
+            color::ui_selected_edge(),
         );
     }
 
@@ -3989,7 +3989,7 @@ fn heading(
         body.x,
         *cursor,
         metric::UI_FONT_HEADER,
-        color::accent(),
+        color::ui_ink(),
     );
     *cursor += 26.0;
     if !subtitle.is_empty() {
@@ -4025,7 +4025,7 @@ fn subheading(
         body.x,
         *cursor,
         metric::UI_FONT_LABEL,
-        color::accent(),
+        color::ui_ink(),
     );
     *cursor += 22.0;
     d.draw_line_ex(
@@ -5362,7 +5362,7 @@ impl AssistSettingsDialog {
             widgets::rectangle(boundary),
             if focused { 2.0 } else { 1.0 },
             if focused {
-                color::accent()
+                color::ui_selected_edge()
             } else {
                 color::ui_rule()
             },
@@ -6332,7 +6332,7 @@ impl AssistSettingsDialog {
             widgets::rectangle(boundary),
             if focused { 2.0 } else { 1.0 },
             if focused {
-                color::accent()
+                color::ui_selected_edge()
             } else {
                 color::ui_rule()
             },

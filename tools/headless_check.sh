@@ -237,6 +237,22 @@ export XDG_CONFIG_HOME="$XDG_ROOT/config"
 export XDG_STATE_HOME="$XDG_ROOT/state"
 export XDG_DATA_HOME="$XDG_ROOT/data"
 
+# The gate runs as a user who chose the LIGHT appearance (WX-5a, 2026-10-24).
+#
+# Since WX-5a a new user gets the dark appearance, and every pixel threshold in
+# this script below the dark-appearance section was measured on the light one:
+# "the darkest pixel is under 200, so the panel drew text on its ~247 fill".
+# On the dark panel that test *passes on a blank panel* — every pixel is under
+# 200 — and the first dark run of this gate proved it: the export panel's ink
+# check read 19 and called it ink. A check that cannot fail is worse than none,
+# so these sections keep the appearance their numbers were measured in, and the
+# default appearance has its own section with checks written for it
+# (`=== the dark appearance, as a new user gets it ===`). Only the theme is
+# set; every split stays a new user's, which is what the paragraph above is for.
+mkdir -p "$XDG_CONFIG_HOME/musializer"
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' \
+    >"$XDG_CONFIG_HOME/musializer/ui.json"
+
 FIXTURE="$OUT_DIR/fixture-sweep.wav"
 SHOT="$OUT_DIR/spectrum.png"
 REPORT="$OUT_DIR/report.txt"
@@ -563,10 +579,19 @@ capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
     --ui-probe "play=1,timeline-height=276" \
     || SWEEP_FAILED=1
 SPECTRUM_ONSETS="$(sed -n 's/^onsets: *\([0-9][0-9]*\) .*/\1/p' "$OUT_DIR/spectrum-onset-floor.txt")"
+# The crop is the bottom of the preview, read from the report's own preview
+# rect (WX-5b): it was a fixed y=380, which the 20 px taller plan lane moved
+# onto the toolbar, where the light chrome's 247 read as a lit floor.
+SPECTRUM_FLOOR_Y="$(sed -n 's/^preview frame:.*pixels [0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\)$/\1 \2/p' \
+    "$OUT_DIR/spectrum-onset-floor.txt" | awk '{print $1 + $2 - 14}')"
 SPECTRUM_FLOOR="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:380,signalstats" \
+    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:${SPECTRUM_FLOOR_Y:-380},signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
-echo "spectrum onset floor: onsets=${SPECTRUM_ONSETS:-?} peak-luma=${SPECTRUM_FLOOR:-?}"
+echo "spectrum onset floor: onsets=${SPECTRUM_ONSETS:-?} peak-luma=${SPECTRUM_FLOOR:-?} (rows ${SPECTRUM_FLOOR_Y:-?}..+12)"
+if [ -z "${SPECTRUM_FLOOR_Y:-}" ]; then
+    echo "FAIL: no preview rect on the Spectrum floor capture's report" >&2
+    SWEEP_FAILED=1
+fi
 if [ "${SPECTRUM_ONSETS:-0}" -eq 0 ] 2>/dev/null \
     || [ "${SPECTRUM_FLOOR%%.*}" -gt 30 ] 2>/dev/null; then
     echo "FAIL: Spectrum's onset frame brightened the reflection floor" >&2
@@ -3036,8 +3061,10 @@ assist_review_navigate_capture() {
 }
 
 # Saturation rather than luma: the panel surface and its disabled buttons are
-# achromatic, and the review rows are accent blue and warning orange. A crop that
-# is bright *and* coloured can only be drawn review text -- a blank surface or a
+# achromatic, and the review block's coloured ink is its warning-orange rows and,
+# for a clean run, its success-green sentence. (Until WX-5a the heading was the
+# accent too; it is ink now, because the accent means *now*.) A crop that is
+# bright *and* coloured can only be drawn review text -- a blank surface or a
 # grey button reads near zero, which is what `legacy` measures below.
 # Darkest pixel in a crop. The tail row is muted grey rather than coloured, so
 # saturation cannot see it; what distinguishes "text here" from "panel surface"
@@ -4000,7 +4027,7 @@ esac
 # check about the ring rather than about the layout.
 ai_focus_ring() {
     local log="$1" shot="$2" baseline="$3" what="$4"
-    local line rect x y w h focused plain
+    local line rect x y w h focused
     line="$(sed -n 's/^assist settings: //p' "$OUT_DIR/$log.txt" | tail -1)"
     case "$line" in
         *"focus-visible=true"*) ;;
@@ -4014,16 +4041,22 @@ ai_focus_ring() {
     IFS=, read -r x y w h <<EOF
 $rect
 EOF
+    # The ring is 2 px, drawn 3 px outside the control, so a crop 6 px larger
+    # holds all of it. It used to be the accent and was found as chroma; since
+    # WX-5a it is the neutral selection outline, so it is found as the pixels
+    # the focused capture has and the unfocused one does not. A whole ring is
+    # about 4(w+h) of them; half a single-pixel perimeter is the floor, which
+    # a caret or a hover tint inside the control cannot reach on its own.
+    local ring_floor
+    ring_floor=$((w + h))
     x=$((x - 6)); y=$((y - 6)); w=$((w + 12)); h=$((h + 12))
-    focused="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/$shot.png,crop=$w:$h:$x:$y,signalstats" \
-        -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
-    plain="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/$baseline.png,crop=$w:$h:$x:$y,signalstats" \
-        -show_entries frame_tags=lavfi.signalstats.UAVG -of csv=p=0 2>/dev/null | head -1)"
-    echo "  $what: rect=$rect chroma focused=${focused:-?} unfocused=${plain:-?}"
-    python3 -c "import sys; sys.exit(0 if float('${focused:-0}') - float('${plain:-0}') > 1.0 else 1)" \
-        || { echo "FAIL: no focus ring where $what says the focus is" >&2; return 1; }
+    focused="$(python3 tools/chrome_probe.py changed \
+        "$OUT_DIR/$shot.png" "$OUT_DIR/$baseline.png" "$w:$h:$x:$y" 2>/dev/null)"
+    echo "  $what: rect=$rect pixels the focus added=${focused:-?} (floor $ring_floor)"
+    if [ "${focused:-0}" -lt "$ring_floor" ]; then
+        echo "FAIL: no focus ring where $what says the focus is" >&2
+        return 1
+    fi
     return 0
 }
 ai_focus_ring ai-focus-8 ai-focus-8 ai-routing "eight Tab steps" || AI_FAILED=1
@@ -4828,34 +4861,73 @@ hud_state hud-forced-on on --hud || TRANSPORT_FAILED=1
 # The coordinates are the mute button's centre in the 1280x720 layout. If the row
 # is ever re-laid-out they stop naming that control, and the check below is what
 # says so — a tooltip that stopped appearing would otherwise be invisible.
-capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=1121x480" || TRANSPORT_FAILED=1
-TIP_INK="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:40:1050:420,signalstats" \
-    -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
-# The tip is white on near-black, drawn over the preview's dark background. A dark
-# minimum is the box; without the tip that region is the preview's own dark too,
-# so the discriminating measure is the *bright* text inside it.
-TIP_TEXT="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/tooltip-mute.png,crop=140:40:1050:420,signalstats" \
-    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
-echo "tooltip-mute            box luma min=${TIP_INK:-?} text luma max=${TIP_TEXT:-?}"
-if [ "${TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null; then
+#
+# **That sentence was false for longer than anyone knew, and WX-5a's dark
+# section is what showed it.** The transport row had moved up from y=480 to
+# y=388 at some point; the hover landed on the empty timeline band, no tip was
+# drawn, and the old crop (140x40 at 1050,420) sat on the *light panel* below
+# the toolbar, whose 247 cleared "text luma max >= 180" with no tooltip at all.
+# The same check written for the dark appearance, where that panel is 19, failed
+# at once — and so did master's build when re-run by hand. So the crop now ends
+# above the toolbar, where without a tip there is only the preview's dark, and
+# each capture has a bare twin with no pointer: the tip must add pixels the bare
+# frame does not have, and the bare frame must *fail* the brightness test.
+#
+# **And then it moved again, and the bare twin said so on the first run**
+# (WX-5b: the plan lane grew 20 px, so the toolbar rose 20 px). The button's
+# row is now read from the bare capture's own report — the toolbar sits
+# directly under the preview, whose rect `preview frame:` prints — so the
+# pointer and the crop follow the layout instead of being re-measured by hand
+# each time it changes.
+capture "tooltip-mute-bare" 1280x720 --ui-probe "play=1" || TRANSPORT_FAILED=1
+preview_bottom() {
+    sed -n 's/^preview frame:.*pixels [0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\)$/\1 \2/p' "$1" \
+        | awk '{print $1 + $2}'
+}
+TIP_TOOLBAR="$(preview_bottom "$OUT_DIR/tooltip-mute-bare.txt")"
+capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=1121x$((${TIP_TOOLBAR:-363} + 25))" \
+    || TRANSPORT_FAILED=1
+TIP_CROP="140:24:1050:$((${TIP_TOOLBAR:-363} - 26))"
+tip_ymax() {
+    ffprobe -v error -f lavfi -i "movie=$OUT_DIR/$1.png,crop=$2,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1
+}
+TIP_TEXT="$(tip_ymax tooltip-mute "$TIP_CROP")"
+TIP_BARE="$(tip_ymax tooltip-mute-bare "$TIP_CROP")"
+TIP_ADDED="$(python3 tools/chrome_probe.py changed "$OUT_DIR/tooltip-mute.png" \
+    "$OUT_DIR/tooltip-mute-bare.png" "$TIP_CROP")"
+echo "tooltip-mute            toolbar at y=${TIP_TOOLBAR:-?} text luma max=${TIP_TEXT:-?} bare=${TIP_BARE:-?} (control) pixels added=${TIP_ADDED:-?}"
+if [ "${TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null || [ "${TIP_ADDED:-0}" -lt 150 ]; then
     echo "FAIL: no tooltip text where the mute button's tip should be" >&2
+    TRANSPORT_FAILED=1
+fi
+if [ "${TIP_BARE%%.*}" -ge 180 ] 2>/dev/null; then
+    echo "FAIL: the control is not a control; the bare frame is bright where the tip goes" >&2
     TRANSPORT_FAILED=1
 fi
 
 # The same interaction after both axes are transformed by 125%. This is a hit
 # target check, not only another picture: if pointer conversion stays in physical
 # coordinates while the widgets move to logical ones, the parked pointer misses
-# Mute and this crop contains no bright tooltip text.
+# Mute and this crop contains no bright tooltip text. (It had the same vacuous
+# pass as the 100% check above until WX-5a: hover 978x599, crop on the panel.)
+capture "tooltip-mute-125-bare" 1600x900 --ui-scale 125 \
+    --ui-probe "panel=tune,play=1" || TRANSPORT_FAILED=1
+TIP_TOOLBAR_125="$(preview_bottom "$OUT_DIR/tooltip-mute-125-bare.txt")"
 capture "tooltip-mute-125" 1600x900 --ui-scale 125 \
-    --ui-probe "panel=tune,play=1,hover=978x599" || TRANSPORT_FAILED=1
-TIP_TEXT_125="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/tooltip-mute-125.png,crop=140:45:900:535,signalstats" \
-    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
-echo "tooltip-mute-125        text luma max=${TIP_TEXT_125:-?}"
-if [ "${TIP_TEXT_125%%.*}" -lt 180 ] 2>/dev/null; then
+    --ui-probe "panel=tune,play=1,hover=978x$((${TIP_TOOLBAR_125:-455} + 31))" || TRANSPORT_FAILED=1
+TIP_CROP_125="160:26:880:$((${TIP_TOOLBAR_125:-455} - 33))"
+TIP_TEXT_125="$(tip_ymax tooltip-mute-125 "$TIP_CROP_125")"
+TIP_BARE_125="$(tip_ymax tooltip-mute-125-bare "$TIP_CROP_125")"
+TIP_ADDED_125="$(python3 tools/chrome_probe.py changed "$OUT_DIR/tooltip-mute-125.png" \
+    "$OUT_DIR/tooltip-mute-125-bare.png" "$TIP_CROP_125")"
+echo "tooltip-mute-125        text luma max=${TIP_TEXT_125:-?} bare=${TIP_BARE_125:-?} (control) pixels added=${TIP_ADDED_125:-?}"
+if [ "${TIP_TEXT_125%%.*}" -lt 180 ] 2>/dev/null || [ "${TIP_ADDED_125:-0}" -lt 150 ]; then
     echo "FAIL: the 125% pointer transform missed the mute button" >&2
+    TRANSPORT_FAILED=1
+fi
+if [ "${TIP_BARE_125%%.*}" -ge 180 ] 2>/dev/null; then
+    echo "FAIL: the control is not a control; the bare 125% frame is bright where the tip goes" >&2
     TRANSPORT_FAILED=1
 fi
 
@@ -5050,6 +5122,313 @@ lane_alignment "ui-scale-150-2560x1440" 3 150
 lane_alignment "ui-auto-2560x1440" 3 150
 if [ "$LANE_ALIGNMENT_FAILED" -ne 0 ]; then
     echo "FAIL: the timed lanes do not share one time axis" >&2
+    SWEEP_FAILED=1
+fi
+
+echo "=== the plan lane as runs (WX-5b) ==="
+# The plan lane folds consecutive sections of one scene into one run, and draws
+# a section's cut, transition, grade and glide as marks inside it. Every claim
+# here is checked twice: by the `scene runs:`/`scene marks:` lines, and off the
+# pixels, against a seeded seven-section plan (`seed_lyric_fixture.py
+# --run-plan`) whose answer is known: C, C (a different grade, arriving by a
+# burn), S, S, S (gliding), C, K -- four runs, three internal cuts.
+#
+# Negative controls, each its own fixture: `alternating` (no two neighbours
+# share a scene: seven runs, no hairline) and `same-grade` (the C/C cut on one
+# grade: the bar under it reads equal).
+RUN_DIR="$OUT_DIR/runs"
+rm -rf "$RUN_DIR"
+mkdir -p "$RUN_DIR"
+RUN_FAILED=0
+run_capture() {
+    # run_capture NAME KIND PROBE
+    local name="$1" kind="$2" probe="$3"
+    mkdir -p "$RUN_DIR/$kind"
+    if [ ! -f "$RUN_DIR/$kind/plan.musi" ]; then
+        cp "$LYRIC_PROJECT" "$RUN_DIR/$kind/plan.musi"
+        cp "$LYRIC_DIR/source.wav" "$RUN_DIR/$kind/source.wav"
+        cp -a "$LYRIC_DIR/cues.assets" "$RUN_DIR/$kind/cues.assets"
+        python3 tools/seed_lyric_fixture.py "$RUN_DIR/$kind/plan.musi" --run-plan "$kind" \
+            >"$RUN_DIR/$kind/seed.txt"
+    fi
+    set +e
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        $MZ_GL ./target/debug/musializer --mute --project "$RUN_DIR/$kind/plan.musi" \
+            --size 1280x720 \
+            --probe-frames 30 \
+            --probe-shot "$RUN_DIR/$name.png" \
+            --ui-probe "$probe" \
+        >"$RUN_DIR/$name.txt" 2>&1
+    local status=$?
+    set -e
+    printf '%-24s exit=%s %s\n' "$name" "$status" \
+        "$(sed -n 's/^scene runs: *//p' "$RUN_DIR/$name.txt" | cut -d' ' -f1-8)"
+    [ "$status" -eq 0 ] && [ -f "$RUN_DIR/$name.png" ]
+}
+run_line() { sed -n 's/^scene runs: *//p' "$RUN_DIR/$1.txt"; }
+if [ ! -f "$LYRIC_PROJECT" ]; then
+    echo "FAIL: the generated project the run lane is seeded from is unavailable" >&2
+    RUN_FAILED=1
+else
+    # Settled, so the poster count on the report line is a fact rather than
+    # however many arrived in 30 paused frames (since the poster service merged,
+    # WX-5b: the gate first read 0/4 here, written before there was a service,
+    # and then 4/4 on a loaded machine). The hairline and grade-step checks
+    # below read this capture with its posters drawn, which is the lane a user
+    # sees.
+    run_capture runs runs "panel=none,time=2.5,play=0,posters=settle" || RUN_FAILED=1
+    run_capture runs-alternating alternating "panel=none,time=2.5,play=0" || RUN_FAILED=1
+    run_capture runs-same-grade same-grade "panel=none,time=2.5,play=0" || RUN_FAILED=1
+    run_capture runs-open runs "panel=none,time=2.5,play=0,run-open=2" || RUN_FAILED=1
+    run_capture runs-off runs "panel=none,time=2.5,play=0,posters=off" || RUN_FAILED=1
+
+    # The fold, as the report states it.
+    case "$(run_line runs)" in
+        "runs=4 sections=7 cuts=3 hairlines=3 arriving=1 graded=2 now=run 2/4 section 3 (stage) selected=none opened=none posters=4/4 unavailable=0 "*) ;;
+        *) echo "FAIL: the run plan did not fold to four runs: $(run_line runs)" >&2; RUN_FAILED=1 ;;
+    esac
+    case "$(run_line runs-alternating)" in
+        "runs=7 sections=7 cuts=0 hairlines=0 "*) ;;
+        *) echo "FAIL: the control is not a control; alternating scenes did not give a run each: $(run_line runs-alternating)" >&2
+           RUN_FAILED=1 ;;
+    esac
+    # `scene marks:` was printed and asserted nowhere before WX-5b; a mark a
+    # run hides would read exactly like a plan without one.
+    MARKS="$(sed -n 's/^scene marks: *//p' "$RUN_DIR/runs.txt")"
+    echo "scene marks: $MARKS"
+    if [ "$MARKS" != "graded=2 glides=1 transitions=1 outro=cut finish=off pixel=0/none" ]; then
+        echo "FAIL: the run plan's marks are not the ones it was seeded with" >&2
+        RUN_FAILED=1
+    fi
+
+    # The hairlines, off the pixels: exact-colour columns in the run bodies.
+    for spec in "runs 3" "runs-alternating 0" "runs-same-grade 3"; do
+        read -r run_name run_expect <<<"$spec"
+        run_got="$(python3 tools/run_lane_check.py hairlines "$RUN_DIR/$run_name.png" "$RUN_DIR/$run_name.txt")"
+        echo "$run_name: hairline columns=$run_got (expected $run_expect)"
+        if [ "$run_got" != "$run_expect" ]; then
+            echo "FAIL: $run_name drew $run_got internal-cut hairlines, not $run_expect" >&2
+            RUN_FAILED=1
+        fi
+    done
+
+    # A grade change inside a run shows in the bar under it; one grade does not.
+    STEP="$(python3 tools/run_lane_check.py grade-step "$RUN_DIR/runs.png" "$RUN_DIR/runs.txt")"
+    STEP_SAME="$(python3 tools/run_lane_check.py grade-step "$RUN_DIR/runs-same-grade.png" "$RUN_DIR/runs-same-grade.txt")"
+    echo "grade bar across the C/C cut: step=$STEP same-grade=$STEP_SAME (control)"
+    if ! python3 -c "import sys; sys.exit(0 if float('$STEP') >= 30 and float('$STEP_SAME') <= 8 else 1)"; then
+        echo "FAIL: the grade bar is not segmented per section" >&2
+        RUN_FAILED=1
+    fi
+
+    # Opening a run zooms the view to it, with 6 % either side: run 2 is
+    # 2..5 s, so the view is 1.82..5.18.
+    case "$(run_line runs-open)" in
+        *"opened=cue 203 "*"view=1.820..5.180") ;;
+        *) echo "FAIL: run-open=2 did not open the Stage run: $(run_line runs-open)" >&2; RUN_FAILED=1 ;;
+    esac
+    # And a cut inside the opened run is still a cut: a press on the 3 s cut
+    # selects its right-hand section (the 4th), exactly as on unfolded blocks.
+    # The coordinate comes from the report's own lane and view.
+    OPEN_AT="$(run_line runs-open | python3 -c "
+import re, sys
+line = sys.stdin.read()
+x, y, w, h = (float(v) for v in re.search(r'lane=(\d+),(\d+),(\d+),(\d+)', line).groups())
+start, end = (float(v) for v in re.search(r'view=([\d.]+)\.\.([\d.]+)', line).groups())
+print(f'{round(x + (3.0 - start) / (end - start) * w)}x{round(y + h / 2)}')
+")"
+    run_capture runs-cut-click runs "panel=none,time=2.5,play=0,run-open=2,click=$OPEN_AT" || RUN_FAILED=1
+    case "$(run_line runs-cut-click)" in
+        *" selected=4 "*) echo "a press on the opened run's 3 s cut at $OPEN_AT selected section 4" ;;
+        *) echo "FAIL: a press on an internal cut at $OPEN_AT did not select it: $(run_line runs-cut-click)" >&2
+           RUN_FAILED=1 ;;
+    esac
+
+    # With the poster service switched off, every run says so, and the name
+    # takes the poster's slot.
+    case "$(run_line runs-off)" in
+        *" posters=0/4 unavailable=4 "*) ;;
+        *) echo "FAIL: posters=off did not reach the lane: $(run_line runs-off)" >&2; RUN_FAILED=1 ;;
+    esac
+
+    # The accent still marks only now, with runs.
+    python3 tools/accent_census.py "$RUN_DIR/runs.png" "$RUN_DIR/runs.txt" \
+        --expect-appearance light-blue || RUN_FAILED=1
+    lane_alignment_runs() {
+        printf '%-30s lanes=3 scale=100\n' "$1"
+        python3 tools/timeline_lane_alignment.py "$RUN_DIR/$1.png" 3 100 || RUN_FAILED=1
+    }
+    lane_alignment_runs runs
+fi
+if [ "$RUN_FAILED" -ne 0 ]; then
+    echo "FAIL: the plan lane's runs did not pass" >&2
+    SWEEP_FAILED=1
+fi
+
+echo "=== the dark appearance, as a new user gets it (WX-5a) ==="
+# Every pixel threshold above this point was measured on the light appearance,
+# which is why the gate runs as a user who chose it (see where XDG_CONFIG_HOME
+# is set). Since WX-5a a *new* user gets the dark mockup look, so it is checked
+# here with checks written for it, from a config directory that holds no
+# `ui.json` at all — the state a first launch is in.
+#
+#   1. The default is dark, and the light pin above is what the rest saw: the
+#      `appearance:` report line names both.
+#   2. The timed lanes share one time axis in the dark too. The lane checker's
+#      border classifier inverts there (a rule is lighter than both fills), so
+#      this is its own measurement rather than the light one run twice.
+#   3. The accent means *now* and nothing else: `tools/accent_census.py` counts
+#      every accent-coloured pixel outside the preview and fails on any that is
+#      not the playhead, the section under it, a thin marker or the one primary
+#      action. A synthetic accent slab painted into a copy of the sidebar is the
+#      negative control, and it runs every time.
+#   4. A panel still draws ink: the export panel crop the light check reads,
+#      measured against its own fill rather than against 200 — the light check's
+#      absolute threshold passes on a blank dark panel, which is the defect
+#      this section exists to not have.
+DARK_DIR="$OUT_DIR/dark"
+rm -rf "$DARK_DIR"
+mkdir -p "$DARK_DIR/config"
+DARK_FAILED=0
+dark_capture() {
+    # dark_capture NAME SIZE [musializer args...] -- the fixture unless args name a project
+    local name="$1" size="$2"
+    shift 2
+    set +e
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        XDG_CONFIG_HOME="$DARK_DIR/config" \
+        $MZ_GL ./target/debug/musializer --mute \
+            --size "$size" \
+            --probe-frames 30 \
+            --probe-shot "$DARK_DIR/$name.png" \
+            "$@" \
+        >"$DARK_DIR/$name.txt" 2>&1
+    local status=$?
+    set -e
+    printf '%-30s %-9s exit=%s %s\n' "$name" "$size" "$status" \
+        "$(sed -n 's/^appearance: *\([a-z-]*\).*/\1/p' "$DARK_DIR/$name.txt")"
+    [ "$status" -eq 0 ] && [ -f "$DARK_DIR/$name.png" ]
+}
+DARK_PLAN="$AUTO_SCENE_DIR/plan.musi"
+if [ -f "$DARK_PLAN" ]; then
+    DARK_SOURCE=(--project "$DARK_PLAN" --auto-scenes)
+else
+    echo "FAIL: the scene-plan project the dark section draws is unavailable" >&2
+    DARK_FAILED=1
+    DARK_SOURCE=("$FIXTURE")
+fi
+dark_capture dark-none-1280x720 1280x720 "${DARK_SOURCE[@]}" \
+    --ui-probe "panel=none,time=5,play=0" || DARK_FAILED=1
+dark_capture dark-none-960x640 960x640 "${DARK_SOURCE[@]}" \
+    --ui-probe "panel=none,time=5,play=0" || DARK_FAILED=1
+dark_capture dark-lyrics-1280x720 1280x720 "${DARK_SOURCE[@]}" \
+    --ui-probe "panel=lyrics,time=5,play=0" || DARK_FAILED=1
+dark_capture dark-tune-1280x720 1280x720 "${DARK_SOURCE[@]}" \
+    --ui-probe "panel=tune,time=5,play=0" || DARK_FAILED=1
+dark_capture dark-export-1280x720 1280x720 "$FIXTURE" \
+    --ui-probe "panel=export,time=4,play=0" || DARK_FAILED=1
+dark_capture dark-150-2560x1440 2560x1440 --ui-scale 150 "${DARK_SOURCE[@]}" \
+    --ui-probe "panel=none,time=5,play=0" || DARK_FAILED=1
+dark_capture dark-tip-bare 1280x720 "$FIXTURE" \
+    --ui-probe "play=1" || DARK_FAILED=1
+DARK_TIP_TOOLBAR="$(sed -n 's/^preview frame:.*pixels [0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\)$/\1 \2/p' \
+    "$DARK_DIR/dark-tip-bare.txt" | awk '{print $1 + $2}')"
+dark_capture dark-tip-mute 1280x720 "$FIXTURE" \
+    --ui-probe "play=1,hover=1121x$((${DARK_TIP_TOOLBAR:-363} + 25))" || DARK_FAILED=1
+
+# 1. Which appearance drew what.
+for name in dark-none-1280x720 dark-export-1280x720 dark-150-2560x1440; do
+    case "$(sed -n 's/^appearance: *//p' "$DARK_DIR/$name.txt")" in
+        "black-amber accent=#F0B347 "*) ;;
+        *) echo "FAIL: a first launch did not draw the dark appearance ($name)" >&2
+           DARK_FAILED=1 ;;
+    esac
+done
+case "$(sed -n 's/^appearance: *//p' "$OUT_DIR/panel-none-1280x720.txt")" in
+    "light-blue accent=#002FA7 "*) echo "the gate's light pin held: panel-none-1280x720 drew light-blue" ;;
+    *) echo "FAIL: the light pin did not reach the gate's own captures" >&2
+       DARK_FAILED=1 ;;
+esac
+
+# 2. One time axis.
+for spec in "dark-none-1280x720 3 100" "dark-none-960x640 3 100" \
+            "dark-lyrics-1280x720 3 100" "dark-150-2560x1440 3 150"; do
+    read -r dark_name dark_lanes dark_scale <<<"$spec"
+    printf '%-30s lanes=%s scale=%s black-amber\n' "$dark_name" "$dark_lanes" "$dark_scale"
+    python3 tools/timeline_lane_alignment.py "$DARK_DIR/$dark_name.png" "$dark_lanes" \
+        "$dark_scale" black-amber || DARK_FAILED=1
+done
+# The negative control for the dark classifier: a light capture measured as if
+# it were dark finds no seams, because the trough it looks for is not there.
+if python3 tools/timeline_lane_alignment.py "$OUT_DIR/panel-none-1280x720.png" 3 100 black-amber \
+        >/dev/null 2>&1; then
+    echo "FAIL: the dark lane check passed on a light capture; it is not reading the dark palette" >&2
+    DARK_FAILED=1
+fi
+
+# 3. The accent census.
+for spec in "dark-none-1280x720 0" "dark-none-960x640 0" "dark-lyrics-1280x720 0" \
+            "dark-tune-1280x720 0" "dark-150-2560x1440 0" "dark-export-1280x720 1"; do
+    read -r dark_name dark_primary <<<"$spec"
+    python3 tools/accent_census.py "$DARK_DIR/$dark_name.png" "$DARK_DIR/$dark_name.txt" \
+        --expect-appearance black-amber --primary "$dark_primary" || DARK_FAILED=1
+done
+# The light appearance obeys the same rule.
+python3 tools/accent_census.py "$OUT_DIR/panel-none-1280x720.png" \
+    "$OUT_DIR/panel-none-1280x720.txt" --expect-appearance light-blue || DARK_FAILED=1
+python3 tools/accent_census.py "$OUT_DIR/panel-export-1280x720.png" \
+    "$OUT_DIR/panel-export-1280x720.txt" --expect-appearance light-blue --primary 1 \
+    || DARK_FAILED=1
+# Negative control: the pre-WX-5a selected track — an accent slab in the
+# sidebar — painted into a copy of a passing frame must fail the census.
+python3 - "$DARK_DIR/dark-none-1280x720.png" "$DARK_DIR/census-control.png" <<'PYSLAB'
+import sys
+from PIL import Image, ImageDraw
+image = Image.open(sys.argv[1]).convert("RGB")
+ImageDraw.Draw(image).rectangle((20, 140, 300, 190), fill=(0xF0, 0xB3, 0x47))
+image.save(sys.argv[2])
+PYSLAB
+if python3 tools/accent_census.py "$DARK_DIR/census-control.png" \
+        "$DARK_DIR/dark-none-1280x720.txt" >/dev/null 2>&1; then
+    echo "FAIL: the accent census passed a frame with an accent slab in the sidebar" >&2
+    DARK_FAILED=1
+else
+    echo "census control: an accent slab in the sidebar fails the census, as it must"
+fi
+
+# 4. The export panel draws ink on its dark fill. The light check's crop, read
+# against the crop's own background; and a control crop in the same panel, to
+# the right of the CLIP readout, where nothing is drawn.
+DARK_EXPORT_INK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" 340:90:10:474)"
+DARK_EXPORT_BLANK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" 300:24:900:486)"
+echo "dark export panel: ink=${DARK_EXPORT_INK:-?} blank=${DARK_EXPORT_BLANK:-?} (control), fill $(python3 tools/chrome_probe.py fill "$DARK_DIR/dark-export-1280x720.png" 340:90:10:474)"
+if [ "${DARK_EXPORT_INK:-0}" -lt 120 ]; then
+    echo "FAIL: the dark export panel drew no ink" >&2
+    DARK_FAILED=1
+fi
+if [ "${DARK_EXPORT_BLANK:-255}" -ge 48 ]; then
+    echo "FAIL: the control is not a control; the blank strip of the export panel has ink" >&2
+    DARK_FAILED=1
+fi
+
+# 5. A tooltip, on the dark appearance: bright text the bare frame does not have.
+DARK_TIP_TEXT="$(ffprobe -v error -f lavfi \
+    -i "movie=$DARK_DIR/dark-tip-mute.png,crop=140:24:1050:$((${DARK_TIP_TOOLBAR:-363} - 26)),signalstats" \
+    -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
+DARK_TIP_ADDED="$(python3 tools/chrome_probe.py changed "$DARK_DIR/dark-tip-mute.png" \
+    "$DARK_DIR/dark-tip-bare.png" "140:24:1050:$((${DARK_TIP_TOOLBAR:-363} - 26))")"
+echo "dark tooltip: text luma max=${DARK_TIP_TEXT:-?} pixels added=${DARK_TIP_ADDED:-?}"
+if [ "${DARK_TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null || [ "${DARK_TIP_ADDED:-0}" -lt 150 ]; then
+    echo "FAIL: no tooltip where the mute button's tip should be, on the dark appearance" >&2
+    DARK_FAILED=1
+fi
+
+if [ "$DARK_FAILED" -ne 0 ]; then
+    echo "FAIL: the dark appearance checks did not pass" >&2
     SWEEP_FAILED=1
 fi
 
@@ -5555,12 +5934,18 @@ entry_expect "drop-unsupported" "tracks" "0 open"
 
 echo "--- D2: the ASCII image import and clear controls ---"
 
+# The footer row is the sidebar's last, so it sits a fixed distance above the
+# timeline band: y=383 since WX-5b grew the plan lane (and the band) by 20 px;
+# it was 403. A press that misses reads `claimed=nothing` on both buttons, and
+# the "empty" capture's expectation of nothing is only a control while the
+# other two still hit — which is why all three move together.
+
 # Empty: Import is drawn, Clear is not. Proved by pressing Clear's seat and
 # getting nothing — a picture cannot distinguish "absent" from "drawn in the
 # background colour", and this is the assertion that can.
 entry_capture "ascii-empty" "$ENTRY_DIR/store-ignored.json" \
-    "$ENTRY_DIR/source.wav" --ui-probe "click=282x403" || true
-entry_expect "ascii-empty" "click probe" "at=282x403 claimed=nothing"
+    "$ENTRY_DIR/source.wav" --ui-probe "click=282x383" || true
+entry_expect "ascii-empty" "click probe" "at=282x383 claimed=nothing"
 entry_expect "ascii-empty" "ascii" "none (procedural mode)"
 
 # Populated, through the command line rather than a picker, so the state is
@@ -5577,16 +5962,16 @@ entry_expect_contains "ascii-populated" "ascii" "54x54 glyphs from"
 # retains its widget id; only its seat changes. Keep the no-dialog guards below.
 entry_capture "ascii-cleared" "$ENTRY_DIR/store-ignored.json" \
     "$ENTRY_DIR/source.wav" --ascii-image "$ENTRY_DIR/picture.png" \
-    --ui-probe "click=282x403" || true
-entry_expect "ascii-cleared" "click probe" "at=282x403 claimed=0xd00000002"
+    --ui-probe "click=282x383" || true
+entry_expect "ascii-cleared" "click probe" "at=282x383 claimed=0xd00000002"
 entry_expect "ascii-cleared" "ascii" "none (procedural mode)"
 
 # Import takes the press and reaches the picker. Run with no backend on PATH, so
 # the refusal is deterministic and no modal is drawn on the capture display.
 ENTRY_PATH_OVERRIDE="$ENTRY_NO_DIALOG_PATH" \
     entry_capture "ascii-import-click" "$ENTRY_DIR/store-ignored.json" \
-        "$ENTRY_DIR/source.wav" --ui-probe "click=150x403" || true
-entry_expect "ascii-import-click" "click probe" "at=150x403 claimed=0xd00000001"
+        "$ENTRY_DIR/source.wav" --ui-probe "click=150x383" || true
+entry_expect "ascii-import-click" "click probe" "at=150x383 claimed=0xd00000001"
 
 # Staged with no track: the fourth state D2 asks for, and the one where the
 # scene browser is not even on screen. The frame is the evidence that the
@@ -5618,7 +6003,9 @@ mkdir -p "$TIMING_DIR"
 cp "$FIXTURE" "$TIMING_DIR/source.wav"
 TIMING_PROJECT="$TIMING_DIR/timing.musi"
 TIMING_PREFS="$TIMING_DIR/ui.json"
-printf '{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$TIMING_PREFS"
+# The light appearance, like the rest of the gate's pixel sections: the masks
+# below were measured on it (WX-5a; see the note where XDG_CONFIG_HOME is set).
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' >"$TIMING_PREFS"
 set +e
 env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
     DISPLAY="$DISPLAY_NUM" \
@@ -5767,13 +6154,18 @@ import sys
 import numpy as np
 from PIL import Image
 
-# `origin_color(CueOrigin::UserApplied)`. Scoped to the bottom of the frame on
-# purpose: the event row's "+ Scene" button is outlined in the same green, and an
-# unscoped count reports 148 of them on a frame with no cues at all — which is
-# how this assertion would have passed while measuring a button.
+# `origin_color(CueOrigin::UserApplied)`, #238A57 since WX-5b (it was #1F7A4D;
+# one set of origin colours now clears 3:1 on both appearances). Since WX-5b a
+# block is a neutral fill, and the pixels counted are its origin marks: a 1 px
+# top line on every block and a 3 px stripe on a block wide enough for words
+# (758 of them on this fixture, against 0 for the old colour). Scoped to the
+# bottom of the frame on purpose: the event row's "+ Scene" button was outlined
+# in the same green, and an unscoped count reported 148 of them on a frame with
+# no cues at all — which is how this assertion would have passed while
+# measuring a button.
 image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
 height = image.shape[0]
-mask = np.abs(image - np.array([0x1F, 0x7A, 0x4D])).sum(axis=2) < 12
+mask = np.abs(image - np.array([0x23, 0x8A, 0x57])).sum(axis=2) < 12
 print(int(mask[int(height * 0.82) :].sum()))
 PY
 )"
@@ -5794,7 +6186,7 @@ from PIL import Image
 
 image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
 height = image.shape[0]
-mask = np.abs(image - np.array([0x1F, 0x7A, 0x4D])).sum(axis=2) < 12
+mask = np.abs(image - np.array([0x23, 0x8A, 0x57])).sum(axis=2) < 12
 print(int(mask[int(height * 0.82) :].sum()))
 PY
 )"
@@ -5905,9 +6297,11 @@ PY
 
     # Both presses have to reach `main.rs` and come back with the refusal on
     # screen. Measured as the tallest contiguous vertical run of the warning
-    # severity colour, which separates a notice card's 75 px stripe from the
-    # event row's amber "+ Feel" outline — that button is the same colour and an
-    # unscoped pixel count says 153 of them on a frame with no notice at all.
+    # severity colour (`NOTICE_WARNING_ON_DARK`, orange since WX-5a moved it off
+    # the accent's amber), which separates a notice card's 75 px stripe from
+    # any outline of a similar colour: before WX-5a the event row's "+ Feel"
+    # button was the same amber and an unscoped pixel count said 153 of them on
+    # a frame with no notice at all. The idle control below still holds that.
     for name in lyrics-click-export lyrics-click-import; do
         WARNING_RUN="$(python3 - "$OUT_DIR/$name.png" <<'PY'
 import sys
@@ -5916,7 +6310,7 @@ import numpy as np
 from PIL import Image
 
 image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
-mask = np.abs(image - np.array([242, 180, 65])).sum(axis=2) < 12
+mask = np.abs(image - np.array([243, 146, 107])).sum(axis=2) < 12
 tallest = 0
 for x in np.unique(np.nonzero(mask)[1]):
     column = np.nonzero(mask[:, x])[0]
@@ -5943,7 +6337,7 @@ import numpy as np
 from PIL import Image
 
 image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
-mask = np.abs(image - np.array([242, 180, 65])).sum(axis=2) < 12
+mask = np.abs(image - np.array([243, 146, 107])).sum(axis=2) < 12
 tallest = 0
 for x in np.unique(np.nonzero(mask)[1]):
     column = np.nonzero(mask[:, x])[0]

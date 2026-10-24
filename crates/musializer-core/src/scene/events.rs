@@ -57,11 +57,18 @@ impl EventType {
     /// not a piece of chrome — the manual event row, the timeline markers and the
     /// lyric lane all have to agree about what colour a cue is, and the only
     /// thing all three share is this enum.
+    ///
+    /// **`Semantic` is not the C's amber (`0xF2BE42`) any more** (WX-5a,
+    /// 2026-10-24). The workspace accent became an amber that means *now* —
+    /// the playhead — and a semantic marker in the C's amber sat four degrees of
+    /// hue from it, so two feel markers on the waveform read as two more
+    /// playheads. Chartreuse keeps it warm and clear of the other three types.
+    /// Only the interface draws these; no file, render or harness carries them.
     #[must_use]
     pub const fn rgba(self) -> u32 {
         match self {
             EventType::Lyric => 0xEC59_BEFF,
-            EventType::Semantic => 0xF2BE_42FF,
+            EventType::Semantic => 0xB9D3_5AFF,
             EventType::Cue => 0x3FDC_ABFF,
             EventType::Custom => 0x976F_F1FF,
         }

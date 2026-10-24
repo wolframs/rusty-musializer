@@ -229,7 +229,7 @@ impl TextField {
             widgets::rectangle(boundary),
             if self.focused { 2.0 } else { 1.0 },
             if self.focused {
-                color::accent()
+                color::ui_selected_edge()
             } else {
                 color::ui_rule()
             },
@@ -266,9 +266,10 @@ impl TextField {
                         (right - left).max(1.0),
                         boundary.height - 8.0,
                     ),
-                    // A pale wash of the accent, the same tone the cue list uses
-                    // for its selected row.
-                    raylib::prelude::Color::new(231, 236, 250, 255),
+                    // The palette's text highlight (WX-5a). It was a literal
+                    // pale blue, which in the dark appearance put light text
+                    // on a light wash.
+                    color::ui_text_highlight(),
                 );
             }
             font.draw_text(
@@ -289,7 +290,7 @@ impl TextField {
                 Vector2::new(x, boundary.y + 5.0),
                 Vector2::new(x, boundary.y + boundary.height - 5.0),
                 1.0,
-                color::accent(),
+                color::ui_ink(),
             );
         }
         drop(clip);

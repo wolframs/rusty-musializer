@@ -38,6 +38,7 @@ use musializer_core::project::model::{
     caption, caption_fx, CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, DriveTuning,
     EffectDrive,
 };
+use musializer_core::ui::contrast;
 use musializer_core::ui::lyric_clipboard::LyricClipboard;
 use musializer_core::ui::lyric_lane_edit::{
     self, LyricLaneClick, LyricLaneSelection, LyricLaneZone, LyricTap, TapRefusal,
@@ -432,19 +433,28 @@ mod caption_id {
 ///
 /// # How they were chosen, with the numbers
 ///
-/// Each is measured against the lane's own fill, which is `ui_raised` — pure
-/// white — through [`musializer_core::ui::contrast::ratio`], and the border is
-/// drawn at full alpha, so the border is what carries the code at every
-/// selection state. All four clear `AA_COMPONENT` (3.0), the WCAG bar for a
-/// non-text component, and the test at the bottom of this file recomputes them
-/// rather than trusting this table:
+/// **One colour per origin, the same in both appearances** (WX-5b). Since the
+/// re-look the code is carried by a 3 px stripe and a 1 px top line rather than
+/// by a tinted block, so a colour has to stand off every surface those marks
+/// touch: the lane (`ui_raised`), the lane trough beside it, and the three block
+/// fills (`ui_cue_block`, `ui_cue_now`, `ui_selected`), in the dark palette
+/// *and* the light one. That is ten surfaces from near-black to white, and a
+/// colour clears `AA_COMPONENT` (3.0) on all of them only if its
+/// relative luminance sits in a band around 0.19 — so each origin kept its hue
+/// and saturation and moved its value into that band. The test at the bottom of
+/// this file recomputes every pair rather than trusting this table:
 ///
-/// | origin | colour | vs the white lane |
-/// | --- | --- | --- |
-/// | `UserApplied` | `#1F7A4D` | 5.32 |
-/// | `InferredCertain` | `#2563C7` | 5.69 |
-/// | `InferredAmbiguous` | `#D07A00` | 3.25 |
-/// | `Potential` | `#7C7C86` | 4.13 |
+/// | origin | was | now | worst surface | ratio |
+/// | --- | --- | --- | --- | --- |
+/// | `UserApplied` | `#1F7A4D` | `#238A57` | dark *now* fill | 3.48 |
+/// | `InferredCertain` | `#2563C7` | `#2C75EB` | light trough | 3.48 |
+/// | `InferredAmbiguous` | `#D07A00` | `#B16800` | light trough | 3.48 |
+/// | `Potential` | `#7C7C86` | unchanged | light trough | 3.32 |
+///
+/// The old green and blue fell under 3:1 on the dark block and the warm *now*
+/// fill (2.97 and 2.65 for the blue), and the old amber under it on the light
+/// block (2.81): each had been measured against the white lane only, which
+/// stopped being the background when the lane went dark and the blocks opaque.
 ///
 /// The **semantics** are the operator's: green reads as settled, blue as a
 /// machine that is sure, amber as check-this, and `Potential` is deliberately
@@ -454,11 +464,77 @@ mod caption_id {
 /// distinguished by texture as well as hue and survives a colour-blind reading.
 const fn origin_color(origin: CueOrigin) -> Color {
     match origin {
-        CueOrigin::UserApplied => Color::new(0x1F, 0x7A, 0x4D, 255),
-        CueOrigin::InferredCertain => Color::new(0x25, 0x63, 0xC7, 255),
-        CueOrigin::InferredAmbiguous => Color::new(0xD0, 0x7A, 0x00, 255),
+        CueOrigin::UserApplied => Color::new(0x23, 0x8A, 0x57, 255),
+        CueOrigin::InferredCertain => Color::new(0x2C, 0x75, 0xEB, 255),
+        CueOrigin::InferredAmbiguous => Color::new(0xB1, 0x68, 0x00, 255),
         CueOrigin::Potential => Color::new(0x7C, 0x7C, 0x86, 255),
     }
+}
+
+/// Width of the provenance stripe down a cue block's start (WX-5b).
+const ORIGIN_STRIPE_PIXELS: f32 = 3.0;
+
+/// A cue block's fill (WX-5b, the mockup's `.ly`): neutral, so the words carry
+/// the block. The line on screen takes the warm *now* tint and a selected block
+/// the selection tint (with its outline, drawn by the caller); then the fill
+/// darkens 20 % per stack step (LX1-d), so a fanned cluster reads as rows,
+/// brightest on top.
+///
+/// No hover tint: `ui_hover` sits within a few levels of `ui_cue_block` in both
+/// appearances, so it would be a state nobody could see. A hovered block says so
+/// with its grab bars, its tooltip and the cursor, all of which are legible.
+fn cue_block_fill(now: bool, selected: bool, shade_steps: usize) -> Color {
+    let base = if now {
+        color::ui_cue_now()
+    } else if selected {
+        color::ui_selected()
+    } else {
+        color::ui_cue_block()
+    };
+    shade(base, shade_multiplier(shade_steps))
+}
+
+/// The colour a block's provenance marks are drawn in on `fill`: the origin's
+/// colour, or that colour darkened with its stack row, whichever stands further
+/// off the fill.
+///
+/// The choice is what keeps a deep row's marks legible in both appearances. On
+/// the dark lane the fill darkens toward black with the row, so darkening the
+/// mark as well would sink it into the fill; on the light lane the fill darkens
+/// from near-white toward the mark, and darkening the mark keeps the gap. Row 0
+/// is never darkened, so the colour the legend shows is the colour on the lane.
+fn origin_mark(origin: CueOrigin, fill: Color, shade_steps: usize) -> Color {
+    let base = origin_color(origin);
+    let shaded = shade(base, shade_multiplier(shade_steps));
+    let fill = packed_rgba(fill);
+    if contrast::ratio(packed_rgba(shaded), fill) > contrast::ratio(packed_rgba(base), fill) {
+        shaded
+    } else {
+        base
+    }
+}
+
+/// The words' colour on a block: muted, ink on the line on screen, and whichever
+/// of the palette's text colours (or plain black or white) still reads where a
+/// deep stack row has darkened the fill past them.
+fn cue_word_ink(now: bool, fill: Color) -> Color {
+    let fill_packed = packed_rgba(fill);
+    let preferred = if now {
+        color::ui_ink()
+    } else {
+        color::ui_muted()
+    };
+    for candidate in [preferred, color::ui_ink()] {
+        if contrast::ratio(packed_rgba(candidate), fill_packed) >= contrast::AA_TEXT {
+            return candidate;
+        }
+    }
+    widgets::contrasting_ink(fill)
+}
+
+/// `0xRRGGBBAA`, for [`contrast::ratio`].
+const fn packed_rgba(color: Color) -> u32 {
+    u32::from_be_bytes([color.r, color.g, color.b, color.a])
 }
 
 /// The four origins in the order the legend and the report line list them.
@@ -506,9 +582,6 @@ const fn lyric_clipboard_keys_allowed(
 ) -> bool {
     !style_pane && !font_pane && !text_focused
 }
-
-/// The pale wash behind a selected row (`GetColor(0xE7ECFAFF)`, `:1238`).
-const SELECTED_ROW: u32 = 0xE7EC_FAFF;
 
 /// One change the editor wants made to the model.
 ///
@@ -2317,6 +2390,14 @@ impl Shell {
         let content_height =
             (lane.height - LANE_BLOCK_TOP_INSET - LANE_RESIZE_GRAB_PIXELS).max(1.0);
         let mut tip: Option<(UiRect, String)> = None;
+        // The line on screen at the playhead (WX-5b, the mockup's `.ly.now`):
+        // the display resolver's answer rather than every block the playhead
+        // crosses, so a proposal parked under it, or a line a later one talks
+        // over, is not dressed as the line the frame is showing.
+        let now_id = track
+            .lyrics
+            .at_time(self.timeline_playhead_seconds(input.time_seconds))
+            .map(|cue| cue.id);
 
         for (index, cue) in track.lyrics.cues().iter().enumerate() {
             let (preview_start, preview_end) = lane_preview_span(editor, cue);
@@ -2354,19 +2435,32 @@ impl Shell {
 
             let in_selection = editor.lane_selection.contains(cue.id);
             let hovered = hover.is_some_and(|hit| hit.id == cue.id);
-            let alpha = if in_selection {
-                0.82
-            } else if hovered {
-                0.68
-            } else {
-                0.38
-            };
-            // Both the fill and the border darken with the row, because only the
-            // border survives the fill alpha at 0.38 — shading one and not the
-            // other would leave every unselected block looking like row 0.
-            let tint = shade(origin_color(cue.origin), shade_multiplier(slot.shade_steps));
-            widgets::fill(d, block, fade(tint, alpha));
-            d.draw_rectangle_lines_ex(widgets::rectangle(block), 1.0, tint);
+            let now = now_id == Some(cue.id);
+            // WX-5b: a neutral block, the words on it, and provenance as a
+            // stripe and a top line — the mockup's calm row of words. Before it
+            // every block was its origin colour at 38 % over the lane with a
+            // full-strength outline, and a track of user-applied lines read as
+            // a green barcode in which the words were the quietest thing.
+            //
+            // The fill darkens with the stack row (LX1-d), so a fanned cluster
+            // still reads as rows, brightest on top.
+            let fill = cue_block_fill(now, in_selection, slot.shade_steps);
+            // A one-pixel seam at the block's end, so two cues that abut read
+            // as two lines rather than one long one — the mockup's
+            // `border-right`. Only where the end is on screen and the block can
+            // spare it; the hit test is unchanged either way.
+            let body = UiRect::new(
+                block.x,
+                block.y,
+                if geometry.end_visible && block.width >= 4.0 {
+                    block.width - 1.0
+                } else {
+                    block.width
+                },
+                block.height,
+            );
+            widgets::fill(d, body, fill);
+            let mark = origin_mark(cue.origin, fill, slot.shade_steps);
             // A proposal is hatched as well as greyed, so the one state that
             // means "not a placement" is legible without colour vision at all.
             //
@@ -2377,7 +2471,13 @@ impl Shell {
             // block is never in `shadows` and never carries the warning wash.
             // The pitch differs anyway, at twice the shadow's spacing.
             if cue.origin == CueOrigin::Potential {
-                hatch_spaced(d, block, fade(tint, 0.9), HATCH_SPACING * 2.0);
+                hatch_spaced(d, body, fade(mark, 0.7), HATCH_SPACING * 2.0);
+            }
+            // Selection is an outline and a tint (WX-5a), drawn before the
+            // origin marks so the stripe and the top line stay the origin's
+            // colour on a selected block too.
+            if in_selection {
+                d.draw_rectangle_lines_ex(widgets::rectangle(body), 1.0, color::ui_selected_edge());
             }
             // A span the preview and the export will never show this cue in is
             // greyed and hatched, so two blocks in one colour stop meaning the
@@ -2402,6 +2502,45 @@ impl Shell {
                     widgets::fill(d, region, fade(color::ui_surface(), 0.62));
                     hatch(d, region, fade(color::ui_warning(), 0.85));
                 }
+            }
+            // The cue the form is bound to gets a second, inset outline.
+            // Selection and form target are different things now that a drag can
+            // move several cues at once, and one colour cannot say both. Before
+            // the origin marks, so the stripe keeps its three columns.
+            if cue.id == editor.selected_id {
+                d.draw_rectangle_lines_ex(
+                    widgets::rectangle(UiRect::new(
+                        body.x + 1.0,
+                        body.y + 1.0,
+                        body.width - 2.0,
+                        body.height - 2.0,
+                    )),
+                    1.0,
+                    color::ui_ink(),
+                );
+            }
+            // Provenance (LX1-d): a 1 px line along the top and a stripe down
+            // the start, in the origin's colour. Both are opaque, which is what
+            // lets the gate count them by exact colour.
+            //
+            // The top line is drawn on every block and is what carries the code
+            // at every zoom. The stripe marks where the cue *starts*, so it is
+            // drawn only where the start is on screen, and only on a block wide
+            // enough to carry words: on a whole-track view most cues are a few
+            // pixels wide, and a 3 px bar on each made a 10 px block a third
+            // origin colour — the barcode this re-look exists to remove.
+            widgets::fill(d, UiRect::new(body.x, body.y, body.width, 1.0), mark);
+            if geometry.start_visible && block.width >= LANE_TEXT_MIN_BLOCK_PIXELS {
+                widgets::fill(
+                    d,
+                    UiRect::new(
+                        body.x,
+                        body.y,
+                        ORIGIN_STRIPE_PIXELS.min(body.width),
+                        body.height,
+                    ),
+                    mark,
+                );
             }
             // The cue's own words, inside the block (operator request,
             // 2026-08-06). The lane is 2.25x the oracle's height now, and the
@@ -2429,11 +2568,11 @@ impl Shell {
                 && label_width > 0.0
             {
                 let size = metric::UI_FONT_CAPTION.min(label_height - 6.0).max(9.0);
-                // Chosen against what the block *composites to*, not against its
-                // tint: the fill is translucent over the lane, and a stack row
-                // four shade steps down is a different background from row 0. A
-                // fixed ink colour would be the one that disappears there.
-                let ink = widgets::contrasting_ink(over(color::ui_raised(), tint, alpha));
+                // Muted serif words, ink on the line on screen (the mockup's
+                // `.ly` and `.ly.now`), checked against the opaque fill they sit
+                // on: a stack row four shade steps down is a different
+                // background from row 0.
+                let ink = cue_word_ink(now, fill);
                 widgets::draw_text_faded(
                     d,
                     &input.fonts.authored(),
@@ -2443,22 +2582,7 @@ impl Shell {
                     label_width,
                     LANE_TEXT_FADE_PIXELS.min(label_width * 0.5),
                     size,
-                    fade(ink, 0.92),
-                );
-            }
-            // The cue the form is bound to gets a second, inset outline.
-            // Selection and form target are different things now that a drag can
-            // move several cues at once, and one colour cannot say both.
-            if cue.id == editor.selected_id {
-                d.draw_rectangle_lines_ex(
-                    widgets::rectangle(UiRect::new(
-                        block.x + 1.0,
-                        block.y + 1.0,
-                        block.width - 2.0,
-                        block.height - 2.0,
-                    )),
-                    1.0,
-                    color::ui_ink(),
+                    ink,
                 );
             }
             // **Both** grab bars, on any hovered block wide enough to have them,
@@ -3455,7 +3579,7 @@ impl Shell {
             list.x,
             list.y,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         let count = format!("{} / {}", track.lyrics.len(), lyrics::CUE_CAPACITY);
         let count_width = widgets::measure(font, &count, metric::UI_FONT_VALUE);
@@ -3540,15 +3664,23 @@ impl Shell {
             let state = self.widgets.button(d, id, boundary);
             let selected = cue.id == editor.selected_id;
             let current = cue.start_seconds <= playhead && playhead < cue.end_seconds;
-            let background = if state.hovered {
-                color::track_button_hoverover()
-            } else if selected {
-                Color::get_color(SELECTED_ROW)
+            // The C washes a selected row in a bare `GetColor(0xE7ECFAFF)`
+            // (`:1238`); since WX-5a it is the palette's selected tint and
+            // outline, which a dark appearance can read and the sweep measures.
+            if selected {
+                widgets::selected_fill(d, boundary);
             } else {
-                color::ui_raised()
-            };
-            widgets::fill(d, boundary, background);
-            d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
+                widgets::fill(
+                    d,
+                    boundary,
+                    if state.hovered {
+                        color::ui_hover()
+                    } else {
+                        color::ui_raised()
+                    },
+                );
+                d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, color::ui_rule());
+            }
             if current {
                 widgets::fill(
                     d,
@@ -3634,7 +3766,7 @@ impl Shell {
                     3.0,
                     thumb,
                 ),
-                color::accent(),
+                color::ui_muted(),
             );
         }
 
@@ -3722,7 +3854,7 @@ impl Shell {
                 header_x,
                 form.y,
                 metric::UI_FONT_HEADER,
-                color::accent(),
+                color::ui_ink(),
             );
         }
 
@@ -4056,7 +4188,7 @@ impl Shell {
             .then(|| shadow_notice(&track.lyrics, editor.selected_id))
             .flatten();
         let (line, tint) = match (tap_status.as_deref(), notice.as_deref()) {
-            (Some(status), _) => (status, color::accent()),
+            (Some(status), _) => (status, color::ui_ink()),
             (None, Some(warning)) => (warning, color::ui_warning()),
             (None, None) => (
                 "Ctrl+Enter taps  |  Ctrl+Z undoes  |  Ctrl+B splits  |  Ctrl+J merges  |  Del removes",
@@ -4249,7 +4381,7 @@ impl Shell {
         if !editing {
             let state = self.widgets.button(d, id, boundary);
             if state.hovered {
-                widgets::fill(d, boundary, color::track_button_hoverover());
+                widgets::fill(d, boundary, color::ui_hover());
             }
             widgets::draw_text(
                 d,
@@ -4384,7 +4516,7 @@ impl Shell {
             toggle.x + toggle.width + 8.0,
             list.y,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         // The Style/Effects flip, hidden while the browser is up because the
         // browser's Back already means "return to where you were".
@@ -4812,7 +4944,7 @@ impl Shell {
                 d,
                 rect,
                 if anchor_index == value {
-                    color::accent()
+                    color::ui_selected_edge()
                 } else {
                     color::ui_raised()
                 },
@@ -4919,7 +5051,7 @@ impl Shell {
             picker.heading.x,
             picker.heading.y,
             12.0,
-            color::accent(),
+            color::ui_ink(),
         );
         if self
             .widgets
@@ -5702,7 +5834,7 @@ impl Shell {
                 widgets::rectangle(box_rect),
                 if selected { 2.0 } else { 1.0 },
                 if selected {
-                    color::accent()
+                    color::ui_ink()
                 } else {
                     color::ui_rule()
                 },
@@ -6451,12 +6583,12 @@ fn caption_slider(
         Vector2::new(left, track_rect.y + radius),
         Vector2::new(handle_x, track_rect.y + radius),
         2.0,
-        color::accent(),
+        color::ui_level(),
     );
     d.draw_circle_v(
         Vector2::new(handle_x, track_rect.y + radius),
         radius * 0.62,
-        color::accent(),
+        color::ui_ink(),
     );
 
     let mouse = ui_scale.mouse(d);
@@ -6875,30 +7007,6 @@ fn hatch_spaced(d: &mut RaylibDrawHandle<'_>, rect: UiRect, tint: Color, spacing
 }
 
 /// raylib's `ColorAlpha`, for a compile-time colour.
-/// What `tint` at `alpha` over an opaque `base` actually presents to the eye.
-///
-/// Needed because [`widgets::contrasting_ink`] judges an opaque colour, and every
-/// cue block is a translucent fill over the lane. Passing it the raw tint would
-/// answer for a colour that is never on screen — and the answer differs, since a
-/// block at 0.38 alpha over the near-white lane is pale whatever its tint is.
-fn over(base: Color, tint: Color, alpha: f32) -> Color {
-    let alpha = alpha.clamp(0.0, 1.0);
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a convex combination of two values in [0, 255]"
-    )]
-    let mix = |over: u8, under: u8| -> u8 {
-        (f32::from(over) * alpha + f32::from(under) * (1.0 - alpha)).round() as u8
-    };
-    Color::new(
-        mix(tint.r, base.r),
-        mix(tint.g, base.g),
-        mix(tint.b, base.b),
-        255,
-    )
-}
-
 fn fade(color: Color, alpha: f32) -> Color {
     Color::new(
         color.r,
@@ -6936,42 +7044,74 @@ mod tests {
     // LX1-d: the colour code, the resize, the tooltip anchor, the shortcuts
     // -----------------------------------------------------------------------
 
-    /// The lane's fill, which every block colour is measured against.
-    const LANE_FILL: u32 = 0xFFFF_FFFF;
-
     fn packed(color: Color) -> u32 {
-        (u32::from(color.r) << 24)
-            | (u32::from(color.g) << 16)
-            | (u32::from(color.b) << 8)
-            | u32::from(color.a)
+        packed_rgba(color)
+    }
+
+    use super::super::super::theme::{self, palette, Palette, UiTheme};
+
+    const APPEARANCES: [(&str, UiTheme, &Palette); 2] = [
+        ("dark", UiTheme::BlackAmber, &palette::DARK),
+        ("light", UiTheme::LightBlue, &palette::LIGHT),
+    ];
+
+    /// Every surface a provenance mark touches in one appearance: the lane and
+    /// the trough beside it, and the three fills a block can take.
+    fn mark_surfaces(palette: &Palette) -> [(&'static str, u32); 5] {
+        [
+            ("ui_raised", palette.ui_raised),
+            ("ui_lane_trough", palette.ui_lane_trough),
+            ("ui_cue_block", palette.ui_cue_block),
+            ("ui_cue_now", palette.ui_cue_now),
+            ("ui_selected", palette.ui_selected),
+        ]
     }
 
     #[test]
     fn every_origin_colour_is_legible_against_the_lane_it_is_drawn_on() {
-        // The border is drawn at full alpha at every selection state, so it is
-        // the border that has to clear the bar for a non-text component. The
-        // numbers in `origin_color`'s table are recomputed here rather than
-        // trusted: a colour written into a doc comment and never measured is
-        // exactly the amber severity label that shipped at 3.96:1.
+        // The stripe and the top line carry the code, so each has to clear the
+        // bar for a non-text component against every surface it can touch, in
+        // both appearances. The worst ratios in `origin_color`'s table are
+        // recomputed here rather than trusted: a colour written into a doc
+        // comment and never measured is exactly the amber severity label that
+        // shipped at 3.96:1, and this table's first version measured the white
+        // lane only and went illegible when the lane went dark.
         let expected = [
-            (CueOrigin::UserApplied, 5.32f64),
-            (CueOrigin::InferredCertain, 5.69),
-            (CueOrigin::InferredAmbiguous, 3.25),
-            (CueOrigin::Potential, 4.13),
+            (CueOrigin::UserApplied, 3.48f64),
+            (CueOrigin::InferredCertain, 3.48),
+            (CueOrigin::InferredAmbiguous, 3.48),
+            (CueOrigin::Potential, 3.32),
         ];
+        let mut measured_pairs = 0;
         for (origin, documented) in expected {
-            let measured = contrast::ratio(packed(origin_color(origin)), LANE_FILL);
+            let colour = packed(origin_color(origin));
+            let mut worst = f64::INFINITY;
+            for (appearance, _, palette) in APPEARANCES {
+                for (surface, value) in mark_surfaces(palette) {
+                    let ratio = contrast::ratio(colour, value);
+                    assert!(
+                        ratio >= contrast::AA_COMPONENT,
+                        "{} is {ratio:.2}:1 on the {appearance} {surface}",
+                        origin.token()
+                    );
+                    worst = worst.min(ratio);
+                    measured_pairs += 1;
+                }
+                // The playhead crosses every block, and the accent means now:
+                // no origin may be mistaken for it.
+                assert!(
+                    crate::ui::scene_colors::tests::reads_apart(colour, palette.accent),
+                    "{} reads as the {appearance} accent",
+                    origin.token()
+                );
+            }
             assert!(
-                measured >= contrast::AA_COMPONENT,
-                "{} is {measured:.2}:1 on the lane",
-                origin.token()
-            );
-            assert!(
-                (measured - documented).abs() < 0.01,
-                "{} measures {measured:.2}, the table says {documented:.2}",
+                (worst - documented).abs() < 0.01,
+                "{} measures {worst:.2} at worst, the table says {documented:.2}",
                 origin.token()
             );
         }
+        assert_eq!(measured_pairs, 4 * 10);
         // And four distinct colours, which is the whole point of the code.
         for (index, first) in ORIGIN_ORDER.iter().enumerate() {
             for second in &ORIGIN_ORDER[index + 1..] {
@@ -7002,22 +7142,122 @@ mod tests {
         }
     }
 
+    /// The negative control for the sweep above, kept as the measurements it
+    /// came from: the pre-WX-5b colours were chosen against the white lane, and
+    /// two of them fail on the opaque blocks this lane draws now.
+    #[test]
+    fn the_white_lane_colours_would_fail_on_the_blocks() {
+        let old_certain = 0x2563_C7FFu32;
+        let old_ambiguous = 0xD07A_00FFu32;
+        assert!(contrast::ratio(old_certain, palette::DARK.ui_cue_block) < contrast::AA_COMPONENT);
+        assert!(contrast::ratio(old_certain, palette::DARK.ui_cue_now) < contrast::AA_COMPONENT);
+        assert!(
+            contrast::ratio(old_ambiguous, palette::LIGHT.ui_cue_block) < contrast::AA_COMPONENT
+        );
+        // And both still passed the one surface the old test measured.
+        assert!(contrast::ratio(old_certain, 0xFFFF_FFFF) >= contrast::AA_COMPONENT);
+        assert!(contrast::ratio(old_ambiguous, 0xFFFF_FFFF) >= contrast::AA_COMPONENT);
+    }
+
     #[test]
     fn a_shaded_row_stays_the_colour_it_started_as() {
-        // Both the fill and the border are shaded, so the check that matters is
-        // that the deepest row is still recognisably its own colour rather than
-        // a hole in the lane — `shade_multiplier` caps at four steps for this.
-        for origin in ORIGIN_ORDER {
-            let base = origin_color(origin);
-            let deepest = shade(base, shade_multiplier(usize::MAX));
-            assert!(
-                contrast::ratio(packed(deepest), LANE_FILL) > contrast::AA_COMPONENT,
-                "{} goes illegible when it is stacked",
-                origin.token()
+        // A fanned cluster (LX1-d) darkens each row's fill 20 % per step, and
+        // the marks follow `origin_mark`'s rule. What has to hold at every depth
+        // in both appearances: each row is darker than the one above it, so the
+        // rows read as rows, and the marks still stand off the row's own fill.
+        //
+        // The bar is 3:1 for rows 0 and 1 everywhere and for every row on the
+        // dark lane, where a darker fill only widens the gap. On the light lane
+        // a deeper row darkens from near-white toward the marks themselves, and
+        // the measured floor is 2.0:1 at the fifth row of a five-deep stack —
+        // rows a 50 px lane makes 8 px tall, whose cues the tooltip names.
+        for (appearance, theme_choice, _) in APPEARANCES {
+            theme::set_current(theme_choice);
+            for now in [false, true] {
+                let mut above: Option<f64> = None;
+                for steps in 0..=musializer_core::ui::lyric_lane_stack::LYRIC_STACK_MAX_SHADE_STEPS
+                {
+                    let fill = cue_block_fill(now, false, steps);
+                    let luminance = contrast::relative_luminance(packed(fill));
+                    if let Some(previous) = above {
+                        assert!(
+                            luminance < previous,
+                            "{appearance} row {steps} is not darker"
+                        );
+                    }
+                    above = Some(luminance);
+                    for origin in ORIGIN_ORDER {
+                        let mark = origin_mark(origin, fill, steps);
+                        let ratio = contrast::ratio(packed(mark), packed(fill));
+                        let bar = if steps <= 1 || appearance == "dark" {
+                            contrast::AA_COMPONENT
+                        } else {
+                            2.0
+                        };
+                        assert!(
+                            ratio >= bar,
+                            "{appearance} {} row {steps}: {ratio:.2}:1",
+                            origin.token()
+                        );
+                        // Alpha is a selection state, never a stack depth.
+                        assert_eq!(mark.a, 255);
+                    }
+                }
+            }
+            for origin in ORIGIN_ORDER {
+                let base = origin_color(origin);
+                assert_eq!(shade(base, 1.0), base, "step 0 must not move the colour");
+                // Row 0's marks are the legend's colour, in both appearances.
+                assert_eq!(
+                    origin_mark(origin, cue_block_fill(false, false, 0), 0),
+                    base
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_blocks_words_read_on_whatever_fill_it_has() {
+        // Muted words on a resting block and ink on the line on screen are the
+        // look (the mockup's `.ly` and `.ly.now`); body-text contrast is the
+        // floor at every state and stack depth, where the fallback takes over.
+        for (appearance, theme_choice, palette) in APPEARANCES {
+            theme::set_current(theme_choice);
+            assert_eq!(
+                packed(cue_word_ink(false, cue_block_fill(false, false, 0))),
+                palette.ui_muted,
+                "{appearance}: a resting block's words are muted"
             );
-            assert_eq!(shade(base, 1.0), base, "step 0 must not move the colour");
-            // Alpha is a selection state, never a stack depth.
-            assert_eq!(deepest.a, base.a);
+            assert_eq!(
+                packed(cue_word_ink(true, cue_block_fill(true, false, 0))),
+                palette.ui_ink,
+                "{appearance}: the line on screen is in ink"
+            );
+            for now in [false, true] {
+                for selected in [false, true] {
+                    for steps in
+                        0..=musializer_core::ui::lyric_lane_stack::LYRIC_STACK_MAX_SHADE_STEPS
+                    {
+                        let fill = cue_block_fill(now, selected, steps);
+                        let ink = cue_word_ink(now, fill);
+                        let ratio = contrast::ratio(packed(ink), packed(fill));
+                        assert!(
+                            ratio >= contrast::AA_TEXT,
+                            "{appearance} now={now} selected={selected} row {steps}: {ratio:.2}:1"
+                        );
+                    }
+                }
+            }
+            // The line on screen is a different fill from a resting block and
+            // from a selected one, or *now* would be a word colour and nothing
+            // else.
+            let resting = cue_block_fill(false, false, 0);
+            assert_ne!(cue_block_fill(true, false, 0), resting, "{appearance}");
+            assert_ne!(
+                cue_block_fill(true, false, 0),
+                cue_block_fill(false, true, 0),
+                "{appearance}"
+            );
         }
     }
 
@@ -7064,18 +7304,22 @@ mod tests {
         let sidebar_floor = lyrics_editor_layout::LYRIC_EDITOR_SIDEBAR_MINIMUM;
         let mut editor = LyricEditor::new();
         editor.cue_count = 6;
-        // 758 px is where the arithmetic first has room for all of it: the
+        // 795 px is where the arithmetic first has room for all of it: the
         // sidebar floor, the scene section, this panel's fixed chrome, the base
         // lane and the form's 223 px. Below that the form wins and the sidebar
         // yields, which is the oracle's own documented behaviour at 640 — see
         // `lyrics_editor_layout`'s module comment. Sweeping from 700 would be
         // asserting a guarantee no window that short can keep.
+        //
+        // It was 775 until WX-5b grew the scene section from 60 to 80 logical
+        // px (the plan lane 24 → 44, for a poster beside each run's name), which
+        // moves the first window that fits by the same 20 px.
         let first_window_that_fits = sidebar_floor
             + SCENE_SECTION_ABOVE_BAND
             + LANE_FIXED_CHROME
             + LANE_HEIGHT
             + lyrics_editor_layout::LYRIC_EDITOR_FORM_MINIMUM;
-        assert_eq!(first_window_that_fits, 775.0);
+        assert_eq!(first_window_that_fits, 795.0);
         let mut window = first_window_that_fits;
         while window <= 2160.0 {
             for requested in [0.0f32, LANE_HEIGHT, 40.0, LANE_HEIGHT_MAX, 400.0] {
@@ -7098,13 +7342,14 @@ mod tests {
         // protect the sidebar even at the base lane — that is the oracle's own
         // documented yield at 640 — so the sidebar bound stops applying and the
         // *band* bound takes over: at 640 the lane itself gives way to 46 so the
-        // editing form still gets its promised 223 px. Between there and 791 the
-        // lane sits at its 2.25x default and cannot be dragged; from 791 up the
-        // full 3x is reachable.
+        // editing form still gets its promised 223 px. Between there and 811 the
+        // lane sits at its 2.25x default and cannot be dragged; from 811 up the
+        // full 3x is reachable. (791 before WX-5b's 20 px taller scene section;
+        // the band bound at 640 does not read the section, so 46 stands.)
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 640.0), 46.0);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 720.0), LANE_HEIGHT);
-        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 771.0), LANE_HEIGHT);
-        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 791.0), LANE_HEIGHT_MAX);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 791.0), LANE_HEIGHT);
+        assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 811.0), LANE_HEIGHT_MAX);
         assert_eq!(clamp_lane_height(LANE_HEIGHT_MAX, 1080.0), LANE_HEIGHT_MAX);
         // The operator's own window, which is the one this revision was asked
         // for: the 2.25x default, draggable to the full 3x.

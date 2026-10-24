@@ -22,6 +22,7 @@ use egui::{Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Vec2};
 use musializer_runtime::terminal::{self, GridSize, Session};
 
 use super::keys;
+use crate::ui::theme::color32;
 
 /// The type size, in egui points. 13 fits 80 columns into a 640-point dock.
 pub const FONT_SIZE: f32 = 13.0;
@@ -478,13 +479,17 @@ fn paint(ui: &egui::Ui, rect: Rect, metrics: &Metrics, session: &Session, focuse
             Pos2::new(rect.left(), rect.bottom() - cell.y - 8.0),
             Vec2::new(rect.width(), cell.y + 8.0),
         );
-        painter.rect_filled(bar, 0.0, Color32::from_rgb(0x1e, 0x22, 0x28));
+        // The terminal is dark in both appearances — its sixteen colours are
+        // tuned to a dark ground — so its status bar takes the dark palette's
+        // roles rather than the current appearance's (WX-5a).
+        let dark = &crate::ui::theme::palette::DARK;
+        painter.rect_filled(bar, 0.0, color32::of(dark.ui_hover));
         painter.text(
             bar.left_center() + Vec2::new(10.0, 0.0),
             egui::Align2::LEFT_CENTER,
             message,
             metrics.font.clone(),
-            Color32::from_rgb(0xc9, 0xc6, 0xbe),
+            color32::of(dark.ui_muted),
         );
     }
 }

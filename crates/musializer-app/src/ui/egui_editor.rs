@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use egui::{Color32, Context, RichText, Stroke};
+use egui::{Context, RichText, Stroke};
 use musializer_core::project::lyrics::{validate_text, LyricCue};
 use musializer_core::project::pixel::{self, Matching, Pixel, PixelPalette};
 use musializer_core::scene::settings::{self, SettingKind};
@@ -95,12 +95,16 @@ pub struct EditorState {
 }
 
 /// Apply the selected skin without changing the renderer or document styling.
+///
+/// Every colour and size here is read from [`super::theme`] (WX-5a): the dock,
+/// the Editor and the welcome picker draw with the numbers the raylib chrome
+/// draws with, in the same face at the same type scale. Before WX-5a this
+/// function carried its own hard-coded `Color32`s, and the dark ink, the light
+/// rule and both selection fills had already drifted from the chrome's.
 pub fn apply_theme(ctx: &Context, theme: UiTheme) {
-    let rgba = |value: u32| {
-        let [r, g, b, a] = value.to_be_bytes();
-        Color32::from_rgba_unmultiplied(r, g, b, a)
-    };
-    use super::theme::dark;
+    use super::theme::{color32::of, metric};
+    install_interface_face(ctx);
+    let p = theme.palette();
     let dark = theme == UiTheme::BlackAmber;
     let mut style = egui::Style::default();
     let mut visuals = if dark {
@@ -108,46 +112,31 @@ pub fn apply_theme(ctx: &Context, theme: UiTheme) {
     } else {
         egui::Visuals::light()
     };
-    let accent = if dark {
-        Color32::from_rgb(255, 184, 0)
-    } else {
-        Color32::from_rgb(0, 47, 167)
-    };
-    let ink = if dark {
-        Color32::from_rgb(225, 226, 216)
-    } else {
-        Color32::from_rgb(20, 20, 20)
-    };
-    let base = if dark {
-        Color32::from_rgb(11, 12, 10)
-    } else {
-        Color32::from_rgb(247, 247, 248)
-    };
-    let raised = if dark {
-        rgba(dark::CONTROL)
-    } else {
-        Color32::WHITE
-    };
-    let rule = if dark {
-        rgba(dark::RULE)
-    } else {
-        Color32::from_rgb(170, 170, 180)
-    };
+    let ink = of(p.ui_ink);
+    let rule = of(p.ui_rule);
+    let edge = of(p.ui_control_edge);
+    let radius = egui::CornerRadius::same(metric::UI_RADIUS as u8);
     visuals.override_text_color = Some(ink);
-    visuals.panel_fill = base;
-    visuals.window_fill = if dark { rgba(dark::TOOLTIP) } else { base };
-    visuals.extreme_bg_color = raised;
-    visuals.faint_bg_color = raised;
-    visuals.selection.bg_fill = if dark {
-        Color32::from_rgb(91, 67, 0)
-    } else {
-        Color32::from_rgb(210, 223, 255)
-    };
+    visuals.weak_text_color = Some(of(p.ui_muted));
+    visuals.panel_fill = of(p.ui_surface);
+    visuals.window_fill = of(p.ui_surface);
+    visuals.extreme_bg_color = of(p.ui_raised);
+    visuals.faint_bg_color = of(p.ui_raised);
+    visuals.code_bg_color = of(p.ui_raised);
+    // A selection is the selected tint, as in the raylib chrome; the accent is
+    // not a selection colour. egui draws a selected label's *text* in
+    // `selection.stroke`, so that is the ink, not the outline tone.
+    visuals.selection.bg_fill = of(p.ui_selected);
     visuals.selection.stroke = Stroke::new(1.0, ink);
-    visuals.hyperlink_color = accent;
-    visuals.window_corner_radius = egui::CornerRadius::ZERO;
+    visuals.hyperlink_color = ink;
+    visuals.warn_fg_color = of(p.ui_warning);
+    visuals.error_fg_color = of(p.ui_danger);
+    visuals.text_cursor.stroke = Stroke::new(2.0, ink);
+    visuals.window_corner_radius = radius;
+    visuals.menu_corner_radius = radius;
     visuals.window_shadow = egui::epaint::Shadow::NONE;
-    visuals.window_stroke = Stroke::new(1.0, rule);
+    visuals.popup_shadow = egui::epaint::Shadow::NONE;
+    visuals.window_stroke = Stroke::new(1.0, edge);
     for widgets in [
         &mut visuals.widgets.noninteractive,
         &mut visuals.widgets.inactive,
@@ -155,49 +144,57 @@ pub fn apply_theme(ctx: &Context, theme: UiTheme) {
         &mut visuals.widgets.active,
         &mut visuals.widgets.open,
     ] {
-        widgets.corner_radius = egui::CornerRadius::ZERO;
-        widgets.bg_stroke = Stroke::new(1.0, rule);
+        widgets.corner_radius = radius;
+        widgets.bg_stroke = Stroke::new(1.0, edge);
         widgets.fg_stroke = Stroke::new(1.0, ink);
-        widgets.bg_fill = raised;
-        widgets.weak_bg_fill = raised;
+        widgets.bg_fill = of(p.ui_control);
+        widgets.weak_bg_fill = of(p.ui_control);
+        widgets.expansion = 0.0;
     }
-    visuals.widgets.inactive.bg_fill = raised;
-    if dark {
-        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, rgba(dark::CONTROL_EDGE));
-        visuals.widgets.noninteractive.bg_fill = rgba(dark::RAISED);
-        visuals.widgets.noninteractive.weak_bg_fill = rgba(dark::RAISED);
-        visuals.window_stroke = Stroke::new(1.0, rgba(dark::CONTROL_EDGE));
-    }
-    visuals.widgets.hovered.bg_fill = if dark {
-        rgba(dark::HOVER)
-    } else {
-        Color32::from_rgb(229, 234, 246)
-    };
-    visuals.widgets.hovered.weak_bg_fill = visuals.widgets.hovered.bg_fill;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, accent);
-    visuals.widgets.active.bg_fill = visuals.selection.bg_fill;
-    visuals.widgets.active.weak_bg_fill = visuals.widgets.active.bg_fill;
-    visuals.widgets.open.bg_fill = visuals.selection.bg_fill;
-    visuals.widgets.open.weak_bg_fill = visuals.widgets.open.bg_fill;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, accent);
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, rule);
+    visuals.widgets.noninteractive.bg_fill = of(p.ui_surface);
+    visuals.widgets.noninteractive.weak_bg_fill = of(p.ui_surface);
+    visuals.widgets.hovered.bg_fill = of(p.ui_hover);
+    visuals.widgets.hovered.weak_bg_fill = of(p.ui_hover);
+    visuals.widgets.active.bg_fill = of(p.ui_selected);
+    visuals.widgets.active.weak_bg_fill = of(p.ui_selected);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, of(p.ui_selected_edge));
+    visuals.widgets.open.bg_fill = of(p.ui_selected);
+    visuals.widgets.open.weak_bg_fill = of(p.ui_selected);
     style.visuals = visuals;
-    style.spacing.item_spacing = egui::vec2(8.0, 10.0);
-    style.spacing.button_padding = egui::vec2(10.0, 7.0);
-    style.spacing.interact_size.y = 30.0;
-    let family = if dark {
-        egui::FontFamily::Monospace
-    } else {
-        egui::FontFamily::Proportional
-    };
-    for (text_style, size) in [
-        (egui::TextStyle::Heading, 20.0),
-        (egui::TextStyle::Body, 15.0),
-        (egui::TextStyle::Button, 15.0),
-        (egui::TextStyle::Small, 12.0),
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.interact_size.y = 26.0;
+    for (text_style, size, family) in [
+        (
+            egui::TextStyle::Heading,
+            metric::UI_FONT_HEADER,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Body,
+            metric::UI_FONT_LABEL,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Button,
+            metric::UI_FONT_LABEL,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Small,
+            metric::UI_FONT_CAPTION,
+            egui::FontFamily::Proportional,
+        ),
+        (
+            egui::TextStyle::Monospace,
+            metric::UI_FONT_CAPTION,
+            egui::FontFamily::Monospace,
+        ),
     ] {
         style
             .text_styles
-            .insert(text_style, egui::FontId::new(size, family.clone()));
+            .insert(text_style, egui::FontId::new(size, family));
     }
     let selected = if dark {
         egui::Theme::Dark
@@ -208,13 +205,69 @@ pub fn apply_theme(ctx: &Context, theme: UiTheme) {
     ctx.set_style_of(selected, style);
 }
 
+/// An egui slider drawn the way the raylib chrome draws one (WX-5a polish): a
+/// groove in [`super::theme::Palette::ui_control_edge`] with the filled amount
+/// in `ui_level`.
+///
+/// egui paints a slider's rail in `widgets.inactive.bg_fill`, the same role a
+/// button's rest fill comes from, so with the palette applied the rail was the
+/// panel's own colour (1.1:1 in both appearances) and a slider read as a
+/// floating knob. The scope changes only what the rail and its trailing fill
+/// read: buttons, combo boxes and a drag value paint with `weak_bg_fill`, which
+/// is untouched. The value box is kept *outside* the scope (callers pass
+/// `show_value(false)` and add their own `DragValue`), because inside it the
+/// trailing fill's `selection.bg_fill` would also become the text-selection
+/// highlight while a value is typed, ink on warm grey.
+fn level_slider(ui: &mut egui::Ui, slider: egui::Slider<'_>) -> egui::Response {
+    use super::theme::color32::of;
+    let p = super::theme::palette();
+    ui.scope(|ui| {
+        let visuals = ui.visuals_mut();
+        visuals.widgets.inactive.bg_fill = of(p.ui_control_edge);
+        visuals.selection.bg_fill = of(p.ui_level);
+        visuals.slider_trailing_fill = true;
+        ui.add(slider)
+    })
+    .inner
+}
+
+/// Puts the interface face — Space Grotesk, the one the raylib chrome draws in
+/// — at the front of egui's proportional family, once per context.
+///
+/// egui's bundled faces stay behind it as fallbacks, so a glyph Space Grotesk
+/// lacks still draws. The monospace family is untouched: the terminal's grid
+/// depends on Hack's exact one-cell advance.
+fn install_interface_face(ctx: &Context) {
+    let flag = egui::Id::new("musializer_interface_face");
+    if ctx
+        .data(|data| data.get_temp::<bool>(flag))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "space-grotesk".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(
+            musializer_runtime::font::INTERFACE_FACE,
+        )),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "space-grotesk".to_owned());
+    ctx.set_fonts(fonts);
+    ctx.data_mut(|data| data.insert_temp(flag, true));
+}
+
 fn theme_picker(ui: &mut egui::Ui, id: &str, theme: &mut UiTheme) -> bool {
     let previous = *theme;
     egui::ComboBox::from_id_salt(id)
         .selected_text(theme.label())
         .show_ui(ui, |ui| {
-            ui.selectable_value(theme, UiTheme::LightBlue, "Light blue");
-            ui.selectable_value(theme, UiTheme::BlackAmber, "Black amber");
+            ui.selectable_value(theme, UiTheme::BlackAmber, UiTheme::BlackAmber.label());
+            ui.selectable_value(theme, UiTheme::LightBlue, UiTheme::LightBlue.label());
         });
     *theme != previous
 }
@@ -440,11 +493,27 @@ impl EditorState {
                     }
                     SettingKind::Slider => {
                         ui.label(descriptor.label);
-                        ui.add(
-                            egui::Slider::new(&mut value, descriptor.minimum..=descriptor.maximum)
-                                .fixed_decimals(descriptor.precision as usize),
-                        )
-                        .changed()
+                        let range = descriptor.minimum..=descriptor.maximum;
+                        ui.horizontal(|ui| {
+                            let moved = level_slider(
+                                ui,
+                                egui::Slider::new(&mut value, range.clone()).show_value(false),
+                            )
+                            .changed();
+                            let typed = ui
+                                .add(
+                                    egui::DragValue::new(&mut value)
+                                        .range(range)
+                                        .speed(
+                                            (descriptor.maximum - descriptor.minimum)
+                                                / ui.spacing().slider_width.max(1.0),
+                                        )
+                                        .fixed_decimals(descriptor.precision as usize),
+                                )
+                                .changed();
+                            moved || typed
+                        })
+                        .inner
                     }
                 };
                 if changed {
@@ -779,13 +848,19 @@ fn pixel_controls(
         ui.spacing_mut().slider_width = 180.0;
         let (low, high) = pixel::pixel_bounds::PIXELS;
         let mut pixels = look.pixels;
-        if ui
-            .add(egui::Slider::new(&mut pixels, low..=high).text("pixels tall"))
-            .on_hover_text(
-                "Pixels across the frame's short edge: 144 is a handheld, 180 a 16:9 cartridge",
-            )
-            .changed()
-        {
+        let moved = level_slider(
+            ui,
+            egui::Slider::new(&mut pixels, low..=high).show_value(false),
+        )
+        .on_hover_text(
+            "Pixels across the frame's short edge: 144 is a handheld, 180 a 16:9 cartridge",
+        )
+        .changed();
+        let typed = ui
+            .add(egui::DragValue::new(&mut pixels).range(low..=high))
+            .changed();
+        ui.label("pixels tall");
+        if moved || typed {
             changed = Some(Some(Pixel { pixels, ..look }));
         }
         let mut kicks = look.split > 0.0 || look.shake > 0.0 || look.zoom > 0.0;
@@ -1215,7 +1290,8 @@ mod tests {
 
     #[test]
     fn both_skins_keep_body_selected_and_hovered_text_readable() {
-        let packed = |color: Color32| u32::from_be_bytes([color.r(), color.g(), color.b(), 255]);
+        let packed =
+            |color: egui::Color32| u32::from_be_bytes([color.r(), color.g(), color.b(), 255]);
         let ctx = Context::default();
         for theme in [UiTheme::LightBlue, UiTheme::BlackAmber] {
             apply_theme(&ctx, theme);

@@ -54,6 +54,7 @@ use musializer_runtime::project_files;
 use raylib::prelude::*;
 
 mod cli;
+mod posters;
 mod project;
 mod recovery;
 mod scene_host;
@@ -433,6 +434,14 @@ fn run(
     let mut dock = ui::dock::Dock::default();
     if let Some(probe) = options.ui_probe.as_ref() {
         app.shell.dock_open |= probe.dock;
+    }
+    // Poster frames for the plan lane's runs (WX-5b). A local of the loop, not
+    // part of `Shell`, so the shell can borrow it while it draws; see
+    // `posters.rs` for the seam and the rules on both sides of it.
+    let mut posters = posters::PosterBoard::from_env();
+    if let Some(probe) = options.ui_probe.as_ref() {
+        posters.configure(probe.posters, probe.poster_dump.clone());
+        app.shell.probe_run_open = probe.run_open;
     }
     editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
     ui::theme::set_current(editor.theme);
@@ -1270,6 +1279,11 @@ fn run(
             }
         }
     }
+    // The poster service's renderer compiles its shaders here, before the
+    // first frame, rather than inside a frame the frame budget counts.
+    if running && export.is_none() {
+        posters.preload(&mut rl, &thread);
+    }
     // Set once the close guard has warned with no dialog available; see
     // `confirm_close`.
     let mut close_warned = false;
@@ -1743,6 +1757,7 @@ fn run(
             window: report.logical_window,
             ui_scale,
             fonts: &fonts,
+            posters: &posters,
             scene: app.scene.id(),
             settings: &base,
             routed: Some(&routed),
@@ -1829,6 +1844,8 @@ fn run(
                 let framed = layout.preview.fit_aspect(preview_aspect);
                 report.preview_panel = (layout.preview.width, layout.preview.height);
                 report.preview_framed = (framed.width, framed.height);
+                let physical = ui_scale.physical_rect(layout.preview);
+                report.preview_pixels = (physical.x, physical.y, physical.width, physical.height);
                 let inset =
                     framed.width < layout.preview.width || framed.height < layout.preview.height;
                 if inset {
@@ -1930,7 +1947,19 @@ fn run(
                     eprintln!("editor rendering: {error}");
                 }
             }
+            // Poster work, last in the drawing pair (WX-5b): the shell no
+            // longer borrows the board, egui has left ordinary 2D state on the
+            // default framebuffer, and no texture mode or scissor is active.
+            posters.step(
+                &mut d,
+                &thread,
+                &fonts,
+                &app.workspace,
+                time_seconds,
+                playing,
+            );
         }
+        posters.enqueue(app.shell.take_poster_requests());
         // A held legacy gesture may predate opening the editor with F8.
         // Only the modal owner's commands can cross the application boundary.
         if editor_active {
@@ -2746,6 +2775,8 @@ fn run(
     }
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
+    report.scene_runs = app.shell.describe_runs(&app.workspace);
+    report.posters = posters.describe();
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
 
@@ -3221,6 +3252,8 @@ impl App {
 fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
     track.timeline_waveform = None;
     track.track_dynamics = None;
+    track.poster_audio = None;
+    let decode_started = std::time::Instant::now();
     let Some(decoded) = musializer_runtime::decode::whole_track(audio, &track.file_path) else {
         eprintln!(
             "warning: waveform preview could not decode {}",
@@ -3246,6 +3279,17 @@ fn load_timeline_waveform(audio: &RaylibAudio, track: &mut Track) {
     // already runs for every track at load, so the numbers are free.
     track.audio_sample_rate = decoded.sample_rate;
     track.audio_channels = u16::try_from(decoded.channels).unwrap_or(2);
+    let decoded_in = decode_started.elapsed();
+    let kept_started = std::time::Instant::now();
+    track.poster_audio = posters::PosterAudio::from_decoded(&decoded);
+    if std::env::var_os("MUSIALIZER_POSTER_BENCH").is_some() {
+        println!(
+            "poster bench: decode={:.1}ms keep-channel-0={:.1}ms frames={}",
+            decoded_in.as_secs_f64() * 1000.0,
+            kept_started.elapsed().as_secs_f64() * 1000.0,
+            decoded.frame_count(),
+        );
+    }
     let waveform = musializer_core::timing::track_timeline::Waveform::build(
         &decoded.samples,
         decoded.channels,
@@ -5726,6 +5770,9 @@ struct Report {
     /// The dock's tabs and the active terminal's screen (WX-2), filled once
     /// after the loop so a capture can assert what the terminal shows.
     dock: String,
+    /// `scene runs:` and `posters:` (WX-5b), taken at shutdown like `dock:`.
+    scene_runs: String,
+    posters: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -5762,6 +5809,9 @@ struct Report {
     /// Field's fixed grid looked like before EX2.
     preview_panel: (f32, f32),
     preview_framed: (f32, f32),
+    /// The scene panel in framebuffer pixels, so a capture check can tell the
+    /// chrome from the picture (WX-5a's accent census reads it).
+    preview_pixels: (f32, f32, f32, f32),
     reopened: Option<Reopen>,
 }
 
@@ -5796,6 +5846,8 @@ impl Default for Report {
             frame_lanes: FrameLaneStatus::default(),
             logical_window: (0.0, 0.0),
             dock: String::new(),
+            scene_runs: String::new(),
+            posters: String::new(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -5805,6 +5857,7 @@ impl Default for Report {
             frames_over_budget: 0,
             peak_ring_fill: 0.0,
             preview_panel: (0.0, 0.0),
+            preview_pixels: (0.0, 0.0, 0.0, 0.0),
             preview_framed: (0.0, 0.0),
             reopened: None,
         }
@@ -5960,6 +6013,29 @@ impl Report {
                 "CPU"
             }
         );
+        // Which appearance the chrome drew in, with the roles a capture check
+        // classifies pixels by (WX-5a). Two appearances photograph as two
+        // different sets of numbers, and a check calibrated on one reading a
+        // capture of the other fails in ways that look like a layout bug; this
+        // line is what lets the gate say which it was given.
+        {
+            let theme = ui::theme::current();
+            let p = theme.palette();
+            println!(
+                "appearance:      {} accent=#{:06X} surface=#{:06X} raised=#{:06X} trough=#{:06X} rule=#{:06X} selected=#{:06X}/#{:06X}",
+                match theme {
+                    ui::theme::UiTheme::BlackAmber => "black-amber",
+                    ui::theme::UiTheme::LightBlue => "light-blue",
+                },
+                p.accent >> 8,
+                p.ui_surface >> 8,
+                p.ui_raised >> 8,
+                p.ui_lane_trough >> 8,
+                p.ui_rule >> 8,
+                p.ui_selected >> 8,
+                p.ui_selected_edge >> 8,
+            );
+        }
         println!(
             "ui layout:       scale={} sidebar={} inspector={} timeline={}",
             (fonts.ui().scale() * 100.0).round() as u16,
@@ -6277,9 +6353,11 @@ impl Report {
             } else {
                 "full"
             };
+            let (px, py, pw, ph) = self.preview_pixels;
             println!(
                 "preview frame:   panel {panel_width:.0}x{panel_height:.0}, \
-                 framed {framed_width:.0}x{framed_height:.0} ({framing})"
+                 framed {framed_width:.0}x{framed_height:.0} ({framing}) \
+                 pixels {px:.0},{py:.0},{pw:.0},{ph:.0}"
             );
         }
         // The export geometry a click on the SIZE row is supposed to move
@@ -6358,6 +6436,10 @@ impl Report {
         // ignored it — both draw a perfectly plausible timeline.
         println!("timeline:        {}", self.timeline);
         println!("dock:            {}", self.dock);
+        // The plan lane folded into runs, and the posters it asked for
+        // (WX-5b). Two lines because two owners fill them in.
+        println!("scene runs:      {}", self.scene_runs);
+        println!("posters:         {}", self.posters);
         println!(
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")

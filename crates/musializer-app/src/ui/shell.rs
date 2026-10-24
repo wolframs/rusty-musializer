@@ -410,6 +410,10 @@ pub struct ShellInput<'a> {
     /// separate parameter so that no panel can measure a string with one face and
     /// draw it with another.
     pub fonts: &'a Faces,
+    /// The poster service's read side (WX-5b): what the plan lane draws for
+    /// each run. A shared borrow for the whole frame; requests go back through
+    /// [`Shell::take_poster_requests`], never through this.
+    pub posters: &'a crate::posters::PosterBoard,
     pub scene: SceneId,
     pub settings: &'a SceneSettings,
     /// The effective settings after routes, when they differ from `settings`.
@@ -472,6 +476,11 @@ pub struct Shell {
     /// Whether a dock surface holds the keyboard this frame. Written by the
     /// composition root, read by [`Shell::text_entry_has_focus`].
     pub dock_keyboard: bool,
+    /// The runs the plan lane drew this frame and wants posters for (WX-5b),
+    /// drained by the composition root after the frame.
+    pub(crate) poster_requests: Vec<crate::posters::PosterRequest>,
+    /// `--ui-probe run-open=N`, delivered by the lane once a track is open.
+    pub probe_run_open: Option<usize>,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -511,7 +520,7 @@ pub struct Shell {
     timeline_pan: Option<TimelinePan>,
     /// A manual pan deliberately detaches the view from playback-follow until
     /// the user asks to Follow again.
-    timeline_manual_view: bool,
+    pub(crate) timeline_manual_view: bool,
     /// The wheel gesture captured over any timed lane by
     /// [`Shell::request_timeline_zoom`] and applied at the start of the next
     /// frame, before any aligned lane draws.
@@ -1087,6 +1096,8 @@ impl Shell {
             editor_open: false,
             dock_open: ui_preferences.dock_open,
             dock_keyboard: false,
+            poster_requests: Vec::new(),
+            probe_run_open: None,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1440,6 +1451,23 @@ impl Shell {
     /// rectangles — the case where a region test is wrong about which lane it
     /// names looks exactly like the case where it is right, in a picture.
     #[must_use]
+    /// This frame's poster requests, handed to the service after the frame.
+    pub fn take_poster_requests(&mut self) -> Vec<crate::posters::PosterRequest> {
+        std::mem::take(&mut self.poster_requests)
+    }
+
+    /// The `scene runs:` report line (WX-5b): what the plan lane drew in its
+    /// last frame, as runs, and the view it drew them in. Read from that frame
+    /// rather than from current state, because the report is printed at
+    /// shutdown, after the view has been let go.
+    #[must_use]
+    pub fn describe_runs(&self, workspace: &Workspace) -> String {
+        if workspace.current().is_none() {
+            return "none".to_owned();
+        }
+        self.scene_lane.describe()
+    }
+
     pub fn describe_timeline(&self, duration_seconds: f64) -> String {
         let zoom = if self.timeline.span_seconds > 0.0 {
             duration_seconds / self.timeline.span_seconds
@@ -1756,7 +1784,9 @@ impl Shell {
             frame.step_number.x,
             frame.step_number.y,
             84.0,
-            color::accent(),
+            // A large faint numeral, not the accent: on this screen the one
+            // thing that is "now" is the action it exists for (WX-5a).
+            color::ui_disabled(),
         );
 
         widgets::draw_text(
@@ -1787,8 +1817,9 @@ impl Shell {
             color::ui_muted(),
         );
 
-        // `Open audio` is drawn selected — accent fill, white label — which is how
-        // the C marks the one action the screen exists for (`plug.c:7790`). A
+        // `Open audio` is the primary action — the accent fill — which is how
+        // the C marks the one action the screen exists for (`plug.c:7790`); since
+        // WX-5a that is `ButtonStyle::Primary` rather than a selected state. A
         // recovery generation changes that priority: opening another session
         // before deciding its fate could eventually replace the only recovery
         // copy, so both entry points stay visibly unavailable until Recover or
@@ -1807,8 +1838,8 @@ impl Shell {
                     widgets::widget_id(widgets::id::WELCOME, 0),
                     frame.open_audio,
                     "Open audio",
-                    true,
-                    ButtonStyle::Neutral,
+                    false,
+                    ButtonStyle::Primary,
                     None,
                 )
                 .clicked
@@ -1841,8 +1872,8 @@ impl Shell {
                     widgets::widget_id(widgets::id::WELCOME, 2),
                     recovery.recover,
                     "Recover session",
-                    true,
-                    ButtonStyle::Neutral,
+                    false,
+                    ButtonStyle::Primary,
                     None,
                 )
                 .clicked
@@ -1913,7 +1944,7 @@ impl Shell {
                     column.x,
                     column.y,
                     28.0,
-                    color::accent(),
+                    color::ui_muted(),
                 );
                 widgets::draw_text(
                     d,
@@ -2117,11 +2148,11 @@ impl Shell {
             // misses.
             let state = self.widgets.button(d, open_id, open_area);
             if state.hovered && !missing {
-                widgets::fill(d, row, widgets::alpha(color::accent(), 0.10));
+                widgets::fill(d, row, color::ui_hover());
                 widgets::fill(
                     d,
                     UiRect::new(row.x - 6.0, row.y, 2.0, row.height),
-                    color::accent(),
+                    color::ui_selected_edge(),
                 );
             }
             // A missing file's row is *not* clickable, and that is the difference
@@ -2667,14 +2698,30 @@ impl Shell {
         // exact mistake `timeline_layout.h` was written to stop.
         let timecode_inline = band.timecode_inline && !band.timecode.is_empty();
         if timecode_inline {
+            // The position in ink and the length in muted grey (WX-5a, the
+            // mockup's `3:12.00 / 5:22.52`): the number that moves is the one
+            // to read. Split at the separator; tabular widths are a per-glyph
+            // sum, so the two halves land exactly where the whole string did.
+            let y = band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5;
+            let split = timecode.find(" / ").unwrap_or(timecode.len());
+            let (now, total) = timecode.split_at(split);
             widgets::draw_text_tabular(
                 d,
                 font,
-                &timecode,
+                now,
                 band.timecode.x,
-                band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5,
+                y,
                 metric::UI_FONT_VALUE,
                 color::ui_ink(),
+            );
+            widgets::draw_text_tabular(
+                d,
+                font,
+                total,
+                band.timecode.x + widgets::measure_tabular(font, now, metric::UI_FONT_VALUE),
+                y,
+                metric::UI_FONT_VALUE,
+                color::ui_muted(),
             );
         }
 
@@ -2744,7 +2791,7 @@ impl Shell {
             && input.duration_seconds.is_finite()
             && input.duration_seconds > 0.0;
 
-        widgets::fill(d, scrub.track, color::ui_rule());
+        widgets::fill(d, scrub.track, color::ui_control_edge());
 
         // The id lives in the fine-seek namespace rather than a new one: this bar
         // *is* a seek control, and slots 0-2 are the three buttons beside it.
@@ -2784,8 +2831,10 @@ impl Shell {
                 scrub.track.width * fraction,
                 scrub.track.height,
             ),
+            // The played part is a filled amount, so it is the level tone; the
+            // handle below is the playhead, so it is the accent (WX-5a).
             if seekable {
-                color::accent()
+                color::ui_level()
             } else {
                 color::ui_disabled()
             },
@@ -4009,7 +4058,7 @@ impl Shell {
                 name,
                 selected,
                 ButtonStyle::Neutral,
-                Some(metric::UI_FONT_LABEL),
+                Some(metric::UI_FONT_AUTHORED_ROW),
             );
             // A state dot at the row's right edge (UX0-B01). The header names the
             // *current* track's state in words; this is the only thing that says
@@ -4390,6 +4439,9 @@ impl Shell {
 
         let columns = (strip.width.floor() as usize).clamp(1, 4096);
         let amplitude = (strip.height * 0.43).max(1.0);
+        // Where the playhead line is drawn, which follows a scrub before the
+        // decoder does, so the warm part ends exactly under it.
+        let playhead = self.timeline_playhead_seconds(input.time_seconds);
         let bins_per_second = bins.len() as f64 / duration;
         for column in 0..columns {
             let start = self.timeline.seconds_at(
@@ -4426,9 +4478,17 @@ impl Shell {
             }
             let x = strip.x + (column as f32 + 0.5) * strip.width / columns as f32;
             let peak = minimum.abs().max(maximum.abs()).min(1.0);
+            // Grey ahead of the playhead, warm behind it (WX-5a, the mockup's
+            // waveform). It used to be the accent, which made the largest
+            // coloured area on screen the one thing that is never "now".
+            let played = end <= playhead;
             let colour = widgets::alpha(
-                widgets::brightness(color::accent(), -0.18 + peak * 0.24),
-                0.38 + peak * 0.48,
+                if played {
+                    color::ui_level()
+                } else {
+                    color::ui_waveform()
+                },
+                0.62 + peak * 0.38,
             );
             d.draw_line_ex(
                 Vector2::new(x, centre - maximum * amplitude),
@@ -5313,7 +5373,12 @@ impl Shell {
             }
             let boundary = UiRect::new(preview.x + 12.0, y, width, height);
             let accent = match notice.severity {
-                Severity::Info => color::notice_info_on_dark(),
+                // Neutral, not blue (WX-5a). An info notice asks nothing of
+                // the user, and in the light appearance a blue stripe and label
+                // shared the accent's hue six degrees apart, so "project opened"
+                // read as *now*. The three severities that do ask something
+                // keep their colours.
+                Severity::Info => color::ui_overlay_muted(),
                 Severity::Success => color::notice_success_on_dark(),
                 Severity::Warning => color::notice_warning_on_dark(),
                 Severity::Error => color::notice_error_on_dark(),
@@ -5623,7 +5688,7 @@ fn draw_splitter(
 ) {
     let selected = active == Some(kind);
     let tint = if selected {
-        color::accent()
+        color::ui_selected_edge()
     } else {
         color::ui_rule()
     };

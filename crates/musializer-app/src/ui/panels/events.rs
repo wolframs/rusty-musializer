@@ -38,7 +38,7 @@ use musializer_core::scene::settings::PRESETS_PER_SCENE;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::workspace_layout::UiRect;
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle};
+use raylib::prelude::{Color, RaylibDrawHandle};
 
 use super::super::shell::{Shell, ShellInput};
 use super::super::theme::{color, metric};
@@ -107,15 +107,6 @@ const MARKERS: [(&str, Option<EventType>); 3] = [
 /// rather than an event (`plug.c:2857`).
 fn marker_color(kind: Option<EventType>) -> Color {
     Color::get_color(kind.unwrap_or(EventType::Cue).rgba())
-}
-
-fn with_alpha(color: Color, alpha: f32) -> Color {
-    Color::new(
-        color.r,
-        color.g,
-        color.b,
-        (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
-    )
 }
 
 impl Shell {
@@ -206,15 +197,28 @@ impl Shell {
                 ButtonStyle::Neutral,
                 Some(font_size),
             );
-            // The category strip and outline (`plug.c:2860-2866`), which is what
-            // tells three otherwise identical buttons apart at a glance.
+            // The category swatch (`plug.c:2860-2866`), which is what tells three
+            // otherwise identical buttons apart at a glance. The C also outlines
+            // the whole button in the category colour at 2 px; on the dark
+            // workspace (WX-5a) that made three saturated boxes the loudest
+            // thing in the chrome, louder than Render, for controls that only
+            // record a marker. The swatch alone carries the category: a short
+            // bar inside the rounded control, clear of its corners. It stays
+            // taller than it is wide, which is what
+            // `tools/timeline_event_markers.py` tells it apart from a marker
+            // head by.
             let category = marker_color(*kind);
+            let swatch_height = (boundary.height * 0.44).round();
             widgets::fill(
                 d,
-                UiRect::new(boundary.x, boundary.y, 4.0, boundary.height),
+                UiRect::new(
+                    boundary.x + (7.0 * band.scale).round(),
+                    boundary.y + ((boundary.height - swatch_height) * 0.5).round(),
+                    3.0,
+                    swatch_height,
+                ),
                 category,
             );
-            d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 2.0, with_alpha(category, 0.8));
 
             if !state.clicked {
                 continue;

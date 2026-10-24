@@ -42,9 +42,11 @@ launch "$OUT/phrase.wav" --scene knot --hud=0 --size 1280x720 \
 launch "$OUT/phrase.wav" --scene knot --hud=0 --size 1280x720 --ui-probe play=0,time=0 \
     --probe-frames 4 --probe-shot "$OUT/idle.png" > "$OUT/idle.log" 2>&1
 # Browse Geometry first, then press the knot's stable tile at minimum size.
-# The old flat-grid coordinate now belongs to Song Atlas.
+# The old flat-grid coordinate now belongs to Song Atlas. y=231 since WX-5b:
+# the plan lane grew 20 px, the sidebar's scene picker shrank by as much, and
+# 252 became Voronoi Bloom's tile — which the `claimed=` assertion caught.
 launch "$OUT/phrase.wav" --scene spectrum --hud=0 --size 960x640 \
-    --ui-probe play=1,scene-family=geometry,click=82x252 --probe-frames 16 --probe-shot "$OUT/minimum.png" > "$OUT/minimum.log" 2>&1
+    --ui-probe play=1,scene-family=geometry,click=82x231 --probe-frames 16 --probe-shot "$OUT/minimum.png" > "$OUT/minimum.log" 2>&1
 # Warm preview versus cold export: both must reconstruct identical scene state.
 for mode in warm cold; do
     args=()

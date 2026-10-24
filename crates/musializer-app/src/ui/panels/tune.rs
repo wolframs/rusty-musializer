@@ -1006,7 +1006,7 @@ impl Shell {
             y,
             metric::UI_FONT_CAPTION,
             if active_cue.is_some() {
-                color::accent()
+                color::ui_ink()
             } else {
                 color::ui_muted()
             },
@@ -1367,12 +1367,12 @@ impl Shell {
                     label_zone,
                     12.0,
                     metric::UI_FONT_CAPTION,
-                    if routed || label_state.hovered {
-                        // Hovered can only be true where the label is a live reset
-                        // button, so the accent is the affordance: the one word that
-                        // lights up under the pointer is the one that does something.
-                        color::accent()
-                    } else if modified {
+                    // Hovered can only be true where the label is a live reset
+                    // button, so lighting it is the affordance: the one word that
+                    // brightens under the pointer is the one that does something.
+                    // Ink rather than the accent since WX-5a — a reset is not
+                    // "now" — and a routed row already says so in its own row.
+                    if routed || label_state.hovered || modified {
                         color::ui_ink()
                     } else {
                         color::ui_muted()
@@ -1391,11 +1391,7 @@ impl Shell {
                         chip.x,
                         row.y,
                         metric::UI_FONT_VALUE,
-                        if routed {
-                            color::accent()
-                        } else {
-                            color::ui_ink()
-                        },
+                        color::ui_ink(),
                     );
                 }
 
@@ -1578,7 +1574,7 @@ impl Shell {
             d.draw_rectangle_lines_ex(
                 Rectangle::new(chip.x, chip.y, chip.width, chip.height),
                 1.0,
-                color::accent(),
+                color::ui_selected_edge(),
             );
             self.with_editor(|host| {
                 if let Some(entry) = host.typing.as_mut() {
@@ -1669,7 +1665,7 @@ impl Shell {
             d,
             chip,
             if state.hovered {
-                color::ui_surface()
+                color::ui_hover()
             } else {
                 color::ui_raised()
             },
@@ -1678,7 +1674,7 @@ impl Shell {
             Rectangle::new(chip.x, chip.y, chip.width, chip.height),
             1.0,
             if state.hovered {
-                color::accent()
+                color::ui_selected_edge()
             } else {
                 color::ui_rule()
             },
@@ -1815,7 +1811,7 @@ impl Shell {
                 area.x,
                 y,
                 metric::UI_FONT_CAPTION,
-                color::accent(),
+                color::ui_ink(),
             );
             y += SENTENCE_H;
 

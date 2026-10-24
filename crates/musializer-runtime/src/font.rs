@@ -129,8 +129,31 @@ pub const IMPORTED_FACE_BYTE_LIMIT: u64 = 32 * 1024 * 1024;
 /// Space Grotesk Regular, SIL OFL 1.1. See `resources/fonts/SpaceGrotesk-OFL.txt`.
 const SPACE_GROTESK: &[u8] = include_bytes!("../../../resources/fonts/SpaceGrotesk-Regular.otf");
 
+/// The interface face's bytes, for the egui surfaces (the dock, the Editor),
+/// so they draw in the face the raylib chrome draws in (WX-5a).
+pub const INTERFACE_FACE: &[u8] = SPACE_GROTESK;
+
 /// Alegreya Regular, SIL OFL 1.1. See `resources/fonts/OFL.txt`.
 const ALEGREYA: &[u8] = include_bytes!("../../../resources/fonts/Alegreya-Regular.ttf");
+
+/// How much larger Alegreya is drawn than the size it is asked for when it
+/// serves [`AuthoredText`], so a serif line sits at the same optical size as the
+/// Space Grotesk chrome beside it (WX-5b).
+///
+/// **Measured, not chosen.** raylib rasterizes through stb_truetype's
+/// `ScaleForPixelHeight`, so a nominal size is the face's `hhea` ascender minus
+/// descender, not its em. At one nominal size Alegreya's x-height (`OS/2`
+/// `sxHeight` 452 over a 1016 + 345 line) is 0.332 of it and Space Grotesk's
+/// (489 over 984 + 292) is 0.383: the serif's lowercase stands 13 % shorter,
+/// which is why a cue row, a lane label and the track name read as the smallest
+/// print on screen beside chrome of the same nominal size. The ratio is
+/// 1.1539; a test reads both tables out of the embedded bytes and recomputes it.
+/// Rendered glyphs agree to within the overshoot: the ink of `x`, `z`, `u`, `n`
+/// and `H` measures 1.11 to 1.13 between the two faces, `o` 1.16.
+///
+/// Lowercase rather than capitals, because authored text is lyrics and titles in
+/// running case; capitals give 1.17 by the same tables, so the two agree.
+pub const ALEGREYA_OPTICAL_SIZE: f32 = 1.154;
 
 /// Font Awesome 4, SIL OFL 1.1. See `resources/fonts/FontAwesome-OFL.txt`.
 ///
@@ -1024,6 +1047,14 @@ impl Faces {
         }
     }
 
+    /// Whether Cadence's SDF atlas has been built (successfully or not) for
+    /// any text yet. The poster service (WX-5b) asks so that it never pays
+    /// the first ~300 ms build in a frame while the song plays.
+    #[must_use]
+    pub fn cadence_sdf_built(&self) -> bool {
+        self.atlases.sdf.borrow().is_some()
+    }
+
     /// Alegreya as a signed-distance-field atlas, for Cadence.
     ///
     /// Cadence animates per-glyph scale continuously as a word pops in, so no
@@ -1147,14 +1178,18 @@ impl Faces {
             return AuthoredText {
                 source: AuthoredSource::Caption(&self.caption),
                 scale,
+                optical: ALEGREYA_OPTICAL_SIZE,
                 repertoire: GlyphRepertoire::Curated,
                 name: "caption",
             };
         }
         if self.caption_alt.is_loaded() {
+            // Space Grotesk, the chrome's own face: already at the chrome's
+            // optical size by definition.
             return AuthoredText {
                 source: AuthoredSource::Caption(&self.caption_alt),
                 scale,
+                optical: 1.0,
                 repertoire: GlyphRepertoire::Curated,
                 name: "caption-alt",
             };
@@ -1515,12 +1550,35 @@ where
 /// measured with one face and drawn against text laid out by another drifts, and
 /// that drift grows with the line, so the caret lands nowhere near the character
 /// the user clicked.
+///
+/// It also owns the serving face's **optical size** ([`ALEGREYA_OPTICAL_SIZE`]
+/// for Alegreya, 1.0 for anything that is the chrome's own face). A caller asks
+/// for the size it would ask the chrome bank for; measurement and drawing both
+/// apply the factor here, so a fit computed with [`Self::measure_text`] is the
+/// width [`Self::draw_text`] covers, and no call site has to know that a serif
+/// with a small x-height needs a larger nominal size to read at the same one.
 #[derive(Clone, Copy)]
 pub struct AuthoredText<'a> {
     source: AuthoredSource<'a>,
     scale: f32,
+    /// Drawn size over requested size for the serving face.
+    optical: f32,
     repertoire: GlyphRepertoire,
     name: &'static str,
+}
+
+/// Where an optically corrected line is drawn: the glyph size, and how far the
+/// glyph box moves up so it stays centred on the line box the caller laid out.
+///
+/// Centred, not top-aligned, because every caller centres text on its
+/// *requested* size (`(row - size) / 2`). A top-aligned larger box would sink
+/// every serif label by `(optical - 1) / 2` of its size. Centring lands
+/// Alegreya's baseline and x-height within 2 % of the size of Space Grotesk's at
+/// the requested size, which a test checks from the faces' own tables, so a
+/// serif word and a chrome word on one row share a baseline.
+#[must_use]
+fn optical_layout(size: f32, optical: f32) -> (f32, f32) {
+    (size * optical, size * (optical - 1.0) * 0.5)
 }
 
 #[derive(Clone, Copy)]
@@ -1566,14 +1624,27 @@ impl<'a> AuthoredText<'a> {
     }
 
     /// Measures through the face and size that will draw.
+    ///
+    /// The width is the optically corrected one [`Self::draw_text`] covers. The
+    /// height stays the requested line box, because that is the box the draw
+    /// centres the larger glyphs on — see [`optical_layout`].
     #[must_use]
     pub fn measure_text(&self, text: &str, size: f32, spacing: f32) -> Vector2 {
         match self.source {
             AuthoredSource::Caption(face) => {
-                face.measure_text(text, size, snap_logical(spacing, self.scale))
+                let (drawn, _) = optical_layout(size, self.optical);
+                let measured = face.measure_text(text, drawn, snap_logical(spacing, self.scale));
+                Vector2::new(measured.x, measured.y / self.optical)
             }
             AuthoredSource::Ui(bank) => bank.measure_text(text, size, spacing),
         }
+    }
+
+    /// Drawn size over requested size: [`ALEGREYA_OPTICAL_SIZE`] when Alegreya
+    /// serves, 1.0 for Space Grotesk and the chrome bank.
+    #[must_use]
+    pub fn optical_size(&self) -> f32 {
+        self.optical
     }
 
     /// Physical pixels per logical unit, for a caller that needs the shell's
@@ -1600,6 +1671,8 @@ impl<'a> AuthoredText<'a> {
         Self {
             source: AuthoredSource::Ui(bank),
             scale: bank.scale(),
+            // The chrome bank is the reference the factor is measured against.
+            optical: 1.0,
             repertoire: if bank.all_loaded() {
                 GlyphRepertoire::InterfaceSubset
             } else {
@@ -1635,15 +1708,16 @@ impl<'a> AuthoredText<'a> {
     ) {
         match self.source {
             AuthoredSource::Caption(face) => {
+                let (drawn, lift) = optical_layout(size, self.optical);
                 let position = Vector2::new(
                     snap_logical(position.x, self.scale),
-                    snap_logical(position.y, self.scale),
+                    snap_logical(position.y - lift, self.scale),
                 );
                 d.draw_text_ex(
                     face,
                     text,
                     position,
-                    size,
+                    drawn,
                     snap_logical(spacing, self.scale),
                     tint,
                 );
@@ -2331,6 +2405,115 @@ mod tests {
         assert_eq!(chrome.name(), authored.name());
         assert_eq!(chrome.repertoire(), authored.repertoire());
         assert!((chrome.scale() - faces.ui().scale()).abs() < f32::EPSILON);
+        // The chrome bank is the reference the optical factor is measured
+        // against, so serving authored text through it changes no size.
+        assert!((chrome.optical_size() - 1.0).abs() < f32::EPSILON);
+        assert!((authored.optical_size() - 1.0).abs() < f32::EPSILON);
+    }
+
+    /// One sfnt table out of an embedded face, by tag. TrueType and CFF
+    /// (`OTTO`) faces share the table directory, so this reads both.
+    fn sfnt_table<'f>(font: &'f [u8], tag: &[u8; 4]) -> &'f [u8] {
+        let count = usize::from(u16::from_be_bytes([font[4], font[5]]));
+        for record in font[12..12 + count * 16].chunks_exact(16) {
+            if &record[..4] == tag {
+                let word = |at: usize| {
+                    u32::from_be_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]])
+                        as usize
+                };
+                let (offset, length) = (word(8), word(12));
+                return &font[offset..offset + length];
+            }
+        }
+        panic!("no {} table", String::from_utf8_lossy(tag));
+    }
+
+    /// The vertical metrics stb_truetype sizes a face by, as fractions of the
+    /// nominal size raylib asks for: `ScaleForPixelHeight` divides by the `hhea`
+    /// ascender minus descender, so that line is 1.0.
+    struct LineMetrics {
+        ascender: f64,
+        x_height: f64,
+        cap_height: f64,
+        em: f64,
+    }
+
+    fn line_metrics(font: &[u8]) -> LineMetrics {
+        let short =
+            |table: &[u8], at: usize| f64::from(i16::from_be_bytes([table[at], table[at + 1]]));
+        let hhea = sfnt_table(font, b"hhea");
+        let (ascender, descender) = (short(hhea, 4), short(hhea, 6));
+        let line = ascender - descender;
+        let os2 = sfnt_table(font, b"OS/2");
+        // `sxHeight` and `sCapHeight` exist from version 2 on.
+        assert!(u16::from_be_bytes([os2[0], os2[1]]) >= 2);
+        let head = sfnt_table(font, b"head");
+        let units_per_em = f64::from(u16::from_be_bytes([head[18], head[19]]));
+        LineMetrics {
+            ascender: ascender / line,
+            x_height: short(os2, 86) / line,
+            cap_height: short(os2, 88) / line,
+            em: units_per_em / line,
+        }
+    }
+
+    /// WX-5b: the factor is the two embedded faces' x-height ratio at one
+    /// nominal size, recomputed here from their own tables rather than trusted
+    /// from the constant's doc comment.
+    #[test]
+    fn alegreya_s_optical_size_is_its_measured_x_height_against_the_chrome() {
+        let serif = line_metrics(ALEGREYA);
+        let chrome = line_metrics(SPACE_GROTESK);
+        let measured = chrome.x_height / serif.x_height;
+        assert!(
+            (f64::from(ALEGREYA_OPTICAL_SIZE) - measured).abs() < 0.0005,
+            "the tables give {measured:.4}, the constant says {ALEGREYA_OPTICAL_SIZE}"
+        );
+        // Capitals tell the same story within a few percent, so the factor is
+        // not an artefact of choosing lowercase.
+        let capitals = chrome.cap_height / serif.cap_height;
+        assert!(
+            (capitals - measured).abs() < 0.03,
+            "capitals give {capitals:.4}"
+        );
+        // The negative control: the obvious wrong reading, "a nominal size is an
+        // em", gives a different number by more than the tolerance, so the test
+        // is pinning stb_truetype's line-height convention and not a coincidence.
+        let by_em = chrome.em / serif.em;
+        assert!(
+            (by_em - measured).abs() > 0.05,
+            "the em ratio is {by_em:.4}"
+        );
+    }
+
+    /// Centring the larger serif on the requested line box puts its baseline and
+    /// its x-height where the chrome face at the requested size has them, so a
+    /// row that mixes a timecode in Space Grotesk with a lyric in Alegreya
+    /// reads as one line.
+    #[test]
+    fn the_corrected_serif_shares_the_chrome_s_baseline_and_x_height() {
+        let serif = line_metrics(ALEGREYA);
+        let chrome = line_metrics(SPACE_GROTESK);
+        let size = 14.0f32;
+        let (drawn, lift) = optical_layout(size, ALEGREYA_OPTICAL_SIZE);
+        let (drawn, lift, size) = (f64::from(drawn), f64::from(lift), f64::from(size));
+        let serif_baseline = drawn * serif.ascender - lift;
+        let chrome_baseline = size * chrome.ascender;
+        assert!(
+            (serif_baseline - chrome_baseline).abs() < 0.02 * size,
+            "baselines {serif_baseline:.2} and {chrome_baseline:.2}"
+        );
+        let serif_x_top = serif_baseline - drawn * serif.x_height;
+        let chrome_x_top = chrome_baseline - size * chrome.x_height;
+        assert!(
+            (serif_x_top - chrome_x_top).abs() < 0.02 * size,
+            "x-heights top out at {serif_x_top:.2} and {chrome_x_top:.2}"
+        );
+        // The negative control: top-aligned, the same glyphs sit more than 5 %
+        // of the size low, which is the sunk label centring prevents.
+        assert!((drawn * serif.ascender - chrome_baseline).abs() > 0.05 * size);
+        // And the chrome face itself is untouched.
+        assert_eq!(optical_layout(13.0, 1.0), (13.0, 0.0));
     }
 
     /// The atlas is built from [`Icon::ALL`], so a variant missing from it is a

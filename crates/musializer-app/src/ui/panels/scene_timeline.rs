@@ -6,17 +6,22 @@
 
 use musializer_core::scene::SceneId;
 use musializer_core::ui::contrast;
+use musializer_core::ui::plan_runs::{fold_runs, RunSpan};
 use musializer_core::ui::scene_lane_edit::{self, SceneLaneZone};
 use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
+use super::super::scene_colors::scene_color;
 use super::super::shell::{Shell, ShellCommand, ShellInput, TimelineGesture};
-use super::super::theme::{color, metric, rgba};
+use super::super::theme::{self, color, metric, Palette};
 use super::super::widgets::{self, ButtonStyle};
 
 pub const SCENE_CONTROLS_HEIGHT: f32 = 26.0;
-pub const SCENE_LANE_HEIGHT: f32 = 24.0;
+/// 44 since WX-5b (it was 24): a run carries a 16:9 poster frame beside its
+/// scene's name, and at 24 px the poster is a coloured smear. The band grows by
+/// the 20 px with it — every budget below reads [`SCENE_SECTION_HEIGHT`].
+pub const SCENE_LANE_HEIGHT: f32 = 44.0;
 
 /// Where this section's lane starts, measured from the top of the area it is
 /// handed.
@@ -95,66 +100,205 @@ pub struct SceneLaneEditor {
     /// A successful split is applied after drawing; resolve its new segment on
     /// the following frame without guessing the model's next id in the UI.
     pending_select_seconds: Option<f64>,
+    /// The last body press, `(time, x)`, so a second one inside the
+    /// double-click window opens the run under it (WX-5b).
+    last_press: Option<(f64, f32)>,
+    /// The run last opened (double-click or `run-open=`), by its first cue id.
+    opened: Option<u64>,
+    /// What the lane drew last frame, for the `scene runs:` report line.
+    last_frame: RunFrame,
 }
 
-fn scene_color(scene: SceneId, alpha: u8) -> Color {
-    let (r, g, b) = match scene {
-        SceneId::Spectrum => (28, 117, 188),
-        SceneId::PulseField => (213, 83, 73),
-        SceneId::OrbitalLattice => (119, 82, 173),
-        SceneId::AsciiField => (50, 125, 82),
-        SceneId::SongAtlas => (197, 137, 46),
-        SceneId::SpectralTerrarium => (40, 151, 137),
-        SceneId::Constellation => (67, 91, 173),
-        SceneId::Cadence => (185, 73, 137),
-        SceneId::Loom => (139, 102, 55),
-        SceneId::Pentagram => (106, 106, 116),
-        // A phosphor cyan, deliberately clear of ASCII Field's green and
-        // Spectral Terrarium's teal: the scene lane identifies a segment by this
-        // swatch alone, so two scenes a glance cannot separate would make the
-        // plan unreadable.
-        SceneId::PhosphorDream => (0, 148, 176),
-        // The character's own terracotta. Clear of Pulse Field's red (213,83,73)
-        // by sitting well into orange, and of Song Atlas's ochre (197,137,46) by
-        // staying red of it — the swatch should *be* Clawd at a glance.
-        SceneId::Clawd => (222, 112, 68),
-        SceneId::OpenAiKnot => (131, 89, 230),
-        SceneId::Stage => (214, 92, 148),
-        // The door's lavender.
-        SceneId::Threshold => (156, 144, 200),
-        SceneId::FluidInk => (100, 210, 160),
-        SceneId::LiquidChrome => (180, 194, 218),
-        SceneId::AuroraVeil => (100, 210, 185),
-        SceneId::MetaballGarden => (225, 140, 185),
-        SceneId::NeonTunnel => (160, 130, 240),
-        SceneId::VoronoiBloom => (220, 177, 94),
-        SceneId::IridescentPool => (120, 185, 235),
-        // The pixel stagings share the handheld's light green, stepped so
-        // neighbouring sections of the family still read as two.
-        SceneId::PixelBoot => (172, 200, 96),
-        SceneId::PixelShell => (120, 220, 140),
-        SceneId::PixelRunner => (200, 140, 230),
-        SceneId::PixelQuartet => (230, 120, 110),
-        SceneId::PixelChapel => (220, 190, 120),
-        SceneId::PixelRave => (240, 110, 200),
-        // The lattice's own aqua.
-        SceneId::GlyphLattice => (96, 222, 200),
+/// How long two presses may be apart and still be one double-click, in
+/// seconds, and how far apart in logical pixels. The desktop default is 400 ms;
+/// the distance keeps a fast press-and-drag from reading as one.
+const DOUBLE_CLICK_SECONDS: f64 = 0.4;
+const DOUBLE_CLICK_PIXELS: f32 = 4.0;
+
+/// Where the runs' tooltip ids start in the timeline namespace: clear of the
+/// controls row's `20 + index` and the strip's `1`, and the namespace's
+/// collision test walks 0..4096.
+const RUN_HINT_IDS: u32 = 1000;
+
+/// The margin either side of a run that a double-click opens, as a share of
+/// the run, so its first and last cut are not on the lane's edge.
+const OPEN_RUN_MARGIN: f64 = 0.06;
+
+/// What the lane drew in one frame (WX-5b). Counted while drawing, so the
+/// report line says what reached the screen rather than what the plan holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct RunFrame {
+    runs: usize,
+    sections: usize,
+    cuts: usize,
+    /// Internal-cut hairlines actually drawn (visible, and wide enough).
+    hairlines: usize,
+    arriving: usize,
+    graded: usize,
+    /// `(run, section, scene)` under the playhead, while the plan is on.
+    now: Option<(usize, usize, SceneId)>,
+    selected: Option<usize>,
+    opened: Option<u64>,
+    posters_ready: usize,
+    posters_total: usize,
+    unavailable: usize,
+    /// The lane's logical rect, so a probe can aim at a cut from the report
+    /// rather than from a coordinate measured off a screenshot once.
+    lane: UiRect,
+    /// The view the lane drew, `start..end` in seconds.
+    view: (f64, f64),
+}
+
+/// Whether a press at `(now, x)` completes a double-click begun by `last`.
+fn is_double_click(last: Option<(f64, f32)>, now: f64, x: f32) -> bool {
+    last.is_some_and(|(time, from)| {
+        let elapsed = now - time;
+        (0.0..=DOUBLE_CLICK_SECONDS).contains(&elapsed) && (x - from).abs() <= DOUBLE_CLICK_PIXELS
+    })
+}
+
+impl SceneLaneEditor {
+    /// The `scene runs:` report line's body (WX-5b).
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let frame = self.last_frame;
+        let now = frame.now.map_or_else(
+            || "none".to_owned(),
+            |(run, section, scene)| {
+                format!(
+                    "run {}/{} section {} ({})",
+                    run + 1,
+                    frame.runs,
+                    section + 1,
+                    scene.stable_name()
+                )
+            },
+        );
+        format!(
+            "runs={} sections={} cuts={} hairlines={} arriving={} graded={} now={now} \
+             selected={} opened={} posters={}/{} unavailable={} \
+             lane={:.0},{:.0},{:.0},{:.0} view={:.3}..{:.3}",
+            frame.runs,
+            frame.sections,
+            frame.cuts,
+            frame.hairlines,
+            frame.arriving,
+            frame.graded,
+            frame
+                .selected
+                .map_or_else(|| "none".to_owned(), |index| (index + 1).to_string()),
+            frame
+                .opened
+                .map_or_else(|| "none".to_owned(), |id| format!("cue {id}")),
+            frame.posters_ready,
+            frame.posters_total,
+            frame.unavailable,
+            frame.lane.x,
+            frame.lane.y,
+            frame.lane.width,
+            frame.lane.height,
+            frame.view.0,
+            frame.view.1,
+        )
+    }
+}
+
+/// A run's colours: its fill top and bottom, the poster fade, and its edge.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RunLook {
+    top: Color,
+    bottom: Color,
+    mid: Color,
+    edge: Color,
+}
+
+/// The scene colour as a run wears it (WX-5b, the mockup's `.run`).
+///
+/// On the dark ground the colour is mixed toward black, 50 % at the top to
+/// 28 % at the bottom, so twenty-odd runs read as a calm strip with a poster in
+/// each rather than as the 5a lane's saturated barcode; on the light ground it
+/// is mixed toward white the same way round. The name is ink on both, which the
+/// tests measure for every scene. A disabled plan sinks further toward the
+/// ground; its names stay ink.
+fn run_look(rgb: (u8, u8, u8), palette: &Palette, enabled: bool) -> RunLook {
+    let dark = contrast::relative_luminance(palette.ui_surface) < 0.2;
+    let mix = |share: f32| {
+        let ground = if dark { 0.0 } else { 255.0 };
+        let channel = |value: u8| (f32::from(value) * share + ground * (1.0 - share)).round() as u8;
+        Color::new(channel(rgb.0), channel(rgb.1), channel(rgb.2), 255)
     };
-    Color::new(r, g, b, alpha)
-}
-
-fn scene_text_color(scene: SceneId, enabled: bool) -> Color {
-    if !enabled {
-        return color::ui_ink();
-    }
-    let fill = packed(scene_color(scene, 255));
-    if contrast::ratio(rgba::WHITE, fill) >= contrast::ratio(rgba::UI_INK, fill) {
-        color::white()
+    let fade = if enabled { 1.0 } else { 0.55 };
+    if dark {
+        RunLook {
+            top: mix(0.50 * fade),
+            bottom: mix(0.28 * fade),
+            mid: mix(0.39 * fade),
+            edge: mix(0.70 * fade),
+        }
     } else {
-        Color::get_color(rgba::UI_INK)
+        RunLook {
+            top: mix(0.45 * fade),
+            bottom: mix(0.62 * fade),
+            mid: mix(0.53 * fade),
+            edge: mix(0.85 * fade),
+        }
     }
 }
 
+fn scene_rgb(scene: SceneId) -> (u8, u8, u8) {
+    let colour = scene_color(scene, 255);
+    (colour.r, colour.g, colour.b)
+}
+
+/// The run's poster in its slot, fading into the run across its right 40 %.
+///
+/// Drawn with a *positive* source height: the service flips each finished
+/// poster to top row first (`posters::PosterView`), so it is an ordinary
+/// texture here. `tools/poster_check.sh` checks it lands upright.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one poster's draw: the texture, its shape, its slot, and the fade"
+)]
+fn draw_poster(
+    d: &mut RaylibDrawHandle<'_>,
+    poster: &raylib::prelude::RenderTexture2D,
+    aspect: f32,
+    rect: UiRect,
+    slot_width: f32,
+    opacity: f32,
+    fade_into: Color,
+) {
+    let height = rect.height - 2.0;
+    let width = (height * aspect.max(0.1)).min(slot_width);
+    if width < 2.0 || height < 2.0 {
+        return;
+    }
+    let texture: &raylib::ffi::Texture2D = poster.as_ref();
+    let source_width = texture.width as f32;
+    let source_height = texture.height as f32;
+    // A slot narrower than the poster crops its right side rather than
+    // squeezing it.
+    let crop = (width / (height * aspect.max(0.1))).min(1.0);
+    let dest = UiRect::new(rect.x + 1.0, rect.y + 1.0, width, height);
+    d.draw_texture_pro(
+        poster,
+        raylib::prelude::Rectangle::new(0.0, 0.0, source_width * crop, source_height),
+        widgets::rectangle(dest),
+        Vector2::zero(),
+        0.0,
+        widgets::alpha(Color::WHITE, opacity),
+    );
+    let fade = UiRect::new(
+        dest.x + dest.width * 0.6,
+        dest.y,
+        dest.width * 0.4,
+        dest.height,
+    );
+    let clear = Color::new(fade_into.r, fade_into.g, fade_into.b, 0);
+    d.draw_rectangle_gradient_ex(widgets::rectangle(fade), clear, clear, fade_into, fade_into);
+}
+
+#[cfg(test)]
 fn packed(color: Color) -> u32 {
     u32::from_be_bytes([color.r, color.g, color.b, color.a])
 }
@@ -613,68 +757,284 @@ impl Shell {
         );
 
         let drag = self.scene_lane.drag;
-        for (index, cue) in track.scene_switches.cues().iter().enumerate() {
-            let mut start = cue.start_seconds;
-            let mut end = cue.end_seconds;
-            if let Some(drag) = drag {
-                if cue.id == drag.right_cue_id {
-                    start = drag.preview_seconds;
+        let cues = track.scene_switches.cues();
+        let enabled = track.scene_switches.enabled;
+        // Every section's span with a boundary drag's preview applied, so a run
+        // stretches under the hand the way its sections do.
+        let bounds: Vec<(f64, f64)> = cues
+            .iter()
+            .enumerate()
+            .map(|(index, cue)| {
+                let mut span = (cue.start_seconds, cue.end_seconds);
+                if let Some(drag) = drag {
+                    if cue.id == drag.right_cue_id {
+                        span.0 = drag.preview_seconds;
+                    }
+                    if cues
+                        .get(index + 1)
+                        .is_some_and(|next| next.id == drag.right_cue_id)
+                    {
+                        span.1 = drag.preview_seconds;
+                    }
                 }
-                if track
-                    .scene_switches
-                    .cues()
-                    .get(index + 1)
-                    .is_some_and(|next| next.id == drag.right_cue_id)
-                {
-                    end = drag.preview_seconds;
-                }
+                span
+            })
+            .collect();
+        // `--ui-probe run-open=N`, once there is a plan to open a run of.
+        // N counts from 1, as the `scene runs:` line's `now=run N/M` does.
+        if let Some(number) = self.probe_run_open.take() {
+            let runs = fold_runs(cues);
+            if let Some(run) = number.checked_sub(1).and_then(|index| runs.get(index)) {
+                self.open_run(run, track.duration_seconds);
             }
-            let Some(block) = timed_lane::block_geometry(
+        }
+        // The section and run under the playhead wear the accent (WX-5a: the
+        // accent means *now*), read off the same playhead the lane draws.
+        let playhead = self.timeline_playhead_seconds(input.time_seconds);
+        let x_of = |seconds: f64| {
+            self.timeline
+                .x_at(seconds, f64::from(lane.x), f64::from(lane.width)) as f32
+        };
+        let runs = fold_runs(cues);
+        let mut stats = RunFrame {
+            runs: runs.len(),
+            sections: cues.len(),
+            arriving: cues.iter().filter(|cue| !cue.transition.is_cut()).count(),
+            graded: cues
+                .iter()
+                .filter(|cue| cue.grade.is_some_and(|grade| !grade.is_identity()))
+                .count(),
+            selected: cues
+                .iter()
+                .position(|cue| cue.id == self.scene_lane.selected_id),
+            opened: self.scene_lane.opened,
+            lane,
+            view: (
+                self.timeline.start_seconds,
+                self.timeline.start_seconds + self.timeline.span_seconds,
+            ),
+            ..RunFrame::default()
+        };
+        let track_slot = input.workspace.current_index();
+        for (run_index, run) in runs.iter().enumerate() {
+            let last = run.first_section + run.sections - 1;
+            let (start, end) = (bounds[run.first_section].0, bounds[last].1);
+            stats.cuts += run.internal_cuts();
+            let geometry = timed_lane::block_geometry(
                 &self.timeline,
                 f64::from(lane.x),
                 f64::from(lane.width),
                 start,
                 end,
-            ) else {
+            );
+            if let Some(slot) = track_slot {
+                self.poster_requests.push(crate::posters::PosterRequest {
+                    track_slot: slot,
+                    run: *run,
+                    visible: geometry.is_some(),
+                });
+            }
+            let Some(block) = geometry else {
                 continue;
             };
-            let Some(scene) = SceneId::from_index(cue.scene_index as usize) else {
-                continue;
-            };
-            let selected = cue.id == self.scene_lane.selected_id;
-            let alpha = if track.scene_switches.enabled {
-                255
-            } else {
-                92
-            };
-            let text_color = scene_text_color(scene, track.scene_switches.enabled);
+            // One pixel of the lane between two runs, as the mockup's
+            // `margin-right: 1px`: a run edge is a scene change, a hairline is
+            // not, and the two must not look alike.
             let rect = UiRect::new(
                 block.left as f32,
                 lane.y + 2.0,
-                block.width() as f32,
+                (block.width() as f32 - 1.0).max(1.0),
                 lane.height - 4.0,
             );
-            widgets::fill(d, rect, scene_color(scene, alpha));
-            d.draw_rectangle_lines_ex(
+            let look = run_look(scene_rgb(run.scene), theme::palette(), enabled);
+            d.draw_rectangle_gradient_ex(
                 widgets::rectangle(rect),
-                if selected { 2.0 } else { 1.0 },
-                text_color,
+                look.top,
+                look.bottom,
+                look.bottom,
+                look.top,
             );
-            let label = scene.display_name();
+
+            // The poster at the left edge, fading into the run (§3 of the WX-5b
+            // note). Its slot is reserved whether or not the picture has
+            // arrived, so the name does not jump when it does.
+            let mut text_left = rect.x + 6.0;
+            let mut poster_note: Option<&'static str> = None;
+            if let Some(slot) = track_slot {
+                let slot_width = (rect.height * 16.0 / 9.0).min(rect.width * 0.6);
+                let poster = input.posters.view(track, slot, run);
+                let drawn = match poster {
+                    crate::posters::PosterView::Ready { texture, aspect } => {
+                        Some((texture, aspect, 1.0))
+                    }
+                    crate::posters::PosterView::Stale { texture, aspect } => {
+                        Some((texture, aspect, 0.45))
+                    }
+                    crate::posters::PosterView::Pending => None,
+                    crate::posters::PosterView::Unavailable(reason) => {
+                        stats.unavailable += 1;
+                        poster_note = Some(reason);
+                        None
+                    }
+                };
+                if !matches!(poster, crate::posters::PosterView::Unavailable(_)) {
+                    text_left = rect.x + slot_width + 6.0;
+                }
+                if let Some((texture, aspect, opacity)) = drawn {
+                    stats.posters_ready += usize::from(opacity >= 1.0);
+                    draw_poster(d, texture, aspect, rect, slot_width, opacity, look.mid);
+                }
+            }
+            stats.posters_total += usize::from(track_slot.is_some());
+
+            // Per section: the transition edge, glide ramp, grade bar and pixel
+            // mark, each in that section's own span, so a grade change inside a
+            // run is a change in the bar under it.
+            for index in run.first_section..=last {
+                let cue = &cues[index];
+                let (from, to) = (x_of(bounds[index].0), x_of(bounds[index].1));
+                let left = from.max(rect.x);
+                let right = to.min(rect.x + rect.width);
+                if right - left < 1.0 {
+                    continue;
+                }
+                let section = UiRect::new(left, rect.y, right - left, rect.height);
+                draw_segment_marks(
+                    d,
+                    &self.timeline,
+                    lane,
+                    section,
+                    cue,
+                    bounds[index].0,
+                    if enabled { 255 } else { 92 },
+                );
+            }
+            // A hairline at every cut inside the run: opaque and whole pixels,
+            // so it is the same colour on every renderer and the gate can count
+            // it exactly.
+            for &(cut, _) in &bounds[run.first_section + 1..=last] {
+                let x = x_of(cut).round();
+                if x > rect.x + 1.0 && x < rect.x + rect.width - 1.0 {
+                    widgets::fill(
+                        d,
+                        UiRect::new(x, rect.y, 1.0, rect.height),
+                        color::ui_run_cut(),
+                    );
+                    stats.hairlines += 1;
+                }
+            }
+            d.draw_rectangle_lines_ex(widgets::rectangle(rect), 1.0, look.edge);
+
+            // The scene's name, if it fits beside the poster. It sits on the
+            // run's fill, but internal-cut hairlines, transition edges and a
+            // pixel mark all cross that fill, so the name carries a one-pixel
+            // shadow in the panel's own tone (dark under light ink, light under
+            // dark ink). A shadow rather than a plate: an opaque plate would
+            // blank the hairlines' columns under the name, and the gate counts
+            // hairlines by exact colour down the whole run body.
+            let label = run.scene.display_name();
             let label_width = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION);
-            if label_width + 10.0 <= rect.width {
+            if text_left + label_width + 6.0 <= rect.x + rect.width {
+                let label_y = rect.y + rect.height - metric::UI_FONT_CAPTION - 7.0;
                 widgets::draw_text(
                     d,
                     input.fonts.ui(),
                     label,
-                    rect.x + 5.0,
-                    rect.y + 3.0,
+                    text_left + 1.0,
+                    label_y + 1.0,
                     metric::UI_FONT_CAPTION,
-                    text_color,
+                    widgets::alpha(color::ui_surface(), 0.8),
+                );
+                widgets::draw_text(
+                    d,
+                    input.fonts.ui(),
+                    label,
+                    text_left,
+                    label_y,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_ink(),
                 );
             }
-            draw_segment_marks(d, &self.timeline, lane, rect, cue, start, alpha);
+
+            // The selected section, as an ink outline over its span inside the
+            // run: selection is an outline, never the accent.
+            for index in run.first_section..=last {
+                if cues[index].id != self.scene_lane.selected_id {
+                    continue;
+                }
+                let left = x_of(bounds[index].0).max(rect.x);
+                let right = x_of(bounds[index].1).min(rect.x + rect.width);
+                if right - left >= 2.0 {
+                    d.draw_rectangle_lines_ex(
+                        widgets::rectangle(UiRect::new(left, rect.y, right - left, rect.height)),
+                        2.0,
+                        color::ui_ink(),
+                    );
+                }
+            }
+
+            // What the run is, in words, under the pointer: its scene, its
+            // sections and its span, how to open it, and why it has no poster
+            // when the service refused one. Never claims a press.
+            let pointer = self.widgets.pointer(d);
+            let hovered = self.timeline_gesture.is_none()
+                && self.scene_lane.drag.is_none()
+                && rect.contains_point(pointer.x, pointer.y);
+            let tip = format!(
+                "{} - sections {}-{} - {}-{} - double-click to open{}",
+                run.scene.display_name(),
+                run.first_section + 1,
+                last + 1,
+                widgets::format_timestamp(start),
+                widgets::format_timestamp(end),
+                poster_note.map_or_else(String::new, |note| format!(" ({note})")),
+            );
+            self.widgets.hint(
+                d,
+                widgets::ButtonState {
+                    hovered,
+                    ..widgets::ButtonState::default()
+                },
+                widgets::widget_id(widgets::id::TIMELINE, RUN_HINT_IDS + run_index as u32),
+                rect,
+                &tip,
+            );
+
+            // Now: the run under the playhead gets an inset accent outline, and
+            // the section under it a 2 px accent tick along the run's top.
+            if enabled && run.contains(playhead) && rect.width > 4.0 {
+                d.draw_rectangle_lines_ex(
+                    widgets::rectangle(UiRect::new(
+                        rect.x + 1.0,
+                        rect.y + 1.0,
+                        rect.width - 2.0,
+                        rect.height - 2.0,
+                    )),
+                    1.0,
+                    color::accent(),
+                );
+                for (index, &(from, to)) in bounds
+                    .iter()
+                    .enumerate()
+                    .take(last + 1)
+                    .skip(run.first_section)
+                {
+                    if from <= playhead && playhead < to {
+                        let left = x_of(from).max(rect.x + 1.0);
+                        let right = x_of(to).min(rect.x + rect.width - 1.0);
+                        if right > left {
+                            widgets::fill(
+                                d,
+                                UiRect::new(left, rect.y + 1.0, right - left, 2.0),
+                                color::accent(),
+                            );
+                        }
+                        stats.now = Some((run_index, index, run.scene));
+                    }
+                }
+            }
         }
+        self.scene_lane.last_frame = stats;
         // How the track ends (MV3): a band fading to black across the outro.
         let outro = track.scene_switches.outro;
         if !outro.is_cut() && track.duration_seconds > 0.0 {
@@ -734,6 +1094,23 @@ impl Shell {
         // in each gap.
     }
 
+    /// Opens a run: the view zooms to it with a margin either side (WX-5b, the
+    /// mockup's "double-click a run to open its sections"). At that zoom its
+    /// sections are wide enough to aim at, and Zoom out or the wheel undo it.
+    /// Detaches playback-follow, as any manual view change does.
+    fn open_run(&mut self, run: &RunSpan, duration_seconds: f64) {
+        let span = run.end_seconds - run.start_seconds;
+        if !(span.is_finite() && span > 0.0) {
+            return;
+        }
+        let margin = span * OPEN_RUN_MARGIN;
+        self.timeline.start_seconds = run.start_seconds - margin;
+        self.timeline.span_seconds = span + margin * 2.0;
+        self.timeline.clamp(duration_seconds);
+        self.timeline_manual_view = true;
+        self.scene_lane.opened = Some(run.first_cue_id);
+    }
+
     fn scene_lane_gesture(
         &mut self,
         d: &RaylibDrawHandle<'_>,
@@ -741,25 +1118,27 @@ impl Shell {
         lane: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) {
-        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
-
         let Some(track) = input.workspace.current() else {
             return;
         };
-        let mouse = input.ui_scale.mouse(d);
+        // Through the widget bank's pointer seam rather than raylib directly
+        // (WX-5b), so `--ui-probe click=` can press the lane the way it presses
+        // a button. With no probe installed it is the same four reads.
+        let pointer = self.widgets.pointer(d);
+        let mouse = Vector2::new(pointer.x, pointer.y);
         if self.timeline_gesture == Some(TimelineGesture::Scrub) {
             self.scene_lane.scrub_origin_x = None;
             self.update_timeline_scrub(
                 mouse.x,
                 lane,
                 track.duration_seconds,
-                d.is_mouse_button_down(MOUSE_BUTTON_LEFT),
+                pointer.down,
                 commands,
             );
             return;
         }
         if let Some(origin_x) = self.scene_lane.scrub_origin_x {
-            if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+            if !pointer.down {
                 self.scene_lane.scrub_origin_x = None;
                 return;
             }
@@ -780,7 +1159,7 @@ impl Shell {
         if self.scene_lane.drag.is_none() {
             if self.timeline_gesture.is_some()
                 || !lane.contains_point(mouse.x, mouse.y)
-                || !d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+                || !pointer.pressed
             {
                 return;
             }
@@ -794,9 +1173,32 @@ impl Shell {
             let Some(hit) = hit else {
                 self.scene_lane.selected_id = 0;
                 self.scene_lane.scrub_origin_x = Some(mouse.x);
+                self.scene_lane.last_press = None;
                 return;
             };
             self.scene_lane.selected_id = hit.id;
+            // A second press on a section body inside the double-click window
+            // opens the run under it. Boundaries are excluded: two quick presses
+            // on a cut are two drags, not an instruction to zoom.
+            let now = d.get_time();
+            let double = hit.zone != SceneLaneZone::Boundary
+                && is_double_click(self.scene_lane.last_press, now, mouse.x);
+            if double {
+                self.scene_lane.last_press = None;
+                let seconds = self.timeline.seconds_at(
+                    f64::from(mouse.x),
+                    f64::from(lane.x),
+                    f64::from(lane.width),
+                    track.duration_seconds,
+                );
+                let runs = fold_runs(track.scene_switches.cues());
+                if let Some(run) = runs.iter().find(|run| run.contains(seconds)) {
+                    self.open_run(run, track.duration_seconds);
+                }
+                return;
+            }
+            self.scene_lane.last_press =
+                (hit.zone != SceneLaneZone::Boundary).then_some((now, mouse.x));
             if hit.zone == SceneLaneZone::Boundary {
                 let start = track
                     .scene_switches
@@ -822,7 +1224,7 @@ impl Shell {
             return;
         }
         let mut drag = self.scene_lane.drag.expect("checked above");
-        if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+        if pointer.down {
             if (mouse.x - drag.origin_x).abs() >= timed_lane::DRAG_THRESHOLD_PIXELS as f32 {
                 drag.moved = true;
             }
@@ -859,25 +1261,55 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::theme::palette;
+
+    /// A run's name is ink on the run's own fill (WX-5b), in both appearances,
+    /// at both ends of the fill's gradient, for every scene — and muted on a
+    /// disabled plan's fill. Measured rather than chosen, because the fill is a
+    /// mix of a content colour nobody here controls (`ui/scene_colors.rs`). A
+    /// disabled plan keeps ink names: its fill sinking toward the ground is the
+    /// signal, and muted grey on a light disabled run measured 4.33:1.
+    #[test]
+    fn every_run_name_reads_on_its_run_in_both_appearances() {
+        for scene in SceneId::ALL {
+            for palette in [&palette::DARK, &palette::LIGHT] {
+                for enabled in [true, false] {
+                    let ink = palette.ui_ink;
+                    let look = run_look(scene_rgb(scene), palette, enabled);
+                    for fill in [look.top, look.bottom] {
+                        let ratio = contrast::ratio(ink, packed(fill));
+                        assert!(
+                            ratio >= contrast::AA_TEXT,
+                            "{} on {:06X} (enabled {enabled}): {ratio:.2}",
+                            scene.display_name(),
+                            palette.ui_surface >> 8
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The negative control: the 5a lane drew the scene colour at full
+    /// strength, and ink-light names on it fail for the brightest scenes —
+    /// which is why the run mixes toward the ground at all.
+    #[test]
+    fn full_strength_scene_colours_would_fail_the_run_name_rule() {
+        let fluid = scene_rgb(SceneId::FluidInk);
+        let full = packed(Color::new(fluid.0, fluid.1, fluid.2, 255));
+        assert!(contrast::ratio(palette::DARK.ui_ink, full) < contrast::AA_TEXT);
+    }
 
     #[test]
-    fn every_scene_label_clears_body_text_contrast_enabled_and_disabled() {
-        for scene in SceneId::ALL {
-            let fill = packed(scene_color(scene, 255));
-            let text = packed(scene_text_color(scene, true));
-            assert!(
-                contrast::ratio(text, fill) >= contrast::AA_TEXT,
-                "{} enabled label",
-                scene.display_name()
-            );
-
-            let disabled = contrast::blend(fill, rgba::UI_RAISED, 92.0 / 255.0);
-            assert!(
-                contrast::ratio(rgba::UI_INK, disabled) >= contrast::AA_TEXT,
-                "{} disabled label",
-                scene.display_name()
-            );
-        }
+    fn a_double_click_is_two_presses_close_in_time_and_place() {
+        let first = Some((10.0, 200.0));
+        assert!(is_double_click(first, 10.3, 202.0));
+        // The controls: too late, too far, no first press, and a clock that
+        // went backwards.
+        assert!(!is_double_click(first, 10.5, 200.0));
+        assert!(!is_double_click(first, 10.2, 210.0));
+        assert!(!is_double_click(None, 10.2, 200.0));
+        assert!(!is_double_click(first, 9.9, 200.0));
     }
 
     #[test]

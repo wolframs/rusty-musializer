@@ -355,7 +355,7 @@ impl Shell {
                 boundary.x + padding,
                 boundary.y + 6.0,
                 metric::UI_FONT_CAPTION,
-                color::accent(),
+                color::ui_ink(),
             );
             widgets::draw_text(
                 d,
@@ -380,7 +380,7 @@ impl Shell {
             boundary.x + padding,
             boundary.y + padding,
             metric::UI_FONT_HEADER,
-            color::accent(),
+            color::ui_ink(),
         );
         // Beside the title rather than under it (UX0-C01). The CLIP row needs a
         // row's worth of height and the band cannot afford one at 640 px, and
@@ -693,7 +693,9 @@ impl Shell {
                         render,
                         render_label,
                         false,
-                        ButtonStyle::Neutral,
+                        // The primary action, and the one control that wears the
+                        // accent as a fill (WX-5a).
+                        ButtonStyle::Primary,
                         Some(footer_font),
                     )
                     .clicked
@@ -973,14 +975,15 @@ impl Shell {
                 x + 12.0,
                 row.y + 11.0,
                 14.0,
-                // Accent while a clip is live, muted otherwise. The only other
-                // sign the export has stopped covering the whole track is
-                // "Full track" losing its highlight, and a capture showed that
-                // reading as ink-on-white against muted-on-white — a
-                // distinction nobody notices at a glance, on the one line that
-                // says how much of their track is about to be rendered.
+                // The warning tone while a clip is live, muted otherwise. The
+                // only other sign the export has stopped covering the whole
+                // track is "Full track" losing its highlight, and a capture
+                // showed ink against muted reading as no distinction at all on
+                // the one line that says how much of the track is about to be
+                // rendered. This was the accent until WX-5a; the accent means
+                // *now*, and "your render is a window" is a caution.
                 if self.export_clip.is_enabled() {
-                    color::accent()
+                    color::ui_warning()
                 } else {
                     color::ui_muted()
                 },
@@ -1063,7 +1066,7 @@ impl Shell {
             // muted grey was picked — and contrast-checked — against the light
             // ones. A capture of the progress screen is what showed it reading
             // as barely-there grey on near-black.
-            Color::new(255, 255, 255, 184),
+            widgets::alpha(color::white(), 0.72),
         );
 
         let bar_width = w * 2.0 / 3.0;
@@ -1091,7 +1094,7 @@ impl Shell {
                 bar.y + 29.0,
                 14.0,
                 // `ColorAlpha(WHITE, 0.52)` (`plug.c:7968`); see the detail line.
-                Color::new(255, 255, 255, 133),
+                widgets::alpha(color::white(), 0.52),
             );
         }
 

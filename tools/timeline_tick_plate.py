@@ -4,8 +4,8 @@
 The C draws a `COLOR_UI_RAISED` rectangle under every tick timestamp
 (`plug.c:3065-3080`) and its comment is a measurement, not a preference: the
 waveform behind the labels is not a constant background. It runs from the raised
-surface in a silent passage to a dense accent blue at full amplitude, where muted
-ink measures about 1.16:1. The Rust port drew the label and dropped the plate.
+surface in a silent passage to a dense envelope at full amplitude (accent blue
+until WX-5a, a tinted grey since), where muted ink measured about 1.16:1. The Rust port drew the label and dropped the plate.
 
 That defect is nastier than a fixed contrast bug, which is why it needs a check
 of its own: it **depends on the audio**. The labels are perfectly legible over a
@@ -56,16 +56,33 @@ PLATE_PAD_Y = 1
 # `+4` (`plug.c:3072`); 30 covers that plus the plate and a 150 % scale.
 LABEL_BAND_ROWS = 30
 
-# A waveform column is the accent blue at some brightness and alpha over white,
-# so every one of them is markedly bluer than it is red. Testing the *relation*
-# rather than a colour value survives the peak-dependent brightness and alpha the
-# envelope is drawn with — and, importantly, no grey antialiased glyph edge can
-# satisfy it.
-WAVEFORM_BLUE_MARGIN = 40
+# A waveform column is a *tinted* grey since WX-5a: cool ahead of the playhead
+# (`ui_waveform`, #BDC1CB on the light appearance: blue > green > red) and warm
+# behind it (`ui_level`, #8A7F6E: red > green > blue), drawn at alpha 0.62..1.0
+# over the white lane. Blending toward white preserves the order of the three
+# channels, so the *order* is the classifier, with a floor on the red-blue tint
+# (WAVEFORM_TINT) and a ceiling on chroma (WAVEFORM_MAX_CHROMA).
+#
+# The cool tint was halved in WX-5b (#BAC2D6, red-blue 28, read as a blue cast
+# beside the light accent; #BDC1CB is 14). At the lowest alpha that leaves a
+# red-blue step of 8.7 and a green step of 2.5 either side, so the floor moved
+# from 8 to 5: still above every neutral glyph edge and the tick rule (4, and
+# not in either order), which is what the floor exists to refuse.
+#
+# Before WX-5a the envelope was the accent blue and this tested "markedly bluer
+# than red, and greener than red". The order does the same work: no neutral
+# glyph edge or tick rule has a tint of 8, and none of the four event-marker
+# hues — which may cross a label legitimately, since markers draw after ticks
+# (`plug.c:3086`) — has either order (purple is B>R>G, pink R>B>G, chartreuse
+# G>R>B, teal G>B>R). The purple case is the one that cost a wrong failure to
+# find, twice: a custom marker line across a label read as 27 waveform pixels
+# under the blue rule, and as 9 under a first tint-only version of this one.
+WAVEFORM_TINT = 5
+WAVEFORM_MAX_CHROMA = 40
 
 # Rows with at least this many waveform pixels are inside the lane. The envelope
 # is one line per pixel column across the whole strip, so a real lane row has
-# hundreds; nothing else in the chrome carries a blue band that wide.
+# hundreds; nothing else in the chrome carries a tinted band that wide.
 MIN_WAVEFORM_ROW_PIXELS = 120
 
 # A run of dense rows counts as a candidate lane if it is at least this share of
@@ -98,19 +115,11 @@ EXPOSURE_ROWS = 12
 
 def _is_waveform(pixel):
     red, green, blue = pixel
-    return (
-        blue > red + WAVEFORM_BLUE_MARGIN
-        and blue > green + WAVEFORM_BLUE_MARGIN
-        # `green > red` is what separates the envelope from the `custom` event
-        # marker, and it cost a wrong failure to find. The envelope is `accent`
-        # (0, 47, 167) brightened and alpha-blended over white, and every one of
-        # those operations preserves `red < green`; the custom marker's purple
-        # (151, 111, 241) is blue-dominant too but has `red > green`. Without
-        # this the tool reported 27 "waveform" pixels inside a label that a
-        # marker line was legitimately drawn across — markers draw after ticks in
-        # the oracle as well (`plug.c:3086`).
-        and green > red
-    )
+    if max(pixel) - min(pixel) > WAVEFORM_MAX_CHROMA:
+        return False
+    cool = blue > green > red and blue - red >= WAVEFORM_TINT
+    warm = red > green > blue and red - blue >= WAVEFORM_TINT
+    return cool or warm
 
 
 def _is_ink(pixel):
