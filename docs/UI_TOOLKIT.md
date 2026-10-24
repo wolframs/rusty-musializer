@@ -141,3 +141,11 @@ two-surface sweep let through.
 
 The terminal keeps its own dark palette in both appearances; its status bar
 draws with `palette::DARK`'s roles.
+
+WX-5b added three roles: `ui_cue_block` and `ui_cue_now` (the cue lane's
+neutral block and the warm tint of the cue under the playhead — not the
+accent; the playhead crossing it is), and `ui_run_cut`, the opaque hairline at
+a cut inside a plan-lane run, which the gate counts by exact colour. The light
+appearance's waveform ahead of the playhead lost half its blue cast
+(`#BAC2D6` → `#BDC1CB`); `tools/timeline_tick_plate.py` classifies the envelope
+by its channel order, so the two moved together.

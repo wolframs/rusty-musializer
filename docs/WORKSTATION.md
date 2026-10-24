@@ -53,7 +53,7 @@ spec:
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
-| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (plan lane as runs) and 5c (rail and big preview) next |
+| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b's lane done 2026-10-24, its poster service in its own branch; 5c (rail and big preview) next |
 | WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
 
 ### WX-1 — the dock
@@ -150,6 +150,19 @@ the same roles), a type scale both toolkits read, and a corner radius for
 controls. egui's visuals, text styles and face are derived from it. The rules
 are in `docs/UI_TOOLKIT.md` ("Tokens and type"); the decisions are below.
 
+**WX-5b, the lane, done 2026-10-24.** The plan lane draws **runs**: consecutive
+sections of one scene folded into one block (`core::ui::plan_runs`), the scene
+colour mixed toward the ground, a poster slot at its left (the poster service,
+`posters.rs`, is built in its own branch; until it lands every run shows its
+fill and name), a hairline at each internal cut, and each section's transition
+edge, glide ramp, grade bar and pixel mark inside its own span. The run under
+the playhead has an inset accent outline and its section an accent tick.
+Hit testing is unchanged and per section, so every gesture still works;
+double-clicking a run zooms the view to it. The lane is 44 px (was 24). Split
+in two by design (`build/redesign/wx5b-design.md` in the main checkout): the
+lane here, the poster-frame service beside it, with a seam commit (`cbbe6b8`)
+both were built against.
+
 ### WX-6 — gate
 
 `tools/dock_check.sh`, using the gate's usual isolation. The terminal runs a
@@ -186,7 +199,8 @@ They are independent unless a line says otherwise. Every one finishes with
    colour assertions to move: update them on purpose, never loosen them
    (see "The headless gate runs on the GPU" in `AGENTS.md`). Done when a capture of Door, No Room
    at 1920x1080 reads like the mockup's chrome.
-2. **WX-5b: the plan lane as runs.** Consecutive sections of one scene
+2. **WX-5b: the plan lane as runs.** *The lane is done (2026-10-24); the
+   poster service is its own branch.* Consecutive sections of one scene
    merge into one block with a frame from that scene, cut hairlines, a
    transition edge and a grade bar. The lyric lane shows its words, and
    the waveform is grey and warms behind the playhead. Lives in
@@ -295,6 +309,35 @@ They are independent unless a line says otherwise. Every one finishes with
   transparent against 560 with it (floor 132); the tick-plate check fails a
   label with three columns of either waveform tone painted into it; the
   dark export-ink check has a blank strip of the same panel as its control.
+
+**WX-5b, the lane (2026-10-24).**
+
+- **A run breaks on a scene change and nothing else.** Door, No Room's 70
+  sections fold to 27 runs (the mockup's 21 was drawn by hand). A grade,
+  transition, glide or pixel-look change stays a mark inside the run.
+- **Folding is drawing only.** The section hit test is unchanged, so a cut
+  inside a run is grabbed and dragged where its hairline is, and selection is
+  an ink outline over the section's span. Double-click on a run zooms the view
+  to it with 6 % either side ("open its sections"); `--ui-probe run-open=N`
+  does the same, N counting from 1 like the report.
+- **The lane reads the pointer through `Widgets::pointer`**, so `click=` can
+  press it; it used to read raylib directly, which left the lane's gestures
+  unreachable from any probe.
+- **The poster slot is reserved whether or not a poster has arrived**, so the
+  scene name does not jump when one does; with the service off
+  (`posters=off`) the name takes the slot. The service is built separately
+  (`posters.rs`, its own branch); until it merges every run shows fill and
+  name.
+- **Gate.** A new section seeds a seven-section plan with a known answer
+  (`seed_lyric_fixture.py --run-plan`) and checks `scene runs:` and
+  `scene marks:` exactly, counts exact-colour hairlines and the grade bar's
+  step off the pixels (`tools/run_lane_check.py`), opens a run and presses a
+  cut inside it from the report's own `lane=`/`view=`. Controls: an
+  alternating-scene plan (seven runs, no hairline) and a one-grade plan (no
+  step). Three older checks moved with the 20 px taller band and now read the
+  layout from the report instead of a constant: the Spectrum floor crop and
+  both mute-tooltip probes (whose bare twins caught the move on the first
+  run). The ASCII footer probes moved from y=403 to y=383.
 
 **WX-1/2 (2026-10-21).**
 
