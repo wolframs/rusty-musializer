@@ -173,13 +173,21 @@ and lasers, history rows, logo state).
   scene. `differential_settings.sh` failed on a perturbed `pace` bound (all six
   rows flagged) and passed once reverted.
 - **Speed.** `cargo run --release -p musializer-core --example
-  pixel_cats_bench`, update, render and composite for one frame, on a quiet
-  machine, at 320x180: mean 0.61–0.98 ms (rave 1.96 ms), worst 3.1 ms. The
-  shader pass is one textured quad.
+  pixel_cats_bench` times update, render and composite for one frame. At
+  320x180 the mean is 0.61–0.94 ms, the rave 2.0 ms, and the worst frame
+  3.6 ms. At 400x225 the mean is 0.93–1.42 ms and the rave 2.9 ms. The shader
+  pass is one textured quad.
+- **Live.** `build/pixel-scene/live_check.sh` runs muted release playback of
+  the meow track from 0:50: 300 frames per scene at 1280x720, entered with
+  `--scene`. Every scene had zero dropped PCM frames and zero output
+  underruns, and the canvas took 0.57–1.85 ms of CPU. The first run of the
+  runner had one 72 ms stall, under a load average of 24 from parallel
+  builds. Two reruns on a quieter machine stayed inside the 16.7 ms frame.
 
-Renders of two songs staged with all six scenes (the meow track on the source
-video's own section map, and *Autoregressive Kitty* from its aligned lyrics) are
-in `build/pixel-scene/`.
+Two songs were staged with all six scenes: the meow track on the source
+video's own section map (`meow.treatment.json`, its sheet, and an NVENC render
+of the whole track), and *Autoregressive Kitty* from its aligned lyrics. Both
+are in `build/pixel-scene/` with the scripts that wrote their treatments.
 
 ## Not built
 
