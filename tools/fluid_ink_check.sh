@@ -62,5 +62,10 @@ assert portrait.shape == (960, 540, 3)
 assert portrait.std() > 20, 'portrait lost the ink'
 log = (out/'music.log').read_text()
 assert 'dye=uploaded, display=shader' in log, 'GPU path silently fell back'
-print('PASS: music response, persistent replay, project reopen, still/video, clip, opaque output and portrait')
+# A dead kick detector draws a plausible ambient frame; only the count says so.
+import re
+kicks = int(re.search(r'kicks=(\d+)', log).group(1))
+print(f'Kicks heard on the pulse fixture: {kicks}')
+assert kicks >= 1, 'the kick detector never fired on the pulse fixture'
+print('PASS: music response, kicks, persistent replay, project reopen, still/video, clip, opaque output and portrait')
 PY
