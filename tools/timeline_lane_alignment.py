@@ -20,11 +20,13 @@ All of them must agree across every lane in the frame. The lanes are found from
 the seams `Shell::timeline_group_chrome` paints between them, so the check does
 not hard-code a single window's geometry.
 
-Usage:  timeline_lane_alignment.py PNG LANES [UI_SCALE_PERCENT]
+Usage:  timeline_lane_alignment.py PNG LANES [UI_SCALE_PERCENT [APPEARANCE]]
         LANES is how many timed lanes the frame should contain (2 without the
         lyrics editor, 3 with it). UI_SCALE_PERCENT defaults to 100; the shell
         selects 150 on its own at 1440p, and every logical dimension below is
-        multiplied by it.
+        multiplied by it. APPEARANCE is `light-blue` (the default, and what
+        every call before WX-5a measured) or `black-amber`, the dark default
+        since 2026-10-24; it picks the palette below and the border classifier.
 """
 
 import sys
@@ -32,10 +34,21 @@ import sys
 import numpy as np
 from PIL import Image
 
-# theme::rgba, as the framebuffer stores them.
-TROUGH = (230, 230, 234)  # UI_LANE_TROUGH, the seam between two lanes
-RULE = (210, 210, 214)  # UI_RULE, every lane border and the group frame
-ACCENT = (0, 47, 167)  # ACCENT, the playhead
+# theme::palette, as the framebuffer stores them. Kept as literals rather than
+# read from the report, so a change on either side shows up here as a
+# mismatch rather than agreeing with itself.
+PALETTES = {
+    "light-blue": {
+        "trough": (230, 230, 234),  # ui_lane_trough, the seam between two lanes
+        "rule": (210, 210, 214),  # ui_rule, every lane border and the group frame
+        "accent": (0, 47, 167),  # accent, the playhead
+    },
+    "black-amber": {
+        "trough": (10, 11, 13),
+        "rule": (37, 42, 50),
+        "accent": (240, 179, 71),
+    },
+}
 
 # theme::metric::LANE_GAP. A seam that is not exactly this tall means the two
 # sides disagree about the gap, which is the defect the compile-time assertion
@@ -81,7 +94,9 @@ def _longest_run(mask_row):
     return best
 
 
-def measure(path, lanes, ui_scale=100):
+def measure(path, lanes, ui_scale=100, appearance="light-blue"):
+    palette = PALETTES[appearance]
+    TROUGH, ACCENT = palette["trough"], palette["accent"]
     image = np.array(Image.open(path).convert("RGB")).astype(int)
     height, width, _ = image.shape
 
@@ -166,8 +181,19 @@ def measure(path, lanes, ui_scale=100):
     # identical column and the cross-lane equality this check exists for is
     # unaffected. Ticks and the playhead qualify too, exactly as they did
     # under the colour match -- only the outermost two columns are taken.
-    RULE_CEILING = 238
-    darkish = image.max(axis=-1) <= RULE_CEILING
+    #
+    # On the dark appearance the same stroke is *lighter* than both fills
+    # (ui_rule #252A32 between ui_surface #111317 and ui_raised #171A1F), so
+    # the classifier inverts into a floor on the brightest channel. A 50/50
+    # split over the lane fill blends to max 40.5 and over the surface to 36.5,
+    # and the brightest fill it must reject is the lane's own 31: 36 sits in
+    # that gap for the same reason 238 does above.
+    if appearance == "black-amber":
+        RULE_FLOOR = 36
+        darkish = image.max(axis=-1) >= RULE_FLOOR
+    else:
+        RULE_CEILING = 238
+        darkish = image.max(axis=-1) <= RULE_CEILING
     measured = []
     for name, y0, y1 in bands:
         if y0 < 0 or y1 > height:
@@ -193,12 +219,16 @@ def measure(path, lanes, ui_scale=100):
 
 
 def main(argv):
-    if len(argv) not in (3, 4):
+    if len(argv) not in (3, 4, 5):
         print(__doc__, file=sys.stderr)
         return 2
     path, lanes = argv[1], int(argv[2])
-    ui_scale = int(argv[3]) if len(argv) == 4 else 100
-    measured, error = measure(path, lanes, ui_scale)
+    ui_scale = int(argv[3]) if len(argv) >= 4 else 100
+    appearance = argv[4] if len(argv) == 5 else "light-blue"
+    if appearance not in PALETTES:
+        print(f"unknown appearance {appearance}; one of {', '.join(PALETTES)}", file=sys.stderr)
+        return 2
+    measured, error = measure(path, lanes, ui_scale, appearance)
     if error is not None:
         print(f"FAIL: {path}: {error}", file=sys.stderr)
         return 1
