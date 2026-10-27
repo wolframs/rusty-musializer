@@ -235,9 +235,29 @@ They are independent unless a line says otherwise. Every one finishes with
    parallel Opus in its own worktree (own capture display), then a critic
    pass. Glyph Lattice (id 28) made Geometry six tiles; the picker must
    lay out all 29 scenes.
-   - **Open for the operator:** whether `.musi`/treatments gain
-     `metadata.artist`. The mockup's top bar shows the artist; nothing on
-     disk stores one, so the slot stays out until they decide.
+   - **Artist: decided 2026-10-27, add it.** `.musi` and treatments gain an
+     optional `metadata.artist` (core `Metadata`), never written when empty,
+     shown in the top bar. Top bar owns it, including the schema bump and
+     `differential_project_io.sh` staying green.
+   - **Checkpoint 2026-10-27: seam landed, nothing else started.** The seam
+     is `82cd54f` on `wx5-redesign` (worktree `../rusty-musializer-wx5`);
+     full gate 13/14, the one red is `CODE_MAP.md` being stale, which is
+     regenerated once at merge. The seam's interfaces for Top bar:
+     `Shell::top_bar(d, input, rect, commands)` and `describe_top_bar` in
+     `ui/top_bar.rs`, its own `TopBarState` there,
+     `ShellCommand::ExportContactSheet` (posts "not built yet"; wire it to
+     `ui::panels::export::export_contact_sheet`), `ModeTab` with
+     `Shell::mode_tab_selected`/`activate_mode_tab`, `save_state_tint`, and
+     widget namespaces `TOP_BAR = 20`, `RAIL = 21`. The top-bar rect is 0
+     high until Rail's step 2 gives it 46 px. **Next:** branch Top bar's
+     worktree from `82cd54f` (gate on `:79`), resume Rail at step 2 on
+     `:78`, in parallel; critic pass after the merge.
+   - **Corrections to `WX5C_DESIGN.md` found by the seam:** `SaveState` has
+     five states, not four (`UnfiledWork`, "Unfiled work"); the panel-button
+     shedding lives in `Shell::toolbar`'s candidate loop, not in
+     `transport_bar`'s ladder; the top bar's Still duplicates the Export
+     panel's (`clip_ids::STILL`) — lead's call: keep both, the panel's sits
+     beside the clip it stills.
 3a. **Loose ends from WX-5a/5b**, small:
    - The gate's pixel checks still run on the light look (a theme-only
      `ui.json` in its private config); the dark default has its own
