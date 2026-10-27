@@ -1760,6 +1760,14 @@ pub mod id {
     /// One per lyric cue row, keyed by cue id so a row keeps its id across a
     /// scroll.
     pub const LYRICS_ROWS: u32 = 19;
+    /// The top bar's mode tabs and its Still / Contact sheet / Render
+    /// (`ui::top_bar`, WX-5c). Minted in the seam so the two 5c agents never
+    /// pick a number each.
+    pub const TOP_BAR: u32 = 20;
+    /// The rail's icons and the flyouts' own chrome (WX-5c). The flyouts'
+    /// contents keep the namespaces they had in the sidebar ([`TRACKS`],
+    /// [`SCENE_BROWSER`], [`SCENE_FAMILY`], [`SCENE_ASCII`]), so no claim moves.
+    pub const RAIL: u32 = 21;
     /// One per notice card's close box, indexed by the notice's own id — the
     /// id rather than the list index, so eviction cannot misroute a claim.
     pub const NOTICE: u32 = 64;
@@ -1780,7 +1788,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 23] = [
+    pub const ALL: [(&str, u32); 25] = [
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),
@@ -1800,6 +1808,8 @@ pub mod id {
         ("LYRICS_FORM", LYRICS_FORM),
         ("LYRICS_CAPTION", LYRICS_CAPTION),
         ("LYRICS_ROWS", LYRICS_ROWS),
+        ("TOP_BAR", TOP_BAR),
+        ("RAIL", RAIL),
         ("NOTICE", NOTICE),
         ("TRACK_STRIP", TRACK_STRIP),
         ("ASSIST", ASSIST),
@@ -2010,6 +2020,8 @@ mod tests {
             ("LYRICS_FORM", id::LYRICS_FORM),
             ("LYRICS_CAPTION", id::LYRICS_CAPTION),
             ("LYRICS_ROWS", id::LYRICS_ROWS),
+            ("TOP_BAR", id::TOP_BAR),
+            ("RAIL", id::RAIL),
             ("NOTICE", id::NOTICE),
             ("TRACK_STRIP", id::TRACK_STRIP),
             ("ASSIST", id::ASSIST),

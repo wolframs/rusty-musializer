@@ -189,6 +189,21 @@ impl ShellWidths {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorkspaceFrame {
     pub widths: ShellWidths,
+    /// The top bar across the workspace (WX-5c, `docs/WX5C_DESIGN.md` §4): the
+    /// title, the mode tabs, Still / Contact sheet / Render. It spans the
+    /// workspace, never the inspector's column or the dock (§0).
+    ///
+    /// **Zero height until the rail lands** (the 5c seam, §8): the rect has
+    /// its final x, y and width, and nothing in the frame has moved for it yet.
+    /// Empty in the fullscreen and editor frames, which hide it.
+    pub top_bar: UiRect,
+    /// The left rail of icons beside the preview and the transport (§1). It
+    /// stops at the band, which keeps the full workspace width (§0).
+    ///
+    /// **Zero width until the rail lands** (the 5c seam): its y and height are
+    /// final, from the top bar's bottom to the band's top. Empty in the
+    /// fullscreen and editor frames.
+    pub rail: UiRect,
     /// Right-hand tuning inspector; empty when closed.
     pub inspector: UiRect,
     /// The scene preview. This is what every other region takes from.
@@ -260,6 +275,16 @@ impl WorkspaceFrame {
             preview_height,
         );
         let toolbar = UiRect::new(preview.x, preview.height, preview.width, toolbar_height);
+        // The 5c seam: both regions sit where they will sit, at zero size, so
+        // the top bar and rail can be written against the frame before the
+        // frame gives them room.
+        let top_bar = UiRect::new(0.0, 0.0, widths.workspace_width, 0.0);
+        let rail = UiRect::new(
+            0.0,
+            top_bar.y + top_bar.height,
+            0.0,
+            preview_height + toolbar_height,
+        );
 
         // The sidebar split used to be inline arithmetic that could allocate the
         // tracks panel zero height while it drew and registered its actions
@@ -279,6 +304,8 @@ impl WorkspaceFrame {
 
         Self {
             widths,
+            top_bar,
+            rail,
             inspector: UiRect::new(
                 widths.workspace_width,
                 0.0,
@@ -330,6 +357,8 @@ impl WorkspaceFrame {
                 workspace_width: window_width,
                 tracks_width: 0.0,
             },
+            top_bar: empty,
+            rail: empty,
             inspector: empty,
             preview: UiRect::new(0.0, 0.0, window_width, preview_height),
             toolbar: if hud_visible {
@@ -643,6 +672,36 @@ mod tests {
         // Preview + toolbar + timeline account for the full height.
         let total = frame.preview.height + frame.toolbar.height + frame.timeline.height;
         assert!((total - 720.0).abs() < 0.01, "got {total}");
+    }
+
+    /// Where the top bar and the rail sit (WX-5c §0). True of the seam, where
+    /// both are zero-sized, and of the frame that gives them room: the bar
+    /// spans the workspace and stops at the inspector's column, and the rail
+    /// runs from the bar's bottom to the band's top, beside the preview and
+    /// the transport only.
+    #[test]
+    fn the_top_bar_spans_the_workspace_and_the_rail_stops_at_the_band() {
+        for (window, inspector) in [
+            ((1280.0, 720.0), false),
+            ((1280.0, 720.0), true),
+            (MIN, true),
+            ((2560.0, 1440.0), false),
+        ] {
+            let frame =
+                WorkspaceFrame::layout(window.0, window.1, inspector, 2, DEFAULT_TIMELINE_HEIGHT);
+            assert_eq!(frame.top_bar.x, 0.0);
+            assert_eq!(frame.top_bar.y, 0.0);
+            assert_eq!(frame.top_bar.width, frame.widths.workspace_width);
+            assert_eq!(frame.rail.x, 0.0);
+            assert_eq!(frame.rail.y, frame.top_bar.y + frame.top_bar.height);
+            assert_eq!(frame.rail.y + frame.rail.height, frame.timeline.y);
+        }
+        for frame in [
+            WorkspaceFrame::fullscreen(1280.0, 720.0, true),
+            WorkspaceFrame::editor((1280.0, 720.0)),
+        ] {
+            assert!(frame.top_bar.is_empty() && frame.rail.is_empty());
+        }
     }
 
     #[test]

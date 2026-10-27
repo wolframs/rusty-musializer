@@ -140,6 +140,16 @@ pub enum ShellCommand {
     /// needs no encoder — and a single command with a mode would make "did the
     /// press start an export?" un-answerable from the seam's own type.
     ExportStill,
+    /// Ask for a destination and write a contact sheet of the track's
+    /// sections (`--sheet-at segments`) through the batch path the CLI uses
+    /// (WX-5c §4, the top bar's Contact sheet). Separate from
+    /// [`Self::ExportStill`] for the reason that one is separate from
+    /// [`Self::StartRender`].
+    #[allow(
+        dead_code,
+        reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
+    )]
+    ExportContactSheet,
     /// The manual event row's outcome (`plug.c:2834-2971`).
     ManualEvent(ManualEventAction),
     /// One durable edit from the always-visible scene-plan lane.
@@ -270,7 +280,9 @@ impl ShellCommand {
             | ShellCommand::StartRender
             // A still is a read of the project, written to a PNG outside it
             // (UX0-C10) — same footing as StartRender.
-            | ShellCommand::ExportStill => false,
+            | ShellCommand::ExportStill
+            // A sheet is many stills: a read of the project, like ExportStill.
+            | ShellCommand::ExportContactSheet => false,
             // The ASCII image is four fields of the serialized project (D2):
             // import and clear both change what a `.musi` records, and their
             // handlers mark dirty on success. The dialog variant is classified
@@ -703,6 +715,121 @@ pub struct Shell {
     /// label lives for 2.5 seconds, then the same state collapses to its dot.
     fullscreen_attention_since: Option<f64>,
     fullscreen_attention_token: &'static str,
+    /// What the top bar drew in its last frame (WX-5c). Its type is
+    /// `ui::top_bar`'s, so the top bar can grow its own state without editing
+    /// this file.
+    pub(crate) top_bar_state: super::top_bar::TopBarState,
+    /// The rail's open flyout (WX-5c §1). `--ui-probe flyout=` sets it; until
+    /// the rail is drawn nothing reads it but the `rail:` line.
+    pub open_flyout: Option<Flyout>,
+    /// The rail rect of the last workspace frame drawn, for the `rail:` line.
+    /// `None` on the welcome screen, which has no rail.
+    last_rail: Option<UiRect>,
+}
+
+/// The colour a save state's word draws in, wherever it is drawn: the tracks
+/// header today, the top bar from WX-5c on. One function so the two can never
+/// disagree about which states ask for attention.
+#[must_use]
+pub(crate) fn save_state_tint(state: SaveState) -> Color {
+    match state {
+        SaveState::Failed => color::ui_danger(),
+        SaveState::UnfiledWork | SaveState::Unsaved => color::ui_warning(),
+        // Saved and "No file" are both calm states, and neither should pull
+        // the eye off the work. The word carries the difference.
+        SaveState::Saved | SaveState::NoProjectFile => color::ui_muted(),
+    }
+}
+
+/// The rail's two flyouts (WX-5c §1), named as `--ui-probe flyout=` names them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flyout {
+    Tracks,
+    Scenes,
+}
+
+impl Flyout {
+    /// `flyout=tracks|scenes|none`: the outer `None` is an unknown name, the
+    /// inner one an explicit "closed".
+    #[must_use]
+    pub fn from_probe_name(name: &str) -> Option<Option<Self>> {
+        match name {
+            "tracks" => Some(Some(Flyout::Tracks)),
+            "scenes" => Some(Some(Flyout::Scenes)),
+            "none" => Some(None),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Flyout::Tracks => "tracks",
+            Flyout::Scenes => "scenes",
+        }
+    }
+}
+
+/// The top bar's mode tabs (WX-5c §4): **views onto existing state, never a
+/// second copy of it.** A tab is selected when the state it names holds, and
+/// pressing one goes through the same guards the transport's panel buttons
+/// do. Declared here rather than in `ui::top_bar` because the state they read
+/// is this file's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
+)]
+pub enum ModeTab {
+    /// No bottom panel and the inspector closed.
+    Direct,
+    /// `UiPanel::Lyrics`.
+    Lyrics,
+    /// The Tune inspector open. It coexists with a bottom panel, so `Look`
+    /// can be selected together with Lyrics, Export or Assist.
+    Look,
+    /// `UiPanel::Export`.
+    Export,
+    /// `UiPanel::Assist`.
+    Assist,
+}
+
+#[allow(
+    dead_code,
+    reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
+)]
+impl ModeTab {
+    pub const ALL: [ModeTab; 5] = [
+        ModeTab::Direct,
+        ModeTab::Lyrics,
+        ModeTab::Look,
+        ModeTab::Export,
+        ModeTab::Assist,
+    ];
+
+    /// The token the `top bar:` line prints.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            ModeTab::Direct => "direct",
+            ModeTab::Lyrics => "lyrics",
+            ModeTab::Look => "look",
+            ModeTab::Export => "export",
+            ModeTab::Assist => "assist",
+        }
+    }
+
+    /// The word on the tab.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            ModeTab::Direct => "Direct",
+            ModeTab::Lyrics => "Lyrics",
+            ModeTab::Look => "Look",
+            ModeTab::Export => "Export",
+            ModeTab::Assist => "Assist",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1148,6 +1275,9 @@ impl Shell {
             pointer_cursor: None,
             fullscreen_attention_since: None,
             fullscreen_attention_token: "none",
+            top_bar_state: super::top_bar::TopBarState::default(),
+            open_flyout: None,
+            last_rail: None,
         }
     }
 
@@ -1584,8 +1714,13 @@ impl Shell {
         // when it does not. The regions are disjoint, so drawing it first costs
         // nothing — and one owner of that decision is the whole point.
         let toolbar = self.toolbar(d, frame, input, &mut commands);
+        self.last_rail = Some(frame.rail);
 
         if !self.fullscreen {
+            // WX-5c: the top bar, after the preview chrome. Its rect is empty
+            // in the fullscreen and editor frames and, until the rail lands,
+            // zero-height in every frame.
+            self.top_bar(d, input, frame.top_bar, &mut commands);
             self.tracks_panel(d, frame, input, &mut commands);
             self.scene_browser(d, frame, input, &mut commands);
             // Not drawn under the modal, and not for tidiness: the lyrics cue
@@ -1735,6 +1870,9 @@ impl Shell {
         // The welcome screen has no timed lane, so the modifier can never be
         // consulted; passing the real key state anyway keeps one rule.
         self.begin_frame(input.ui_scale, shift_held(d));
+        // No track, no rail and no top bar (WX-5c §1).
+        self.last_rail = None;
+        self.top_bar_state = super::top_bar::TopBarState::default();
         if self.editor_open || appearance_input_blocked {
             self.widgets.button(
                 d,
@@ -3461,6 +3599,75 @@ impl Shell {
         self.panel = panel;
     }
 
+    /// Whether the state a top-bar tab names holds (WX-5c §4). `Look` can be
+    /// selected together with one of the bottom panels; `Direct` only when
+    /// neither is open. `UiPanel::Tune` is no bottom panel (see
+    /// [`Self::timeline_height`]), so it counts as Direct.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
+    )]
+    pub(crate) fn mode_tab_selected(&self, tab: ModeTab) -> bool {
+        match tab {
+            ModeTab::Direct => {
+                matches!(self.panel, UiPanel::None | UiPanel::Tune) && !self.inspector_open
+            }
+            ModeTab::Lyrics => self.panel == UiPanel::Lyrics,
+            ModeTab::Look => self.inspector_open,
+            ModeTab::Export => self.panel == UiPanel::Export,
+            ModeTab::Assist => self.panel == UiPanel::Assist,
+        }
+    }
+
+    /// A press on a top-bar tab, through the transport's own paths: `Look`
+    /// toggles the inspector as the Tune button does, and the three panels
+    /// toggle behind the lyric-draft guard that every context change takes.
+    /// `Direct` closes both, behind the same guard, since leaving the lyrics
+    /// editor with a half-typed cue is a context change too.
+    #[allow(
+        dead_code,
+        reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
+    )]
+    pub(crate) fn activate_mode_tab(&mut self, tab: ModeTab, workspace: &Workspace) {
+        let panel = match tab {
+            ModeTab::Look => {
+                self.set_inspector_open(!self.inspector_open);
+                return;
+            }
+            ModeTab::Direct => {
+                if self.lyric_draft_allows_context_change(workspace) {
+                    self.panel = UiPanel::None;
+                    self.set_inspector_open(false);
+                }
+                return;
+            }
+            ModeTab::Lyrics => UiPanel::Lyrics,
+            ModeTab::Export => UiPanel::Export,
+            ModeTab::Assist => UiPanel::Assist,
+        };
+        if self.lyric_draft_allows_context_change(workspace) {
+            self.toggle_panel(panel);
+        }
+    }
+
+    /// The `rail:` report line (WX-5c §1): the rail rect of the last
+    /// workspace frame, its icons, the open flyout and where it drew.
+    #[must_use]
+    pub fn describe_rail(&self) -> String {
+        let Some(rail) = self.last_rail else {
+            return "none".to_owned();
+        };
+        format!(
+            "rect={:.0},{:.0},{:.0},{:.0} icons=none open={} flyout=none",
+            rail.x,
+            rail.y,
+            rail.width,
+            rail.height,
+            self.open_flyout.map_or("none", Flyout::name),
+        )
+    }
+
     /// Draggable workspace boundaries. Geometry remains a pure layout concern;
     /// this is only the immediate-mode gesture that updates its optional inputs.
     fn splitters(
@@ -3769,13 +3976,7 @@ impl Shell {
         if x < title_end {
             return;
         }
-        let tint = match state {
-            SaveState::Failed => color::ui_danger(),
-            SaveState::UnfiledWork | SaveState::Unsaved => color::ui_warning(),
-            // Saved and "No file" are both calm states, and neither should pull
-            // the eye off the work. The word carries the difference.
-            SaveState::Saved | SaveState::NoProjectFile => color::ui_muted(),
-        };
+        let tint = save_state_tint(state);
         widgets::draw_text(
             d,
             font,
@@ -5739,6 +5940,44 @@ mod tests {
     }
 
     use super::*;
+
+    /// The top bar's tabs are views onto `UiPanel` and the inspector (WX-5c
+    /// §4): selection reads that state, a press writes it through the
+    /// transport's paths, and nothing else holds a copy.
+    #[test]
+    fn mode_tabs_read_and_write_the_panel_and_the_inspector_and_nothing_else() {
+        let workspace = crate::workspace::Workspace::new();
+        let mut shell = Shell::new();
+        let selected = |shell: &Shell| -> Vec<&str> {
+            ModeTab::ALL
+                .into_iter()
+                .filter(|tab| shell.mode_tab_selected(*tab))
+                .map(ModeTab::name)
+                .collect()
+        };
+        assert_eq!(selected(&shell), ["direct"]);
+        // `UiPanel::Tune` is no bottom panel, so it is still Direct.
+        shell.panel = UiPanel::Tune;
+        assert_eq!(selected(&shell), ["direct"]);
+
+        shell.activate_mode_tab(ModeTab::Export, &workspace);
+        assert_eq!(shell.panel, UiPanel::Export);
+        assert_eq!(selected(&shell), ["export"]);
+        shell.activate_mode_tab(ModeTab::Look, &workspace);
+        assert!(shell.inspector_open);
+        assert_eq!(selected(&shell), ["look", "export"]);
+        // A second press on a panel's tab closes it, as its transport button did.
+        shell.activate_mode_tab(ModeTab::Export, &workspace);
+        assert_eq!(shell.panel, UiPanel::None);
+        assert_eq!(selected(&shell), ["look"]);
+
+        shell.activate_mode_tab(ModeTab::Lyrics, &workspace);
+        shell.activate_mode_tab(ModeTab::Direct, &workspace);
+        assert_eq!((shell.panel, shell.inspector_open), (UiPanel::None, false));
+        assert_eq!(selected(&shell), ["direct"]);
+        shell.activate_mode_tab(ModeTab::Assist, &workspace);
+        assert_eq!(selected(&shell), ["assist"]);
+    }
 
     #[test]
     fn fullscreen_attention_is_absent_fresh_and_names_each_risk_state() {

@@ -442,6 +442,9 @@ fn run(
     if let Some(probe) = options.ui_probe.as_ref() {
         posters.configure(probe.posters, probe.poster_dump.clone());
         app.shell.probe_run_open = probe.run_open;
+        if let Some(flyout) = probe.flyout {
+            app.shell.open_flyout = flyout;
+        }
     }
     editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
     ui::theme::set_current(editor.theme);
@@ -2421,6 +2424,15 @@ fn run(
                         probe_save_to.as_deref(),
                     );
                 }
+                ShellCommand::ExportContactSheet => {
+                    // The top bar's Contact sheet (WX-5c §4). The seam
+                    // answers the press by name rather than doing nothing.
+                    app.shell.notify(
+                        Severity::Info,
+                        "Contact sheet",
+                        "Not built yet: use --contact-sheet on the command line",
+                    );
+                }
                 ShellCommand::ManualEvent(action) => {
                     // The playhead this frame, not the timeline widget's view: a cue is
                     // recorded where the transport is (`plug.c:1979-2030`).
@@ -2776,6 +2788,8 @@ fn run(
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
     report.scene_runs = app.shell.describe_runs(&app.workspace);
+    report.top_bar = app.shell.describe_top_bar();
+    report.rail = app.shell.describe_rail();
     report.posters = posters.describe();
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
@@ -5773,6 +5787,9 @@ struct Report {
     /// `scene runs:` and `posters:` (WX-5b), taken at shutdown like `dock:`.
     scene_runs: String,
     posters: String,
+    /// `top bar:` and `rail:` (WX-5c), what the last frame drew.
+    top_bar: String,
+    rail: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -5848,6 +5865,8 @@ impl Default for Report {
             dock: String::new(),
             scene_runs: String::new(),
             posters: String::new(),
+            top_bar: String::new(),
+            rail: String::new(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -6440,6 +6459,9 @@ impl Report {
         // (WX-5b). Two lines because two owners fill them in.
         println!("scene runs:      {}", self.scene_runs);
         println!("posters:         {}", self.posters);
+        // WX-5c: the top bar and the rail, from the last frame drawn.
+        println!("top bar:         {}", self.top_bar);
+        println!("rail:            {}", self.rail);
         println!(
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")
