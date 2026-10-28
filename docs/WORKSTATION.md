@@ -258,6 +258,34 @@ They are independent unless a line says otherwise. Every one finishes with
      `transport_bar`'s ladder; the top bar's Still duplicates the Export
      panel's (`clip_ids::STILL`) — lead's call: keep both, the panel's sits
      beside the clip it stills.
+   - **Checkpoint 2026-10-28: Rail, steps 2–6 landed** on `wx5-redesign`
+     (`93ad096` frame and rail, `c086b0e` flyouts/picker/lane head/transport,
+     `474daa5` fix, `0fd4054` harness and docs). Headless gate green. What
+     changed against the note:
+     - The flyout's modality for presses is `UiScale::occluded` (`ui/scale.rs`):
+       one seam rather than a guard at each raw pointer read, two of which are
+       in panels nobody in 5c owns.
+     - The transport's volume is a chip (`50 %`, drag or scroll) rather than a
+       slider, and the seek trio, readout, mute and fullscreen are ghost icons
+       (`ButtonStyle::Ghost`).
+     - The lane head draws the marker chips in every state, Lyrics and Assist
+       included, where the event row was hidden; its ladder sheds words before
+       it sheds the chips, and never a plan gesture.
+     - `scene-family=` holds its family against the plan's first-frame scene
+       change, or a capture of a plan-driven project showed the plan's family.
+     - The band's header carries the mockup's gesture hint while the timecode
+       is inline.
+     - `layout_post_legacy.txt`'s two controls failed the unit tests too, not
+       only the harness: `WorkspaceRail`'s tests pin numbers.
+     - `lane head:` and `transport:` print on the `rail:` string after
+       newlines until `main.rs` gives them their own `println!`.
+     **Open for the merge:** the save-badge crop in `headless_check.sh` is
+     marked INTERIM (it reads the tracks flyout's header) for Top bar's
+     replacement; the HUD readout in `main.rs` draws over an open flyout
+     (`Shell::last_flyout` says where it is); `panels::export`'s band budget
+     still adds `EVENT_ROW_HEIGHT`, which the shell subtracts from the export
+     minimum. Without the top bar's tabs this branch alone has no mouse route
+     to Export, Lyrics or Assist.
 3a. **Loose ends from WX-5a/5b**, small:
    - The gate's pixel checks still run on the light look (a theme-only
      `ui.json` in its private config); the dark default has its own
