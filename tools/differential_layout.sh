@@ -32,6 +32,33 @@
 #
 # Both were reverted byte-for-byte and the checksums re-verified.
 #
+# WX-5c (2026-10-28): the sidebar split is retired, and with it the `sidebar`
+# and `action_row` records and four of the six divergence pairs. The window
+# stopped calling `workspace_sidebar_layout` — the 320 px sidebar became a
+# 52 px rail with flyouts — and a harness that pins code nothing calls proves
+# nothing. Control 1 above was a sidebar perturbation and went with it.
+# `UiRect` and `TimelineBand` are still the window's and still compared with
+# the C.
+#
+# The rail has no oracle, so it is pinned the way `settings_dump` pins the
+# scenes the C cannot have: the dump prints a `--- post-legacy (no oracle) ---`
+# marker and then `WorkspaceRail::layout` over a window sweep, and that half is
+# diffed exactly against `tests/differential/layout_post_legacy.txt` (1388
+# records: the window grid at six band heights, every rail height from 0 to
+# 260, each icon-ladder rung a sixteenth and a pixel either side, and ten
+# degenerate cases). Its two negative controls, run 2026-10-28:
+#
+#   3. RAIL_WIDTH 52 -> 52.0625 (one sixteenth of a pixel): 1215 of the 1388
+#      records differ — every accepted one; the 173 refusals print sentinels.
+#   4. the flyout's top moved down 1 px: 1215 of 1388 differ, the same set.
+#
+# Unlike the controls above, the unit tests caught these too (3 and 1 of the
+# module's tests failed), because WorkspaceRail's tests pin numbers at the
+# photographed windows rather than properties — which is the lesson those
+# controls taught, applied. The harness still earns its place: it is the sweep,
+# and the pinned file is what a deliberate change has to be argued past.
+# Both were reverted byte-for-byte (md5 re-verified) and the harness passed.
+#
 # The oracle at ../musializer is READ-ONLY. This script compiles
 # ../musializer/src/workspace_layout.c and ../musializer/src/timeline_layout.c
 # with all output going into our own build/ directory. It never writes to the C
@@ -88,7 +115,36 @@ echo "=== running the oracle ==="
 
 echo "=== running the Rust port ==="
 cargo run --quiet --release -p musializer-core --example layout_dump \
-    >"$OUT_DIR/layout_rust.txt"
+    >"$OUT_DIR/layout_rust_full.txt"
+
+# The C-era records, then the post-legacy rail after the marker (WX-5c).
+MARKER="--- post-legacy (no oracle) ---"
+EXPECTED="tests/differential/layout_post_legacy.txt"
+if ! grep -qxF -- "$MARKER" "$OUT_DIR/layout_rust_full.txt"; then
+    echo "FAIL: the dump printed no '$MARKER' line" >&2
+    exit 1
+fi
+awk -v m="$MARKER" '$0 == m {found=1; next} !found' \
+    "$OUT_DIR/layout_rust_full.txt" >"$OUT_DIR/layout_rust.txt"
+awk -v m="$MARKER" '$0 == m {found=1; next} found' \
+    "$OUT_DIR/layout_rust_full.txt" >"$OUT_DIR/layout_rust_post.txt"
+
+echo "=== comparing the post-legacy rail (exact, against the pinned file) ==="
+if [ ! -f "$EXPECTED" ]; then
+    echo "FAIL: $EXPECTED is missing. Copy $OUT_DIR/layout_rust_post.txt there" \
+         "and read it before you commit it." >&2
+    exit 1
+fi
+if ! diff -u "$EXPECTED" "$OUT_DIR/layout_rust_post.txt" >"$OUT_DIR/layout_post_legacy.diff"; then
+    head -40 "$OUT_DIR/layout_post_legacy.diff"
+    echo
+    echo "FAIL: the rail layout changed: $(grep -c '^+rail' "$OUT_DIR/layout_post_legacy.diff") of" \
+         "$(grep -c '^rail' "$EXPECTED") pinned records differ ('-' is the pinned" \
+         "expectation, '+' is the code). If the change is deliberate, update" \
+         "$EXPECTED and say why in the commit." >&2
+    exit 1
+fi
+echo "post-legacy rail: $(grep -c '^rail' "$EXPECTED") records match the pinned file"
 
 echo "=== comparing ==="
 python3 - "$OUT_DIR/layout_oracle.txt" "$OUT_DIR/layout_rust.txt" "$TOLERANCE" <<'PY'
@@ -118,12 +174,7 @@ SCHEMA = {
                  ("contains_ab", "i"), ("contains_ba", "i"),
                  ("overlaps_ab", "i"), ("overlaps_ba", "i")]
                 + prefixed("isect_ab", RECT) + prefixed("isect_ba", RECT)),
-    "action_row": (1, [("ok", "i"), ("top", "f"), ("height", "f")]),
     "control_set": (2, [("width", "f")]),
-    "sidebar": (1, [("in_width", "f"), ("in_height", "f"), ("in_tracks", "i"),
-                    ("ok", "i")]
-                   + prefixed("tracks", RECT) + prefixed("scenes", RECT)
-                   + [("tracks_mode", "i")]),
     "timeline": (1, [("in_x", "f"), ("in_y", "f"),
                      ("in_width", "f"), ("in_height", "f"), ("in_margin", "f"),
                      ("in_set", "i"), ("in_count", "i"),
@@ -138,7 +189,7 @@ SCHEMA = {
 # so the message names the window size rather than a record number -- and a
 # mismatch in one of them means the two duplicated generators have drifted, which
 # is a harness bug rather than a port bug.
-INPUT_FIELDS = {"sidebar": 3, "timeline": 9}
+INPUT_FIELDS = {"timeline": 9}
 
 # Divergences in mechanism, not in behaviour: the C takes bare pointers and a bare
 # enum, so it can refuse an input the Rust signatures cannot express at all.
@@ -146,10 +197,6 @@ INPUT_FIELDS = {"sidebar": 3, "timeline": 9}
 EXPECTED_DIVERGENCES = {
     "null_band_out":       ("c_rejects", "not_expressible"),
     "null_control_widths": ("c_rejects", "not_expressible"),
-    "null_sidebar_out":    ("c_rejects", "not_expressible"),
-    "null_action_top":     ("c_rejects", "not_expressible"),
-    "null_action_height":  ("c_rejects", "not_expressible"),
-    "out_of_range_mode":   ("c_rejects", "not_expressible"),
 }
 
 
@@ -223,10 +270,9 @@ for o, r in zip(oracle, rust):
     per_kind[kind] += len(fields)
     for (name, spec), otoken, rtoken in zip(fields, otokens, rtokens):
         if spec == "i":
-            # Integers, enums and every boolean. `ok`, `tracks_mode`,
-            # `timecode_inline` and `fits` are the decisions the drawing code
-            # branches on, so a difference is a real bug, never a rounding
-            # artifact.
+            # Integers, enums and every boolean. `ok`, `timecode_inline` and
+            # `fits` are the decisions the drawing code branches on, so a
+            # difference is a real bug, never a rounding artifact.
             integral += 1
             if int(otoken) != int(rtoken):
                 failures.append("%s: %s differs: oracle %s, rust %s"
@@ -257,12 +303,11 @@ for kind in sorted(per_kind):
     print("  %-14s %7d records, %8d values"
           % (kind, sum(1 for rec in oracle if rec[0] == kind), per_kind[kind]))
 timeline_values = per_kind["timeline"] + per_kind["control_set"]
-workspace_values = (per_kind["sidebar"] + per_kind["rect"] + per_kind["rect_table"]
-                    + per_kind["action_row"])
+workspace_values = per_kind["rect"] + per_kind["rect_table"]
 print("workspace_layout:      %d values" % workspace_values)
 print("timeline_layout:       %d values" % timeline_values)
 print("values compared:       %d" % compared)
-print("  integral, exact:     %d   (ok, tracks_mode, timecode_inline, fits, ...)" % integral)
+print("  integral, exact:     %d   (ok, timecode_inline, fits, ...)" % integral)
 print("  non-finite, exact:   %d   (routed away from the tolerance on purpose)" % nonfinite)
 print("  float, tolerance:    %d" % (compared - integral - nonfinite))
 print("largest rel. delta:    %.3g%s"

@@ -30,10 +30,7 @@
  *   rect         <i> <j> <a_finite> <a_empty> <b_finite> <b_empty>
  *                    <contains_ab> <contains_ba> <overlaps_ab> <overlaps_ba>
  *                    <isect_ab x y w h> <isect_ba x y w h>
- *   action_row   <mode> <ok> <top> <height>
  *   control_set  <set> <index> <width>
- *   sidebar      <case> <in_width> <in_height> <in_tracks>
- *                    <ok> <tracks x y w h> <scenes x y w h> <mode>
  *   timeline     <case> <in_x> <in_y> <in_width> <in_height> <in_margin>
  *                    <in_set> <in_count> <in_clear> <in_timecode>
  *                    <ok> <scale> <controls_width> <controls x y w h>
@@ -48,6 +45,14 @@
  * (SENTINEL_F / SENTINEL_MODE), so "returns false and leaves *out untouched" is
  * a compared column rather than a claim. The Rust side prints the same sentinels
  * for its `None`, where the guarantee is structural.
+ *
+ * WX-5c retired the sidebar split (`workspace_sidebar_layout`) and the tracks
+ * action row from the window: the 320 px sidebar became a 52 px rail with
+ * flyouts. Their records are no longer dumped here, because a harness that
+ * pins code the window no longer calls proves nothing. Ui_Rect and the
+ * timeline band are still the window's and still compared. The rail has no
+ * oracle; the Rust dump prints it after a `--- post-legacy (no oracle) ---`
+ * marker and the driver diffs that half against a checked-in file.
  *
  * Build and run through tools/differential_layout.sh.
  */
@@ -151,58 +156,6 @@ static void dump_rect_helpers(void)
     }
 }
 
-/* ------------------------------------------------------------------------- *
- * workspace_tracks_action_row. Three modes, and the sentinel proves the hidden
- * mode leaves both out-parameters untouched rather than zeroing them.
- * ------------------------------------------------------------------------- */
-
-static void dump_action_rows(void)
-{
-    static const Tracks_Panel_Mode modes[] = {
-        TRACKS_PANEL_HIDDEN, TRACKS_PANEL_SINGLE, TRACKS_PANEL_STACKED,
-    };
-    for (size_t i = 0; i < sizeof modes/sizeof modes[0]; ++i) {
-        float top = SENTINEL_F;
-        float height = SENTINEL_F;
-        bool ok = workspace_tracks_action_row(modes[i], &top, &height);
-        printf("action_row %d %d", (int)modes[i], ok ? 1 : 0);
-        pf(top);
-        pf(height);
-        printf("\n");
-    }
-}
-
-/* ------------------------------------------------------------------------- *
- * workspace_sidebar_layout.
- * ------------------------------------------------------------------------- */
-
-static size_t sidebar_case_index = 0;
-
-static void emit_sidebar(float width, float height, size_t track_count)
-{
-    Workspace_Sidebar out;
-    out.tracks = (Ui_Rect){SENTINEL_F, SENTINEL_F, SENTINEL_F, SENTINEL_F};
-    out.scenes = (Ui_Rect){SENTINEL_F, SENTINEL_F, SENTINEL_F, SENTINEL_F};
-    out.tracks_mode = (Tracks_Panel_Mode)SENTINEL_MODE;
-
-    bool ok = workspace_sidebar_layout(width, height, track_count, &out);
-
-    printf("sidebar %zu", sidebar_case_index++);
-    pf(width);
-    pf(height);
-    printf(" %llu %d", (unsigned long long)track_count, ok ? 1 : 0);
-    pf(out.tracks.x); pf(out.tracks.y); pf(out.tracks.width); pf(out.tracks.height);
-    pf(out.scenes.x); pf(out.scenes.y); pf(out.scenes.width); pf(out.scenes.height);
-    printf(" %d\n", (int)out.tracks_mode);
-}
-
-/* Duplicated, on purpose, from layout_dump.rs. */
-static const float sidebar_dense_widths[] = {168.0f, 320.0f};
-static const size_t sidebar_dense_counts[] = {0, 1, 3, 12};
-static const float sidebar_grid_widths[] = {
-    1.0f, 2.0f, 96.0f, 168.0f, 200.0f, 240.0f, 280.0f, 320.0f, 400.0f, 640.0f, 3000.0f,
-};
-static const size_t sidebar_grid_counts[] = {0, 1, 2, 3, 4, 5, 8, 12, 64, 512, 4096};
 /* Sixteenths, so a threshold-adjacent probe is exactly representable and the two
  * generators cannot disagree about what "one pixel below" means. */
 static const float threshold_offsets[] = {-1.0f, -0.0625f, 0.0f, 0.0625f, 1.0f};
@@ -213,115 +166,6 @@ static const float window_widths[] = {
     0.0f, 1.0f, 200.0f, 640.0f, 960.0f, 1024.0f, 1280.0f, 1366.0f,
     1600.0f, 1920.0f, 2560.0f, 3840.0f, 7680.0f,
 };
-static const float window_heights[] = {
-    0.0f, 1.0f, 300.0f, 480.0f, 600.0f, 640.0f, 720.0f, 768.0f,
-    800.0f, 900.0f, 1080.0f, 1440.0f, 2160.0f, 4320.0f,
-};
-
-/* The rail width the shell hands the sidebar, and the sidebar height left once
- * the default 180 px timeline is reserved. Plain arithmetic, duplicated. */
-static float rail_width(float window_width)
-{
-    float rail = window_width*0.25f;
-    if (rail < 240.0f) rail = 240.0f;
-    if (rail > 320.0f) rail = 320.0f;
-    return rail;
-}
-
-static void dump_sidebars(void)
-{
-    /* Dense: one pixel at a time through every threshold, at the rail width the
-     * shell produces with no inspector. */
-    for (size_t c = 0; c < sizeof sidebar_dense_counts/sizeof sidebar_dense_counts[0]; ++c) {
-        for (int h = 1; h <= 1400; ++h) {
-            emit_sidebar(240.0f, (float)h, sidebar_dense_counts[c]);
-        }
-    }
-    /* Dense, coarser, at the two other rail widths the shell can produce. */
-    for (size_t w = 0; w < sizeof sidebar_dense_widths/sizeof sidebar_dense_widths[0]; ++w) {
-        for (size_t c = 0; c < sizeof sidebar_dense_counts/sizeof sidebar_dense_counts[0]; ++c) {
-            for (int h = 1; h <= 1400; h += 7) {
-                emit_sidebar(sidebar_dense_widths[w], (float)h, sidebar_dense_counts[c]);
-            }
-        }
-    }
-    /* Threshold-adjacent: the whole point. Every boundary the module compares
-     * against, probed a sixteenth and a pixel either side. */
-    for (size_t w = 0; w < sizeof sidebar_grid_widths/sizeof sidebar_grid_widths[0]; ++w) {
-        for (size_t c = 0; c < sizeof sidebar_grid_counts/sizeof sidebar_grid_counts[0]; ++c) {
-            float width = sidebar_grid_widths[w];
-            size_t count = sidebar_grid_counts[c];
-            float wanted = WORKSPACE_TRACKS_STACKED_HEADER +
-                           (float)count*width*WORKSPACE_TRACKS_ITEM_RATIO;
-            if (!isfinite(wanted) || wanted < WORKSPACE_TRACKS_STACKED_MINIMUM) {
-                wanted = WORKSPACE_TRACKS_STACKED_MINIMUM;
-            }
-            if (wanted > WORKSPACE_TRACKS_MAXIMUM) wanted = WORKSPACE_TRACKS_MAXIMUM;
-            const float bases[] = {
-                wanted,
-                wanted + WORKSPACE_SCENES_MINIMUM,
-                wanted + WORKSPACE_SCENES_MAXIMUM,
-                wanted + WORKSPACE_TRACKS_SINGLE_MINIMUM,
-                wanted + WORKSPACE_TRACKS_STACKED_MINIMUM,
-                WORKSPACE_SCENES_MINIMUM,
-                WORKSPACE_SCENES_MAXIMUM,
-                WORKSPACE_TRACKS_SINGLE_MINIMUM,
-                WORKSPACE_TRACKS_STACKED_MINIMUM,
-            };
-            for (size_t b = 0; b < sizeof bases/sizeof bases[0]; ++b) {
-                for (size_t o = 0; o < sizeof threshold_offsets/sizeof threshold_offsets[0]; ++o) {
-                    emit_sidebar(width, bases[b] + threshold_offsets[o], count);
-                }
-            }
-        }
-    }
-    /* The window grid, twice: once treating the window as the sidebar directly
-     * (extremely wide and extremely tall aspect ratios, and the 0 cases), once
-     * through the rail/timeline derivation the shell actually performs. */
-    for (size_t w = 0; w < sizeof window_widths/sizeof window_widths[0]; ++w) {
-        for (size_t h = 0; h < sizeof window_heights/sizeof window_heights[0]; ++h) {
-            for (size_t c = 0; c < 3; ++c) {
-                static const size_t counts[] = {0, 1, 3};
-                emit_sidebar(window_widths[w], window_heights[h], counts[c]);
-                emit_sidebar(rail_width(window_widths[w]),
-                             window_heights[h] - 180.0f, counts[c]);
-            }
-        }
-    }
-    /* Extremes and non-finite input. The huge counts are what reach the oracle's
-     * "an overflowed ask goes to the *minimum*" branch, which the port kept. */
-    {
-        struct { float width; float height; size_t count; } cases[] = {
-            {240.0f, 0.0f, 1},
-            {240.0f, -10.0f, 1},
-            {0.0f, 600.0f, 1},
-            {-1.0f, 600.0f, 1},
-            {1.0e-3f, 1.0e-3f, 0},
-            {0.0625f, 640.0f, 0},
-            {240.0f, 1.0e-3f, 1},
-            {1.0e38f, 600.0f, 1},
-            {3.0e38f, 600.0f, 1},
-            {240.0f, 1.0e38f, 1},
-            {240.0f, 3.0e38f, 1},
-            {240.0f, 600.0f, SIZE_MAX},
-            {1.0e38f, 600.0f, SIZE_MAX},
-            {1.0e38f, 1.0e38f, SIZE_MAX},
-            {3.0e38f, 3.0e38f, SIZE_MAX},
-            {240.0f, 600.0f, (size_t)1 << 40},
-            {1.0e20f, 600.0f, (size_t)1 << 40},
-            {NAN, 600.0f, 1},
-            {240.0f, NAN, 1},
-            {NAN, NAN, 1},
-            {INFINITY, 600.0f, 1},
-            {240.0f, INFINITY, 1},
-            {-INFINITY, 600.0f, 1},
-            {240.0f, -INFINITY, 1},
-        };
-        for (size_t i = 0; i < sizeof cases/sizeof cases[0]; ++i) {
-            emit_sidebar(cases[i].width, cases[i].height, cases[i].count);
-        }
-    }
-}
 
 /* ------------------------------------------------------------------------- *
  * timeline_band_layout.
@@ -566,36 +410,21 @@ static void dump_timelines(void)
 static void dump_divergences(void)
 {
     Timeline_Band band;
-    float top = SENTINEL_F;
 
     bool null_band_out = timeline_band_layout(0.0f, 0.0f, 1280.0f, 38.0f, 6.0f,
                                               control_sets[2], 6, 112.0f, 145.0f, NULL);
     bool null_control_widths = timeline_band_layout(0.0f, 0.0f, 1280.0f, 38.0f, 6.0f,
                                                     NULL, 6, 112.0f, 145.0f, &band);
-    bool null_sidebar_out = workspace_sidebar_layout(240.0f, 600.0f, 1, NULL);
-    bool null_action_top = workspace_tracks_action_row(TRACKS_PANEL_SINGLE, NULL, &top);
-    bool null_action_height = workspace_tracks_action_row(TRACKS_PANEL_SINGLE, &top, NULL);
-    /* An out-of-range enum value falls off the switch and returns false. Rust's
-     * TracksPanelMode has no such value, which is the divergence. */
-    bool out_of_range_mode = workspace_tracks_action_row((Tracks_Panel_Mode)99, &top, &top);
 
     printf("divergence null_band_out %s\n", null_band_out ? "c_accepts" : "c_rejects");
     printf("divergence null_control_widths %s\n",
            null_control_widths ? "c_accepts" : "c_rejects");
-    printf("divergence null_sidebar_out %s\n", null_sidebar_out ? "c_accepts" : "c_rejects");
-    printf("divergence null_action_top %s\n", null_action_top ? "c_accepts" : "c_rejects");
-    printf("divergence null_action_height %s\n",
-           null_action_height ? "c_accepts" : "c_rejects");
-    printf("divergence out_of_range_mode %s\n",
-           out_of_range_mode ? "c_accepts" : "c_rejects");
 }
 
 int main(void)
 {
     build_rects();
     dump_rect_helpers();
-    dump_action_rows();
-    dump_sidebars();
     dump_timelines();
     dump_divergences();
     return 0;

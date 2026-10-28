@@ -22,20 +22,28 @@
 //! so C's "returns false and leaves `*out` untouched" is a compared column. Here
 //! the guarantee is structural (`Option`), and printing the same sentinel is what
 //! pairs the two.
+//!
+//! # Two sections since WX-5c
+//!
+//! The sidebar split (`WorkspaceSidebar`) and the tracks action row are retired
+//! from the window — a 52 px rail with flyouts replaced the sidebar — and no
+//! longer dumped: a harness pinning code the window does not call proves
+//! nothing. What follows the oracle's records, after a
+//! `--- post-legacy (no oracle) ---` marker, is [`WorkspaceRail::layout`] over
+//! a window sweep, which the driver diffs against
+//! `tests/differential/layout_post_legacy.txt` exactly — the pattern
+//! `settings_dump` set for scenes the C cannot have.
 
 use musializer_core::ui::timeline_layout::{
     TimelineBand, TIMELINE_BAND_GAP, TIMELINE_BAND_MIN_SCALE,
 };
 use musializer_core::ui::workspace_layout::{
-    TracksPanelMode, UiRect, WorkspaceSidebar, WORKSPACE_SCENES_MAXIMUM, WORKSPACE_SCENES_MINIMUM,
-    WORKSPACE_TRACKS_ITEM_RATIO, WORKSPACE_TRACKS_MAXIMUM, WORKSPACE_TRACKS_SINGLE_MINIMUM,
-    WORKSPACE_TRACKS_STACKED_HEADER, WORKSPACE_TRACKS_STACKED_MINIMUM,
+    UiRect, WorkspaceRail, RAIL_GROUP_GAP, RAIL_ICON_GAP, RAIL_ICON_MARGIN, RAIL_ICON_MINIMUM,
+    RAIL_ICON_SIZE, TOP_BAR_HEIGHT,
 };
 
 /// What the C harness pre-fills every out-parameter with.
 const SENTINEL_F: f32 = -12345.0;
-/// Not a valid `Tracks_Panel_Mode`, so "the C did not write" is visible.
-const SENTINEL_MODE: i32 = 7;
 
 /// Ten significant digits, matching the C's `%.9e`. That round-trips an IEEE
 /// single exactly, so the comparison is effectively bit-exact.
@@ -131,52 +139,6 @@ fn dump_rect_helpers(out: &mut String) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TracksPanelMode::action_row.
-// ---------------------------------------------------------------------------
-
-fn mode_int(mode: TracksPanelMode) -> i32 {
-    // Explicit rather than `as i32`, because the pairing with C's enum is a
-    // contract and not an accident of declaration order.
-    match mode {
-        TracksPanelMode::Hidden => 0,
-        TracksPanelMode::Single => 1,
-        TracksPanelMode::Stacked => 2,
-    }
-}
-
-fn dump_action_rows(out: &mut String) {
-    for mode in [
-        TracksPanelMode::Hidden,
-        TracksPanelMode::Single,
-        TracksPanelMode::Stacked,
-    ] {
-        let (ok, top, height) = match mode.action_row() {
-            // C leaves both out-parameters untouched when it returns false, so
-            // the sentinel is what pairs with `None` here.
-            None => (0, SENTINEL_F, SENTINEL_F),
-            Some((top, height)) => (1, top, height),
-        };
-        out.push_str(&format!(
-            "action_row {} {ok} {} {}\n",
-            mode_int(mode),
-            f(top),
-            f(height)
-        ));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// WorkspaceSidebar::layout.
-// ---------------------------------------------------------------------------
-
-// Duplicated, on purpose, from layout_oracle.c.
-const SIDEBAR_DENSE_WIDTHS: [f32; 2] = [168.0, 320.0];
-const SIDEBAR_DENSE_COUNTS: [usize; 4] = [0, 1, 3, 12];
-const SIDEBAR_GRID_WIDTHS: [f32; 11] = [
-    1.0, 2.0, 96.0, 168.0, 200.0, 240.0, 280.0, 320.0, 400.0, 640.0, 3000.0,
-];
-const SIDEBAR_GRID_COUNTS: [usize; 11] = [0, 1, 2, 3, 4, 5, 8, 12, 64, 512, 4096];
 /// Sixteenths, so a threshold-adjacent probe is exactly representable and the two
 /// generators cannot disagree about what "one pixel below" means.
 const THRESHOLD_OFFSETS: [f32; 5] = [-1.0, -0.0625, 0.0, 0.0625, 1.0];
@@ -190,151 +152,6 @@ const WINDOW_HEIGHTS: [f32; 14] = [
     0.0, 1.0, 300.0, 480.0, 600.0, 640.0, 720.0, 768.0, 800.0, 900.0, 1080.0, 1440.0, 2160.0,
     4320.0,
 ];
-
-/// The rail width the shell hands the sidebar. Plain arithmetic, duplicated.
-// Sequential ifs, not `clamp`, so this is the same expression the C harness runs:
-// `clamp` propagates NaN differently and would make the window grid's degenerate
-// entries diverge for a reason that has nothing to do with the port.
-#[allow(clippy::manual_clamp)]
-fn rail_width(window_width: f32) -> f32 {
-    let mut rail = window_width * 0.25;
-    if rail < 240.0 {
-        rail = 240.0;
-    }
-    if rail > 320.0 {
-        rail = 320.0;
-    }
-    rail
-}
-
-struct Sidebars {
-    out: String,
-    index: usize,
-}
-
-impl Sidebars {
-    fn emit(&mut self, width: f32, height: f32, track_count: usize) {
-        let (ok, tracks, scenes, mode) = match WorkspaceSidebar::layout(width, height, track_count)
-        {
-            None => (0, SENTINEL_RECT, SENTINEL_RECT, SENTINEL_MODE),
-            Some(layout) => (
-                1,
-                layout.tracks,
-                layout.scenes,
-                mode_int(layout.tracks_mode),
-            ),
-        };
-        self.out.push_str(&format!(
-            "sidebar {} {} {} {track_count} {ok} {} {} {mode}\n",
-            self.index,
-            f(width),
-            f(height),
-            rect_fields(tracks),
-            rect_fields(scenes),
-        ));
-        self.index += 1;
-    }
-}
-
-fn dump_sidebars(out: &mut String) {
-    let mut sink = Sidebars {
-        out: String::new(),
-        index: 0,
-    };
-
-    // Dense: one pixel at a time through every threshold, at the rail width the
-    // shell produces with no inspector.
-    for count in SIDEBAR_DENSE_COUNTS {
-        for h in 1..=1400 {
-            sink.emit(240.0, h as f32, count);
-        }
-    }
-    // Dense, coarser, at the two other rail widths the shell can produce.
-    for width in SIDEBAR_DENSE_WIDTHS {
-        for count in SIDEBAR_DENSE_COUNTS {
-            let mut h = 1;
-            while h <= 1400 {
-                sink.emit(width, h as f32, count);
-                h += 7;
-            }
-        }
-    }
-    // Threshold-adjacent: the whole point. Every boundary the module compares
-    // against, probed a sixteenth and a pixel either side.
-    for width in SIDEBAR_GRID_WIDTHS {
-        for count in SIDEBAR_GRID_COUNTS {
-            let mut wanted = WORKSPACE_TRACKS_STACKED_HEADER
-                + count as f32 * width * WORKSPACE_TRACKS_ITEM_RATIO;
-            if !wanted.is_finite() || wanted < WORKSPACE_TRACKS_STACKED_MINIMUM {
-                wanted = WORKSPACE_TRACKS_STACKED_MINIMUM;
-            }
-            if wanted > WORKSPACE_TRACKS_MAXIMUM {
-                wanted = WORKSPACE_TRACKS_MAXIMUM;
-            }
-            let bases = [
-                wanted,
-                wanted + WORKSPACE_SCENES_MINIMUM,
-                wanted + WORKSPACE_SCENES_MAXIMUM,
-                wanted + WORKSPACE_TRACKS_SINGLE_MINIMUM,
-                wanted + WORKSPACE_TRACKS_STACKED_MINIMUM,
-                WORKSPACE_SCENES_MINIMUM,
-                WORKSPACE_SCENES_MAXIMUM,
-                WORKSPACE_TRACKS_SINGLE_MINIMUM,
-                WORKSPACE_TRACKS_STACKED_MINIMUM,
-            ];
-            for base in bases {
-                for offset in THRESHOLD_OFFSETS {
-                    sink.emit(width, base + offset, count);
-                }
-            }
-        }
-    }
-    // The window grid, twice: once treating the window as the sidebar directly
-    // (extremely wide and extremely tall aspect ratios, and the 0 cases), once
-    // through the rail/timeline derivation the shell actually performs.
-    for width in WINDOW_WIDTHS {
-        for height in WINDOW_HEIGHTS {
-            for count in [0usize, 1, 3] {
-                sink.emit(width, height, count);
-                sink.emit(rail_width(width), height - 180.0, count);
-            }
-        }
-    }
-    // Extremes and non-finite input. The huge counts are what reach the oracle's
-    // "an overflowed ask goes to the *minimum*" branch, which the port kept.
-    #[rustfmt::skip]
-    let cases: [(f32, f32, usize); 24] = [
-        (240.0,        0.0,     1),
-        (240.0,       -10.0,    1),
-        (0.0,          600.0,   1),
-        (-1.0,         600.0,   1),
-        (1.0e-3,       1.0e-3,  0),
-        (0.0625,       640.0,   0),
-        (240.0,        1.0e-3,  1),
-        (1.0e38,       600.0,   1),
-        (3.0e38,       600.0,   1),
-        (240.0,        1.0e38,  1),
-        (240.0,        3.0e38,  1),
-        (240.0,        600.0,   usize::MAX),
-        (1.0e38,       600.0,   usize::MAX),
-        (1.0e38,       1.0e38,  usize::MAX),
-        (3.0e38,       3.0e38,  usize::MAX),
-        (240.0,        600.0,   1usize << 40),
-        (1.0e20,       600.0,   1usize << 40),
-        (f32::NAN,     600.0,   1),
-        (240.0,        f32::NAN, 1),
-        (f32::NAN,     f32::NAN, 1),
-        (f32::INFINITY, 600.0,  1),
-        (240.0, f32::INFINITY,  1),
-        (f32::NEG_INFINITY, 600.0, 1),
-        (240.0, f32::NEG_INFINITY, 1),
-    ];
-    for (width, height, count) in cases {
-        sink.emit(width, height, count);
-    }
-
-    out.push_str(&sink.out);
-}
 
 // ---------------------------------------------------------------------------
 // TimelineBand::layout.
@@ -649,28 +466,142 @@ fn dump_timelines(out: &mut String) {
 // ---------------------------------------------------------------------------
 
 fn dump_divergences(out: &mut String) {
-    // A `&mut Self` out-parameter, a `*const f32` array and a bare enum are all
-    // things the Rust signatures replaced: the result is a returned value, the
-    // widths are a slice, and the mode is a closed enum. None of these five
-    // rejections has an input that can be spelled here at all.
-    for name in [
-        "null_band_out",
-        "null_control_widths",
-        "null_sidebar_out",
-        "null_action_top",
-        "null_action_height",
-        "out_of_range_mode",
-    ] {
+    // A `&mut Self` out-parameter and a `*const f32` array are things the Rust
+    // signatures replaced: the result is a returned value and the widths are a
+    // slice. Neither rejection has an input that can be spelled here at all.
+    // (The sidebar and action-row pairs went with the sidebar in WX-5c.)
+    for name in ["null_band_out", "null_control_widths"] {
         out.push_str(&format!("divergence {name} not_expressible\n"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Post-legacy: WorkspaceRail::layout (WX-5c). No oracle; pinned by a file.
+// ---------------------------------------------------------------------------
+
+/// Band heights the window draws: none (the band gives way), the 180 px
+/// default, the default with its 80 px plan section (260), and the export and
+/// assist bands at their tallest.
+const BAND_HEIGHTS: [f32; 6] = [0.0, 180.0, 260.0, 431.0, 494.0, 560.0];
+
+fn rail_record(
+    out: &mut String,
+    index: &mut usize,
+    width: f32,
+    height: f32,
+    top: f32,
+    band_top: f32,
+) {
+    let layout = WorkspaceRail::layout(width, height, top, band_top);
+    let (ok, layout) = match layout {
+        Some(layout) => (1, layout),
+        None => (
+            0,
+            WorkspaceRail {
+                rail: SENTINEL_RECT,
+                icons: [None; 4],
+                flyout: SENTINEL_RECT,
+            },
+        ),
+    };
+    let icons: Vec<String> = layout
+        .icons
+        .iter()
+        .map(|icon| match icon {
+            Some(rect) => format!("1 {}", rect_fields(*rect)),
+            None => format!("0 {}", rect_fields(SENTINEL_RECT)),
+        })
+        .collect();
+    out.push_str(&format!(
+        "rail {index} {} {} {} {} {ok} {} {} {}\n",
+        f(width),
+        f(height),
+        f(top),
+        f(band_top),
+        rect_fields(layout.rail),
+        icons.join(" "),
+        rect_fields(layout.flyout),
+    ));
+    *index += 1;
+}
+
+fn dump_rails(out: &mut String) {
+    let mut index = 0usize;
+    // The window grid, at every band the window draws.
+    for width in WINDOW_WIDTHS {
+        for height in WINDOW_HEIGHTS {
+            for band in BAND_HEIGHTS {
+                rail_record(
+                    out,
+                    &mut index,
+                    width,
+                    height,
+                    TOP_BAR_HEIGHT,
+                    height - band,
+                );
+            }
+        }
+    }
+    // Dense: one pixel at a time through every rung of the icon ladder.
+    for rail_height in 0..=260 {
+        rail_record(
+            out,
+            &mut index,
+            1280.0,
+            720.0,
+            TOP_BAR_HEIGHT,
+            TOP_BAR_HEIGHT + rail_height as f32,
+        );
+    }
+    // Threshold-adjacent: each rung's boundary, a sixteenth and a pixel either
+    // side. Derived from the constants rather than written as numbers, so the
+    // probe follows a rung that moves — and the pinned file is what says it
+    // moved.
+    let stacked = |n: f32, s: f32| RAIL_ICON_MARGIN * 2.0 + n * s + (n - 1.0) * RAIL_ICON_GAP;
+    let split = stacked(4.0, RAIL_ICON_SIZE) + RAIL_GROUP_GAP - RAIL_ICON_GAP;
+    for boundary in [
+        split,
+        stacked(4.0, RAIL_ICON_SIZE),
+        stacked(4.0, RAIL_ICON_MINIMUM),
+        stacked(2.0, RAIL_ICON_MINIMUM),
+        stacked(1.0, RAIL_ICON_MINIMUM),
+    ] {
+        for offset in THRESHOLD_OFFSETS {
+            rail_record(
+                out,
+                &mut index,
+                960.0,
+                640.0,
+                TOP_BAR_HEIGHT,
+                TOP_BAR_HEIGHT + boundary + offset,
+            );
+        }
+    }
+    // Degenerate and non-finite input.
+    #[rustfmt::skip]
+    let cases: [(f32, f32, f32, f32); 10] = [
+        (51.0,          720.0,         46.0,        460.0),
+        (52.0,          720.0,         46.0,        460.0),
+        (300.0,         720.0,         46.0,        460.0),
+        (1280.0,        720.0,         0.0,         460.0),
+        (1280.0,        720.0,        -5.0,         460.0),
+        (1280.0,        720.0,         46.0,         10.0),
+        (f32::NAN,      720.0,         46.0,        460.0),
+        (1280.0,        f32::INFINITY, 46.0,        460.0),
+        (1280.0,        720.0,         f32::NAN,    460.0),
+        (1280.0,        720.0,         46.0,        f32::NEG_INFINITY),
+    ];
+    for (width, height, top, band_top) in cases {
+        rail_record(out, &mut index, width, height, top, band_top);
     }
 }
 
 fn main() {
     let mut out = String::new();
     dump_rect_helpers(&mut out);
-    dump_action_rows(&mut out);
-    dump_sidebars(&mut out);
     dump_timelines(&mut out);
     dump_divergences(&mut out);
+    out.push_str("--- post-legacy (no oracle) ---\n");
+    dump_rails(&mut out);
     print!("{out}");
 }
