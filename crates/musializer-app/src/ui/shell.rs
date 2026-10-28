@@ -731,6 +731,9 @@ pub struct Shell {
     /// What the transport row drew in the last frame, for the `transport:`
     /// line.
     transport_report: String,
+    /// `--ui-probe scene-family=`, held against the plan's scene changes
+    /// until a family row is pressed (see [`Self::browse_scene_family`]).
+    pub(crate) probe_family: Option<SceneFamily>,
 }
 
 /// The colour a save state's word draws in, wherever it is drawn: the tracks
@@ -1272,6 +1275,7 @@ impl Shell {
             last_rail: None,
             last_flyout: None,
             transport_report: "none".to_owned(),
+            probe_family: None,
         }
     }
 
@@ -4129,9 +4133,16 @@ impl Shell {
 
     /// `--ui-probe scene-family=`: browse a family, and open the scenes
     /// flyout so a capture shows what it browsed (WX-5c §1).
+    ///
+    /// The family holds until a family row is pressed. The probe stage runs
+    /// before the first frame, so a plan that sets the scene on that frame
+    /// would otherwise move the picker to the new scene's family — which is
+    /// right for a hand and makes a capture of "browsing Geometry" show
+    /// whatever the plan happened to play.
     pub fn browse_scene_family(&mut self, family: SceneFamily, active: SceneId) {
         self.scene_picker.observe_scene(active);
         self.scene_picker.browse(family);
+        self.probe_family = Some(family);
         self.open_flyout = Some(Flyout::Scenes);
     }
 
@@ -4490,6 +4501,30 @@ impl Shell {
         }
         self.refresh_timeline_events(input);
         let content = widgets::panel(d, input.fonts.ui(), band, "TIMELINE");
+        // The band's gestures, said where they happen (the mockup's band head,
+        // WX-5c). Only while the timecode is inline: when it is not, this
+        // corner is the timecode's.
+        if toolbar.timecode_inline {
+            let hint =
+                "WHEEL ZOOM \u{00b7} SHIFT PAN \u{00b7} DOUBLE-CLICK A RUN TO OPEN ITS SECTIONS";
+            let font = input.fonts.ui();
+            let width =
+                widgets::measure(font, hint, metric::UI_FONT_MICRO) + hint.chars().count() as f32;
+            let x = band.x + band.width - metric::UI_PANEL_PADDING - width;
+            let title_end = band.x + metric::UI_PANEL_PADDING + 80.0;
+            if x > title_end {
+                widgets::draw_text_tracked(
+                    d,
+                    font,
+                    hint,
+                    x,
+                    band.y + 9.0,
+                    metric::UI_FONT_MICRO,
+                    1.0,
+                    color::ui_disabled(),
+                );
+            }
+        }
         // The timecode's fallback home, when the toolbar's band could not seat it
         // beside the transport buttons (`timeline_layout.h:42-44`). Right-aligned
         // in this panel's header, where nothing else is drawn.

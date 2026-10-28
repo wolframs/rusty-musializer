@@ -5310,7 +5310,7 @@ rail_point() {
     python3 -c "
 import re, sys
 line, key, sep = sys.argv[1], sys.argv[2], sys.argv[3]
-m = re.search(r'(?:^|[ ;])' + re.escape(key) + sep + r'(-?\d+),(-?\d+),(\d+),(\d+)', line)
+m = re.search(r'(?:^|[ ;=])' + re.escape(key) + sep + r'(-?\d+),(-?\d+),(\d+),(\d+)', line)
 if not m: sys.exit('no ' + key + ' on: ' + line)
 x, y, w, h = (int(v) for v in m.groups())
 print(f'{x + w // 2}x{y + h // 2}')
@@ -5324,7 +5324,7 @@ if [ -f "$LYRIC_PROJECT" ]; then
         "rect=0,46,52,414 icons=tracks@8,56,36,36;scenes@8,98,36,36;editor@8,372,36,36;dock@8,414,36,36 open=none flyout=none") ;;
         *) echo "FAIL: the rail is not where WorkspaceRail puts it at 1280x720" >&2; RAIL_FAILED=1 ;;
     esac
-    RAIL_TRACKS="$(rail_point "$RAIL_BASE" tracks @)"
+    RAIL_TRACKS="$(rail_point "$RAIL_BASE" tracks @)" || RAIL_FAILED=1
     # The rail's gap: between Scenes' bottom (134) and Editor's top (372).
     run_capture rail-open-tracks runs "panel=none,time=2.5,play=0,click=$RAIL_TRACKS" || RAIL_FAILED=1
     run_capture rail-gap runs "panel=none,time=2.5,play=0,click=26x250" || RAIL_FAILED=1
@@ -5360,7 +5360,7 @@ if [ -f "$LYRIC_PROJECT" ]; then
     # knot tile's, from the picker's own `tiles=`.
     run_capture rail-picker runs "panel=none,time=2.5,play=0,scene-family=geometry" || RAIL_FAILED=1
     RAIL_PICKER="$(rail_line rail-picker 'scene picker')"
-    RAIL_KNOT="$(rail_point "$RAIL_PICKER" knot @)"
+    RAIL_KNOT="$(rail_point "$RAIL_PICKER" knot @)" || RAIL_FAILED=1
     run_capture rail-pick-knot runs "panel=none,time=2.5,play=0,scene-family=geometry,click=$RAIL_KNOT" || RAIL_FAILED=1
     case "$(rail_line rail-pick-knot 'click probe') / $(rail_line rail-pick-knot 'scene picker')" in
         *"claimed=0x20000000d / family=geometry active=knot "*) echo "the knot tile at $RAIL_KNOT took the press and selected the knot" ;;
@@ -5380,7 +5380,7 @@ if [ -f "$LYRIC_PROJECT" ]; then
         *" selected="[0-9]*" prev="*" name="*" next="*" capture="*" delete="*) echo "a selected section put its controls on the lane head" ;;
         *) echo "FAIL: a selection did not bring the section controls: $(rail_line rail-inside-control 'lane head')" >&2; RAIL_FAILED=1 ;;
     esac
-    RAIL_SPLIT="$(rail_point "$RAIL_HEAD" split)"
+    RAIL_SPLIT="$(rail_point "$RAIL_HEAD" split)" || RAIL_FAILED=1
     run_capture rail-split runs "panel=none,time=2.5,play=0,click=$RAIL_SPLIT" || RAIL_FAILED=1
     case "$(run_line rail-split)" in
         "runs="*" sections=8 "*) echo "Split here at $RAIL_SPLIT made the seventh section two" ;;

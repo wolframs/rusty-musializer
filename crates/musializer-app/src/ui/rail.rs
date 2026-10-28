@@ -246,6 +246,9 @@ impl Shell {
             return;
         }
         self.scene_picker.observe_scene(input.scene);
+        if let Some(family) = self.probe_family {
+            self.scene_picker.browse(family);
+        }
         let current_family = SceneFamily::of(input.scene);
         let mouse_allowed = !self.editor_open && !self.assist_settings.is_open();
 
@@ -310,6 +313,7 @@ impl Shell {
             );
             if state.clicked {
                 self.scene_picker.browse(family);
+                self.probe_family = None;
             }
             tabs.push(format!("{}@{}", family.stable_name(), rect_token(rect)));
         }

@@ -55,6 +55,11 @@ for size in 960x640 1280x900; do
     capture "editor-light-$suffix" "$size" light-blue panel=none,time=24,play=0 --editor-ui "$TRACK"
     capture "assist-dark-$suffix" "$size" black-amber panel=assist,time=24,play=0 "$TRACK"
     capture "export-dark-$suffix" "$size" black-amber panel=export,time=24,play=0 "$TRACK"
+    # WX-5c: the rail's two flyouts, one in each appearance.
+    capture "flyout-scenes-dark-$suffix" "$size" black-amber \
+        panel=none,time=24,play=0,flyout=scenes "$TRACK"
+    capture "flyout-tracks-light-$suffix" "$size" light-blue \
+        panel=none,time=24,play=0,flyout=tracks "$TRACK"
 done
 
 capture assist-failed-dark-960 960x640 black-amber panel=assist,assist=failed,time=24,play=0 "$TRACK"
