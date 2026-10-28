@@ -132,6 +132,9 @@ struct TreatmentWire {
     schema: String,
     #[serde(default)]
     title: Option<String>,
+    /// Who made the music (WX-5c): the project's `metadata.artist`.
+    #[serde(default)]
+    artist: Option<String>,
     /// The author's own remarks. Parsed so a strict file can carry them, and
     /// otherwise ignored — JSON has no comments and a treatment is exactly the
     /// kind of document that wants one.
@@ -449,6 +452,8 @@ struct EventMark {
 #[derive(Clone, Debug)]
 pub struct Treatment {
     pub title: Option<String>,
+    /// `None` leaves the project's artist alone, like `title`.
+    pub artist: Option<String>,
     pub audio: Option<TreatmentAudio>,
     pub output: Option<OutputRequest>,
     pub seed: Option<u64>,
@@ -541,12 +546,17 @@ impl Treatment {
             return Err(TreatmentError::Schema { found: wire.schema });
         }
 
-        if let Some(title) = &wire.title {
-            if title.is_empty() || title.len() > MAX_TITLE_BYTES || title.contains('\0') {
-                return Err(invalid(
-                    "title",
-                    format!("must be 1..={MAX_TITLE_BYTES} bytes"),
-                ));
+        // The same bounds for both, because both land in `.musi` metadata
+        // strings of the same capacity; an empty artist is refused rather than
+        // read as "clear it", since a project never writes one empty.
+        for (place, value) in [("title", &wire.title), ("artist", &wire.artist)] {
+            if let Some(value) = value {
+                if value.is_empty() || value.len() > MAX_TITLE_BYTES || value.contains('\0') {
+                    return Err(invalid(
+                        place,
+                        format!("must be 1..={MAX_TITLE_BYTES} bytes"),
+                    ));
+                }
             }
         }
 
@@ -790,6 +800,7 @@ impl Treatment {
 
         Ok(Self {
             title: wire.title,
+            artist: wire.artist,
             audio,
             output,
             seed: wire.seed,
@@ -2484,6 +2495,14 @@ pub fn vocabulary() -> Value {
             "quality": ["balanced", "high", "master"],
         },
         "events": { "type": ["cue", "lyric", "semantic", "custom"], "value": "default 1" },
+        "project": {
+            "title": format!("the project's title, 1..={MAX_TITLE_BYTES} bytes; absent leaves \
+                              the project's own"),
+            "artist": format!("who made the music, 1..={MAX_TITLE_BYTES} bytes; shown after \
+                               the title in the window's top bar and saved as the project's \
+                               metadata.artist (a .musi v2 field); absent leaves the \
+                               project's own"),
+        },
         "limits": {
             "segments": scene_switch::CAPACITY,
             "lyrics": lyrics::CUE_CAPACITY,
@@ -3103,6 +3122,37 @@ mod tests {
         .contains("not a 64-hex sha256"));
     }
 
+    /// `artist` (WX-5c) is held to the title's bounds, by name, and absent is
+    /// not the same as empty.
+    #[test]
+    fn the_artist_is_bounded_like_the_title_and_never_empty() {
+        let with = |artist: &str| {
+            format!(
+                r#"{{ "schema": "musializer.treatment/v1", "title": "Door, No Room",
+                     "artist": {artist}, "segments": [ {{ "at": 0, "scene": "loom" }} ] }}"#
+            )
+        };
+        let treatment = parse(&with("\"Chaos Cat Familiar\"")).unwrap();
+        assert_eq!(treatment.artist.as_deref(), Some("Chaos Cat Familiar"));
+        assert!(refusal(&with("\"\"")).starts_with("artist: must be 1..=128 bytes"));
+        assert!(refusal(&with(&format!("\"{}\"", "x".repeat(129)))).starts_with("artist:"));
+        assert!(refusal(&with("7")).contains("invalid type"));
+        assert_eq!(
+            parse(
+                r#"{ "schema": "musializer.treatment/v1",
+                     "segments": [ { "at": 0, "scene": "loom" } ] }"#
+            )
+            .unwrap()
+            .artist,
+            None
+        );
+        let vocabulary = vocabulary();
+        assert!(vocabulary["project"]["artist"]
+            .as_str()
+            .unwrap()
+            .contains("metadata.artist"));
+    }
+
     #[test]
     fn the_output_block_is_three_independent_requests() {
         let treatment = parse(
@@ -3122,6 +3172,7 @@ mod tests {
         );
         assert_eq!(treatment.seed, Some(2012));
         assert_eq!(treatment.title.as_deref(), Some("Haul Away"));
+        assert_eq!(treatment.artist, None);
         assert!(refusal(
             r#"{ "schema": "musializer.treatment/v1", "output": { "resolution": "1080p" },
                  "segments": [ { "at": 0, "scene": "loom" } ] }"#

@@ -154,6 +154,40 @@ echo "=== step 8: Rust reads the C's re-write (the mirror composition) ==="
 step "Rust refused the C's re-write of Rust's own project" \
     "$RUST" read "$OUT_DIR/c_from_rust.musi" >"$OUT_DIR/rust_read_c_from_rust.txt"
 
+# v2 (WX-5c): a project naming an artist is the one shape the frozen C cannot
+# read, and that is pinned as an expected pair rather than left out. The C must
+# refuse the file *by its version* -- "schema mismatch", not an unknown field in
+# the metadata -- which is the whole reason the version moved; and Rust must
+# read its own v2 file back to the same values and re-write the same bytes.
+echo "=== step 9: Rust writes the fixture with an artist (v2) ==="
+step "Rust could not build or write its v2 fixture" \
+    "$RUST" build-artist "$OUT_DIR/rust_v2.musi" >"$OUT_DIR/rust_v2_wrote.txt"
+case "$(head -c 41 "$OUT_DIR/rust_v2.musi")" in
+    '{"schema_version":"musializer.project/v2"'*) ;;
+    *) echo "FAIL: the artist fixture was not written as v2" >&2; exit 1 ;;
+esac
+
+echo "=== step 10: the C refuses it, by its version ==="
+if "$ORACLE" read "$OUT_DIR/rust_v2.musi" >/dev/null 2>"$OUT_DIR/c_read_v2.err"; then
+    echo "FAIL: the frozen C read a v2 project; the version bump protects nothing" >&2
+    exit 1
+fi
+if ! grep -q "failed: schema mismatch" "$OUT_DIR/c_read_v2.err"; then
+    echo "FAIL: the C refused the v2 file for another reason:" >&2
+    cat "$OUT_DIR/c_read_v2.err" >&2
+    exit 1
+fi
+echo "    expected refusal: $(cat "$OUT_DIR/c_read_v2.err")"
+
+echo "=== step 11: Rust re-writes its own v2 file ==="
+step "Rust refused its own v2 project" \
+    "$RUST" rewrite "$OUT_DIR/rust_v2.musi" "$OUT_DIR/rust_v2_again.musi" \
+    >"$OUT_DIR/rust_read_v2.txt"
+if ! cmp -s "$OUT_DIR/rust_v2.musi" "$OUT_DIR/rust_v2_again.musi"; then
+    echo "FAIL: Rust re-wrote its v2 project into different bytes" >&2
+    exit 1
+fi
+
 echo "=== comparing ==="
 python3 - "$OUT_DIR" "$TOLERANCE" <<'PY'
 import os
@@ -329,6 +363,9 @@ comparisons = [
                "c_wrote.txt", "c_read_rust_from_c.txt"),
     Comparison("4. Rust writes -> C reads -> C re-writes -> Rust reads",
                "rust_wrote.txt", "rust_read_c_from_rust.txt"),
+    # Post-legacy, no oracle (WX-5c): the v2 file against its own build dump.
+    Comparison("5. Rust writes v2 -> Rust reads (the C refuses it, step 10)",
+               "rust_v2_wrote.txt", "rust_read_v2.txt"),
 ]
 
 ok = True
@@ -378,8 +415,8 @@ if not ok:
 
 total = sum(comparison.compared for comparison in comparisons)
 worst = max(comparison.worst_absolute for comparison in comparisons)
-print("PASS: %d values compared across 5 comparisons, largest float delta %.3g."
-      % (total, worst))
+print("PASS: %d values compared across %d comparisons, largest float delta %.3g."
+      % (total, len(comparisons), worst))
 print("      A .musi written by the frozen C opens here and one written here opens")
 print("      in the frozen C, and every field survives all four steps of both")
 print("      round trips.")

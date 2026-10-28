@@ -173,6 +173,7 @@ goes missing.
 | Member | Meaning |
 | --- | --- |
 | `title` | The project's title |
+| `artist` | Who made the music, 1..128 bytes. Shown after the title in the window's top bar and saved as the project's `metadata.artist`, which makes the `.musi` a v2 file (`docs/PHASE0_INVENTORY.md`). Absent leaves the project's own; there is no way to clear one from a treatment, because an empty string is refused |
 | `notes` | Anything. Parsed and ignored: JSON has no comments, and a treatment wants them |
 | `audio` | `{ "path", "sha256" }`. The path resolves against the treatment file's own directory. With it, `--treatment` alone opens the whole video; without it, the treatment directs the track the command line opened. `sha256` is optional — pin it when the file should outlive the session |
 | `output` | `{ "resolution": "1920x1080", "fps": 30, "quality": "high" }`, each optional. `--resolution`, `--fps` and `--quality` on the command line override it |

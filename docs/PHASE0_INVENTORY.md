@@ -1112,7 +1112,7 @@ Optional: `ascii_image`, `caption_style`, `lyrics`, `scene_switches`,
 
 | Field | Type / bounds | Default | Line |
 | --- | --- | --- | --- |
-| `schema_version` | `const "musializer.project/v1"` | — | `:20-22` |
+| `schema_version` | `"musializer.project/v1"`, or `"musializer.project/v2"` when `metadata.artist` is present (post-legacy, WX-5c) | — | `:20-22` |
 | `metadata` | object, see below | — | `:23-25` |
 | `audio` | object, see below | — | `:26-28` |
 | `ascii_image` | `null` or `ascii_image_asset` | `null` | `:29-40` |
@@ -1155,6 +1155,19 @@ Object definitions:
 (string 1..128), `application_version` (string 1..64). Optional `author`
 (≤128, default `""`), `created_utc` (≤32, default `""`), `modified_utc` (≤32,
 default `""`).
+
+**Post-legacy, schema v2 (WX-5c, 2026-10-27): `artist`** (string 1..128 bytes,
+written after `title`). Who made the music, shown after the title in the
+window's top bar; set from a treatment's top-level `artist`. It is the only
+v2 member, and the version follows it: a project is written as
+`"musializer.project/v2"` only when it names an artist, and as v1 otherwise —
+so every project without one is byte-identical to what earlier builds wrote,
+and the frozen C and every earlier build refuse an artist-bearing file by its
+version ("schema mismatch") rather than by an unknown field. This build reads
+both versions. It refuses `artist` under v1 (unknown field, as the C would)
+and an empty `artist` (never written). `tools/differential_project_io.sh`
+pins the C's refusal of the v2 file as an expected pair and checks Rust's own
+v2 round trip.
 
 **`audio_asset`** (`:174-215`) — all six required: `mode` (`imported` |
 `referenced`), `path` (1..1024), `sha256`, `duration_seconds`

@@ -4027,21 +4027,30 @@ fn apply_treatment<'audio>(
         track.caption_licence_path = None;
     }
     track.render_config = render_config;
-    if let Some(title) = &treatment.title {
-        match track.project_metadata.as_mut() {
-            Some(metadata) => metadata.title.clone_from(title),
-            // The id `build_project` would have derived, so a titled treatment
-            // and an untitled one save under the same project identity.
-            None => {
-                track.project_metadata = Some(Metadata {
-                    project_id: format!(
-                        "track-{}",
-                        &track.audio_sha256[..track.audio_sha256.len().min(16)]
-                    ),
-                    title: title.clone(),
-                    ..Metadata::default()
-                });
-            }
+    if treatment.title.is_some() || treatment.artist.is_some() {
+        // The id and title `build_project` would have derived, so a treatment
+        // that names only an artist saves under the same identity and title an
+        // untouched project would have.
+        let metadata = track.project_metadata.get_or_insert_with(|| Metadata {
+            project_id: format!(
+                "track-{}",
+                &track.audio_sha256[..track.audio_sha256.len().min(16)]
+            ),
+            title: track
+                .file_path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .filter(|stem| !stem.is_empty())
+                .unwrap_or_else(|| "Untitled visualization".to_owned()),
+            ..Metadata::default()
+        });
+        if let Some(title) = &treatment.title {
+            metadata.title.clone_from(title);
+        }
+        // An absent `artist` leaves the project's own, as an absent title does
+        // (WX-5c). The `.musi` becomes v2 on its next save.
+        if let Some(artist) = &treatment.artist {
+            metadata.artist.clone_from(artist);
         }
     }
     let seed = track.scene_seed;
