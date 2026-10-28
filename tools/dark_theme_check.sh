@@ -32,7 +32,9 @@ import pathlib, sys
 from PIL import Image
 out = pathlib.Path(sys.argv[1])
 cx, top = int(sys.argv[2]), int(sys.argv[3])
-for name, fill in [('tooltip-dark', (48, 56, 42)),
+# The dark fill is WX-5a's tooltip surface; (48, 56, 42) was the
+# pre-5a palette, stale since this script left the gate.
+for name, fill in [('tooltip-dark', (38, 42, 49)),
                    ('tooltip-light', (20, 20, 20))]:
     im = Image.open(out / (name + '.png')).convert('RGB')
     # The tip sits centred over the button and ends a few pixels above it.
