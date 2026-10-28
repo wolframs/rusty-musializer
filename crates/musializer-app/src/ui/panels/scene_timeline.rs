@@ -6,6 +6,7 @@
 
 use musializer_core::scene::SceneId;
 use musializer_core::ui::contrast;
+use musializer_core::ui::lane_head::{LaneHead, LaneHeadWidths};
 use musializer_core::ui::plan_runs::{fold_runs, RunSpan};
 use musializer_core::ui::scene_lane_edit::{self, SceneLaneZone};
 use musializer_core::ui::timed_lane;
@@ -17,7 +18,10 @@ use super::super::shell::{Shell, ShellCommand, ShellInput, TimelineGesture};
 use super::super::theme::{self, color, metric, Palette};
 use super::super::widgets::{self, ButtonStyle};
 
-pub const SCENE_CONTROLS_HEIGHT: f32 = 26.0;
+/// The lane head's row (WX-5c §3): the plan controls row it replaced, at the
+/// same height, so the scene section keeps its 80 px and nothing below it in
+/// the band moves.
+pub const SCENE_CONTROLS_HEIGHT: f32 = musializer_core::ui::lane_head::LANE_HEAD_HEIGHT;
 /// 44 since WX-5b (it was 24): a run carries a 16:9 poster frame beside its
 /// scene's name, and at 24 px the poster is a coloured smear. The band grows by
 /// the 20 px with it — every budget below reads [`SCENE_SECTION_HEIGHT`].
@@ -107,6 +111,8 @@ pub struct SceneLaneEditor {
     opened: Option<u64>,
     /// What the lane drew last frame, for the `scene runs:` report line.
     last_frame: RunFrame,
+    /// What the lane head drew last frame, for the `lane head:` line.
+    head_report: String,
 }
 
 /// How long two presses may be apart and still be one double-click, in
@@ -158,6 +164,18 @@ fn is_double_click(last: Option<(f64, f32)>, now: f64, x: f32) -> bool {
 }
 
 impl SceneLaneEditor {
+    /// The `lane head:` report line's body (WX-5c §3): the ladder's step, the
+    /// selection, the plan label, and the rect of every control it drew, as
+    /// `name=x,y,w,h`. Probes that press the head read their points here.
+    #[must_use]
+    pub fn describe_head(&self) -> &str {
+        if self.head_report.is_empty() {
+            "none"
+        } else {
+            &self.head_report
+        }
+    }
+
     /// The `scene runs:` report line's body (WX-5b).
     #[must_use]
     pub fn describe(&self) -> String {
@@ -301,6 +319,14 @@ fn draw_poster(
 #[cfg(test)]
 fn packed(color: Color) -> u32 {
     u32::from_be_bytes([color.r, color.g, color.b, color.a])
+}
+
+/// `x,y,w,h` at whole logical pixels, as the report lines print a rect.
+fn rect_fields(rect: UiRect) -> String {
+    format!(
+        "{:.0},{:.0},{:.0},{:.0}",
+        rect.x, rect.y, rect.width, rect.height
+    )
 }
 
 /// Clips a label to `width` with an ellipsis, so a long segment summary stays
@@ -527,6 +553,15 @@ impl Shell {
         SCENE_SECTION_HEIGHT
     }
 
+    /// The lane head (WX-5c §3): the plan's size and Auto on the left, the
+    /// selected section in context in the middle, the event markers as chips
+    /// on the right, in the one 26 px row the plan controls had. Placed by
+    /// [`LaneHead::layout`], which sheds labels and words — never a gesture —
+    /// as the band narrows.
+    ///
+    /// The widget ids are the controls row's (`TIMELINE` 20 + index) and the
+    /// event row's (`EVENT_ROW`), so nothing a probe or a hand pressed before
+    /// has moved namespace.
     fn scene_plan_controls(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -534,33 +569,108 @@ impl Shell {
         row: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) {
+        self.scene_lane.head_report.clear();
         let Some(track) = input.workspace.current() else {
             return;
         };
-        let gap = 6.0;
-        let widths = [68.0, 78.0, 28.0, 28.0, 104.0, 64.0];
-        let fixed: f32 = widths.iter().sum::<f32>() + gap * 6.0;
-        let name_width = (row.width - fixed).max(72.0);
-        if fixed + name_width > row.width {
-            return;
-        }
-        let selected = track
-            .scene_switches
-            .cues()
+        let font = input.fonts.ui();
+        let cues = track.scene_switches.cues();
+        let selected = cues
             .iter()
-            .find(|cue| cue.id == self.scene_lane.selected_id);
-        let selected_scene = selected.and_then(|cue| SceneId::from_index(cue.scene_index as usize));
-        let mut x = row.x;
+            .enumerate()
+            .find(|(_, cue)| cue.id == self.scene_lane.selected_id);
+        let selected_scene =
+            selected.and_then(|(_, cue)| SceneId::from_index(cue.scene_index as usize));
 
+        let runs = fold_runs(cues).len();
+        let label_full = if cues.is_empty() {
+            "PLAN \u{00b7} NO SECTIONS".to_owned()
+        } else {
+            format!(
+                "PLAN \u{00b7} {runs} RUN{} \u{00b7} {} SECTION{}",
+                if runs == 1 { "" } else { "S" },
+                cues.len(),
+                if cues.len() == 1 { "" } else { "S" }
+            )
+        };
+        let label_short = if cues.is_empty() {
+            "PLAN".to_owned()
+        } else {
+            format!(
+                "PLAN \u{00b7} {runs} RUN{}",
+                if runs == 1 { "" } else { "S" }
+            )
+        };
+        let caption = |text: &str| widgets::measure(font, text, metric::UI_FONT_CAPTION);
+        let tracked = |text: &str| {
+            widgets::measure(font, text, metric::UI_FONT_MICRO) + text.chars().count() as f32
+        };
+        let button = |text: &str| (caption(text) + 20.0).ceil();
+        let hint_text = if track.scene_switches.finish.pixel.is_on() {
+            let look = track.scene_switches.finish.pixel;
+            format!(
+                "click a section to edit it \u{00b7} pixel look {} {}",
+                look.palette_label(),
+                look.pixels
+            )
+        } else if track.scene_switches.finish.is_active() {
+            "click a section to edit it \u{00b7} film finish on".to_owned()
+        } else {
+            "click a section to edit it".to_owned()
+        };
+        let face = track.manual_clear.button();
+        let (markers_full, markers_short, clear_full, clear_short) =
+            super::events::chip_widths(font, face);
+        let widths = LaneHeadWidths {
+            label_full: tracked(&label_full).ceil(),
+            label_short: tracked(&label_short).ceil(),
+            auto: button("Auto off").max(button("Auto on")),
+            arrow: 26.0,
+            name_min: 120.0,
+            split_full: button("Split here"),
+            split_short: button("Split"),
+            capture_full: button("Capture tuning"),
+            capture_short: button("Capture"),
+            delete: button("Delete"),
+            hint: (caption("click a section to edit it") + 4.0).ceil(),
+            markers_full,
+            markers_short,
+            clear_full,
+            clear_short,
+        };
+        let Some(head) = LaneHead::layout(row, &widths, selected.is_some()) else {
+            self.scene_lane.head_report = "not drawn (no room)".to_owned();
+            return;
+        };
+
+        if let Some(rect) = head.label {
+            let text = if head.label_short {
+                &label_short
+            } else {
+                &label_full
+            };
+            widgets::draw_text_tracked(
+                d,
+                font,
+                text,
+                rect.x,
+                rect.y + (rect.height - metric::UI_FONT_MICRO) * 0.5,
+                metric::UI_FONT_MICRO,
+                1.0,
+                color::ui_muted(),
+            );
+        }
+        let gap = 0.0;
+        let mut auto_x = head.auto.x;
         if control_button(
             self,
             d,
             input,
-            row,
-            &mut x,
+            head.auto,
+            &mut auto_x,
             gap,
             0,
-            widths[0],
+            head.auto.width,
             if track.scene_switches.enabled {
                 "Auto on"
             } else {
@@ -577,16 +687,21 @@ impl Shell {
                 !track.scene_switches.enabled,
             )));
         }
+        let mut split_x = head.split.x;
         if control_button(
             self,
             d,
             input,
-            row,
-            &mut x,
+            head.split,
+            &mut split_x,
             gap,
             1,
-            widths[1],
-            "Split here",
+            head.split.width,
+            if head.split_short {
+                "Split"
+            } else {
+                "Split here"
+            },
             true,
             false,
             ButtonStyle::Neutral,
@@ -598,143 +713,185 @@ impl Shell {
                 seconds: input.time_seconds,
             }));
         }
-        if control_button(
-            self,
-            d,
-            input,
-            row,
-            &mut x,
-            gap,
-            2,
-            widths[2],
-            "<",
-            selected.is_some(),
-            false,
-            ButtonStyle::Neutral,
-        )
-        .clicked
-        {
-            if let (Some(cue), Some(scene)) = (selected, selected_scene) {
-                let previous =
-                    SceneId::ALL[(scene.index() + SceneId::ALL.len() - 1) % SceneId::ALL.len()];
-                commands.push(ShellCommand::ScenePlan(ScenePlanEdit::Retarget {
-                    cue_id: cue.id,
-                    scene: previous,
-                }));
-            }
+        if let Some(rect) = head.hint {
+            let text = fit_text(input, &hint_text, rect.width);
+            widgets::draw_text(
+                d,
+                font,
+                &text,
+                rect.x + 4.0,
+                rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
         }
 
-        // The name field carries what a segment's colour cannot (MV9-k): a
-        // threshold's beyond, how it arrives, a glide, a grade. With nothing
-        // selected it says whether the video has a finish, which is otherwise
-        // invisible everywhere in the window.
-        let detail =
-            selected.and_then(|cue| scene_lane_edit::segment_summary(cue, &track.scene_settings));
-        let name_owned = match (selected_scene, detail) {
-            (Some(scene), Some(detail)) => format!("{} · {detail}", scene.display_name()),
-            (Some(scene), None) => scene.display_name().to_owned(),
-            (None, _) if track.scene_switches.finish.pixel.is_on() => {
-                let look = track.scene_switches.finish.pixel;
-                format!(
-                    "Select a segment · pixel look {} {}",
-                    look.palette_label(),
-                    look.pixels
+        let mut report = vec![
+            format!("step={}", head.step),
+            format!(
+                "selected={}",
+                selected.map_or_else(|| "none".to_owned(), |(index, _)| (index + 1).to_string())
+            ),
+            format!("markers={}", track.manual_events.len()),
+            format!("auto={}", rect_fields(head.auto)),
+            format!("split={}", rect_fields(head.split)),
+        ];
+
+        if let (Some((index, cue)), Some(scene)) = (selected, selected_scene) {
+            if let Some(rect) = head.prev {
+                let mut x = rect.x;
+                if control_button(
+                    self,
+                    d,
+                    input,
+                    rect,
+                    &mut x,
+                    gap,
+                    2,
+                    rect.width,
+                    "<",
+                    true,
+                    false,
+                    ButtonStyle::Neutral,
                 )
+                .clicked
+                {
+                    let previous =
+                        SceneId::ALL[(scene.index() + SceneId::ALL.len() - 1) % SceneId::ALL.len()];
+                    commands.push(ShellCommand::ScenePlan(ScenePlanEdit::Retarget {
+                        cue_id: cue.id,
+                        scene: previous,
+                    }));
+                }
+                report.push(format!("prev={}", rect_fields(rect)));
             }
-            (None, _) if track.scene_switches.finish.is_active() => {
-                "Select a segment · film finish on".to_owned()
+            // The name carries what a section's colour cannot (MV9-k): which
+            // section, which scene, where it starts, and then a threshold's
+            // beyond, how it arrives, a glide, a grade.
+            if let Some(rect) = head.name {
+                let detail = scene_lane_edit::segment_summary(cue, &track.scene_settings);
+                let mut text = format!(
+                    "Section {} \u{00b7} {} \u{00b7} {}",
+                    index + 1,
+                    scene.display_name(),
+                    widgets::format_timestamp(cue.start_seconds)
+                );
+                if let Some(detail) = detail {
+                    text.push_str(" \u{00b7} ");
+                    text.push_str(&detail);
+                }
+                let text = fit_text(input, &text, rect.width - 12.0);
+                widgets::fill(d, rect, color::ui_raised());
+                d.draw_rectangle_lines_ex(widgets::rectangle(rect), 1.0, color::ui_rule());
+                widgets::draw_text(
+                    d,
+                    font,
+                    &text,
+                    rect.x + 6.0,
+                    rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_ink(),
+                );
+                report.push(format!("name={}", rect_fields(rect)));
             }
-            (None, _) => "Select a segment".to_owned(),
-        };
-        let name = fit_text(input, &name_owned, name_width - 8.0);
-        let name = name.as_str();
-        let name_rect = UiRect::new(x, row.y, name_width, row.height);
-        widgets::fill(d, name_rect, color::ui_raised());
-        d.draw_rectangle_lines_ex(widgets::rectangle(name_rect), 1.0, color::ui_rule());
-        let name_text_width = widgets::measure(input.fonts.ui(), name, metric::UI_FONT_CAPTION);
-        widgets::draw_text(
-            d,
-            input.fonts.ui(),
-            name,
-            name_rect.x + ((name_rect.width - name_text_width) * 0.5).max(4.0),
-            name_rect.y + 6.0,
-            metric::UI_FONT_CAPTION,
-            if selected.is_some() {
-                color::ui_ink()
-            } else {
-                color::ui_disabled()
-            },
-        );
-        x += name_width + gap;
+            if let Some(rect) = head.next {
+                let mut x = rect.x;
+                if control_button(
+                    self,
+                    d,
+                    input,
+                    rect,
+                    &mut x,
+                    gap,
+                    3,
+                    rect.width,
+                    ">",
+                    true,
+                    false,
+                    ButtonStyle::Neutral,
+                )
+                .clicked
+                {
+                    let next = SceneId::ALL[(scene.index() + 1) % SceneId::ALL.len()];
+                    commands.push(ShellCommand::ScenePlan(ScenePlanEdit::Retarget {
+                        cue_id: cue.id,
+                        scene: next,
+                    }));
+                }
+                report.push(format!("next={}", rect_fields(rect)));
+            }
+            if let Some(rect) = head.capture {
+                let mut x = rect.x;
+                let label = if head.capture_short {
+                    "Capture"
+                } else {
+                    "Capture tuning"
+                };
+                if control_button(
+                    self,
+                    d,
+                    input,
+                    rect,
+                    &mut x,
+                    gap,
+                    4,
+                    rect.width,
+                    label,
+                    true,
+                    false,
+                    ButtonStyle::Neutral,
+                )
+                .clicked
+                {
+                    commands.push(ShellCommand::ScenePlan(ScenePlanEdit::CaptureTuning {
+                        cue_id: cue.id,
+                    }));
+                }
+                report.push(format!("capture={}", rect_fields(rect)));
+            }
+            if let Some(rect) = head.delete {
+                let mut x = rect.x;
+                if control_button(
+                    self,
+                    d,
+                    input,
+                    rect,
+                    &mut x,
+                    gap,
+                    5,
+                    rect.width,
+                    "Delete",
+                    true,
+                    false,
+                    ButtonStyle::Danger,
+                )
+                .clicked
+                {
+                    commands.push(ShellCommand::ScenePlan(ScenePlanEdit::Remove {
+                        cue_id: cue.id,
+                    }));
+                }
+                report.push(format!("delete={}", rect_fields(rect)));
+            }
+        }
 
-        if control_button(
-            self,
-            d,
-            input,
-            row,
-            &mut x,
-            gap,
-            3,
-            widths[3],
-            ">",
-            selected.is_some(),
-            false,
-            ButtonStyle::Neutral,
-        )
-        .clicked
-        {
-            if let (Some(cue), Some(scene)) = (selected, selected_scene) {
-                let next = SceneId::ALL[(scene.index() + 1) % SceneId::ALL.len()];
-                commands.push(ShellCommand::ScenePlan(ScenePlanEdit::Retarget {
-                    cue_id: cue.id,
-                    scene: next,
-                }));
+        if let (Some(markers), Some(clear)) = (head.markers, head.clear) {
+            let mut actions = Vec::new();
+            self.event_chips(
+                d,
+                input,
+                markers,
+                clear,
+                (head.markers_short, head.clear_short),
+                &mut actions,
+            );
+            commands.extend(actions.into_iter().map(ShellCommand::ManualEvent));
+            for (name, rect) in ["feel", "scene", "custom"].into_iter().zip(markers) {
+                report.push(format!("{name}={}", rect_fields(rect)));
             }
+            report.push(format!("clear={}", rect_fields(clear)));
         }
-        if control_button(
-            self,
-            d,
-            input,
-            row,
-            &mut x,
-            gap,
-            4,
-            widths[4],
-            "Capture tuning",
-            selected.is_some(),
-            false,
-            ButtonStyle::Neutral,
-        )
-        .clicked
-        {
-            if let Some(cue) = selected {
-                commands.push(ShellCommand::ScenePlan(ScenePlanEdit::CaptureTuning {
-                    cue_id: cue.id,
-                }));
-            }
-        }
-        if control_button(
-            self,
-            d,
-            input,
-            row,
-            &mut x,
-            gap,
-            5,
-            widths[5],
-            "Delete",
-            selected.is_some(),
-            false,
-            ButtonStyle::Danger,
-        )
-        .clicked
-        {
-            if let Some(cue) = selected {
-                commands.push(ShellCommand::ScenePlan(ScenePlanEdit::Remove {
-                    cue_id: cue.id,
-                }));
-            }
-        }
+        self.scene_lane.head_report = report.join(" ");
     }
 
     fn scene_plan_lane(

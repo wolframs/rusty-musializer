@@ -55,11 +55,31 @@ pub const SEEK_FORWARD: Control = Control::new(
     "Forward 1 s  [\u{2192}]  \u{00b7}  Ctrl 0.1 s  \u{00b7}  Shift 10 s",
 );
 
+// Tune, Export, Lyrics and Assist left the transport for the top bar's mode
+// tabs in WX-5c, which draw words. The four controls stay as the one place
+// their glyph, fallback and shortcut are written down together, for whichever
+// surface draws them as icons next.
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const TUNE: Control = Control::new(Icon::Sliders, "Tune", "Tuning inspector [T]");
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const EXPORT: Control = Control::new(Icon::Film, "Export", "Render to video");
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const LYRICS: Control = Control::new(Icon::FileText, "Lyrics", "Lyrics editor");
 pub const EDITOR: Control =
     Control::new(Icon::Pencil, "Editor", "Tune, lyrics and appearance [F8]");
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const ASSIST: Control = Control::new(Icon::Magic, "Assist", "Analysis assist");
 pub const DOCK: Control = Control::new(
     Icon::Terminal,

@@ -675,30 +675,6 @@ impl Widgets {
         );
     }
 
-    /// Disabled counterpart to [`Self::icon_button`].
-    pub fn disabled_icon_button(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
-        boundary: UiRect,
-        glyph: &str,
-        font_size: f32,
-    ) {
-        if boundary.is_empty() {
-            return;
-        }
-        control_box(d, boundary, color::ui_surface(), color::ui_rule(), 1.0);
-        draw_button_label(
-            d,
-            LabelFont::Exact(font),
-            boundary,
-            glyph,
-            Some(font_size),
-            0.0,
-            color::ui_disabled(),
-        );
-    }
-
     /// A horizontal slider returning the value the pointer asks for, or `None`
     /// when it is not being dragged this frame.
     ///
@@ -760,6 +736,82 @@ impl Widgets {
             ));
         }
         None
+    }
+}
+
+impl Widgets {
+    /// The transport's volume chip (WX-5c, the mockup's `70%`): the level
+    /// as a fill from the left, the percentage on top, and a drag across it
+    /// that sets the level like a slider. Returns the level the pointer asks
+    /// for while it is dragged, as [`Self::slider`] does, so an untouched
+    /// chip cannot write a value.
+    ///
+    /// The fill is the level tone, never the accent: a level is an amount,
+    /// not *now*. While muted the percentage still shows the stored level,
+    /// in the disabled ink, because mute is a toggle the user expects to undo.
+    #[allow(clippy::too_many_arguments)]
+    pub fn volume_chip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        id: u64,
+        boundary: UiRect,
+        level: f32,
+        muted: bool,
+    ) -> (ButtonState, Option<f32>) {
+        if boundary.is_empty() {
+            return (ButtonState::default(), None);
+        }
+        let pointer = self.pointer(d);
+        let state = self.button_at(id, boundary, pointer);
+        let look = button_look(ButtonStyle::Neutral, false, state.hovered || state.pressed);
+        control_box(d, boundary, look.fill, look.edge, 1.0);
+        let level = level.clamp(0.0, 1.0);
+        let inset = 3.0;
+        let fill = UiRect::new(
+            boundary.x + inset,
+            boundary.y + boundary.height - inset - 3.0,
+            (boundary.width - inset * 2.0) * level,
+            3.0,
+        );
+        d.draw_rectangle_rec(
+            rectangle(fill),
+            if muted {
+                color::ui_disabled()
+            } else {
+                color::ui_level()
+            },
+        );
+        let text = format!("{:.0} %", level * 100.0);
+        text_label(
+            d,
+            font,
+            UiRect::new(
+                boundary.x,
+                boundary.y - 1.0,
+                boundary.width,
+                boundary.height,
+            ),
+            &text,
+            metric::UI_FONT_CAPTION,
+            if muted {
+                color::ui_disabled()
+            } else {
+                look.ink
+            },
+        );
+        if self.active_button_id == id && pointer.down {
+            self.interacted = true;
+            return (
+                state,
+                Some(slider_value(
+                    pointer.x,
+                    boundary.x + inset,
+                    boundary.x + boundary.width - inset,
+                )),
+            );
+        }
+        (state, None)
     }
 }
 
@@ -1295,6 +1347,47 @@ pub fn draw_text_tracked(
         Vector2::new(x.round(), y.round()),
         font_size,
         spacing.round(),
+        tint,
+    );
+}
+
+/// A glyph from the icon face, centred in `boundary` exactly as a button's
+/// label is (WX-5c: the round play button draws its own disc).
+pub fn icon_label(
+    d: &mut RaylibDrawHandle<'_>,
+    face: &Face,
+    boundary: UiRect,
+    glyph: &str,
+    size: f32,
+    tint: Color,
+) {
+    draw_button_label(
+        d,
+        LabelFont::Exact(face),
+        boundary,
+        glyph,
+        Some(size),
+        0.0,
+        tint,
+    );
+}
+
+/// Text centred in `boundary` exactly as a button's label is.
+pub fn text_label(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &UiFonts,
+    boundary: UiRect,
+    text: &str,
+    size: f32,
+    tint: Color,
+) {
+    draw_button_label(
+        d,
+        LabelFont::Ui(font),
+        boundary,
+        text,
+        Some(size),
+        0.0,
         tint,
     );
 }

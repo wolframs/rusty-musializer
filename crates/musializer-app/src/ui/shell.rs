@@ -18,12 +18,10 @@ use musializer_core::project::preset_store::{PresetAction, SharedPresetsView};
 use musializer_core::scene::routes::{ParameterMapping, RouteSources};
 use musializer_core::scene::{SceneId, SceneSettings};
 use musializer_core::ui::notice::{self, NoticeQueue, NoticeSpec, Severity};
-use musializer_core::ui::row_typography;
-use musializer_core::ui::scene_browser::{PickerLayout, PickerState, SceneFamily};
+use musializer_core::ui::scene_browser::{PickerState, SceneFamily};
 use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
-use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
-use musializer_core::ui::transport_bar;
+use musializer_core::ui::transport_bar::{self, TransportRow};
 use musializer_core::ui::workspace_layout::{RailIcon, UiRect};
 use musializer_runtime::font::{Faces, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
@@ -638,8 +636,8 @@ pub struct Shell {
     pub lyrics: super::panels::lyrics::LyricEditor,
     /// Selection and in-flight boundary preview for the scene-plan lane.
     pub scene_lane: super::panels::scene_timeline::SceneLaneEditor,
-    scene_picker: PickerState,
-    scene_picker_report: String,
+    pub(crate) scene_picker: PickerState,
+    pub(crate) scene_picker_report: String,
     /// The export panel's clip window: which part of the track the next export
     /// covers (UX0-C01).
     ///
@@ -730,6 +728,9 @@ pub struct Shell {
     pub(crate) last_rail: Option<musializer_core::ui::workspace_layout::WorkspaceRail>,
     /// Where the open flyout drew in the last frame, for the same line.
     pub(crate) last_flyout: Option<UiRect>,
+    /// What the transport row drew in the last frame, for the `transport:`
+    /// line.
+    transport_report: String,
 }
 
 /// The colour a save state's word draws in, wherever it is drawn: the tracks
@@ -948,19 +949,6 @@ pub(crate) const TIMELINE_WHEEL_PAN_FRACTION: f64 = 0.15;
 /// bare panel, and neither shows up as a failure anywhere — so it fails here,
 /// at compile time, instead.
 const _: () = assert!(lyrics::LANE_GAP == metric::LANE_GAP);
-
-/// One button in the scene browser's ASCII image footer (D2).
-const ASCII_BUTTON_HEIGHT: f32 = 22.0;
-const ASCII_FOOTER_GAP: f32 = 4.0;
-/// Import and Clear share a single row. It reserves the same height with or
-/// without an image so importing never makes the family grid jump.
-const ASCII_FOOTER_HEIGHT: f32 = ASCII_BUTTON_HEIGHT;
-
-/// Header has already been removed by widgets::panel. Keep this shared with
-/// the minimum-size regression so extra vertical reservations cannot hide tiles.
-fn scene_browser_available_height(content_height: f32) -> f32 {
-    content_height - 6.0 * 3.0 - ASCII_FOOTER_HEIGHT
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PlayheadGeometry {
@@ -1283,6 +1271,7 @@ impl Shell {
             open_flyout: None,
             last_rail: None,
             last_flyout: None,
+            transport_report: "none".to_owned(),
         }
     }
 
@@ -1449,10 +1438,16 @@ impl Shell {
         // and at 720p there is no room for both without pushing the sidebar under
         // its floor — which drops the tracks panel entirely, as a capture showed.
         // The event lane keeps its own affordance in the no-panel band.
-        let events = super::panels::events::EVENT_ROW_HEIGHT;
+        //
+        // Since WX-5c no state spends it: the row's controls are chips on the
+        // lane head, which took the scene section's controls row
+        // (`docs/WX5C_DESIGN.md` §3), so the band is 66 px shorter with no
+        // panel or with Export open, and the preview has those pixels. The
+        // band is bottom-anchored, so everything below the old row keeps its
+        // window y — every band probe in the gate keeps its point.
         let panel_height = match self.panel {
-            UiPanel::None | UiPanel::Tune => events + DEFAULT_TIMELINE_HEIGHT,
-            UiPanel::Export => events + WorkspaceFrame::export_timeline_height(window_height),
+            UiPanel::None | UiPanel::Tune => DEFAULT_TIMELINE_HEIGHT,
+            UiPanel::Export => WorkspaceFrame::export_timeline_height(window_height),
             // Both full-band editors take the band to themselves, for the same
             // arithmetic reason: their chrome budgets are the oracle's, and the
             // oracle spends that budget on a controls row this rewrite has
@@ -1470,14 +1465,18 @@ impl Shell {
         };
         let minimum = super::panels::scene_timeline::SCENE_SECTION_HEIGHT
             + match self.panel {
-                UiPanel::None | UiPanel::Tune => super::panels::events::EVENT_ROW_HEIGHT + 150.0,
+                UiPanel::None | UiPanel::Tune => 150.0,
                 // Derived from the export panel's own layout constants: the old
                 // bare 260.0 undershot what the panel consumes above its
                 // boundary, and a persisted shorter split blanked it across
                 // restarts (review 1.4, UX0-A04).
+                //
+                // `EXPORT_MIN_BAND_HEIGHT` still counts the event row the band
+                // no longer carries (WX-5c), so it comes off here.
                 UiPanel::Export => {
                     super::panels::export::EXPORT_MIN_BAND_HEIGHT
                         - super::panels::scene_timeline::SCENE_SECTION_HEIGHT
+                        - super::panels::events::EVENT_ROW_HEIGHT
                 }
                 // Asked, not asserted (LX1-d follow-up). This was the literal
                 // `381.0` with a comment adding up five constants, and all five
@@ -1722,6 +1721,9 @@ impl Shell {
         } else {
             self.flyout_begin(d, frame)
         };
+        // The picker reports what it drew this frame, and it draws only in
+        // the scenes flyout; a stale line would read as a picker on screen.
+        self.scene_picker_report = "not drawn".to_owned();
         let occluded = ShellInput {
             ui_scale: input.ui_scale.occluded(flyout),
             ..*input
@@ -2641,6 +2643,7 @@ impl Shell {
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) -> ToolbarResult {
+        self.transport_report = "none".to_owned();
         let bar = frame.toolbar;
         if bar.is_empty() {
             return ToolbarResult::default();
@@ -2655,248 +2658,209 @@ impl Shell {
 
         let has_track = input.workspace.current().is_some();
         let font = input.fonts.ui();
-        let control_size = transport_bar::CONTROL_SIZE;
-        let row_y = bar.y + (bar.height - control_size) * 0.5;
-
-        // The right-hand cluster is placed first because it is measured from the
-        // window's right edge, and everything else is laid out against what it
-        // leaves. Volume is only offered when there is a stream to set it on.
-        let utilities = transport_bar::utilities(bar, row_y, has_track);
-        let middle_right = utilities.map_or(bar.x + bar.width, |cluster| cluster.left_edge);
-        let middle_width = (middle_right - bar.x).max(0.0);
-
         let shown_time = self.timeline_playhead_seconds(input.time_seconds);
         let timecode = format!(
             "{} / {}",
             widgets::format_timestamp(shown_time),
             widgets::format_timestamp(input.duration_seconds)
         );
-        let timecode_width = widgets::measure_tabular(font, &timecode, metric::UI_FONT_VALUE);
+        let timecode_size = metric::UI_FONT_VALUE + 2.0;
+        let timecode_width = widgets::measure_tabular(font, &timecode, timecode_size).ceil();
+        // The row's whole composition — what it carries and where — is
+        // `transport_bar::TransportRow`'s, raylib-free and swept for
+        // monotonicity: the seek trio goes first, then the inline timecode
+        // (to the band's header), then the scrub bar. Tune, Export, Lyrics and
+        // Assist are the top bar's tabs and Editor and Dock the rail's icons
+        // since WX-5c, so none of them is here to shed.
+        let Some(row) = TransportRow::layout(bar, timecode_width, has_track) else {
+            return ToolbarResult::default();
+        };
+        let mut report = vec![format!("step={}", row.step)];
 
-        // The middle group, richest first. The seek trio is shed before the panel
-        // buttons and the panel buttons before the transport button, which is the
-        // order `transport_bar` documents: every seek action has a keyboard
-        // binding, so dropping the group costs no capability, and the transport
-        // button is the one control the row cannot do without.
-        let transport = if input.playing {
+        // The round play button: an ink disc with the glyph cut out of it in
+        // the surface colour, the mockup's one solid shape on the row.
+        let play_id = widgets::widget_id(widgets::id::TOOLBAR, 0);
+        let control = if input.playing {
             icons::PAUSE
         } else {
             icons::PLAY
         };
-        // Editor and Dock moved to the rail (WX-5c §1).
-        let panels = [icons::TUNE, icons::EXPORT, icons::LYRICS, icons::ASSIST];
-        let seek = [icons::SEEK_START, icons::SEEK_BACK, icons::SEEK_FORWARD];
-
-        // Natural widths. With the icon face loaded every control is a square, so
-        // the row is uniform; on the text fallback each button asks for what its
-        // word needs and the band scales them together, which is the same
-        // `ui_row_typography.h:9-13` rule the oracle's row follows.
-        let natural = |control: &icons::Control| -> f32 {
-            if input.fonts.icons_available() {
-                control_size
-            } else {
-                widgets::measure(font, control.text, metric::UI_FONT_LABEL)
-                    + row_typography::UI_ROW_LABEL_PADDING
-                    + 8.0
-            }
-        };
-
-        let mut group: Vec<icons::Control> = Vec::with_capacity(8);
-        let mut band = None;
-        // Three candidate compositions, tried richest first. `TimelineBand::fits`
-        // is what rejects one — it is the same "even the minimum scale overflows"
-        // answer the oracle's row consults, so the shedding here and the scaling
-        // there cannot disagree about what a row can hold.
-        for candidate in [
-            [&[transport][..], &seek[..], &panels[..]].concat(),
-            [&[transport][..], &panels[..]].concat(),
-            vec![transport],
-        ] {
-            let widths: Vec<f32> = candidate.iter().map(natural).collect();
-            let Some(laid) = TimelineBand::layout(
-                bar.x,
-                row_y,
-                middle_width,
-                control_size,
-                metric::UI_CONTROL_GAP,
-                &widths,
-                // No trailing "Clear manual" button in the transport row, so the
-                // band's clear slot is zero-width here.
-                0.0,
-                timecode_width,
-            ) else {
-                continue;
-            };
-            if laid.fits || candidate.len() == 1 {
-                group = candidate;
-                band = Some(laid);
-                break;
-            }
-        }
-        let Some(band) = band else {
-            return ToolbarResult::default();
-        };
-
-        let widths: Vec<f32> = group.iter().map(natural).collect();
-        let scaled: Vec<f32> = widths.iter().map(|width| width * band.scale).collect();
-        let fallback_labels: Vec<&str> = group.iter().map(|control| control.text).collect();
-        // One size for the whole row, whichever face it is drawn in.
-        let font_size = if input.fonts.icons_available() {
-            control_size * 0.5 * band.scale
+        let state = if has_track {
+            self.widgets.button(d, play_id, row.play)
         } else {
-            widgets::row_font_size(font, &fallback_labels, &scaled, control_size)
+            widgets::ButtonState::default()
         };
-
-        let mut cursor = bar.x + metric::UI_CONTROL_GAP;
-        for (index, control) in group.iter().enumerate() {
-            let boundary = UiRect::new(cursor, row_y, scaled[index], control_size);
-            cursor += scaled[index] + metric::UI_CONTROL_GAP * band.scale;
-
-            // The seek group and the panel buttons are numbered by *what they are*
-            // rather than by their position in the row, because the row's
-            // composition changes with the window width. An id that moved with the
-            // layout would let a press claimed before a resize be released by
-            // whichever control inherited the index.
-            let (namespace, slot, selected) = match control {
-                c if *c == icons::SEEK_START => (widgets::id::SEEK, 0, false),
-                c if *c == icons::SEEK_BACK => (widgets::id::SEEK, 1, false),
-                c if *c == icons::SEEK_FORWARD => (widgets::id::SEEK, 2, false),
-                c if *c == icons::TUNE => (widgets::id::TOOLBAR, 1, self.inspector_open),
-                c if *c == icons::EXPORT => {
-                    (widgets::id::TOOLBAR, 2, self.panel == UiPanel::Export)
-                }
-                c if *c == icons::LYRICS => {
-                    (widgets::id::TOOLBAR, 3, self.panel == UiPanel::Lyrics)
-                }
-                c if *c == icons::ASSIST => {
-                    (widgets::id::TOOLBAR, 4, self.panel == UiPanel::Assist)
-                }
-                _ => (widgets::id::TOOLBAR, 0, false),
-            };
-
-            // Every control here needs a track. Drawn disabled rather than hidden,
-            // so the control names the feature even when it cannot run — and the
-            // tooltip still answers, which is the one thing a disabled button can
-            // usefully do.
-            let glyph = icons::glyph(input.fonts, control);
-            if !has_track {
-                match &glyph {
-                    icons::Glyph::Icon(face, text) => self
-                        .widgets
-                        .disabled_icon_button(d, face, boundary, text, font_size),
-                    icons::Glyph::Text(font, text) => {
-                        self.widgets
-                            .disabled_button(d, font, boundary, text, Some(font_size))
-                    }
-                }
-                continue;
+        let disc = if !has_track {
+            color::ui_disabled()
+        } else if state.pressed {
+            widgets::brightness(color::ui_ink(), -0.12)
+        } else if state.hovered {
+            widgets::brightness(color::ui_ink(), 0.08)
+        } else {
+            color::ui_ink()
+        };
+        d.draw_circle_v(
+            Vector2::new(
+                row.play.x + row.play.width * 0.5,
+                row.play.y + row.play.height * 0.5,
+            ),
+            row.play.width * 0.5,
+            disc,
+        );
+        // The play glyph's own optical centre sits left of its box, so it is
+        // nudged a pixel right, as every round play button does.
+        let nudge = if input.playing { 0.0 } else { 1.5 };
+        let glyph_box = UiRect::new(
+            row.play.x + nudge,
+            row.play.y,
+            row.play.width,
+            row.play.height,
+        );
+        match icons::glyph(input.fonts, &control) {
+            icons::Glyph::Icon(face, text) => {
+                widgets::icon_label(d, face, glyph_box, &text, 16.0, color::ui_surface());
             }
-            let id = widgets::widget_id(namespace, slot);
-            let state = match &glyph {
-                icons::Glyph::Icon(face, text) => self.widgets.icon_button(
-                    d,
-                    face,
-                    id,
-                    boundary,
-                    text,
-                    selected,
-                    ButtonStyle::Neutral,
-                    font_size,
-                ),
-                icons::Glyph::Text(font, text) => self.widgets.text_button(
+            icons::Glyph::Text(font, text) => {
+                widgets::text_label(
                     d,
                     font,
-                    id,
-                    boundary,
-                    text,
-                    selected,
-                    ButtonStyle::Neutral,
-                    Some(font_size),
-                ),
-            };
-            self.widgets.hint(d, state, id, boundary, control.tip);
-            if !state.clicked {
-                continue;
-            }
-            match control {
-                c if *c == icons::SEEK_START => commands.push(ShellCommand::Seek(0.0)),
-                c if *c == icons::SEEK_BACK || *c == icons::SEEK_FORWARD => {
-                    let sign = if *control == icons::SEEK_BACK {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
-                }
-                c if *c == icons::TUNE => self.set_inspector_open(!self.inspector_open),
-                // The three bottom panels share one guard, as they do in the
-                // oracle's own panel row (`plug.c:2905-2906`): leaving the lyrics
-                // editor with a half-typed cue is a context change like any other,
-                // and the draft is invisible once the panel is gone.
-                c if *c == icons::EXPORT || *c == icons::LYRICS || *c == icons::ASSIST => {
-                    if self.lyric_draft_allows_context_change(input.workspace) {
-                        let panel = if *c == icons::EXPORT {
-                            UiPanel::Export
-                        } else if *c == icons::LYRICS {
-                            UiPanel::Lyrics
-                        } else {
-                            UiPanel::Assist
-                        };
-                        self.toggle_panel(panel);
-                    }
-                }
-                _ => commands.push(ShellCommand::TogglePlay),
+                    glyph_box,
+                    &text,
+                    metric::UI_FONT_MICRO,
+                    color::ui_surface(),
+                );
             }
         }
-
-        if let Some(cluster) = utilities {
-            self.utility_cluster(d, input, cluster, font_size, has_track, commands);
+        self.widgets.hint(d, state, play_id, row.play, control.tip);
+        if state.clicked {
+            commands.push(ShellCommand::TogglePlay);
         }
+        report.push(format!("play={}", super::rail::rect_token(row.play)));
 
-        // The timecode goes where the band put it, and only if the band said it
-        // fits there. Drawing it at `bar.x + bar.width - width` regardless is the
-        // exact mistake `timeline_layout.h` was written to stop.
-        let timecode_inline = band.timecode_inline && !band.timecode.is_empty();
-        if timecode_inline {
-            // The position in ink and the length in muted grey (WX-5a, the
-            // mockup's `3:12.00 / 5:22.52`): the number that moves is the one
-            // to read. Split at the separator; tabular widths are a per-glyph
-            // sum, so the two halves land exactly where the whole string did.
-            let y = band.timecode.y + (band.timecode.height - metric::UI_FONT_VALUE) * 0.5;
+        // The position in ink and the length in muted grey (WX-5a, the
+        // mockup's `3:12.00 / 5:22.52`): the number that moves is the one to
+        // read. Split at the separator; tabular widths are a per-glyph sum, so
+        // the two halves land exactly where the whole string did.
+        if let Some(rect) = row.timecode {
+            let y = rect.y + (rect.height - timecode_size) * 0.5;
             let split = timecode.find(" / ").unwrap_or(timecode.len());
             let (now, total) = timecode.split_at(split);
-            widgets::draw_text_tabular(
-                d,
-                font,
-                now,
-                band.timecode.x,
-                y,
-                metric::UI_FONT_VALUE,
-                color::ui_ink(),
-            );
+            widgets::draw_text_tabular(d, font, now, rect.x, y, timecode_size, color::ui_ink());
             widgets::draw_text_tabular(
                 d,
                 font,
                 total,
-                band.timecode.x + widgets::measure_tabular(font, now, metric::UI_FONT_VALUE),
+                rect.x + widgets::measure_tabular(font, now, timecode_size),
                 y,
-                metric::UI_FONT_VALUE,
+                timecode_size,
                 color::ui_muted(),
             );
+            report.push(format!("timecode={}", super::rail::rect_token(rect)));
         }
 
-        // The position bar goes in whatever is left between the buttons and the
-        // timecode. See [`Self::position_bar`] for what used to be here.
-        let bar_right = if timecode_inline {
-            band.timecode.x - metric::UI_CONTROL_GAP
-        } else {
-            middle_right - metric::UI_CONTROL_GAP
-        };
-        if let Some(scrub) = transport_bar::scrub_bar(cursor, bar_right, bar) {
+        // The fine-seek trio, as ghost icons: secondary to the play button,
+        // and each with its key ladder in the tooltip. Numbered by what they
+        // are, so a press claimed before a resize is released by the same one.
+        if let Some(seek) = row.seek {
+            for (slot, control, rect) in [
+                (0, icons::SEEK_START, seek.start),
+                (1, icons::SEEK_BACK, seek.back),
+                (2, icons::SEEK_FORWARD, seek.forward),
+            ] {
+                let size = 14.0;
+                let glyph = icons::glyph(input.fonts, &control);
+                if !has_track {
+                    match &glyph {
+                        icons::Glyph::Icon(face, text) => {
+                            widgets::icon_label(d, face, rect, text, size, color::ui_disabled());
+                        }
+                        icons::Glyph::Text(font, text) => {
+                            widgets::text_label(
+                                d,
+                                font,
+                                rect,
+                                text,
+                                metric::UI_FONT_MICRO,
+                                color::ui_disabled(),
+                            );
+                        }
+                    }
+                    continue;
+                }
+                let id = widgets::widget_id(widgets::id::SEEK, slot);
+                let state = match &glyph {
+                    icons::Glyph::Icon(face, text) => self.widgets.icon_button(
+                        d,
+                        face,
+                        id,
+                        rect,
+                        text,
+                        false,
+                        ButtonStyle::Ghost,
+                        size,
+                    ),
+                    icons::Glyph::Text(font, text) => self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        rect,
+                        text,
+                        false,
+                        ButtonStyle::Ghost,
+                        Some(metric::UI_FONT_MICRO),
+                    ),
+                };
+                self.widgets.hint(d, state, id, rect, control.tip);
+                if state.clicked {
+                    commands.push(ShellCommand::Seek(if slot == 0 {
+                        0.0
+                    } else {
+                        self.nudge_target(d, input, if slot == 1 { -1.0 } else { 1.0 })
+                    }));
+                }
+            }
+            report.push(format!(
+                "seek=start@{};back@{};forward@{}",
+                super::rail::rect_token(seek.start),
+                super::rail::rect_token(seek.back),
+                super::rail::rect_token(seek.forward)
+            ));
+        }
+
+        // The position bar goes in whatever is left between the trio and the
+        // utilities. See [`Self::position_bar`] for what used to be here.
+        if let Some(scrub) = row.scrub {
             self.position_bar(d, input, scrub, has_track, commands);
+            report.push(format!("scrub={}", super::rail::rect_token(scrub.hit)));
         }
 
-        ToolbarResult { timecode_inline }
+        if let Some(cluster) = row.utilities {
+            self.utility_cluster(d, input, cluster, has_track, commands);
+            for (name, rect) in [
+                ("readout", cluster.readout),
+                ("mute", cluster.mute),
+                ("volume", cluster.volume),
+                ("fullscreen", Some(cluster.fullscreen)),
+            ] {
+                if let Some(rect) = rect {
+                    report.push(format!("{name}={}", super::rail::rect_token(rect)));
+                }
+            }
+        }
+        self.transport_report = report.join(" ");
+        ToolbarResult {
+            timecode_inline: row.timecode.is_some(),
+        }
+    }
+
+    /// The `transport:` report line (WX-5c §2): the row's ladder step and the
+    /// rect of every control it drew, as `name=x,y,w,h` (the seek trio as
+    /// `name@x,y,w,h` entries joined by `;`). The tooltip and click probes on
+    /// the row read their points here rather than from `preview frame:` plus
+    /// a constant.
+    #[must_use]
+    pub fn describe_transport(&self) -> &str {
+        &self.transport_report
     }
 
     /// The transport row's position bar: seek control, with the analyzer's level
@@ -3351,10 +3315,13 @@ impl Shell {
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
         cluster: transport_bar::UtilityCluster,
-        font_size: f32,
         has_track: bool,
         commands: &mut Vec<ShellCommand>,
     ) {
+        // Ghost icons (WX-5c): a glyph until hovered, and the selection look
+        // while the state it names holds — the readout on, the output muted,
+        // fullscreen on. The volume beside mute is a chip.
+        let font_size = 16.0;
         let icon_button = |shell: &mut Self,
                            d: &mut RaylibDrawHandle<'_>,
                            slot: u32,
@@ -3366,14 +3333,24 @@ impl Shell {
             let glyph = icons::glyph(input.fonts, control);
             if !enabled {
                 match &glyph {
-                    icons::Glyph::Icon(face, text) => shell
-                        .widgets
-                        .disabled_icon_button(d, face, boundary, text, font_size),
-                    icons::Glyph::Text(font, text) => {
-                        shell
-                            .widgets
-                            .disabled_button(d, font, boundary, text, Some(font_size))
+                    icons::Glyph::Icon(face, text) => {
+                        widgets::icon_label(
+                            d,
+                            face,
+                            boundary,
+                            text,
+                            font_size,
+                            color::ui_disabled(),
+                        );
                     }
+                    icons::Glyph::Text(font, text) => widgets::text_label(
+                        d,
+                        font,
+                        boundary,
+                        text,
+                        metric::UI_FONT_MICRO,
+                        color::ui_disabled(),
+                    ),
                 }
                 return false;
             }
@@ -3386,7 +3363,7 @@ impl Shell {
                     boundary,
                     text,
                     selected,
-                    ButtonStyle::Neutral,
+                    ButtonStyle::Ghost,
                     font_size,
                 ),
                 icons::Glyph::Text(font, text) => shell.widgets.text_button(
@@ -3396,8 +3373,8 @@ impl Shell {
                     boundary,
                     text,
                     selected,
-                    ButtonStyle::Neutral,
-                    Some(font_size),
+                    ButtonStyle::Ghost,
+                    Some(metric::UI_FONT_MICRO),
                 ),
             };
             shell.widgets.hint(d, state, id, boundary, control.tip);
@@ -3435,29 +3412,37 @@ impl Shell {
         }
 
         if let Some(boundary) = cluster.volume {
-            // Inset by the knob's radius at each end. `slider` centres the knob on
-            // the value's position, so at 0 and 1 half of it hangs outside the rect
-            // it was given — and a capture at 960 px with the inspector open showed
-            // exactly that: a full-volume knob touching the fullscreen button
-            // beside it. The layout module reserves the box; this is the drawing's
-            // own business, so it is corrected here rather than by widening the
-            // reservation.
-            let inset = widgets::SLIDER_KNOB_RADIUS;
-            let boundary = UiRect::new(
-                boundary.x + inset,
-                boundary.y,
-                (boundary.width - inset * 2.0).max(1.0),
-                boundary.height,
-            );
-            // The slider shows the *stored* volume even while muted, rather than
+            // The chip shows the *stored* volume even while muted, rather than
             // dropping to zero: mute is a toggle the user expects to undo, and a
-            // slider that zeroed itself would lose the level they had set.
+            // level that zeroed itself would lose the one they had set.
             let id = widgets::widget_id(widgets::id::UTILITY, 2);
-            if let Some(value) = self.widgets.slider(d, id, boundary, input.volume) {
-                commands.push(ShellCommand::SetVolume(value));
+            if has_track {
+                let (state, value) = self.widgets.volume_chip(
+                    d,
+                    input.fonts.ui(),
+                    id,
+                    boundary,
+                    input.volume,
+                    input.muted,
+                );
+                if let Some(value) = value {
+                    commands.push(ShellCommand::SetVolume(value));
+                }
+                // The wheel over the chip steps it by 5 %, which is the
+                // gesture a chip this small invites.
+                let wheel = if state.hovered {
+                    self.wheel_delta(d)
+                } else {
+                    0.0
+                };
+                if wheel != 0.0 && wheel.is_finite() {
+                    commands.push(ShellCommand::SetVolume(
+                        (input.volume + wheel.signum() * 0.05).clamp(0.0, 1.0),
+                    ));
+                }
+                self.widgets
+                    .hint(d, state, id, boundary, "Volume: drag or scroll");
             }
-            // No `hint` here: a slider explains itself by moving, and a tooltip
-            // over one being dragged covers the thing it describes.
         }
 
         let control = if self.fullscreen {
@@ -4154,261 +4139,6 @@ impl Shell {
         &self.scene_picker_report
     }
 
-    /// The scene browser (`scene_browser`, `plug.c`).
-    ///
-    /// Its content floor is why the sidebar serves it first: it has no collapsed
-    /// form (`workspace_layout.h:78-81`).
-    pub(crate) fn scene_browser(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        boundary: UiRect,
-        input: &ShellInput<'_>,
-        commands: &mut Vec<ShellCommand>,
-    ) {
-        if boundary.is_empty() {
-            return;
-        }
-        let heading = format!("SCENES · {}", input.scene.display_name());
-        let content = widgets::panel(d, input.fonts.ui(), boundary, &heading);
-        let padding = 6.0f32;
-        // The ASCII footer's seat, reserved before the tiles are sized (D2). A
-        // panel that reserves height it never draws steals it from something
-        // else, and one that draws height it never reserved prints over its
-        // neighbour — `shell_layout`'s rule 1, applied inside a panel.
-        // panel() already removed the header. Reserving another 24 px here
-        // hid the thirteenth tile at minimum height (SX5).
-        let available_height = scene_browser_available_height(content.height);
-        if available_height <= 0.0 {
-            return;
-        }
-        self.scene_picker.observe_scene(input.scene);
-        let area = UiRect::new(
-            content.x + padding,
-            content.y + padding,
-            content.width - padding * 2.0,
-            available_height,
-        );
-        let mut scenes = self.scene_picker.family.scenes();
-        let mut layout = PickerLayout::new(area, scenes.len());
-        let tab_labels: Vec<_> = SceneFamily::ALL
-            .iter()
-            .map(|family| family.label())
-            .collect();
-        // Tabs are as wide as their labels ask (`scene_browser::tab_slot`), so
-        // the font is fitted over each tab's own width.
-        let tab_widths: Vec<f32> = (0..tab_labels.len())
-            .map(|index| layout.tab(index).width)
-            .collect();
-        let tab_font = widgets::row_font_size(input.fonts.ui(), &tab_labels, &tab_widths, 22.0);
-        for (index, family) in SceneFamily::ALL.into_iter().enumerate() {
-            let rect = layout.tab(index);
-            let widget = widgets::widget_id(widgets::id::SCENE_FAMILY, index as u32);
-            let state = self.widgets.text_button(
-                d,
-                input.fonts.ui(),
-                widget,
-                rect,
-                family.label(),
-                family == self.scene_picker.family,
-                ButtonStyle::Neutral,
-                Some(tab_font),
-            );
-            let names = family
-                .scenes()
-                .iter()
-                .map(|scene| scene.display_name())
-                .collect::<Vec<_>>()
-                .join(", ");
-            self.widgets.hint(
-                d,
-                state,
-                widget,
-                rect,
-                &format!("{}: {}", family.label(), names),
-            );
-            if state.clicked {
-                self.scene_picker.browse(family);
-            }
-        }
-        // Category clicks change navigation only. They never retarget the
-        // selected timeline segment or the currently playing scene.
-        scenes = self.scene_picker.family.scenes();
-        layout = PickerLayout::new(area, scenes.len());
-        self.scene_picker.clamp(layout);
-        let mouse = input.ui_scale.mouse(d);
-        let input_allowed = !self.editor_open && !self.assist_settings.is_open();
-        if layout.viewport.contains_point(mouse.x, mouse.y) && input_allowed {
-            let wheel = self.wheel_delta(d);
-            self.scene_picker.wheel(wheel, layout);
-        }
-        if let Some(bar) = layout.scrollbar() {
-            let id = widgets::widget_id(widgets::id::SCENE_FAMILY, 20);
-            let state = self.widgets.button(d, id, bar);
-            if state.pressed && input_allowed {
-                let thumb_height = layout
-                    .thumb(self.scene_picker.offset)
-                    .map_or(0.0, |thumb| thumb.height);
-                let fraction =
-                    (mouse.y - bar.y - thumb_height * 0.5) / (bar.height - thumb_height).max(1.0);
-                self.scene_picker.scrollbar_to(fraction, layout);
-            }
-        }
-        let labels: Vec<_> = scenes.iter().map(|scene| scene.display_name()).collect();
-        let widths = vec![layout.tile_width; labels.len()];
-        let font_size =
-            widgets::row_font_size(input.fonts.ui(), &labels, &widths, layout.tile_height);
-        let plan_is_driving = input
-            .workspace
-            .current()
-            .is_some_and(|track| track.scene_switches.enabled && !track.scene_switches.is_empty());
-        let mut visible = Vec::new();
-        let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
-        {
-            let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
-            for (index, id) in scenes.iter().copied().enumerate() {
-                let rect = layout.tile(index, self.scene_picker.offset);
-                let hit = rect.intersect(layout.viewport);
-                if hit.is_empty() {
-                    continue;
-                }
-                visible.push(id.stable_name());
-                // Stable scene widget ids survive grouping, scrolling and the
-                // addition of a new family. Hidden pixels cannot claim a click.
-                let widget = widgets::widget_id(widgets::id::SCENE_BROWSER, id.index() as u32);
-                let state = self.widgets.text_button_in(
-                    &mut clip,
-                    input.fonts.ui(),
-                    widget,
-                    rect,
-                    hit,
-                    id.display_name(),
-                    id == input.scene,
-                    ButtonStyle::Neutral,
-                    Some(font_size),
-                );
-                self.widgets.hint(
-                    &mut clip,
-                    state,
-                    widget,
-                    hit,
-                    crate::scene_host::scene_picker_hint(id),
-                );
-                if state.clicked && (id != input.scene || plan_is_driving) {
-                    commands.push(ShellCommand::SelectScene(id));
-                }
-            }
-        }
-        self.widgets.set_input_clip(old_clip);
-        if let Some(bar) = layout.scrollbar() {
-            widgets::fill(d, bar, color::ui_rule());
-            if let Some(thumb) = layout.thumb(self.scene_picker.offset) {
-                widgets::fill(d, thumb, color::ui_muted());
-            }
-        }
-        self.scene_picker_report = format!(
-            "family={} active={} visible=[{}] offset={:.1}/{:.1} viewport={:.0}x{:.0}@{:.0},{:.0} font={:.1}",
-            self.scene_picker.family.stable_name(),
-            input.scene.stable_name(),
-            visible.join(","),
-            self.scene_picker.offset,
-            layout.max_scroll,
-            layout.viewport.width,
-            layout.viewport.height,
-            layout.viewport.x,
-            layout.viewport.y,
-            font_size
-        );
-
-        self.ascii_image_footer(d, input, content, padding, commands);
-    }
-
-    /// The scene browser's "Import image" / "Clear image" pair (D2,
-    /// `plug.c:6358-6394`).
-    ///
-    /// Clear is drawn **only when the current track owns an image-backed grid**,
-    /// which is the oracle's condition and the right one: ASCII Field always has
-    /// something to draw — its procedural spectrogram — so a Clear button with
-    /// nothing to clear would offer to undo a state the user is not in. Import is
-    /// always drawn, because it is the entry point.
-    fn ascii_image_footer(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        content: UiRect,
-        padding: f32,
-        commands: &mut Vec<ShellCommand>,
-    ) {
-        let width = content.width - padding * 2.0;
-        if width <= 0.0 {
-            return;
-        }
-        let font = input.fonts.ui();
-        let has_image = input
-            .workspace
-            .current()
-            .is_some_and(|track| track.ascii.is_some());
-        let top = content.y + content.height - ASCII_FOOTER_HEIGHT;
-        let x = content.x + padding;
-
-        let clear_width = 64.0;
-        // Keep the absent Clear seat inert. Import must not grow underneath
-        // it and turn a previously harmless press into a file-dialog launch.
-        let import_width = width - clear_width - ASCII_FOOTER_GAP;
-        let import = UiRect::new(x, top, import_width, ASCII_BUTTON_HEIGHT);
-        let import_id = widgets::widget_id(widgets::id::SCENE_ASCII, 0);
-        let state = self.widgets.text_button(
-            d,
-            font,
-            import_id,
-            import,
-            "Import image",
-            false,
-            ButtonStyle::Neutral,
-            Some(metric::UI_FONT_CAPTION),
-        );
-        self.widgets.hint(
-            d,
-            state,
-            import_id,
-            import,
-            "Convert a PNG, JPEG or BMP into ASCII Field's glyph grid",
-        );
-        if state.clicked {
-            commands.push(ShellCommand::ImportAsciiImageDialog);
-        }
-
-        let clear = UiRect::new(
-            x + width - clear_width,
-            top,
-            clear_width,
-            ASCII_BUTTON_HEIGHT,
-        );
-        if !has_image {
-            return;
-        }
-        let clear_id = widgets::widget_id(widgets::id::SCENE_ASCII, 1);
-        let state = self.widgets.text_button(
-            d,
-            font,
-            clear_id,
-            clear,
-            "Clear",
-            false,
-            ButtonStyle::Neutral,
-            Some(metric::UI_FONT_CAPTION),
-        );
-        self.widgets.hint(
-            d,
-            state,
-            clear_id,
-            clear,
-            "Drop the imported image and go back to the procedural grid",
-        );
-        if state.clicked {
-            commands.push(ShellCommand::ClearAsciiImage);
-        }
-    }
-
     /// The track's amplitude envelope behind the timeline
     /// (`draw_timeline_waveform`, `plug.c:2696-2751`).
     ///
@@ -4813,22 +4543,10 @@ impl Shell {
             self.timeline.reveal(duration, input.time_seconds);
         }
 
-        // The manual event row, above the waveform lane (`plug.c:2861-2971`).
-        // It reports what it took; 0.0 means it could not seat its controls and
-        // the strip gets the space back.
-        let mut events = Vec::new();
-        let row = self.event_row(
-            d,
-            input,
-            UiRect::new(
-                content.x + padding,
-                content.y + padding,
-                (content.width - padding * 2.0).max(0.0),
-                (content.height - padding * 2.0).max(0.0),
-            ),
-            &mut events,
-        );
-        commands.extend(events.into_iter().map(ShellCommand::ManualEvent));
+        // The manual event row was here (`plug.c:2861-2971`). Since WX-5c its
+        // markers are chips on the lane head, the scene section's first row,
+        // so the section starts at the top of the content.
+        let row = 0.0;
         let scene_row = self.scene_plan_section(
             d,
             input,
@@ -5714,28 +5432,9 @@ fn draw_splitter(
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn every_family_fits_the_minimum_scene_panel_without_small_tiles() {
-        let available = scene_browser_available_height(188.0);
-        for family in SceneFamily::ALL {
-            let layout = PickerLayout::new(
-                UiRect::new(6.0, 6.0, 228.0, available),
-                family.scenes().len(),
-            );
-            assert_eq!(
-                layout.max_scroll,
-                0.0,
-                "{} should fit in the unchanged 215px panel",
-                family.label()
-            );
-            for i in 0..family.scenes().len() {
-                assert!(layout.viewport.contains(layout.tile(i, 0.0)));
-            }
-            assert!(layout.tile_height >= 24.0);
-        }
-    }
-
     use super::*;
+
+    /// The top bar's tabs    use super::*;
 
     /// The top bar's tabs are views onto `UiPanel` and the inspector (WX-5c
     /// §4): selection reads that state, a press writes it through the
@@ -5841,158 +5540,10 @@ mod tests {
         assert_eq!(shell.panel, UiPanel::None);
     }
 
-    /// The toolbar's own band, computed the way [`Shell::toolbar`] computes it.
-    ///
-    /// `controls` is how many icon buttons the row is trying to seat: 8 for the
-    /// full composition (transport, the seek trio, four panels), 5 with the seek
-    /// trio shed, 1 for the transport button alone.
-    ///
-    /// With the icon face loaded every control is a square, so unlike the oracle's
-    /// text row there is nothing to measure — which is why this helper no longer
-    /// needs the stubbed measurer the old one carried.
-    fn toolbar_band(bar_width: f32, controls: usize) -> Option<TimelineBand> {
-        use musializer_core::ui::transport_bar;
-
-        let bar = UiRect::new(0.0, 0.0, bar_width, metric::HUD_BUTTON_SIZE);
-        let utilities = transport_bar::utilities(bar, 0.0, true);
-        let middle = utilities.map_or(bar_width, |cluster| cluster.left_edge - bar.x);
-        let widths = vec![transport_bar::CONTROL_SIZE; controls];
-        // The default face's rough average advance at the value size; the timecode
-        // is the one thing in this row still measured as text.
-        let timecode_width =
-            "00:00.000 / 00:00.000".chars().count() as f32 * metric::UI_FONT_VALUE * 0.5;
-        TimelineBand::layout(
-            bar.x,
-            0.0,
-            middle.max(0.0),
-            transport_bar::CONTROL_SIZE,
-            metric::UI_CONTROL_GAP,
-            &widths,
-            // No trailing "Clear manual" button in the transport row.
-            0.0,
-            timecode_width,
-        )
-    }
-
-    #[test]
-    fn the_toolbar_never_squeezes_its_controls_below_the_legibility_floor() {
-        // The band's contract: it will shrink to TIMELINE_BAND_MIN_SCALE and no
-        // further, and it says so through `fits`. A capture at 960x640 with the
-        // inspector open — a 440 px toolbar — is what caught the old arithmetic
-        // reading "Pau?  Tune  Exp?  Lyr?".
-        use musializer_core::ui::timeline_layout::TIMELINE_BAND_MIN_SCALE;
-
-        for width in [440.0f32, 640.0, 960.0, 1280.0] {
-            let band = toolbar_band(width, 5).expect("the band accepts these inputs");
-            assert!(
-                band.scale >= TIMELINE_BAND_MIN_SCALE,
-                "{width}px scaled to {} — below the legibility floor",
-                band.scale
-            );
-            assert!(band.scale <= 1.0, "{width}px scaled up to {}", band.scale);
-        }
-    }
-
-    #[test]
-    fn a_narrow_toolbar_moves_the_timecode_out_rather_than_over_the_buttons() {
-        // The whole reason the band exists. At the narrow end the timecode must
-        // not be inline, and the timeline panel is then responsible for it —
-        // which is why `ToolbarResult` travels. A capture at 960x640 with the
-        // inspector open shows exactly that handover.
-        let narrow = toolbar_band(440.0, 8).expect("valid");
-        let wide = toolbar_band(1280.0, 8).expect("valid");
-        assert!(
-            !narrow.timecode_inline || !narrow.fits,
-            "a 440 px band claimed room for both the row and the timecode"
-        );
-        assert!(wide.timecode_inline, "a 1280 px band should seat both");
-        assert!(wide.fits);
-        assert!(!wide.controls.overlaps(wide.timecode));
-    }
-
-    #[test]
-    fn the_toolbar_sheds_whole_groups_rather_than_overflowing() {
-        // `fits == false` does not mean the band returned something that fits. It
-        // means the band has already scaled to its floor and the row still
-        // overflows, so **the caller has to drop controls**
-        // (`timeline_layout.h:45-47`). `Shell::toolbar` responds by trying three
-        // compositions richest-first, and the invariant is that the last of them —
-        // the lone transport button — always fits.
-        //
-        // Swept rather than spot-checked because the interesting widths are the two
-        // boundaries, and neither is where anyone would guess.
-        for width in 200..=1920 {
-            let bar = width as f32;
-            let chosen = [8usize, 5, 1].into_iter().find_map(|count| {
-                let band = toolbar_band(bar, count)?;
-                (band.fits || count == 1).then_some((count, band))
-            });
-            let Some((count, band)) = chosen else {
-                // Too narrow even for the utility cluster's fullscreen button; the
-                // row draws nothing, which is honest rather than degenerate.
-                continue;
-            };
-            if band.fits {
-                assert!(
-                    band.controls_width <= bar + 0.01,
-                    "{width}px: the band said a {}px row of {count} fits, and it does not",
-                    band.controls_width
-                );
-            } else {
-                assert_eq!(
-                    count, 1,
-                    "{width}px settled on {count} controls that do not fit"
-                );
-            }
-            if band.timecode_inline && band.fits {
-                assert!(
-                    band.timecode.x + band.timecode.width <= bar + 0.01,
-                    "{width}px: the timecode runs past the bar"
-                );
-                assert!(
-                    !band.controls.overlaps(band.timecode),
-                    "{width}px: the timecode prints through the controls"
-                );
-            }
-        }
-    }
-
-    /// The utility cluster and the middle group must never overlap, at any width.
-    ///
-    /// They are laid out by two different modules against opposite edges of the
-    /// same bar, which is precisely the arrangement `timeline_layout.h:12-21`
-    /// records as having printed one group through the other in the C.
-    #[test]
-    fn the_middle_group_never_reaches_into_the_utility_cluster() {
-        use musializer_core::ui::transport_bar;
-
-        for width in 200..=1920 {
-            let bar = UiRect::new(0.0, 0.0, width as f32, metric::HUD_BUTTON_SIZE);
-            let Some(cluster) = transport_bar::utilities(bar, 0.0, true) else {
-                continue;
-            };
-            for count in [8usize, 5, 1] {
-                let Some(band) = toolbar_band(width as f32, count) else {
-                    continue;
-                };
-                if !band.fits && count != 1 {
-                    continue;
-                }
-                let leftmost = [cluster.readout, cluster.mute, cluster.volume]
-                    .into_iter()
-                    .flatten()
-                    .chain(std::iter::once(cluster.fullscreen))
-                    .map(|rect| rect.x)
-                    .fold(f32::MAX, f32::min);
-                assert!(
-                    band.controls.x + band.controls.width <= leftmost + 0.01,
-                    "{width}px with {count} controls: the row reaches {} into a cluster starting at {leftmost}",
-                    band.controls.x + band.controls.width
-                );
-                break;
-            }
-        }
-    }
+    // The toolbar's composition — what it sheds, in what order, and that the
+    // timecode leaves for the band's header rather than printing through the
+    // controls — is `transport_bar::TransportRow`'s since WX-5c, and is swept
+    // there for monotonicity and overlap at every width from 120 to 1920.
 
     // ---- UX0-A09 (review 1.9): the position bar ----------------------------
 
@@ -6440,6 +5991,27 @@ mod tests {
             toggle_inspector: true,
             ..KeyboardFrame::default()
         }
+    }
+
+    /// Escape closes an open flyout before it does anything else (WX-5c §1),
+    /// and with no flyout open it still leaves fullscreen.
+    #[test]
+    fn escape_closes_the_flyout_first() {
+        let escape = KeyboardFrame {
+            escape: true,
+            ..KeyboardFrame::default()
+        };
+        let mut shell = Shell::new();
+        shell.open_flyout = Some(Flyout::Scenes);
+        let mut commands = Vec::new();
+        shell.keyboard_actions(escape, context(), &mut commands);
+        assert_eq!(shell.open_flyout, None);
+        assert!(commands.is_empty(), "{commands:?}");
+
+        shell.fullscreen = true;
+        shell.keyboard_actions(escape, context(), &mut commands);
+        assert!(!shell.fullscreen);
+        assert_eq!(commands, vec![ShellCommand::SetFullscreen(false)]);
     }
 
     /// Puts one named surface in the state the user reaches by clicking into it
