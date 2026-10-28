@@ -24,6 +24,7 @@ pub mod mapping_editor;
 pub mod panels;
 pub mod preferences;
 pub mod protocol;
+pub mod rail;
 pub mod scale;
 pub mod scene_colors;
 pub mod shell;

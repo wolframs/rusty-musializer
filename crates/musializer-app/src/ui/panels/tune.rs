@@ -2758,7 +2758,7 @@ mod tests {
         shell.toggle_route_editor(0, SceneId::SongAtlas, last, None);
         shell.route_editor.state.set_source(AnalysisSource::Band);
         assert_eq!(shell.focused_route_row(0, SceneId::SongAtlas), Some(last));
-        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 1, 150.0);
+        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 150.0);
         let padding = metric::UI_PANEL_PADDING;
         let available = frame.inspector.height
             - 27.0
@@ -2872,7 +2872,7 @@ mod tests {
         // minimum with the inspector open has to leave a content rectangle the
         // expanded row can sit in, or the row is never drawn and the feature is
         // unreachable at a size the application permits.
-        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 1, 150.0);
+        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 150.0);
         let padding = metric::UI_PANEL_PADDING;
         // The panel header rule, then the scene name, then the scope line
         // (review 1.7 added this one), then the first row.

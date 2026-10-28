@@ -55,6 +55,12 @@ pub enum ButtonStyle {
     /// The primary action — Render — and nothing else: the one control that
     /// wears the accent as a fill, selected or not (WX-5a).
     Primary,
+    /// A control that only draws a box when it is hovered or selected: the
+    /// rail's icons and the transport's chips (WX-5c). Idle, it is its glyph in
+    /// muted ink on whatever surface it sits on, so a column of four does not
+    /// read as four buttons stacked on a panel. Selected is the same outline
+    /// and tint every other selected control wears.
+    Ghost,
     // No caller yet. It is the style for a destructive action, and the two the
     // oracle has — `Clear manual` and Cancel export — are Agents L and H's. Kept
     // rather than deleted because it is half of the C's widget vocabulary and
@@ -115,6 +121,21 @@ pub fn button_look(style: ButtonStyle, selected: bool, hovered: bool) -> ButtonL
             },
             edge: alpha(color::ui_danger(), 0.72),
             ink: color::ui_ink(),
+        },
+        ButtonStyle::Ghost if selected => ButtonLook {
+            fill: color::ui_selected(),
+            edge: color::ui_selected_edge(),
+            ink: color::ui_ink(),
+        },
+        ButtonStyle::Ghost if hovered => ButtonLook {
+            fill: color::ui_hover(),
+            edge: alpha(color::ui_hover(), 0.0),
+            ink: color::ui_ink(),
+        },
+        ButtonStyle::Ghost => ButtonLook {
+            fill: alpha(color::ui_hover(), 0.0),
+            edge: alpha(color::ui_hover(), 0.0),
+            ink: color::ui_muted(),
         },
         ButtonStyle::Neutral if selected => ButtonLook {
             fill: color::ui_selected(),
@@ -287,6 +308,14 @@ impl Widgets {
         self.pending_tooltip = None;
         self.input_clip = None;
         self.ui_scale = ui_scale;
+    }
+
+    /// Swaps the scale the pointer is read through, returning the one it
+    /// replaces (WX-5c). The shell installs an occluded scale while it draws
+    /// what an open flyout covers, and puts the plain one back for the flyout
+    /// itself; see [`UiScale::occluded`].
+    pub fn set_ui_scale(&mut self, ui_scale: UiScale) -> UiScale {
+        std::mem::replace(&mut self.ui_scale, ui_scale)
     }
 
     /// Restrict new presses and hover to the visible viewport. Restore the

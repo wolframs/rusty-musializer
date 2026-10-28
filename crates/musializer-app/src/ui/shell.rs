@@ -24,7 +24,7 @@ use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::timeline_view::{self, TimelineView};
 use musializer_core::ui::transport_bar;
-use musializer_core::ui::workspace_layout::{TracksPanelMode, UiRect};
+use musializer_core::ui::workspace_layout::{RailIcon, UiRect};
 use musializer_runtime::font::{Faces, UiFonts};
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
@@ -37,6 +37,7 @@ use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
 use crate::workspace::{SaveState, Workspace};
+use musializer_core::ui::workspace_layout::TOP_BAR_HEIGHT;
 
 /// What the shell asks the application to do.
 ///
@@ -414,6 +415,7 @@ fn drop_command(path: &Path) -> ShellCommand {
 ///
 /// Borrowed, never owned. The lifetime is the contract: the shell may not retain
 /// anything it is handed.
+#[derive(Clone, Copy)]
 pub struct ShellInput<'a> {
     pub window: (f32, f32),
     pub ui_scale: UiScale,
@@ -722,9 +724,12 @@ pub struct Shell {
     /// The rail's open flyout (WX-5c §1). `--ui-probe flyout=` sets it; until
     /// the rail is drawn nothing reads it but the `rail:` line.
     pub open_flyout: Option<Flyout>,
-    /// The rail rect of the last workspace frame drawn, for the `rail:` line.
-    /// `None` on the welcome screen, which has no rail.
-    last_rail: Option<UiRect>,
+    /// The rail of the last workspace frame drawn, for the `rail:` line.
+    /// `None` on the welcome screen, which has no rail, and in the fullscreen
+    /// and editor frames, which hide it.
+    pub(crate) last_rail: Option<musializer_core::ui::workspace_layout::WorkspaceRail>,
+    /// Where the open flyout drew in the last frame, for the same line.
+    pub(crate) last_flyout: Option<UiRect>,
 }
 
 /// The colour a save state's word draws in, wherever it is drawn: the tracks
@@ -834,7 +839,6 @@ impl ModeTab {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SplitKind {
-    Sidebar,
     Inspector,
     Timeline,
 }
@@ -1278,6 +1282,7 @@ impl Shell {
             top_bar_state: super::top_bar::TopBarState::default(),
             open_flyout: None,
             last_rail: None,
+            last_flyout: None,
         }
     }
 
@@ -1384,18 +1389,20 @@ impl Shell {
         if self.fullscreen {
             return SaveAffordance::Fullscreen;
         }
-        if frame.tracks_mode != TracksPanelMode::Hidden
-            && !frame.tracks.is_empty()
-            && frame.tracks_mode.action_row().is_some()
+        // The rail's Tracks icon is one press from Save, and the top bar
+        // carries the state word (WX-5c). Both are drawn in every workspace
+        // frame the rail is seated in; the rail's own layout drops Tracks
+        // last, so a frame with a rail and no Tracks icon is a rail too short
+        // for one 28 px box, which no permitted window produces.
+        if !frame.top_bar.is_empty()
+            && frame
+                .rail_layout
+                .is_some_and(|rail| rail.icon(RailIcon::Tracks).is_some())
         {
-            return SaveAffordance::TracksPanel;
+            return SaveAffordance::TopBar;
         }
-        if collapsed_tracks_split(frame.tracks_mode, frame.scenes).is_some() {
-            return SaveAffordance::CollapsedStrip;
-        }
-        // Unreachable while the sidebar has any height at all, and reported
-        // rather than asserted so a future layout change surfaces in the report
-        // line instead of in a panic.
+        // The editor frame, which hides the workspace's chrome while its own
+        // modal is up; Ctrl+S still saves.
         SaveAffordance::Fullscreen
     }
 
@@ -1410,9 +1417,13 @@ impl Shell {
     #[must_use]
     pub fn describe(&self, frame: &WorkspaceFrame) -> String {
         format!(
-            "panel {:?}  tracks {:?}  save {:?}  readout {}",
+            "panel {:?}  rail {}  save {:?}  readout {}",
             self.panel,
-            frame.tracks_mode,
+            if frame.rail.is_empty() {
+                "none"
+            } else {
+                self.open_flyout.map_or("closed", Flyout::name)
+            },
             self.save_affordance(frame),
             if self.hud_visible { "on" } else { "off" }
         )
@@ -1477,7 +1488,7 @@ impl Shell {
                 // floor; resizing can give it room, never clip an action.
                 UiPanel::Assist => automatic - super::panels::scene_timeline::SCENE_SECTION_HEIGHT,
             };
-        let maximum = (window.1 - metric::HUD_BUTTON_SIZE - 150.0).max(minimum);
+        let maximum = (window.1 - metric::HUD_BUTTON_SIZE - TOP_BAR_HEIGHT - 150.0).max(minimum);
         requested.clamp(minimum, maximum)
     }
 
@@ -1508,28 +1519,19 @@ impl Shell {
             return WorkspaceFrame::fullscreen(window.0, window.1, true);
         }
         let timeline = self.resolved_timeline_height(window, workspace);
+        // `ui_preferences.sidebar_width` is still read from `ui.json`, so a
+        // file written before WX-5c loads, and nothing lays out by it: the
+        // rail has one width.
         let overrides = LayoutOverrides {
             inspector_width: self.ui_preferences.inspector_width,
-            tracks_width: self.ui_preferences.sidebar_width,
         };
-        if overrides == LayoutOverrides::default() {
-            WorkspaceFrame::layout(
-                window.0,
-                window.1,
-                self.inspector_open,
-                workspace.len(),
-                timeline,
-            )
-        } else {
-            WorkspaceFrame::layout_with_overrides(
-                window.0,
-                window.1,
-                self.inspector_open,
-                workspace.len(),
-                timeline,
-                overrides,
-            )
-        }
+        WorkspaceFrame::layout_with_overrides(
+            window.0,
+            window.1,
+            self.inspector_open,
+            timeline,
+            overrides,
+        )
     }
 
     /// [`Self::describe`] for the slice report, which has the window and the
@@ -1709,41 +1711,66 @@ impl Shell {
             self.keyboard(d, input, &mut commands);
         }
 
+        // WX-5c: an open flyout floats over the preview, the transport and the
+        // band, and is modal for presses. A press outside it closes it; one
+        // inside must not reach anything underneath. Everything drawn under
+        // it gets a copy of this frame's input whose pointer is not there
+        // (`UiScale::occluded`), and the widget bank reads the same scale, so
+        // a press on a tile cannot also start a scrub on the lane below it.
+        let flyout = if modal {
+            None
+        } else {
+            self.flyout_begin(d, frame)
+        };
+        let occluded = ShellInput {
+            ui_scale: input.ui_scale.occluded(flyout),
+            ..*input
+        };
+        let under = &occluded;
+        let pointer_scale = self.widgets.set_ui_scale(under.ui_scale);
+
         // The toolbar runs first because its band decides whether the timecode
         // fits beside the transport buttons, and the timeline is where it goes
         // when it does not. The regions are disjoint, so drawing it first costs
         // nothing — and one owner of that decision is the whole point.
-        let toolbar = self.toolbar(d, frame, input, &mut commands);
-        self.last_rail = Some(frame.rail);
+        let toolbar = self.toolbar(d, frame, under, &mut commands);
+        self.last_rail = frame.rail_layout;
+        self.last_flyout = None;
 
         if !self.fullscreen {
-            // WX-5c: the top bar, after the preview chrome. Its rect is empty
-            // in the fullscreen and editor frames and, until the rail lands,
-            // zero-height in every frame.
-            self.top_bar(d, input, frame.top_bar, &mut commands);
-            self.tracks_panel(d, frame, input, &mut commands);
-            self.scene_browser(d, frame, input, &mut commands);
+            // WX-5c: the top bar and the rail. Both rects are empty in the
+            // fullscreen and editor frames.
+            self.top_bar(d, under, frame.top_bar, &mut commands);
+            self.rail(d, frame, under, &mut commands);
             // Not drawn under the modal, and not for tidiness: the lyrics cue
             // field reads raylib's keyboard directly rather than through the
             // widget bank (`ui/text_input.rs`), so a key typed into the modal's
             // masked field would also land in a cue — a credential in a `.musi`
             // file.
             if !modal {
-                self.timeline_strip(d, frame, input, toolbar, &mut commands);
+                self.timeline_strip(d, frame, under, toolbar, &mut commands);
             }
             if self.inspector_open && !self.editor_open {
-                self.inspector(d, frame, input, &mut commands);
+                self.inspector(d, frame, under, &mut commands);
             }
             if !self.editor_open {
-                self.splitters(d, frame, input, &mut commands);
+                self.splitters(d, frame, under, &mut commands);
             }
         }
+        self.widgets.set_ui_scale(pointer_scale);
         // The protocol question card sits over the preview's bottom edge, and
         // the notice tray stacks *above* it rather than over it — the first
         // smoke capture had the session-start notice covering the question
         // text. Drawn in fullscreen too: a listening session is exactly when
         // the panels are hidden.
         let mut notice_region = frame.preview;
+        // An open flyout covers the preview's left edge, which is where the
+        // tray stacks; the tray moves right of it rather than under it.
+        if let Some(rect) = flyout {
+            let right = (rect.x + rect.width).min(notice_region.x + notice_region.width);
+            notice_region.width = (notice_region.x + notice_region.width - right).max(0.0);
+            notice_region.x = right;
+        }
         if let Some(session) = &self.protocol {
             if !modal {
                 if let Some(card_top) = super::protocol::draw_card(
@@ -1759,6 +1786,10 @@ impl Shell {
         }
         self.notice_tray(d, input.fonts.ui(), notice_region);
         self.fullscreen_attention(d, input);
+        // Over everything above, under the AI settings modal and the tooltip.
+        if flyout.is_some() {
+            self.flyout(d, frame, input, &mut commands);
+        }
 
         if self.assist_settings.is_open() {
             // AP3-R S11: the one fact the dialog cannot read off disk. It states
@@ -2508,7 +2539,12 @@ impl Shell {
         }
         // Escape leaves fullscreen but does not enter it — the convention every
         // media player follows, and the one that makes Escape safe to press.
-        if keys.escape && self.fullscreen {
+        //
+        // An open flyout takes Escape first (WX-5c): it is the thing on top,
+        // and fullscreen cannot be on while one is open.
+        if keys.escape && self.open_flyout.is_some() {
+            self.open_flyout = None;
+        } else if keys.escape && self.fullscreen {
             self.set_fullscreen(false, commands);
         }
         if keys.toggle_mute {
@@ -2647,14 +2683,8 @@ impl Shell {
         } else {
             icons::PLAY
         };
-        let panels = [
-            icons::TUNE,
-            icons::EXPORT,
-            icons::LYRICS,
-            icons::ASSIST,
-            icons::EDITOR,
-            icons::DOCK,
-        ];
+        // Editor and Dock moved to the rail (WX-5c §1).
+        let panels = [icons::TUNE, icons::EXPORT, icons::LYRICS, icons::ASSIST];
         let seek = [icons::SEEK_START, icons::SEEK_BACK, icons::SEEK_FORWARD];
 
         // Natural widths. With the icon face loaded every control is a square, so
@@ -2732,8 +2762,6 @@ impl Shell {
                 c if *c == icons::SEEK_BACK => (widgets::id::SEEK, 1, false),
                 c if *c == icons::SEEK_FORWARD => (widgets::id::SEEK, 2, false),
                 c if *c == icons::TUNE => (widgets::id::TOOLBAR, 1, self.inspector_open),
-                c if *c == icons::EDITOR => (widgets::id::TOOLBAR, 5, self.editor_open),
-                c if *c == icons::DOCK => (widgets::id::TOOLBAR, 6, self.dock_open),
                 c if *c == icons::EXPORT => {
                     (widgets::id::TOOLBAR, 2, self.panel == UiPanel::Export)
                 }
@@ -2801,12 +2829,6 @@ impl Shell {
                     commands.push(ShellCommand::Seek(self.nudge_target(d, input, sign)));
                 }
                 c if *c == icons::TUNE => self.set_inspector_open(!self.inspector_open),
-                c if *c == icons::EDITOR => {
-                    if self.lyric_draft_allows_context_change(input.workspace) {
-                        self.editor_open = true;
-                    }
-                }
-                c if *c == icons::DOCK => commands.push(self.toggle_dock()),
                 // The three bottom panels share one guard, as they do in the
                 // oracle's own panel row (`plug.c:2905-2906`): leaving the lyrics
                 // editor with a half-typed cue is a context change like any other,
@@ -3651,23 +3673,6 @@ impl Shell {
         }
     }
 
-    /// The `rail:` report line (WX-5c §1): the rail rect of the last
-    /// workspace frame, its icons, the open flyout and where it drew.
-    #[must_use]
-    pub fn describe_rail(&self) -> String {
-        let Some(rail) = self.last_rail else {
-            return "none".to_owned();
-        };
-        format!(
-            "rect={:.0},{:.0},{:.0},{:.0} icons=none open={} flyout=none",
-            rail.x,
-            rail.y,
-            rail.width,
-            rail.height,
-            self.open_flyout.map_or("none", Flyout::name),
-        )
-    }
-
     /// Draggable workspace boundaries. Geometry remains a pure layout concern;
     /// this is only the immediate-mode gesture that updates its optional inputs.
     fn splitters(
@@ -3691,12 +3696,6 @@ impl Shell {
             return;
         }
         const HIT: f32 = 8.0;
-        let sidebar = UiRect::new(
-            frame.preview.x - HIT * 0.5,
-            0.0,
-            HIT,
-            frame.timeline.y.max(0.0),
-        );
         let inspector = self
             .inspector_open
             .then(|| UiRect::new(frame.inspector.x - HIT * 0.5, 0.0, HIT, input.window.1));
@@ -3710,11 +3709,6 @@ impl Shell {
         let hovered = inspector
             .filter(|rect| rect.contains_point(mouse.x, mouse.y))
             .map(|_| SplitKind::Inspector)
-            .or_else(|| {
-                sidebar
-                    .contains_point(mouse.x, mouse.y)
-                    .then_some(SplitKind::Sidebar)
-            })
             .or_else(|| {
                 timeline
                     .contains_point(mouse.x, mouse.y)
@@ -3730,7 +3724,6 @@ impl Shell {
                 self.last_split_press = Some((kind, now));
                 if double {
                     match kind {
-                        SplitKind::Sidebar => self.ui_preferences.sidebar_width = None,
                         SplitKind::Inspector => self.ui_preferences.inspector_width = None,
                         SplitKind::Timeline => self.ui_preferences.timeline_height = None,
                     }
@@ -3750,9 +3743,6 @@ impl Shell {
         if let Some(kind) = self.split_drag {
             if d.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
                 match kind {
-                    SplitKind::Sidebar => {
-                        self.ui_preferences.sidebar_width = Some(mouse.x.clamp(168.0, 520.0))
-                    }
                     SplitKind::Inspector => {
                         self.ui_preferences.inspector_width =
                             Some((input.window.0 - mouse.x).clamp(240.0, 520.0))
@@ -3776,74 +3766,53 @@ impl Shell {
         let active = self.split_drag.or(hovered);
         d.set_mouse_cursor(match active {
             Some(SplitKind::Timeline) => MouseCursor::MOUSE_CURSOR_RESIZE_NS,
-            Some(SplitKind::Sidebar | SplitKind::Inspector) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
+            Some(SplitKind::Inspector) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
             None => self
                 .pointer_cursor
                 .unwrap_or(MouseCursor::MOUSE_CURSOR_DEFAULT),
         });
 
-        for (kind, rect) in [
-            (SplitKind::Sidebar, sidebar),
-            (SplitKind::Timeline, timeline),
-        ] {
-            draw_splitter(d, rect, kind, active);
-        }
+        draw_splitter(d, timeline, SplitKind::Timeline, active);
         if let Some(rect) = inspector {
             draw_splitter(d, rect, SplitKind::Inspector, active);
         }
     }
 
-    /// The tracks rail (`tracks_panel`, `plug.c`).
+    /// The tracks flyout's body (`tracks_panel`, `plug.c`): the four actions,
+    /// then the track list, in `panel` (WX-5c §1).
     ///
-    /// Drawn only when the layout says the panel can host its own action row. The
-    /// alternative — drawing it anyway at a fixed offset — is the defect
-    /// `workspace_layout.h:7-19` documents: invisible buttons that claim clicks
-    /// aimed at the scene tiles painted over them.
-    fn tracks_panel(
+    /// The widget ids are the sidebar panel's, so a press claimed by a probe
+    /// or a hand names the same control it always did. The action row is the
+    /// old panel's stacked form (two rows of two), which the flyout's 336 px
+    /// always has room for, so the mode ladder that hid the panel at short
+    /// windows has nothing left to decide.
+    pub(crate) fn tracks_panel(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
+        panel: UiRect,
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
-        if frame.tracks_mode == TracksPanelMode::Hidden || frame.tracks.is_empty() {
-            self.collapsed_tracks_strip(d, frame, input, commands);
-            return;
-        }
-        let content = widgets::panel(d, input.fonts.ui(), frame.tracks, "TRACKS");
+        let content = widgets::panel(d, input.fonts.ui(), panel, "TRACKS");
         // The save state, right-aligned in the panel's own title row (UX0-B01,
-        // F1). In the header rather than on the row because the header is the one
-        // part of this panel that is never scrolled, never clipped and never
-        // absent while the panel exists — and because the row is a single button
-        // whose whole width is its label, so a badge drawn into it would sit on
-        // top of the track's name.
-        self.tracks_save_state(d, frame, input);
-        let Some((top, height)) = frame.tracks_mode.action_row() else {
-            return;
-        };
+        // F1). The top bar carries it too from WX-5c on; here it sits beside
+        // the Save it describes.
+        self.tracks_save_state(d, panel, input);
         let row = UiRect::new(
-            frame.tracks.x + metric::UI_PANEL_PADDING,
-            frame.tracks.y + top,
-            frame.tracks.width - metric::UI_PANEL_PADDING * 2.0,
-            height,
+            panel.x + metric::UI_PANEL_PADDING,
+            panel.y + TRACKS_ACTION_TOP,
+            panel.width - metric::UI_PANEL_PADDING * 2.0,
+            TRACKS_ACTION_ROW * 2.0 + TRACKS_ACTION_GAP,
         );
-        // The layout promised this fits; assert it rather than trust it, because
-        // this is the exact promise the C broke.
-        if !frame.tracks.contains(row) {
+        if !panel.contains(row) {
             return;
         }
 
-        let stacked = frame.tracks_mode == TracksPanelMode::Stacked;
         // The oracle's four, in its order (`action_labels`, `plug.c:5165-5166`).
         // There is no "Close": the frozen C cannot close a single track, and a
         // button for it would be an invented feature rather than parity.
         //
         // Save carries a `*` while the current track has work to write (UX0-B01).
-        // A marked *label* rather than an accent colour, because the widget bank
-        // has exactly two button styles — Neutral and Danger — and minting a
-        // third for this would be widget infrastructure rather than a panel
-        // change. The asterisk is also the convention every editor already uses
-        // for the same fact, so it needs no legend.
         let current = input.workspace.current();
         let save_marked = current.is_some_and(|track| track.save_state().needs_attention());
         let unnamed = current.is_some_and(|track| track.project_path.is_none());
@@ -3854,13 +3823,9 @@ impl Shell {
             (false, false) => "Save",
         };
         let labels: [&str; 4] = ["Open project", "Add audio", save_label, "Save As"];
-        let columns = if stacked { 2 } else { 4 };
-        let cell_width = (row.width - (columns - 1) as f32 * 4.0) / columns as f32;
-        let cell_height = if stacked {
-            (row.height - 4.0) * 0.5
-        } else {
-            row.height
-        };
+        let columns = 2;
+        let cell_width = (row.width - TRACKS_ACTION_GAP) * 0.5;
+        let cell_height = TRACKS_ACTION_ROW;
         let widths = [cell_width; 4];
         let font = input.fonts.ui();
         let font_size = widgets::row_font_size(font, &labels, &widths, cell_height);
@@ -3869,14 +3834,11 @@ impl Shell {
             let column = index % columns;
             let line = index / columns;
             let boundary = UiRect::new(
-                row.x + column as f32 * (cell_width + 4.0),
-                row.y + line as f32 * (cell_height + 4.0),
+                row.x + column as f32 * (cell_width + TRACKS_ACTION_GAP),
+                row.y + line as f32 * (cell_height + TRACKS_ACTION_GAP),
                 cell_width,
                 cell_height,
             );
-            // Every one of these needs Agent B's project model. Disabled and
-            // named beats absent: the affordance is what tells the user the
-            // feature exists at all.
             // Opening a project and adding audio work with an empty workspace;
             // saving needs something to save.
             let unavailable = index >= 2 && input.workspace.current().is_none();
@@ -3896,14 +3858,14 @@ impl Shell {
                 ButtonStyle::Neutral,
                 Some(font_size),
             );
+            if index == 2 {
+                self.widgets
+                    .hint(d, state, id, boundary, "Save the project [Ctrl+S]");
+            }
             if state.clicked {
                 match index {
                     // Both Opens make a *different* track current, so they are the
                     // same context change as clicking a track row (review 1.3).
-                    // The oracle guards neither and clears the draft on the way
-                    // through (`plug.c:5037`), which loses the typing without
-                    // saying so; refusing is the interaction the rest of this
-                    // interface already uses.
                     0 | 1 if !self.lyric_draft_allows_context_change(input.workspace) => {}
                     0 => commands.push(ShellCommand::OpenProject),
                     1 => commands.push(ShellCommand::OpenAudio),
@@ -3913,19 +3875,22 @@ impl Shell {
                     2 => commands.push(ShellCommand::SaveProject),
                     _ => commands.push(ShellCommand::SaveProjectAs),
                 }
+                // An action that opens a dialog or writes a file is done with
+                // the flyout; the list stays open for picking a track.
+                self.open_flyout = None;
             }
         }
 
         // The track list, below the action row.
-        let list_top = frame.tracks.y + top + height + metric::UI_CONTROL_GAP;
+        let list_top = row.y + row.height + metric::UI_CONTROL_GAP;
         if !input.workspace.is_empty() {
-            self.track_list(d, frame, input, commands, content, list_top);
+            self.track_list(d, panel, input, commands, content, list_top);
         } else {
             widgets::draw_text(
                 d,
                 input.fonts.ui(),
                 "no track open",
-                frame.tracks.x + metric::UI_PANEL_PADDING,
+                panel.x + metric::UI_PANEL_PADDING,
                 list_top,
                 metric::UI_FONT_CAPTION,
                 color::ui_muted(),
@@ -3955,7 +3920,7 @@ impl Shell {
     fn tracks_save_state(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
+        panel: UiRect,
         input: &ShellInput<'_>,
     ) {
         let Some(track) = input.workspace.current() else {
@@ -3965,11 +3930,11 @@ impl Shell {
         let font = input.fonts.ui();
         let label = state.label();
         let width = widgets::measure(font, label, metric::UI_FONT_CAPTION);
-        let x = frame.tracks.x + frame.tracks.width - metric::UI_PANEL_PADDING - width;
+        let x = panel.x + panel.width - metric::UI_PANEL_PADDING - width;
         // Never over the "TRACKS" title: at a narrow sidebar the two would
         // overlap into an unreadable smear, and the title is the one that says
         // which panel this is.
-        let title_end = frame.tracks.x
+        let title_end = panel.x
             + metric::UI_PANEL_PADDING
             + widgets::measure(font, "TRACKS", metric::UI_FONT_CAPTION)
             + 8.0;
@@ -3982,7 +3947,7 @@ impl Shell {
             font,
             label,
             x,
-            frame.tracks.y + 8.0,
+            panel.y + 8.0,
             metric::UI_FONT_CAPTION,
             tint,
         );
@@ -3992,14 +3957,12 @@ impl Shell {
         let Some(reason) = &track.project_save_error else {
             return;
         };
-        let Some((action_top, _)) = frame.tracks_mode.action_row() else {
-            return;
-        };
-        let reason_y = frame.tracks.y + widgets::PANEL_HEADER_HEIGHT + 2.0;
-        if reason_y + metric::UI_FONT_CAPTION > frame.tracks.y + action_top {
+        let action_top = TRACKS_ACTION_TOP;
+        let reason_y = panel.y + widgets::PANEL_HEADER_HEIGHT + 2.0;
+        if reason_y + metric::UI_FONT_CAPTION > panel.y + action_top {
             return;
         }
-        let available = frame.tracks.width - metric::UI_PANEL_PADDING * 2.0;
+        let available = panel.width - metric::UI_PANEL_PADDING * 2.0;
         for line in notice::wrap_detail(&save_error_summary(reason), available, 1, |text| {
             widgets::measure(font, text, metric::UI_FONT_CAPTION)
         }) {
@@ -4007,143 +3970,11 @@ impl Shell {
                 d,
                 font,
                 &line,
-                frame.tracks.x + metric::UI_PANEL_PADDING,
+                panel.x + metric::UI_PANEL_PADDING,
                 reason_y,
                 metric::UI_FONT_CAPTION,
                 color::ui_danger(),
             );
-        }
-    }
-
-    /// What the sidebar shows in place of the whole tracks panel (review 1.12,
-    /// UX0-A12).
-    ///
-    /// # The defect
-    ///
-    /// At 960x640 with Assist open — and at 1280x720 with the lyrics sheet
-    /// expanded — [`TracksPanelMode::Hidden`] takes the entire tracks panel away.
-    /// The sidebar then starts at SCENES, and Save, Save As, Open project and the
-    /// name of the track being worked on are simply gone, with nothing on screen
-    /// marking their absence. Since the oracle binds no save shortcut either,
-    /// that state had **no route to saving at all** except closing the bottom
-    /// panel, and nothing suggested it.
-    ///
-    /// # Where this lives, and why there
-    ///
-    /// A 26 px strip at the very top of the sidebar — which is precisely the
-    /// space the tracks panel vacated, so the collapsed form appears where the
-    /// full one was rather than somewhere the user has to hunt for. The pixels
-    /// come out of `frame.scenes` via [`collapsed_tracks_split`], which is
-    /// shell-side arithmetic: `workspace_layout`'s outputs are pinned
-    /// record-for-record by `tools/differential_layout.sh` against the frozen C
-    /// and are not ours to change.
-    ///
-    /// The alternative considered and rejected was the transport row. It has its
-    /// own shedding ladder with a monotonicity property, so a Save control there
-    /// would either have to be unsheddable — competing with fullscreen for that
-    /// status — or would vanish at exactly the narrow widths where the tracks
-    /// panel is already hidden, which is the same bug one row down.
-    fn collapsed_tracks_strip(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
-        input: &ShellInput<'_>,
-        commands: &mut Vec<ShellCommand>,
-    ) {
-        let Some((strip, _)) = collapsed_tracks_split(frame.tracks_mode, frame.scenes) else {
-            return;
-        };
-        let font = input.fonts.ui();
-        widgets::fill(d, strip, color::ui_surface());
-        d.draw_line_ex(
-            Vector2::new(strip.x, strip.y + strip.height),
-            Vector2::new(strip.x + strip.width, strip.y + strip.height),
-            1.0,
-            color::ui_rule(),
-        );
-
-        let save = UiRect::new(
-            strip.x + strip.width - COLLAPSED_SAVE_WIDTH - 4.0,
-            strip.y + 3.0,
-            COLLAPSED_SAVE_WIDTH,
-            (strip.height - 6.0).max(1.0),
-        );
-        let name_width = (save.x - strip.x - metric::UI_PANEL_PADDING - 6.0).max(0.0);
-        // The current track's name, ellipsized rather than clipped: this is the
-        // only place it appears in this configuration, so half a name is worse
-        // than a shortened one. `wrap_detail` with a one-line cap is exactly that
-        // rule and is already tested.
-        let name = input
-            .workspace
-            .current()
-            .map_or("no track open", |track| track.display_name());
-        // The name is the user's own words, so it goes through the authored
-        // face (review 1.5); measure and draw share that face so the one-line
-        // cap cannot lie about what fits.
-        let authored = input.fonts.authored();
-        for line in notice::wrap_detail(name, name_width, 1, |text| {
-            authored.measure_text(text, metric::UI_FONT_CAPTION, 0.0).x
-        }) {
-            authored.draw_text(
-                d,
-                &line,
-                raylib::prelude::Vector2::new(
-                    strip.x + metric::UI_PANEL_PADDING,
-                    strip.y + (strip.height - metric::UI_FONT_CAPTION) * 0.5,
-                ),
-                metric::UI_FONT_CAPTION,
-                0.0,
-                color::ui_ink(),
-            );
-        }
-
-        if !strip.contains(save) {
-            return;
-        }
-        let id = widgets::widget_id(widgets::id::TRACK_STRIP, 0);
-        if input.workspace.current().is_none() {
-            self.widgets
-                .disabled_button(d, font, save, "Save", Some(metric::UI_FONT_CAPTION));
-            return;
-        }
-        // The same `*` the full panel's Save carries (UX0-B01). This strip is the
-        // *only* save route in this configuration, so it is also the only place
-        // the state can appear — there is no header to put a word in.
-        let save_state = input
-            .workspace
-            .current()
-            .map_or(SaveState::NoProjectFile, |track| track.save_state());
-        let state = self.widgets.text_button(
-            d,
-            font,
-            id,
-            save,
-            if save_state.needs_attention() {
-                "Save *"
-            } else {
-                "Save"
-            },
-            false,
-            ButtonStyle::Neutral,
-            Some(metric::UI_FONT_CAPTION),
-        );
-        // The tooltip is the only place the collapse is explained. A user who
-        // notices the panel is gone has no other way to learn that it comes back
-        // when the bottom panel closes. It now also carries the save state in
-        // words, since the `*` says there is something to save but not what
-        // happened to the last attempt.
-        self.widgets.hint(
-            d,
-            state,
-            id,
-            save,
-            &format!(
-                "{} \u{00b7} Save project [Ctrl+S] \u{00b7} the tracks panel returns when the bottom panel closes",
-                save_state.label()
-            ),
-        );
-        if state.clicked {
-            commands.push(ShellCommand::SaveProject);
         }
     }
 
@@ -4161,7 +3992,7 @@ impl Shell {
     fn track_list(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
+        panel: UiRect,
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
         content: UiRect,
@@ -4173,18 +4004,18 @@ impl Shell {
         // The list area is what is left of the panel's content below the action
         // row, so `header_height` here is everything above the first row.
         let area = UiRect::new(
-            frame.tracks.x,
+            panel.x,
             list_top,
-            frame.tracks.width,
+            panel.width,
             (content.y + content.height - list_top).max(0.0),
         );
         if area.height <= 0.0 {
             return;
         }
-        let metrics = ListMetrics::measure(frame.tracks.width, area.height, 0.0, count);
+        let metrics = ListMetrics::measure(panel.width, area.height, 0.0, count);
 
         let mouse = input.ui_scale.mouse(d);
-        let over_panel = frame.tracks.contains_point(mouse.x, mouse.y);
+        let over_panel = panel.contains_point(mouse.x, mouse.y);
         let input_allowed = !self.editor_open && !self.assist_settings.is_open();
         if over_panel && input_allowed {
             self.track_scroll.wheel(d.get_mouse_wheel_move(), &metrics);
@@ -4192,7 +4023,7 @@ impl Shell {
 
         // The thumb is measured before `advance` so that a drag reads the same
         // rectangle the user pressed on, and released before the rows are drawn.
-        let bar_x = frame.tracks.x + frame.tracks.width - metrics.bar_width;
+        let bar_x = panel.x + panel.width - metrics.bar_width;
         if input_allowed {
             if let Some((thumb_y, thumb_height)) = metrics.thumb(self.track_scroll.offset()) {
                 let thumb = UiRect::new(bar_x, area.y + thumb_y, metrics.bar_width, thumb_height);
@@ -4226,7 +4057,7 @@ impl Shell {
         }
 
         let current = input.workspace.current_index();
-        let row_width = metrics.row_width(frame.tracks.width);
+        let row_width = metrics.row_width(panel.width);
         // Scissor mode is GL state, so drawing through the parent handle inside
         // the pair is still clipped; the handle type only enforces the begin/end
         // pairing. Opened once around the whole list rather than per row.
@@ -4240,8 +4071,7 @@ impl Shell {
             if !track_row_is_legible(top, row_height, area) {
                 continue;
             }
-            let boundary =
-                UiRect::new(frame.tracks.x + metrics.padding, top, row_width, row_height);
+            let boundary = UiRect::new(panel.x + metrics.padding, top, row_width, row_height);
             let selected = current == Some(index);
             // Offset past the action buttons above, so a track row and an action
             // never hash to the same id.
@@ -4312,9 +4142,12 @@ impl Shell {
         }
     }
 
+    /// `--ui-probe scene-family=`: browse a family, and open the scenes
+    /// flyout so a capture shows what it browsed (WX-5c §1).
     pub fn browse_scene_family(&mut self, family: SceneFamily, active: SceneId) {
         self.scene_picker.observe_scene(active);
         self.scene_picker.browse(family);
+        self.open_flyout = Some(Flyout::Scenes);
     }
 
     pub fn describe_scene_picker(&self) -> &str {
@@ -4325,18 +4158,13 @@ impl Shell {
     ///
     /// Its content floor is why the sidebar serves it first: it has no collapsed
     /// form (`workspace_layout.h:78-81`).
-    fn scene_browser(
+    pub(crate) fn scene_browser(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
+        boundary: UiRect,
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
-        // Whatever the collapsed tracks strip did not take (review 1.12,
-        // UX0-A12). One owner for that split, so the browser and the strip cannot
-        // draw over each other.
-        let boundary = collapsed_tracks_split(frame.tracks_mode, frame.scenes)
-            .map_or(frame.scenes, |(_, rest)| rest);
         if boundary.is_empty() {
             return;
         }
@@ -5797,43 +5625,11 @@ fn track_row_is_legible(top: f32, row_height: f32, area: UiRect) -> bool {
     visible > 0.0 && visible >= (row_height * TRACK_ROW_MINIMUM_VISIBLE).min(area.height)
 }
 
-/// Height of the collapsed tracks strip.
-///
-/// 26 px seats a 13 px caption and a 20 px button with 3 px of breathing room,
-/// and is the least that can carry both legibly.
-const COLLAPSED_TRACKS_HEIGHT: f32 = 26.0;
-/// The Save button's width in that strip.
-const COLLAPSED_SAVE_WIDTH: f32 = 46.0;
-
-/// Splits the sidebar into the collapsed tracks strip and what is left for the
-/// scene browser, or `None` when the full tracks panel is on screen.
-///
-/// Pure, and separate from the drawing, because the property that matters is
-/// "there is always somewhere to put it" — and that is a statement about
-/// rectangles at every window size, which is a sweep rather than a screenshot.
-///
-/// The strip is taken from the *browser's* rect rather than from
-/// [`WorkspaceFrame::tracks`], because in this mode `tracks` is empty by
-/// construction: `workspace_layout` gives the whole sidebar to the browser when
-/// it hides the panel, and its outputs are harness-pinned and untouchable.
-fn collapsed_tracks_split(
-    tracks_mode: TracksPanelMode,
-    scenes: UiRect,
-) -> Option<(UiRect, UiRect)> {
-    if tracks_mode != TracksPanelMode::Hidden || scenes.is_empty() {
-        return None;
-    }
-    let height = COLLAPSED_TRACKS_HEIGHT.min(scenes.height);
-    Some((
-        UiRect::new(scenes.x, scenes.y, scenes.width, height),
-        UiRect::new(
-            scenes.x,
-            scenes.y + height,
-            scenes.width,
-            (scenes.height - height).max(0.0),
-        ),
-    ))
-}
+/// The tracks flyout's action rows: two rows of two buttons, 46 px under the
+/// panel's top (the old sidebar's stacked form, `workspace_layout.h:41-47`).
+const TRACKS_ACTION_TOP: f32 = 46.0;
+const TRACKS_ACTION_ROW: f32 = 32.0;
+const TRACKS_ACTION_GAP: f32 = 4.0;
 
 /// Where this frame's route to saving is, if there is one on screen.
 ///
@@ -5843,10 +5639,10 @@ fn collapsed_tracks_split(
 /// a test can sweep and a report line can print.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SaveAffordance {
-    /// The tracks panel's own action row.
-    TracksPanel,
-    /// The one-row strip that stands in for it.
-    CollapsedStrip,
+    /// The top bar's state word, and Save one rail press away in the tracks
+    /// flyout (WX-5c). The flyout replaced both the sidebar's tracks panel
+    /// and the strip that stood in for it when the panel did not fit.
+    TopBar,
     /// Fullscreen draws no chrome at all. Escape is the way back and every
     /// keyboard route still works, so this is a deliberate absence rather than
     /// the defect.
@@ -5895,7 +5691,7 @@ fn draw_splitter(
     };
     let thickness = if selected { 2.0 } else { 1.0 };
     match kind {
-        SplitKind::Sidebar | SplitKind::Inspector => {
+        SplitKind::Inspector => {
             let x = hit.x + hit.width * 0.5;
             d.draw_line_ex(
                 Vector2::new(x, hit.y),
@@ -6390,83 +6186,33 @@ mod tests {
 
     /// The defect: with the tracks panel hidden there was **no route to saving at
     /// all**, because the four action buttons were the only one and nothing on
-    /// screen said they had gone.
+    /// screen said they had gone. Since WX-5c the rail's Tracks icon and the
+    /// top bar are in every workspace frame, including the 960x640 Assist
+    /// state that used to collapse the panel to a strip.
     #[test]
     fn a_save_route_survives_every_panel_and_window_configuration() {
         let workspace = two_track_workspace();
-        let mut collapsed = 0;
-        let mut full = 0;
-
         for (window, panel, inspector) in save_route_configurations() {
             let mut shell = Shell::new();
             shell.panel = panel;
             shell.inspector_open = inspector;
             let frame = shell.frame_for(window, &workspace);
-
-            match shell.save_affordance(&frame) {
-                SaveAffordance::TracksPanel => full += 1,
-                SaveAffordance::CollapsedStrip => collapsed += 1,
-                SaveAffordance::Fullscreen => {
-                    panic!("{window:?} with {panel:?} and inspector={inspector} has no way to save")
-                }
-            }
-        }
-
-        // Both arms have to be exercised, or the sweep is asserting nothing: if
-        // the layout stopped hiding the panel this test would pass vacuously and
-        // the collapsed strip would rot untested.
-        assert!(
-            collapsed > 0,
-            "no configuration hid the tracks panel, so the collapsed strip was never reached"
-        );
-        assert!(full > 0, "no configuration showed the full panel");
-    }
-
-    /// The named configuration from the review, on its own, so a regression names
-    /// itself rather than appearing as one failure among sixty.
-    #[test]
-    fn the_minimum_window_with_assist_open_shows_the_collapsed_strip() {
-        let workspace = two_track_workspace();
-        let mut shell = Shell::new();
-        shell.panel = UiPanel::Assist;
-        let frame = shell.frame_for((960.0, 640.0), &workspace);
-
-        assert_eq!(frame.tracks_mode, TracksPanelMode::Hidden);
-        assert_eq!(
-            shell.save_affordance(&frame),
-            SaveAffordance::CollapsedStrip
-        );
-        // And the report line says so, because a capture of the collapsed sidebar
-        // and a capture of a broken one look the same.
-        let described = shell.describe(&frame);
-        assert!(
-            described.contains("CollapsedStrip"),
-            "the report line hides the state it exists to report: {described}"
-        );
-    }
-
-    /// The strip is taken from the browser's rect, so the two must tile it.
-    #[test]
-    fn the_collapsed_strip_and_the_browser_tile_the_sidebar_without_overlapping() {
-        for height in 200..=900 {
-            let scenes = UiRect::new(0.0, 0.0, 320.0, height as f32);
-            let Some((strip, rest)) = collapsed_tracks_split(TracksPanelMode::Hidden, scenes)
-            else {
-                continue;
-            };
-            assert!(!strip.overlaps(rest), "{height}px: the two overlap");
-            assert!((strip.height + rest.height - scenes.height).abs() < 0.01);
-            assert_eq!(strip.y, scenes.y, "the strip is where the panel used to be");
-            assert!(scenes.contains(strip));
-        }
-        // And it is not offered when the full panel is on screen, which is what
-        // stops two tracks affordances being drawn at once.
-        for mode in [TracksPanelMode::Single, TracksPanelMode::Stacked] {
             assert_eq!(
-                collapsed_tracks_split(mode, UiRect::new(0.0, 0.0, 320.0, 400.0)),
-                None
+                shell.save_affordance(&frame),
+                SaveAffordance::TopBar,
+                "{window:?} with {panel:?} and inspector={inspector} has no way to save"
+            );
+            let described = shell.describe(&frame);
+            assert!(
+                described.contains("rail closed") && described.contains("save TopBar"),
+                "the report line hides the state it exists to report: {described}"
             );
         }
+        // Fullscreen is the one deliberate absence: Escape is the way back.
+        let mut shell = Shell::new();
+        shell.fullscreen = true;
+        let frame = shell.frame_for((1280.0, 720.0), &workspace);
+        assert_eq!(shell.save_affordance(&frame), SaveAffordance::Fullscreen);
     }
 
     /// The clip policy stands; the sliver does not.
@@ -6901,9 +6647,9 @@ mod tests {
 
         // A drag on one of the other two boundaries is not the inspector's to end.
         shell.set_inspector_open(true);
-        shell.split_drag = Some(SplitKind::Sidebar);
+        shell.split_drag = Some(SplitKind::Timeline);
         shell.set_inspector_open(false);
-        assert_eq!(shell.split_drag, Some(SplitKind::Sidebar));
+        assert_eq!(shell.split_drag, Some(SplitKind::Timeline));
     }
 
     /// The same stranding, one gesture over: a scrub pauses playback when it

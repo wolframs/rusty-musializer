@@ -67,6 +67,20 @@ pub const DOCK: Control = Control::new(
     "Terminal and agents: Claude Code, Codex, Antigravity [Ctrl+`]",
 );
 
+/// The rail's two flyouts (WX-5c §1). Neither has a key: every letter a
+/// flyout could take is already a global, and both are one press away on the
+/// rail, which is always on screen beside the preview.
+pub const RAIL_TRACKS: Control = Control::new(
+    Icon::Music,
+    "Trk",
+    "Tracks: open a project, add audio, save",
+);
+pub const RAIL_SCENES: Control = Control::new(
+    Icon::ThLarge,
+    "Scn",
+    "Scenes: pick what plays, import ASCII imagery",
+);
+
 pub const READOUT: Control = Control::new(Icon::Info, "Info", "Diagnostic readout [H]");
 pub const MUTE: Control = Control::new(Icon::VolumeUp, "Mute", "Mute [M]");
 pub const UNMUTE: Control = Control::new(Icon::VolumeOff, "Sound", "Unmute [M]");
@@ -145,6 +159,8 @@ mod tests {
             LYRICS,
             ASSIST,
             DOCK,
+            RAIL_TRACKS,
+            RAIL_SCENES,
             READOUT,
             MUTE,
             UNMUTE,
