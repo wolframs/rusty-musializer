@@ -1051,7 +1051,11 @@ impl ChatTab {
                     {
                         self.with_context = !self.with_context;
                     }
-                    ui.label(micro("Enter sends", c.weak));
+                    // Only where it fits beside Stop and Send: at the 320 px
+                    // column it would run into them, and Send's tip says it.
+                    if ui.available_width() > 200.0 {
+                        ui.label(micro("Enter sends", c.weak));
+                    }
                     if !asks_permission(self.transcript.protocol) {
                         let before = self.allow_commands;
                         ui.checkbox(&mut self.allow_commands, "run commands")
