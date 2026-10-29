@@ -7,13 +7,21 @@
 //! it shows is [`super::shell::ColumnView`]; where its rects go is
 //! [`super::shell_layout::WorkspaceFrame::column`].
 //!
-//! # The seam
+//! # The views' contract
 //!
-//! This file was created by the WX-5d seam commit so the three builders never
-//! edit a `mod.rs`. Until the merge flips it, the column layout sits behind
-//! [`COLUMN_LAYOUT_VARIABLE`]: off, every panel draws exactly as before; on,
-//! each panel entry is handed [`Placement::Column`] and draws its column
-//! branch, which falls back to the band until its builder has built it.
+//! - A view draws in [`Shell::column_rect`]: the whole column, head included.
+//!   The shell has already filled it with the surface and drawn its left
+//!   edge; the view draws its own head with [`widgets::column_head`] (its
+//!   title, then its switch in `trailing_right`) and its body below.
+//! - `lyrics_panel` is called from the band, because the Lyrics view owns the
+//!   band's cue lane too; every other view leaves the band to the cue lane.
+//! - `assist_panel`, `export_panel` (the Render view) and `inspector` (Look)
+//!   are called once per frame while they are the view. Direct is the dock,
+//!   which the composition root draws with egui into the same rect.
+//!
+//! The layout was built behind `MUSIALIZER_COLUMN_LAYOUT` and a
+//! `Placement::{Band, Column}` argument on each panel entry; the WX-5d merge
+//! made it the only layout and retired both.
 
 use musializer_core::ui::column_layout;
 use musializer_core::ui::workspace_layout::UiRect;
@@ -24,56 +32,6 @@ use super::shell_layout::{WorkspaceFrame, DEFAULT_TIMELINE_HEIGHT};
 use super::theme::{color, metric};
 use super::widgets;
 use crate::workspace::Workspace;
-
-/// `MUSIALIZER_COLUMN_LAYOUT=1` turns the column layout on (WX-5d seam).
-///
-/// Read once at startup, like the `MUSIALIZER_ASSIST_*` seams, so a frame can
-/// never see half a layout. Any other value, or none, is off: the switch exists
-/// so the gate stays green on the band while the column is built, and it goes
-/// away when the merge flips it.
-pub const COLUMN_LAYOUT_VARIABLE: &str = "MUSIALIZER_COLUMN_LAYOUT";
-
-/// Whether a value of [`COLUMN_LAYOUT_VARIABLE`] turns the column on. Exactly
-/// `1`: a stray `0` or `false` must not switch a layout on.
-#[must_use]
-pub fn column_layout_enabled(value: Option<&str>) -> bool {
-    value == Some("1")
-}
-
-/// [`column_layout_enabled`] for this process's environment.
-#[must_use]
-pub fn column_layout_from_env() -> bool {
-    column_layout_enabled(std::env::var(COLUMN_LAYOUT_VARIABLE).ok().as_deref())
-}
-
-/// Where a panel entry draws this frame (WX-5d §4, seam item 3).
-///
-/// Passed to `lyrics_panel`, `assist_panel`, `export_panel` and `inspector`,
-/// so each builder builds its `Column` branch in its own file. `Band` is
-/// today's behaviour; the merge deletes it.
-///
-/// # The `Column` contract
-///
-/// - The view draws in [`Shell::column_rect`]: the whole column, head
-///   included. The shell has already filled it with the surface and drawn its
-///   left edge; the view draws its own head with [`widgets::column_head`]
-///   (its title, then its switch in `trailing_right`) and its body below.
-/// - `lyrics_panel` is called from the band as before, because the Lyrics
-///   view owns the band's cue lane too; `content` and `strip` are the band's.
-/// - `assist_panel` and `export_panel` are called once per frame while they
-///   are the view, after the band. Their `content` is the column rect and
-///   their `strip` a zero-height rect 28 px above it, which is only so a
-///   `Band` fallback lands in the column instead of over the band.
-/// - `inspector` is called while Look is the view, with `frame.inspector`
-///   and `frame.column` both the column rect.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Placement {
-    /// The panel's pre-WX-5d place: the band under the timeline, or for the
-    /// Tune inspector its own right-hand column.
-    Band,
-    /// The right column (see the contract above).
-    Column,
-}
 
 /// The column's resize grip: 6 px centred on its left edge (§2, "Resize").
 #[must_use]
@@ -149,20 +107,9 @@ pub fn column_band_height(window_height: f32, requested: Option<f32>) -> f32 {
 }
 
 impl Shell {
-    /// Where the panels draw this frame: the column when the switch is on.
-    #[must_use]
-    pub(crate) fn placement(&self) -> Placement {
-        if self.column_layout {
-            Placement::Column
-        } else {
-            Placement::Band
-        }
-    }
-
     /// The column's rect in the frame being drawn, head included: what a
-    /// view draws into under [`Placement::Column`]. Empty when the switch is
-    /// off, the column is closed, or the frame (fullscreen, the editor)
-    /// hides it.
+    /// view draws into. Empty when the column is closed or the frame
+    /// (fullscreen, the editor) hides it.
     #[must_use]
     pub(crate) fn column_rect(&self) -> UiRect {
         self.column_frame
@@ -175,15 +122,11 @@ impl Shell {
             .then(|| column_layout::column_width(window_width, self.ui_preferences.column_width))
     }
 
-    /// Where the F8 Editor's panel goes (WX-5d §3.6): with the column layout
-    /// the column's own place — its x, the full height, 16 px from the top,
-    /// the bottom and the window's right edge — so opening it moves nothing
-    /// on the right. Without it, the Editor's own rule.
+    /// Where the F8 Editor's panel goes (WX-5d §3.6): the column's own place
+    /// — its x, the full height, 16 px from the top, the bottom and the
+    /// window's right edge — so opening it moves nothing on the right.
     #[must_use]
     pub fn editor_panel(&self, window: (f32, f32)) -> UiRect {
-        if !self.column_layout {
-            return super::shell_layout::editor_rect(window);
-        }
         let width = column_layout::column_width(window.0, self.ui_preferences.column_width);
         UiRect::new(
             window.0 - width,
@@ -193,8 +136,8 @@ impl Shell {
         )
     }
 
-    /// The frame with the column (§1); `Shell::frame_for` calls it while the
-    /// switch is on and the frame is neither fullscreen nor the editor.
+    /// The workspace frame (§1); `Shell::frame_for` calls it whenever the
+    /// frame is neither fullscreen nor the editor.
     #[must_use]
     pub(crate) fn column_frame_for(&self, window: (f32, f32)) -> WorkspaceFrame {
         let mut frame = WorkspaceFrame::with_column(
@@ -297,9 +240,6 @@ impl Shell {
     /// view draws on the same ground.
     pub(crate) fn column_chrome(&mut self, d: &mut RaylibDrawHandle<'_>, _input: &ShellInput<'_>) {
         let rect = self.column_frame;
-        if !self.column_layout {
-            return;
-        }
         if rect.is_empty() {
             self.column_report.drawn = Some((self.column_view(), rect));
             return;
@@ -327,27 +267,17 @@ impl Shell {
         if rect.is_empty() {
             return;
         }
-        // See `Placement`'s contract for why `strip` sits 28 px above.
-        let strip = UiRect::new(rect.x, rect.y - 28.0, rect.width, 0.0);
         match self.column_view() {
-            ColumnView::Assist => {
-                self.assist_panel(d, input, rect, strip, commands, Placement::Column);
-            }
-            ColumnView::Render => {
-                self.export_panel(d, input, rect, strip, commands, Placement::Column);
-            }
+            ColumnView::Assist => self.assist_panel(d, input, commands),
+            ColumnView::Render => self.export_panel(d, input, commands),
             ColumnView::Closed | ColumnView::Direct | ColumnView::Lyrics | ColumnView::Look => {}
         }
     }
 
     /// The `column:` report line (§5): view, open state and the head, body
-    /// and grip rects, and the Direct tab's dot. Empty while the switch is
-    /// off, and an empty line is not printed, so no report changes then.
+    /// and grip rects, the band, and the Direct tab's dot.
     #[must_use]
     pub(crate) fn describe_column(&self, _workspace: &Workspace) -> String {
-        if !self.column_layout {
-            return String::new();
-        }
         let Some((view, rect)) = self.column_report.drawn else {
             return "none".to_owned();
         };
@@ -380,22 +310,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_exact_one_turns_the_column_on() {
-        assert!(column_layout_enabled(Some("1")));
-        for off in [
-            None,
-            Some(""),
-            Some("0"),
-            Some("true"),
-            Some(" 1"),
-            Some("yes"),
-        ] {
-            assert!(!column_layout_enabled(off), "{off:?} must leave the band");
-        }
-        assert_eq!(COLUMN_LAYOUT_VARIABLE, "MUSIALIZER_COLUMN_LAYOUT");
-    }
-
-    #[test]
     fn the_band_is_260_or_the_users_in_every_view() {
         assert_eq!(column_band_height(720.0, None), 260.0);
         assert_eq!(column_band_height(1080.0, Some(400.0)), 400.0);
@@ -422,7 +336,6 @@ mod tests {
         let mut commands = Vec::new();
         let mut shell =
             Shell::with_preferences(super::super::preferences::UiPreferences::default());
-        shell.column_layout = true;
         shell.seed_column_from_preferences();
         assert_eq!(
             shell.column_view(),
@@ -449,26 +362,16 @@ mod tests {
         preferences.dock_open = true;
         preferences.dock_width = Some(480.0);
         let mut shell = Shell::with_preferences(preferences);
-        shell.column_layout = true;
         shell.seed_column_from_preferences();
         assert_eq!(shell.ui_preferences.column_width, Some(480.0));
         assert_eq!(shell.column_width(1920.0), Some(480.0));
         preferences.column_width = Some(400.0);
         preferences.column_open = Some(false);
         let mut shell = Shell::with_preferences(preferences);
-        shell.column_layout = true;
         shell.seed_column_from_preferences();
         assert_eq!(shell.ui_preferences.column_width, Some(400.0));
         assert_eq!(shell.column_view(), ColumnView::Closed);
         assert_eq!(shell.column_width(1920.0), None);
     }
 
-    #[test]
-    fn the_switch_alone_decides_the_placement() {
-        let mut shell =
-            Shell::with_preferences(super::super::preferences::UiPreferences::default());
-        assert_eq!(shell.placement(), Placement::Band);
-        shell.column_layout = true;
-        assert_eq!(shell.placement(), Placement::Column);
-    }
 }

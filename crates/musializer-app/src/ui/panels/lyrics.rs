@@ -55,7 +55,6 @@ use raylib::consts::MouseCursor;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 use serde::{Deserialize, Serialize};
 
-use super::super::column::Placement;
 use super::super::mapping_editor;
 use super::super::shell::{draw_timeline_playhead, Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::DEFAULT_TIMELINE_HEIGHT;
@@ -2033,8 +2032,7 @@ impl Shell {
     /// view is Lyrics. Read by the report lines, which are printed at
     /// shutdown, so a view left mid-run cannot report what it drew before.
     fn lyrics_column_shown(&self) -> bool {
-        self.placement() == Placement::Column
-            && self.column_view() == super::super::shell::ColumnView::Lyrics
+        self.column_view() == super::super::shell::ColumnView::Lyrics
     }
 
     /// The cue the preview shows as a sample caption this frame (§3.2): the
@@ -2106,7 +2104,6 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
-        placement: Placement,
     ) -> f32 {
         // `fonts=PATH`: nothing else hands the browser its local family list,
         // so without this only the consent body could ever be photographed.
@@ -2119,30 +2116,12 @@ impl Shell {
                 Err(error) => eprintln!("FONTS: --ui-probe fonts={}: {error}", path.display()),
             }
         }
-        // WX-5d: in the column the band keeps only the cue lane, exactly as
-        // every other view has it, and the editor draws in the column's rect.
-        if placement == Placement::Column {
-            let zoom_row_y = self.band_lyric_lane(d, input, content, strip, commands, true);
-            let column = self.column_rect();
-            let mut editor = std::mem::take(&mut self.lyrics);
-            self.lyrics_column(d, input, &mut editor, column, commands);
-            if let Some(seconds) = editor.take_seek_request() {
-                commands.push(ShellCommand::Seek(seconds));
-            }
-            self.lyrics = editor;
-            return zoom_row_y;
-        }
-        // Split borrow: the editor and the widget set are both fields of
-        // `self`, and `draw_lyrics` needs them at once.
+        // WX-5d: the band keeps only the cue lane, exactly as every other
+        // view has it, and the editor draws in the column's rect.
+        let zoom_row_y = self.band_lyric_lane(d, input, content, strip, commands, true);
+        let column = self.column_rect();
         let mut editor = std::mem::take(&mut self.lyrics);
-        let zoom_row_y = self.draw_lyrics(d, input, &mut editor, content, strip, commands);
-        // Drained here rather than inside `draw_lyrics` so that **every** return
-        // path is covered by exactly one drain (UX0-B02). `draw_lyrics` has five
-        // early returns — no track, an empty panel, a band too short for the
-        // form, the caption pane — and a seek asked for by a key before one of
-        // them would otherwise be stranded in the field forever. One drain also
-        // means one `Seek` per frame: two in a batch would be applied in list
-        // order and land on whichever was pushed second.
+        self.lyrics_column(d, input, &mut editor, column, commands);
         if let Some(seconds) = editor.take_seek_request() {
             commands.push(ShellCommand::Seek(seconds));
         }

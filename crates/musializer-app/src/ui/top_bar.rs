@@ -505,7 +505,6 @@ fn tab_tip(tab: ModeTab) -> &'static str {
         ModeTab::Direct => "Direct: the preview and the plan, no panel open",
         ModeTab::Lyrics => "Lyrics: the lines and their timing",
         ModeTab::Look => "Look: the tuning inspector [T]",
-        ModeTab::Export => "Export: size, shape, clip and quality",
         ModeTab::Assist => "Assist: analysis and lyric timing",
     }
 }
@@ -641,11 +640,7 @@ impl Shell {
         const ACTION_SIZE: f32 = metric::UI_FONT_LABEL;
         let action_labels = ["Still", "Contact sheet", "Render\u{2026}"];
         // WX-5d: with the column, four tabs; Export is Render…'s view.
-        let tab_list: &[ModeTab] = if self.column_layout {
-            &ModeTab::COLUMN
-        } else {
-            &ModeTab::ALL
-        };
+        let tab_list: &[ModeTab] = &ModeTab::ALL;
         let measures = TopBarMeasures {
             title: authored.measure_text(&title, TITLE_SIZE, 0.0).x,
             artist: artist.as_deref().map_or(0.0, |artist| {
@@ -863,13 +858,8 @@ impl Shell {
         // cannot press says why rather than vanishing.
         let render_live = ffmpeg_available();
         let render_id = widgets::widget_id(widgets::id::TOP_BAR, RENDER_SLOT);
-        let render_tip = format!(
-            "Render: choose a file and render {} (size, shape and clip in Export)",
-            format_label(track.render_config.width, track.render_config.height)
-        );
-        let render_view =
-            self.column_layout && self.column_view() == super::shell::ColumnView::Render;
-        if self.column_layout {
+        let render_view = self.column_view() == super::shell::ColumnView::Render;
+        {
             // WX-5d §3.5: Render… opens the Render view, whose commit renders.
             // While the view is open the button wears the selection look and
             // the commit carries the accent, so the frame still has one.
@@ -925,37 +915,6 @@ impl Shell {
                     );
                 }
             }
-        } else if render_live {
-            let render = self.widgets.text_button(
-                d,
-                ui,
-                render_id,
-                layout.actions[2],
-                action_labels[2],
-                false,
-                ButtonStyle::Primary,
-                Some(ACTION_SIZE),
-            );
-            self.widgets
-                .hint(d, render, render_id, layout.actions[2], &render_tip);
-            if render.clicked {
-                commands.push(ShellCommand::StartRender);
-            }
-        } else {
-            self.widgets.disabled_button(
-                d,
-                ui,
-                layout.actions[2],
-                action_labels[2],
-                Some(ACTION_SIZE),
-            );
-            self.widgets.hint(
-                d,
-                hover(layout.actions[2]),
-                render_id,
-                layout.actions[2],
-                "Render needs FFmpeg on the PATH; Still and Contact sheet do not",
-            );
         }
 
         self.top_bar_state = TopBarState {
@@ -995,11 +954,7 @@ impl Shell {
                 area.x, area.y, area.width, area.height
             )
         };
-        let tab_list: &[ModeTab] = if self.column_layout {
-            &ModeTab::COLUMN
-        } else {
-            &ModeTab::ALL
-        };
+        let tab_list: &[ModeTab] = &ModeTab::ALL;
         let tabs: Vec<String> = tab_list
             .iter()
             .copied()
@@ -1050,22 +1005,14 @@ impl Shell {
                 "sheet"
             },
             at(layout.actions[1]),
-            if state.render_view {
-                "(view)"
-            } else if state.render_live || self.column_layout {
-                ""
-            } else {
-                "(disabled)"
-            },
+            // Render… opens the Render view whether or not FFmpeg is on PATH:
+            // the view's commit is what says it cannot render.
+            if state.render_view { "(view)" } else { "" },
             at(layout.actions[2]),
-        ) + &if self.column_layout {
-            format!(
-                " format={}",
-                layout.info.map_or_else(|| "hidden".to_owned(), at)
-            )
-        } else {
-            String::new()
-        }
+        ) + &format!(
+            " format={}",
+            layout.info.map_or_else(|| "hidden".to_owned(), at)
+        )
     }
 }
 
