@@ -2216,6 +2216,17 @@ fn probe_candidate(mode: AssistMode) -> Result<AnalysisCandidate, String> {
     .map_err(|error| capitalize_sentence(&error.to_string()))
 }
 
+/// `--ui-probe assist-card=` (WX-5d): opens that workflow's card, exactly as
+/// pressing it does — the workflow is proposed and its Confirmation shows.
+/// Nothing starts. The one-line call in `main.rs` is the Frame builder's.
+pub(crate) fn apply_card_probe(workspace: &Workspace, kind: execution::WorkflowKind) {
+    let mode = AssistMode::ALL
+        .into_iter()
+        .find(|mode| workflow_kind(*mode) == kind)
+        .unwrap_or(AssistMode::Lyrics);
+    workspace.assist.select_mode(mode);
+}
+
 /// Puts the Assist session into one of its four probeable states (review 4.2).
 ///
 /// The synthetic running job has a fixed elapsed value. Real jobs get their
@@ -5915,6 +5926,25 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_probe_opens_the_named_workflow_on_confirmation() {
+        use musializer_core::assist::execution::WorkflowKind;
+        for (kind, mode) in [
+            (WorkflowKind::Lyrics, AssistMode::Lyrics),
+            (WorkflowKind::Sections, AssistMode::Sections),
+            (WorkflowKind::Mimo, AssistMode::Mimo),
+            (WorkflowKind::All, AssistMode::All),
+        ] {
+            let workspace = Workspace::default();
+            apply_card_probe(&workspace, kind);
+            assert_eq!(workspace.assist.mode(), mode);
+            assert_eq!(
+                workspace.assist.panel_content(),
+                AssistPanelContent::Confirmation
+            );
+        }
+    }
 
     #[test]
     fn a_card_names_what_it_replaces_with_the_tracks_numbers() {
