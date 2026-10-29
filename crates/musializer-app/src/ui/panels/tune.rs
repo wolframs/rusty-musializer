@@ -959,6 +959,9 @@ pub struct LookColumn {
     context: Option<(usize, SceneId)>,
     /// Scroll the open route editor into view on the next frame.
     reveal_editor: bool,
+    /// The row whose editor the last frame showed. An editor that opens by any
+    /// route — `~`, Edit draft, a probe — is scrolled into view once.
+    editor_shown: Option<usize>,
     /// The last track press, `(descriptor index, time)`, for double-click reset.
     last_track_press: Option<(usize, f64)>,
     /// The `tune layout:` line for the last frame Look drew in the column.
@@ -2713,6 +2716,10 @@ impl Shell {
             .flat_map(|rows| rows.indices.iter().copied())
             .collect();
         let focused = self.focused_route_row(track_slot, scene);
+        if focused != self.look_column.editor_shown {
+            self.look_column.editor_shown = focused;
+            self.look_column.reveal_editor |= focused.is_some();
+        }
         let draft_bar = self.route_editor.state.is_dirty() && focused.is_none();
         let audition = self.peek_editor(|host| host.explore.session(target));
         let looks = super::events::SavedLooks::measure(font, &input.presets, scene);

@@ -1735,6 +1735,24 @@ pub fn assist_column_layout(
     }
 }
 
+/// The scroll offset that brings `target` (a rect from `layout`, laid out at
+/// `layout.offset`) into the viewport: its bottom when it fits, its top when
+/// it is taller than the viewport. A card that opens below the fold — a job
+/// started from the Full assist card at 1280x720 — is scrolled to once.
+#[must_use]
+pub fn reveal_offset(layout: &AssistColumnLayout, target: UiRect) -> f32 {
+    let top = target.y - layout.viewport.y + layout.offset;
+    let bottom = top + target.height;
+    let mut offset = layout.offset;
+    if bottom > offset + layout.viewport.height {
+        offset = bottom - layout.viewport.height;
+    }
+    if top < offset {
+        offset = top;
+    }
+    offset.clamp(0.0, layout.max_offset)
+}
+
 /// Which card is open, and why, for a session in this state (WX-5d §3.4):
 /// the workflow that is confirming, running, cancelling, staged or finished.
 /// `None` while nothing waits on the user, so every card reads as an offer.
@@ -2468,5 +2486,26 @@ mod tests {
         assert_eq!(card_boundary(Sections, true), ("Local audio", false));
         assert_eq!(card_boundary(Mimo, false), ("Sends audio", true));
         assert_eq!(card_boundary(All, false), ("Sends audio", true));
+    }
+    #[test]
+    fn an_open_card_below_the_fold_is_brought_into_view() {
+        let spec = AssistColumnSpec {
+            description_lines: [2, 2, 2, 2],
+            open: Some((AssistMode::All, OpenCardSpec::Running { lines: 2 })),
+            ..confirming_lyrics()
+        };
+        let body = UiRect::new(640.0, 86.0, 320.0, 554.0);
+        let layout = assist_column_layout(body, &spec, 0.0);
+        let card = layout.cards[3].card;
+        assert!(card.y + card.height > layout.viewport.y + layout.viewport.height);
+        let offset = reveal_offset(&layout, card);
+        let shown = assist_column_layout(body, &spec, offset);
+        let card = shown.cards[3].card;
+        assert_eq!(
+            card.y + card.height,
+            shown.viewport.y + shown.viewport.height
+        );
+        // Already visible: nothing moves.
+        assert_eq!(reveal_offset(&shown, shown.cards[3].title), offset);
     }
 }

@@ -3495,6 +3495,9 @@ fn running_clock(seconds: f64) -> String {
 pub struct AssistColumn {
     offset: f32,
     report: String,
+    /// The open card and its body last frame: a change brings the card into
+    /// view once, so a state that opens below the fold is not missed.
+    shown: Option<(AssistMode, AssistPanelContent)>,
 }
 
 impl Shell {
@@ -3789,6 +3792,18 @@ impl Shell {
                 &spec,
                 layout.offset - wheel * ASSIST_WHEEL_STEP,
             );
+        }
+        let shown = open_mode.map(|mode| (mode, panel_content));
+        if shown != self.assist_column.shown {
+            self.assist_column.shown = shown;
+            if let Some(index) = open_mode.and_then(|mode| {
+                AssistMode::ALL
+                    .iter()
+                    .position(|candidate| *candidate == mode)
+            }) {
+                let offset = assist_ui_state::reveal_offset(&layout, layout.cards[index].card);
+                layout = assist_ui_state::assist_column_layout(head.body, &spec, offset);
+            }
         }
         self.assist_column.offset = layout.offset;
 
