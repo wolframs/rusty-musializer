@@ -142,12 +142,15 @@ docs/ASSIST_PIPELINE.md    analysis/lyrics control flow and trust policy
 
 ## `unsafe`
 
-Small, named islands. Every block carries a `SAFETY:` comment and a row in
+Small, named islands. Grep `docs/UNSAFE.md` for the module before touching one.
+Every block carries a `SAFETY:` comment and a row in
 `docs/UNSAFE.md`. Never add one without both.
 
 ## Traps already paid for
 
-One line each; why and how each was found is in `docs/TRAPS.md`.
+One line each. These are the rules; `docs/TRAPS.md` has the failure each one
+caused and how to recognise its symptom. When a capture looks plausible but a
+number disagrees, grep it there before debugging from scratch.
 
 - **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
   never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
@@ -191,6 +194,8 @@ One line each; why and how each was found is in `docs/TRAPS.md`.
 
 Mechanism is negotiable; observable behaviour changes only on purpose.
 
+- Before changing anything that looks odd, grep `docs/DIVERGENCES.md` for it
+  (see Required lookups).
 - When a faithful port is impossible, unavailable or bad Rust: decide, build the
   alternative, and record the divergence and its reason in
   `docs/DIVERGENCES.md`. Do not stall, stub or ask. An unrecorded divergence
@@ -225,12 +230,26 @@ Mechanism is negotiable; observable behaviour changes only on purpose.
   them. The same rule covers any reference look (e.g. modal.com for Glyph
   Lattice): from captured images only, no code, assets or brand.
 
-## Where detail lives
+## Required lookups
 
-- `docs/DIVERGENCES.md` — every deliberate difference and invented mechanism,
-  with its reason. Look here before "fixing" anything that looks odd.
-- `docs/UNSAFE.md`, `docs/TRAPS.md`, `docs/DIFFERENTIAL_TESTING.md`,
-  `docs/HEADLESS_GPU.md`.
+Your own reasoning won't stand in for these. Each file records a decision or a
+measurement that can't be derived from the code, and each was written because a
+session that reasoned it out instead got it wrong. Grepping counts as looking.
+Not grepping doesn't.
+
+| Before you… | Run | Why reasoning is not enough |
+| --- | --- | --- |
+| change behaviour that looks wrong, odd, inconsistent or unlike the C | `grep -n -i '<module, setting, flag or feature>' docs/DIVERGENCES.md` | ~140 rows, most are operator decisions with dates. Code that looks like a bug is often a recorded choice, and "fixing" it reverts the operator |
+| add, move or edit an `unsafe` block, or call raylib ffi | `grep -n '<module>' docs/UNSAFE.md` | The invariants live there, not in the types. Three raylib-rs wrappers looked safe and were wrong |
+| touch raylib render targets, blends, shaders, fonts, `rlgl` state or the probe/report seams | `grep -n -i '<function or symptom>' docs/TRAPS.md` | Every entry produced a plausible picture with every gate green |
+| edit a module | `ls tools/differential_*.sh`, then `grep -n '<module>' docs/DIFFERENTIAL_TESTING.md` | If a harness pins it, the harness is the contract, and the module's own unit tests have stayed green against wrong formulas |
+| write or loosen a pixel/colour assertion, or a GPU-vs-CPU comparison | read `docs/HEADLESS_GPU.md` | Thresholds calibrated on one rasterizer are calibrated to an accident |
+| answer "why is it like that" | `grep -rn -i '<thing>' docs/archive/FEATURE_PARITY_HISTORY.md docs/DIVERGENCES.md` | The reason is recorded; a guess can't be checked |
+
+When you diverge, invent or hit a new trap, write the row before you finish.
+Divergences go in `docs/DIVERGENCES.md`. Traps go in `docs/TRAPS.md`, plus one
+line under the traps list above.
+
 - History, not instructions: `docs/archive/` (`FEATURE_PARITY_HISTORY.md`
   answers "why is it like that"), `REWRITE_PLAN.md` (at the root only because
   source comments cite it). Put expensive-to-rediscover investigation there,
