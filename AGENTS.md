@@ -181,8 +181,8 @@ number disagrees, grep it there before debugging from scratch.
 - **`rlBlitFramebuffer` takes far corners, not extents.**
 - **`BLEND_ALPHA` eats destination alpha**, visible only in a saved PNG.
   Full-frame washes use `BLEND_ALPHA_PREMULTIPLY`. Read per-plane PSNR.
-- **`--probe-shot` photographs the frame before the last**; run one frame past
-  the frame you care about.
+- **`--probe-shot` photographs the frame before the last** on the GPU and the
+  last on llvmpipe; photograph a state held still for two frames.
 - **A stranded pointer claim is invisible in a picture**; the next interaction
   misbehaves. `gesture=none` on `timeline:` proves the release was taken.
 - **`--ui-probe hover=XxY`**, not a comma; the spec is comma-separated.

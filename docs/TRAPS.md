@@ -172,5 +172,10 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   framebuffer after the swap. A check that wants the frame in which something
   happened has to run one frame longer than that frame: the poster gate's
   isolation check passed with a deliberate draw-to-screen leak in frame 2
-  until the shot moved to a 3-frame run (WX-5b).
+  until the shot moved to a 3-frame run (WX-5b). **And not on every
+  renderer:** under llvmpipe (`MZ_GL_LAUNCH=""`) the same readback returned
+  the *newest* frame, so a probe that reported the frame before the last
+  described a different picture on the CPU path (WX-5d's `progress-shot=`
+  read a filled bar at frame 0 on llvmpipe only). Photograph a still screen
+  — hold the state for two frames — rather than counting frames.
 
