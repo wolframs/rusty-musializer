@@ -7,7 +7,7 @@
 #
 # Every launch goes through tools/headless_run.sh: private Xvfb, unreachable
 # Wayland and audio endpoints, kdialog/zenity off PATH, a private config
-# directory, --mute. MUSIALIZER_COLUMN_LAYOUT=1 for every run. The fixture is
+# directory, --mute. The fixture is
 # synthetic: make-fixture-wav audio and a treatment with timed lines, a gap
 # between them, and a caption ink no scene here draws (#FF2BD6, no glow, no
 # backing), so "caption ink in the preview" is a colour count.
@@ -67,7 +67,6 @@ OUT="$(realpath "$OUT")"
 
 export MZ_BIN="${LYRICS_COLUMN_BIN:-$(realpath target/debug/musializer)}"
 export MZ_STATE_DIR="$OUT/state"
-export MUSIALIZER_COLUMN_LAYOUT=1
 
 cargo run --quiet --bin make-fixture-wav -- "$OUT/fixture.wav" 40 >/dev/null
 

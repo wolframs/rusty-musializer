@@ -1547,13 +1547,23 @@ else
     # One caption tooltip actually in a frame (UX0-C16). Probe runs suppress
     # tips unless `hover=` asks for one, so without this capture every tip the
     # caption panes gained would be unphotographed — the welcome-screen blind
-    # spot again. 250x466 is the GLOW slider at 960x640; its tip box lands
-    # above the bar, and the crop below sits inside the box where the bare
-    # frame is plain panel (measured: bare 247/247, tip 20/239).
+    # spot again. Since WX-5d the point is the GLOW row's track centre from the
+    # `caption style:` line; the tip box lands above the row and the crop sits
+    # inside it (measured: base 19/41, tip 42/217).
+    lyric_capture "lyrics-effects-tip-base-960x640" 960x640 \
+        "panel=lyrics,style=effects,play=1" || SWEEP_FAILED=1
+    read -r TIP_X TIP_Y TIP_CROP <<<"$(python3 - "$OUT_DIR/lyrics-effects-tip-base-960x640.txt" <<'PY'
+import re, sys
+line = re.search(r"^caption style:\s+(.*)$", open(sys.argv[1]).read(), re.M).group(1)
+x, y, w, h = map(int, re.search(r"\bglow@(\d+),(\d+),(\d+),(\d+)", line).groups())
+cx = x + 68 + (w - 124) // 2
+print(cx, y + h // 2, f"85:10:{cx - 42}:{y - 20}")
+PY
+)"
     lyric_capture "lyrics-tip-glow-960x640" 960x640 \
-        "panel=lyrics,style=effects,play=1,hover=250x466" || SWEEP_FAILED=1
+        "panel=lyrics,style=effects,play=1,hover=${TIP_X}x${TIP_Y}" || SWEEP_FAILED=1
     TIP_STATS="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/lyrics-tip-glow-960x640.png,crop=85:10:165:436,signalstats" \
+        -i "movie=$OUT_DIR/lyrics-tip-glow-960x640.png,crop=$TIP_CROP,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YMAX \
         -of csv=p=0 2>/dev/null | head -1)"
     TIP_MIN="${TIP_STATS%%,*}"
@@ -6410,45 +6420,17 @@ PY
     # unavailable" branch D3 asks to be tested.
     TIMING_EMPTY_BIN="$TIMING_DIR/empty-bin"
     mkdir -p "$TIMING_EMPTY_BIN"
-    # Located by measurement, never hard-coded: the row's three buttons are the
-    # only long horizontal runs of `UI_RULE` in the bottom-right of the form, and
-    # a guessed pair is how `--ui-probe hover=` silently photographs the wrong
-    # thing. Their widths come back as 77/77/92, which is the code's own
-    # `export`/`import`/`add` table.
-    read -r EXPORT_X IMPORT_X GAP_X BUTTON_Y <<<"$(python3 - "$OUT_DIR/timing-idle.png" <<'PY'
-import sys
-
-import numpy as np
-from PIL import Image
-
-image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
-height, width, _ = image.shape
-mask = np.abs(image - np.array([210, 210, 214])).sum(axis=2) < 12
-rows = []
-for y in range(height * 2 // 3, height):
-    runs, start = [], None
-    for x in range(width):
-        if mask[y, x]:
-            if start is None:
-                start = x
-        else:
-            if start is not None and x - start >= 60:
-                runs.append((start, x - 1))
-            start = None
-    if len(runs) >= 3 and runs[-1][0] > width * 0.55:
-        rows.append((y, runs[-3:]))
-assert len(rows) >= 2, "the Export/Import/Add row was not found"
-top, runs = rows[0]
-bottom = rows[-1][0]
-export, imports, _add = runs
-# The 7 px gap between Export and Import: a click there must claim nothing, or a
-# probe that pressed empty panel would satisfy every assertion below.
-print(
-    (export[0] + export[1]) // 2,
-    (imports[0] + imports[1]) // 2,
-    (export[1] + imports[0]) // 2,
-    (top + bottom) // 2,
-)
+    # Located by the report, never hard-coded (WX-5d): Import… and Export…
+    # are ghost buttons in the Lyrics column's footer and draw no rule, so
+    # their rects come from the `lyrics column:` line. The gap between them
+    # must claim nothing, or a probe that pressed empty panel would satisfy
+    # every assertion below.
+    read -r EXPORT_X IMPORT_X GAP_X BUTTON_Y <<<"$(python3 - "$OUT_DIR/timing-idle.txt" <<'PY'
+import re, sys
+line = re.search(r"^lyrics column:\s+(.*)$", open(sys.argv[1]).read(), re.M).group(1)
+rect = lambda name: list(map(int, re.search(r"\b" + name + r"@(\d+),(\d+),(\d+),(\d+)", line).groups()))
+imp, exp = rect("import"), rect("export")
+print(exp[0] + exp[2] // 2, imp[0] + imp[2] // 2, (imp[0] + imp[2] + exp[0]) // 2, imp[1] + imp[3] // 2)
 PY
 )"
     echo "the document row: export x=$EXPORT_X import x=$IMPORT_X gap x=$GAP_X at y=$BUTTON_Y"
@@ -6804,6 +6786,24 @@ tune_entry()  { sed -n 's/^tune entry: *//p'  "$OUT_DIR/$1.txt"; }
 # The tuning every case below starts from, and the shape of the report line.
 capture "tune-base" 1280x720 --ui-probe "panel=tune" || TUNE_FAILED=1
 TUNE_BASE="$(tune_values tune-base)"
+# WX-5d: every Tune point from the `tune layout:` line, never typed.
+TUNE_LAYOUT="$(sed -n 's/^tune layout: *//p' "$OUT_DIR/tune-base.txt")"
+read -r TUNE_CHIP TUNE_CHIP_GAP TUNE_ROW TUNE_MISS TUNE_SURPRISE_AT <<<"$(python3 - "$TUNE_LAYOUT" <<'PY'
+import re, sys
+line = sys.argv[1]
+entry = next(x for x in line.split(");") if "settings.spectrum.amplitude" in x)
+def rect(name, text):
+    return tuple(map(int, re.search(name + r"@(\d+),(\d+),(\d+),(\d+)", text).groups()))
+value, track = rect("value", entry), rect("track", entry)
+title = tuple(map(int, re.search(r"title=(\d+),(\d+),(\d+),(\d+)", line).groups()))
+surprise = rect("surprise", line)
+c = lambda r: f"{r[0] + r[2] // 2}x{r[1] + r[3] // 2}"
+# The gap: 5 px right of the value, inside the row's 10 px gap before `~`.
+print(c(value), f"{value[0] + value[2] + 5}x{value[1] + value[3] // 2}", c(track),
+      f"{title[0] + 40}x{title[1] + 13}", c(surprise))
+PY
+)"
+echo "tune points: chip=$TUNE_CHIP gap=$TUNE_CHIP_GAP row=$TUNE_ROW miss=$TUNE_MISS surprise=$TUNE_SURPRISE_AT"
 echo "tune base: [$TUNE_BASE]"
 if [ "$TUNE_BASE" != "spectrum 1 1 1 3 55 1 0.5 0.3" ]; then
     echo "FAIL: Spectrum's descriptor defaults are not what Tune reports: [$TUNE_BASE]" >&2
@@ -6816,13 +6816,11 @@ fi
 
 # -- UX0-B09: the value chip takes a press and becomes a field -----------------
 #
-# The click coordinate is the Amplitude chip's centre at 1280x720, read off
-# panel-tune-1280x720.png, adjusted by -12 x / +4 y for the scrollbar
-# gutter/body padding. That adjustment awaits the next visual gate.
+# The click point is the Amplitude value's centre from `tune layout:`.
 # Asserting `tune entry:` as well as `click probe:` is
 # the point: a press cashed by the right widget id through a branch that forgot to
 # open the field photographs exactly like one that opened it.
-capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=1183x168" || TUNE_FAILED=1
+capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=$TUNE_CHIP" || TUNE_FAILED=1
 CHIP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-click.txt")"
 CHIP_ENTRY="$(tune_entry tune-chip-click)"
 echo "chip click: $CHIP_CLAIM -> [$CHIP_ENTRY]"
@@ -6839,7 +6837,7 @@ esac
 # The control-free gap between the label zone and the chip. Without this row a
 # probe that pressed nothing would satisfy every assertion above, since a no-op
 # leaves the panel exactly as it started.
-capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=1148x168" || TUNE_FAILED=1
+capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=$TUNE_CHIP_GAP" || TUNE_FAILED=1
 GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-gap.txt")"
 GAP_ENTRY="$(tune_entry tune-chip-gap)"
 echo "chip gap: $GAP_CLAIM -> [$GAP_ENTRY]"
@@ -6919,14 +6917,14 @@ tune_wheel() {
     esac
 }
 # Amplitude is a 0.40..2.00 slider at precision 2, so one notch is 0.01.
-tune_wheel up   1050x190 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
-tune_wheel down 1050x190 -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
+tune_wheel up   $TUNE_ROW 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
+tune_wheel down $TUNE_ROW -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
 # The negative control, and it has to be inside the panel rather than outside it:
 # a wheel handler scoped to the inspector instead of to a row would pass every
 # assertion above and silently move whichever setting happened to be first.
-tune_wheel miss 1000x620 1 "$TUNE_BASE"
+tune_wheel miss $TUNE_MISS 1 "$TUNE_BASE"
 # Unmodified wheel navigates Tune and must never change the setting underneath.
-tune_wheel scroll 1050x190 -3 "$TUNE_BASE" 0
+tune_wheel scroll $TUNE_ROW -3 "$TUNE_BASE" 0
 
 # -- UX0-C07: Surprise stays inside every bound, and is reproducible -----------
 #
@@ -6963,7 +6961,7 @@ fi
 # The Surprise *button*, pressed. Same seed, so the values must be byte-identical
 # to the sequence probe's — which is what stops the two probe families from
 # drifting into testing different code.
-capture "tune-surprise-click" 1280x720 --ui-probe "panel=tune,tune-seed=4242,click=1150x139" || TUNE_FAILED=1
+capture "tune-surprise-click" 1280x720 --ui-probe "panel=tune,tune-seed=4242,click=$TUNE_SURPRISE_AT" || TUNE_FAILED=1
 CLICK_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-surprise-click.txt")"
 CLICK_VALUES="$(tune_values tune-surprise-click)"
 echo "surprise click: $CLICK_CLAIM -> [$CLICK_VALUES]"

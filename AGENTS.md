@@ -41,7 +41,7 @@ tools/headless_check.sh --skip-render  # Assist/routing checks only
 tools/headless_run.sh ARGS...      # any hand launch: isolated, muted, on the GPU
 tools/treatment_check.sh           # directing gate: --treatment, sheets, stills
 tools/poster_check.sh              # poster frames gate
-tools/column_check.sh              # WX-5d right column (MUSIALIZER_COLUMN_LAYOUT=1)
+tools/column_check.sh              # the right column: views, frame, census, dock, render
 tools/align_lyrics.py song.mp3 song.lyrics.json   # time known lyrics (MMS CTC)
 tools/install-linux-launcher.sh    # desktop entry; --uninstall removes it
 cargo build --release              # ALWAYS last in a work stream

@@ -2,7 +2,7 @@
 #
 # The Look & Assist column gate (WX-5d, build/redesign/wx5d-design.md §3.3,
 # §3.4 and §5): Look and Assist drawn in the right column, pressed and
-# photographed headless, with MUSIALIZER_COLUMN_LAYOUT=1.
+# photographed headless.
 #
 #   tools/look_assist_check.sh [OUTPUT_DIR]      # default build/look-assist-check
 #
@@ -71,7 +71,6 @@ OUT="$(realpath "$OUT")"
 
 export MZ_BIN="${LOOK_ASSIST_BIN:-$(realpath target/debug/musializer)}"
 export MZ_STATE_DIR="$OUT/state"
-export MUSIALIZER_COLUMN_LAYOUT=1
 
 cargo run --quiet --bin make-fixture-wav -- "$OUT/fixture.wav" 8 >/dev/null
 cat >"$OUT/look.treatment.json" <<'EOF'

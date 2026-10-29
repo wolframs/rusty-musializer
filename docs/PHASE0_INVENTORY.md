@@ -2129,13 +2129,6 @@ reason `MUSIALIZER_ASSIST_PROBE_DIR` above exists.
 | `MUSIALIZER_ASSIST_PROBE_LANES` | `PROBE_LANES_VARIABLE`, `probe_mode` | Which `AssistMode` a probed candidate was run in, so a lyrics-only review layout is photographable | `AssistMode::All` | `lyrics`, `sections`, `mimo` (trimmed, case-insensitive); anything else is `All` |
 | `MUSIALIZER_ASSIST_PROBE_ACTIVATE_ROW` | `PROBE_ACTIVATE_ROW_VARIABLE`, `probe_activated_row` | Presses one lyric-review row through the real `Shell::open_lyric_review_row` path, since a headless run has no pointer that can click | no row pressed | `usize`; delivered once per process |
 
-One build switch, WX-5d's (2026-10-29): the right-column layout is built behind
-it and the merge that finishes it deletes it, with this row.
-
-| Variable | Site | Purpose | Unset behaviour | Parsing |
-| --- | --- | --- | --- | --- |
-| `MUSIALIZER_COLUMN_LAYOUT` | `ui::column::COLUMN_LAYOUT_VARIABLE`, read once in `main.rs` into `Shell::column_layout` | Hands every secondary panel `Placement::Column`, so the column views can be built and captured while the gate stays on the band | every panel draws in its pre-WX-5d place | exactly `1`; anything else, `0`, `true` and ` 1` included, is off |
-
 ### 9.5 `local_runtimes.codex_bin` (added 2026-08-05)
 
 `assist.json`'s `local_runtimes` block gains a fourth optional path override

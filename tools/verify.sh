@@ -174,7 +174,9 @@ if [ "$QUICK" -eq 0 ]; then
         step "headless gate (window, audio, Spectrum)" tools/headless_check.sh
         step "dock gate (terminal in the window)" tools/dock_check.sh
         step "top bar (title, tabs, still, sheet, render)" tools/top_bar_check.sh
-        step "column (WX-5d, behind MUSIALIZER_COLUMN_LAYOUT)" tools/column_check.sh
+        step "column (views, the frame, census, dock, render, progress)" tools/column_check.sh
+        step "lyrics column (cues, style, sample caption, 292 px browser)" tools/lyrics_column_check.sh
+        step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
         step "fluid ink gate (audio and persistent replay)" tools/fluid_ink_check.sh
         step "scene gallery (families, audio, replay)" tools/scene_gallery_check.py
         step "pixel cats (six stagings, audio, replay)" tools/pixel_cats_check.py

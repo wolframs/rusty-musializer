@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # The column gate (WX-5d, build/redesign/wx5d-design.md §5, the Frame checks):
-# the right column behind MUSIALIZER_COLUMN_LAYOUT=1, checked headless.
+# the right column, checked headless.
 #
 #   tools/column_check.sh [OUTPUT_DIR]        # default build/column-check
 #
@@ -35,8 +35,9 @@
 #      `save-to=` renders the file.
 #   7. The progress screen (`progress-shot=N`): the ground is the surface
 #      exactly, the bar's filled part is the accent exactly, the encoded
-#      frame is drawn; at frame 0 the bar holds no accent, and the band
-#      layout's old screen fails the ground test.
+#      frame is drawn; at frame 0 the bar holds no accent. (The ground
+#      test's control was the band layout's old screen until the WX-5d flip
+#      deleted it; it is now the background perturbation in build A below.)
 #   8. The Direct view's chat (§3.1), at 1920x1080: with no chat, a Start row
 #      per agent inside the column (and none once a chat is open); your
 #      bubble on the right, the agent's prompt card, chips and prose at the
@@ -81,7 +82,6 @@ mkdir -p "$OUT"
 OUT="$(realpath "$OUT")"
 
 export MZ_BIN="${COLUMN_BIN:-$(realpath target/debug/musializer)}"
-export MUSIALIZER_COLUMN_LAYOUT=1
 export SHELL=/bin/sh
 
 cargo run --quiet --bin make-fixture-wav -- "$OUT/fixture.wav" 6 >/dev/null
@@ -360,17 +360,6 @@ if [ -s "$OUT/render-zero-progress.png" ]; then
         fail "the bar holds accent at frame 0"
 else
     fail "progress-shot=0 wrote no picture"
-fi
-# The control: the band layout's own screen, through its own Export panel.
-MUSIALIZER_COLUMN_LAYOUT=0 run render-old 40 \
-    "size=1280x720,time=3,panel=export,save-to=$OUT/renders/old.mp4,click=1153x683,progress-shot=20" \
-    --encoder "${MZ_ENCODER:-nvenc}" --render-window 1 2
-if [ -s "$OUT/render-old-progress.png" ]; then
-    if pixel_check "$OUT/render-old-progress.png" "$OUT/render-old.log" ground >/dev/null; then
-        fail "the ground test cannot tell the old progress screen from the themed one"
-    fi
-else
-    fail "the control run wrote no progress picture, so the ground test is unproven"
 fi
 
 # --- 8. The Direct view's chat (§3.1) ------------------------------------------
