@@ -920,10 +920,13 @@ impl Shell {
             at(rect),
             state.scale,
             state.title,
-            state
-                .artist
-                .as_ref()
-                .map_or_else(|| "none".to_owned(), |artist| format!("\"{artist}\"")),
+            // What was drawn: a project's artist the bar had no room for is
+            // `hidden`, which is a different fact from having none.
+            match (&state.artist, layout.artist) {
+                (None, _) => "none".to_owned(),
+                (Some(artist), Some(_)) => format!("\"{artist}\""),
+                (Some(_), None) => "hidden".to_owned(),
+            },
             if state.info_shown {
                 format!("\"{}\"", state.info)
             } else {

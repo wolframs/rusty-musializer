@@ -981,7 +981,6 @@ fn build_fixture() -> Project {
         scene_presets,
         semantic_events,
         manual_events,
-        ..Project::default()
     };
 
     if let Err(validation) = project.validate() {
