@@ -1985,6 +1985,9 @@ pub(crate) fn export_contact_sheet_from_window(
     let times = match sheet_times(track, &stops, window) {
         Ok(times) => times,
         Err(reason) => {
+            // The refusals print the success line's key, so a capture can tell
+            // "refused, and said why" from "never pressed".
+            println!("contact sheet:   refused: {reason}");
             app.shell.notify(
                 Severity::Error,
                 "No contact sheet was written",
@@ -2001,6 +2004,10 @@ pub(crate) fn export_contact_sheet_from_window(
         .parent()
         .is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir())
     {
+        println!(
+            "contact sheet:   refused: {} is not in a folder that exists",
+            destination.display()
+        );
         app.shell.notify(
             Severity::Error,
             "No contact sheet was written",
@@ -2039,6 +2046,7 @@ pub(crate) fn export_contact_sheet_from_window(
             Some(destination)
         }
         Err(detail) => {
+            println!("contact sheet:   refused: {detail}");
             app.shell.notify(
                 Severity::Error,
                 "The contact sheet could not be written",
