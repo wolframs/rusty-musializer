@@ -5772,8 +5772,6 @@ fn draw_splitter(
 mod tests {
     use super::*;
 
-    /// The top bar's tabs    use super::*;
-
     /// The top bar's tabs are views onto `UiPanel` and the inspector (WX-5c
     /// §4): selection reads that state, a press writes it through the
     /// transport's paths, and nothing else holds a copy.

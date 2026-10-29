@@ -1931,9 +1931,6 @@ pub(crate) fn alpha(color: Color, amount: f32) -> Color {
 // `draw_tooltip`): geometry nobody can check without a window is geometry
 // nobody checks.
 
-/// The column's head: a micro title, the view's switch or actions on the
-/// right, and a hairline under it (`.head`, 40 px).
-
 #[allow(
     unused_imports,
     reason = "WX-5d seam: unused until the column views call the vocabulary"
@@ -1951,6 +1948,8 @@ pub use column_kit::*;
 mod column_kit {
     use super::*;
 
+    /// The column's head: a micro title, the view's switch or actions on the
+    /// right, and a hairline under it (`.head`, 40 px).
     pub const COLUMN_HEAD_HEIGHT: f32 = 40.0;
     /// Left and right insets of the head's contents (`.head`'s `padding: 0 10px 0 14px`).
     pub const COLUMN_HEAD_PADDING_LEFT: f32 = 14.0;
@@ -1980,6 +1979,10 @@ mod column_kit {
     const SLIDER_ROW_TICK_HEIGHT: f32 = 12.0;
     /// The knob at rest; one pixel more while hovered or held.
     pub const SLIDER_ROW_KNOB_RADIUS: f32 = 7.0;
+    // The knob is centred on the value, so at 0 and 1 it hangs past the track
+    // by its radius (AGENTS.md trap); the gap to the label and the value has
+    // to be wider than the hovered knob, or it touches them.
+    const _: () = assert!(SLIDER_ROW_KNOB_RADIUS + 1.0 < SLIDER_ROW_GAP);
     /// How many consecutive widget indices one [`Widgets::slider_row`] takes from
     /// its namespace: track, label, value, route. A caller laying out rows strides
     /// its `first_index` by this.
@@ -3567,13 +3570,6 @@ mod tests {
         assert!(bare.route.is_empty());
         assert_eq!(bare.value, UiRect::new(1860.0, 300.0, 46.0, 30.0));
         assert_eq!(bare.track.width, 248.0);
-    }
-
-    #[test]
-    fn a_parameter_rows_knob_cannot_reach_its_neighbours() {
-        // The knob is centred on the value, so at 0 and 1 it hangs past the
-        // track by its radius (AGENTS.md trap); the gap has to be wider.
-        assert!(SLIDER_ROW_KNOB_RADIUS + 1.0 < SLIDER_ROW_GAP);
     }
 
     #[test]

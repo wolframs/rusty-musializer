@@ -11,12 +11,14 @@
 //! produces, not against a guessed threshold.
 
 pub mod assist_ui_state;
+pub mod column_layout;
 pub mod contrast;
 pub mod font_import_state;
 pub mod lane_head;
 pub mod lyric_clipboard;
 pub mod lyric_lane_edit;
 pub mod lyric_lane_stack;
+pub mod lyrics_column_layout;
 pub mod lyrics_editor_layout;
 pub mod notice;
 pub mod plan_runs;
@@ -31,4 +33,5 @@ pub mod timeline_layout;
 pub mod timeline_view;
 pub mod transport_bar;
 pub mod tune_explore;
+pub mod tune_groups;
 pub mod workspace_layout;

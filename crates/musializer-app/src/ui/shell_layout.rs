@@ -189,6 +189,11 @@ pub struct WorkspaceFrame {
     pub rail_layout: Option<WorkspaceRail>,
     /// Right-hand tuning inspector; empty when closed.
     pub inspector: UiRect,
+    /// The right column every secondary view draws in (WX-5d,
+    /// [`super::column`]). **In the seam it is the inspector's rect**, so
+    /// nothing moves; the Frame builder gives it the column rule
+    /// (`wx5d-design.md` §1) behind `MUSIALIZER_COLUMN_LAYOUT`.
+    pub column: UiRect,
     /// The scene preview. This is what every other region takes from.
     pub preview: UiRect,
     /// Transport toolbar, directly beneath the preview (`plug.c:7755-7760`).
@@ -278,17 +283,19 @@ impl WorkspaceFrame {
             layout.rail
         });
 
+        let inspector = UiRect::new(
+            widths.workspace_width,
+            0.0,
+            widths.inspector_width,
+            if inspector_open { window_height } else { 0.0 },
+        );
         Self {
             widths,
             top_bar,
             rail,
             rail_layout,
-            inspector: UiRect::new(
-                widths.workspace_width,
-                0.0,
-                widths.inspector_width,
-                if inspector_open { window_height } else { 0.0 },
-            ),
+            inspector,
+            column: inspector,
             preview,
             toolbar,
             timeline,
@@ -330,6 +337,7 @@ impl WorkspaceFrame {
             rail: empty,
             rail_layout: None,
             inspector: empty,
+            column: empty,
             preview: UiRect::new(0.0, 0.0, window_width, preview_height),
             toolbar: if hud_visible {
                 UiRect::new(0.0, preview_height, window_width, toolbar_height)
@@ -997,5 +1005,21 @@ mod tests {
         // And below the cap it is proportional, so a narrow window packs them.
         let narrow = WelcomeFrame::layout(960.0, 640.0, false);
         assert!((narrow.steps[1].x - narrow.steps[0].x) < 250.0);
+    }
+
+    /// WX-5d seam: the column is the inspector's rect in every frame, so the
+    /// seam moves nothing. The Frame builder replaces this with the column
+    /// rule's own table.
+    #[test]
+    fn the_seams_column_is_the_inspectors_rect() {
+        for (width, height) in [(960.0, 640.0), (1280.0, 720.0), (1920.0, 1080.0)] {
+            for open in [false, true] {
+                let frame = WorkspaceFrame::layout(width, height, open, 260.0);
+                assert_eq!(frame.column, frame.inspector, "{width}x{height} {open}");
+            }
+            let full = WorkspaceFrame::fullscreen(width, height, true);
+            assert!(full.column.is_empty());
+            assert!(WorkspaceFrame::editor((width, height)).column.is_empty());
+        }
     }
 }
