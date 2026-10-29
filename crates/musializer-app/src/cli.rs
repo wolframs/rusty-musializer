@@ -366,6 +366,15 @@ pub struct UiProbe {
     /// same handler a double-click on the run calls. Addressed by index, never
     /// by pixel.
     pub run_open: Option<usize>,
+    /// `flyout=tracks|scenes|none` (WX-5c §1): which rail flyout is open,
+    /// by name. The outer `None` means the key was not given; `Some(None)`
+    /// asks for every flyout closed.
+    pub flyout: Option<Option<crate::ui::shell::Flyout>>,
+    /// `key=escape` (WX-5c): press Escape once, on the frame `click=` presses,
+    /// through the shell's keyboard path. Escape is the only key so far,
+    /// because it is the one whose effect (closing a flyout) no click can
+    /// stand in for; another key is added by name, never by keycode.
+    pub key_escape: bool,
     /// `tune-seed=N`: replace the Tune panel's Surprise/Nudge seed (PX6).
     ///
     /// **Invented, and it is what makes a random feature photographable at
@@ -1312,6 +1321,11 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         }
         "poster-dump" => probe.poster_dump = Some(std::path::PathBuf::from(value)),
         "run-open" => probe.run_open = Some(value.parse().ok()?),
+        "flyout" => probe.flyout = Some(crate::ui::shell::Flyout::from_probe_name(value)?),
+        "key" => match value {
+            "escape" => probe.key_escape = true,
+            _ => return None,
+        },
         "dock-focus" => {
             probe.dock = true;
             probe.dock_focus = parse_probe_flag(value)?;
@@ -1499,6 +1513,8 @@ Diagnostics:
                           panel=none|tune|export|lyrics|assist,
                           scene-family=sound|geometry|atmosphere|materials|living|type-stage|pixel-cats,
                           scene-pick=NAME selects a scene through the normal edit path,
+                          flyout=tracks|scenes|none opens a rail flyout,
+                          key=escape presses Escape once,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
                           sidebar=PX, inspector=PX, timeline-height=PX
                           set logical split positions for capture,
@@ -1669,6 +1685,24 @@ mod tests {
             assert_eq!(probe.scene_pick, None);
         }
         assert!(parse_ui_probe("scene-family=unknown").is_none());
+    }
+
+    #[test]
+    fn a_flyout_probe_takes_its_names_and_nothing_else() {
+        use crate::ui::shell::Flyout;
+        for (name, expected) in [
+            ("tracks", Some(Flyout::Tracks)),
+            ("scenes", Some(Flyout::Scenes)),
+            ("none", None),
+        ] {
+            let probe = parse_ui_probe(&format!("flyout={name}")).unwrap();
+            assert_eq!(probe.flyout, Some(expected));
+        }
+        assert_eq!(parse_ui_probe("time=1").unwrap().flyout, None);
+        assert!(parse_ui_probe("flyout=sidebar").is_none());
+        assert!(parse_ui_probe("key=escape").unwrap().key_escape);
+        assert!(!parse_ui_probe("flyout=scenes").unwrap().key_escape);
+        assert!(parse_ui_probe("key=enter").is_none());
     }
 
     #[test]

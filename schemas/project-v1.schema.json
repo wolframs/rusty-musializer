@@ -16,9 +16,32 @@
     "cues",
     "analysis_lanes"
   ],
+  "if": {
+    "properties": {
+      "metadata": {
+        "required": [
+          "artist"
+        ]
+      }
+    },
+    "required": [
+      "metadata"
+    ]
+  },
+  "then": {
+    "properties": {
+      "schema_version": {
+        "const": "musializer.project/v2"
+      }
+    }
+  },
   "properties": {
     "schema_version": {
-      "const": "musializer.project/v1"
+      "enum": [
+        "musializer.project/v1",
+        "musializer.project/v2"
+      ],
+      "description": "v2 (WX-5c, 2026-10-27) is v1 plus metadata.artist. A project is written at the oldest version that carries it: v1 unless it names an artist, so a v1 file stays byte-identical on save and a v1 reader refuses an artist-bearing file by its version."
     },
     "metadata": {
       "$ref": "#/$defs/metadata"
@@ -714,6 +737,12 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 128
+        },
+        "artist": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Who made the music (v2 only, WX-5c). Omitted when there is none, never written empty; a v1 file carrying it is refused as an unknown field."
         },
         "author": {
           "type": "string",

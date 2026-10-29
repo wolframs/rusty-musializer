@@ -152,3 +152,24 @@ a cut inside a plan-lane run, which the gate counts by exact colour. The light
 appearance's waveform ahead of the playhead lost half its blue cast
 (`#BAC2D6` → `#BDC1CB`); `tools/timeline_tick_plate.py` classifies the envelope
 by its channel order, so the two moved together.
+
+WX-5c added no roles and one style. `ButtonStyle::Ghost` is a control that
+draws only its glyph, in `ui_muted`, until it is hovered (`ui_hover`) or its
+state holds (the selection outline and tint): the rail's four icons, the
+transport's seek trio, readout, mute and fullscreen. The round play button is
+an `ui_ink` disc with the glyph in `ui_surface`, and the volume chip is a
+Neutral control with the level as a 3 px `ui_level` fill along its bottom and
+the percentage over it. A flyout is `widgets::panel`'s `ui_surface` with a
+`ui_control_edge` border and a soft black edge falling on the preview; none
+of it wears the accent, which the gate's census checks with a flyout open in
+the dark appearance and with an accent slab painted onto the rail as its
+negative control.
+
+The rail and its flyouts are raylib, not egui: they share the shell's widget
+bank, so the claim rule, `--ui-probe click=` and `last_claimed_id` reach them
+like any other control. A flyout's modality for presses is
+`UiScale::occluded`: the shell draws everything under an open flyout with a
+copy of the frame's input whose scale reports the pointer far outside the
+window while it is over the flyout, and swaps the widget bank to that scale
+for the same span. egui's dock is beside the workspace and never under a
+flyout, so it is untouched.

@@ -29,9 +29,18 @@ use crate::scene::SCENE_COUNT;
 
 use super::event_timeline::EventTimeline;
 
-/// `MUSI_PROJECT_SCHEMA_VERSION` (`project.h:12`). The file spells this
-/// `"musializer.project/v1"`; the number is the in-memory form.
-pub const SCHEMA_VERSION: u32 = 1;
+/// `MUSI_PROJECT_SCHEMA_VERSION` (`project.h:12`): the frozen C's version, and
+/// the oldest this build reads. The file spells it `"musializer.project/v1"`.
+pub const FIRST_SCHEMA_VERSION: u32 = 1;
+/// The newest schema this build reads and writes (`"musializer.project/v2"`,
+/// WX-5c, 2026-10-27): v1 plus `metadata.artist`.
+///
+/// A project is *written* at the oldest version that can carry it
+/// ([`Project::schema_version`]), so a file with no artist is still a v1 file,
+/// byte for byte what earlier builds wrote, and a v1 reader — the frozen C or
+/// any build before this one — refuses an artist-bearing file by its version
+/// rather than by an unknown field halfway through `metadata`.
+pub const SCHEMA_VERSION: u32 = 2;
 /// `project.h:13`.
 pub const MAX_SCENES: usize = 32;
 /// `project.h:14-15`: every scene's every control, since one `.musi` scene entry
@@ -626,6 +635,11 @@ pub struct Metadata {
     /// A `stable_name`.
     pub project_id: String,
     pub title: String,
+    /// Who made the music (WX-5c, schema v2). Empty means none: it is never
+    /// written empty, and a project that has one is written as v2. Distinct
+    /// from [`Self::author`], which the C has always carried as the project's
+    /// author and which nothing in this application sets or shows.
+    pub artist: String,
     pub author: String,
     pub created_utc: String,
     pub modified_utc: String,
@@ -805,7 +819,6 @@ pub struct ScenePreset {
 /// A whole `.musi` project (`Musi_Project`, `project.h:287-315`).
 #[derive(Clone, Debug)]
 pub struct Project {
-    pub schema_version: u32,
     pub metadata: Metadata,
     pub audio: AudioAsset,
     pub ascii_image: Option<AsciiImageAsset>,
@@ -837,7 +850,6 @@ impl Default for Project {
     /// [`Project::validate`] then insists the two agree.
     fn default() -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
             metadata: Metadata::default(),
             audio: AudioAsset::default(),
             ascii_image: None,
@@ -952,12 +964,29 @@ fn fail(error: ProjectError, index: usize, subindex: usize) -> ProjectValidation
 }
 
 impl Project {
+    /// The schema this project is written as: the oldest that can carry it.
+    ///
+    /// [`FIRST_SCHEMA_VERSION`] unless the project names an artist, which only
+    /// v2 has. Derived rather than stored, so a project cannot claim a version
+    /// its contents contradict, and a v1 project opened and saved by this build
+    /// stays v1 — the frozen C and every earlier build can still read it.
+    #[must_use]
+    pub fn schema_version(&self) -> u32 {
+        if self.metadata.artist.is_empty() {
+            FIRST_SCHEMA_VERSION
+        } else {
+            SCHEMA_VERSION
+        }
+    }
+
     /// `musi_project_validate` (`project.c:111-391`), in the same order, so the
     /// *first* complaint about a bad document matches the C's.
+    ///
+    /// The C's first check, `schema_version != 1`, has no counterpart: the
+    /// version is no longer a stored number that can disagree with the
+    /// document but [`Self::schema_version`], derived from what the document
+    /// carries, and the codec refuses a version string it does not know.
     pub fn validate(&self) -> Result<(), ProjectValidation> {
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(fail(ProjectError::SchemaVersion, 0, 0));
-        }
         self.validate_metadata()?;
         self.validate_audio()?;
         self.validate_ascii_image()?;
@@ -991,6 +1020,7 @@ impl Project {
         let metadata = &self.metadata;
         let ok = is_stable_name(&metadata.project_id)
             && is_bounded(&metadata.title, capacity::NAME, false)
+            && is_bounded(&metadata.artist, capacity::NAME, true)
             && is_bounded(&metadata.author, capacity::NAME, true)
             && is_bounded(&metadata.created_utc, capacity::TIMESTAMP, true)
             && is_bounded(&metadata.modified_utc, capacity::TIMESTAMP, true)
@@ -1523,13 +1553,22 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_version_is_checked_before_anything_else() {
+    fn a_project_is_v1_until_it_names_an_artist() {
         let mut project = valid_project();
-        project.schema_version = 2;
-        project.metadata.title = String::new();
+        assert_eq!(project.schema_version(), FIRST_SCHEMA_VERSION);
+        project.metadata.artist = "Chaos Cat Familiar".into();
+        assert_eq!(project.schema_version(), SCHEMA_VERSION);
+        assert_eq!(project.validate(), Ok(()));
+        // Bounded in bytes like the title: 43 three-byte characters is 129.
+        project.metadata.artist = "\u{2603}".repeat(43);
         assert_eq!(
             project.validate().unwrap_err().error,
-            ProjectError::SchemaVersion
+            ProjectError::Metadata
+        );
+        project.metadata.artist = "a\0b".into();
+        assert_eq!(
+            project.validate().unwrap_err().error,
+            ProjectError::Metadata
         );
     }
 

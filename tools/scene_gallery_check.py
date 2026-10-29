@@ -153,6 +153,14 @@ def picker_report(log):
     return next(line for line in log.read_text().splitlines() if line.startswith('scene picker:'))
 
 
+def report_rect(report, key):
+    """The centre of `key@x,y,w,h` on a `scene picker:` line (WX-5c)."""
+    match = re.search(r'(?:[ =;])' + re.escape(key) + r'@(\d+),(\d+),(\d+),(\d+)', report)
+    assert match, f'no {key} rect on: {report}'
+    x, y, w, h = (int(value) for value in match.groups())
+    return x + w // 2, y + h // 2
+
+
 def check_picker(base, vocabulary):
     out = base/'picker'
     out.mkdir(exist_ok=True)
@@ -160,44 +168,37 @@ def check_picker(base, vocabulary):
     for scene in vocabulary['scenes']:
         groups.setdefault(scene['family'], []).append(scene['name'])
     assert len(groups) == 7
+    # The picker is the scenes flyout since WX-5c: a family column and a
+    # two-column grid of tiles over the preview, opened by `scene-family=`.
+    # Every point pressed is read from the picker's own `tiles=` and `tabs=`
+    # rather than re-derived from its geometry here, which is how this check
+    # kept pressing the wrong tile each time the sidebar's picker moved.
     # Click probes settle three frames, then press/hold/release. Leave a
     # following frame for the deferred command to redraw its new selection.
     for family, members in groups.items():
         app(out, family, base/'pulse.wav', '--size', '960x640', '--hud=0',
             '--probe-frames', '12', '--probe-shot', out/f'{family}.png',
-            '--ui-probe', f'play=0,sidebar=240,scene-family={family}')
+            '--ui-probe', f'play=0,scene-family={family}')
         report = picker_report(out/f'{family}.log')
         assert f'family={family} active=spectrum' in report, report
         assert 'offset=0.0/0.0' in report, f'{family}: does not fit minimum picker'
         visible = re.search(r'visible=\[(.*?)\]', report)[1].split(',')
         assert visible == members, f'{family}: unreachable scenes {members} / {visible}'
-        width, height, x, y = map(int, re.search(r'viewport=(\d+)x(\d+)@(\d+),(\d+)', report).groups())
-        rows = math.ceil(len(members)/2)
-        tile_h = max(24, min(44, (height-4*(rows-1))/rows))
-        tile_w = (width-4)/2
-        for i, scene in enumerate(members):
-            cx = round(x+(i%2)*(tile_w+4)+tile_w/2)
-            cy = round(y+(i//2)*(tile_h+4)+tile_h/2)
+        for scene in members:
+            cx, cy = report_rect(report, scene)
             app(out, f'click-{scene}', base/'pulse.wav', '--size', '960x640', '--hud=0',
                 '--probe-frames', '12', '--probe-shot', out/f'click-{scene}.png',
-                '--ui-probe', f'play=0,sidebar=240,scene-family={family},click={cx}x{cy}')
+                '--ui-probe', f'play=0,scene-family={family},click={cx}x{cy}')
             actual = picker_report(out/f'click-{scene}.log')
             assert f'active={scene} ' in actual, f'tile {scene} did not select it: {actual}'
-        print(f'picker {family}: all {len(members)} tiles clicked at 960x640 / 240px sidebar', flush=True)
-    # One real tab click proves family navigation reaches the same state as the
+        print(f'picker {family}: all {len(members)} tiles clicked at 960x640', flush=True)
+    # One real family-row click proves navigation reaches the same state as the
     # parked probe, without changing playback or silently selecting a scene.
-    # Materials is fourth on the top row of the two-row tab strip, whose tabs
-    # are as wide as their labels plus three characters of padding
-    # (`scene_browser::tab_slot`): Sound, Geometry, Atmosphere, Materials.
-    width, _, x, y = map(int, re.search(r'viewport=(\d+)x(\d+)@(\d+),(\d+)', report).groups())
-    weights = [len(label)+3 for label in ('Sound', 'Geometry', 'Atmosphere', 'Materials')]
-    free = width-4*(len(weights)-1)
-    left = x+sum(weights[:3])/sum(weights)*free+3*4
-    cx = round(left+weights[3]/sum(weights)*free/2)
-    cy = y-52+11
+    # The flyout is opened by name; the row's point is the report's `tabs=`.
+    cx, cy = report_rect(report, 'materials')
     app(out, 'category-click', base/'pulse.wav', '--size', '960x640', '--hud=0',
         '--probe-frames', '12', '--probe-shot', out/'category-click.png',
-        '--ui-probe', f'play=0,sidebar=240,click={cx}x{cy}')
+        '--ui-probe', f'play=0,flyout=scenes,click={cx}x{cy}')
     assert 'family=materials active=spectrum' in picker_report(out/'category-click.log')
 
 

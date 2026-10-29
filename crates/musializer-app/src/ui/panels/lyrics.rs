@@ -2033,7 +2033,8 @@ impl Shell {
     /// hides most of the picture.
     ///
     /// **It costs no band height.** The `None`/`Tune` band is
-    /// `EVENT_ROW_HEIGHT + DEFAULT_TIMELINE_HEIGHT + SCENE_SECTION_HEIGHT`, and
+    /// `DEFAULT_TIMELINE_HEIGHT + SCENE_SECTION_HEIGHT` (before WX-5c also the
+    /// 66 px manual event row), and
     /// the 180 of that spends 56 on the waveform strip and 28 on the zoom row —
     /// so the lane draws in slack that was already reserved and already empty.
     /// That is deliberate rather than lucky: growing the band would move

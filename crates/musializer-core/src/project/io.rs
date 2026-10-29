@@ -46,8 +46,8 @@ use crate::project::model::{
     BlendMode, CaptionAnchor, CaptionBox, CaptionEffects, CaptionFace, CaptionStyle, DriveTuning,
     EffectDrive, FontAsset, Metadata, OutputFormat, OutputQuality, OutputSettings, ParameterCue,
     Project, Provenance, SceneEntry, ScenePreset, SceneSwitchSuggestion, SceneSwitchSuggestions,
-    MAX_ANALYSIS_LANES, MAX_CUES, MAX_MAPPINGS_PER_SCENE, MAX_SCENES, MAX_SCENE_PRESETS,
-    SCENE_SWITCH_CAPACITY,
+    FIRST_SCHEMA_VERSION, MAX_ANALYSIS_LANES, MAX_CUES, MAX_MAPPINGS_PER_SCENE, MAX_SCENES,
+    MAX_SCENE_PRESETS, SCENE_SWITCH_CAPACITY, SCHEMA_VERSION,
 };
 use crate::scene::events::{EventRecord, EventType, TIMELINE_CAPACITY, VALUE_CAPACITY};
 use crate::scene::routes::{AnalysisSource, Interpolation, ParameterMapping};
@@ -60,8 +60,12 @@ use super::event_timeline::EventTimeline;
 /// The first bound any `.musi` meets, before a single byte is interpreted.
 pub const MAX_INPUT: usize = 4 * 1024 * 1024;
 
-/// The file's `schema_version` value (`project_io.c:103`).
+/// The file's `schema_version` value (`project_io.c:103`): v1, the frozen C's,
+/// and still what every project without an artist is written as.
 pub const SCHEMA_VERSION_STRING: &str = "musializer.project/v1";
+/// v2 (WX-5c, 2026-10-27): v1 plus the optional `metadata.artist`. Written only
+/// by a project that names an artist ([`Project::schema_version`]).
+pub const SCHEMA_VERSION_V2_STRING: &str = "musializer.project/v2";
 /// The preset store's `schema_version` value (`project_io.c:330`).
 pub const PRESET_STORE_SCHEMA_VERSION_STRING: &str = "musializer.presets/v1";
 
@@ -249,14 +253,26 @@ fn write_f32_array(out: &mut String, values: &[f32]) {
 /// workspace, including `caption_style` and the embedded semantic lane, even when
 /// every value is a default: a canonical writer that omitted defaults would make
 /// "absent" ambiguous between "old file" and "deliberately default".
+///
+/// The version is the oldest that carries the project (v1 unless it names an
+/// artist), and `artist` follows `title` only when there is one. So a project
+/// without an artist is written byte for byte as before v2 existed.
 fn write_project(out: &mut String, project: &Project) {
     out.push_str("{\"schema_version\":\"");
-    out.push_str(SCHEMA_VERSION_STRING);
+    out.push_str(if project.schema_version() == FIRST_SCHEMA_VERSION {
+        SCHEMA_VERSION_STRING
+    } else {
+        SCHEMA_VERSION_V2_STRING
+    });
     out.push_str("\",\"metadata\":{\"project_id\":");
     let metadata = &project.metadata;
     write_string(out, &metadata.project_id);
     out.push_str(",\"title\":");
     write_string(out, &metadata.title);
+    if !metadata.artist.is_empty() {
+        out.push_str(",\"artist\":");
+        write_string(out, &metadata.artist);
+    }
     out.push_str(",\"author\":");
     write_string(out, &metadata.author);
     out.push_str(",\"created_utc\":");
@@ -1129,14 +1145,21 @@ fn parse_cue(parser: &mut Parser<'_>) -> Parsed<ParameterCue> {
 /// Only `project_id`, `title` and `application_version` are required — mask
 /// `0x23`. The three optional fields default to the empty string, which is a
 /// documented compatibility default.
+///
+/// `artist` (v2, WX-5c) is the seventh name, appended so the C's mask keeps its
+/// meaning. It is never written empty, so an empty one is refused as a string
+/// this codec did not write; whether the file's version allows it at all is
+/// [`parse_project`]'s question, because `schema_version` may follow
+/// `metadata` in a file somebody else wrote.
 fn parse_metadata(parser: &mut Parser<'_>) -> Parsed<Metadata> {
-    const NAMES: [&str; 6] = [
+    const NAMES: [&str; 7] = [
         "project_id",
         "title",
         "author",
         "created_utc",
         "modified_utc",
         "application_version",
+        "artist",
     ];
     let mut metadata = Metadata::default();
     let mut seen = Seen::default();
@@ -1149,7 +1172,13 @@ fn parse_metadata(parser: &mut Parser<'_>) -> Parsed<Metadata> {
             2 => metadata.author = parser.string(capacity::NAME)?,
             3 => metadata.created_utc = parser.string(capacity::TIMESTAMP)?,
             4 => metadata.modified_utc = parser.string(capacity::TIMESTAMP)?,
-            _ => metadata.application_version = parser.string(capacity::VERSION)?,
+            5 => metadata.application_version = parser.string(capacity::VERSION)?,
+            _ => {
+                metadata.artist = parser.string(capacity::NAME)?;
+                if metadata.artist.is_empty() {
+                    return Err(ProjectIoError::String);
+                }
+            }
         }
         Ok(())
     })?;
@@ -2052,15 +2081,20 @@ fn parse_project(parser: &mut Parser<'_>) -> Parsed<Project> {
     let mut manual_events = Vec::new();
     let mut semantic_events = Vec::new();
     let mut seen = Seen::default();
+    let mut read_version = FIRST_SCHEMA_VERSION;
     parser.object(|parser, key| {
         let field = field_index(key, &NAMES)?;
         seen.mark(field)?;
         match field {
             0 => {
                 let version = parser.string(63)?;
-                if version != SCHEMA_VERSION_STRING {
+                read_version = if version == SCHEMA_VERSION_STRING {
+                    FIRST_SCHEMA_VERSION
+                } else if version == SCHEMA_VERSION_V2_STRING {
+                    SCHEMA_VERSION
+                } else {
                     return Err(ProjectIoError::Schema);
-                }
+                };
             }
             1 => project.metadata = parse_metadata(parser)?,
             2 => project.audio = parse_audio(parser)?,
@@ -2105,6 +2139,12 @@ fn parse_project(parser: &mut Parser<'_>) -> Parsed<Project> {
     })?;
     if !seen.has_all(0xff) {
         return Err(ProjectIoError::MissingField);
+    }
+    // v1 has no `artist`: an artist under a v1 version is the unknown field the
+    // frozen C would also have refused it as. Checked here rather than in
+    // `parse_metadata`, because the version may come after the metadata.
+    if read_version == FIRST_SCHEMA_VERSION && !project.metadata.artist.is_empty() {
+        return Err(ProjectIoError::UnknownField);
     }
     // `lyrics.duration_seconds` is not a field in the file; it is copied from the
     // audio asset (`project_io.c:306`), and validation then insists the two agree.
@@ -2508,6 +2548,73 @@ mod tests {
         assert_eq!(reparsed.lyrics, project.lyrics);
     }
 
+    /// The artist field (WX-5c): absent leaves the file v1 and byte-identical,
+    /// present makes it v2, and the two versions refuse each other's shapes.
+    #[test]
+    fn an_artist_makes_the_file_v2_and_its_absence_keeps_it_v1() {
+        let mut project = valid_project();
+        let plain = serialize(&project).unwrap();
+        assert!(plain.starts_with("{\"schema_version\":\"musializer.project/v1\""));
+        assert!(
+            !plain.contains("\"artist\""),
+            "never written empty: {plain}"
+        );
+
+        project.metadata.artist = "Chaos Cat Familiar".into();
+        let named = serialize(&project).unwrap();
+        assert!(named.starts_with("{\"schema_version\":\"musializer.project/v2\""));
+        assert!(
+            named.contains("\"title\":\"Fixture\",\"artist\":\"Chaos Cat Familiar\",\"author\"")
+        );
+        let reparsed = deserialize(named.as_bytes()).unwrap();
+        assert_eq!(reparsed.metadata, project.metadata);
+        assert_eq!(serialize(&reparsed).unwrap(), named);
+
+        // Everything but the version and the one member is the v1 file, so a
+        // project that loses its artist writes the bytes it had before.
+        let mut cleared = reparsed;
+        cleared.metadata.artist.clear();
+        assert_eq!(serialize(&cleared).unwrap(), plain);
+
+        // An artist under v1 is the unknown field the C would call it, wherever
+        // the version sits in the object.
+        let as_v1 = named.replacen("musializer.project/v2", "musializer.project/v1", 1);
+        assert_eq!(
+            deserialize(as_v1.as_bytes()).unwrap_err(),
+            ProjectIoError::UnknownField
+        );
+        let version_last = format!(
+            "{{{},\"schema_version\":\"musializer.project/v1\"}}",
+            &as_v1[1..as_v1.len() - 1].replacen(
+                "\"schema_version\":\"musializer.project/v1\",",
+                "",
+                1
+            )
+        );
+        assert_eq!(
+            deserialize(version_last.as_bytes()).unwrap_err(),
+            ProjectIoError::UnknownField
+        );
+        // v2 without one is a valid v2 file, and is written back as v1.
+        let v2_plain = plain.replacen("musializer.project/v1", "musializer.project/v2", 1);
+        assert_eq!(
+            serialize(&deserialize(v2_plain.as_bytes()).unwrap()).unwrap(),
+            plain
+        );
+        // Never written empty, so an empty one is not this codec's.
+        let empty = named.replacen("\"Chaos Cat Familiar\"", "\"\"", 1);
+        assert_eq!(
+            deserialize(empty.as_bytes()).unwrap_err(),
+            ProjectIoError::String
+        );
+        // And a version this build does not know is still refused by name.
+        let v3 = named.replacen("musializer.project/v2", "musializer.project/v3", 1);
+        assert_eq!(
+            deserialize(v3.as_bytes()).unwrap_err(),
+            ProjectIoError::Schema
+        );
+    }
+
     #[test]
     fn serialization_is_stable_across_a_round_trip() {
         let project = valid_project();
@@ -2670,7 +2777,8 @@ mod tests {
     #[test]
     fn a_wrong_schema_version_is_a_schema_mismatch() {
         let text = serialize(&valid_project()).unwrap();
-        let bumped = text.replace("musializer.project/v1", "musializer.project/v2");
+        // v3, not v2: v2 is a version this build reads (WX-5c).
+        let bumped = text.replace("musializer.project/v1", "musializer.project/v3");
         assert_eq!(
             deserialize(bumped.as_bytes()).unwrap_err(),
             ProjectIoError::Schema

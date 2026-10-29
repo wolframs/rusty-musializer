@@ -15,11 +15,21 @@
 //! repository already paid for show up here: the reserved height is derived from
 //! what is actually drawn, and the floor it is measured against is what the
 //! minimum supported window (960x640) really produces — at 640 the form wins and
-//! the sidebar yields, because
-//! [`WorkspaceSidebar::layout`](super::workspace_layout::WorkspaceSidebar::layout)
-//! collapses the tracks panel cleanly rather than letting it overflow.
+//! the sidebar yields.
+//!
+//! **There is no sidebar since WX-5c** (the rail and its flyouts replaced it),
+//! and so nothing competes with this panel for height any more. The floor is
+//! kept, at its value, as two named legacy constants below, so the lyrics band
+//! does not move in WX-5c; relaxing it belongs to the wave that restructures
+//! the secondary panels.
 
-use super::workspace_layout::{WORKSPACE_SCENES_MINIMUM, WORKSPACE_TRACKS_SINGLE_MINIMUM};
+/// The scene browser's content floor in the retired sidebar (`workspace_layout.h:55-57`:
+/// 27 header + 36 footer + 16 padding + four 4 px gaps + five 24 px rows).
+/// **Legacy**: it only sizes [`LYRIC_EDITOR_SIDEBAR_MINIMUM`] now.
+pub const WORKSPACE_SCENES_MINIMUM: f32 = 215.0;
+/// The retired sidebar's tracks panel with one action row (`workspace_layout.h:49-51`:
+/// the row at +50, 36 tall). **Legacy**, for the same reason.
+pub const WORKSPACE_TRACKS_SINGLE_MINIMUM: f32 = 50.0 + 36.0;
 
 /// One cue row (`lyrics_editor_layout.h:20-22`).
 pub const LYRIC_EDITOR_ROW_HEIGHT: f32 = 36.0;
@@ -117,8 +127,7 @@ pub fn panel_height_with_chrome(screen_height: f32, cue_count: usize, timeline_c
         wanted = ceiling;
     }
     // A window too short to give both is a window where the editing controls
-    // matter more than the track list; WorkspaceSidebar::layout collapses the
-    // tracks panel cleanly rather than letting it overflow.
+    // matter more than the track list.
     if wanted < LYRIC_EDITOR_FORM_MINIMUM {
         wanted = LYRIC_EDITOR_FORM_MINIMUM;
     }
@@ -222,8 +231,7 @@ mod tests {
             );
             height += 1.0;
         }
-        // At the 640 minimum the form wins and the sidebar yields; the tracks panel
-        // collapses cleanly instead of overflowing. See WorkspaceSidebar::layout.
+        // At the 640 minimum the form wins and the sidebar yields.
         near(panel_height(640.0, 8), LYRIC_EDITOR_FORM_MINIMUM, 0.001);
     }
 

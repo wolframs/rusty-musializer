@@ -1,4 +1,4 @@
-//! The manual event row, and the shared preset controls.
+//! The manual event markers, and the shared preset controls.
 //!
 //! **Owner: Agent L.** C sources: `plug.c:2834-2971` (the row), `:5979-6100`
 //! (the preset block), `event_timeline.c`, `semantic_lane.c`, `preset_store.c`.
@@ -16,15 +16,16 @@
 //! [`musializer_core::project::semantic_lane::sample`] requires the four-value
 //! analysis payload and skips anything else, so a `+ Feel` marker never reaches
 //! the semantic lane at all — only Constellation's generic event path reads it.
-//! The C says so in a tooltip (`plug.c:2839-2844`); this row says so in a caption
-//! that is always on screen, because this rewrite has no tooltip widget and
-//! because a claim only a hover can reveal is a claim no capture can review.
+//! The C says so in a tooltip (`plug.c:2839-2844`). This row said so in an
+//! always-visible caption until WX-5c moved the markers onto the 26 px lane
+//! head as chips; the sentence is their tooltip again, with the marker count
+//! that the `lane head:` report line also carries.
 //!
-//! # Two things this row does *not* reproduce
+//! # What this does *not* reproduce
 //!
 //! - **The `Lyrics` / `Assist` / `Export` buttons.** The C seats them in this row
-//!   (`plug.c:2830`); this rewrite seats them in the toolbar. Drawing them in
-//!   both places would put two controls in charge of one open panel, which is
+//!   (`plug.c:2830`); this rewrite seats them in the top bar's tabs. Drawing them
+//!   in both places would put two controls in charge of one open panel, which is
 //!   exactly the defect the C's own comment at `plug.c:2884-2887` records.
 //! - **`ShellCommand`.** The row returns [`ManualEventAction`]s and the preset
 //!   block returns [`PresetAction`]s, because a leaf agent may not add a
@@ -36,7 +37,6 @@ use musializer_core::project::preset_store::{self, PresetAction, SharedPresetsVi
 use musializer_core::scene::events::EventType;
 use musializer_core::scene::settings::PRESETS_PER_SCENE;
 use musializer_core::ui::notice::Severity;
-use musializer_core::ui::timeline_layout::TimelineBand;
 use musializer_core::ui::workspace_layout::UiRect;
 use raylib::prelude::{Color, RaylibDrawHandle};
 
@@ -56,49 +56,20 @@ use super::super::widgets::{self, ButtonStyle};
 const EVENT_ROW_NAMESPACE: u32 = widgets::id::EVENT_ROW;
 const PRESET_NAMESPACE: u32 = widgets::id::EVENT_PRESET;
 
-/// The oracle's control-row geometry (`plug.c:2822-2861`).
-///
-/// `#[rustfmt::skip]` because these are checked against the C column by column,
-/// and one width per line stops being checkable.
-#[rustfmt::skip]
-mod geometry {
-    /// `controls_height` (`plug.c:2822`).
-    pub const CONTROLS_HEIGHT: f32 = 38.0;
-    /// `margin` (`plug.c:2824`).
-    pub const MARGIN: f32 = 6.0;
-    /// The three marker buttons' natural widths, from the tail of the C's
-    /// `control_widths` (`plug.c:2853`): `+ Feel`, `+ Scene`, `+ Custom`.
-    pub const MARKER_WIDTHS: [f32; 3] = [74.0, 82.0, 86.0];
-    /// The trailing `Clear manual` slot (`plug.c:2870`).
-    pub const CLEAR_WIDTH: f32 = 112.0;
-    /// Gap above the always-visible honesty caption, which the oracle keeps in a
-    /// tooltip instead.
-    pub const CAPTION_GAP: f32 = 3.0;
-}
-
-/// The height [`Shell::event_row`] takes when it draws at all.
-///
-/// A constant rather than only a return value, because the caller has to *reserve*
-/// it before the row is measured — [`Shell::timeline_height`] is asked how tall
-/// the strip should be before anything inside it is laid out. The row still
-/// returns what it actually took, and returns `0.0` when it drew nothing, so a
-/// reservation and a use can never silently disagree.
-pub(crate) const EVENT_ROW_HEIGHT: f32 = geometry::MARGIN
-    + geometry::CONTROLS_HEIGHT
-    + geometry::CAPTION_GAP
-    + metric::UI_FONT_CAPTION
-    + geometry::MARGIN;
-
-/// The three markers the row records, in the C's order (`plug.c:2830`, `:2856`).
+/// The three markers the row records, in the C's order (`plug.c:2830`, `:2856`),
+/// with the short label the lane head falls back to when the band is narrow.
 ///
 /// `+ Scene` is not an event at all — it cues the scene switch plan — which is
 /// why it carries no [`EventType`].
 #[rustfmt::skip]
-const MARKERS: [(&str, Option<EventType>); 3] = [
-    ("+ Feel",   Some(EventType::Semantic)),
-    ("+ Scene",  None),
-    ("+ Custom", Some(EventType::Custom)),
+const MARKERS: [(&str, &str, Option<EventType>); 3] = [
+    ("+ Feel",   "Feel",   Some(EventType::Semantic)),
+    ("+ Scene",  "Scene",  None),
+    ("+ Custom", "Custom", Some(EventType::Custom)),
 ];
+
+/// Room a chip leaves for its category swatch and padding, beside its label.
+const CHIP_PADDING: f32 = 26.0;
 
 /// The colour a marker button's category strip draws in.
 ///
@@ -109,117 +80,102 @@ fn marker_color(kind: Option<EventType>) -> Color {
     Color::get_color(kind.unwrap_or(EventType::Cue).rgba())
 }
 
+/// The short face of the clear control, for a narrow lane head.
+fn clear_short(face: ClearButton) -> &'static str {
+    match face {
+        ClearButton::Clear => "Clear",
+        ClearButton::Confirm => "Confirm",
+        ClearButton::Undo => "Undo",
+    }
+}
+
+/// The chips' widths at the caption size: the three markers full and short,
+/// and the clear control full and short, for the lane head's ladder.
+pub(crate) fn chip_widths(
+    font: &musializer_runtime::font::UiFonts,
+    face: ClearButton,
+) -> ([f32; 3], [f32; 3], f32, f32) {
+    let measure = |text: &str| widgets::measure(font, text, metric::UI_FONT_CAPTION);
+    (
+        MARKERS.map(|(full, _, _)| (measure(full) + CHIP_PADDING).ceil()),
+        MARKERS.map(|(_, short, _)| (measure(short) + CHIP_PADDING).ceil()),
+        (measure(face.label()) + 20.0).ceil(),
+        (measure(clear_short(face)) + 20.0).ceil(),
+    )
+}
+
 impl Shell {
-    /// The manual event row, above the timeline's waveform lane.
+    /// The manual event markers as chips on the lane head (WX-5c §3): `+ Feel`,
+    /// `+ Scene`, `+ Custom` and the clear control, in rects the lane head
+    /// placed. The widget ids are the event row's, so a probe or a hand that
+    /// pressed `+ Feel` before presses the same control now.
     ///
-    /// Returns **the height it consumed**, which is the layout rule this
-    /// repository has already paid for: a row only some modes have is a
-    /// parameter, never an assumption. A row that cannot seat its own controls —
-    /// no track open, too little height, or a band too narrow even at
-    /// [`musializer_core::ui::timeline_layout::TIMELINE_BAND_MIN_SCALE`] —
-    /// consumes nothing and draws nothing, rather than claiming clicks it cannot
-    /// show a control for (`workspace_layout.h:7-19`).
-    // No call site yet: its caller is `shell.rs`, which a leaf agent does not
-    // edit. The wiring diff is in this session's NOTE ENTRIES.
-    #[allow(dead_code)]
-    pub(crate) fn event_row(
+    /// **The oracle's honesty, kept, one hover away.** A manual marker carries
+    /// one value, so only Constellation reacts to it; the row said so in a
+    /// caption that was always on screen, and the chips say it in their
+    /// tooltip with the marker count, because the 26 px head has no line for
+    /// a caption.
+    pub(crate) fn event_chips(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
-        area: UiRect,
+        markers: [UiRect; 3],
+        clear: UiRect,
+        short: (bool, bool),
         actions: &mut Vec<ManualEventAction>,
-    ) -> f32 {
-        // Not drawn over the lyrics editor: see `Shell::timeline_height` for why
-        // the band cannot afford both, and why that is the oracle's arithmetic
-        // rather than a preference.
-        if matches!(
-            self.panel,
-            crate::cli::UiPanel::Lyrics | crate::cli::UiPanel::Assist
-        ) {
-            return 0.0;
-        }
-        use geometry::{CAPTION_GAP, CLEAR_WIDTH, CONTROLS_HEIGHT, MARGIN, MARKER_WIDTHS};
-
+    ) {
         let Some(track) = input.workspace.current() else {
-            return 0.0;
+            return;
         };
-        let consumed = EVENT_ROW_HEIGHT;
-        if area.width <= 0.0 || area.height < consumed {
-            return 0.0;
-        }
-
-        // The timecode is already placed by the toolbar or the timeline header,
-        // so this band asks for none — declaring a width it does not draw would
-        // shrink the row for a string that is not there.
-        let Some(band) = TimelineBand::layout(
-            area.x,
-            area.y + MARGIN,
-            area.width,
-            CONTROLS_HEIGHT,
-            MARGIN,
-            &MARKER_WIDTHS,
-            CLEAR_WIDTH,
-            0.0,
-        ) else {
-            return 0.0;
-        };
-        if !band.fits {
-            // Even the minimum scale overflows. The band reports that rather than
-            // hiding it, and the answer here is to draw nothing: the timeline
-            // below is worth more than three buttons at an illegible size.
-            return 0.0;
-        }
-
         let font = input.fonts.ui();
-        let scaled: Vec<f32> = MARKER_WIDTHS
-            .iter()
-            .map(|width| width * band.scale)
-            .collect();
-        let labels: Vec<&str> = MARKERS.iter().map(|(label, _)| *label).collect();
-        // One shared label size for the row, so a longer label shrinks its
-        // neighbours with it instead of rendering visibly smaller than them
-        // (`ui_row_typography.h:9-13`).
-        let font_size = widgets::row_font_size(font, &labels, &scaled, CONTROLS_HEIGHT);
-
-        let mut cursor = band.controls.x;
-        for (index, (label, kind)) in MARKERS.iter().enumerate() {
-            let boundary = UiRect::new(cursor, band.controls.y, scaled[index], CONTROLS_HEIGHT);
-            cursor += scaled[index] + MARGIN * band.scale;
-
+        let count = track.manual_events.len();
+        let caption = format!(
+            "{count} manual marker{} \u{00b7} a marker carries one value, so only Constellation reacts",
+            if count == 1 { "" } else { "s" }
+        );
+        for (index, (full, brief, kind)) in MARKERS.iter().enumerate() {
+            let boundary = markers[index];
             let id = widgets::widget_id(EVENT_ROW_NAMESPACE, index as u32);
-            let state = self.widgets.text_button(
-                d,
-                font,
-                id,
-                boundary,
-                label,
-                false,
-                ButtonStyle::Neutral,
-                Some(font_size),
-            );
-            // The category swatch (`plug.c:2860-2866`), which is what tells three
-            // otherwise identical buttons apart at a glance. The C also outlines
-            // the whole button in the category colour at 2 px; on the dark
-            // workspace (WX-5a) that made three saturated boxes the loudest
-            // thing in the chrome, louder than Render, for controls that only
-            // record a marker. The swatch alone carries the category: a short
-            // bar inside the rounded control, clear of its corners. It stays
-            // taller than it is wide, which is what
-            // `tools/timeline_event_markers.py` tells it apart from a marker
-            // head by.
-            let category = marker_color(*kind);
-            let swatch_height = (boundary.height * 0.44).round();
+            let label = if short.0 { brief } else { full };
+            let state = self.widgets.button(d, id, boundary);
+            let look = widgets::button_look(ButtonStyle::Neutral, false, state.hovered);
+            let fill = if state.pressed {
+                widgets::brightness(look.fill, -0.08)
+            } else {
+                look.fill
+            };
+            widgets::control_box(d, boundary, fill, look.edge, 1.0);
+            // The category swatch (`plug.c:2860-2866`), which is what tells
+            // three otherwise identical chips apart at a glance: a short bar
+            // inside the rounded control, taller than it is wide, which is
+            // what `tools/timeline_event_markers.py` tells it apart from a
+            // marker head by.
+            let swatch_height = (boundary.height * 0.5).round();
             widgets::fill(
                 d,
                 UiRect::new(
-                    boundary.x + (7.0 * band.scale).round(),
+                    boundary.x + 8.0,
                     boundary.y + ((boundary.height - swatch_height) * 0.5).round(),
                     3.0,
                     swatch_height,
                 ),
-                category,
+                marker_color(*kind),
             );
-
+            widgets::draw_text(
+                d,
+                font,
+                label,
+                boundary.x + 17.0,
+                boundary.y + (boundary.height - metric::UI_FONT_CAPTION) * 0.5,
+                metric::UI_FONT_CAPTION,
+                look.ink,
+            );
+            let tip = if kind.is_none() {
+                "Cue a scene switch at the playhead".to_owned()
+            } else {
+                format!("Mark the playhead \u{00b7} {caption}")
+            };
+            self.widgets.hint(d, state, id, boundary, &tip);
             if !state.clicked {
                 continue;
             }
@@ -243,70 +199,54 @@ impl Shell {
 
         // `Clear manual` / `Confirm clear` / `Undo clear` (`plug.c:2852-2855`).
         let face = track.manual_clear.button();
-        let clear = UiRect::new(
-            band.clear.x,
-            band.clear.y,
-            band.clear.width,
-            CONTROLS_HEIGHT,
-        );
+        let label = if short.1 {
+            clear_short(face)
+        } else {
+            face.label()
+        };
         let clear_id = widgets::widget_id(EVENT_ROW_NAMESPACE, 100);
         // Nothing recorded and nothing to put back means nothing to do. Drawn
         // disabled rather than hidden, so the control still names what it is for.
         let live = face != ClearButton::Clear || !track.manual_events.is_empty();
-        if live {
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    clear_id,
-                    clear,
-                    face.label(),
-                    face.is_danger(),
-                    if face.is_danger() {
-                        ButtonStyle::Danger
-                    } else {
-                        ButtonStyle::Neutral
-                    },
-                    None,
-                )
-                .clicked
-            {
-                let action = face.click();
-                if action == ManualEventAction::ArmClear {
-                    // The C pushes the warning together with the confirmation, so
-                    // the second click is never a surprise (`plug.c:2966-2969`).
-                    self.notify(
-                        Severity::Warning,
-                        "Confirm manual-event clear",
-                        "Click Confirm clear. Lyrics and imported lanes will remain.",
-                    );
-                }
-                actions.push(action);
-            }
-        } else {
+        if !live {
             self.widgets
-                .disabled_button(d, font, clear, face.label(), None);
+                .disabled_button(d, font, clear, label, Some(metric::UI_FONT_CAPTION));
+            return;
         }
-
-        // The honesty caption, and the marker count beside it. The count is what
-        // a headless capture can assert on: it distinguishes "the row drew" from
-        // "the row recorded".
-        let markers = track.manual_events.len();
-        let caption = format!(
-            "{markers} manual marker{}  -  a marker carries one value, so only Constellation reacts",
-            if markers == 1 { "" } else { "s" }
-        );
-        widgets::draw_text(
+        let state = self.widgets.text_button(
             d,
             font,
-            &caption,
-            band.controls.x,
-            band.controls.y + CONTROLS_HEIGHT + CAPTION_GAP,
-            metric::UI_FONT_CAPTION,
-            color::ui_muted(),
+            clear_id,
+            clear,
+            label,
+            face.is_danger(),
+            if face.is_danger() {
+                ButtonStyle::Danger
+            } else {
+                ButtonStyle::Neutral
+            },
+            Some(metric::UI_FONT_CAPTION),
         );
-        consumed
+        self.widgets.hint(
+            d,
+            state,
+            clear_id,
+            clear,
+            &format!("Clear the manual markers \u{00b7} {caption}"),
+        );
+        if state.clicked {
+            let action = face.click();
+            if action == ManualEventAction::ArmClear {
+                // The C pushes the warning together with the confirmation, so
+                // the second click is never a surprise (`plug.c:2966-2969`).
+                self.notify(
+                    Severity::Warning,
+                    "Confirm manual-event clear",
+                    "Click Confirm clear. Lyrics and imported lanes will remain.",
+                );
+            }
+            actions.push(action);
+        }
     }
 
     /// The shared preset block, inside the tuning inspector
@@ -629,40 +569,14 @@ mod tests {
     }
 
     #[test]
-    fn the_marker_row_names_the_three_the_oracle_records() {
+    fn the_marker_chips_name_the_three_the_oracle_records() {
         // The tail of `plug.c:2830`, and `:2856-2858`'s types. `+ Scene` carries
         // no event type because it cues the switch plan rather than the lane.
         assert_eq!(MARKERS[0].0, "+ Feel");
-        assert_eq!(MARKERS[0].1, Some(EventType::Semantic));
+        assert_eq!(MARKERS[0].2, Some(EventType::Semantic));
         assert_eq!(MARKERS[1].0, "+ Scene");
-        assert_eq!(MARKERS[1].1, None);
+        assert_eq!(MARKERS[1].2, None);
         assert_eq!(MARKERS[2].0, "+ Custom");
-        assert_eq!(MARKERS[2].1, Some(EventType::Custom));
-    }
-
-    #[test]
-    fn the_row_band_seats_its_controls_at_the_narrowest_supported_timeline() {
-        use geometry::{CLEAR_WIDTH, CONTROLS_HEIGHT, MARGIN, MARKER_WIDTHS};
-        // The 960 px minimum window with the inspector open is the case
-        // `timeline_layout.h:9-21` names, and the timeline keeps roughly 620 px
-        // of it. The row has to seat itself there or it is not drawn at all.
-        for width in [620.0f32, 700.0, 960.0, 1280.0, 1920.0] {
-            let band = TimelineBand::layout(
-                0.0,
-                0.0,
-                width,
-                CONTROLS_HEIGHT,
-                MARGIN,
-                &MARKER_WIDTHS,
-                CLEAR_WIDTH,
-                0.0,
-            )
-            .expect("a legal band");
-            assert!(band.fits, "the marker row must fit at {width} px");
-            assert!(
-                band.clear.x + band.clear.width <= width,
-                "the clear button runs past the band at {width} px"
-            );
-        }
+        assert_eq!(MARKERS[2].2, Some(EventType::Custom));
     }
 }

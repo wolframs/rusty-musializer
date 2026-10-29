@@ -207,11 +207,15 @@ pub enum Icon {
     Terminal,
     /// The diagnostic readout toggle.
     Info,
+    /// The rail's tracks flyout (WX-5c).
+    Music,
+    /// The rail's scenes flyout (WX-5c).
+    ThLarge,
 }
 
 impl Icon {
     /// Every icon, which is exactly what the atlas is built over.
-    pub const ALL: [Icon; 17] = [
+    pub const ALL: [Icon; 19] = [
         Icon::Play,
         Icon::Pause,
         Icon::Film,
@@ -229,6 +233,8 @@ impl Icon {
         Icon::Pencil,
         Icon::Terminal,
         Icon::Info,
+        Icon::Music,
+        Icon::ThLarge,
     ];
 
     /// The Font Awesome 4 codepoint.
@@ -252,6 +258,8 @@ impl Icon {
             Icon::Pencil => 0xF040,
             Icon::Terminal => 0xF120,
             Icon::Info => 0xF05A,
+            Icon::Music => 0xF001,
+            Icon::ThLarge => 0xF009,
         }
     }
 

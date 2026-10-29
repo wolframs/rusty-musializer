@@ -19,17 +19,26 @@ capture() {
         --ui-theme "$theme" "$TRACK" --ui-probe "$probe" \
         --probe-frames 12 --probe-shot "$OUT/$name.png" "$@" > "$OUT/$name.log" 2>&1
 }
-capture tooltip-dark black-amber 'panel=none,time=2,play=1,hover=1083x389'
-capture tooltip-light light-blue 'panel=none,time=2,play=1,hover=1083x389'
+# The readout button is read from the bare frame's `transport:` line (WX-5c:
+# the row was rebuilt, and the old 1083x389 had been measured once by hand).
+capture tooltip-bare black-amber 'panel=none,time=2,play=1'
+read -r RX RY RW RH <<<"$(sed -n 's/^transport:.* readout=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\1 \2 \3 \4/p' "$OUT/tooltip-bare.log")"
+HOVER="$((RX + RW / 2))x$((RY + RH / 2))"
+capture tooltip-dark black-amber "panel=none,time=2,play=1,hover=$HOVER"
+capture tooltip-light light-blue "panel=none,time=2,play=1,hover=$HOVER"
 capture editor-dark black-amber 'panel=none,time=2,play=1' --editor-ui
-python3 - "$OUT" <<'PY'
+python3 - "$OUT" "$((RX + RW / 2))" "$RY" <<'PY'
 import pathlib, sys
 from PIL import Image
 out = pathlib.Path(sys.argv[1])
-for name, fill in [('tooltip-dark', (48, 56, 42)),
+cx, top = int(sys.argv[2]), int(sys.argv[3])
+# The dark fill is WX-5a's tooltip surface; (48, 56, 42) was the
+# pre-5a palette, stale since this script left the gate.
+for name, fill in [('tooltip-dark', (38, 42, 49)),
                    ('tooltip-light', (20, 20, 20))]:
     im = Image.open(out / (name + '.png')).convert('RGB')
-    pixels = list(im.crop((1026, 343, 1140, 365)).get_flattened_data())
+    # The tip sits centred over the button and ends a few pixels above it.
+    pixels = list(im.crop((cx - 57, top - 29, cx + 57, top - 7)).get_flattened_data())
     assert pixels.count(fill) > 1500, f'{name}: tooltip surface missing'
     assert sum(min(pixel) > 180 for pixel in pixels) > 20, f'{name}: tooltip text missing'
 print('PASS: both tooltip surfaces and readable text captured')

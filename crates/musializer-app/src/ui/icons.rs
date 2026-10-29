@@ -55,16 +55,50 @@ pub const SEEK_FORWARD: Control = Control::new(
     "Forward 1 s  [\u{2192}]  \u{00b7}  Ctrl 0.1 s  \u{00b7}  Shift 10 s",
 );
 
+// Tune, Export, Lyrics and Assist left the transport for the top bar's mode
+// tabs in WX-5c, which draw words. The four controls stay as the one place
+// their glyph, fallback and shortcut are written down together, for whichever
+// surface draws them as icons next.
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const TUNE: Control = Control::new(Icon::Sliders, "Tune", "Tuning inspector [T]");
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const EXPORT: Control = Control::new(Icon::Film, "Export", "Render to video");
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const LYRICS: Control = Control::new(Icon::FileText, "Lyrics", "Lyrics editor");
 pub const EDITOR: Control =
     Control::new(Icon::Pencil, "Editor", "Tune, lyrics and appearance [F8]");
+#[allow(
+    dead_code,
+    reason = "left the transport in WX-5c; the top bar's tabs are words"
+)]
 pub const ASSIST: Control = Control::new(Icon::Magic, "Assist", "Analysis assist");
 pub const DOCK: Control = Control::new(
     Icon::Terminal,
     "Agents",
     "Terminal and agents: Claude Code, Codex, Antigravity [Ctrl+`]",
+);
+
+/// The rail's two flyouts (WX-5c §1). Neither has a key: every letter a
+/// flyout could take is already a global, and both are one press away on the
+/// rail, which is always on screen beside the preview.
+pub const RAIL_TRACKS: Control = Control::new(
+    Icon::Music,
+    "Trk",
+    "Tracks: open a project, add audio, save",
+);
+pub const RAIL_SCENES: Control = Control::new(
+    Icon::ThLarge,
+    "Scn",
+    "Scenes: pick what plays, import ASCII imagery",
 );
 
 pub const READOUT: Control = Control::new(Icon::Info, "Info", "Diagnostic readout [H]");
@@ -145,6 +179,8 @@ mod tests {
             LYRICS,
             ASSIST,
             DOCK,
+            RAIL_TRACKS,
+            RAIL_SCENES,
             READOUT,
             MUTE,
             UNMUTE,

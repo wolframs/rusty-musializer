@@ -30,6 +30,18 @@
 //!
 //! Fullscreen is never shed. It is the control that gets a cramped window *out* of
 //! being cramped, so it is the last thing a narrow row should lose.
+//!
+//! # The row since WX-5c
+//!
+//! The mockup's transport (`docs/WX5C_DESIGN.md` §2): a round play button, the
+//! timecode, the fine-seek trio, the scrub bar, and on the right the readout
+//! toggle, mute with a volume chip, and fullscreen. Tune, Export, Lyrics and
+//! Assist left the row for the top bar's tabs and Editor and Dock for the rail,
+//! so the panel-button rung of the old ladder is gone with them.
+//! [`TransportRow::layout`] chooses the middle from its own ladder of whole
+//! configurations — seek trio, then the inline timecode, then the scrub bar —
+//! each strictly narrower than the last, so it is monotone in width the way
+//! the utilities are.
 
 use super::workspace_layout::UiRect;
 
@@ -39,11 +51,19 @@ use super::workspace_layout::UiRect;
 /// carry eleven controls where the oracle's carries six.
 pub const CONTROL_SIZE: f32 = 34.0;
 
-/// The volume slider's width when it is drawn at full size.
-pub const VOLUME_SLIDER_WIDTH: f32 = 96.0;
+/// The volume chip's width: the level as a fill and a percentage, dragged
+/// like a slider (WX-5c, the mockup's `70%`).
+pub const VOLUME_CHIP_WIDTH: f32 = 64.0;
 
-/// Below this, the volume slider is dropped and mute stands alone.
-pub const VOLUME_SLIDER_MIN_WIDTH: f32 = 64.0;
+/// The round play button's diameter.
+pub const PLAY_SIZE: f32 = 38.0;
+
+/// A fine-seek button's box: smaller than a utility, because the trio is a
+/// secondary control beside the timecode rather than a chip.
+pub const SEEK_SIZE: f32 = 30.0;
+
+/// The row's left inset, before the play button.
+pub const ROW_INSET: f32 = 8.0;
 
 /// Gap between controls inside one cluster.
 pub const CLUSTER_GAP: f32 = 4.0;
@@ -92,7 +112,6 @@ pub struct SeekCluster {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Rung {
     Full,
-    NarrowSlider,
     NoSlider,
     FullscreenOnly,
 }
@@ -100,18 +119,12 @@ enum Rung {
 impl Rung {
     /// Richest first. A configuration is chosen by walking this in order and
     /// taking the first that fits.
-    const LADDER: [Rung; 4] = [
-        Rung::Full,
-        Rung::NarrowSlider,
-        Rung::NoSlider,
-        Rung::FullscreenOnly,
-    ];
+    const LADDER: [Rung; 3] = [Rung::Full, Rung::NoSlider, Rung::FullscreenOnly];
 
-    /// The slider width this rung asks for, or `None` for no slider.
+    /// The volume chip's width on this rung, or `None` for no chip.
     fn slider(self) -> Option<f32> {
         match self {
-            Rung::Full => Some(VOLUME_SLIDER_WIDTH),
-            Rung::NarrowSlider => Some(VOLUME_SLIDER_MIN_WIDTH),
+            Rung::Full => Some(VOLUME_CHIP_WIDTH),
             Rung::NoSlider | Rung::FullscreenOnly => None,
         }
     }
@@ -206,17 +219,86 @@ pub fn utilities(bar: UiRect, row_y: f32, want_volume: bool) -> Option<UtilityCl
 /// justify itself against what remains.
 #[must_use]
 pub fn seek_group(x: f32, row_y: f32, available: f32) -> Option<SeekCluster> {
-    let width = CONTROL_SIZE * 3.0 + CLUSTER_GAP * 2.0;
+    let width = SEEK_SIZE * 3.0 + CLUSTER_GAP * 2.0;
     if available < width + GROUP_GAP {
         return None;
     }
-    let step = CONTROL_SIZE + CLUSTER_GAP;
+    let step = SEEK_SIZE + CLUSTER_GAP;
     Some(SeekCluster {
-        start: UiRect::new(x, row_y, CONTROL_SIZE, CONTROL_SIZE),
-        back: UiRect::new(x + step, row_y, CONTROL_SIZE, CONTROL_SIZE),
-        forward: UiRect::new(x + step * 2.0, row_y, CONTROL_SIZE, CONTROL_SIZE),
+        start: UiRect::new(x, row_y, SEEK_SIZE, SEEK_SIZE),
+        back: UiRect::new(x + step, row_y, SEEK_SIZE, SEEK_SIZE),
+        forward: UiRect::new(x + step * 2.0, row_y, SEEK_SIZE, SEEK_SIZE),
         width: width + GROUP_GAP,
     })
+}
+
+/// The whole transport row, placed (WX-5c §2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransportRow {
+    /// How far down the middle's ladder the row went: 0 carries everything,
+    /// 1 has shed the seek trio, 2 the inline timecode (it goes to the band's
+    /// header), 3 the scrub bar.
+    pub step: usize,
+    /// The round play button's square box.
+    pub play: UiRect,
+    /// Where the timecode is drawn, when it is inline.
+    pub timecode: Option<UiRect>,
+    pub seek: Option<SeekCluster>,
+    pub scrub: Option<ScrubBar>,
+    pub utilities: Option<UtilityCluster>,
+}
+
+impl TransportRow {
+    /// The richest middle that fits beside the utilities, in `bar`.
+    ///
+    /// `timecode_width` is measured by the caller at the size it draws.
+    /// `None` only for a degenerate bar.
+    #[must_use]
+    pub fn layout(bar: UiRect, timecode_width: f32, want_volume: bool) -> Option<Self> {
+        if !bar.is_finite() || bar.is_empty() || !timecode_width.is_finite() {
+            return None;
+        }
+        let row_y = |size: f32| bar.y + ((bar.height - size) * 0.5).round();
+        let utilities = utilities(bar, row_y(CONTROL_SIZE), want_volume);
+        let right = utilities.map_or(bar.x + bar.width, |cluster| cluster.left_edge);
+        let available = right - bar.x;
+        let seek = SEEK_SIZE * 3.0 + CLUSTER_GAP * 2.0 + GROUP_GAP;
+        let lead = ROW_INSET + PLAY_SIZE + GROUP_GAP;
+        let timecode = timecode_width + GROUP_GAP;
+        let widths = [
+            lead + timecode + seek + SCRUB_BAR_MIN_WIDTH,
+            lead + timecode + SCRUB_BAR_MIN_WIDTH,
+            lead + SCRUB_BAR_MIN_WIDTH,
+            lead,
+        ];
+        let step = widths
+            .iter()
+            .position(|width| *width <= available)
+            .unwrap_or(widths.len() - 1);
+
+        let play = UiRect::new(bar.x + ROW_INSET, row_y(PLAY_SIZE), PLAY_SIZE, PLAY_SIZE);
+        let mut x = play.x + PLAY_SIZE + GROUP_GAP;
+        let mut row = TransportRow {
+            step,
+            play,
+            timecode: None,
+            seek: None,
+            scrub: None,
+            utilities,
+        };
+        if step <= 1 {
+            row.timecode = Some(UiRect::new(x, bar.y, timecode_width, bar.height));
+            x += timecode;
+        }
+        if step == 0 {
+            row.seek = seek_group(x, row_y(SEEK_SIZE), available);
+            x += seek;
+        }
+        if step <= 2 {
+            row.scrub = scrub_bar(x, right, bar);
+        }
+        Some(row)
+    }
 }
 
 /// The seek groove's height: the part of the position bar that is a control.
@@ -418,11 +500,9 @@ mod tests {
         if cluster.readout.is_some() {
             score += 1;
         }
-        score += match cluster.volume.map(|v| v.width) {
-            Some(width) if width >= VOLUME_SLIDER_WIDTH => 2,
-            Some(_) => 1,
-            None => 0,
-        };
+        if cluster.volume.is_some() {
+            score += 1;
+        }
         score
     }
 
@@ -509,13 +589,89 @@ mod tests {
     #[test]
     fn the_seek_group_is_three_boxes_or_nothing() {
         let group = seek_group(10.0, 4.0, 400.0).expect("400px seats the group");
-        assert_eq!(group.start.width, CONTROL_SIZE);
+        assert_eq!(group.start.width, SEEK_SIZE);
         assert!(!group.start.overlaps(group.back));
         assert!(!group.back.overlaps(group.forward));
         assert!(group.start.x < group.back.x && group.back.x < group.forward.x);
         // Contiguous: the three read as one control, not three strays.
-        assert!((group.back.x - (group.start.x + CONTROL_SIZE + CLUSTER_GAP)).abs() < 0.01);
+        assert!((group.back.x - (group.start.x + SEEK_SIZE + CLUSTER_GAP)).abs() < 0.01);
         assert_eq!(seek_group(10.0, 4.0, 40.0), None);
+    }
+
+    /// The row at the toolbar widths the gate photographs, pinned: 1228 (the
+    /// 1280 window's preview), 908 (960) and 628 (960 with the inspector).
+    /// The timecode is 168 px at the value size plus two.
+    #[test]
+    fn the_transport_row_at_the_photographed_widths() {
+        let bar = UiRect::new(52.0, 410.0, 1228.0, 50.0);
+        let row = TransportRow::layout(bar, 168.0, true).unwrap();
+        assert_eq!(row.step, 0);
+        assert_eq!(row.play, UiRect::new(60.0, 416.0, 38.0, 38.0));
+        assert_eq!(row.timecode, Some(UiRect::new(114.0, 410.0, 168.0, 50.0)));
+        let seek = row.seek.unwrap();
+        assert_eq!(seek.start, UiRect::new(298.0, 420.0, 30.0, 30.0));
+        assert_eq!(seek.forward, UiRect::new(366.0, 420.0, 30.0, 30.0));
+        let utilities = row.utilities.unwrap();
+        assert_eq!(utilities.fullscreen, UiRect::new(1242.0, 418.0, 34.0, 34.0));
+        assert_eq!(
+            utilities.volume,
+            Some(UiRect::new(1174.0, 418.0, 64.0, 34.0))
+        );
+        assert_eq!(utilities.mute, Some(UiRect::new(1136.0, 418.0, 34.0, 34.0)));
+        assert_eq!(
+            utilities.readout,
+            Some(UiRect::new(1098.0, 418.0, 34.0, 34.0))
+        );
+        // The scrub bar spans from after the trio to the utilities' edge.
+        let scrub = row.scrub.unwrap();
+        assert_eq!(scrub.hit, UiRect::new(412.0, 428.0, 670.0, 14.0));
+
+        let narrow =
+            TransportRow::layout(UiRect::new(52.0, 330.0, 908.0, 50.0), 168.0, true).unwrap();
+        assert_eq!(narrow.step, 0);
+        let inspector =
+            TransportRow::layout(UiRect::new(52.0, 330.0, 628.0, 50.0), 168.0, true).unwrap();
+        assert_eq!(inspector.step, 0, "the trio still fits at 628");
+        assert_eq!(inspector.scrub.unwrap().hit.width, 70.0);
+        let cramped =
+            TransportRow::layout(UiRect::new(0.0, 0.0, 520.0, 50.0), 168.0, true).unwrap();
+        assert_eq!(cramped.step, 1);
+        assert!(cramped.seek.is_none() && cramped.timecode.is_some());
+    }
+
+    #[test]
+    fn the_transport_middle_sheds_monotonically_and_never_overlaps() {
+        let mut previous = 0usize;
+        for width in (120..=1920).rev() {
+            let bar = UiRect::new(0.0, 0.0, width as f32, 50.0);
+            let row = TransportRow::layout(bar, 168.0, true).unwrap();
+            assert!(
+                row.step >= previous,
+                "{width}: step {} after {previous}",
+                row.step
+            );
+            previous = row.step;
+            let mut placed = vec![row.play];
+            placed.extend(row.timecode);
+            if let Some(seek) = row.seek {
+                placed.extend([seek.start, seek.back, seek.forward]);
+            }
+            placed.extend(row.scrub.map(|scrub| scrub.hit));
+            if let Some(cluster) = row.utilities {
+                placed.extend(
+                    [cluster.readout, cluster.mute, cluster.volume]
+                        .into_iter()
+                        .flatten(),
+                );
+                placed.push(cluster.fullscreen);
+            }
+            for (index, rect) in placed.iter().enumerate() {
+                for other in &placed[index + 1..] {
+                    assert!(!rect.overlaps(*other), "{width}: two controls overlap");
+                }
+            }
+        }
+        assert_eq!(previous, 3);
     }
 
     #[test]

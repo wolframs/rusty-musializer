@@ -262,20 +262,20 @@ const ASSUMED_STRIP_HEIGHT: f32 = 56.0;
 /// hands to the whole strip — is spent before this panel's own `boundary` ever
 /// begins: the TIMELINE panel header (`widgets::panel` consumes it before
 /// returning the content rect — a real 27 px this constant once missed, caught
-/// only by measuring a capture), two lots of panel padding (one before the
-/// manual event row, one at the bottom of this panel's own boundary
-/// calculation), the manual event row, the scene-plan lane, the timeline strip
-/// itself, and this panel's own gap under the strip. Traced in
+/// only by measuring a capture), two lots of panel padding (one above the
+/// scene section, one at the bottom of this panel's own boundary
+/// calculation), the scene section (lane head and plan lane), the timeline
+/// strip itself, and this panel's own gap under the strip. Traced in
 /// `shell.rs::timeline_strip` and [`Shell::export_panel`]'s `boundary`
 /// construction.
 ///
-/// [`EVENT_ROW_HEIGHT`](super::events::EVENT_ROW_HEIGHT) and
-/// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) are
-/// imported rather than duplicated, so a change to either row's budget cannot
-/// silently reopen this gap the way the `260.0` floor did.
+/// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) is
+/// imported rather than duplicated, so a change to the section's budget cannot
+/// silently reopen this gap the way the `260.0` floor did. The manual event
+/// row it once also counted left the band in WX-5c (its markers are lane-head
+/// chips), and with it the 66 px this budget added and the shell took off.
 const BAND_TO_BOUNDARY_OFFSET: f32 = widgets::PANEL_HEADER_HEIGHT
     + metric::UI_PANEL_PADDING * 2.0
-    + super::events::EVENT_ROW_HEIGHT
     + super::scene_timeline::SCENE_SECTION_HEIGHT
     + ASSUMED_STRIP_HEIGHT
     + STRIP_GAP;
@@ -693,9 +693,10 @@ impl Shell {
                         render,
                         render_label,
                         false,
-                        // The primary action, and the one control that wears the
-                        // accent as a fill (WX-5a).
-                        ButtonStyle::Primary,
+                        // Neutral since WX-5c: the top bar's Render… is the same
+                        // action and the one accent fill on every workspace
+                        // frame, so this panel does not add a second.
+                        ButtonStyle::Neutral,
                         Some(footer_font),
                     )
                     .clicked
@@ -1870,6 +1871,230 @@ pub(crate) fn export_contact_sheet(
         config,
         achieved_factor,
     })
+}
+
+/// The moments a sheet shows, for `--contact-sheet` and the top bar's Contact
+/// sheet alike: the track's plan sections and displayable lyric lines handed
+/// to [`SheetStops::resolve`], inside `window` when there is one.
+///
+/// One function for both callers, so a sheet pressed in the window and one
+/// asked for on the command line cannot come to pick different moments.
+///
+/// # Errors
+///
+/// [`SheetStops::resolve`]'s, in the caller's words: no plan for `segments`,
+/// no line for `lyrics`, a window off the track, too many tiles.
+///
+/// [`SheetStops::resolve`]: musializer_core::render::contact_sheet::SheetStops::resolve
+pub(crate) fn sheet_times(
+    track: &crate::workspace::Track,
+    stops: &musializer_core::render::contact_sheet::SheetStops,
+    window: Option<(f64, f64)>,
+) -> Result<Vec<f64>, String> {
+    let segments: Vec<(f64, f64)> = if track.scene_switches.enabled {
+        track
+            .scene_switches
+            .cues()
+            .iter()
+            .map(|cue| (cue.start_seconds, cue.end_seconds))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Displayable lines only: a `Potential` cue never reaches a frame, so a
+    // tile at its midpoint would be labelled with a line that is not there.
+    let lyrics: Vec<(f64, f64)> = track
+        .lyrics
+        .cues()
+        .iter()
+        .filter(|cue| cue.origin.is_displayable())
+        .map(|cue| (cue.start_seconds, cue.end_seconds))
+        .collect();
+    stops.resolve(track.duration_seconds, window, &segments, &lyrics)
+}
+
+/// The `contact sheet:` report line, printed by both callers so one assertion
+/// reads either.
+pub(crate) fn print_sheet_line(done: &BatchFrames, times: &[f64], destination: &Path) {
+    println!(
+        "contact sheet:   {} tiles from {} to {} at {}x{} ({}x target), {}",
+        done.frames,
+        musializer_core::treatment::format_time(times[0]),
+        musializer_core::treatment::format_time(times[times.len() - 1]),
+        done.config.width,
+        done.config.height,
+        done.achieved_factor,
+        destination.display()
+    );
+}
+
+/// What the top bar's Contact sheet shows (WX-5c §4): one tile per plan
+/// section, the way `--sheet-at segments` does, when the track has a plan to
+/// show; otherwise [`DEFAULT_TILES`] even moments, because a track with one
+/// scene has no sections and a refusal would make the button useless exactly
+/// where a first look is wanted.
+///
+/// [`DEFAULT_TILES`]: musializer_core::render::contact_sheet::DEFAULT_TILES
+pub(crate) fn panel_sheet_stops(
+    track: &crate::workspace::Track,
+) -> musializer_core::render::contact_sheet::SheetStops {
+    use musializer_core::render::contact_sheet::SheetStops;
+    if track.scene_switches.enabled && !track.scene_switches.is_empty() {
+        SheetStops::Segments
+    } else {
+        SheetStops::default()
+    }
+}
+
+/// The top bar's Contact sheet (WX-5c §4): a destination, then the same
+/// replay and the same sheet `--contact-sheet` writes, over the export
+/// panel's clip when one is set.
+///
+/// Synchronous, from the command loop and outside the drawing pair, for the
+/// reasons [`export_still`] is. Every outcome lands in the tray by name; a
+/// cancelled picker is silent. Returns the written path.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one export frame needs; see `ExportSession::begin`"
+)]
+pub(crate) fn export_contact_sheet_from_window(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
+    let Some(track) = app.workspace.current() else {
+        app.shell.notify(
+            Severity::Error,
+            "No contact sheet was written",
+            "There is no track to render a sheet from.",
+        );
+        return None;
+    };
+    let window = app
+        .shell
+        .export_clip
+        .window(track.duration_seconds, track.render_config.fps);
+    let stops = panel_sheet_stops(track);
+    // Resolved before the picker, so a sheet that cannot be made says why
+    // without asking for a file first.
+    let times = match sheet_times(track, &stops, window) {
+        Ok(times) => times,
+        Err(reason) => {
+            // The refusals print the success line's key, so a capture can tell
+            // "refused, and said why" from "never pressed".
+            println!("contact sheet:   refused: {reason}");
+            app.shell.notify(
+                Severity::Error,
+                "No contact sheet was written",
+                &format!("{reason}."),
+            );
+            return None;
+        }
+    };
+    let destination = ask_for_sheet_destination(app, probe_destination)?;
+    // Refused before the replay, not after it: a sheet costs a pass over the
+    // whole track, and a directory that does not exist would only be noticed
+    // when raylib declined to write the finished image.
+    if !destination
+        .parent()
+        .is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir())
+    {
+        println!(
+            "contact sheet:   refused: {} is not in a folder that exists",
+            destination.display()
+        );
+        app.shell.notify(
+            Severity::Error,
+            "No contact sheet was written",
+            &format!(
+                "{} is not in a folder that exists. Nothing was rendered.",
+                destination.display()
+            ),
+        );
+        return None;
+    }
+    match export_contact_sheet(
+        rl,
+        thread,
+        audio,
+        music,
+        app,
+        analysis,
+        renderer,
+        fonts,
+        &times,
+        &destination,
+    ) {
+        Ok(done) => {
+            print_sheet_line(&done, &times, &destination);
+            app.shell.notify(
+                Severity::Success,
+                "Contact sheet saved",
+                &format!(
+                    "{} tiles from {} to {}, rendered through the export path: {}",
+                    done.frames,
+                    musializer_core::treatment::format_time(times[0]),
+                    musializer_core::treatment::format_time(times[times.len() - 1]),
+                    destination.display()
+                ),
+            );
+            Some(destination)
+        }
+        Err(detail) => {
+            println!("contact sheet:   refused: {detail}");
+            app.shell.notify(
+                Severity::Error,
+                "The contact sheet could not be written",
+                &format!("{detail}. Nothing else was changed."),
+            );
+            None
+        }
+    }
+}
+
+/// Where a contact sheet goes: beside the project when there is one, else
+/// beside the audio, named after it.
+fn ask_for_sheet_destination(
+    app: &mut crate::App,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
+    use musializer_runtime::process::dialogs::{FileDialog, FileFilter};
+
+    if let Some(path) = probe_destination {
+        return Some(path.to_path_buf());
+    }
+    let track = app.workspace.current()?;
+    let anchor = track.project_path.as_deref().unwrap_or(&track.file_path);
+    let stem = anchor
+        .file_stem()
+        .map_or_else(|| "musializer".into(), |stem| stem.to_string_lossy());
+    let suggested = anchor
+        .with_file_name(format!("{stem}-contact-sheet.png"))
+        .to_string_lossy()
+        .into_owned();
+    let dialog = FileDialog::new("Save contact sheet")
+        .with_filter(FileFilter {
+            label: "PNG image",
+            patterns: &["*.png"],
+        })
+        .with_default_path(&suggested);
+    match dialog.save_file() {
+        Ok(path) => path,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Warning,
+                "No file picker is available",
+                &format!("{error}. Pass --contact-sheet on the command line instead."),
+            );
+            None
+        }
+    }
 }
 
 /// Where a still goes, following the video's own convention (UX0-C10).
@@ -3114,17 +3339,16 @@ mod tests {
 
     /// The band-height counterpart of the test above: replays the exact chain
     /// `shell.rs::timeline_strip` and `Shell::export_panel` use to turn a band
-    /// height into `boundary.height` — panel padding, the manual event row,
-    /// the scene-plan lane, the timeline strip, and this panel's own gap
-    /// underneath it — and asserts that handing it [`EXPORT_MIN_BAND_HEIGHT`]
-    /// produces *exactly* [`EXPORT_CONTENT_MIN_HEIGHT`] of boundary, not
-    /// merely "enough". `EVENT_ROW_HEIGHT` and `SCENE_SECTION_HEIGHT` are the
-    /// real constants those modules export, not copies, so a change to either
-    /// row's budget moves this test rather than being missed by it.
+    /// height into `boundary.height` — panel padding, the scene section, the
+    /// timeline strip, and this panel's own gap underneath it — and asserts
+    /// that handing it [`EXPORT_MIN_BAND_HEIGHT`] produces *exactly*
+    /// [`EXPORT_CONTENT_MIN_HEIGHT`] of boundary, not merely "enough".
+    /// `SCENE_SECTION_HEIGHT` is the real constant that module exports, not a
+    /// copy, so a change to the section's budget moves this test rather than
+    /// being missed by it.
     #[test]
     fn export_min_band_height_reproduces_the_panels_own_boundary_formula() {
         let padding = metric::UI_PANEL_PADDING;
-        let row = super::super::events::EVENT_ROW_HEIGHT;
         let scene_row = super::super::scene_timeline::SCENE_SECTION_HEIGHT;
 
         // The band, exactly as `Shell::timeline_strip` receives it — and then
@@ -3141,9 +3365,9 @@ mod tests {
         );
 
         // `shell.rs::timeline_strip`'s construction of `strip`.
-        let strip_y = content.y + padding + row + scene_row;
+        let strip_y = content.y + padding + scene_row;
         let strip_height =
-            ASSUMED_STRIP_HEIGHT.min((content.height - padding * 2.0 - row - scene_row).max(0.0));
+            ASSUMED_STRIP_HEIGHT.min((content.height - padding * 2.0 - scene_row).max(0.0));
 
         // `Shell::export_panel`'s construction of `boundary`.
         let top = strip_y + strip_height + STRIP_GAP;

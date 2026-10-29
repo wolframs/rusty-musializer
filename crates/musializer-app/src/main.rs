@@ -442,6 +442,9 @@ fn run(
     if let Some(probe) = options.ui_probe.as_ref() {
         posters.configure(probe.posters, probe.poster_dump.clone());
         app.shell.probe_run_open = probe.run_open;
+        if let Some(flyout) = probe.flyout {
+            app.shell.open_flyout = flyout;
+        }
     }
     editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
     ui::theme::set_current(editor.theme);
@@ -784,6 +787,9 @@ fn run(
     // layout that is about to move would land somewhere nobody aimed.
     let mut click_at: Option<(f32, f32)> = None;
     let mut click_phase: u32 = 0;
+    // `--ui-probe key=escape`: frames left before the one Escape, on the
+    // frame `click=` would press, after the same settling frames.
+    let mut escape_in: Option<u32> = None;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -992,6 +998,9 @@ fn run(
             if let Some(point) = probe.click {
                 hover_at = Some(point);
                 click_at = Some(point);
+            }
+            if probe.key_escape {
+                escape_in = Some(3);
             }
             // `save-to=` stands in for the destination picker, and only for it
             // (UX0-C01, UX0-C10). Without it the two controls this panel exists
@@ -1388,6 +1397,14 @@ fn run(
                 _ => None,
             });
             click_phase = click_phase.saturating_add(1);
+        }
+        match escape_in {
+            Some(0) => {
+                app.shell.probe_escape = true;
+                escape_in = None;
+            }
+            Some(frames) => escape_in = Some(frames - 1),
+            None => {}
         }
         // `--ui-probe middle-drag=FROMxTO`: press, two moved frames, release —
         // after the same three settling frames `click=` waits for, and for the
@@ -1869,9 +1886,6 @@ fn run(
                 }
             }
 
-            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
-            commands = app.shell.draw(&mut ui_draw, &layout, &shell_input);
-
             // A one-line readout, so a headless capture carries its own evidence
             // rather than needing a separate log to be trusted.
             //
@@ -1884,63 +1898,29 @@ fn run(
             // twenty capture sites each remember a flag would be how one of them
             // silently stops carrying it.
             //
-            // Two things about it are corrections a capture forced, and no test
-            // would have: it used to be drawn at the window origin, where the
-            // tracks panel covered its left half, and it used to run past the
-            // preview's right edge into the tuning inspector. It now starts inside
-            // the preview and is clipped to it, and it drops to a short form when
-            // the long form will not fit — a readout that overwrites a panel is
-            // worse than a shorter readout.
-            let readout = if layout.preview.width >= 700.0 {
-                format!(
-                    "frame {}  scene={}  t={time_seconds:.2}s  bands={}  peak band={} ({band_centre_hz:.0} Hz)  rms={:.3}  audio frames={}",
-                    report.frames,
-                    app.scene.id().stable_name(),
-                    spectrum.band_count(),
-                    report.peak_band_last,
-                    frame.audio.rms,
-                    report.consumed_frames,
-                )
-            } else {
-                format!(
-                    "{}  t={time_seconds:.2}s  peak {} ({band_centre_hz:.0} Hz)",
-                    app.scene.id().stable_name(),
-                    report.peak_band_last,
-                )
-            };
-            // Drawn with the interface face like everything else, rather than
-            // raylib's default: this line is the evidence a capture is read for,
-            // and it was the last thing on screen still rendering in the bitmap
-            // face.
-            if !app.shell.hud_visible {
-                // Nothing drawn. The `readout` above is still built, because the
-                // report at the end of the run prints from the same figures and a
-                // probe that produced no numbers would be indistinguishable from
-                // one that produced wrong ones.
-            } else if layout.preview.is_empty() {
-                ui::widgets::draw_text(
-                    &mut ui_draw,
-                    fonts.ui(),
-                    &readout,
-                    12.0,
-                    12.0,
-                    18.0,
-                    Color::RAYWHITE,
-                );
-            } else {
-                let preview = ui::widgets::rectangle(layout.preview);
-                let mut scissor =
-                    ui::widgets::begin_scissor(&mut ui_draw, layout.preview, ui_scale);
-                ui::widgets::draw_text(
-                    &mut scissor,
-                    fonts.ui(),
-                    &readout,
-                    preview.x + 12.0,
-                    preview.y + 12.0,
-                    18.0,
-                    Color::RAYWHITE,
-                );
-            }
+            // Both forms are built here and the shell draws one
+            // (`Shell::hud_readout_line`): inside the preview, right of an open
+            // flyout, clipped to what is left, and the short form when the long
+            // one will not fit — a readout that overwrites a panel is worse than
+            // a shorter readout. Built even when hidden, because the report at
+            // the end of the run prints from the same figures.
+            let long = format!(
+                "frame {}  scene={}  t={time_seconds:.2}s  bands={}  peak band={} ({band_centre_hz:.0} Hz)  rms={:.3}  audio frames={}",
+                report.frames,
+                app.scene.id().stable_name(),
+                spectrum.band_count(),
+                report.peak_band_last,
+                frame.audio.rms,
+                report.consumed_frames,
+            );
+            let short = format!(
+                "{}  t={time_seconds:.2}s  peak {} ({band_centre_hz:.0} Hz)",
+                app.scene.id().stable_name(),
+                report.peak_band_last,
+            );
+            app.shell.hud_readout = Some((long, short));
+            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+            commands = app.shell.draw(&mut ui_draw, &layout, &shell_input);
             drop(ui_draw);
             if egui_active {
                 if let Err(error) = editor_backend.draw(&mut d, &thread) {
@@ -2421,6 +2401,24 @@ fn run(
                         probe_save_to.as_deref(),
                     );
                 }
+                ShellCommand::ExportContactSheet => {
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.mark_significant();
+                    }
+                    // The top bar's Contact sheet (WX-5c §4): the CLI's own
+                    // sheet, synchronous here for the reasons ExportStill is.
+                    ui::panels::export::export_contact_sheet_from_window(
+                        &mut rl,
+                        &thread,
+                        &audio,
+                        music.as_ref(),
+                        &mut app,
+                        &mut analysis,
+                        &mut renderer,
+                        &fonts,
+                        probe_save_to.as_deref(),
+                    );
+                }
                 ShellCommand::ManualEvent(action) => {
                     // The playhead this frame, not the timeline widget's view: a cue is
                     // recorded where the transport is (`plug.c:1979-2030`).
@@ -2776,6 +2774,10 @@ fn run(
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
     report.scene_runs = app.shell.describe_runs(&app.workspace);
+    report.top_bar = app.shell.describe_top_bar();
+    report.rail = app.shell.describe_rail();
+    report.lane_head = app.shell.scene_lane.describe_head().to_owned();
+    report.transport = app.shell.describe_transport().to_owned();
     report.posters = posters.describe();
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
@@ -4013,21 +4015,30 @@ fn apply_treatment<'audio>(
         track.caption_licence_path = None;
     }
     track.render_config = render_config;
-    if let Some(title) = &treatment.title {
-        match track.project_metadata.as_mut() {
-            Some(metadata) => metadata.title.clone_from(title),
-            // The id `build_project` would have derived, so a titled treatment
-            // and an untitled one save under the same project identity.
-            None => {
-                track.project_metadata = Some(Metadata {
-                    project_id: format!(
-                        "track-{}",
-                        &track.audio_sha256[..track.audio_sha256.len().min(16)]
-                    ),
-                    title: title.clone(),
-                    ..Metadata::default()
-                });
-            }
+    if treatment.title.is_some() || treatment.artist.is_some() {
+        // The id and title `build_project` would have derived, so a treatment
+        // that names only an artist saves under the same identity and title an
+        // untouched project would have.
+        let metadata = track.project_metadata.get_or_insert_with(|| Metadata {
+            project_id: format!(
+                "track-{}",
+                &track.audio_sha256[..track.audio_sha256.len().min(16)]
+            ),
+            title: track
+                .file_path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .filter(|stem| !stem.is_empty())
+                .unwrap_or_else(|| "Untitled visualization".to_owned()),
+            ..Metadata::default()
+        });
+        if let Some(title) = &treatment.title {
+            metadata.title.clone_from(title);
+        }
+        // An absent `artist` leaves the project's own, as an absent title does
+        // (WX-5c). The `.musi` becomes v2 on its next save.
+        if let Some(artist) = &treatment.artist {
+            metadata.artist.clone_from(artist);
         }
     }
     let seed = track.scene_seed;
@@ -4121,32 +4132,8 @@ fn render_batch_frames(
             .workspace
             .current()
             .ok_or("there is no track to render a sheet from")?;
-        let segments: Vec<(f64, f64)> = if track.scene_switches.enabled {
-            track
-                .scene_switches
-                .cues()
-                .iter()
-                .map(|cue| (cue.start_seconds, cue.end_seconds))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // Displayable lines only: a `Potential` cue never reaches a frame, so a
-        // tile at its midpoint would be labelled with a line that is not there.
-        let lyrics: Vec<(f64, f64)> = track
-            .lyrics
-            .cues()
-            .iter()
-            .filter(|cue| cue.origin.is_displayable())
-            .map(|cue| (cue.start_seconds, cue.end_seconds))
-            .collect();
         let stops = options.sheet_at.clone().unwrap_or_default();
-        let times = stops.resolve(
-            track.duration_seconds,
-            options.render_window,
-            &segments,
-            &lyrics,
-        )?;
+        let times = ui::panels::export::sheet_times(track, &stops, options.render_window)?;
         let done = ui::panels::export::export_contact_sheet(
             rl,
             thread,
@@ -4159,16 +4146,7 @@ fn render_batch_frames(
             &times,
             destination,
         )?;
-        println!(
-            "contact sheet:   {} tiles from {} to {} at {}x{} ({}x target), {}",
-            done.frames,
-            musializer_core::treatment::format_time(times[0]),
-            musializer_core::treatment::format_time(times[times.len() - 1]),
-            done.config.width,
-            done.config.height,
-            done.achieved_factor,
-            destination.display()
-        );
+        ui::panels::export::print_sheet_line(&done, &times, destination);
     }
     Ok(())
 }
@@ -5773,6 +5751,11 @@ struct Report {
     /// `scene runs:` and `posters:` (WX-5b), taken at shutdown like `dock:`.
     scene_runs: String,
     posters: String,
+    /// `top bar:` and `rail:` (WX-5c), what the last frame drew.
+    top_bar: String,
+    rail: String,
+    lane_head: String,
+    transport: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -5848,6 +5831,10 @@ impl Default for Report {
             dock: String::new(),
             scene_runs: String::new(),
             posters: String::new(),
+            top_bar: String::new(),
+            rail: String::new(),
+            lane_head: String::new(),
+            transport: String::new(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -6440,6 +6427,11 @@ impl Report {
         // (WX-5b). Two lines because two owners fill them in.
         println!("scene runs:      {}", self.scene_runs);
         println!("posters:         {}", self.posters);
+        // WX-5c: the top bar and the rail, from the last frame drawn.
+        println!("top bar:         {}", self.top_bar);
+        println!("rail:            {}", self.rail);
+        println!("lane head:       {}", self.lane_head);
+        println!("transport:       {}", self.transport);
         println!(
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")

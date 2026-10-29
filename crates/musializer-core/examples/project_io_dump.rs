@@ -268,11 +268,17 @@ fn dump_frame_lanes(project: &Project) {
 }
 
 fn dump_project(project: &Project) {
-    dump_uint("schema_version", u64::from(project.schema_version));
+    dump_uint("schema_version", u64::from(project.schema_version()));
 
     let metadata = &project.metadata;
     dump_string("metadata.project_id", &metadata.project_id);
     dump_string("metadata.title", &metadata.title);
+    // v2 only (WX-5c), and printed only when there is one, because the C's
+    // dump has no such line and a project without an artist is a v1 project
+    // the two dumps must agree on line for line.
+    if !metadata.artist.is_empty() {
+        dump_string("metadata.artist", &metadata.artist);
+    }
     dump_string("metadata.author", &metadata.author);
     dump_string("metadata.created_utc", &metadata.created_utc);
     dump_string("metadata.modified_utc", &metadata.modified_utc);
@@ -553,6 +559,7 @@ fn build_fixture() -> Project {
     let metadata = Metadata {
         project_id: "round-trip.fixture:01".to_owned(),
         title: "Nächtliche Röhren — 夜の曲 ✦ \"quoted\" \\ back\ttab\nnewline".to_owned(),
+        artist: String::new(),
         author: "Ægir Þórsson & 佐藤".to_owned(),
         created_utc: "2026-07-29T12:34:56.789Z".to_owned(),
         modified_utc: "2026-07-29T13:00:00Z".to_owned(),
@@ -974,7 +981,6 @@ fn build_fixture() -> Project {
         scene_presets,
         semantic_events,
         manual_events,
-        ..Project::default()
     };
 
     if let Err(validation) = project.validate() {
@@ -1030,6 +1036,7 @@ fn main() -> ExitCode {
     let usage = || {
         eprintln!(
             "usage: project_io_dump build <out.musi>\n\
+             \x20      project_io_dump build-artist <out.musi>\n\
              \x20      project_io_dump read <in.musi>\n\
              \x20      project_io_dump rewrite <in.musi> <out.musi>"
         );
@@ -1041,6 +1048,14 @@ fn main() -> ExitCode {
     match arguments[1].as_str() {
         "build" => {
             let fixture = build_fixture();
+            serialize_to(&fixture, &arguments[2]);
+            dump_project(&fixture);
+        }
+        // The same fixture naming an artist (WX-5c), which makes it a v2
+        // file: the one direction the frozen C must refuse, by its version.
+        "build-artist" => {
+            let mut fixture = build_fixture();
+            fixture.metadata.artist = "Chaos Cat Familiar — 混沌猫 \"Ø\"".to_owned();
             serialize_to(&fixture, &arguments[2]);
             dump_project(&fixture);
         }

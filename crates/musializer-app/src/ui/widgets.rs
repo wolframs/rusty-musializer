@@ -55,6 +55,12 @@ pub enum ButtonStyle {
     /// The primary action — Render — and nothing else: the one control that
     /// wears the accent as a fill, selected or not (WX-5a).
     Primary,
+    /// A control that only draws a box when it is hovered or selected: the
+    /// rail's icons and the transport's chips (WX-5c). Idle, it is its glyph in
+    /// muted ink on whatever surface it sits on, so a column of four does not
+    /// read as four buttons stacked on a panel. Selected is the same outline
+    /// and tint every other selected control wears.
+    Ghost,
     // No caller yet. It is the style for a destructive action, and the two the
     // oracle has — `Clear manual` and Cancel export — are Agents L and H's. Kept
     // rather than deleted because it is half of the C's widget vocabulary and
@@ -115,6 +121,21 @@ pub fn button_look(style: ButtonStyle, selected: bool, hovered: bool) -> ButtonL
             },
             edge: alpha(color::ui_danger(), 0.72),
             ink: color::ui_ink(),
+        },
+        ButtonStyle::Ghost if selected => ButtonLook {
+            fill: color::ui_selected(),
+            edge: color::ui_selected_edge(),
+            ink: color::ui_ink(),
+        },
+        ButtonStyle::Ghost if hovered => ButtonLook {
+            fill: color::ui_hover(),
+            edge: alpha(color::ui_hover(), 0.0),
+            ink: color::ui_ink(),
+        },
+        ButtonStyle::Ghost => ButtonLook {
+            fill: alpha(color::ui_hover(), 0.0),
+            edge: alpha(color::ui_hover(), 0.0),
+            ink: color::ui_muted(),
         },
         ButtonStyle::Neutral if selected => ButtonLook {
             fill: color::ui_selected(),
@@ -287,6 +308,14 @@ impl Widgets {
         self.pending_tooltip = None;
         self.input_clip = None;
         self.ui_scale = ui_scale;
+    }
+
+    /// Swaps the scale the pointer is read through, returning the one it
+    /// replaces (WX-5c). The shell installs an occluded scale while it draws
+    /// what an open flyout covers, and puts the plain one back for the flyout
+    /// itself; see [`UiScale::occluded`].
+    pub fn set_ui_scale(&mut self, ui_scale: UiScale) -> UiScale {
+        std::mem::replace(&mut self.ui_scale, ui_scale)
     }
 
     /// Restrict new presses and hover to the visible viewport. Restore the
@@ -646,30 +675,6 @@ impl Widgets {
         );
     }
 
-    /// Disabled counterpart to [`Self::icon_button`].
-    pub fn disabled_icon_button(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        font: &Face,
-        boundary: UiRect,
-        glyph: &str,
-        font_size: f32,
-    ) {
-        if boundary.is_empty() {
-            return;
-        }
-        control_box(d, boundary, color::ui_surface(), color::ui_rule(), 1.0);
-        draw_button_label(
-            d,
-            LabelFont::Exact(font),
-            boundary,
-            glyph,
-            Some(font_size),
-            0.0,
-            color::ui_disabled(),
-        );
-    }
-
     /// A horizontal slider returning the value the pointer asks for, or `None`
     /// when it is not being dragged this frame.
     ///
@@ -731,6 +736,82 @@ impl Widgets {
             ));
         }
         None
+    }
+}
+
+impl Widgets {
+    /// The transport's volume chip (WX-5c, the mockup's `70%`): the level
+    /// as a fill from the left, the percentage on top, and a drag across it
+    /// that sets the level like a slider. Returns the level the pointer asks
+    /// for while it is dragged, as [`Self::slider`] does, so an untouched
+    /// chip cannot write a value.
+    ///
+    /// The fill is the level tone, never the accent: a level is an amount,
+    /// not *now*. While muted the percentage still shows the stored level,
+    /// in the disabled ink, because mute is a toggle the user expects to undo.
+    #[allow(clippy::too_many_arguments)]
+    pub fn volume_chip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        id: u64,
+        boundary: UiRect,
+        level: f32,
+        muted: bool,
+    ) -> (ButtonState, Option<f32>) {
+        if boundary.is_empty() {
+            return (ButtonState::default(), None);
+        }
+        let pointer = self.pointer(d);
+        let state = self.button_at(id, boundary, pointer);
+        let look = button_look(ButtonStyle::Neutral, false, state.hovered || state.pressed);
+        control_box(d, boundary, look.fill, look.edge, 1.0);
+        let level = level.clamp(0.0, 1.0);
+        let inset = 3.0;
+        let fill = UiRect::new(
+            boundary.x + inset,
+            boundary.y + boundary.height - inset - 3.0,
+            (boundary.width - inset * 2.0) * level,
+            3.0,
+        );
+        d.draw_rectangle_rec(
+            rectangle(fill),
+            if muted {
+                color::ui_disabled()
+            } else {
+                color::ui_level()
+            },
+        );
+        let text = format!("{:.0} %", level * 100.0);
+        text_label(
+            d,
+            font,
+            UiRect::new(
+                boundary.x,
+                boundary.y - 1.0,
+                boundary.width,
+                boundary.height,
+            ),
+            &text,
+            metric::UI_FONT_CAPTION,
+            if muted {
+                color::ui_disabled()
+            } else {
+                look.ink
+            },
+        );
+        if self.active_button_id == id && pointer.down {
+            self.interacted = true;
+            return (
+                state,
+                Some(slider_value(
+                    pointer.x,
+                    boundary.x + inset,
+                    boundary.x + boundary.width - inset,
+                )),
+            );
+        }
+        (state, None)
     }
 }
 
@@ -875,6 +956,13 @@ pub fn row_font_size(font: &UiFonts, labels: &[&str], widths: &[f32], box_height
 #[must_use]
 pub fn measure(font: &UiFonts, text: &str, font_size: f32) -> f32 {
     font.measure_text(text, font_size, 0.0).x
+}
+
+/// Width of `text` as [`draw_text_tracked`] draws it with `spacing`: the same
+/// rounding, then the font's own snap of the spacing onto physical pixels.
+#[must_use]
+pub fn measure_tracked(font: &UiFonts, text: &str, font_size: f32, spacing: f32) -> f32 {
+    font.measure_text(text, font_size, spacing.round()).x
 }
 
 /// Width of proportional UI text with decimal digits laid out in equal cells.
@@ -1243,9 +1331,12 @@ fn fade_alpha(glyph_center: f32, right_edge: f32, fade_width: f32, base_alpha: f
 ///
 /// Only the welcome screen's masthead and format strip use it (`plug.c:7773`,
 /// `:7828`), where the extra space is what makes a short all-caps line read as a
-/// masthead rather than a label. Deliberately separate from [`draw_text`]: nothing
-/// tracked is measured for fitting, so the linearity [`measure`] depends on is
-/// never at risk.
+/// masthead rather than a label. Deliberately separate from [`draw_text`], so
+/// the linearity [`measure`] depends on is never at risk. Tracked text that has
+/// to fit (the lane head's label, the band's gesture hint) is measured with
+/// [`measure_tracked`], never as `measure + one pixel a character`: the font
+/// snaps the spacing to whole physical pixels, which at 150 % is 1.33 logical
+/// a character, and the shortfall clipped the hint and ran the label into Auto.
 #[allow(
     clippy::too_many_arguments,
     reason = "draw_text plus one spacing argument; a struct here would hide the position"
@@ -1266,6 +1357,47 @@ pub fn draw_text_tracked(
         Vector2::new(x.round(), y.round()),
         font_size,
         spacing.round(),
+        tint,
+    );
+}
+
+/// A glyph from the icon face, centred in `boundary` exactly as a button's
+/// label is (WX-5c: the round play button draws its own disc).
+pub fn icon_label(
+    d: &mut RaylibDrawHandle<'_>,
+    face: &Face,
+    boundary: UiRect,
+    glyph: &str,
+    size: f32,
+    tint: Color,
+) {
+    draw_button_label(
+        d,
+        LabelFont::Exact(face),
+        boundary,
+        glyph,
+        Some(size),
+        0.0,
+        tint,
+    );
+}
+
+/// Text centred in `boundary` exactly as a button's label is.
+pub fn text_label(
+    d: &mut RaylibDrawHandle<'_>,
+    font: &UiFonts,
+    boundary: UiRect,
+    text: &str,
+    size: f32,
+    tint: Color,
+) {
+    draw_button_label(
+        d,
+        LabelFont::Ui(font),
+        boundary,
+        text,
+        Some(size),
+        0.0,
         tint,
     );
 }
@@ -1760,6 +1892,14 @@ pub mod id {
     /// One per lyric cue row, keyed by cue id so a row keeps its id across a
     /// scroll.
     pub const LYRICS_ROWS: u32 = 19;
+    /// The top bar's mode tabs and its Still / Contact sheet / Render
+    /// (`ui::top_bar`, WX-5c). Minted in the seam so the two 5c agents never
+    /// pick a number each.
+    pub const TOP_BAR: u32 = 20;
+    /// The rail's icons and the flyouts' own chrome (WX-5c). The flyouts'
+    /// contents keep the namespaces they had in the sidebar ([`TRACKS`],
+    /// [`SCENE_BROWSER`], [`SCENE_FAMILY`], [`SCENE_ASCII`]), so no claim moves.
+    pub const RAIL: u32 = 21;
     /// One per notice card's close box, indexed by the notice's own id — the
     /// id rather than the list index, so eviction cannot misroute a claim.
     pub const NOTICE: u32 = 64;
@@ -1780,7 +1920,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 23] = [
+    pub const ALL: [(&str, u32); 25] = [
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),
@@ -1800,6 +1940,8 @@ pub mod id {
         ("LYRICS_FORM", LYRICS_FORM),
         ("LYRICS_CAPTION", LYRICS_CAPTION),
         ("LYRICS_ROWS", LYRICS_ROWS),
+        ("TOP_BAR", TOP_BAR),
+        ("RAIL", RAIL),
         ("NOTICE", NOTICE),
         ("TRACK_STRIP", TRACK_STRIP),
         ("ASSIST", ASSIST),
@@ -2010,6 +2152,8 @@ mod tests {
             ("LYRICS_FORM", id::LYRICS_FORM),
             ("LYRICS_CAPTION", id::LYRICS_CAPTION),
             ("LYRICS_ROWS", id::LYRICS_ROWS),
+            ("TOP_BAR", id::TOP_BAR),
+            ("RAIL", id::RAIL),
             ("NOTICE", id::NOTICE),
             ("TRACK_STRIP", id::TRACK_STRIP),
             ("ASSIST", id::ASSIST),

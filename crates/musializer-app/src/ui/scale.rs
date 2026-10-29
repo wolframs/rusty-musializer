@@ -17,14 +17,27 @@ pub const UI_SCALE_STEPS: [f32; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
 /// The logical minimum whose content policies are already exhaustively tested.
 pub const LOGICAL_MINIMUM: (f32, f32) = (960.0, 640.0);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UiScale(f32);
+#[derive(Clone, Copy, Debug)]
+pub struct UiScale(f32, Option<UiRect>);
+
+/// Equal when the scale is: the occluder is a property of one frame's input,
+/// not of the scale, and nothing that keys on a scale (font atlases, the
+/// preference file) may see two values for one rung.
+impl PartialEq for UiScale {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
 
 impl Default for UiScale {
     fn default() -> Self {
-        Self(1.0)
+        Self(1.0, None)
     }
 }
+
+/// Where [`UiScale::mouse`] reports a pointer that is over an occluder: far
+/// outside any window, and finite, so arithmetic on it cannot turn into NaN.
+const OCCLUDED_POINTER: f32 = -1.0e6;
 
 impl UiScale {
     #[must_use]
@@ -33,7 +46,7 @@ impl UiScale {
             .iter()
             .copied()
             .find(|step| (value - step).abs() < 0.001)
-            .map(Self)
+            .map(|step| Self(step, None))
     }
 
     #[must_use]
@@ -61,9 +74,35 @@ impl UiScale {
         Vector2::new(physical.x / self.0, physical.y / self.0)
     }
 
+    /// The pointer in logical units, or a point far outside the window when
+    /// it is over this scale's occluder.
     #[must_use]
     pub fn mouse(self, d: &RaylibDrawHandle<'_>) -> Vector2 {
-        self.logical_point(d.get_mouse_position())
+        self.occlude(self.logical_point(d.get_mouse_position()))
+    }
+
+    /// The same scale with `occluder` hiding the pointer (WX-5c, the rail's
+    /// flyouts).
+    ///
+    /// A flyout floats over the preview, the transport and the band, and is
+    /// modal for presses. Most of what is under it reads the pointer through
+    /// this type — every widget, and the lanes and panels that test a raw
+    /// press against a rect — so a frame's input handed to them through an
+    /// occluded scale cannot reach anything under the flyout: the pointer is
+    /// simply not there. One seam, rather than a guard at each of the forty
+    /// call sites, two of which are in panels other agents own.
+    #[must_use]
+    pub fn occluded(self, occluder: Option<UiRect>) -> Self {
+        Self(self.0, occluder.filter(|rect| !rect.is_empty()))
+    }
+
+    fn occlude(self, point: Vector2) -> Vector2 {
+        match self.1 {
+            Some(rect) if rect.contains_point(point.x, point.y) => {
+                Vector2::new(OCCLUDED_POINTER, OCCLUDED_POINTER)
+            }
+            _ => point,
+        }
     }
 
     /// Transform a logical rectangle to framebuffer pixels, rounding edges
@@ -167,6 +206,25 @@ pub fn effective_scale(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_occluded_scale_hides_the_pointer_over_its_rect_and_nowhere_else() {
+        let scale = UiScale::new(1.5).unwrap();
+        let occluded = scale.occluded(Some(UiRect::new(52.0, 46.0, 336.0, 674.0)));
+        // Equal as a scale: nothing keyed on the rung may see two values.
+        assert_eq!(occluded, scale);
+        assert_eq!(
+            occluded.occlude(Vector2::new(100.0, 100.0)),
+            Vector2::new(OCCLUDED_POINTER, OCCLUDED_POINTER)
+        );
+        assert_eq!(
+            occluded.occlude(Vector2::new(400.0, 100.0)),
+            Vector2::new(400.0, 100.0)
+        );
+        // An empty occluder is no occluder.
+        let none = scale.occluded(Some(UiRect::new(0.0, 0.0, 0.0, 0.0)));
+        assert_eq!(none.occlude(Vector2::new(0.0, 0.0)), Vector2::new(0.0, 0.0));
+    }
 
     #[test]
     fn scale_steps_parse_and_walk_without_fractional_drift() {

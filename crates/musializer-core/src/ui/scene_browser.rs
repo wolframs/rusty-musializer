@@ -99,45 +99,42 @@ impl SceneFamily {
     }
 }
 
-pub const TAB_HEIGHT: f32 = 22.0;
+/// The family column's width (WX-5c §1). Wide enough for "Type & stage" and
+/// "Atmosphere" at the label size; the tiles take the rest of the flyout.
+pub const FAMILY_WIDTH: f32 = 96.0;
+/// A family row's height when the column has room for every row at it, and
+/// the least it may shrink to.
+pub const FAMILY_HEIGHT: f32 = 30.0;
+pub const FAMILY_FLOOR: f32 = 18.0;
+/// Between the family column and the tiles.
+pub const COLUMN_GAP: f32 = 10.0;
+/// Between two rows, or two tiles.
 pub const GAP: f32 = 4.0;
-pub const TILE_FLOOR: f32 = 24.0;
-/// The family tabs sit in two rows whatever their number, so a new family
-/// costs tab width rather than tile height: the first half of
-/// [`SceneFamily::ALL`] (rounded up) on the top row, the rest below.
-const TAB_ROWS: usize = 2;
+/// A tile seats a scene's name in up to two lines, so it is never shorter
+/// than two lines of caption plus its padding, and never taller than reads as
+/// a tile rather than a card.
+pub const TILE_FLOOR: f32 = 36.0;
+pub const TILE_CEILING: f32 = 48.0;
+/// The scrollbar's lane, taken from the tiles' width only when they scroll.
+pub const SCROLL_GUTTER: f32 = 12.0;
 
-/// Where a family tab sits: its row, its column in that row, how many tabs
-/// share the row, and the fraction of the row's free width before it and its
-/// own. Widths are proportional to the label's length plus a fixed allowance
-/// for the button's padding, so the longest label in a row is not the one
-/// squeezed. Character counts stand in for measured widths because this module
-/// has no font; the shell fits one font size over the widths this produces.
-fn tab_slot(index: usize) -> Option<(usize, usize, usize, f32, f32)> {
-    let count = SceneFamily::ALL.len();
-    if index >= count {
-        return None;
-    }
-    let per_row = count.div_ceil(TAB_ROWS);
-    let row = index / per_row;
-    let first = row * per_row;
-    let last = (first + per_row).min(count);
-    let weight = |i: usize| SceneFamily::ALL[i].label().chars().count() as f32 + 3.0;
-    let total: f32 = (first..last).map(weight).sum();
-    let before: f32 = (first..index).map(weight).sum();
-    Some((
-        row,
-        index - first,
-        last - first,
-        before / total,
-        weight(index) / total,
-    ))
-}
-
+/// The picker's geometry: a column of families on the left, one row each,
+/// and the browsed family's tiles in a two-column grid on the right
+/// (WX-5c §1).
+///
+/// **The shape changed on purpose.** In the 320 px sidebar the families were
+/// two rows of label-width tabs over a viewport about 100 px tall, which is why
+/// Pixel Cats stopped at six stagings — six was what a family showed
+/// unscrolled at the minimum picker. In the flyout the tiles get the flyout's
+/// height: at 960x640 a family shows twenty tiles before it scrolls.
 #[derive(Clone, Copy, Debug)]
 pub struct PickerLayout {
     pub area: UiRect,
+    /// The family column.
+    pub families: UiRect,
+    /// The tiles' viewport: what scrolls, and what clips a press.
     pub viewport: UiRect,
+    pub family_height: f32,
     pub columns: usize,
     pub tile_height: f32,
     pub tile_width: f32,
@@ -148,25 +145,34 @@ pub struct PickerLayout {
 impl PickerLayout {
     #[must_use]
     pub fn new(area: UiRect, count: usize) -> Self {
-        let top = TAB_ROWS as f32 * TAB_HEIGHT + GAP * TAB_ROWS as f32;
+        let family_width = FAMILY_WIDTH.min((area.width * 0.4).max(0.0));
+        let families = UiRect::new(area.x, area.y, family_width, area.height.max(0.0));
+        let rows = SceneFamily::ALL.len() as f32;
+        let family_height = ((area.height - GAP * (rows - 1.0)) / rows)
+            .clamp(FAMILY_FLOOR, FAMILY_HEIGHT)
+            .floor();
         let viewport = UiRect::new(
-            area.x,
-            area.y + top,
-            area.width,
-            (area.height - top).max(0.0),
+            area.x + family_width + COLUMN_GAP,
+            area.y,
+            (area.width - family_width - COLUMN_GAP).max(0.0),
+            area.height.max(0.0),
         );
-        let columns = if area.width >= 170.0 { 2 } else { 1 };
+        let columns = if viewport.width >= 170.0 { 2 } else { 1 };
         let rows = count.div_ceil(columns).max(1);
-        let tile_height =
-            ((viewport.height - GAP * (rows - 1) as f32) / rows as f32).clamp(TILE_FLOOR, 44.0);
+        let tile_height = ((viewport.height - GAP * (rows - 1) as f32) / rows as f32)
+            .clamp(TILE_FLOOR, TILE_CEILING)
+            .floor();
         let content_height = rows as f32 * tile_height + (rows - 1) as f32 * GAP;
         let max_scroll = (content_height - viewport.height).max(0.0);
-        let gutter = if max_scroll > 0.0 { 12.0 } else { 0.0 };
-        let tile_width =
-            ((area.width - gutter - GAP * (columns - 1) as f32) / columns as f32).max(0.0);
+        let gutter = if max_scroll > 0.0 { SCROLL_GUTTER } else { 0.0 };
+        let tile_width = ((viewport.width - gutter - GAP * (columns - 1) as f32) / columns as f32)
+            .max(0.0)
+            .floor();
         Self {
             area,
+            families,
             viewport,
+            family_height,
             columns,
             tile_height,
             tile_width,
@@ -175,18 +181,18 @@ impl PickerLayout {
             count,
         }
     }
+    /// The family row at `index` in [`SceneFamily::ALL`]: one row each,
+    /// top to bottom, the column's full width.
     #[must_use]
     pub fn tab(self, index: usize) -> UiRect {
-        let Some((row, column, in_row, start, share)) = tab_slot(index) else {
-            return UiRect::new(self.area.x, self.area.y, 0.0, 0.0);
-        };
-        let gaps = GAP * in_row.saturating_sub(1) as f32;
-        let free = (self.area.width - gaps).max(0.0);
+        if index >= SceneFamily::ALL.len() {
+            return UiRect::new(self.families.x, self.families.y, 0.0, 0.0);
+        }
         UiRect::new(
-            self.area.x + start * free + column as f32 * GAP,
-            self.area.y + row as f32 * (TAB_HEIGHT + GAP),
-            share * free,
-            TAB_HEIGHT,
+            self.families.x,
+            self.families.y + index as f32 * (self.family_height + GAP),
+            self.families.width,
+            self.family_height,
         )
     }
     #[must_use]
@@ -298,21 +304,65 @@ mod tests {
         assert_eq!(state.family, SceneFamily::Geometry);
         assert_eq!(state.offset, 0.0);
     }
+    /// The flyout's picker area at the 960x640 minimum: the flyout is 336
+    /// wide and 594 tall, the panel header takes 27, 10 px of padding go
+    /// round the area, and the ASCII footer and its gap take 30 at the bottom.
+    const MINIMUM_AREA: UiRect = UiRect::new(62.0, 83.0, 316.0, 517.0);
+
+    /// Pinned numbers, not properties: the picker at the minimum window.
     #[test]
-    fn every_tile_is_reachable_without_shrinking_at_small_and_future_sizes() {
-        for width in [150.0, 228.0, 308.0, 388.0] {
-            for height in [104.0, 148.0, 220.0, 300.0] {
+    fn the_picker_at_the_minimum_window_is_a_family_column_and_two_tile_columns() {
+        let layout = PickerLayout::new(MINIMUM_AREA, 6);
+        assert_eq!(layout.families, UiRect::new(62.0, 83.0, 96.0, 517.0));
+        assert_eq!(layout.viewport, UiRect::new(168.0, 83.0, 210.0, 517.0));
+        assert_eq!(layout.family_height, 30.0);
+        assert_eq!(layout.tab(0), UiRect::new(62.0, 83.0, 96.0, 30.0));
+        assert_eq!(layout.tab(6), UiRect::new(62.0, 287.0, 96.0, 30.0));
+        assert_eq!(layout.columns, 2);
+        assert_eq!(layout.tile_height, 48.0);
+        assert_eq!(layout.tile_width, 103.0);
+        assert_eq!(layout.tile(0, 0.0), UiRect::new(168.0, 83.0, 103.0, 48.0));
+        assert_eq!(layout.tile(5, 0.0), UiRect::new(275.0, 187.0, 103.0, 48.0));
+        assert_eq!(layout.max_scroll, 0.0);
+    }
+
+    /// The constraint WX-5c lifts: a family shows twenty tiles unscrolled at
+    /// the minimum window, so Pixel Cats can grow to ten stagings and well
+    /// past them without a scrollbar.
+    #[test]
+    fn a_family_of_twenty_fits_the_minimum_flyout_unscrolled() {
+        for count in [6, 10, 20] {
+            let layout = PickerLayout::new(MINIMUM_AREA, count);
+            assert_eq!(layout.max_scroll, 0.0, "{count} tiles scroll");
+            assert!(layout.scrollbar().is_none());
+            let last = layout.tile(count - 1, 0.0);
+            assert!(layout.viewport.contains(last), "{count}: {last:?}");
+        }
+        assert_eq!(PickerLayout::new(MINIMUM_AREA, 20).tile_height, 48.0);
+        // Twenty-two rows of floor height do not fit 517 px, and scroll.
+        assert!(PickerLayout::new(MINIMUM_AREA, 44).max_scroll > 0.0);
+        // Every family as the scenes are registered today.
+        for family in SceneFamily::ALL {
+            let layout = PickerLayout::new(MINIMUM_AREA, family.scenes().len());
+            assert_eq!(layout.max_scroll, 0.0, "{family:?}");
+        }
+    }
+
+    #[test]
+    fn every_tile_is_reachable_and_no_row_or_tile_overlaps() {
+        for width in [240.0, 316.0, 400.0] {
+            for height in [160.0, 240.0, 517.0, 800.0] {
                 for count in [2, 5, 22, 100] {
                     let area = UiRect::new(6.0, 30.0, width, height);
                     let layout = PickerLayout::new(area, count);
-                    assert!(layout.tile_height >= 24.0);
+                    assert!(layout.tile_height >= TILE_FLOOR);
+                    assert!(!layout.families.overlaps(layout.viewport));
                     for i in 0..SceneFamily::ALL.len() {
-                        assert!(area.contains(layout.tab(i)));
-                        assert!(layout.tab(i).width > 0.0);
+                        assert!(area.contains(layout.tab(i)), "{width}x{height}: row {i}");
                         for j in 0..i {
                             assert!(
                                 layout.tab(i).intersect(layout.tab(j)).is_empty(),
-                                "tabs {i} and {j} overlap"
+                                "rows {i} and {j} overlap"
                             );
                         }
                     }
@@ -338,17 +388,6 @@ mod tests {
                     }
                 }
             }
-        }
-    }
-    #[test]
-    fn grouping_removes_the_growth_pressure_on_the_default_picker() {
-        let area = UiRect::new(6.0, 30.0, 228.0, 148.0);
-        assert!(PickerLayout::new(area, SceneId::ALL.len()).max_scroll > 0.0);
-        for family in SceneFamily::ALL {
-            assert_eq!(
-                PickerLayout::new(area, family.scenes().len()).max_scroll,
-                0.0
-            );
         }
     }
 }

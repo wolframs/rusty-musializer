@@ -173,6 +173,7 @@ if [ "$QUICK" -eq 0 ]; then
     if command -v Xvfb >/dev/null 2>&1; then
         step "headless gate (window, audio, Spectrum)" tools/headless_check.sh
         step "dock gate (terminal in the window)" tools/dock_check.sh
+        step "top bar (title, tabs, still, sheet, render)" tools/top_bar_check.sh
         step "fluid ink gate (audio and persistent replay)" tools/fluid_ink_check.sh
         step "scene gallery (families, audio, replay)" tools/scene_gallery_check.py
         step "pixel cats (six stagings, audio, replay)" tools/pixel_cats_check.py

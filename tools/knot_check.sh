@@ -42,11 +42,17 @@ launch "$OUT/phrase.wav" --scene knot --hud=0 --size 1280x720 \
 launch "$OUT/phrase.wav" --scene knot --hud=0 --size 1280x720 --ui-probe play=0,time=0 \
     --probe-frames 4 --probe-shot "$OUT/idle.png" > "$OUT/idle.log" 2>&1
 # Browse Geometry first, then press the knot's stable tile at minimum size.
-# The old flat-grid coordinate now belongs to Song Atlas. y=231 since WX-5b:
-# the plan lane grew 20 px, the sidebar's scene picker shrank by as much, and
-# 252 became Voronoi Bloom's tile — which the `claimed=` assertion caught.
+# The tile is read from the picker's own `tiles=` (WX-5c: the picker is the
+# scenes flyout now). It was a fixed point that moved twice — 82x252, then
+# 82x231, which had become Voronoi Bloom's tile when the `claimed=` assertion
+# caught it.
 launch "$OUT/phrase.wav" --scene spectrum --hud=0 --size 960x640 \
-    --ui-probe play=1,scene-family=geometry,click=82x231 --probe-frames 16 --probe-shot "$OUT/minimum.png" > "$OUT/minimum.log" 2>&1
+    --ui-probe play=1,scene-family=geometry --probe-frames 8 > "$OUT/tiles.log" 2>&1
+KNOT_AT="$(sed -n 's/^scene picker:.*[;=]knot@\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\1 \2 \3 \4/p' "$OUT/tiles.log" \
+    | awk '{printf "%dx%d", $1 + int($3 / 2), $2 + int($4 / 2)}')"
+[ -n "$KNOT_AT" ] || { echo "FAIL: no knot tile on the picker line" >&2; exit 1; }
+launch "$OUT/phrase.wav" --scene spectrum --hud=0 --size 960x640 \
+    --ui-probe "play=1,scene-family=geometry,click=$KNOT_AT" --probe-frames 16 --probe-shot "$OUT/minimum.png" > "$OUT/minimum.log" 2>&1
 # Warm preview versus cold export: both must reconstruct identical scene state.
 for mode in warm cold; do
     args=()

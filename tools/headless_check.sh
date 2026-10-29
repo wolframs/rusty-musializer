@@ -561,20 +561,23 @@ tools/treatment_check.sh "$OUT_DIR/treatment" || SWEEP_FAILED=1
 # frame eight. The removed renderer pass used that boolean to paint a full-width
 # white gradient across the reflection floor — the short flash reported in both
 # preview and exports. Pin a quiet region far from the active bands. Negative
-# control: restoring the old pass raises this crop's YMAX from 21 to 55.
+# control: restoring the old pass raises this crop's YMAX from 21 to 55. Re-run
+# at the WX-5c frame (critic, 2026-10-29): 10 -> 47 on the GPU, 10 -> 54 on
+# the CPU (`MZ_GL_LAUNCH=""`), against the threshold of 30.
 #
 # Pin the split on this capture: per-user timeline preferences are intentionally
 # honoured elsewhere in the sweep, but letting one move a renderer negative
 # control made this crop sample white timeline chrome instead of the scene.
 #
 # The requested height must be a height the band can actually take, because
-# `Shell::resolved_timeline_height` clamps it up to
-# `SCENE_SECTION_HEIGHT + EVENT_ROW_HEIGHT + 150` and a *silently clamped*
-# request moves the split without moving this comment. 276 is that floor today
-# (60 + 66 + 150); it was 270 until LX1-e spent a lane gap inside the scene
-# section, and the six pixels the band gained put white chrome inside the old
-# y=386 crop. To re-derive after a band constant moves: the preview's last row
-# is `720 - band - 50`, so the crop is the 12 px ending two rows above it.
+# `Shell::resolved_timeline_height` clamps it up to `SCENE_SECTION_HEIGHT +
+# 150` and a *silently clamped* request moves the split without moving this
+# comment. 276 was written as that floor when the section was 60 (60 + the
+# 66 px event row + 150); WX-5b grew the section to 80, WX-5c took the event
+# row out of the band, and the floor is 230 now, so 276 is honoured as asked
+# and every number below was measured with it. The crop is read from
+# the preview's own rect (next paragraph), so the split no longer has to be
+# re-derived by hand when a band constant moves.
 capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
     --ui-probe "play=1,timeline-height=276" \
     || SWEEP_FAILED=1
@@ -582,10 +585,18 @@ SPECTRUM_ONSETS="$(sed -n 's/^onsets: *\([0-9][0-9]*\) .*/\1/p' "$OUT_DIR/spectr
 # The crop is the bottom of the preview, read from the report's own preview
 # rect (WX-5b): it was a fixed y=380, which the 20 px taller plan lane moved
 # onto the toolbar, where the light chrome's 247 read as a lit floor.
-SPECTRUM_FLOOR_Y="$(sed -n 's/^preview frame:.*pixels [0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\)$/\1 \2/p' \
-    "$OUT_DIR/spectrum-onset-floor.txt" | awk '{print $1 + $2 - 14}')"
+#
+# Its x is read from the same line since WX-5c: the preview starts at x=52
+# beside the rail rather than at 320 beside the sidebar, and is 268 px wider,
+# so a fixed x=900 now lands on a different band of the spectrum. The crop is
+# the same share of the *framed* scene it always was — 66 % to 99 % across a
+# 612 px frame that started at x=494 — so it stays in the quiet top octaves.
+SPECTRUM_FLOOR_RECT="$(sed -n 's/^preview frame:.*framed \([0-9]*\)x[0-9]* .*pixels \([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\)$/\1 \2 \3 \4 \5/p' \
+    "$OUT_DIR/spectrum-onset-floor.txt" \
+    | awk '{fx = $2 + ($4 - $1) / 2; printf "%d:12:%d:%d", $1 * 0.327, fx + $1 * 0.663, $3 + $5 - 14}')"
+SPECTRUM_FLOOR_Y="${SPECTRUM_FLOOR_RECT##*:}"
 SPECTRUM_FLOOR="$(ffprobe -v error -f lavfi \
-    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=200:12:900:${SPECTRUM_FLOOR_Y:-380},signalstats" \
+    -i "movie=$OUT_DIR/spectrum-onset-floor.png,crop=${SPECTRUM_FLOOR_RECT:-200:12:900:380},signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 echo "spectrum onset floor: onsets=${SPECTRUM_ONSETS:-?} peak-luma=${SPECTRUM_FLOOR:-?} (rows ${SPECTRUM_FLOOR_Y:-?}..+12)"
 if [ -z "${SPECTRUM_FLOOR_Y:-}" ]; then
@@ -4833,10 +4844,14 @@ hud_state() {
     set -e
     # The readout is drawn, not printed, so the picture is the only witness. The
     # line sits in the top-left of the preview on a near-black background; a
-    # bright pixel there means text, and none means a clean preview.
-    local ink
+    # bright pixel there means text, and none means a clean preview. The crop
+    # is 70 px in and 10 px down from the preview's corner, read from the
+    # report (WX-5c moved the preview from 320,0 to 52,46).
+    local origin ink
+    origin="$(sed -n 's/^preview frame:.*pixels \([0-9]*\),\([0-9]*\),[0-9]*,[0-9]*$/\1 \2/p' \
+        "$OUT_DIR/$name.txt" | awk '{printf "%d:%d", $1 + 70, $2 + 10}')"
     ink="$(ffprobe -v error -f lavfi \
-        -i "movie=$out,crop=760:24:390:10,signalstats" \
+        -i "movie=$out,crop=760:24:${origin:-390:10},signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
     ink="${ink:-0}"
     local got="off"
@@ -4879,15 +4894,24 @@ hud_state hud-forced-on on --hud || TRANSPORT_FAILED=1
 # directly under the preview, whose rect `preview frame:` prints — so the
 # pointer and the crop follow the layout instead of being re-measured by hand
 # each time it changes.
+#
+# **WX-5c: the button itself is read from the report.** The transport is a
+# new row (a round play button, the timecode, ghost icons, a volume chip), so
+# `transport: mute=x,y,w,h` names the button and both the pointer and the crop
+# follow it: the crop is the 140x24 band ending 10 px above the button, where
+# the tip draws, centred on it.
 capture "tooltip-mute-bare" 1280x720 --ui-probe "play=1" || TRANSPORT_FAILED=1
-preview_bottom() {
-    sed -n 's/^preview frame:.*pixels [0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\)$/\1 \2/p' "$1" \
-        | awk '{print $1 + $2}'
+transport_rect() {
+    # transport_rect LOG NAME -> "x y w h" from the `transport:` line
+    sed -n "s/^transport:.* $2=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\1 \2 \3 \4/p" "$1" | head -1
 }
-TIP_TOOLBAR="$(preview_bottom "$OUT_DIR/tooltip-mute-bare.txt")"
-capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=1121x$((${TIP_TOOLBAR:-363} + 25))" \
+read -r TIP_MX TIP_MY TIP_MW TIP_MH <<<"$(transport_rect "$OUT_DIR/tooltip-mute-bare.txt" mute)"
+TIP_MCX=$(( ${TIP_MX:-1136} + ${TIP_MW:-34} / 2 ))
+TIP_MCY=$(( ${TIP_MY:-418} + ${TIP_MH:-34} / 2 ))
+TIP_TOOLBAR="${TIP_MY:-?}"
+capture "tooltip-mute" 1280x720 --ui-probe "play=1,hover=${TIP_MCX}x${TIP_MCY}" \
     || TRANSPORT_FAILED=1
-TIP_CROP="140:24:1050:$((${TIP_TOOLBAR:-363} - 26))"
+TIP_CROP="140:24:$((TIP_MCX - 71)):$((${TIP_MY:-418} - 34))"
 tip_ymax() {
     ffprobe -v error -f lavfi -i "movie=$OUT_DIR/$1.png,crop=$2,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1
@@ -4896,7 +4920,7 @@ TIP_TEXT="$(tip_ymax tooltip-mute "$TIP_CROP")"
 TIP_BARE="$(tip_ymax tooltip-mute-bare "$TIP_CROP")"
 TIP_ADDED="$(python3 tools/chrome_probe.py changed "$OUT_DIR/tooltip-mute.png" \
     "$OUT_DIR/tooltip-mute-bare.png" "$TIP_CROP")"
-echo "tooltip-mute            toolbar at y=${TIP_TOOLBAR:-?} text luma max=${TIP_TEXT:-?} bare=${TIP_BARE:-?} (control) pixels added=${TIP_ADDED:-?}"
+echo "tooltip-mute            mute at y=${TIP_TOOLBAR:-?} text luma max=${TIP_TEXT:-?} bare=${TIP_BARE:-?} (control) pixels added=${TIP_ADDED:-?}"
 if [ "${TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null || [ "${TIP_ADDED:-0}" -lt 150 ]; then
     echo "FAIL: no tooltip text where the mute button's tip should be" >&2
     TRANSPORT_FAILED=1
@@ -4913,10 +4937,14 @@ fi
 # pass as the 100% check above until WX-5a: hover 978x599, crop on the panel.)
 capture "tooltip-mute-125-bare" 1600x900 --ui-scale 125 \
     --ui-probe "panel=tune,play=1" || TRANSPORT_FAILED=1
-TIP_TOOLBAR_125="$(preview_bottom "$OUT_DIR/tooltip-mute-125-bare.txt")"
+# The report's rects are logical; the pointer and the crop are physical, so
+# both go through the 1.25 the window is scaled by.
+read -r TIP_MX_125 TIP_MY_125 TIP_MW_125 TIP_MH_125 <<<"$(transport_rect "$OUT_DIR/tooltip-mute-125-bare.txt" mute)"
+TIP_MCX_125=$(( (${TIP_MX_125:-800} * 2 + ${TIP_MW_125:-34}) * 5 / 8 ))
+TIP_MCY_125=$(( (${TIP_MY_125:-418} * 2 + ${TIP_MH_125:-34}) * 5 / 8 ))
 capture "tooltip-mute-125" 1600x900 --ui-scale 125 \
-    --ui-probe "panel=tune,play=1,hover=978x$((${TIP_TOOLBAR_125:-455} + 31))" || TRANSPORT_FAILED=1
-TIP_CROP_125="160:26:880:$((${TIP_TOOLBAR_125:-455} - 33))"
+    --ui-probe "panel=tune,play=1,hover=${TIP_MCX_125}x${TIP_MCY_125}" || TRANSPORT_FAILED=1
+TIP_CROP_125="160:26:$((TIP_MCX_125 - 98)):$(( ${TIP_MY_125:-418} * 5 / 4 - 43 ))"
 TIP_TEXT_125="$(tip_ymax tooltip-mute-125 "$TIP_CROP_125")"
 TIP_BARE_125="$(tip_ymax tooltip-mute-125-bare "$TIP_CROP_125")"
 TIP_ADDED_125="$(python3 tools/chrome_probe.py changed "$OUT_DIR/tooltip-mute-125.png" \
@@ -5255,7 +5283,7 @@ print(f'{round(x + (3.0 - start) / (end - start) * w)}x{round(y + h / 2)}')
 
     # The accent still marks only now, with runs.
     python3 tools/accent_census.py "$RUN_DIR/runs.png" "$RUN_DIR/runs.txt" \
-        --expect-appearance light-blue || RUN_FAILED=1
+        --expect-appearance light-blue --primary 1 || RUN_FAILED=1
     lane_alignment_runs() {
         printf '%-30s lanes=3 scale=100\n' "$1"
         python3 tools/timeline_lane_alignment.py "$RUN_DIR/$1.png" 3 100 || RUN_FAILED=1
@@ -5264,6 +5292,133 @@ print(f'{round(x + (3.0 - start) / (end - start) * w)}x{round(y + h / 2)}')
 fi
 if [ "$RUN_FAILED" -ne 0 ]; then
     echo "FAIL: the plan lane's runs did not pass" >&2
+    SWEEP_FAILED=1
+fi
+
+echo "=== the rail, its flyouts and the lane head (WX-5c) ==="
+# The sidebar became a 52 px rail whose Tracks and Scenes icons open flyouts
+# over the preview, and the event row and the plan's controls row became one
+# lane head. Every point pressed here is read from a report line — `rail:`,
+# `scene picker:`, `lane head:`, `scene runs:` — never from a constant, because
+# the sidebar's footer and the knot tile moved twice in one week before this.
+#
+# Each claim has its control: the gap in the rail opens nothing, a press inside
+# the flyout over the plan lane selects no section while the same press with
+# the flyout closed does, and the context controls are absent until a section
+# is selected.
+RAIL_FAILED=0
+rail_line() { sed -n "s/^$2: *//p" "$RUN_DIR/$1.txt" | head -1; }
+rail_point() {
+    # rail_point LINE KEY [SEP] -> centre "XxY" of KEY's rect on LINE
+    python3 -c "
+import re, sys
+line, key, sep = sys.argv[1], sys.argv[2], sys.argv[3]
+m = re.search(r'(?:^|[ ;=])' + re.escape(key) + sep + r'(-?\d+),(-?\d+),(\d+),(\d+)', line)
+if not m: sys.exit('no ' + key + ' on: ' + line)
+x, y, w, h = (int(v) for v in m.groups())
+print(f'{x + w // 2}x{y + h // 2}')
+" "$1" "$2" "${3:-=}"
+}
+if [ -f "$LYRIC_PROJECT" ]; then
+    run_capture rail-base runs "panel=none,time=2.5,play=0" || RAIL_FAILED=1
+    RAIL_BASE="$(rail_line rail-base rail)"
+    echo "rail: $RAIL_BASE"
+    case "$RAIL_BASE" in
+        "rect=0,46,52,414 icons=tracks@8,56,36,36;scenes@8,98,36,36;editor@8,372,36,36;dock@8,414,36,36 open=none flyout=none") ;;
+        *) echo "FAIL: the rail is not where WorkspaceRail puts it at 1280x720" >&2; RAIL_FAILED=1 ;;
+    esac
+    RAIL_TRACKS="$(rail_point "$RAIL_BASE" tracks @)" || RAIL_FAILED=1
+    # The rail's gap: between Scenes' bottom (134) and Editor's top (372).
+    run_capture rail-open-tracks runs "panel=none,time=2.5,play=0,click=$RAIL_TRACKS" || RAIL_FAILED=1
+    run_capture rail-gap runs "panel=none,time=2.5,play=0,click=26x250" || RAIL_FAILED=1
+    case "$(rail_line rail-open-tracks rail) / $(rail_line rail-open-tracks 'click probe')" in
+        *"open=tracks flyout=52,46,336,674 / at=$RAIL_TRACKS claimed=0x1500000001") echo "a press on the Tracks icon opened its flyout" ;;
+        *) echo "FAIL: the Tracks icon did not open its flyout: $(rail_line rail-open-tracks rail)" >&2; RAIL_FAILED=1 ;;
+    esac
+    case "$(rail_line rail-gap rail) / $(rail_line rail-gap 'click probe')" in
+        *"open=none flyout=none / at=26x250 claimed=nothing") echo "a press in the rail's gap opened nothing (control)" ;;
+        *) echo "FAIL: a press in the rail's gap did something: $(rail_line rail-gap 'click probe')" >&2; RAIL_FAILED=1 ;;
+    esac
+
+    # A press outside closes the flyout; a press inside it over the plan lane
+    # reaches nothing underneath, and the same press with no flyout selects.
+    RAIL_LANE_Y="$(run_line rail-base | sed -n 's/.*lane=[0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\).*/\1 \2/p' | awk '{print $1 + int($2 / 2)}')"
+    run_capture rail-outside runs "panel=none,time=2.5,play=0,flyout=scenes,click=1000x200" || RAIL_FAILED=1
+    run_capture rail-inside runs "panel=none,time=2.5,play=0,flyout=scenes,click=200x${RAIL_LANE_Y}" || RAIL_FAILED=1
+    run_capture rail-inside-control runs "panel=none,time=2.5,play=0,click=200x${RAIL_LANE_Y}" || RAIL_FAILED=1
+    case "$(rail_line rail-outside rail)" in
+        *"open=none flyout=none") echo "a press outside the flyout closed it" ;;
+        *) echo "FAIL: a press outside the flyout left it open: $(rail_line rail-outside rail)" >&2; RAIL_FAILED=1 ;;
+    esac
+    # Escape closes it, through the shell's keyboard path (`key=escape`); the
+    # same run without the key keeps it open (control). Negative control
+    # (2026-10-29): with the flyout's Escape branch in `keyboard_actions`
+    # disabled, the key=escape run reports open=scenes and this fails.
+    run_capture rail-escape runs "panel=none,time=2.5,play=0,flyout=scenes,key=escape" || RAIL_FAILED=1
+    run_capture rail-escape-control runs "panel=none,time=2.5,play=0,flyout=scenes" || RAIL_FAILED=1
+    case "$(rail_line rail-escape rail) / $(rail_line rail-escape-control rail)" in
+        *"open=none flyout=none / "*"open=scenes flyout=52,46,336,674") echo "Escape closed the flyout; without it the flyout stayed (control)" ;;
+        *) echo "FAIL: Escape and the flyout: $(rail_line rail-escape rail) / control $(rail_line rail-escape-control rail)" >&2; RAIL_FAILED=1 ;;
+    esac
+    case "$(rail_line rail-inside rail) / $(run_line rail-inside)" in
+        *"open=scenes flyout=52,46,336,674 / "*" selected=none "*) echo "a press inside the flyout over the lane selected nothing under it" ;;
+        *) echo "FAIL: a press inside the flyout fell through: $(run_line rail-inside)" >&2; RAIL_FAILED=1 ;;
+    esac
+    case "$(run_line rail-inside-control)" in
+        *" selected=none "*) echo "FAIL: the control is not a control; the press at 200x$RAIL_LANE_Y selects nothing without a flyout either" >&2; RAIL_FAILED=1 ;;
+        *" selected="*) echo "the same press with no flyout selected a section (control)" ;;
+    esac
+
+    # A tile press through the flyout selects its scene. The point is the
+    # knot tile's, from the picker's own `tiles=`.
+    run_capture rail-picker runs "panel=none,time=2.5,play=0,scene-family=geometry" || RAIL_FAILED=1
+    RAIL_PICKER="$(rail_line rail-picker 'scene picker')"
+    RAIL_KNOT="$(rail_point "$RAIL_PICKER" knot @)" || RAIL_FAILED=1
+    run_capture rail-pick-knot runs "panel=none,time=2.5,play=0,scene-family=geometry,click=$RAIL_KNOT" || RAIL_FAILED=1
+    case "$(rail_line rail-pick-knot 'click probe') / $(rail_line rail-pick-knot 'scene picker')" in
+        *"claimed=0x20000000d / family=geometry active=knot "*) echo "the knot tile at $RAIL_KNOT took the press and selected the knot" ;;
+        *) echo "FAIL: the knot tile did not select the knot: $(rail_line rail-pick-knot 'click probe')" >&2; RAIL_FAILED=1 ;;
+    esac
+
+    # The lane head: context controls only with a section selected, and Split
+    # here adds a section.
+    RAIL_HEAD="$(rail_line rail-base 'lane head')"
+    echo "lane head: $RAIL_HEAD"
+    case "$RAIL_HEAD" in
+        *" prev="*|*" delete="*) echo "FAIL: the lane head drew section controls with nothing selected" >&2; RAIL_FAILED=1 ;;
+        "step=0 selected=none markers="*" auto="*" split="*" feel="*" scene="*" custom="*" clear="*) ;;
+        *) echo "FAIL: the lane head is missing a control: $RAIL_HEAD" >&2; RAIL_FAILED=1 ;;
+    esac
+    case "$(rail_line rail-inside-control 'lane head')" in
+        *" selected="[0-9]*" prev="*" name="*" next="*" capture="*" delete="*) echo "a selected section put its controls on the lane head" ;;
+        *) echo "FAIL: a selection did not bring the section controls: $(rail_line rail-inside-control 'lane head')" >&2; RAIL_FAILED=1 ;;
+    esac
+    RAIL_SPLIT="$(rail_point "$RAIL_HEAD" split)" || RAIL_FAILED=1
+    run_capture rail-split runs "panel=none,time=2.5,play=0,click=$RAIL_SPLIT" || RAIL_FAILED=1
+    case "$(run_line rail-split)" in
+        "runs="*" sections=8 "*) echo "Split here at $RAIL_SPLIT made the seventh section two" ;;
+        *) echo "FAIL: Split here did not add a section: $(run_line rail-split)" >&2; RAIL_FAILED=1 ;;
+    esac
+    python3 tools/accent_census.py "$RUN_DIR/rail-inside.png" "$RUN_DIR/rail-inside.txt" \
+        --expect-appearance light-blue --primary 1 || RAIL_FAILED=1
+    printf '%-30s lanes=3 scale=100\n' rail-base
+    python3 tools/timeline_lane_alignment.py "$RUN_DIR/rail-base.png" 3 100 || RAIL_FAILED=1
+fi
+
+# Every family's tiles fit the minimum window's flyout unscrolled: the
+# constraint that held Pixel Cats at six stagings is gone (WX-5c §1).
+for family in sound geometry atmosphere materials living type-stage pixel-cats; do
+    capture "rail-family-$family" 960x640 --ui-probe "play=0,scene-family=$family" \
+        >/dev/null || RAIL_FAILED=1
+    RAIL_FAMILY="$(sed -n 's/^scene picker: *//p' "$OUT_DIR/rail-family-$family.txt")"
+    case "$RAIL_FAMILY" in
+        "family=$family "*" offset=0.0/0.0 "*) printf '%-14s unscrolled at 960x640: %s\n' "$family" \
+            "$(printf '%s' "$RAIL_FAMILY" | sed -n 's/.*visible=\[\([^]]*\)\].*/\1/p')" ;;
+        *) echo "FAIL: $family scrolls or did not draw at 960x640: $RAIL_FAMILY" >&2; RAIL_FAILED=1 ;;
+    esac
+done
+if [ "$RAIL_FAILED" -ne 0 ]; then
+    echo "FAIL: the rail, its flyouts or the lane head did not pass" >&2
     SWEEP_FAILED=1
 fi
 
@@ -5335,10 +5490,14 @@ dark_capture dark-150-2560x1440 2560x1440 --ui-scale 150 "${DARK_SOURCE[@]}" \
     --ui-probe "panel=none,time=5,play=0" || DARK_FAILED=1
 dark_capture dark-tip-bare 1280x720 "$FIXTURE" \
     --ui-probe "play=1" || DARK_FAILED=1
-DARK_TIP_TOOLBAR="$(sed -n 's/^preview frame:.*pixels [0-9]*,\([0-9]*\),[0-9]*,\([0-9]*\)$/\1 \2/p' \
-    "$DARK_DIR/dark-tip-bare.txt" | awk '{print $1 + $2}')"
+read -r DARK_MX DARK_MY DARK_MW DARK_MH <<<"$(transport_rect "$DARK_DIR/dark-tip-bare.txt" mute)"
+DARK_MCX=$(( ${DARK_MX:-1136} + ${DARK_MW:-34} / 2 ))
+DARK_TIP_TOOLBAR="${DARK_MY:-418}"
 dark_capture dark-tip-mute 1280x720 "$FIXTURE" \
-    --ui-probe "play=1,hover=1121x$((${DARK_TIP_TOOLBAR:-363} + 25))" || DARK_FAILED=1
+    --ui-probe "play=1,hover=${DARK_MCX}x$(( ${DARK_MY:-418} + ${DARK_MH:-34} / 2 ))" || DARK_FAILED=1
+# A flyout open, in the dark: its selected icon and tile are outline and tint.
+dark_capture dark-flyout-1280x720 1280x720 "${DARK_SOURCE[@]}" \
+    --ui-probe "panel=none,time=5,play=0,flyout=scenes" || DARK_FAILED=1
 
 # 1. Which appearance drew what.
 for name in dark-none-1280x720 dark-export-1280x720 dark-150-2560x1440; do
@@ -5370,34 +5529,39 @@ if python3 tools/timeline_lane_alignment.py "$OUT_DIR/panel-none-1280x720.png" 3
     DARK_FAILED=1
 fi
 
-# 3. The accent census.
-for spec in "dark-none-1280x720 0" "dark-none-960x640 0" "dark-lyrics-1280x720 0" \
-            "dark-tune-1280x720 0" "dark-150-2560x1440 0" "dark-export-1280x720 1"; do
+# 3. The accent census. Since WX-5c every workspace frame has exactly one
+# primary fill, the top bar's Render…; the Export panel's own render button is
+# neutral, so an open panel does not make it two.
+for spec in "dark-none-1280x720 1" "dark-none-960x640 1" "dark-lyrics-1280x720 1" \
+            "dark-tune-1280x720 1" "dark-150-2560x1440 1" "dark-export-1280x720 1" \
+            "dark-flyout-1280x720 1"; do
     read -r dark_name dark_primary <<<"$spec"
     python3 tools/accent_census.py "$DARK_DIR/$dark_name.png" "$DARK_DIR/$dark_name.txt" \
         --expect-appearance black-amber --primary "$dark_primary" || DARK_FAILED=1
 done
 # The light appearance obeys the same rule.
 python3 tools/accent_census.py "$OUT_DIR/panel-none-1280x720.png" \
-    "$OUT_DIR/panel-none-1280x720.txt" --expect-appearance light-blue || DARK_FAILED=1
+    "$OUT_DIR/panel-none-1280x720.txt" --expect-appearance light-blue --primary 1 || DARK_FAILED=1
 python3 tools/accent_census.py "$OUT_DIR/panel-export-1280x720.png" \
     "$OUT_DIR/panel-export-1280x720.txt" --expect-appearance light-blue --primary 1 \
     || DARK_FAILED=1
-# Negative control: the pre-WX-5a selected track — an accent slab in the
-# sidebar — painted into a copy of a passing frame must fail the census.
+# Negative control: the pre-WX-5a selected track — an accent slab — painted
+# into a copy of a passing frame must fail the census. Since WX-5c the slab is
+# the size of a selected rail icon, on the rail, where a regression that gave
+# the open flyout's icon the accent would put one.
 python3 - "$DARK_DIR/dark-none-1280x720.png" "$DARK_DIR/census-control.png" <<'PYSLAB'
 import sys
 from PIL import Image, ImageDraw
 image = Image.open(sys.argv[1]).convert("RGB")
-ImageDraw.Draw(image).rectangle((20, 140, 300, 190), fill=(0xF0, 0xB3, 0x47))
+ImageDraw.Draw(image).rectangle((8, 98, 43, 133), fill=(0xF0, 0xB3, 0x47))
 image.save(sys.argv[2])
 PYSLAB
 if python3 tools/accent_census.py "$DARK_DIR/census-control.png" \
-        "$DARK_DIR/dark-none-1280x720.txt" >/dev/null 2>&1; then
-    echo "FAIL: the accent census passed a frame with an accent slab in the sidebar" >&2
+        "$DARK_DIR/dark-none-1280x720.txt" --primary 1 >/dev/null 2>&1; then
+    echo "FAIL: the accent census passed a frame with an accent slab on the rail" >&2
     DARK_FAILED=1
 else
-    echo "census control: an accent slab in the sidebar fails the census, as it must"
+    echo "census control: an accent slab on the rail fails the census, as it must"
 fi
 
 # 4. The export panel draws ink on its dark fill. The light check's crop, read
@@ -5417,7 +5581,7 @@ fi
 
 # 5. A tooltip, on the dark appearance: bright text the bare frame does not have.
 DARK_TIP_TEXT="$(ffprobe -v error -f lavfi \
-    -i "movie=$DARK_DIR/dark-tip-mute.png,crop=140:24:1050:$((${DARK_TIP_TOOLBAR:-363} - 26)),signalstats" \
+    -i "movie=$DARK_DIR/dark-tip-mute.png,crop=140:24:$((DARK_MCX - 71)):$((DARK_TIP_TOOLBAR - 34)),signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 DARK_TIP_ADDED="$(python3 tools/chrome_probe.py changed "$DARK_DIR/dark-tip-mute.png" \
     "$DARK_DIR/dark-tip-bare.png" "140:24:1050:$((${DARK_TIP_TOOLBAR:-363} - 26))")"
@@ -5500,7 +5664,8 @@ if [ ! -f "$SAVE_STATE_DIR/show.musi" ]; then
     echo "FAIL: the save-state fixture project was not written" >&2
     SAVE_STATE_FAILED=1
 fi
-SAVED_STATE="$(save_state_run save-state-saved 40 --project "$SAVE_STATE_DIR/show.musi")"
+SAVED_STATE="$(save_state_run save-state-saved 40 --project "$SAVE_STATE_DIR/show.musi" \
+    --ui-scale 100)"
 expect_save_state "saved, no edit" "$SAVED_STATE" "*saved"
 
 # 3. C4, end to end. `scene-pick` is a durable edit (it retargets the base scene),
@@ -5553,7 +5718,7 @@ RO_CLEAN_STATE="$(save_state_run save-state-readonly-clean 40 --project "$RO_DIR
 expect_save_state "read-only, no edit" "$RO_CLEAN_STATE" "*saved"
 
 RO_STATE="$(save_state_run save-state-failed 240 \
-    --project "$RO_DIR/show.musi" --ui-probe scene-pick=pulse-field)"
+    --project "$RO_DIR/show.musi" --ui-scale 100 --ui-probe scene-pick=pulse-field)"
 expect_save_state "read-only, edited" "$RO_STATE" "*failed("
 # The reason is the actionable half; a bare "Save failed" is the silent amber dot
 # this task exists to delete.
@@ -5565,29 +5730,51 @@ if [ "$RO_BEFORE" != "$RO_AFTER" ]; then
     SAVE_STATE_FAILED=1
 fi
 
-# The badge has to be *drawn*, not merely computed. The TRACKS header carries the
-# word, so a capture with no ink in that strip means the state is reaching the
-# report and not the user — the exact split this repository keeps rediscovering.
+# The badge has to be *drawn*, not merely computed. The top bar carries the
+# word (WX-5c), so a capture with no ink where its `top bar:` line says the
+# word is means the state is reaching the report and not the user — the exact
+# split this repository keeps rediscovering. The crop is read from the line,
+# never measured once; a strip as wide in the bar's empty stretch beside it
+# must carry no ink, so a crop that drifted onto anti-aliasing or the wrong
+# appearance cannot pass.
 for shot in save-state-saved save-state-failed; do
     if [ ! -f "$OUT_DIR/$shot.png" ]; then
         echo "FAIL: no capture for $shot" >&2
         SAVE_STATE_FAILED=1
         continue
     fi
-    python3 - "$OUT_DIR/$shot.png" "$shot" <<'PYEOF' || SAVE_STATE_FAILED=1
+    python3 - "$OUT_DIR/$shot.png" "$shot" "$OUT_DIR/$shot.txt" <<'PYEOF' || SAVE_STATE_FAILED=1
+import re
 import sys
 from PIL import Image
 
-path, name = sys.argv[1], sys.argv[2]
-# The right half of the TRACKS header row, where the state word is drawn. The
-# panel is the top-left of the sidebar and the header is ~26 px tall.
-badge = Image.open(path).convert("L").crop((180, 4, 372, 30))
-# `tobytes` rather than `getdata`: the latter is deprecated in Pillow 14 and
-# printed a warning into the middle of this gate's output.
+path, name, report = sys.argv[1], sys.argv[2], sys.argv[3]
+bar = re.search(r"^top bar:.*", open(report, encoding="utf-8").read(), re.M)
+word = bar and re.search(r" scale=([\d.]+) .* word=(\d+),(\d+),(\d+),(\d+)", bar.group(0))
+if not word:
+    print(f"FAIL: {name} drew no save-state word in the top bar", file=sys.stderr)
+    sys.exit(1)
+scale = float(word.group(1))
+x, y, w, h = (round(int(v) * scale) for v in word.groups()[1:])
+group = re.search(r"tabs=direct\*?@(\d+)", bar.group(0))
+inset = round(8 * scale)
+image = Image.open(path).convert("L")
+# The word's own box, as the top bar reports it, less the bar's vertical
+# padding; and, as the control, a strip as wide in the empty stretch between
+# the save state and the tabs, which must carry no ink at all.
+badge = image.crop((x, y + inset, x + w, y + h - inset))
+empty_x = x + w + round(24 * scale)
+empty = image.crop((empty_x, y + inset,
+                    min(empty_x + w, round(int(group.group(1)) * scale) - 4), y + h - inset))
+# `tobytes` rather than `getdata`: the latter is deprecated in Pillow 14.
 ink = sum(1 for pixel in badge.tobytes() if pixel < 160)
-print(f"{name}: {ink} ink pixels in the TRACKS header badge")
+stray = sum(1 for pixel in empty.tobytes() if pixel < 160)
+print(f"{name}: {ink} ink pixels in the top bar's save word, {stray} in the empty stretch")
 if ink < 20:
-    print(f"FAIL: {name} drew no save-state word in the TRACKS header", file=sys.stderr)
+    print(f"FAIL: {name} drew no save-state word in the top bar", file=sys.stderr)
+    sys.exit(1)
+if stray:
+    print(f"FAIL: {name}'s control strip beside the save word is not empty", file=sys.stderr)
     sys.exit(1)
 PYEOF
 done
@@ -5934,18 +6121,35 @@ entry_expect "drop-unsupported" "tracks" "0 open"
 
 echo "--- D2: the ASCII image import and clear controls ---"
 
-# The footer row is the sidebar's last, so it sits a fixed distance above the
-# timeline band: y=383 since WX-5b grew the plan lane (and the band) by 20 px;
-# it was 403. A press that misses reads `claimed=nothing` on both buttons, and
-# the "empty" capture's expectation of nothing is only a control while the
-# other two still hit — which is why all three move together.
+# The footer is the scenes flyout's last row since WX-5c, so every capture
+# here opens the flyout and every point is read from the picker's own
+# `footer=import@…;clear@…`, which reports Clear's seat whether or not Clear
+# is drawn. (It sat at y=403, then y=383, at fixed points that moved with the
+# band twice in a week.) A press that misses reads `claimed=nothing` on both
+# buttons, and the "empty" capture's expectation of nothing is only a control
+# while the other two still hit.
+entry_capture "ascii-footer" "$ENTRY_DIR/store-ignored.json" \
+    "$ENTRY_DIR/source.wav" --ui-probe "flyout=scenes" || true
+ASCII_FOOTER="$(sed -n 's/^scene picker: *//p' "$ENTRY_DIR/ascii-footer.txt")"
+ascii_point() {
+    python3 -c "
+import re, sys
+m = re.search(sys.argv[2] + r'@(\d+),(\d+),(\d+),(\d+)', sys.argv[1])
+if not m: sys.exit('no ' + sys.argv[2] + ' seat on: ' + sys.argv[1])
+x, y, w, h = (int(v) for v in m.groups())
+print(f'{x + w // 2}x{y + h // 2}')
+" "$ASCII_FOOTER" "$1"
+}
+ASCII_IMPORT_AT="$(ascii_point import)" || ENTRY_FAILED=1
+ASCII_CLEAR_AT="$(ascii_point clear)" || ENTRY_FAILED=1
+echo "ascii footer: import at $ASCII_IMPORT_AT, clear seat at $ASCII_CLEAR_AT"
 
 # Empty: Import is drawn, Clear is not. Proved by pressing Clear's seat and
 # getting nothing — a picture cannot distinguish "absent" from "drawn in the
 # background colour", and this is the assertion that can.
 entry_capture "ascii-empty" "$ENTRY_DIR/store-ignored.json" \
-    "$ENTRY_DIR/source.wav" --ui-probe "click=282x383" || true
-entry_expect "ascii-empty" "click probe" "at=282x383 claimed=nothing"
+    "$ENTRY_DIR/source.wav" --ui-probe "flyout=scenes,click=$ASCII_CLEAR_AT" || true
+entry_expect "ascii-empty" "click probe" "at=$ASCII_CLEAR_AT claimed=nothing"
 entry_expect "ascii-empty" "ascii" "none (procedural mode)"
 
 # Populated, through the command line rather than a picker, so the state is
@@ -5956,22 +6160,20 @@ entry_expect_contains "ascii-populated" "ascii" "54x54 glyphs from"
 
 # Cleared: the same seat now claims Clear, and the grid goes back to procedural.
 # Path, digest, cells and dimensions are one `Option`, so they cannot part ways.
-#
-# The grouped picker keeps Import and Clear on one row. Measured at 1280x720
-# under the gate's private config: Import x150, Clear x282, both y403. Clear
-# retains its widget id; only its seat changes. Keep the no-dialog guards below.
+# Clear retains its widget id; only its seat changes. Keep the no-dialog
+# guards below.
 entry_capture "ascii-cleared" "$ENTRY_DIR/store-ignored.json" \
     "$ENTRY_DIR/source.wav" --ascii-image "$ENTRY_DIR/picture.png" \
-    --ui-probe "click=282x383" || true
-entry_expect "ascii-cleared" "click probe" "at=282x383 claimed=0xd00000002"
+    --ui-probe "flyout=scenes,click=$ASCII_CLEAR_AT" || true
+entry_expect "ascii-cleared" "click probe" "at=$ASCII_CLEAR_AT claimed=0xd00000002"
 entry_expect "ascii-cleared" "ascii" "none (procedural mode)"
 
 # Import takes the press and reaches the picker. Run with no backend on PATH, so
 # the refusal is deterministic and no modal is drawn on the capture display.
 ENTRY_PATH_OVERRIDE="$ENTRY_NO_DIALOG_PATH" \
     entry_capture "ascii-import-click" "$ENTRY_DIR/store-ignored.json" \
-        "$ENTRY_DIR/source.wav" --ui-probe "click=150x383" || true
-entry_expect "ascii-import-click" "click probe" "at=150x383 claimed=0xd00000001"
+        "$ENTRY_DIR/source.wav" --ui-probe "flyout=scenes,click=$ASCII_IMPORT_AT" || true
+entry_expect "ascii-import-click" "click probe" "at=$ASCII_IMPORT_AT claimed=0xd00000001"
 
 # Staged with no track: the fourth state D2 asks for, and the one where the
 # scene browser is not even on screen. The frame is the evidence that the
