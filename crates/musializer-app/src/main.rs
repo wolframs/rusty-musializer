@@ -801,7 +801,7 @@ fn run(
         .ui_probe
         .as_ref()
         .and_then(|probe| probe.progress_shot);
-    let mut progress_shot_armed = false;
+    let mut progress_shot_wait: Option<u8> = None;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -1560,24 +1560,31 @@ fn run(
         // the analyzer and the scene for the duration, and draws its own progress
         // screen (`musializer.c:641-651`).
         if export.is_some() {
-            // `--ui-probe progress-shot=N` (WX-5d): photograph the progress
-            // screen once frame N has been encoded. One tick after it was
-            // drawn, because a readback returns the frame before the last
-            // (`docs/TRAPS.md`), and the line reported is that frame's.
+            // `--ui-probe progress-shot=N` (WX-5d): once N frames are
+            // encoded, hold the encoder for three ticks and photograph the
+            // screen after the second identical one. Held rather than timed,
+            // because which of the last two frames a readback returns depends
+            // on the renderer (`docs/TRAPS.md`), and a still screen makes
+            // that question moot.
             if let (Some(target), Some(path)) = (progress_shot, options.probe_shot.as_ref()) {
-                let encoded = export.as_ref().map_or(0, ExportSession::encoded_frames);
-                if progress_shot_armed {
-                    let path = progress_shot_path(path);
-                    with_preview_paused(music.as_ref(), || {
-                        let image = rl.load_image_from_screen(&thread);
-                        image.export_image(&path.to_string_lossy());
-                    });
-                    app.shell.render_view.progress_at_shot =
-                        Some(app.shell.render_view.progress_previous.clone());
-                    progress_shot = None;
-                    progress_shot_armed = false;
-                } else if encoded > u64::from(target) {
-                    progress_shot_armed = true;
+                let session = export.as_mut().expect("just checked");
+                match progress_shot_wait {
+                    None if session.encoded_frames() >= u64::from(target) => {
+                        session.hold_for(3);
+                        progress_shot_wait = Some(2);
+                    }
+                    Some(0) => {
+                        let path = progress_shot_path(path);
+                        with_preview_paused(music.as_ref(), || {
+                            let image = rl.load_image_from_screen(&thread);
+                            image.export_image(&path.to_string_lossy());
+                        });
+                        app.shell.render_view.progress_at_shot =
+                            Some(app.shell.render_view.progress.clone());
+                        progress_shot = None;
+                    }
+                    Some(left) => progress_shot_wait = Some(left - 1),
+                    None => {}
                 }
             }
             let finished = export.as_mut().expect("just checked").tick(

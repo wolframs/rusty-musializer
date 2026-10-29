@@ -101,9 +101,7 @@ pub(crate) struct RenderView {
     pub report: String,
     /// The `export progress:` line from the last progress frame drawn.
     pub progress: String,
-    /// The progress line of the frame `progress-shot=` photographed, which is
-    /// the one before the last (`--probe-shot`'s trap).
-    pub progress_previous: String,
+    /// The progress line of the screen `progress-shot=` photographed.
     pub progress_at_shot: Option<String>,
 }
 
@@ -2105,8 +2103,7 @@ impl Shell {
                 at(cancel)
             },
         );
-        self.render_view.progress_previous =
-            std::mem::replace(&mut self.render_view.progress, report);
+        self.render_view.progress = report;
         cancelled
     }
 }
@@ -3319,6 +3316,11 @@ pub(crate) struct ExportSession {
     /// the encoder. The ordinary frame is still prepared and drawn first, so
     /// consuming this cannot change any subsequent scene state or timing.
     share_frame: Option<PreparedFrame>,
+    /// Ticks left that draw the progress screen without stepping the encoder
+    /// (`--ui-probe progress-shot=`, WX-5d): two identical frames in a row,
+    /// so a readback shows the frame the report describes whichever of the
+    /// two a renderer hands back.
+    hold: u8,
 }
 
 /// Builds any whole-track data the export's frames will need, before the first one
@@ -3555,6 +3557,7 @@ impl ExportSession {
             restore_playing,
             reported_frame_lanes: false,
             share_frame,
+            hold: 0,
         })
     }
 
@@ -3562,6 +3565,12 @@ impl ExportSession {
     #[must_use]
     pub(crate) fn encoded_frames(&self) -> u64 {
         self.job.as_ref().map_or(0, RenderJob::encoded_frames)
+    }
+
+    /// Draws the progress screen for `ticks` ticks without encoding, so a
+    /// probe can photograph a still screen (`progress-shot=`).
+    pub(crate) fn hold_for(&mut self, ticks: u8) {
+        self.hold = ticks;
     }
 
     /// The running job.
@@ -3643,7 +3652,9 @@ impl ExportSession {
             if cancelled {
                 self.job_mut().request_cancel();
             }
-            let active = !self.job().is_finishing() && !self.job().cancel_requested();
+            let active =
+                !self.job().is_finishing() && !self.job().cancel_requested() && self.hold == 0;
+            self.hold = self.hold.saturating_sub(1);
             if active {
                 let mut steps = self.job().batch_size();
                 while steps > 0 && !self.job().is_complete() {
