@@ -980,7 +980,14 @@ fn run(
                 rl.set_window_size(width as i32, height as i32);
             }
             rl.set_window_position(0, 0);
-            app.shell.panel = probe.panel;
+            // With the column, a probe that names no panel and no view keeps
+            // the view `ui.json` seeded rather than resetting it to none.
+            if !app.shell.column_layout
+                || probe.panel != cli::UiPanel::None
+                || probe.column.is_some()
+            {
+                app.shell.panel = probe.panel;
+            }
             app.shell.fullscreen = probe.fullscreen;
             if let Some(width) = probe.sidebar_width {
                 app.shell.ui_preferences.sidebar_width = Some(width);
@@ -1753,6 +1760,22 @@ fn run(
         // One egui pass for every toolkit surface on screen: the dock, the
         // Editor and the welcome theme picker. The dock is built first, so
         // keys a terminal used are gone before the Editor reads its Escape.
+        // With the column the dock's probes run whether or not Direct is on
+        // screen (WX-5d): a reply that arrives behind another view is what
+        // the Direct tab's dot is for, and a probe that only ran while the
+        // dock was shown could never stage one.
+        if column_layout {
+            if let Some(probe) = options.ui_probe.as_ref() {
+                let context = dock_context(&app, follow.as_ref(), time_seconds);
+                dock_probes(&mut dock, probe, report.frames, &context);
+                if report.frames == 40 {
+                    if let Some(view) = probe.column_switch {
+                        app.shell
+                            .show_column_view(view, &app.workspace, &mut dock_commands);
+                    }
+                }
+            }
+        }
         let egui_active = editor_active || welcome_theme_active || dock_rect.is_some();
         if egui_active {
             editor_backend.begin_frame(
@@ -1767,31 +1790,9 @@ fn run(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
                 );
-                if let Some(probe) = options.ui_probe.as_ref() {
-                    if report.frames == 10 {
-                        if let Some(agent) =
-                            probe.agent.as_deref().and_then(ui::dock::Agent::from_name)
-                        {
-                            dock.open_chat(agent, &context);
-                        }
-                    }
-                    if report.frames == 30 {
-                        if let Some(text) = probe.agent_say.as_deref() {
-                            dock.probe_say(text, &context);
-                        }
-                    }
-                    if report.frames == 60 {
-                        if let Some(allow) = probe.agent_decide {
-                            dock.probe_decide(allow);
-                        }
-                    }
-                    if report.frames == 20 {
-                        if let Some(command) = probe.dock_run.as_deref() {
-                            dock.probe_write(&format!("{command}\r"));
-                        }
-                        if probe.dock_focus {
-                            dock.focus_active();
-                        }
+                if !column_layout {
+                    if let Some(probe) = options.ui_probe.as_ref() {
+                        dock_probes(&mut dock, probe, report.frames, &context);
                     }
                 }
                 let output = dock.show(editor_backend.ctx(), rect, &context);
@@ -2891,6 +2892,14 @@ fn run(
     }
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
+    if app.shell.column_layout {
+        // WX-5d: where the dock drew, which is the column's rect on Direct.
+        let rect = app.shell.column_rect();
+        report.dock.push_str(&format!(
+            " rect={:.0},{:.0},{:.0},{:.0}",
+            rect.x, rect.y, rect.width, rect.height
+        ));
+    }
     report.scene_runs = app.shell.describe_runs(&app.workspace);
     report.top_bar = app.shell.describe_top_bar();
     report.notices = app.shell.describe_notices();
@@ -6761,4 +6770,37 @@ fn progress_shot_path(shot: &Path) -> PathBuf {
         .extension()
         .map_or_else(|| "png".into(), |ext| ext.to_string_lossy().into_owned());
     shot.with_file_name(format!("{stem}-progress.{extension}"))
+}
+
+/// The dock's probe seams (`agent=`, `agent-say=`, `agent-decide=`,
+/// `dock-run=`, `dock-focus=`), each on its own frame.
+fn dock_probes(
+    dock: &mut ui::dock::Dock,
+    probe: &cli::UiProbe,
+    frame: u64,
+    context: &ui::dock::DockContext,
+) {
+    if frame == 10 {
+        if let Some(agent) = probe.agent.as_deref().and_then(ui::dock::Agent::from_name) {
+            dock.open_chat(agent, context);
+        }
+    }
+    if frame == 30 {
+        if let Some(text) = probe.agent_say.as_deref() {
+            dock.probe_say(text, context);
+        }
+    }
+    if frame == 60 {
+        if let Some(allow) = probe.agent_decide {
+            dock.probe_decide(allow);
+        }
+    }
+    if frame == 20 {
+        if let Some(command) = probe.dock_run.as_deref() {
+            dock.probe_write(&format!("{command}\r"));
+        }
+        if probe.dock_focus {
+            dock.focus_active();
+        }
+    }
 }

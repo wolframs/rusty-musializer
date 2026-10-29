@@ -1856,6 +1856,7 @@ impl Shell {
             UiRect::default()
         };
         // The column's surface and edge, under every view's own drawing.
+        self.column_report.band = frame.timeline;
         self.column_chrome(d, under);
 
         if !self.fullscreen {

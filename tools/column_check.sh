@@ -1,0 +1,353 @@
+#!/usr/bin/env bash
+#
+# The column gate (WX-5d, build/redesign/wx5d-design.md §5, the Frame checks):
+# the right column behind MUSIALIZER_COLUMN_LAYOUT=1, checked headless.
+#
+#   tools/column_check.sh [OUTPUT_DIR]        # default build/column-check
+#
+# Every launch goes through tools/headless_run.sh: private Xvfb, unreachable
+# Wayland and audio endpoints, kdialog/zenity off PATH, a private config
+# directory, --mute. Destinations are given with `--ui-probe save-to=`, so no
+# picker is ever asked for. The fixture is synthetic: make-fixture-wav audio
+# and a three-section treatment. Every press aims at a rect from a report
+# line (`top bar:`, `column:`, `render view:`), never at a pixel measured
+# once, and every run is at --ui-scale 100 except the 150 % row.
+#
+# Checks, each with its control:
+#   1. Tabs: a tab press by its `top bar:` rect sets `column: view=`; a press
+#      on the empty stretch between the tabs and Still changes nothing; the
+#      selected tab again closes the column.
+#   2. The frame does not move: `preview frame:`, `transport:` and the band
+#      (`column: band=`) are identical across all five views at 960x640,
+#      1280x720, 1920x1080 and 2560x1440 at 150 %.
+#   3. The accent census (`--primary 1`) in every view, both appearances; in
+#      the Render view the accent lies inside the commit and the top bar's
+#      Render… holds none.
+#   4. ui.json: a dragged width and the view survive a restart; a pre-WX-5d
+#      file with `dock_width 480, dock_open true` opens a 480 column on Direct.
+#   5. The dock in the column: `dock: rect=` is the column's; a focused
+#      terminal holds the keyboard on Direct and releases it when the view
+#      leaves Direct; a reply behind Lyrics lights the Direct tab
+#      (`badge=direct:reply`) and the same reply on Direct does not; a
+#      permission prompt behind Lyrics is `waiting` and posts one warning.
+#   6. The Render view: a SIZE press by its rect changes `export config:`; a
+#      press between two shape tiles changes nothing; the commit with
+#      `save-to=` renders the file.
+#   7. The progress screen (`progress-shot=N`): the ground is the surface
+#      exactly, the bar's filled part is the accent exactly, the encoded
+#      frame is drawn; at frame 0 the bar holds no accent, and the band
+#      layout's old screen fails the ground test.
+#
+# COLUMN_BIN names a different binary, for a negative control without
+# replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
+#
+# NEGATIVE CONTROLS, run 2026-10-29 on the GPU path and on llvmpipe
+# (MZ_GL_LAUNCH=""), each perturbation reverted byte for byte after:
+#   (filled in below the checks' first green run; see the end of this file)
+
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+OUT="${1:-build/column-check}"
+rm -rf "$OUT"
+mkdir -p "$OUT"
+OUT="$(realpath "$OUT")"
+
+export MZ_BIN="${COLUMN_BIN:-$(realpath target/debug/musializer)}"
+export MUSIALIZER_COLUMN_LAYOUT=1
+export SHELL=/bin/sh
+
+cargo run --quiet --bin make-fixture-wav -- "$OUT/fixture.wav" 6 >/dev/null
+cat >"$OUT/show.treatment.json" <<'EOF'
+{ "schema": "musializer.treatment/v1", "title": "Column Fixture",
+  "audio": { "path": "fixture.wav" },
+  "segments": [ { "at": 0, "scene": "spectrum" }, { "at": 2, "scene": "loom" },
+                { "at": 4, "scene": "cadence" } ] }
+EOF
+SHOW="$OUT/show.treatment.json"
+
+failures=0
+fail() {
+    printf 'FAIL: %s\n' "$*"
+    failures=$((failures + 1))
+}
+line_of() { # line_of KEY LOG
+    grep -E "^$1: " "$2" | tail -n 1 | sed -E "s/^$1: +//" || true
+}
+# run NAME FRAMES PROBE [extra args]; state in $OUT/state-NAME unless STATE is set.
+run() {
+    local name="$1" frames="$2" probe="$3"
+    shift 3
+    MZ_STATE_DIR="${STATE:-$OUT/state-$name}" tools/headless_run.sh --treatment "$SHOW" \
+        --ui-scale "${SCALE:-100}" --ui-probe "$probe" --probe-frames "$frames" \
+        --probe-shot "$OUT/$name.png" "$@" >"$OUT/$name.log" 2>&1 || true
+}
+# rect NAME LINE -> "x y w h" of `NAME@x,y,w,h` (a `*` may follow NAME).
+rect() {
+    python3 - "$1" "$2" <<'PY'
+import re, sys
+name, line = sys.argv[1], sys.argv[2]
+m = re.search(r"(?:^|[ ;,=])" + re.escape(name) + r"\*?@(-?\d+),(-?\d+),(\d+),(\d+)", line)
+if not m:
+    m = re.search(r"(?:^| )" + re.escape(name) + r"=(-?\d+),(-?\d+),(\d+),(\d+)", line)
+if not m:
+    sys.exit(f"no rect for {name}")
+print(*m.groups())
+PY
+}
+centre() { # centre NAME LINE -> XxY
+    local r
+    r="$(rect "$1" "$2")" || return 1
+    read -r x y w h <<<"$r"
+    echo "$((x + w / 2))x$((y + h / 2))"
+}
+field() { # field KEY LINE -> the value of `KEY=value`
+    sed -nE "s/.*(^| )$1=([^ ]*).*/\\2/p" <<<"$2"
+}
+
+# --- 1. Tabs -----------------------------------------------------------------
+run base 30 "size=1280x720,time=3,column=direct"
+bar="$(line_of 'top bar' "$OUT/base.log")"
+col="$(line_of column "$OUT/base.log")"
+printf 'column: %s\n' "${col:0:200}"
+case "$col" in
+    *"view=direct open=1 rect=922,46,358,674"*) ;;
+    *) fail "the base run is not a 358 column on Direct at 1280x720: $col" ;;
+esac
+case "$bar" in
+    *"tabs=direct*@"*";assist@"*) ;;
+    *) fail "the top bar does not draw the four column tabs: ${bar:0:200}" ;;
+esac
+case "$bar" in
+    *"export@"*) fail "Export is still a tab with the column layout" ;;
+esac
+for tab in lyrics look assist; do
+    run "tab-$tab" 30 "size=1280x720,time=3,column=direct,click=$(centre "$tab" "$bar")"
+    got="$(field view "$(line_of column "$OUT/tab-$tab.log")")"
+    [ "$got" = "$tab" ] || fail "the $tab tab's press left the column on $got"
+done
+run tab-direct-again 30 "size=1280x720,time=3,column=direct,click=$(centre direct "$bar")"
+got="$(field view "$(line_of column "$OUT/tab-direct-again.log")")"
+[ "$got" = "direct" ] && fail "the selected tab's press did not close the column"
+case "$(line_of column "$OUT/tab-direct-again.log")" in
+    *"open=0"*) ;;
+    *) fail "the selected tab's press left the column open" ;;
+esac
+read -r ax _ aw _ <<<"$(rect assist "$bar")"
+read -r sx _ _ _ <<<"$(rect still "$bar")"
+gap="$(((ax + aw + sx) / 2))x23"
+run tab-gap 30 "size=1280x720,time=3,column=direct,click=$gap"
+got="$(field view "$(line_of column "$OUT/tab-gap.log")")"
+[ "$got" = "direct" ] || fail "a press at $gap, between the tabs and Still, changed the view to $got"
+
+# --- 2. The frame does not move ------------------------------------------------
+for size in 960x640 1280x720 1920x1080 2560x1440@150; do
+    window="${size%@*}"
+    scale=100
+    [ "$size" != "$window" ] && scale="${size#*@}"
+    reference=""
+    for view in direct lyrics look assist render; do
+        name="frame-$window-$view"
+        SCALE=$scale run "$name" 24 "size=$window,time=3,column=$view"
+        frame="$(line_of 'preview frame' "$OUT/$name.log")"
+        transport="$(line_of transport "$OUT/$name.log")"
+        band="$(field band "$(line_of column "$OUT/$name.log")")"
+        width="$(rect rect "$(line_of column "$OUT/$name.log")" | cut -d' ' -f3)"
+        got="$frame | $transport | band=$band | column-width=$width"
+        if [ -z "$frame" ] || [ -z "$band" ]; then
+            fail "$name reported no frame or band"
+        elif [ -z "$reference" ]; then
+            reference="$got"
+            printf '%s: %s\n' "$size" "${frame:0:80} band=$band column=$width"
+        elif [ "$got" != "$reference" ]; then
+            fail "the frame moved at $size between direct and $view: $got"
+        fi
+    done
+done
+
+# --- 3. The accent census ------------------------------------------------------
+for theme in dark light; do
+    for view in direct lyrics look assist render; do
+        name="census-$theme-$view"
+        run "$name" 30 "size=1280x720,time=3,column=$view" --ui-theme "$theme"
+        if ! python3 tools/accent_census.py "$OUT/$name.png" "$OUT/$name.log" --primary 1 \
+            >"$OUT/$name.census" 2>&1; then
+            fail "census $theme $view: $(tail -n 3 "$OUT/$name.census" | tr '\n' ' ')"
+        fi
+    done
+done
+# Where the one accent is in the Render view: in the commit, not on Render….
+accent_in() { # accent_in PNG LOG X Y W H -> count of accent pixels
+    python3 - "$@" <<'PY'
+import re, sys
+import numpy as np
+from PIL import Image
+png, log, x, y, w, h = sys.argv[1], sys.argv[2], *map(int, sys.argv[3:])
+text = open(log, encoding="utf-8", errors="replace").read()
+accent = re.search(r"^appearance:.* accent=#([0-9A-Fa-f]{6})", text, re.M).group(1)
+target = np.array([int(accent[i:i + 2], 16) for i in (0, 2, 4)])
+pixels = np.asarray(Image.open(png).convert("RGB"), dtype=int)[y:y + h, x:x + w]
+print(int((np.abs(pixels - target).max(axis=2) <= 18).sum()))
+PY
+}
+for theme in dark light; do
+    name="census-$theme-render"
+    view_line="$(line_of 'render view' "$OUT/$name.log")"
+    bar_line="$(line_of 'top bar' "$OUT/$name.log")"
+    read -r cx cy cw ch <<<"$(rect commit "$view_line")"
+    read -r rx ry rw rh <<<"$(rect 'render(view)' "$bar_line")"
+    in_commit="$(accent_in "$OUT/$name.png" "$OUT/$name.log" "$cx" "$cy" "$cw" "$ch")"
+    on_button="$(accent_in "$OUT/$name.png" "$OUT/$name.log" "$rx" "$ry" "$rw" "$rh")"
+    printf 'render view %s: accent in the commit %s, on Render… %s\n' "$theme" "$in_commit" "$on_button"
+    [ "$in_commit" -gt $((cw * ch / 2)) ] || fail "$theme: the commit is not the accent fill ($in_commit px)"
+    [ "$on_button" -eq 0 ] || fail "$theme: Render… keeps the accent while its view is open ($on_button px)"
+done
+
+# --- 4. ui.json ----------------------------------------------------------------
+STATE="$OUT/state-persist" run persist-1 30 \
+    "size=1280x720,time=3,column=direct,column-width=500,click=$(centre lyrics "$bar")"
+STATE="$OUT/state-persist" run persist-2 20 "size=1280x720,time=3"
+case "$(line_of column "$OUT/persist-2.log")" in
+    *"view=lyrics open=1 rect=780,46,500,674"*) ;;
+    *) fail "a 500 column on Lyrics did not survive the restart: $(line_of column "$OUT/persist-2.log")" ;;
+esac
+mkdir -p "$OUT/state-old/config/musializer"
+cat >"$OUT/state-old/config/musializer/ui.json" <<'EOF'
+{"schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,
+ "inspector_width":null,"timeline_height":null,"lyric_lane_height":null,
+ "lyric_tap_offset":null,"dock_open":true,"dock_width":480.0}
+EOF
+STATE="$OUT/state-old" run old-file 20 "size=1280x720,time=3"
+case "$(line_of column "$OUT/old-file.log")" in
+    *"view=direct open=1 rect=800,46,480,674"*) ;;
+    *) fail "a pre-WX-5d dock_width 480 did not open a 480 column on Direct: $(line_of column "$OUT/old-file.log")" ;;
+esac
+
+# --- 5. The dock in the column -------------------------------------------------
+run dock-focus 60 'size=1600x900,column=direct,dock-run=echo dock-$((6*7)),dock-focus=1'
+dock="$(line_of dock "$OUT/dock-focus.log")"
+col_rect="$(rect rect "$(line_of column "$OUT/dock-focus.log")" | tr ' ' ',')"
+case "$dock" in
+    *"dock-42"*"rect=$col_rect") ;;
+    *) fail "the dock did not run in the column's rect ($col_rect): ${dock:0:120}…${dock: -40}" ;;
+esac
+case "$dock" in
+    *"keyboard=true"*) ;;
+    *) fail "a focused terminal on Direct did not hold the keyboard" ;;
+esac
+run dock-leave 60 'size=1600x900,column=direct,dock-run=echo leave,dock-focus=1,column-switch=lyrics'
+case "$(line_of dock "$OUT/dock-leave.log")" in
+    *"keyboard=false"*) ;;
+    *) fail "leaving Direct did not release the keyboard: $(line_of dock "$OUT/dock-leave.log" | cut -c1-160)" ;;
+esac
+[ "$(field view "$(line_of column "$OUT/dock-leave.log")")" = "lyrics" ] ||
+    fail "column-switch=lyrics did not reach Lyrics"
+FAKE="$OUT/fake-agent"
+printf '#!/bin/sh\nexec /usr/bin/python3 %s "$@"\n' "$(realpath tools/fake_agent.py)" >"$FAKE"
+chmod +x "$FAKE"
+agent_run() { # agent_run NAME VIEW SAY
+    env MUSIALIZER_AGENT_CLAUDE="$FAKE" MUSIALIZER_AGENT_CODEX="$FAKE" MUSIALIZER_AGENT_AGY="$FAKE" \
+        MZ_STATE_DIR="$OUT/state-$1" tools/headless_run.sh --treatment "$SHOW" --ui-scale 100 \
+        --ui-probe "size=1600x900,column=$2,agent=claude,agent-say=$3" --probe-frames 120 \
+        --probe-shot "$OUT/$1.png" >"$OUT/$1.log" 2>&1 || true
+}
+agent_run badge-away lyrics 'make the bridge colder'
+agent_run badge-here direct 'make the bridge colder'
+agent_run badge-wait lyrics 'please ask first'
+for case_ in badge-away:reply badge-here:none badge-wait:waiting; do
+    name="${case_%%:*}"
+    want="${case_##*:}"
+    got="$(field badge "$(line_of column "$OUT/$name.log")")"
+    [ "$got" = "direct:$want" ] || fail "$name: the Direct tab's dot is $got, not direct:$want"
+done
+case "$(line_of dock "$OUT/badge-here.log")" in
+    *"replies=1"*) ;;
+    *) fail "the reply on Direct never arrived, so the badge control proves nothing" ;;
+esac
+case "$(line_of notices "$OUT/badge-wait.log")" in
+    *"warning"*) ;;
+    *) fail "a permission prompt behind Lyrics posted no warning" ;;
+esac
+
+# --- 6. The Render view --------------------------------------------------------
+run render 30 "size=1280x720,time=3,column=render"
+view_line="$(line_of 'render view' "$OUT/render.log")"
+before="$(line_of 'export config' "$OUT/render.log")"
+run render-720 30 "size=1280x720,time=3,column=render,click=$(centre 720p "$view_line")"
+case "$(line_of 'export config' "$OUT/render-720.log")" in
+    "1280x720 at"*) ;;
+    *) fail "the 720p press did not reach the config: $(line_of 'export config' "$OUT/render-720.log")" ;;
+esac
+read -r tx ty tw th <<<"$(rect 16:9 "$view_line")"
+run render-tile-gap 30 "size=1280x720,time=3,column=render,click=$((tx + tw + 3))x$((ty + th / 2))"
+[ "$(line_of 'export config' "$OUT/render-tile-gap.log")" = "$before" ] ||
+    fail "a press between two shape tiles changed the config"
+mkdir -p "$OUT/renders"
+run render-go 40 "size=1280x720,time=3,column=render,save-to=$OUT/renders/clip.mp4,click=$(centre commit "$view_line"),progress-shot=20" \
+    --encoder "${MZ_ENCODER:-nvenc}" --render-window 1 2
+[ -s "$OUT/renders/clip.mp4" ] || fail "the commit with save-to= wrote no video"
+
+# --- 7. The progress screen ----------------------------------------------------
+pixel_check() { # pixel_check PNG LOG MODE -> prints and exits nonzero on failure
+    python3 - "$@" <<'PY'
+import re, sys
+import numpy as np
+from PIL import Image
+png, log, mode = sys.argv[1:]
+text = open(log, encoding="utf-8", errors="replace").read()
+look = re.search(r"^appearance:.* accent=#(\w{6}) surface=#(\w{6})", text, re.M)
+hexrgb = lambda h: np.array([int(h[i:i + 2], 16) for i in (0, 2, 4)])
+accent, surface = hexrgb(look.group(1)), hexrgb(look.group(2))
+image = np.asarray(Image.open(png).convert("RGB"), dtype=int)
+line = re.search(r"^export progress:\s+(.*)$", text, re.M)
+fields = dict(kv.split("=", 1) for kv in line.group(1).split()) if line else {}
+# The ground: an opaque fill, so compared exactly, away from every drawn part.
+ground = image[8, 8]
+ground_ok = bool((ground == surface).all())
+if mode == "ground":
+    print(f"ground {tuple(ground)} surface {tuple(surface)}")
+    sys.exit(0 if ground_ok else 1)
+x, y, w, h = map(int, fields["bar"].split(","))
+fill = int(fields["fill"])
+bar = image[y:y + h, x:x + w]
+accent_px = int((np.abs(bar - accent).max(axis=2) == 0).sum())
+# Inside the fill, clear of the rounded ends: the accent exactly.
+inner = image[y + 2:y + h - 2, x + 4:x + max(fill - 4, 4)]
+inner_ok = fill > 8 and bool((np.abs(inner - accent).max(axis=2) == 0).all())
+print(f"ground_ok={ground_ok} fill={fill} accent_px={accent_px} inner_exact={inner_ok} thumb={fields.get('thumb')}")
+if mode == "zero":
+    sys.exit(0 if accent_px == 0 else 1)
+sys.exit(0 if ground_ok and inner_ok and fields.get("thumb") == "drawn" else 1)
+PY
+}
+progress_png="$OUT/render-go-progress.png"
+if [ -s "$progress_png" ]; then
+    pixel_check "$progress_png" "$OUT/render-go.log" full || fail "the progress screen at frame 20 is not the themed one"
+else
+    fail "progress-shot=20 wrote no picture"
+fi
+run render-zero 40 "size=1280x720,time=3,column=render,save-to=$OUT/renders/zero.mp4,click=$(centre commit "$view_line"),progress-shot=0" \
+    --encoder "${MZ_ENCODER:-nvenc}" --render-window 1 2
+if [ -s "$OUT/render-zero-progress.png" ]; then
+    pixel_check "$OUT/render-zero-progress.png" "$OUT/render-zero.log" zero ||
+        fail "the bar holds accent at frame 0"
+else
+    fail "progress-shot=0 wrote no picture"
+fi
+# The control: the band layout's own screen, through its own Export panel.
+MUSIALIZER_COLUMN_LAYOUT=0 run render-old 40 \
+    "size=1280x720,time=3,panel=export,save-to=$OUT/renders/old.mp4,click=1153x683,progress-shot=20" \
+    --encoder "${MZ_ENCODER:-nvenc}" --render-window 1 2
+if [ -s "$OUT/render-old-progress.png" ]; then
+    if pixel_check "$OUT/render-old-progress.png" "$OUT/render-old.log" ground >/dev/null; then
+        fail "the ground test cannot tell the old progress screen from the themed one"
+    fi
+else
+    fail "the control run wrote no progress picture, so the ground test is unproven"
+fi
+
+if [ "$failures" -gt 0 ]; then
+    printf '%d column check(s) failed; logs in %s\n' "$failures" "$OUT"
+    exit 1
+fi
+printf 'column check: all checks passed; evidence in %s\n' "$OUT"

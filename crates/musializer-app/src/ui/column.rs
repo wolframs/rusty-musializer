@@ -86,6 +86,8 @@ pub fn column_grip(column: UiRect) -> UiRect {
 pub struct ColumnReport {
     /// `None` when no workspace frame with the switch on has been drawn.
     pub drawn: Option<(ColumnView, UiRect)>,
+    /// The band's rect in that frame: the same in every view (§1).
+    pub band: UiRect,
     /// The Direct tab's dot while another view shows (§2): what the dock is
     /// doing that the user should come back for.
     pub badge: DirectBadge,
@@ -354,16 +356,21 @@ impl Shell {
         if rect.is_empty() {
             // Closed, or hidden by a frame that has no column (fullscreen,
             // the Editor): the view is still the one it will come back on.
-            return format!("view={} open=0 badge={badge}", view.name());
+            return format!(
+                "view={} open=0 band={} badge={badge}",
+                view.name(),
+                at(self.column_report.band)
+            );
         }
         let head = widgets::column_head_layout(rect, 0.0);
         format!(
-            "view={} open=1 rect={} head={} body={} grip={} badge={badge}",
+            "view={} open=1 rect={} head={} body={} grip={} band={} badge={badge}",
             view.name(),
             at(rect),
             at(head.head),
             at(head.body),
             at(column_grip(rect)),
+            at(self.column_report.band),
         )
     }
 }

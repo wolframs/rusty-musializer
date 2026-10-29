@@ -426,10 +426,17 @@ fn paint(ui: &egui::Ui, rect: Rect, metrics: &Metrics, session: &Session, focuse
 
     if cursor.shape != CursorShape::Hidden && session.exit().is_none() {
         let pos = at(cursor.point.line.0, cursor.point.column.0);
-        let cursor_color = color(terminal::resolve(
-            Color::Named(NamedColor::Cursor),
-            overrides,
-        ));
+        // Ink, not the terminal palette's amber caret (WX-5d): the accent
+        // is the playhead and the one primary action, and a caret in it was
+        // the census's only stray mark in the column. A program that sets
+        // its own cursor colour still gets it.
+        let cursor_color = match overrides[NamedColor::Cursor] {
+            Some(_) => color(terminal::resolve(
+                Color::Named(NamedColor::Cursor),
+                overrides,
+            )),
+            None => crate::ui::theme::color32::ui_ink(),
+        };
         let block = Rect::from_min_size(pos, cell);
         match (focused, cursor.shape) {
             (true, CursorShape::Beam) => {
