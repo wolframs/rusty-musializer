@@ -376,7 +376,7 @@ pub(crate) fn draw_markers(
         }
         let is_current = session.current == Some(index);
         let answered = session.is_answered(&item.id);
-        let base = color::notice_info_on_dark();
+        let base = color::protocol_marker();
         let tint = if is_current {
             base
         } else if answered {
@@ -436,7 +436,7 @@ pub(crate) fn draw_card(
                 preview.width - 24.0,
                 46.0,
             );
-            widgets::fill(d, card, color::ui_overlay_surface());
+            widgets::floating_surface(d, card);
             let lines = musializer_core::ui::notice::wrap_detail(
                 &item.question,
                 card.width - 24.0,
@@ -450,7 +450,7 @@ pub(crate) fn draw_card(
                 card.x + 12.0,
                 card.y + 6.0,
                 metric::UI_FONT_LABEL,
-                color::ui_overlay_ink(),
+                color::ui_ink(),
             );
             let hint = format!(
                 "{} / {}  ·  Space pause for choices  ·  R replay  ·  N next",
@@ -464,7 +464,7 @@ pub(crate) fn draw_card(
                 card.x + 12.0,
                 card.y + 26.0,
                 metric::UI_FONT_CAPTION,
-                color::ui_overlay_muted(),
+                color::ui_muted(),
             );
             return Some(card.y);
         }
@@ -534,22 +534,21 @@ pub(crate) fn draw_card(
         return None;
     }
     let card = UiRect::new(x, y, width, height);
-    widgets::fill(d, card, color::ui_overlay_surface());
-    widgets::fill(
-        d,
-        UiRect::new(card.x, card.y, 3.0, card.height),
-        color::notice_info_on_dark(),
-    );
+    // The notice card's floating surface and its micro, tracked head (WX-5
+    // follow-up): the progress line is the card's section head, so it speaks
+    // the way a panel head does rather than in a colour of its own.
+    widgets::floating_surface(d, card);
 
     let mut cursor = card.y + CARD_PADDING;
-    widgets::draw_text(
+    widgets::draw_text_tracked(
         d,
         font,
-        &title,
+        &title.to_uppercase(),
         card.x + CARD_PADDING,
-        cursor,
-        metric::UI_FONT_CAPTION,
-        color::notice_info_on_dark(),
+        cursor + 1.0,
+        metric::UI_FONT_MICRO,
+        1.0,
+        color::ui_muted(),
     );
     cursor += metric::UI_FONT_CAPTION + 6.0;
     for line in &question_lines {
@@ -560,7 +559,7 @@ pub(crate) fn draw_card(
             card.x + CARD_PADDING,
             cursor,
             metric::UI_FONT_LABEL,
-            color::ui_overlay_ink(),
+            color::ui_ink(),
         );
         cursor += metric::UI_FONT_LABEL + 4.0;
     }
@@ -573,7 +572,7 @@ pub(crate) fn draw_card(
             card.x + CARD_PADDING + 8.0,
             cursor,
             metric::UI_FONT_VALUE,
-            color::ui_overlay_ink(),
+            color::ui_ink(),
         );
         cursor += ROW_HEIGHT;
     }
@@ -587,7 +586,7 @@ pub(crate) fn draw_card(
         card.x + CARD_PADDING,
         cursor,
         metric::UI_FONT_CAPTION,
-        color::ui_overlay_muted(),
+        color::ui_muted(),
     );
     Some(card.y)
 }

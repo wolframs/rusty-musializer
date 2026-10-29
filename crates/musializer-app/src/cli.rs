@@ -375,6 +375,12 @@ pub struct UiProbe {
     /// because it is the one whose effect (closing a flyout) no click can
     /// stand in for; another key is added by name, never by keycode.
     pub key_escape: bool,
+    /// `notices=all` or `notices=info+warning+...` (WX-5 follow-up): post one
+    /// sample notice of each named severity, in that order, through the
+    /// shell's own `notify`, so a capture can photograph every kind of card
+    /// at once. Invented: no single real action raises all four, and the
+    /// gate still raises a real one (the lyrics panel's missing picker).
+    pub notices: Vec<musializer_core::ui::notice::Severity>,
     /// `tune-seed=N`: replace the Tune panel's Surprise/Nudge seed (PX6).
     ///
     /// **Invented, and it is what makes a random feature photographable at
@@ -1322,6 +1328,22 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "poster-dump" => probe.poster_dump = Some(std::path::PathBuf::from(value)),
         "run-open" => probe.run_open = Some(value.parse().ok()?),
         "flyout" => probe.flyout = Some(crate::ui::shell::Flyout::from_probe_name(value)?),
+        "notices" => {
+            use musializer_core::ui::notice::Severity;
+            probe.notices = if value == "all" {
+                Severity::ALL.to_vec()
+            } else {
+                value
+                    .split('+')
+                    .map(|name| {
+                        Severity::ALL
+                            .into_iter()
+                            .find(|severity| severity.label().eq_ignore_ascii_case(name))
+                            .or((name == "success").then_some(Severity::Success))
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            };
+        }
         "key" => match value {
             "escape" => probe.key_escape = true,
             _ => return None,
@@ -1515,6 +1537,8 @@ Diagnostics:
                           scene-pick=NAME selects a scene through the normal edit path,
                           flyout=tracks|scenes|none opens a rail flyout,
                           key=escape presses Escape once,
+                          notices=all|info+done+warning+error posts one
+                          sample notice of each severity,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
                           sidebar=PX, inspector=PX, timeline-height=PX
                           set logical split positions for capture,
@@ -1702,6 +1726,22 @@ mod tests {
         assert!(parse_ui_probe("flyout=sidebar").is_none());
         assert!(parse_ui_probe("key=escape").unwrap().key_escape);
         assert!(!parse_ui_probe("flyout=scenes").unwrap().key_escape);
+        {
+            use musializer_core::ui::notice::Severity;
+            assert_eq!(
+                parse_ui_probe("notices=all").unwrap().notices,
+                Severity::ALL.to_vec()
+            );
+            assert_eq!(
+                parse_ui_probe("notices=error+info+success")
+                    .unwrap()
+                    .notices,
+                [Severity::Error, Severity::Info, Severity::Success]
+            );
+            assert!(parse_ui_probe("time=1").unwrap().notices.is_empty());
+            assert!(parse_ui_probe("notices=loud").is_none());
+            assert!(parse_ui_probe("notices=").is_none());
+        }
         assert!(parse_ui_probe("key=enter").is_none());
     }
 

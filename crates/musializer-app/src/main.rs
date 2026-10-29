@@ -1002,6 +1002,30 @@ fn run(
             if probe.key_escape {
                 escape_in = Some(3);
             }
+            // `notices=`: sample cards in the words real ones use, posted
+            // through `notify` so each gets its severity's dwell and the
+            // tray draws them exactly as it draws a real notice.
+            for severity in &probe.notices {
+                let (title, detail) = match severity {
+                    Severity::Info => (
+                        "Treatment applied",
+                        "70 sections across 12 scenes are driving the preview.",
+                    ),
+                    Severity::Success => (
+                        "Timed lyrics exported",
+                        "48 cue(s) written. The project is unchanged.",
+                    ),
+                    Severity::Warning => (
+                        "No file picker is available",
+                        "Neither kdialog nor zenity was found on PATH. Pass --project on the command line instead.",
+                    ),
+                    Severity::Error => (
+                        "Export failed while writing a frame",
+                        "Broken pipe (os error 32). The previous destination was preserved.",
+                    ),
+                };
+                app.shell.notify(*severity, title, detail);
+            }
             // `save-to=` stands in for the destination picker, and only for it
             // (UX0-C01, UX0-C10). Without it the two controls this panel exists
             // for — render and still — could be pressed in a capture and never
@@ -2775,6 +2799,7 @@ fn run(
     report.dock = dock.describe(app.shell.dock_open);
     report.scene_runs = app.shell.describe_runs(&app.workspace);
     report.top_bar = app.shell.describe_top_bar();
+    report.notices = app.shell.describe_notices();
     report.rail = app.shell.describe_rail();
     report.lane_head = app.shell.scene_lane.describe_head().to_owned();
     report.transport = app.shell.describe_transport().to_owned();
@@ -5753,6 +5778,7 @@ struct Report {
     posters: String,
     /// `top bar:` and `rail:` (WX-5c), what the last frame drew.
     top_bar: String,
+    notices: String,
     rail: String,
     lane_head: String,
     transport: String,
@@ -5832,6 +5858,7 @@ impl Default for Report {
             scene_runs: String::new(),
             posters: String::new(),
             top_bar: String::new(),
+            notices: String::new(),
             rail: String::new(),
             lane_head: String::new(),
             transport: String::new(),
@@ -6429,6 +6456,7 @@ impl Report {
         println!("posters:         {}", self.posters);
         // WX-5c: the top bar and the rail, from the last frame drawn.
         println!("top bar:         {}", self.top_bar);
+        println!("notices:         {}", self.notices);
         println!("rail:            {}", self.rail);
         println!("lane head:       {}", self.lane_head);
         println!("transport:       {}", self.transport);

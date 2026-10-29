@@ -6498,62 +6498,35 @@ PY
     fi
 
     # Both presses have to reach `main.rs` and come back with the refusal on
-    # screen. Measured as the tallest contiguous vertical run of the warning
-    # severity colour (`NOTICE_WARNING_ON_DARK`, orange since WX-5a moved it off
-    # the accent's amber), which separates a notice card's 75 px stripe from
-    # any outline of a similar colour: before WX-5a the event row's "+ Feel"
-    # button was the same amber and an unscoped pixel count said 153 of them on
-    # a frame with no notice at all. The idle control below still holds that.
+    # screen. The `notices:` line names the warning card the tray drew (its
+    # rect and its dot, newest first), and `tools/notice_card_check.py` reads
+    # that card in the capture: its interior must be the floating surface and
+    # its dot the warning colour, both exact opaque fills. Before the notice
+    # card was restyled (WX-5 follow-up) this measured the height of a 3 px
+    # orange stripe; the stripe is gone, and a pixel run measured once would
+    # not follow the card when the tray moves (it now starts past an open
+    # flyout's shadow). The report says which card; the pixels say it is there.
     for name in lyrics-click-export lyrics-click-import; do
-        WARNING_RUN="$(python3 - "$OUT_DIR/$name.png" <<'PY'
-import sys
-
-import numpy as np
-from PIL import Image
-
-image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
-mask = np.abs(image - np.array([243, 146, 107])).sum(axis=2) < 12
-tallest = 0
-for x in np.unique(np.nonzero(mask)[1]):
-    column = np.nonzero(mask[:, x])[0]
-    run = longest = 1 if len(column) else 0
-    for index in range(1, len(column)):
-        run = run + 1 if column[index] == column[index - 1] + 1 else 1
-        longest = max(longest, run)
-    tallest = max(tallest, longest)
-print(int(tallest))
-PY
-)"
-        echo "$name: tallest warning stripe $WARNING_RUN px"
-        if [ "$WARNING_RUN" -lt 60 ]; then
+        if ! python3 tools/notice_card_check.py "$OUT_DIR/$name.png" "$OUT_DIR/$name.txt" \
+            --severity warning | sed "s/^/$name: /"; then
             echo "FAIL: $name did not report the missing file picker on screen" >&2
             SWEEP_FAILED=1
         fi
     done
-    # The control for *that* threshold: the untouched panel carries the amber
-    # button outline and no warning card, and must measure under it.
-    IDLE_WARNING_RUN="$(python3 - "$OUT_DIR/timing-idle.png" <<'PY'
-import sys
-
-import numpy as np
-from PIL import Image
-
-image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
-mask = np.abs(image - np.array([243, 146, 107])).sum(axis=2) < 12
-tallest = 0
-for x in np.unique(np.nonzero(mask)[1]):
-    column = np.nonzero(mask[:, x])[0]
-    run = longest = 1 if len(column) else 0
-    for index in range(1, len(column)):
-        run = run + 1 if column[index] == column[index - 1] + 1 else 1
-        longest = max(longest, run)
-    tallest = max(tallest, longest)
-print(int(tallest))
-PY
-)"
-    echo "timing-idle: tallest warning stripe $IDLE_WARNING_RUN px (must stay under 60)"
-    if [ "$IDLE_WARNING_RUN" -ge 60 ]; then
+    # The control for both halves: the untouched panel has a card of its own
+    # (the session's "Project opened", INFO) and no warning, so its report
+    # names no warning card and, where the export run drew its warning dot,
+    # this capture has none of that colour.
+    if ! python3 tools/notice_card_check.py "$OUT_DIR/timing-idle.png" "$OUT_DIR/timing-idle.txt" \
+        --severity warning --absent-at "$OUT_DIR/lyrics-click-export.txt" | sed "s/^/timing-idle: /"; then
         echo "FAIL: the idle lyrics panel already shows a warning notice" >&2
+        SWEEP_FAILED=1
+    fi
+    # And the INFO card it does have reads as neutral: present, measured, and
+    # not in a status hue.
+    if ! python3 tools/notice_card_check.py "$OUT_DIR/timing-idle.png" "$OUT_DIR/timing-idle.txt" \
+        --severity info | sed "s/^/timing-idle: /"; then
+        echo "FAIL: the idle lyrics panel's Project opened card is not drawn as an INFO card" >&2
         SWEEP_FAILED=1
     fi
 fi

@@ -25,6 +25,8 @@
 //!   the waveform and the scrub bar are [`Palette::ui_level`]: the mockup's
 //!   "played" tone, so "how much" reads as one thing everywhere.
 
+use musializer_core::ui::notice::Severity;
+
 /// Workstation appearance; never part of an exported scene or music project.
 ///
 /// The serialized names are the ones every `ui.json` this application has
@@ -249,8 +251,6 @@ pub enum Surface {
     OnAccent,
     /// Text on a tooltip.
     Tooltip,
-    /// Text on the notice tray's card, over the preview.
-    DarkOverlay,
     /// A non-text component that has to be perceivable (WCAG 1.4.11, 3:1)
     /// against the panels: the selection outline, the accent's playhead.
     Graphic,
@@ -326,10 +326,6 @@ impl Palette {
                 vec![("ui_tooltip_surface", self.ui_tooltip_surface)],
                 AA_TEXT,
             ),
-            Surface::DarkOverlay => (
-                vec![("ui_overlay_surface", rgba::UI_OVERLAY_SURFACE)],
-                AA_TEXT,
-            ),
             Surface::Graphic => (
                 vec![
                     ("ui_surface", self.ui_surface),
@@ -340,11 +336,53 @@ impl Palette {
             Surface::Fill | Surface::ExemptText => (Vec::new(), 0.0),
         }
     }
+
+    /// A floating surface's fill: notice cards, context menus, pills over the
+    /// preview (`widgets::floating_surface`). The raised surface, so it sits a
+    /// step above the panels in both appearances and is one of the
+    /// [`Surface::Chrome`] backgrounds the sweep already measures every label
+    /// against.
+    #[must_use]
+    pub const fn float_surface(&self) -> u32 {
+        self.ui_raised
+    }
+
+    /// A notice card's severity: its dot and its micro label.
+    ///
+    /// Info is neutral (the muted label tone): it asks nothing of the user,
+    /// and a coloured INFO competed with the cards that do. The other three
+    /// are the chrome's own status hues, the ones the save state speaks in.
+    /// None of them is the accent, which means *now*.
+    #[must_use]
+    pub const fn notice_severity(&self, severity: Severity) -> u32 {
+        match severity {
+            Severity::Info => self.ui_muted,
+            Severity::Success => self.ui_success,
+            Severity::Warning => self.ui_warning,
+            Severity::Error => self.ui_danger,
+        }
+    }
+
+    /// Every colour a notice card draws text or a glyph in, with what it is,
+    /// for the sweep (`the_notice_card_reads_in_both_appearances`): the four
+    /// severities, the title, the detail and the close glyph at rest.
+    #[allow(
+        dead_code,
+        reason = "the palette audit in this module's tests is its only reader"
+    )]
+    pub fn notice_card_inks(&self) -> Vec<(&'static str, u32)> {
+        let mut inks: Vec<(&'static str, u32)> = Severity::ALL
+            .iter()
+            .map(|severity| (severity.label(), self.notice_severity(*severity)))
+            .collect();
+        inks.push(("title", self.ui_ink));
+        inks.push(("detail and close glyph", self.ui_muted));
+        inks
+    }
 }
 
 /// Values that do not change with the appearance: the scene's own clear, the
-/// frame around the preview, and the notice tray, which floats over video in
-/// both appearances.
+/// frame around the preview, and the protocol's pennants.
 pub mod rgba {
     pub const BACKGROUND: u32 = 0x1515_15FF;
     pub const WHITE: u32 = 0xFFFF_FFFF;
@@ -368,42 +406,18 @@ pub mod rgba {
     /// enough not to compete with the scene.
     pub const PREVIEW_FRAME_EDGE: u32 = 0x4A4A_52FF;
 
-    /// The notice tray's card, floating over the scene preview.
+    /// The listening protocol's pennants on the timeline (HX-2): one per
+    /// question, full at the current one, faded once answered.
     ///
-    /// **Opaque, and that is the fix rather than an aesthetic choice**
-    /// (review 1.11, UX0-A11). It was `rgba(20, 22, 28, 232)`, so the colour the
-    /// user actually read was the card composited over whatever the scene was
-    /// drawing that frame — which means no contrast ratio measured against it was
-    /// true, and the sweep in this module could not have measured it in the first
-    /// place: the opacity assertion exists precisely because
-    /// [`musializer_core::ui::contrast`] treats every colour as fully composited.
-    pub const UI_OVERLAY_SURFACE: u32 = 0x1416_1CFF;
-    /// A notice's title, on [`UI_OVERLAY_SURFACE`]. raylib's `RAYWHITE`, promoted
-    /// into the palette so the sweep can see it.
-    pub const UI_OVERLAY_INK: u32 = 0xF5F5_F5FF;
-    /// A notice's detail text: the dark card's equivalent of a muted label.
-    pub const UI_OVERLAY_MUTED: u32 = 0xB4BE_CDFF;
-
-    /// The four severity labels on the notice card (review 1.11, UX0-A11).
-    ///
-    /// The tray used to draw the *light chrome* colours here, which are chosen
-    /// to sit on a near-white panel. On the near-black card the old blue accent
-    /// measured **1.69:1** and the light danger **3.19:1**, both below the 4.5:1
-    /// body-text minimum, so an error and an info were indistinguishable at a
-    /// glance. These are the dark-surface variants: same hues, lifted until they
-    /// clear AA against the card.
-    /// `the_light_chrome_severities_would_fail_the_dark_sweep` keeps the old
-    /// numbers as a negative control.
-    ///
-    /// Since WX-5a the tray draws an INFO notice in [`UI_OVERLAY_MUTED`]
-    /// instead: in the light appearance this blue sits six degrees of hue from
-    /// the accent. The protocol card and its pennants still use it.
-    pub const NOTICE_INFO_ON_DARK: u32 = 0x8AB4_F8FF;
-    pub const NOTICE_SUCCESS_ON_DARK: u32 = 0x6FDB_A0FF;
-    /// Orange rather than the amber it was (`0xF2B441`) since WX-5a: that amber
-    /// sat two degrees of hue from the dark accent, which means *now*.
-    pub const NOTICE_WARNING_ON_DARK: u32 = 0xF392_6BFF;
-    pub const NOTICE_ERROR_ON_DARK: u32 = 0xFF6B_6BFF;
+    /// It was the dark notice card's INFO blue (`NOTICE_INFO_ON_DARK`) until
+    /// the notice card and the protocol card moved onto the appearance's own
+    /// floating surface; the pennants are its last user, so it carries their
+    /// name. A content colour, not chrome, and fixed in both appearances. On
+    /// the dark lanes it reads; on the light lanes it measures about 2:1,
+    /// under the 3:1 a graphic needs, so it is declared a fill here rather
+    /// than measured against a surface it is not drawn on. Theming the pennant
+    /// is open (`build/redesign/wx5-leftover-survey.md`).
+    pub const PROTOCOL_MARKER: u32 = 0x8AB4_F8FF;
 
     /// The dim laid over the workspace behind a modal dialog. Translucent by
     /// design, so it is not a palette entry: nothing is ever measured against it.
@@ -414,44 +428,10 @@ pub mod rgba {
         dead_code,
         reason = "the palette audit in this module's tests is its only reader"
     )]
-    pub const ALL: [(&str, u32, super::Surface); 9] = [
+    pub const ALL: [(&str, u32, super::Surface); 3] = [
         ("background", BACKGROUND, super::Surface::Fill),
         ("white", WHITE, super::Surface::Fill),
-        (
-            "ui_overlay_surface",
-            UI_OVERLAY_SURFACE,
-            super::Surface::Fill,
-        ),
-        (
-            "ui_overlay_ink",
-            UI_OVERLAY_INK,
-            super::Surface::DarkOverlay,
-        ),
-        (
-            "ui_overlay_muted",
-            UI_OVERLAY_MUTED,
-            super::Surface::DarkOverlay,
-        ),
-        (
-            "notice_info_on_dark",
-            NOTICE_INFO_ON_DARK,
-            super::Surface::DarkOverlay,
-        ),
-        (
-            "notice_success_on_dark",
-            NOTICE_SUCCESS_ON_DARK,
-            super::Surface::DarkOverlay,
-        ),
-        (
-            "notice_warning_on_dark",
-            NOTICE_WARNING_ON_DARK,
-            super::Surface::DarkOverlay,
-        ),
-        (
-            "notice_error_on_dark",
-            NOTICE_ERROR_ON_DARK,
-            super::Surface::DarkOverlay,
-        ),
+        ("protocol_marker", PROTOCOL_MARKER, super::Surface::Fill),
     ];
 }
 
@@ -509,18 +489,24 @@ pub mod color {
         ui_run_cut;
     }
 
+    /// [`super::Palette::float_surface`] in the current appearance.
+    #[must_use]
+    pub fn float_surface() -> Color {
+        Color::get_color(super::palette().float_surface())
+    }
+
+    /// [`super::Palette::notice_severity`] in the current appearance.
+    #[must_use]
+    pub fn notice_severity(severity: musializer_core::ui::notice::Severity) -> Color {
+        Color::get_color(super::palette().notice_severity(severity))
+    }
+
     fixed! {
         background = BACKGROUND;
         white = WHITE;
         preview_surround = PREVIEW_SURROUND;
         preview_frame_edge = PREVIEW_FRAME_EDGE;
-        ui_overlay_surface = UI_OVERLAY_SURFACE;
-        ui_overlay_ink = UI_OVERLAY_INK;
-        ui_overlay_muted = UI_OVERLAY_MUTED;
-        notice_info_on_dark = NOTICE_INFO_ON_DARK;
-        notice_success_on_dark = NOTICE_SUCCESS_ON_DARK;
-        notice_warning_on_dark = NOTICE_WARNING_ON_DARK;
-        notice_error_on_dark = NOTICE_ERROR_ON_DARK;
+        protocol_marker = PROTOCOL_MARKER;
         scrim = SCRIM;
     }
 }
@@ -697,6 +683,18 @@ mod tests {
                     measured += 1;
                 }
             }
+            // The notice card is drawn on the floating surface, which is not a
+            // palette entry's declared background but is what the card's text
+            // actually sits on: walk its inks there too, so this sweep still
+            // covers the card the way it covered the old fixed dark one.
+            for (name, ink) in palette.notice_card_inks() {
+                let ratio = contrast::ratio(ink, palette.float_surface());
+                assert!(
+                    ratio >= contrast::AA_TEXT,
+                    "{appearance}: notice {name} on the floating surface reads at {ratio:.2}:1"
+                );
+                measured += 1;
+            }
         }
         // A sweep that measured nothing would pass silently, which is the failure
         // mode of every table-driven test that lost its table.
@@ -716,15 +714,12 @@ mod tests {
                 }
                 assert_ne!(value, palette.accent, "{appearance}: {name} is the accent");
             }
-            // The notice card's severities are coloured text over the preview
-            // in both appearances, so none of them may read as the accent.
-            for (name, value, surface) in rgba::ALL {
-                if surface != Surface::DarkOverlay {
-                    continue;
-                }
+            // The notice card's severities are coloured over the preview, so
+            // none of them may read as the accent.
+            for (name, value) in palette.notice_card_inks() {
                 assert!(
                     reads_apart(value, palette.accent),
-                    "{appearance}: {name} reads as the accent"
+                    "{appearance}: the notice card's {name} reads as the accent"
                 );
             }
             for (name, value) in [
@@ -839,36 +834,72 @@ mod tests {
         }
     }
 
-    /// The negative control, kept as the measurement it came from.
-    ///
-    /// These are the exact colours the tray drew before UX0-A11 — light chrome
-    /// colours on a near-black card. If somebody "simplifies" the dark variants
-    /// back to the palette they were copied from, this is what says no.
+    /// The notice card's own sweep: every colour it draws text or a glyph in,
+    /// on the floating surface it draws on and on the close box's hover fill,
+    /// in both appearances. Read through the same `Palette` methods the tray
+    /// draws with, so moving the card to another surface moves the sweep.
     #[test]
-    fn the_light_chrome_severities_would_fail_the_dark_sweep() {
+    fn the_notice_card_reads_in_both_appearances() {
+        let mut measured = 0;
+        for (appearance, palette) in BOTH {
+            let card = palette.float_surface();
+            assert_eq!(card & 0xFF, 0xFF, "{appearance}: the card must be opaque");
+            for (name, ink) in palette.notice_card_inks() {
+                let ratio = contrast::ratio(ink, card);
+                assert!(
+                    ratio >= contrast::AA_TEXT,
+                    "{appearance}: notice {name} reads {ratio:.2}:1 on the card"
+                );
+                measured += 1;
+            }
+            // The close glyph turns to ink on the hover fill.
+            let ratio = contrast::ratio(palette.ui_ink, palette.ui_hover);
+            assert!(
+                ratio >= contrast::AA_TEXT,
+                "{appearance}: close {ratio:.2}:1"
+            );
+            // The card's hairline is not text, but it is the card's edge over
+            // a scene that can be any colour; it must at least differ from
+            // the fill it bounds.
+            assert_ne!(palette.ui_control_edge, card, "{appearance}");
+            measured += 1;
+        }
+        assert_eq!(measured, 2 * (Severity::ALL.len() + 2 + 1));
+    }
+
+    /// The negative controls, kept as the measurements they came from.
+    ///
+    /// Before UX0-A11 the tray drew light chrome colours on a near-black card,
+    /// and INFO read 1.69:1. Then the card was a fixed dark surface with lifted
+    /// severities. Now it follows the appearance, and the lifted dark-card
+    /// severities are exactly what would fail on the light card: a fixed set of
+    /// severity colours cannot serve both surfaces, which is why
+    /// `Palette::notice_severity` is per appearance.
+    #[test]
+    fn severity_colours_fixed_for_one_card_fail_on_the_other() {
+        let old_dark_card = 0x1416_1CFFu32;
         for (name, value) in [
             ("old light accent (was INFO)", 0x002F_A7FFu32),
             ("ui_danger (was ERROR)", palette::LIGHT.ui_danger),
             ("old ui_success (was DONE)", 0x1879_4EFF),
             ("old ui_warning (was WARNING)", 0x9E5D_00FF),
         ] {
-            let ratio = contrast::ratio(value, rgba::UI_OVERLAY_SURFACE);
+            let ratio = contrast::ratio(value, old_dark_card);
             assert!(
                 ratio < contrast::AA_TEXT,
-                "{name} now reads {ratio:.2}:1 on the card; the control is stale"
+                "{name} now reads {ratio:.2}:1 on the old card; the control is stale"
             );
         }
-        // And the replacements clear it, by a margin rather than by a hair.
+        let light_card = palette::LIGHT.float_surface();
         for (name, value) in [
-            ("info", rgba::NOTICE_INFO_ON_DARK),
-            ("success", rgba::NOTICE_SUCCESS_ON_DARK),
-            ("warning", rgba::NOTICE_WARNING_ON_DARK),
-            ("error", rgba::NOTICE_ERROR_ON_DARK),
+            ("old dark-card success", 0x6FDB_A0FFu32),
+            ("old dark-card warning", 0xF392_6BFF),
+            ("old dark-card error", 0xFF6B_6BFF),
         ] {
-            let ratio = contrast::ratio(value, rgba::UI_OVERLAY_SURFACE);
+            let ratio = contrast::ratio(value, light_card);
             assert!(
-                ratio >= 6.0,
-                "{name} reads {ratio:.2}:1, too close to the line"
+                ratio < contrast::AA_TEXT,
+                "{name} now reads {ratio:.2}:1 on the light card; the control is stale"
             );
         }
     }

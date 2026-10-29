@@ -30,8 +30,8 @@ use musializer_core::ui::row_typography;
 use musializer_core::ui::{contrast, workspace_layout::UiRect};
 use musializer_runtime::font::{AuthoredText, Face, GlyphRepertoire, UiFonts};
 use raylib::prelude::{
-    Color, RaylibDraw, RaylibDrawHandle, RaylibFont, RaylibScissorMode, RaylibScissorModeExt,
-    Rectangle, Vector2,
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, RaylibFont,
+    RaylibScissorMode, RaylibScissorModeExt, Rectangle, Vector2,
 };
 
 use super::scale::UiScale;
@@ -1504,6 +1504,69 @@ pub fn control_box<D: RaylibDraw>(
     let inner_roundness =
         ((metric::UI_RADIUS - thickness).max(0.0) * 2.0 / inner_short).clamp(0.0, 1.0);
     d.draw_rectangle_rounded_lines_ex(rectangle(inset), inner_roundness, 4, thickness, edge);
+}
+
+/// How far a floating surface's shadow reaches past its edge, and how far it
+/// drops below it. Public so a caller placing something beside a floating
+/// surface can keep it out of the shadow.
+pub const FLOAT_SHADOW_SPREAD: f32 = 6.0;
+pub const FLOAT_SHADOW_DROP: f32 = 2.0;
+
+/// A surface that floats over the work rather than sitting in the layout: a
+/// notice card, a context menu, a pill over the preview (WX-5 follow-up).
+///
+/// One language with the flyout and the tooltip: the appearance's own raised
+/// surface, a hairline edge, the controls' 4 px corner and a soft shadow
+/// under it, so it lifts off whatever the scene is drawing. Opaque, so text on
+/// it reads at the ratio the palette sweep measured (review 1.11).
+///
+/// The shadow is a blend and composites **premultiplied**: `BLEND_ALPHA`
+/// would leave the pixels it touches translucent in a saved PNG
+/// (`docs/TRAPS.md`). Its pixels round per renderer, so a capture check reads
+/// the card's interior (an opaque fill) and never the shadow.
+pub fn floating_surface(d: &mut RaylibDrawHandle<'_>, boundary: UiRect) {
+    if boundary.is_empty() {
+        return;
+    }
+    floating_shadow(d, boundary);
+    control_box(
+        d,
+        boundary,
+        color::float_surface(),
+        color::ui_control_edge(),
+        1.0,
+    );
+}
+
+/// The shadow [`floating_surface`] lays under its box, on its own.
+pub fn floating_shadow(d: &mut RaylibDrawHandle<'_>, boundary: UiRect) {
+    if boundary.is_empty() {
+        return;
+    }
+    // Rings of a faint black, each one pixel wider than the last: where they
+    // overlap, near the edge, the shadow is darkest, and it falls off outward.
+    // Premultiplied black is plain black with alpha, so the tint is unchanged.
+    const RINGS: u8 = FLOAT_SHADOW_SPREAD as u8;
+    const RING_ALPHA: u8 = 14;
+    d.draw_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY, |mut blend| {
+        for ring in 1..=RINGS {
+            let grow = f32::from(ring);
+            let rect = UiRect::new(
+                boundary.x - grow,
+                boundary.y - grow + FLOAT_SHADOW_DROP,
+                boundary.width + grow * 2.0,
+                boundary.height + grow * 2.0,
+            );
+            let short = rect.width.min(rect.height);
+            let roundness = ((metric::UI_RADIUS + grow) * 2.0 / short).clamp(0.0, 1.0);
+            blend.draw_rectangle_rounded(
+                rectangle(rect),
+                roundness,
+                6,
+                Color::new(0, 0, 0, RING_ALPHA),
+            );
+        }
+    });
 }
 
 /// A selected row or tile drawn by hand: the selected tint and its outline,

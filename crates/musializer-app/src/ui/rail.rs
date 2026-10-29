@@ -23,8 +23,9 @@ use super::shell_layout::WorkspaceFrame;
 use super::theme::{color, metric};
 use super::widgets::{self, ButtonStyle};
 
-/// How far the flyout's shadow falls on the preview to its right.
-const FLYOUT_SHADOW: f32 = 14.0;
+/// How far the flyout's shadow falls on the preview to its right. The notice
+/// tray starts past it, so a card is never drawn in the shadow.
+pub(crate) const FLYOUT_SHADOW: f32 = 14.0;
 
 /// One button in the scenes flyout's ASCII image footer (D2), and the gap
 /// between the tiles and it.

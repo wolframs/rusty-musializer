@@ -45,6 +45,15 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// Every severity, mildest first. For sweeps and probes that must walk
+    /// all four rather than the ones somebody remembered.
+    pub const ALL: [Severity; 4] = [
+        Severity::Info,
+        Severity::Success,
+        Severity::Warning,
+        Severity::Error,
+    ];
+
     /// The badge text drawn on the notice card (`ui_notice.c:113-123`).
     ///
     /// User-visible strings; note `Success` reads `"DONE"`, not `"SUCCESS"`. C's
