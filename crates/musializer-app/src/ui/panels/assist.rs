@@ -5900,6 +5900,46 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_card_names_what_it_replaces_with_the_tracks_numbers() {
+        assert_eq!(
+            card_replaces(AssistMode::Lyrics, None),
+            "Adds \u{00b7} timed lyrics"
+        );
+        assert_eq!(
+            card_replaces(AssistMode::Sections, None),
+            "Adds \u{00b7} a scene plan"
+        );
+        assert_eq!(
+            card_replaces(AssistMode::Mimo, None),
+            "Adds \u{00b7} feeling cues"
+        );
+        assert_eq!(
+            card_replaces(AssistMode::All, None),
+            "Replaces \u{00b7} lyrics and plan, adds feelings"
+        );
+        assert_eq!(
+            auto_scenes_sentence(Some((true, 70))),
+            "70 sections follow the measured plan"
+        );
+        assert_eq!(
+            auto_scenes_sentence(Some((false, 70))),
+            "Paused \u{00b7} the plan's 70 sections wait"
+        );
+        assert_eq!(
+            auto_scenes_sentence(None),
+            "No scene plan yet \u{00b7} Scene changes makes one"
+        );
+        assert_eq!(running_clock(125.0), "2:05");
+        assert_eq!(running_clock(2400.0), "40:00");
+        assert_eq!(running_clock(f64::NAN), "0:00");
+        assert_eq!(
+            AssistMode::ALL.map(card_token),
+            ["lyrics", "scenes", "feelings", "full"]
+        );
+    }
+
     use musializer_core::project::lyrics::LyricsDocument;
     use musializer_core::project::sha256;
 
