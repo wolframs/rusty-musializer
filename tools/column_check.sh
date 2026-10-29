@@ -20,9 +20,12 @@
 #   2. The frame does not move: `preview frame:`, `transport:` and the band
 #      (`column: band=`) are identical across all five views at 960x640,
 #      1280x720, 1920x1080 and 2560x1440 at 150 %.
-#   3. The accent census (`--primary 1`) in every view, both appearances; in
-#      the Render view the accent lies inside the commit and the top bar's
-#      Render… holds none.
+#   3. The accent census (`--primary 1`) in every view, both appearances —
+#      Look also with its route editor open, Assist also with a card open —
+#      with the two marks the report permits (the current lyric line's time
+#      and tick, the route plot's live dot), which fail the census once the
+#      report stops naming them; in the Render view the accent lies inside
+#      the commit and the top bar's Render… holds none.
 #   4. ui.json: a dragged width and the view survive a restart; a pre-WX-5d
 #      file with `dock_width 480, dock_open true` opens a 480 column on Direct.
 #   5. The dock in the column: `dock: rect=` is the column's; a focused
@@ -89,7 +92,10 @@ cat >"$OUT/show.treatment.json" <<'EOF'
 { "schema": "musializer.treatment/v1", "title": "Column Fixture",
   "audio": { "path": "fixture.wav" },
   "segments": [ { "at": 0, "scene": "spectrum" }, { "at": 2, "scene": "loom" },
-                { "at": 4, "scene": "cadence" } ] }
+                { "at": 4, "scene": "cadence" } ],
+  "lyrics": [ { "at": 1.0, "until": 2.4, "text": "the first line" },
+              { "at": 2.6, "until": 3.6, "text": "the line at the playhead" },
+              { "at": 3.8, "until": 5.0, "text": "the line after it" } ] }
 EOF
 SHOW="$OUT/show.treatment.json"
 
@@ -193,15 +199,32 @@ for size in 960x640 1280x720 1920x1080 2560x1440@150; do
 done
 
 # --- 3. The accent census ------------------------------------------------------
+# Look with its route editor open (the plot's live dot) and Assist with a
+# card open (selection, never the accent) are views of their own here.
 for theme in dark light; do
-    for view in direct lyrics look assist render; do
+    for view in direct lyrics look look-route assist assist-open render; do
         name="census-$theme-$view"
-        run "$name" 30 "size=1280x720,time=3,column=$view" --ui-theme "$theme"
+        case "$view" in
+            look-route) probe="column=look,route=loom.weight" ;;
+            assist-open) probe="column=assist,assist=confirm" ;;
+            *) probe="column=$view" ;;
+        esac
+        run "$name" 30 "size=1280x720,time=3,$probe" --ui-theme "$theme"
         if ! python3 tools/accent_census.py "$OUT/$name.png" "$OUT/$name.log" --primary 1 \
             >"$OUT/$name.census" 2>&1; then
             fail "census $theme $view: $(tail -n 3 "$OUT/$name.census" | tr '\n' ' ')"
         fi
     done
+done
+# The census's two permitted marks are real, and the report is what admits
+# them: the same pictures with the naming lines removed must fail.
+for view in lyrics look-route; do
+    name="census-dark-$view"
+    grep -vE '^(lyrics column|tune layout):' "$OUT/$name.log" >"$OUT/$name.unnamed.log"
+    if python3 tools/accent_census.py "$OUT/$name.png" "$OUT/$name.unnamed.log" --primary 1 \
+        >"$OUT/$name.unnamed.census" 2>&1; then
+        fail "the census passes $view without the report naming its mark, so the mark is not checked"
+    fi
 done
 # Where the one accent is in the Render view: in the commit, not on Render….
 accent_in() { # accent_in PNG LOG X Y W H -> count of accent pixels
