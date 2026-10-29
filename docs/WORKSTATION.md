@@ -443,6 +443,33 @@ They are independent unless a line says otherwise. Every one finishes with
   both mute-tooltip probes (whose bare twins caught the move on the first
   run). The ASCII footer probes moved from y=403 to y=383.
 
+**WX-5 follow-up, floating surfaces (2026-10-29).** The operator spotted the
+notice cards still in the pre-redesign style.
+
+- **One floating-surface language** (`widgets::floating_surface`): the
+  appearance's raised fill, a hairline, the 4 px corner and a soft shadow
+  that falls below and composites premultiplied. Notice cards, the protocol
+  card and the fullscreen pill use it; tooltips and the cue lane's tip take
+  its shape on their own dark tokens; egui popups got a matching shadow.
+- **The notice card follows the appearance** (light in the light look), with
+  a 6 px dot and a micro, tracked label (Info neutral, the rest the chrome's
+  status hues), title in ink, detail muted, a ghost close box. Reasons and the
+  dark-card argument against: `docs/DIVERGENCES.md`, the notice-card row.
+- **The tray starts past an open flyout's shadow** (`rail::FLYOUT_SHADOW`),
+  16 px in from the preview, 8 px between cards.
+- **Evidence.** `notices:` names each drawn card; `--ui-probe notices=` posts
+  samples of all four severities; the gate's lyrics warning check reads the
+  named card (`tools/notice_card_check.py`: the interior is the floating fill
+  and the dot the warning colour, both exact). Negative controls, GPU and
+  llvmpipe both: the warning dot drawn muted reads 0 dot pixels and fails;
+  the card's surface not drawn reads fill 0.00 and fails (the idle INFO check
+  fails with it); the idle control aimed at a capture that has the warning
+  fails. Reverted byte for byte. The palette sweep walks the card's inks on
+  the floating surface in both appearances; perturbing Info to the disabled
+  tone fails it at 3.12:1.
+- **Left**: `build/redesign/wx5-leftover-survey.md` in the main checkout lists
+  every surface still in the old look, with sizes.
+
 **WX-1/2 (2026-10-21).**
 
 - **Agents run in terminal tabs first.** The Claude, Codex and Antigravity

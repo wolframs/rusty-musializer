@@ -3905,9 +3905,10 @@ fn banner(
     let lines = wrap(font, text, body.width - 24.0, metric::UI_FONT_CAPTION);
     let height = lines.len() as f32 * 17.0 + 12.0;
     let boundary = UiRect::new(body.x, *cursor, body.width, height);
-    widgets::fill(d, boundary, color::ui_raised());
-    d.draw_rectangle_lines_ex(widgets::rectangle(boundary), 1.0, tint);
-    widgets::fill(d, UiRect::new(boundary.x, boundary.y, 3.0, height), tint);
+    // Re-skinned (WX-5 follow-up), geometry unchanged: a rounded box with the
+    // status colour as its hairline, and no stripe down its edge — the notice
+    // card dropped the stripe for the same vocabulary.
+    widgets::control_box(d, boundary, color::ui_raised(), tint, 1.0);
     let mut y = *cursor + 6.0;
     for line in lines {
         widgets::draw_text(
