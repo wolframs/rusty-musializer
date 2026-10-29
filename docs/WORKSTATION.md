@@ -53,7 +53,7 @@ spec:
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
-| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail and big preview) next |
+| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail, top bar, big preview) done 2026-10-29 |
 | WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
 
 ### WX-1 — the dock
@@ -221,7 +221,9 @@ They are independent unless a line says otherwise. Every one finishes with
    scrolling at the minimum picker size; the progress bar, pause menu,
    handheld and music box are unbuilt. And the family tabs became two rows
    of label-width tabs so a seventh family fits.
-   **Planned 2026-10-24, not started.** The plan is
+   **Done 2026-10-29** on `wx5-redesign` (Rail and Top bar in parallel,
+   merged by the lead, then a critic pass; see the last bullet for what is
+   left). The plan was
    [`WX5C_DESIGN.md`](WX5C_DESIGN.md), written by the 5a/5b designer and
    accepted by the lead: a 46 px top bar over the workspace (not the dock,
    which keeps its full height — lead's call), a 52 px rail beside the
@@ -286,6 +288,33 @@ They are independent unless a line says otherwise. Every one finishes with
      still adds `EVENT_ROW_HEIGHT`, which the shell subtracts from the export
      minimum. Without the top bar's tabs this branch alone has no mouse route
      to Export, Lyrics or Assist.
+   - **Landed 2026-10-29.** Top bar merged (`686d617`), then the critic
+     pass: the full gate, `top_bar_check`, `dock_check`, `dark_theme_check`,
+     `knot_check`, `ui_ux_check`, `differential_layout.sh` and
+     `differential_project_io.sh` green, then `tools/verify.sh`. The three
+     items open for the merge are closed: the save badge is read from the
+     top bar's `word=`; the developer readout is drawn by the shell under
+     the flyout and to its right; `EVENT_ROW_HEIGHT` is gone (the export
+     budget no longer counts the row, the shell no longer takes it off).
+     Also from the critic: `--ui-probe key=escape` and a gate check that it
+     closes the flyout; tracked text measured as drawn (at 150 % the band's
+     gesture hint clipped and the lane head's label ran into Auto); the mark
+     centred over the rail; a track row in the interface face when it covers
+     the name, as the top bar draws the same name. Captures of every size,
+     scale, flyout and the dock in both looks: `build/wx5c-final/` (not
+     committed; `build/critic/capture7.sh` remakes them).
+     **Left:**
+     - Inline artist editing in the top bar is not built. The artist comes
+       from a treatment or a v2 `.musi` only. It needs a
+       `TextEntrySurface::TopBarArtist` in `ui/shell.rs` reading a
+       `top_bar_state.artist_editing` flag; the field, its commit through a
+       `ShellCommand` and the draw belong in `ui/top_bar.rs`.
+     - The top bar spans the workspace, not the dock (open choice, §0).
+     - Scene tiles show names, not posters (§1's follow-up).
+     - The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
+       only; their restructure is the next wave. With Export open at
+       1280x720 the preview is 145 px tall.
+     - `README` screenshot still to retake (3a).
 3a. **Loose ends from WX-5a/5b**, small:
    - The gate's pixel checks still run on the light look (a theme-only
      `ui.json` in its private config); the dark default has its own
