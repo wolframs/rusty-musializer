@@ -1872,6 +1872,222 @@ pub(crate) fn export_contact_sheet(
     })
 }
 
+/// The moments a sheet shows, for `--contact-sheet` and the top bar's Contact
+/// sheet alike: the track's plan sections and displayable lyric lines handed
+/// to [`SheetStops::resolve`], inside `window` when there is one.
+///
+/// One function for both callers, so a sheet pressed in the window and one
+/// asked for on the command line cannot come to pick different moments.
+///
+/// # Errors
+///
+/// [`SheetStops::resolve`]'s, in the caller's words: no plan for `segments`,
+/// no line for `lyrics`, a window off the track, too many tiles.
+///
+/// [`SheetStops::resolve`]: musializer_core::render::contact_sheet::SheetStops::resolve
+pub(crate) fn sheet_times(
+    track: &crate::workspace::Track,
+    stops: &musializer_core::render::contact_sheet::SheetStops,
+    window: Option<(f64, f64)>,
+) -> Result<Vec<f64>, String> {
+    let segments: Vec<(f64, f64)> = if track.scene_switches.enabled {
+        track
+            .scene_switches
+            .cues()
+            .iter()
+            .map(|cue| (cue.start_seconds, cue.end_seconds))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Displayable lines only: a `Potential` cue never reaches a frame, so a
+    // tile at its midpoint would be labelled with a line that is not there.
+    let lyrics: Vec<(f64, f64)> = track
+        .lyrics
+        .cues()
+        .iter()
+        .filter(|cue| cue.origin.is_displayable())
+        .map(|cue| (cue.start_seconds, cue.end_seconds))
+        .collect();
+    stops.resolve(track.duration_seconds, window, &segments, &lyrics)
+}
+
+/// The `contact sheet:` report line, printed by both callers so one assertion
+/// reads either.
+pub(crate) fn print_sheet_line(done: &BatchFrames, times: &[f64], destination: &Path) {
+    println!(
+        "contact sheet:   {} tiles from {} to {} at {}x{} ({}x target), {}",
+        done.frames,
+        musializer_core::treatment::format_time(times[0]),
+        musializer_core::treatment::format_time(times[times.len() - 1]),
+        done.config.width,
+        done.config.height,
+        done.achieved_factor,
+        destination.display()
+    );
+}
+
+/// What the top bar's Contact sheet shows (WX-5c §4): one tile per plan
+/// section, the way `--sheet-at segments` does, when the track has a plan to
+/// show; otherwise [`DEFAULT_TILES`] even moments, because a track with one
+/// scene has no sections and a refusal would make the button useless exactly
+/// where a first look is wanted.
+///
+/// [`DEFAULT_TILES`]: musializer_core::render::contact_sheet::DEFAULT_TILES
+pub(crate) fn panel_sheet_stops(
+    track: &crate::workspace::Track,
+) -> musializer_core::render::contact_sheet::SheetStops {
+    use musializer_core::render::contact_sheet::SheetStops;
+    if track.scene_switches.enabled && !track.scene_switches.is_empty() {
+        SheetStops::Segments
+    } else {
+        SheetStops::default()
+    }
+}
+
+/// The top bar's Contact sheet (WX-5c §4): a destination, then the same
+/// replay and the same sheet `--contact-sheet` writes, over the export
+/// panel's clip when one is set.
+///
+/// Synchronous, from the command loop and outside the drawing pair, for the
+/// reasons [`export_still`] is. Every outcome lands in the tray by name; a
+/// cancelled picker is silent. Returns the written path.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one export frame needs; see `ExportSession::begin`"
+)]
+pub(crate) fn export_contact_sheet_from_window(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
+    let Some(track) = app.workspace.current() else {
+        app.shell.notify(
+            Severity::Error,
+            "No contact sheet was written",
+            "There is no track to render a sheet from.",
+        );
+        return None;
+    };
+    let window = app
+        .shell
+        .export_clip
+        .window(track.duration_seconds, track.render_config.fps);
+    let stops = panel_sheet_stops(track);
+    // Resolved before the picker, so a sheet that cannot be made says why
+    // without asking for a file first.
+    let times = match sheet_times(track, &stops, window) {
+        Ok(times) => times,
+        Err(reason) => {
+            app.shell.notify(
+                Severity::Error,
+                "No contact sheet was written",
+                &format!("{reason}."),
+            );
+            return None;
+        }
+    };
+    let destination = ask_for_sheet_destination(app, probe_destination)?;
+    // Refused before the replay, not after it: a sheet costs a pass over the
+    // whole track, and a directory that does not exist would only be noticed
+    // when raylib declined to write the finished image.
+    if !destination
+        .parent()
+        .is_some_and(|parent| parent.as_os_str().is_empty() || parent.is_dir())
+    {
+        app.shell.notify(
+            Severity::Error,
+            "No contact sheet was written",
+            &format!(
+                "{} is not in a folder that exists. Nothing was rendered.",
+                destination.display()
+            ),
+        );
+        return None;
+    }
+    match export_contact_sheet(
+        rl,
+        thread,
+        audio,
+        music,
+        app,
+        analysis,
+        renderer,
+        fonts,
+        &times,
+        &destination,
+    ) {
+        Ok(done) => {
+            print_sheet_line(&done, &times, &destination);
+            app.shell.notify(
+                Severity::Success,
+                "Contact sheet saved",
+                &format!(
+                    "{} tiles from {} to {}, rendered through the export path: {}",
+                    done.frames,
+                    musializer_core::treatment::format_time(times[0]),
+                    musializer_core::treatment::format_time(times[times.len() - 1]),
+                    destination.display()
+                ),
+            );
+            Some(destination)
+        }
+        Err(detail) => {
+            app.shell.notify(
+                Severity::Error,
+                "The contact sheet could not be written",
+                &format!("{detail}. Nothing else was changed."),
+            );
+            None
+        }
+    }
+}
+
+/// Where a contact sheet goes: beside the project when there is one, else
+/// beside the audio, named after it.
+fn ask_for_sheet_destination(
+    app: &mut crate::App,
+    probe_destination: Option<&Path>,
+) -> Option<PathBuf> {
+    use musializer_runtime::process::dialogs::{FileDialog, FileFilter};
+
+    if let Some(path) = probe_destination {
+        return Some(path.to_path_buf());
+    }
+    let track = app.workspace.current()?;
+    let anchor = track.project_path.as_deref().unwrap_or(&track.file_path);
+    let stem = anchor
+        .file_stem()
+        .map_or_else(|| "musializer".into(), |stem| stem.to_string_lossy());
+    let suggested = anchor
+        .with_file_name(format!("{stem}-contact-sheet.png"))
+        .to_string_lossy()
+        .into_owned();
+    let dialog = FileDialog::new("Save contact sheet")
+        .with_filter(FileFilter {
+            label: "PNG image",
+            patterns: &["*.png"],
+        })
+        .with_default_path(&suggested);
+    match dialog.save_file() {
+        Ok(path) => path,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Warning,
+                "No file picker is available",
+                &format!("{error}. Pass --contact-sheet on the command line instead."),
+            );
+            None
+        }
+    }
+}
+
 /// Where a still goes, following the video's own convention (UX0-C10).
 fn ask_for_still_destination(
     app: &mut crate::App,

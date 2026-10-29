@@ -2425,12 +2425,21 @@ fn run(
                     );
                 }
                 ShellCommand::ExportContactSheet => {
-                    // The top bar's Contact sheet (WX-5c §4). The seam
-                    // answers the press by name rather than doing nothing.
-                    app.shell.notify(
-                        Severity::Info,
-                        "Contact sheet",
-                        "Not built yet: use --contact-sheet on the command line",
+                    if let Some(track) = app.workspace.current_mut() {
+                        track.mark_significant();
+                    }
+                    // The top bar's Contact sheet (WX-5c §4): the CLI's own
+                    // sheet, synchronous here for the reasons ExportStill is.
+                    ui::panels::export::export_contact_sheet_from_window(
+                        &mut rl,
+                        &thread,
+                        &audio,
+                        music.as_ref(),
+                        &mut app,
+                        &mut analysis,
+                        &mut renderer,
+                        &fonts,
+                        probe_save_to.as_deref(),
                     );
                 }
                 ShellCommand::ManualEvent(action) => {
@@ -4144,32 +4153,8 @@ fn render_batch_frames(
             .workspace
             .current()
             .ok_or("there is no track to render a sheet from")?;
-        let segments: Vec<(f64, f64)> = if track.scene_switches.enabled {
-            track
-                .scene_switches
-                .cues()
-                .iter()
-                .map(|cue| (cue.start_seconds, cue.end_seconds))
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // Displayable lines only: a `Potential` cue never reaches a frame, so a
-        // tile at its midpoint would be labelled with a line that is not there.
-        let lyrics: Vec<(f64, f64)> = track
-            .lyrics
-            .cues()
-            .iter()
-            .filter(|cue| cue.origin.is_displayable())
-            .map(|cue| (cue.start_seconds, cue.end_seconds))
-            .collect();
         let stops = options.sheet_at.clone().unwrap_or_default();
-        let times = stops.resolve(
-            track.duration_seconds,
-            options.render_window,
-            &segments,
-            &lyrics,
-        )?;
+        let times = ui::panels::export::sheet_times(track, &stops, options.render_window)?;
         let done = ui::panels::export::export_contact_sheet(
             rl,
             thread,
@@ -4182,16 +4167,7 @@ fn render_batch_frames(
             &times,
             destination,
         )?;
-        println!(
-            "contact sheet:   {} tiles from {} to {} at {}x{} ({}x target), {}",
-            done.frames,
-            musializer_core::treatment::format_time(times[0]),
-            musializer_core::treatment::format_time(times[times.len() - 1]),
-            done.config.width,
-            done.config.height,
-            done.achieved_factor,
-            destination.display()
-        );
+        ui::panels::export::print_sheet_line(&done, &times, destination);
     }
     Ok(())
 }
