@@ -55,8 +55,10 @@
 #   - the card press not calling select_mode: assist 1 reads body=Ready;
 #   - the dialog drawn with the pre-WX-5d frame and header: dialog 1 fails
 #     both the corner and the header comparison, in both appearances.
-# The GPU and CPU runs read the same verdicts and the same pixel counts on
-# the opaque fills; see build/redesign/wx5d-look-assist-gate.md.
+# The GPU and CPU runs read the same verdicts and the same opaque-fill
+# colours (dialog 1 compares them exactly); the changed dot, an antialiased
+# disc, reads 25 ink pixels on the GPU and 21 on llvmpipe against a floor of
+# 8, and 0 on the default row on both.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
