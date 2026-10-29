@@ -656,14 +656,12 @@ mod tests {
     #[test]
     fn the_rail_line_names_every_icon_and_the_flyout_it_drew() {
         let mut shell = Shell::new();
-        assert!(shell
-            .describe_rail()
-            .starts_with("none\nlane head:       none\ntransport:"));
+        assert_eq!(shell.describe_rail(), "none");
         shell.last_rail = WorkspaceRail::layout(1280.0, 720.0, 46.0, 460.0);
         shell.open_flyout = Some(Flyout::Scenes);
         shell.last_flyout = Some(UiRect::new(52.0, 46.0, 336.0, 674.0));
         assert_eq!(
-            shell.describe_rail().lines().next().unwrap(),
+            shell.describe_rail(),
             "rect=0,46,52,414 icons=tracks@8,56,36,36;scenes@8,98,36,36;\
              editor@8,372,36,36;dock@8,414,36,36 open=scenes flyout=52,46,336,674"
         );
