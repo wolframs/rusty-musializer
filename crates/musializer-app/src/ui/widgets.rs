@@ -61,6 +61,16 @@ pub enum ButtonStyle {
     /// read as four buttons stacked on a panel. Selected is the same outline
     /// and tint every other selected control wears.
     Ghost,
+    /// The commit inside a column card — Apply, Keep, Allow, Start analysis —
+    /// that is not the frame's primary action (WX-5d §2): an ink fill with the
+    /// label cut out in the surface colour, the round play button's look.
+    /// **Never the accent**, so the frame's accent census stays at one: the
+    /// accent fill is Render's, or the Render view's commit, and nothing else.
+    #[allow(
+        dead_code,
+        reason = "WX-5d seam: the column views' builders are the callers"
+    )]
+    Strong,
     // No caller yet. It is the style for a destructive action, and the two the
     // oracle has — `Clear manual` and Cancel export — are Agents L and H's. Kept
     // rather than deleted because it is half of the C's widget vocabulary and
@@ -86,6 +96,16 @@ pub struct ButtonLook {
 #[must_use]
 pub fn button_look(style: ButtonStyle, selected: bool, hovered: bool) -> ButtonLook {
     match style {
+        // Selected or not: a commit is not a selection, and an ink slab that
+        // turned into an outline when "selected" would stop reading as one.
+        ButtonStyle::Strong => {
+            let ink = color::ui_ink();
+            ButtonLook {
+                fill: if hovered { brightness(ink, 0.08) } else { ink },
+                edge: ink,
+                ink: color::ui_surface(),
+            }
+        }
         ButtonStyle::Primary => {
             let accent = color::accent();
             ButtonLook {
@@ -1489,18 +1509,33 @@ pub fn control_box<D: RaylibDraw>(
     edge: Color,
     thickness: f32,
 ) {
+    rounded_box(d, boundary, metric::UI_RADIUS, fill, edge, thickness);
+}
+
+/// [`control_box`] at any corner radius: the segmented control's 6 px frame
+/// (WX-5d) is the first box that is not a control's 4 px. `control_box` is this
+/// at [`metric::UI_RADIUS`], arithmetic for arithmetic, so no existing control
+/// moves a pixel.
+pub fn rounded_box<D: RaylibDraw>(
+    d: &mut D,
+    boundary: UiRect,
+    radius: f32,
+    fill: Color,
+    edge: Color,
+    thickness: f32,
+) {
     if boundary.is_empty() {
         return;
     }
     let rect = rectangle(boundary);
     let short = boundary.width.min(boundary.height);
-    if short < metric::UI_RADIUS * 4.0 {
+    if short < radius * 4.0 {
         d.draw_rectangle_rec(rect, fill);
         d.draw_rectangle_lines_ex(rect, thickness, edge);
         return;
     }
     // raylib's roundness is the radius as a fraction of half the short side.
-    let roundness = (metric::UI_RADIUS * 2.0 / short).clamp(0.0, 1.0);
+    let roundness = (radius * 2.0 / short).clamp(0.0, 1.0);
     d.draw_rectangle_rounded(rect, roundness, 4, fill);
     // `DrawRectangleRoundedLinesEx` strokes *outside* its rectangle
     // (`rshapes.c:1183`, `outerRadius = radius + lineThick` at `:1203`), unlike
@@ -1516,8 +1551,7 @@ pub fn control_box<D: RaylibDraw>(
         boundary.height - thickness * 2.0,
     );
     let inner_short = short - thickness * 2.0;
-    let inner_roundness =
-        ((metric::UI_RADIUS - thickness).max(0.0) * 2.0 / inner_short).clamp(0.0, 1.0);
+    let inner_roundness = ((radius - thickness).max(0.0) * 2.0 / inner_short).clamp(0.0, 1.0);
     d.draw_rectangle_rounded_lines_ex(rectangle(inset), inner_roundness, 4, thickness, edge);
 }
 
@@ -1881,6 +1915,938 @@ pub(crate) fn alpha(color: Color, amount: f32) -> Color {
     )
 }
 
+// ---------------------------------------------------------------------------
+// The column vocabulary (WX-5d)
+// ---------------------------------------------------------------------------
+//
+// One set of pieces for every view in the right column — Direct, Lyrics, Look,
+// Assist, Render — so the five read as one surface (`wx5d-design.md` §2, "The
+// head"). Every number below is the approved mockup's (`build/redesign/wx5d-src/
+// mock.py`'s CSS), and every widget returns the rects it drew, because each view
+// prints a report line and a probe aims at a report line, never at a pixel
+// measured once.
+//
+// Each widget is a pure `*_layout` function, tested here, and a drawing wrapper
+// that calls it. The split is the file's existing one (`tooltip_box` and
+// `draw_tooltip`): geometry nobody can check without a window is geometry
+// nobody checks.
+
+/// The column's head: a micro title, the view's switch or actions on the
+/// right, and a hairline under it (`.head`, 40 px).
+
+#[allow(
+    unused_imports,
+    reason = "WX-5d seam: unused until the column views call the vocabulary"
+)]
+pub use column_kit::*;
+
+/// The vocabulary in a module of its own only so one `allow` covers it while
+/// nothing calls it: the WX-5d seam lands it before the Lyrics and Look &
+/// Assist builders do. Drop the `allow` (and fold the module back into the
+/// file if you like) once the views use it.
+#[allow(
+    dead_code,
+    reason = "WX-5d seam: the column views' builders are the callers; the tests below exercise every layout"
+)]
+mod column_kit {
+    use super::*;
+
+    pub const COLUMN_HEAD_HEIGHT: f32 = 40.0;
+    /// Left and right insets of the head's contents (`.head`'s `padding: 0 10px 0 14px`).
+    pub const COLUMN_HEAD_PADDING_LEFT: f32 = 14.0;
+    pub const COLUMN_HEAD_PADDING_RIGHT: f32 = 10.0;
+    /// Space between the head's title and whatever sits after it (`.head`'s `gap`).
+    pub const COLUMN_HEAD_GAP: f32 = 8.0;
+
+    /// A section head inside a body: the micro title, then a hairline to the right
+    /// edge (`.gh`, 18 px).
+    pub const SECTION_HEAD_HEIGHT: f32 = 18.0;
+    const SECTION_HEAD_GAP: f32 = 8.0;
+
+    /// One parameter row: label, track, value, route button (`.row`, 30 px; it was
+    /// 46 px in two lines in the Tune panel).
+    pub const SLIDER_ROW_HEIGHT: f32 = 30.0;
+    /// Between the row's four parts (`.row`'s `gap`). Wider than the knob's
+    /// hovered radius, so a knob at 0 or 1 never touches the label or the value.
+    pub const SLIDER_ROW_GAP: f32 = 10.0;
+    /// The value's reserved width (`.val`), right-aligned tabular figures.
+    pub const SLIDER_ROW_VALUE_WIDTH: f32 = 46.0;
+    /// The `~` route button's box (`.rt`).
+    pub const SLIDER_ROW_ROUTE_SIZE: f32 = 22.0;
+    /// The changed dot (`.cd`) and the space between it and the label's words.
+    pub const SLIDER_ROW_DOT_SIZE: f32 = 5.0;
+    const SLIDER_ROW_DOT_GAP: f32 = 6.0;
+    const SLIDER_ROW_TRACK_HEIGHT: f32 = 4.0;
+    const SLIDER_ROW_TICK_HEIGHT: f32 = 12.0;
+    /// The knob at rest; one pixel more while hovered or held.
+    pub const SLIDER_ROW_KNOB_RADIUS: f32 = 7.0;
+    /// How many consecutive widget indices one [`Widgets::slider_row`] takes from
+    /// its namespace: track, label, value, route. A caller laying out rows strides
+    /// its `first_index` by this.
+    pub const SLIDER_ROW_IDS: u32 = 4;
+
+    /// A segmented control's frame: 24 px items inside 2 px of padding and a 1 px
+    /// edge (`.seg`).
+    pub const SEGMENTED_HEIGHT: f32 = 30.0;
+    /// The frame's edge plus its padding: where the items start.
+    pub const SEGMENTED_INSET: f32 = 3.0;
+    /// Horizontal padding inside one item, either side of its label.
+    pub const SEGMENTED_ITEM_PADDING: f32 = 9.0;
+    const SEGMENTED_RADIUS: f32 = 6.0;
+
+    /// A status line: a dot and a micro word (`.dot`, the Assist cards' boundary,
+    /// the AI settings' READY state).
+    pub const STATUS_DOT_LABEL_HEIGHT: f32 = 16.0;
+    pub const STATUS_DOT_SIZE: f32 = 6.0;
+    const STATUS_DOT_GAP: f32 = 6.0;
+
+    /// A colour swatch: a 24 px disc, ringed when selected (the caption's Ink and
+    /// Plate rows).
+    pub const SWATCH_SIZE: f32 = 24.0;
+
+    /// The micro type's tracking (`.micro`'s `letter-spacing: 1px`).
+    const MICRO_TRACKING: f32 = 1.0;
+
+    /// One run of a micro head: muted by default, ink for the numbers inside it
+    /// (`LYRICS · 83 CUES`, where 83 is ink). Drawn uppercase.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct MicroRun<'a> {
+        pub text: &'a str,
+        pub ink: bool,
+    }
+
+    impl<'a> MicroRun<'a> {
+        #[must_use]
+        pub const fn muted(text: &'a str) -> Self {
+            Self { text, ink: false }
+        }
+
+        #[must_use]
+        pub const fn ink(text: &'a str) -> Self {
+            Self { text, ink: true }
+        }
+    }
+
+    /// Width of `runs` as [`draw_micro`] draws them.
+    #[must_use]
+    pub fn micro_width(font: &UiFonts, runs: &[MicroRun<'_>]) -> f32 {
+        runs.iter()
+            .map(|run| {
+                measure_tracked(
+                    font,
+                    &run.text.to_uppercase(),
+                    metric::UI_FONT_MICRO,
+                    MICRO_TRACKING,
+                )
+            })
+            .sum()
+    }
+
+    /// Draws micro runs left to right from `(x, y)`, their top edge, and returns
+    /// the width drawn.
+    pub fn draw_micro(
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        x: f32,
+        y: f32,
+        runs: &[MicroRun<'_>],
+    ) -> f32 {
+        let mut cursor = x;
+        for run in runs {
+            let text = run.text.to_uppercase();
+            draw_text_tracked(
+                d,
+                font,
+                &text,
+                cursor,
+                y,
+                metric::UI_FONT_MICRO,
+                MICRO_TRACKING,
+                if run.ink {
+                    color::ui_ink()
+                } else {
+                    color::ui_muted()
+                },
+            );
+            cursor += measure_tracked(font, &text, metric::UI_FONT_MICRO, MICRO_TRACKING);
+        }
+        cursor - x
+    }
+
+    /// The y that centres one line of `size` in a box starting at `top` that is
+    /// `height` tall, on the pixel grid.
+    fn centred_text_y(top: f32, height: f32, size: f32) -> f32 {
+        (top + (height - size) * 0.5).round()
+    }
+
+    /// Where a column head's parts go.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct ColumnHead {
+        /// The whole head, [`COLUMN_HEAD_HEIGHT`] tall; its last row is the hairline.
+        pub head: UiRect,
+        /// The micro title.
+        pub title: UiRect,
+        /// What is left of the head after the title: the view's switch or its
+        /// actions go here, right-aligned with [`ColumnHead::trailing_right`].
+        pub trailing: UiRect,
+        /// The column below the head.
+        pub body: UiRect,
+    }
+
+    impl ColumnHead {
+        /// A box `width` wide and `height` tall at the right end of
+        /// [`Self::trailing`], vertically centred in the head. Clipped to the
+        /// trailing room, so a switch too wide for a narrow column shrinks rather
+        /// than covering the title.
+        #[must_use]
+        pub fn trailing_right(&self, width: f32, height: f32) -> UiRect {
+            let width = width.min(self.trailing.width).max(0.0);
+            let height = height.min(self.head.height).max(0.0);
+            UiRect::new(
+                (self.trailing.x + self.trailing.width - width).round(),
+                (self.head.y + (self.head.height - 1.0 - height) * 0.5).round(),
+                width,
+                height,
+            )
+        }
+    }
+
+    /// [`column_head`]'s geometry, for a title `title_width` wide.
+    #[must_use]
+    pub fn column_head_layout(column: UiRect, title_width: f32) -> ColumnHead {
+        let height = COLUMN_HEAD_HEIGHT.min(column.height.max(0.0));
+        let head = UiRect::new(column.x, column.y, column.width.max(0.0), height);
+        let inner_left = column.x + COLUMN_HEAD_PADDING_LEFT;
+        let inner_right = (column.x + column.width - COLUMN_HEAD_PADDING_RIGHT).max(inner_left);
+        let title = UiRect::new(
+            inner_left,
+            column.y,
+            title_width.max(0.0).min(inner_right - inner_left),
+            height,
+        );
+        let trailing_x = (title.x + title.width + COLUMN_HEAD_GAP).min(inner_right);
+        ColumnHead {
+            head,
+            title,
+            trailing: UiRect::new(trailing_x, column.y, inner_right - trailing_x, height),
+            body: UiRect::new(
+                column.x,
+                column.y + height,
+                column.width.max(0.0),
+                (column.height - height).max(0.0),
+            ),
+        }
+    }
+
+    /// Draws the head of a column view at the top of `column` and returns where
+    /// everything went. The head is filled with the surface, so it reads the same
+    /// whatever the body scrolled under it.
+    pub fn column_head(
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        column: UiRect,
+        title: &[MicroRun<'_>],
+    ) -> ColumnHead {
+        let layout = column_head_layout(column, micro_width(font, title));
+        if layout.head.is_empty() {
+            return layout;
+        }
+        fill(d, layout.head, color::ui_surface());
+        let y = centred_text_y(
+            layout.head.y,
+            layout.head.height - 1.0,
+            metric::UI_FONT_MICRO,
+        );
+        draw_micro(d, font, layout.title.x, y, title);
+        fill(
+            d,
+            UiRect::new(
+                layout.head.x,
+                layout.head.y + layout.head.height - 1.0,
+                layout.head.width,
+                1.0,
+            ),
+            color::ui_rule(),
+        );
+        layout
+    }
+
+    /// Where a section head's parts go.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SectionHead {
+        /// The whole row, [`SECTION_HEAD_HEIGHT`] tall.
+        pub rect: UiRect,
+        pub title: UiRect,
+        /// The hairline after the title, one pixel tall; empty when the title
+        /// fills the row.
+        pub rule: UiRect,
+    }
+
+    /// [`section_head`]'s geometry. Only `row`'s x, y and width are read.
+    #[must_use]
+    pub fn section_head_layout(row: UiRect, title_width: f32) -> SectionHead {
+        let rect = UiRect::new(row.x, row.y, row.width.max(0.0), SECTION_HEAD_HEIGHT);
+        let title = UiRect::new(
+            row.x,
+            row.y,
+            title_width.max(0.0).min(rect.width),
+            SECTION_HEAD_HEIGHT,
+        );
+        let rule_x = title.x + title.width + SECTION_HEAD_GAP;
+        let right = rect.x + rect.width;
+        SectionHead {
+            rect,
+            title,
+            rule: if rule_x < right {
+                UiRect::new(
+                    rule_x.round(),
+                    (row.y + SECTION_HEAD_HEIGHT * 0.5).floor(),
+                    right - rule_x.round(),
+                    1.0,
+                )
+            } else {
+                UiRect::new(right, row.y, 0.0, 0.0)
+            },
+        }
+    }
+
+    /// A section head inside a column body: `TYPE ———`. Takes `row`'s x, y and
+    /// width; the height is [`SECTION_HEAD_HEIGHT`].
+    pub fn section_head(
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        row: UiRect,
+        title: &[MicroRun<'_>],
+    ) -> SectionHead {
+        let layout = section_head_layout(row, micro_width(font, title));
+        if layout.rect.is_empty() {
+            return layout;
+        }
+        let y = centred_text_y(layout.rect.y, layout.rect.height, metric::UI_FONT_MICRO);
+        draw_micro(d, font, layout.title.x, y, title);
+        fill(d, layout.rule, color::ui_rule());
+        layout
+    }
+
+    /// How a segmented control spends the width it is given.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum SegmentedFit {
+        /// Each item as wide as its label plus padding (`.seg`): the head's
+        /// switch. Falls back to [`SegmentedFit::Fill`] when that does not fit.
+        Hug,
+        /// Equal items across the whole width (`.seg.fill`): a row in a body,
+        /// None / Shadow / Plate.
+        Fill,
+    }
+
+    /// Where a segmented control's frame and items go.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct SegmentedLayout {
+        pub frame: UiRect,
+        pub items: Vec<UiRect>,
+    }
+
+    /// The width a [`SegmentedFit::Hug`] control needs for labels this wide.
+    #[must_use]
+    pub fn segmented_width(label_widths: &[f32]) -> f32 {
+        label_widths
+            .iter()
+            .map(|width| width.max(0.0) + SEGMENTED_ITEM_PADDING * 2.0)
+            .sum::<f32>()
+            + SEGMENTED_INSET * 2.0
+    }
+
+    /// [`segmented_width`] for labels as [`Widgets::segmented`] draws them.
+    #[must_use]
+    pub fn segmented_intrinsic_width(font: &UiFonts, labels: &[&str]) -> f32 {
+        let widths: Vec<f32> = labels
+            .iter()
+            .map(|label| measure(font, label, metric::UI_FONT_CAPTION))
+            .collect();
+        segmented_width(&widths)
+    }
+
+    /// [`Widgets::segmented`]'s geometry. The frame is [`SEGMENTED_HEIGHT`] tall,
+    /// vertically centred in `boundary` and starting at its left edge. Item edges
+    /// land on whole pixels, so neighbouring items share an edge rather than
+    /// splitting one between them.
+    #[must_use]
+    pub fn segmented_layout(
+        boundary: UiRect,
+        label_widths: &[f32],
+        fit: SegmentedFit,
+    ) -> SegmentedLayout {
+        let height = SEGMENTED_HEIGHT.min(boundary.height.max(0.0));
+        let y = (boundary.y + (boundary.height - height) * 0.5).round();
+        let available = boundary.width.max(0.0);
+        let intrinsic = segmented_width(label_widths);
+        let hug = fit == SegmentedFit::Hug && intrinsic <= available;
+        let frame = UiRect::new(
+            boundary.x,
+            y,
+            if hug { intrinsic } else { available },
+            height,
+        );
+        let count = label_widths.len();
+        let inner_width = (frame.width - SEGMENTED_INSET * 2.0).max(0.0);
+        let item_height = (height - SEGMENTED_INSET * 2.0).max(0.0);
+        let mut items = Vec::with_capacity(count);
+        let mut left = frame.x + SEGMENTED_INSET;
+        let mut consumed = 0.0f32;
+        for (index, width) in label_widths.iter().enumerate() {
+            consumed += if hug {
+                width.max(0.0) + SEGMENTED_ITEM_PADDING * 2.0
+            } else {
+                inner_width / count as f32
+            };
+            let right = if index + 1 == count {
+                frame.x + SEGMENTED_INSET + inner_width
+            } else {
+                (frame.x + SEGMENTED_INSET + consumed).round()
+            };
+            items.push(UiRect::new(
+                left,
+                y + SEGMENTED_INSET,
+                (right - left).max(0.0),
+                item_height,
+            ));
+            left = right;
+        }
+        SegmentedLayout { frame, items }
+    }
+
+    /// What a segmented control drew and which item took a press.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Segmented {
+        pub layout: SegmentedLayout,
+        /// The item released over this frame, if any.
+        pub clicked: Option<usize>,
+    }
+
+    /// One parameter row's content.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SliderRow<'a> {
+        pub label: &'a str,
+        /// The value as the row prints it, already formatted by the caller.
+        pub value_text: &'a str,
+        /// The value's position on the track, `0..=1`.
+        pub normalized: f32,
+        /// Where the default sits on the track, drawn as a tick; `None` for none.
+        pub default: Option<f32>,
+        /// Away from its default: the label turns ink and gains a dot, and the
+        /// value turns ink (replacing Tune's `*`).
+        pub changed: bool,
+        /// `None` draws no route button; `Some(routed)` draws `~`, filled when a
+        /// route drives the value.
+        pub route: Option<bool>,
+        /// The label column's width, dot included (118 in Look, 58 in Lyrics'
+        /// Style, from the mockup).
+        pub label_width: f32,
+    }
+
+    /// Where a parameter row's parts go.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SliderRowLayout {
+        /// The whole row, [`SLIDER_ROW_HEIGHT`] tall.
+        pub row: UiRect,
+        /// The label's press area, dot included.
+        pub label: UiRect,
+        /// The changed dot, drawn only when the row is changed.
+        pub dot: UiRect,
+        /// The track's press area: the full row height across the track, so the
+        /// 4 px bar is not the only thing a pointer can hit.
+        pub track: UiRect,
+        /// The drawn bar, centred in [`Self::track`].
+        pub bar: UiRect,
+        pub value: UiRect,
+        /// Empty when the row has no route button.
+        pub route: UiRect,
+    }
+
+    /// [`Widgets::slider_row`]'s geometry. Only `row`'s x, y and width are read.
+    #[must_use]
+    pub fn slider_row_layout(row: UiRect, label_width: f32, route: bool) -> SliderRowLayout {
+        let row = UiRect::new(row.x, row.y, row.width.max(0.0), SLIDER_ROW_HEIGHT);
+        let right = row.x + row.width;
+        let label = UiRect::new(
+            row.x,
+            row.y,
+            label_width.max(0.0).min(row.width),
+            row.height,
+        );
+        let dot = UiRect::new(
+            row.x,
+            (row.y + (row.height - SLIDER_ROW_DOT_SIZE) * 0.5).round(),
+            SLIDER_ROW_DOT_SIZE,
+            SLIDER_ROW_DOT_SIZE,
+        );
+        let route_rect = if route {
+            UiRect::new(
+                right - SLIDER_ROW_ROUTE_SIZE,
+                (row.y + (row.height - SLIDER_ROW_ROUTE_SIZE) * 0.5).round(),
+                SLIDER_ROW_ROUTE_SIZE,
+                SLIDER_ROW_ROUTE_SIZE,
+            )
+        } else {
+            UiRect::new(right, row.y, 0.0, 0.0)
+        };
+        let value_right = if route {
+            route_rect.x - SLIDER_ROW_GAP
+        } else {
+            right
+        };
+        let value = UiRect::new(
+            value_right - SLIDER_ROW_VALUE_WIDTH,
+            row.y,
+            SLIDER_ROW_VALUE_WIDTH,
+            row.height,
+        );
+        let track_x = label.x + label.width + SLIDER_ROW_GAP;
+        let track = UiRect::new(
+            track_x,
+            row.y,
+            (value.x - SLIDER_ROW_GAP - track_x).max(0.0),
+            row.height,
+        );
+        let bar = UiRect::new(
+            track.x,
+            (row.y + (row.height - SLIDER_ROW_TRACK_HEIGHT) * 0.5).round(),
+            track.width,
+            SLIDER_ROW_TRACK_HEIGHT,
+        );
+        SliderRowLayout {
+            row,
+            label,
+            dot,
+            track,
+            bar,
+            value,
+            route: route_rect,
+        }
+    }
+
+    /// What a parameter row drew and what the pointer did to it.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SliderRowResult {
+        pub layout: SliderRowLayout,
+        /// The value the pointer asks for while the track is dragged, as
+        /// [`Widgets::slider`] returns it: an untouched row cannot write a value.
+        pub drag: Option<f32>,
+        /// The track's own state, so a caller can see a double press (reset).
+        pub track: ButtonState,
+        /// The label: a press resets the value in Look.
+        pub label: ButtonState,
+        /// The value: a press opens the typed entry.
+        pub value: ButtonState,
+        /// The `~` button; default when the row has none.
+        pub route: ButtonState,
+    }
+
+    /// The colour a status dot wears. **No accent**: a status is never *now*
+    /// (WX-5a), and the Direct tab's dot is told the same (§2).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum StatusTone {
+        Success,
+        Warning,
+        Danger,
+        Ink,
+        Muted,
+    }
+
+    impl StatusTone {
+        #[must_use]
+        pub fn color(self) -> Color {
+            match self {
+                StatusTone::Success => color::ui_success(),
+                StatusTone::Warning => color::ui_warning(),
+                StatusTone::Danger => color::ui_danger(),
+                StatusTone::Ink => color::ui_ink(),
+                StatusTone::Muted => color::ui_muted(),
+            }
+        }
+    }
+
+    /// [`status_dot_label`]'s geometry: the dot and the text box for a word
+    /// `text_width` wide, left-aligned and vertically centred in `boundary`.
+    /// Returns `(whole, dot, text)`; the text is clipped to the boundary.
+    #[must_use]
+    pub fn status_dot_label_layout(boundary: UiRect, text_width: f32) -> (UiRect, UiRect, UiRect) {
+        let height = STATUS_DOT_LABEL_HEIGHT.min(boundary.height.max(0.0));
+        let y = (boundary.y + (boundary.height - height) * 0.5).round();
+        let dot = UiRect::new(
+            boundary.x,
+            (y + (height - STATUS_DOT_SIZE) * 0.5).round(),
+            STATUS_DOT_SIZE,
+            STATUS_DOT_SIZE,
+        );
+        let text_x = boundary.x + STATUS_DOT_SIZE + STATUS_DOT_GAP;
+        let right = boundary.x + boundary.width;
+        let text = UiRect::new(
+            text_x,
+            y,
+            text_width.max(0.0).min((right - text_x).max(0.0)),
+            height,
+        );
+        let whole = UiRect::new(boundary.x, y, text.x + text.width - boundary.x, height);
+        (whole, dot, text)
+    }
+
+    /// A dot in `tone` and a muted micro word: `● LOCAL AUDIO`. The word is
+    /// ellipsized to the boundary. Returns the rect drawn, dot to last glyph.
+    pub fn status_dot_label(
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        boundary: UiRect,
+        tone: StatusTone,
+        text: &str,
+    ) -> UiRect {
+        let upper = text.to_uppercase();
+        let measure_micro =
+            |run: &str| measure_tracked(font, run, metric::UI_FONT_MICRO, MICRO_TRACKING);
+        let room = (boundary.width - STATUS_DOT_SIZE - STATUS_DOT_GAP).max(0.0);
+        let (fitted, _) = row_typography::truncate_label(
+            &upper,
+            room,
+            Some(measure_micro),
+            row_typography::UI_ROW_LABEL_CAPACITY,
+        );
+        let (whole, dot, text_box) = status_dot_label_layout(boundary, measure_micro(&fitted));
+        if whole.is_empty() {
+            return whole;
+        }
+        d.draw_circle_v(
+            Vector2::new(dot.x + dot.width * 0.5, dot.y + dot.height * 0.5),
+            STATUS_DOT_SIZE * 0.5,
+            tone.color(),
+        );
+        draw_text_tracked(
+            d,
+            font,
+            &fitted,
+            text_box.x,
+            centred_text_y(text_box.y, text_box.height, metric::UI_FONT_MICRO),
+            metric::UI_FONT_MICRO,
+            MICRO_TRACKING,
+            color::ui_muted(),
+        );
+        whole
+    }
+
+    /// The checker a translucent swatch is laid over, light then dark (the
+    /// mockup's `#999`/`#666`).
+    const SWATCH_CHECKER: [Color; 2] = [
+        Color::new(0x99, 0x99, 0x99, 0xFF),
+        Color::new(0x66, 0x66, 0x66, 0xFF),
+    ];
+
+    /// `top` composited over an opaque `base`, as one opaque colour.
+    ///
+    /// Computed here rather than blended by the GPU: `BLEND_ALPHA` on a chrome
+    /// surface leaves the pixel translucent in a saved PNG (`docs/TRAPS.md`), and
+    /// a swatch is exactly what a capture check would read.
+    #[must_use]
+    pub fn composite_over(top: Color, base: Color) -> Color {
+        let a = u16::from(top.a);
+        let mix = |over: u8, under: u8| -> u8 {
+            let value = (u16::from(over) * a + u16::from(under) * (255 - a) + 127) / 255;
+            u8::try_from(value).unwrap_or(u8::MAX)
+        };
+        Color::new(
+            mix(top.r, base.r),
+            mix(top.g, base.g),
+            mix(top.b, base.b),
+            255,
+        )
+    }
+
+    /// What a swatch drew and whether it was pressed.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct SwatchResult {
+        /// The press area, [`SWATCH_SIZE`] square; the selection ring reaches
+        /// 3 px past it.
+        pub rect: UiRect,
+        pub state: ButtonState,
+    }
+
+    impl Widgets {
+        /// A segmented control: one selected item among a few
+        /// (`Cues / Style / Effects`, `None / Shadow / Plate`). Item `i` claims
+        /// `widget_id(namespace, first_index + i)`.
+        ///
+        /// The selected item wears the selection look — tint and outline, ink
+        /// label — and the rest are muted words on the frame's raised fill, so the
+        /// control reads as one object with one choice in it. `selected` is an
+        /// index into `labels`; `None` selects nothing.
+        #[allow(
+            clippy::too_many_arguments,
+            reason = "a button's arguments plus the label list and its fit; the id pair has to stay visible at the call site"
+        )]
+        pub fn segmented(
+            &mut self,
+            d: &mut RaylibDrawHandle<'_>,
+            font: &UiFonts,
+            namespace: u32,
+            first_index: u32,
+            boundary: UiRect,
+            labels: &[&str],
+            selected: Option<usize>,
+            fit: SegmentedFit,
+        ) -> Segmented {
+            let widths: Vec<f32> = labels
+                .iter()
+                .map(|label| measure(font, label, metric::UI_FONT_CAPTION))
+                .collect();
+            let layout = segmented_layout(boundary, &widths, fit);
+            let mut clicked = None;
+            if layout.frame.is_empty() {
+                return Segmented { layout, clicked };
+            }
+            rounded_box(
+                d,
+                layout.frame,
+                SEGMENTED_RADIUS,
+                color::ui_raised(),
+                color::ui_control_edge(),
+                1.0,
+            );
+            for (index, (item, label)) in layout.items.iter().zip(labels).enumerate() {
+                let id = widget_id(namespace, first_index + index as u32);
+                let state = self.button(d, id, *item);
+                if state.clicked {
+                    clicked = Some(index);
+                }
+                let on = selected == Some(index);
+                if on {
+                    control_box(
+                        d,
+                        *item,
+                        color::ui_selected(),
+                        color::ui_selected_edge(),
+                        1.0,
+                    );
+                } else if state.hovered {
+                    control_box(d, *item, color::ui_hover(), color::ui_hover(), 1.0);
+                }
+                text_label(
+                    d,
+                    font,
+                    *item,
+                    label,
+                    metric::UI_FONT_CAPTION,
+                    if on || state.hovered {
+                        color::ui_ink()
+                    } else {
+                        color::ui_muted()
+                    },
+                );
+            }
+            Segmented { layout, clicked }
+        }
+
+        /// One parameter row: label (with a dot when changed), a track with a
+        /// tick at the default, the value, and an optional `~` route button.
+        /// Claims [`SLIDER_ROW_IDS`] consecutive indices from `first_index`:
+        /// track, label, value, route.
+        ///
+        /// Like [`Self::slider`], the caller owns the value: the row returns what
+        /// the pointer asks for and writes nothing.
+        pub fn slider_row(
+            &mut self,
+            d: &mut RaylibDrawHandle<'_>,
+            font: &UiFonts,
+            namespace: u32,
+            first_index: u32,
+            row: UiRect,
+            spec: &SliderRow<'_>,
+        ) -> SliderRowResult {
+            let layout = slider_row_layout(row, spec.label_width, spec.route.is_some());
+            let mut result = SliderRowResult {
+                layout,
+                drag: None,
+                track: ButtonState::default(),
+                label: ButtonState::default(),
+                value: ButtonState::default(),
+                route: ButtonState::default(),
+            };
+            if layout.row.is_empty() {
+                return result;
+            }
+            let size = metric::UI_FONT_CAPTION;
+            let ink = color::ui_ink();
+            let muted = color::ui_muted();
+
+            // Label: the dot, then the words, ellipsized to the column.
+            result.label = self.button(d, widget_id(namespace, first_index + 1), layout.label);
+            if spec.changed {
+                d.draw_circle_v(
+                    Vector2::new(
+                        layout.dot.x + layout.dot.width * 0.5,
+                        layout.dot.y + layout.dot.height * 0.5,
+                    ),
+                    SLIDER_ROW_DOT_SIZE * 0.5,
+                    ink,
+                );
+            }
+            let words_x = layout.label.x + SLIDER_ROW_DOT_SIZE + SLIDER_ROW_DOT_GAP;
+            let words_room = (layout.label.x + layout.label.width - words_x).max(0.0);
+            let (words, _) = row_typography::truncate_label(
+                spec.label,
+                words_room,
+                Some(|text: &str| measure(font, text, size)),
+                row_typography::UI_ROW_LABEL_CAPACITY,
+            );
+            draw_text(
+                d,
+                font,
+                &words,
+                words_x,
+                centred_text_y(layout.row.y, layout.row.height, size),
+                size,
+                if spec.changed || result.label.hovered {
+                    ink
+                } else {
+                    muted
+                },
+            );
+
+            // Track: the trough, the filled amount, the default tick, the knob.
+            let pointer = self.pointer(d);
+            let track_id = widget_id(namespace, first_index);
+            result.track = self.button_at(track_id, layout.track, pointer);
+            let filled = spec.normalized.clamp(0.0, 1.0);
+            let bar = layout.bar;
+            if !bar.is_empty() {
+                let roundness = 1.0;
+                d.draw_rectangle_rounded(rectangle(bar), roundness, 4, color::ui_selected());
+                if filled > 0.0 {
+                    d.draw_rectangle_rounded(
+                        rectangle(UiRect::new(bar.x, bar.y, bar.width * filled, bar.height)),
+                        roundness,
+                        4,
+                        color::ui_level(),
+                    );
+                }
+                if let Some(default) = spec.default {
+                    let x = (bar.x + bar.width * default.clamp(0.0, 1.0)).round();
+                    fill(
+                        d,
+                        UiRect::new(
+                            x,
+                            (bar.y + (bar.height - SLIDER_ROW_TICK_HEIGHT) * 0.5).round(),
+                            1.0,
+                            SLIDER_ROW_TICK_HEIGHT,
+                        ),
+                        color::ui_selected_edge(),
+                    );
+                }
+                d.draw_circle_v(
+                    Vector2::new(bar.x + bar.width * filled, bar.y + bar.height * 0.5),
+                    if result.track.hovered || result.track.pressed {
+                        SLIDER_ROW_KNOB_RADIUS + 1.0
+                    } else {
+                        SLIDER_ROW_KNOB_RADIUS
+                    },
+                    ink,
+                );
+            }
+            if self.active_button_id == track_id && pointer.down {
+                self.interacted = true;
+                result.drag = Some(slider_value(pointer.x, bar.x, bar.x + bar.width));
+            }
+
+            // Value: right-aligned tabular figures, a hover box saying it can be typed.
+            result.value = self.button(d, widget_id(namespace, first_index + 2), layout.value);
+            if result.value.hovered {
+                control_box(d, layout.value, color::ui_hover(), color::ui_hover(), 1.0);
+            }
+            let value_width = measure_tabular(font, spec.value_text, size);
+            draw_text_tabular(
+                d,
+                font,
+                spec.value_text,
+                (layout.value.x + layout.value.width - value_width).max(layout.value.x),
+                centred_text_y(layout.row.y, layout.row.height, size),
+                size,
+                if spec.changed { ink } else { muted },
+            );
+
+            // Route: `~`, always visible, filled when a route drives the value.
+            if let Some(routed) = spec.route {
+                result.route = self.button(d, widget_id(namespace, first_index + 3), layout.route);
+                let surface = if routed {
+                    color::ui_selected()
+                } else if result.route.hovered {
+                    color::ui_hover()
+                } else {
+                    color::ui_surface()
+                };
+                control_box(d, layout.route, surface, color::ui_rule(), 1.0);
+                text_label(
+                    d,
+                    font,
+                    layout.route,
+                    "~",
+                    15.0,
+                    if routed || result.route.hovered {
+                        ink
+                    } else {
+                        muted
+                    },
+                );
+            }
+            result
+        }
+
+        /// A colour swatch: a [`SWATCH_SIZE`] disc with a hairline ring, and when
+        /// selected a ring of ink 2 px out. `boundary`'s top-left places it; its
+        /// size is the swatch's own. A translucent colour is shown over a checker,
+        /// composited on the CPU so the pixels are opaque.
+        pub fn swatch(
+            &mut self,
+            d: &mut RaylibDrawHandle<'_>,
+            id: u64,
+            boundary: UiRect,
+            tint: Color,
+            selected: bool,
+        ) -> SwatchResult {
+            let rect = UiRect::new(boundary.x, boundary.y, SWATCH_SIZE, SWATCH_SIZE);
+            let state = self.button(d, id, rect);
+            let centre = Vector2::new(rect.x + SWATCH_SIZE * 0.5, rect.y + SWATCH_SIZE * 0.5);
+            let radius = SWATCH_SIZE * 0.5;
+            if selected {
+                d.draw_circle_v(centre, radius + 3.0, color::ui_ink());
+                d.draw_circle_v(centre, radius + 2.0, color::ui_surface());
+            }
+            d.draw_circle_v(
+                centre,
+                radius + 1.0,
+                if state.hovered {
+                    color::ui_selected_edge()
+                } else {
+                    color::ui_control_edge()
+                },
+            );
+            if tint.a == u8::MAX {
+                d.draw_circle_v(centre, radius, tint);
+            } else {
+                // Four quadrants of checker, each with the colour laid over it.
+                for (quadrant, start) in [0.0f32, 90.0, 180.0, 270.0].into_iter().enumerate() {
+                    let base = SWATCH_CHECKER[quadrant % 2];
+                    d.draw_circle_sector(
+                        centre,
+                        radius,
+                        start,
+                        start + 90.0,
+                        8,
+                        composite_over(tint, base),
+                    );
+                }
+            }
+            SwatchResult { rect, state }
+        }
+    }
+}
+
 /// A stable widget id from a namespace and an index.
 ///
 /// The C hashes with djb2 (`UI_WIDGETS_DJB2_INIT`, `ui_widgets.h:46-48`) because
@@ -1980,6 +2946,14 @@ pub mod id {
     /// contents keep the namespaces they had in the sidebar ([`TRACKS`],
     /// [`SCENE_BROWSER`], [`SCENE_FAMILY`], [`SCENE_ASCII`]), so no claim moves.
     pub const RAIL: u32 = 21;
+    /// The right column's own chrome (WX-5d, `ui::column`): its head, its
+    /// grip, the view switches it owns. The views' contents keep their
+    /// panels' namespaces, so no claim moves when a panel moves into it.
+    pub const COLUMN: u32 = 22;
+    /// The font browser pane (`panels::fonts`). It minted `0x464F_4E54`
+    /// ("FONT") in its own file, which no collision test could see — the
+    /// exact trap this table exists for; moved here in the WX-5d seam.
+    pub const FONTS: u32 = 23;
     /// One per notice card's close box, indexed by the notice's own id — the
     /// id rather than the list index, so eviction cannot misroute a claim.
     pub const NOTICE: u32 = 64;
@@ -1990,6 +2964,11 @@ pub mod id {
     /// The Assist settings dialog (`ui::assist_settings`), which is modal but
     /// gets a namespace of its own for the same reason [`WELCOME`] does.
     pub const ASSIST_DIALOG: u32 = 128;
+    /// The full-window blocker the Assist settings modal draws into the
+    /// **shell's** bank (`assist_settings::MODAL_BLOCK_NAMESPACE`), so nothing
+    /// under the modal can claim a press. Minted in that file as a bare `129`
+    /// until the WX-5d seam moved it here with [`FONTS`].
+    pub const ASSIST_MODAL_BLOCK: u32 = 129;
 
     /// Every namespace above, for the collision test and for anyone adding one.
     ///
@@ -2000,7 +2979,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 25] = [
+    pub const ALL: [(&str, u32); 28] = [
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),
@@ -2022,10 +3001,13 @@ pub mod id {
         ("LYRICS_ROWS", LYRICS_ROWS),
         ("TOP_BAR", TOP_BAR),
         ("RAIL", RAIL),
+        ("COLUMN", COLUMN),
+        ("FONTS", FONTS),
         ("NOTICE", NOTICE),
         ("TRACK_STRIP", TRACK_STRIP),
         ("ASSIST", ASSIST),
         ("ASSIST_DIALOG", ASSIST_DIALOG),
+        ("ASSIST_MODAL_BLOCK", ASSIST_MODAL_BLOCK),
     ];
 }
 
@@ -2234,10 +3216,13 @@ mod tests {
             ("LYRICS_ROWS", id::LYRICS_ROWS),
             ("TOP_BAR", id::TOP_BAR),
             ("RAIL", id::RAIL),
+            ("COLUMN", id::COLUMN),
+            ("FONTS", id::FONTS),
             ("NOTICE", id::NOTICE),
             ("TRACK_STRIP", id::TRACK_STRIP),
             ("ASSIST", id::ASSIST),
             ("ASSIST_DIALOG", id::ASSIST_DIALOG),
+            ("ASSIST_MODAL_BLOCK", id::ASSIST_MODAL_BLOCK),
         ] {
             assert!(values.contains(&value), "{name} is missing from id::ALL");
         }
@@ -2467,5 +3452,164 @@ mod tests {
         // would be the unreadable choice.
         assert_eq!(contrasting_ink(Color::new(0, 0, 0, 16)).r, 0);
         assert_eq!(contrasting_ink(Color::new(242, 190, 66, 255)).r, 0);
+    }
+
+    // --- The column vocabulary (WX-5d). Numbers are the mockup's CSS; each
+    // test pins them exactly, because a property ("inside the column") passes
+    // a wrong formula.
+
+    #[test]
+    fn a_column_head_puts_its_title_inside_the_padding_and_its_switch_on_the_right() {
+        let head = column_head_layout(UiRect::new(1460.0, 46.0, 460.0, 1034.0), 100.0);
+        assert_eq!(head.head, UiRect::new(1460.0, 46.0, 460.0, 40.0));
+        assert_eq!(head.title, UiRect::new(1474.0, 46.0, 100.0, 40.0));
+        assert_eq!(head.trailing, UiRect::new(1582.0, 46.0, 328.0, 40.0));
+        assert_eq!(head.body, UiRect::new(1460.0, 86.0, 460.0, 994.0));
+        // Right-aligned and centred over the 39 px above the hairline.
+        assert_eq!(
+            head.trailing_right(120.0, SEGMENTED_HEIGHT),
+            UiRect::new(1790.0, 51.0, 120.0, 30.0)
+        );
+        // Wider than the room: clipped to it, never over the title.
+        assert_eq!(head.trailing_right(900.0, 30.0).x, head.trailing.x);
+    }
+
+    #[test]
+    fn a_column_too_narrow_for_its_padding_lays_out_nothing_negative() {
+        let head = column_head_layout(UiRect::new(0.0, 0.0, 20.0, 30.0), 100.0);
+        assert_eq!(head.head.height, 30.0);
+        assert_eq!(head.title.width, 0.0);
+        assert_eq!(head.trailing.width, 0.0);
+        assert_eq!(head.body, UiRect::new(0.0, 30.0, 20.0, 0.0));
+    }
+
+    #[test]
+    fn a_section_head_draws_its_rule_from_after_the_title_to_the_edge() {
+        let section = section_head_layout(UiRect::new(1474.0, 200.0, 432.0, 99.0), 40.0);
+        assert_eq!(
+            section.rect,
+            UiRect::new(1474.0, 200.0, 432.0, SECTION_HEAD_HEIGHT)
+        );
+        assert_eq!(section.title, UiRect::new(1474.0, 200.0, 40.0, 18.0));
+        assert_eq!(section.rule, UiRect::new(1522.0, 209.0, 384.0, 1.0));
+        // A title that fills the row leaves no rule rather than a negative one.
+        let full = section_head_layout(UiRect::new(0.0, 0.0, 30.0, 18.0), 40.0);
+        assert!(full.rule.is_empty());
+        assert_eq!(full.title.width, 30.0);
+    }
+
+    #[test]
+    fn a_hugging_segmented_control_is_its_labels_plus_padding() {
+        let widths = [30.0, 40.0, 50.0];
+        assert_eq!(segmented_width(&widths), 180.0);
+        let layout = segmented_layout(
+            UiRect::new(100.0, 50.0, 400.0, 40.0),
+            &widths,
+            SegmentedFit::Hug,
+        );
+        assert_eq!(layout.frame, UiRect::new(100.0, 55.0, 180.0, 30.0));
+        assert_eq!(
+            layout.items,
+            vec![
+                UiRect::new(103.0, 58.0, 48.0, 24.0),
+                UiRect::new(151.0, 58.0, 58.0, 24.0),
+                UiRect::new(209.0, 58.0, 68.0, 24.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_filling_segmented_control_shares_whole_pixel_edges() {
+        let layout = segmented_layout(
+            UiRect::new(100.0, 50.0, 200.0, 40.0),
+            &[10.0, 10.0, 10.0],
+            SegmentedFit::Fill,
+        );
+        assert_eq!(layout.frame, UiRect::new(100.0, 55.0, 200.0, 30.0));
+        assert_eq!(
+            layout.items,
+            vec![
+                UiRect::new(103.0, 58.0, 65.0, 24.0),
+                UiRect::new(168.0, 58.0, 64.0, 24.0),
+                UiRect::new(232.0, 58.0, 65.0, 24.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hugging_control_that_does_not_fit_fills_instead() {
+        let widths = [30.0, 40.0, 50.0];
+        let boundary = UiRect::new(0.0, 0.0, 150.0, 30.0);
+        assert_eq!(
+            segmented_layout(boundary, &widths, SegmentedFit::Hug),
+            segmented_layout(boundary, &widths, SegmentedFit::Fill)
+        );
+        let layout = segmented_layout(boundary, &widths, SegmentedFit::Hug);
+        let last = layout.items.last().unwrap();
+        assert_eq!(last.x + last.width, 147.0);
+    }
+
+    #[test]
+    fn a_parameter_row_places_label_track_value_and_route_by_the_mockup() {
+        let row = slider_row_layout(UiRect::new(1474.0, 300.0, 432.0, 0.0), 118.0, true);
+        assert_eq!(
+            row.row,
+            UiRect::new(1474.0, 300.0, 432.0, SLIDER_ROW_HEIGHT)
+        );
+        assert_eq!(row.label, UiRect::new(1474.0, 300.0, 118.0, 30.0));
+        assert_eq!(row.dot, UiRect::new(1474.0, 313.0, 5.0, 5.0));
+        assert_eq!(row.route, UiRect::new(1884.0, 304.0, 22.0, 22.0));
+        assert_eq!(row.value, UiRect::new(1828.0, 300.0, 46.0, 30.0));
+        assert_eq!(row.track, UiRect::new(1602.0, 300.0, 216.0, 30.0));
+        assert_eq!(row.bar, UiRect::new(1602.0, 313.0, 216.0, 4.0));
+
+        let bare = slider_row_layout(UiRect::new(1474.0, 300.0, 432.0, 0.0), 118.0, false);
+        assert!(bare.route.is_empty());
+        assert_eq!(bare.value, UiRect::new(1860.0, 300.0, 46.0, 30.0));
+        assert_eq!(bare.track.width, 248.0);
+    }
+
+    #[test]
+    fn a_parameter_rows_knob_cannot_reach_its_neighbours() {
+        // The knob is centred on the value, so at 0 and 1 it hangs past the
+        // track by its radius (AGENTS.md trap); the gap has to be wider.
+        assert!(SLIDER_ROW_KNOB_RADIUS + 1.0 < SLIDER_ROW_GAP);
+    }
+
+    #[test]
+    fn a_status_line_is_a_dot_then_its_word_clipped_to_the_room() {
+        let (whole, dot, text) =
+            status_dot_label_layout(UiRect::new(10.0, 20.0, 200.0, 30.0), 60.0);
+        assert_eq!(whole, UiRect::new(10.0, 27.0, 72.0, 16.0));
+        assert_eq!(dot, UiRect::new(10.0, 32.0, 6.0, 6.0));
+        assert_eq!(text, UiRect::new(22.0, 27.0, 60.0, 16.0));
+        let (whole, _, text) = status_dot_label_layout(UiRect::new(10.0, 20.0, 40.0, 30.0), 60.0);
+        assert_eq!(text.width, 28.0);
+        assert_eq!(whole.width, 40.0);
+    }
+
+    #[test]
+    fn a_translucent_swatch_is_composited_to_an_opaque_colour() {
+        let base = Color::new(0, 0, 255, 255);
+        assert_eq!(
+            composite_over(Color::new(255, 0, 0, 128), base),
+            Color::new(128, 0, 127, 255)
+        );
+        let opaque = Color::new(12, 34, 56, 255);
+        assert_eq!(composite_over(opaque, base), opaque);
+        assert_eq!(composite_over(Color::new(255, 255, 255, 0), base), base);
+    }
+
+    #[test]
+    fn the_strong_button_is_ink_never_the_accent_and_ignores_selection() {
+        let look = button_look(ButtonStyle::Strong, false, false);
+        assert_eq!(look.fill, color::ui_ink());
+        assert_eq!(look.ink, color::ui_surface());
+        assert_ne!(look.fill, color::accent());
+        assert_eq!(button_look(ButtonStyle::Strong, true, false), look);
+        assert_ne!(
+            button_look(ButtonStyle::Strong, false, true).fill,
+            color::accent()
+        );
     }
 }

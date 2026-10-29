@@ -57,12 +57,10 @@ use super::super::widgets::{self, ButtonStyle, Widgets};
 
 /// Widget id namespace for this pane.
 ///
-/// A local constant rather than an entry in [`widgets::id`], because that module
-/// is a shared file this fan-out's agents may not edit. `0x464F_4E54` is `FONT`
-/// in ASCII, which cannot collide with the small integers every other namespace
-/// uses — and a colliding id would let one widget release another's press, which
-/// is the whole reason namespaces exist.
-const ID: u32 = 0x464F_4E54;
+/// Allocated in [`widgets::id`] like every other namespace (WX-5d seam). It was
+/// a local `0x464F_4E54` ("FONT") minted here while that table was a file this
+/// pane's agent could not edit, which kept it out of the table's collision test.
+const ID: u32 = widgets::id::FONTS;
 
 /// Where the helper's per-job directories go (`plug.c:1624`, `"./build/fonts"`).
 const WORKSPACE_ROOT: &str = "./build/fonts";
@@ -896,21 +894,22 @@ mod tests {
     #[test]
     fn the_panes_widget_ids_cannot_collide_with_the_shells() {
         // Ids are what claim a press, and a collision lets one widget release
-        // another's — the failure `widgets`'s module comment records. The
-        // namespace is checked rather than assumed, because this one is a local
-        // constant rather than an entry in the shared `widgets::id`.
+        // another's — the failure `widgets`'s module comment records. Checked
+        // against the whole of `widgets::id::ALL`, which is where the pane's
+        // namespace now lives; the old hand-written list of six was the subset
+        // trap the table's own comment describes.
+        assert!(widgets::id::ALL
+            .iter()
+            .any(|(_, namespace)| *namespace == ID));
         let mut seen = std::collections::HashSet::new();
         for index in 0..4096u32 {
             assert!(seen.insert(widgets::widget_id(ID, index)));
         }
-        for namespace in [
-            widgets::id::TOOLBAR,
-            widgets::id::SCENE_BROWSER,
-            widgets::id::TRACKS,
-            widgets::id::INSPECTOR,
-            widgets::id::TIMELINE,
-            widgets::id::WELCOME,
-        ] {
+        for namespace in widgets::id::ALL
+            .iter()
+            .map(|(_, namespace)| *namespace)
+            .filter(|namespace| *namespace != ID)
+        {
             for index in 0..4096u32 {
                 assert!(
                     !seen.contains(&widgets::widget_id(namespace, index)),

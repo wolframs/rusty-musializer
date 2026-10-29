@@ -3320,7 +3320,7 @@ const DIALOG_WIDGETS: u32 = widgets::id::ASSIST_DIALOG;
 
 /// The shell-side blocker's namespace. Drawn into the **shell's** bank, which is
 /// how every other widget in the frame is prevented from claiming a press.
-pub const MODAL_BLOCK_NAMESPACE: u32 = 129;
+pub const MODAL_BLOCK_NAMESPACE: u32 = widgets::id::ASSIST_MODAL_BLOCK;
 
 /// Row metrics. One place, so the focus ring, the hit box and the drawn box
 /// cannot drift.
