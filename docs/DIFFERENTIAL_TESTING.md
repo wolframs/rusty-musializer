@@ -19,7 +19,7 @@ is never touched.
 | `differential_ascii_art.sh` | 53847 records, 329738 values, largest delta **0** |
 | `differential_project_io.sh` | 3061 values across 6 comparisons, **both `.musi` round trips** plus frame-lane boundaries, and the C's refusal of a v2 file pinned as an expected pair, largest delta **0** |
 | `differential_timeline_view.sh` | 30865 records, 204953 values, largest delta **0** |
-| `differential_layout.sh` | 13783 records, 348285 values, largest delta **0**; plus 1388 post-legacy rail records against a pinned file (WX-5c) |
+| `differential_layout.sh` | 13783 records, 348285 values, largest delta **0**; plus 1388 post-legacy rail records (WX-5c) and 2477 column-width records (WX-5d) against a pinned file |
 | `differential_beat_tracker.sh` | 12352 records, 123522 values, largest delta **0** — **found a parity bug** |
 
 Two of those harnesses now compare in **two sections**. The tree has a scene the
