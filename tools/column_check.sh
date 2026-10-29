@@ -37,6 +37,14 @@
 #      exactly, the bar's filled part is the accent exactly, the encoded
 #      frame is drawn; at frame 0 the bar holds no accent, and the band
 #      layout's old screen fails the ground test.
+#   8. The Direct view's chat (§3.1), at 1920x1080: with no chat, a Start row
+#      per agent inside the column (and none once a chat is open); your
+#      bubble on the right, the agent's prompt card, chips and prose at the
+#      left inset, the composer at the bottom with its send button inside;
+#      the waiting prompt outlined in the warning tone with an ink Allow;
+#      the census in both appearances; Allow reaches the agent and its reply
+#      is drawn; a followed treatment rewritten mid-run is noted in the chat
+#      as a notice, and an unrewritten one is not.
 #
 # COLUMN_BIN names a different binary, for a negative control without
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
@@ -359,6 +367,143 @@ if [ -s "$OUT/render-old-progress.png" ]; then
 else
     fail "the control run wrote no progress picture, so the ground test is unproven"
 fi
+
+# --- 8. The Direct view's chat (§3.1) ------------------------------------------
+# Rects from the `dock:` line's direct=[…]; the fake agent from check 5.
+direct_of() { # direct_of LOG -> the direct=[…] body
+    line_of dock "$1" | sed -nE 's/.* direct=\[([^]]*)\].*/\1/p'
+}
+geometry() { # geometry DIRECT COLUMN-RECT MODE -> exits nonzero on failure
+    python3 - "$@" <<'PY'
+import re, sys
+direct, column, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+cx, cy, cw, ch = map(int, column.split(","))
+rects = {}
+for kind, x, y, w, h in re.findall(r"(\w+)@(-?\d+),(-?\d+),(\d+),(\d+)", direct):
+    rects.setdefault(kind, []).append(tuple(map(int, (x, y, w, h))))
+problems = []
+if mode == "empty":
+    for agent in ("claude", "codex", "agy"):
+        if agent not in rects:
+            problems.append(f"no Start for {agent}")
+        else:
+            x, y, w, h = rects[agent][0]
+            if not (cx < x and x + w <= cx + cw and cy < y < cy + ch):
+                problems.append(f"{agent}'s Start lies outside the column")
+else:
+    for kind in ("user", "permission", "allow", "composer", "send"):
+        if kind not in rects:
+            problems.append(f"no {kind} drawn")
+    if "user" in rects:
+        x, y, w, h = rects["user"][0]
+        right_gap = cx + cw - (x + w)
+        # Your words sit on the right, as in every chat.
+        if not (8 <= right_gap <= 22 and x > cx + cw * 0.12):
+            problems.append(f"the user bubble is not right-aligned (x={x} w={w}, gap {right_gap})")
+    for kind in ("permission", "tool", "assistant"):
+        for x, y, w, h in rects.get(kind, []):
+            if abs(x - (cx + 15)) > 3:
+                problems.append(f"{kind} does not start at the column's left inset (x={x})")
+    if "composer" in rects and "send" in rects:
+        x, y, w, h = rects["composer"][0]
+        sx, sy, sw, sh = rects["send"][0]
+        if not (x <= sx and sx + sw <= x + w and y <= sy and sy + sh <= y + h):
+            problems.append("the send button is not inside the composer")
+        if y + h < cy + ch - 300:
+            problems.append("the composer is not at the bottom of the chat")
+print("; ".join(problems) or "ok")
+sys.exit(1 if problems else 0)
+PY
+}
+pixels() { # pixels PNG LOG DIRECT -> the permission card's outline and Allow's fill
+    python3 - "$@" <<'PY'
+import re, sys
+import numpy as np
+from PIL import Image
+png, log, direct = sys.argv[1:]
+text = open(log, encoding="utf-8", errors="replace").read()
+rgb = lambda h: np.array([int(h[i:i + 2], 16) for i in (0, 2, 4)])
+# The warning and ink roles, from the palette's report line.
+look = re.search(r"^appearance:\s+(\S+)", text, re.M).group(1)
+warning = rgb(re.search(r"^appearance:.* warning=#(\w{6})", text, re.M).group(1))
+image = np.asarray(Image.open(png).convert("RGB"), dtype=int)
+rects = dict((k, tuple(map(int, v))) for k, *v in re.findall(r"(\w+)@(-?\d+),(-?\d+),(\d+),(\d+)", direct))
+x, y, w, h = rects["permission"]
+# The 1 px outline lands on a fraction of a pixel: classify each side's
+# two-pixel band as "near the warning tone" rather than read one exact pixel.
+near = lambda region: (np.abs(region - warning).max(axis=2) <= 40)
+sides = [image[y:y + 2, x + 8:x + w - 8], image[y + h - 2:y + h, x + 8:x + w - 8],
+         image[y + 8:y + h - 8, x:x + 2], image[y + 8:y + h - 8, x + w - 2:x + w]]
+outline = min(near(side).any(axis=0 if side.shape[0] == 2 else 1).mean() for side in sides)
+ax, ay, aw, ah = rects["allow"]
+inside = image[ay + 6:ay + ah - 6, ax + 4:ax + 10]
+ink = image[ay + ah // 2, ax + 4]
+brightness = inside.mean()
+print(f"outline={outline:.2f} allow-brightness={brightness:.0f}")
+ok_outline = outline >= 0.9
+ok_allow = brightness >= 170 if look == "black-amber" else brightness <= 90
+sys.exit(0 if ok_outline and ok_allow else 1)
+PY
+}
+direct_run() { # direct_run NAME PROBE [extra]
+    local name="$1" probe="$2"
+    shift 2
+    env MUSIALIZER_AGENT_CLAUDE="$FAKE" MUSIALIZER_AGENT_CODEX="$FAKE" MUSIALIZER_AGENT_AGY="$FAKE" \
+        MZ_STATE_DIR="$OUT/state-$name" tools/headless_run.sh --treatment "${TREATMENT:-$SHOW}" --ui-scale 100 \
+        --ui-probe "size=1920x1080,time=3,column=direct${probe:+,$probe}" --probe-frames "${FRAMES:-120}" \
+        --probe-shot "$OUT/$name.png" "$@" >"$OUT/$name.log" 2>&1 || true
+}
+direct_run direct-empty ""
+column_rect="$(rect rect "$(line_of column "$OUT/direct-empty.log")" | tr ' ' ',')"
+empty="$(direct_of "$OUT/direct-empty.log")"
+printf 'direct (empty): %s\n' "${empty:0:160}"
+case "$empty" in
+    start\ *) geometry "$empty" "$column_rect" empty >/dev/null || fail "the empty state: $(geometry "$empty" "$column_rect" empty)" ;;
+    *) fail "with no chat, the Direct view drew no invitation: ${empty:0:120}" ;;
+esac
+direct_run direct-ask 'agent=claude,agent-say=please ask first: make the bridge colder'
+asked="$(direct_of "$OUT/direct-ask.log")"
+printf 'direct (prompt): %s\n' "${asked:0:200}"
+case "$asked" in
+    chat\ *) ;;
+    *) fail "with a chat open, the Direct view still drew the invitation" ;;
+esac
+geometry "$asked" "$column_rect" chat >"$OUT/direct-ask.geometry" ||
+    fail "the chat's layout: $(cat "$OUT/direct-ask.geometry")"
+pixels "$OUT/direct-ask.png" "$OUT/direct-ask.log" "$asked" >"$OUT/direct-ask.pixels" ||
+    fail "the prompt card is not outlined in warning with an ink Allow: $(cat "$OUT/direct-ask.pixels")"
+for theme in dark light; do
+    name="direct-census-$theme"
+    direct_run "$name" 'agent=claude,agent-say=please ask first: make the bridge colder' --ui-theme "$theme"
+    python3 tools/accent_census.py "$OUT/$name.png" "$OUT/$name.log" --primary 1 >"$OUT/$name.census" 2>&1 ||
+        fail "census on the Direct chat, $theme: $(tail -n 2 "$OUT/$name.census" | tr '\n' ' ')"
+done
+direct_run direct-allowed 'agent=claude,agent-say=please ask first: make the bridge colder,agent-decide=allow'
+case "$(line_of dock "$OUT/direct-allowed.log")" in
+    *"replies=1"*"(permission: allow)"*) ;;
+    *) fail "Allow from the Direct view did not reach the agent" ;;
+esac
+case "$(direct_of "$OUT/direct-allowed.log")" in
+    *"assistant@"*) ;;
+    *) fail "the reply after Allow was not drawn" ;;
+esac
+# The window's own apply, in the chat: the followed treatment rewritten
+# mid-run lands as a notice; without a rewrite there is none.
+cp "$SHOW" "$OUT/live.treatment.json"
+( sleep 3.5
+  sed 's/"cadence"/"loom"/' "$OUT/live.treatment.json" >"$OUT/live.treatment.json.tmp" &&
+      mv "$OUT/live.treatment.json.tmp" "$OUT/live.treatment.json" ) &
+writer=$!
+TREATMENT="$OUT/live.treatment.json" FRAMES=420 direct_run direct-applied 'agent=claude,follow=1'
+wait "$writer" || true
+TREATMENT="$OUT/show.treatment.json" FRAMES=420 direct_run direct-unapplied 'agent=claude,follow=1'
+case "$(direct_of "$OUT/direct-applied.log")" in
+    *"notice@"*) ;;
+    *) fail "the window's treatment apply was not noted in the chat: $(line_of 'treatment follow' "$OUT/direct-applied.log")" ;;
+esac
+case "$(direct_of "$OUT/direct-unapplied.log")" in
+    *"notice@"*) fail "a chat noted an apply that never happened" ;;
+esac
 
 if [ "$failures" -gt 0 ]; then
     printf '%d column check(s) failed; logs in %s\n' "$failures" "$OUT"

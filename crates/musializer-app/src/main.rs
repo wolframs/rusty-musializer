@@ -6153,7 +6153,7 @@ impl Report {
             let theme = ui::theme::current();
             let p = theme.palette();
             println!(
-                "appearance:      {} accent=#{:06X} surface=#{:06X} raised=#{:06X} trough=#{:06X} rule=#{:06X} selected=#{:06X}/#{:06X}",
+                "appearance:      {} accent=#{:06X} surface=#{:06X} raised=#{:06X} trough=#{:06X} rule=#{:06X} selected=#{:06X}/#{:06X} ink=#{:06X} warning=#{:06X}",
                 match theme {
                     ui::theme::UiTheme::BlackAmber => "black-amber",
                     ui::theme::UiTheme::LightBlue => "light-blue",
@@ -6165,6 +6165,8 @@ impl Report {
                 p.ui_rule >> 8,
                 p.ui_selected >> 8,
                 p.ui_selected_edge >> 8,
+                p.ui_ink >> 8,
+                p.ui_warning >> 8,
             );
         }
         println!(
