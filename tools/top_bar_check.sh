@@ -28,6 +28,16 @@
 #
 # TOP_BAR_BIN names a different binary, for a negative control without
 # replacing the build.
+#
+# NEGATIVE CONTROLS, run 2026-10-29 on the GPU path:
+#   - the tab press calling nothing instead of `activate_mode_tab`: 11
+#     failures (each of the four tabs unselected and Direct still starred;
+#     three panels left at none), with the gap press still green;
+#   - the save word drawn in the bar's own surface colour: the ink check
+#     reads 0 against 81 and fails, the empty-stretch control still 0.
+# The same run on the CPU path (MZ_GL_LAUNCH="") reads the same 81 ink pixels
+# and 0.89/0.00 fill shares, so the classifier is not calibrated to one
+# rasterizer.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
