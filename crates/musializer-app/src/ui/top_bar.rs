@@ -65,10 +65,14 @@ use super::theme::{color, metric};
 use super::widgets::{self, ButtonState, ButtonStyle};
 use crate::workspace::{SaveState, Track};
 
-/// Inset from the bar's two ends.
+/// Inset from the bar's right end.
 const BAR_PADDING: f32 = 12.0;
 /// The mark's edge, as in the mockup (`.mark{width:22px}`).
 const MARK_SIZE: f32 = 22.0;
+/// Inset from the bar's left end: the mark centred over the rail below it, so
+/// the mark reads as the rail's head and the left edge as one column rather
+/// than two pieces 3 px apart (critic pass, WX-5c).
+const MARK_INSET: f32 = (musializer_core::ui::workspace_layout::RAIL_WIDTH - MARK_SIZE) * 0.5;
 /// Between the mark and the title.
 const MARK_GAP: f32 = 10.0;
 /// Between the title and the artist, which read as one name.
@@ -259,7 +263,7 @@ impl TopBarLayout {
         let actions_width = action_widths.iter().sum::<f32>() + ACTION_GAP * 2.0;
 
         // Everything left of the tabs but the title.
-        let left_fixed = BAR_PADDING
+        let left_fixed = MARK_INSET
             + MARK_SIZE
             + MARK_GAP
             + if show_artist {
@@ -302,7 +306,7 @@ impl TopBarLayout {
 
         let control_y = bar.y + (bar.height - CONTROL_HEIGHT) * 0.5;
         let line = |x: f32, width: f32| UiRect::new(x, bar.y, width, bar.height);
-        let mut x = bar.x + BAR_PADDING;
+        let mut x = bar.x + MARK_INSET;
         let mark = UiRect::new(
             x,
             bar.y + (bar.height - MARK_SIZE) * 0.5,

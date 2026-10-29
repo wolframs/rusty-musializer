@@ -262,20 +262,20 @@ const ASSUMED_STRIP_HEIGHT: f32 = 56.0;
 /// hands to the whole strip — is spent before this panel's own `boundary` ever
 /// begins: the TIMELINE panel header (`widgets::panel` consumes it before
 /// returning the content rect — a real 27 px this constant once missed, caught
-/// only by measuring a capture), two lots of panel padding (one before the
-/// manual event row, one at the bottom of this panel's own boundary
-/// calculation), the manual event row, the scene-plan lane, the timeline strip
-/// itself, and this panel's own gap under the strip. Traced in
+/// only by measuring a capture), two lots of panel padding (one above the
+/// scene section, one at the bottom of this panel's own boundary
+/// calculation), the scene section (lane head and plan lane), the timeline
+/// strip itself, and this panel's own gap under the strip. Traced in
 /// `shell.rs::timeline_strip` and [`Shell::export_panel`]'s `boundary`
 /// construction.
 ///
-/// [`EVENT_ROW_HEIGHT`](super::events::EVENT_ROW_HEIGHT) and
-/// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) are
-/// imported rather than duplicated, so a change to either row's budget cannot
-/// silently reopen this gap the way the `260.0` floor did.
+/// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) is
+/// imported rather than duplicated, so a change to the section's budget cannot
+/// silently reopen this gap the way the `260.0` floor did. The manual event
+/// row it once also counted left the band in WX-5c (its markers are lane-head
+/// chips), and with it the 66 px this budget added and the shell took off.
 const BAND_TO_BOUNDARY_OFFSET: f32 = widgets::PANEL_HEADER_HEIGHT
     + metric::UI_PANEL_PADDING * 2.0
-    + super::events::EVENT_ROW_HEIGHT
     + super::scene_timeline::SCENE_SECTION_HEIGHT
     + ASSUMED_STRIP_HEIGHT
     + STRIP_GAP;
@@ -3339,17 +3339,16 @@ mod tests {
 
     /// The band-height counterpart of the test above: replays the exact chain
     /// `shell.rs::timeline_strip` and `Shell::export_panel` use to turn a band
-    /// height into `boundary.height` — panel padding, the manual event row,
-    /// the scene-plan lane, the timeline strip, and this panel's own gap
-    /// underneath it — and asserts that handing it [`EXPORT_MIN_BAND_HEIGHT`]
-    /// produces *exactly* [`EXPORT_CONTENT_MIN_HEIGHT`] of boundary, not
-    /// merely "enough". `EVENT_ROW_HEIGHT` and `SCENE_SECTION_HEIGHT` are the
-    /// real constants those modules export, not copies, so a change to either
-    /// row's budget moves this test rather than being missed by it.
+    /// height into `boundary.height` — panel padding, the scene section, the
+    /// timeline strip, and this panel's own gap underneath it — and asserts
+    /// that handing it [`EXPORT_MIN_BAND_HEIGHT`] produces *exactly*
+    /// [`EXPORT_CONTENT_MIN_HEIGHT`] of boundary, not merely "enough".
+    /// `SCENE_SECTION_HEIGHT` is the real constant that module exports, not a
+    /// copy, so a change to the section's budget moves this test rather than
+    /// being missed by it.
     #[test]
     fn export_min_band_height_reproduces_the_panels_own_boundary_formula() {
         let padding = metric::UI_PANEL_PADDING;
-        let row = super::super::events::EVENT_ROW_HEIGHT;
         let scene_row = super::super::scene_timeline::SCENE_SECTION_HEIGHT;
 
         // The band, exactly as `Shell::timeline_strip` receives it — and then
@@ -3366,9 +3365,9 @@ mod tests {
         );
 
         // `shell.rs::timeline_strip`'s construction of `strip`.
-        let strip_y = content.y + padding + row + scene_row;
+        let strip_y = content.y + padding + scene_row;
         let strip_height =
-            ASSUMED_STRIP_HEIGHT.min((content.height - padding * 2.0 - row - scene_row).max(0.0));
+            ASSUMED_STRIP_HEIGHT.min((content.height - padding * 2.0 - scene_row).max(0.0));
 
         // `Shell::export_panel`'s construction of `boundary`.
         let top = strip_y + strip_height + STRIP_GAP;

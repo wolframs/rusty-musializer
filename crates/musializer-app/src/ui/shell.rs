@@ -489,6 +489,9 @@ pub struct Shell {
     pub(crate) poster_requests: Vec<crate::posters::PosterRequest>,
     /// `--ui-probe run-open=N`, delivered by the lane once a track is open.
     pub probe_run_open: Option<usize>,
+    /// `--ui-probe key=escape`: one Escape for the next keyboard read, set by
+    /// `main.rs` on the frame the probe presses and taken by that read.
+    pub probe_escape: bool,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -724,6 +727,11 @@ pub struct Shell {
     pub(crate) last_rail: Option<musializer_core::ui::workspace_layout::WorkspaceRail>,
     /// Where the open flyout drew in the last frame, for the same line.
     pub(crate) last_flyout: Option<UiRect>,
+    /// The developer readout for this frame, long and short forms, handed in
+    /// by `main.rs` before [`Shell::draw`]. The shell draws it because only
+    /// the shell knows what floats over the preview: drawn after the shell,
+    /// it used to print across an open flyout and over the tooltip.
+    pub hud_readout: Option<(String, String)>,
     /// What the transport row drew in the last frame, for the `transport:`
     /// line.
     transport_report: String,
@@ -1208,6 +1216,7 @@ impl Shell {
             dock_keyboard: false,
             poster_requests: Vec::new(),
             probe_run_open: None,
+            probe_escape: false,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1262,6 +1271,7 @@ impl Shell {
             open_flyout: None,
             last_rail: None,
             last_flyout: None,
+            hud_readout: None,
             transport_report: "none".to_owned(),
             probe_family: None,
         }
@@ -1462,13 +1472,9 @@ impl Shell {
                 // bare 260.0 undershot what the panel consumes above its
                 // boundary, and a persisted shorter split blanked it across
                 // restarts (review 1.4, UX0-A04).
-                //
-                // `EXPORT_MIN_BAND_HEIGHT` still counts the event row the band
-                // no longer carries (WX-5c), so it comes off here.
                 UiPanel::Export => {
                     super::panels::export::EXPORT_MIN_BAND_HEIGHT
                         - super::panels::scene_timeline::SCENE_SECTION_HEIGHT
-                        - super::panels::events::EVENT_ROW_HEIGHT
                 }
                 // Asked, not asserted (LX1-d follow-up). This was the literal
                 // `381.0` with a comment adding up five constants, and all five
@@ -1765,6 +1771,10 @@ impl Shell {
             notice_region.width = (notice_region.x + notice_region.width - right).max(0.0);
             notice_region.x = right;
         }
+        // The developer readout, under the notices, the flyout and the
+        // tooltip, and moved right of an open flyout so it stays readable
+        // rather than being half covered.
+        self.hud_readout_line(d, input, frame.preview, notice_region);
         if let Some(session) = &self.protocol {
             if !modal {
                 if let Some(card_top) = super::protocol::draw_card(
@@ -1823,6 +1833,47 @@ impl Shell {
 
         self.notices.tick(f64::from(d.get_frame_time()));
         commands
+    }
+
+    /// Draws [`Shell::hud_readout`] at the top left of `region` (the preview
+    /// less an open flyout), clipped to it, in the long form when it fits.
+    ///
+    /// With no preview (the editor frame) it goes to the window's corner, as
+    /// before. Off unless [`Shell::hud_visible`]; the long/short choice reads
+    /// the width it actually gets, so a flyout shortens it rather than
+    /// letting it run under the inspector.
+    fn hud_readout_line(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        preview: UiRect,
+        region: UiRect,
+    ) {
+        let Some((long, short)) = self.hud_readout.take() else {
+            return;
+        };
+        if !self.hud_visible {
+            return;
+        }
+        let font = input.fonts.ui();
+        if preview.is_empty() {
+            widgets::draw_text(d, font, &short, 12.0, 12.0, 18.0, Color::RAYWHITE);
+            return;
+        }
+        if region.is_empty() {
+            return;
+        }
+        let text = if region.width >= 700.0 { &long } else { &short };
+        let mut scissor = widgets::begin_scissor(d, region, input.ui_scale);
+        widgets::draw_text(
+            &mut scissor,
+            font,
+            text,
+            region.x + 12.0,
+            region.y + 12.0,
+            18.0,
+            Color::RAYWHITE,
+        );
     }
 
     /// Fullscreen's deliberately tiny save-state surface (CX-3/PXF-1).
@@ -2451,7 +2502,9 @@ impl Shell {
             self.editor_open = true;
             return;
         }
-        self.keyboard_actions(KeyboardFrame::read(d), KeyboardContext::of(input), commands);
+        let mut keys = KeyboardFrame::read(d);
+        keys.escape |= std::mem::take(&mut self.probe_escape);
+        self.keyboard_actions(keys, KeyboardContext::of(input), commands);
     }
 
     /// [`Shell::keyboard`] without raylib.
@@ -4047,10 +4100,18 @@ impl Shell {
             let id = widgets::widget_id(widgets::id::TRACKS, 16 + index as u32);
             // A track name is the user's own words: the authored face carries
             // the glyphs the Latin-only chrome bank would draw as `?`
-            // (review 1.5).
+            // (review 1.5). When the chrome bank covers the name it draws it,
+            // in the label size, as the top bar does with the same name — one
+            // name in two faces a few pixels apart read as two designs.
+            let chrome = musializer_runtime::font::AuthoredText::from_ui(input.fonts.ui());
+            let (face, size) = if chrome.missing(name) == 0 {
+                (chrome, metric::UI_FONT_LABEL)
+            } else {
+                (input.fonts.authored(), metric::UI_FONT_AUTHORED_ROW)
+            };
             let state = self.widgets.text_button_in_authored(
                 &mut clip,
-                input.fonts.authored(),
+                face,
                 id,
                 boundary,
                 // The press is tested against the visible part only.
@@ -4058,7 +4119,7 @@ impl Shell {
                 name,
                 selected,
                 ButtonStyle::Neutral,
-                Some(metric::UI_FONT_AUTHORED_ROW),
+                Some(size),
             );
             // A state dot at the row's right edge (UX0-B01). The header names the
             // *current* track's state in words; this is the only thing that says
@@ -4488,8 +4549,7 @@ impl Shell {
             let hint =
                 "WHEEL ZOOM \u{00b7} SHIFT PAN \u{00b7} DOUBLE-CLICK A RUN TO OPEN ITS SECTIONS";
             let font = input.fonts.ui();
-            let width =
-                widgets::measure(font, hint, metric::UI_FONT_MICRO) + hint.chars().count() as f32;
+            let width = widgets::measure_tracked(font, hint, metric::UI_FONT_MICRO, 1.0);
             let x = band.x + band.width - metric::UI_PANEL_PADDING - width;
             let title_end = band.x + metric::UI_PANEL_PADDING + 80.0;
             if x > title_end {
@@ -4561,23 +4621,22 @@ impl Shell {
         // The manual event row was here (`plug.c:2861-2971`). Since WX-5c its
         // markers are chips on the lane head, the scene section's first row,
         // so the section starts at the top of the content.
-        let row = 0.0;
         let scene_row = self.scene_plan_section(
             d,
             input,
             UiRect::new(
                 content.x + padding,
-                content.y + padding + row,
+                content.y + padding,
                 (content.width - padding * 2.0).max(0.0),
-                (content.height - padding * 2.0 - row).max(0.0),
+                (content.height - padding * 2.0).max(0.0),
             ),
             commands,
         );
         let strip = UiRect::new(
             content.x + padding,
-            content.y + padding + row + scene_row,
+            content.y + padding + scene_row,
             (content.width - padding * 2.0).max(0.0),
-            56.0f32.min((content.height - padding * 2.0 - row - scene_row).max(0.0)),
+            56.0f32.min((content.height - padding * 2.0 - scene_row).max(0.0)),
         );
         if strip.is_empty() {
             return;
@@ -4593,7 +4652,6 @@ impl Shell {
         let scene_lane_bottom = (scene_row > 0.0).then_some(
             content.y
                 + padding
-                + row
                 + scene_timeline::SCENE_LANE_OFFSET
                 + scene_timeline::SCENE_LANE_HEIGHT,
         );

@@ -573,9 +573,9 @@ pub mod metric {
     pub const UI_FONT_HEADER: f32 = 16.0;
     /// Body text and labels. Was 16; the mockup's body is 13 at 1600 px.
     pub const UI_FONT_LABEL: f32 = 14.0;
-    /// Secondary text. Unchanged at 13 because the timeline band reserves it
-    /// (`panels::events::EVENT_ROW_HEIGHT`), and moving the band moves every
-    /// lane the gate measures for a one-pixel difference nobody would see.
+    /// Secondary text. Kept at 13 through WX-5a because the old manual event
+    /// row reserved it in the band; that row left the band in WX-5c, so the
+    /// size is free to move on its own merits now.
     pub const UI_FONT_CAPTION: f32 = 13.0;
     /// Tabular readouts: the timecode, a tuning value.
     pub const UI_FONT_VALUE: f32 = 14.0;

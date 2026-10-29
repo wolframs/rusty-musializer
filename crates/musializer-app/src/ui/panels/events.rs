@@ -56,17 +56,6 @@ use super::super::widgets::{self, ButtonStyle};
 const EVENT_ROW_NAMESPACE: u32 = widgets::id::EVENT_ROW;
 const PRESET_NAMESPACE: u32 = widgets::id::EVENT_PRESET;
 
-/// The height the manual event row took from the band before WX-5c: a 38 px
-/// control row between two 6 px margins, and a 13 px caption 3 px under it.
-///
-/// **No band spends it any more.** The row's controls are chips on the lane
-/// head (`docs/WX5C_DESIGN.md` §3), and the caption is their tooltip. The
-/// constant stays because `panels::export`'s band budget still adds it — and
-/// subtracts it again through `EXPORT_PANEL_TIMELINE_HEIGHT`, which
-/// `Shell::timeline_height` relies on — so removing it is that file's change
-/// to make, and the shell takes it off the export minimum until then.
-pub(crate) const EVENT_ROW_HEIGHT: f32 = 6.0 + 38.0 + 3.0 + metric::UI_FONT_CAPTION + 6.0;
-
 /// The three markers the row records, in the C's order (`plug.c:2830`, `:2856`),
 /// with the short label the lane head falls back to when the band is narrow.
 ///
@@ -589,7 +578,5 @@ mod tests {
         assert_eq!(MARKERS[1].2, None);
         assert_eq!(MARKERS[2].0, "+ Custom");
         assert_eq!(MARKERS[2].2, Some(EventType::Custom));
-        // The band the export budget still counts: 6 + 38 + 3 + 13 + 6.
-        assert_eq!(EVENT_ROW_HEIGHT, 66.0);
     }
 }

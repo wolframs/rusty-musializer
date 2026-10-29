@@ -602,9 +602,7 @@ impl Shell {
             )
         };
         let caption = |text: &str| widgets::measure(font, text, metric::UI_FONT_CAPTION);
-        let tracked = |text: &str| {
-            widgets::measure(font, text, metric::UI_FONT_MICRO) + text.chars().count() as f32
-        };
+        let tracked = |text: &str| widgets::measure_tracked(font, text, metric::UI_FONT_MICRO, 1.0);
         let button = |text: &str| (caption(text) + 20.0).ceil();
         let hint_text = if track.scene_switches.finish.pixel.is_on() {
             let look = track.scene_switches.finish.pixel;

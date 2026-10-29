@@ -41,7 +41,6 @@ pub const DEFAULT_TIMELINE_HEIGHT: f32 = 180.0;
 /// panel's single source of truth so the two can never drift apart again; the
 /// value works out to 351.
 pub const EXPORT_PANEL_TIMELINE_HEIGHT: f32 = super::panels::export::EXPORT_MIN_BAND_HEIGHT
-    - super::panels::events::EVENT_ROW_HEIGHT
     - super::panels::scene_timeline::SCENE_SECTION_HEIGHT;
 
 /// Narrowest window `scene_settings_ui_layout` will lay out

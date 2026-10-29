@@ -787,6 +787,9 @@ fn run(
     // layout that is about to move would land somewhere nobody aimed.
     let mut click_at: Option<(f32, f32)> = None;
     let mut click_phase: u32 = 0;
+    // `--ui-probe key=escape`: frames left before the one Escape, on the
+    // frame `click=` would press, after the same settling frames.
+    let mut escape_in: Option<u32> = None;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -995,6 +998,9 @@ fn run(
             if let Some(point) = probe.click {
                 hover_at = Some(point);
                 click_at = Some(point);
+            }
+            if probe.key_escape {
+                escape_in = Some(3);
             }
             // `save-to=` stands in for the destination picker, and only for it
             // (UX0-C01, UX0-C10). Without it the two controls this panel exists
@@ -1391,6 +1397,14 @@ fn run(
                 _ => None,
             });
             click_phase = click_phase.saturating_add(1);
+        }
+        match escape_in {
+            Some(0) => {
+                app.shell.probe_escape = true;
+                escape_in = None;
+            }
+            Some(frames) => escape_in = Some(frames - 1),
+            None => {}
         }
         // `--ui-probe middle-drag=FROMxTO`: press, two moved frames, release —
         // after the same three settling frames `click=` waits for, and for the
@@ -1872,9 +1886,6 @@ fn run(
                 }
             }
 
-            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
-            commands = app.shell.draw(&mut ui_draw, &layout, &shell_input);
-
             // A one-line readout, so a headless capture carries its own evidence
             // rather than needing a separate log to be trusted.
             //
@@ -1887,63 +1898,29 @@ fn run(
             // twenty capture sites each remember a flag would be how one of them
             // silently stops carrying it.
             //
-            // Two things about it are corrections a capture forced, and no test
-            // would have: it used to be drawn at the window origin, where the
-            // tracks panel covered its left half, and it used to run past the
-            // preview's right edge into the tuning inspector. It now starts inside
-            // the preview and is clipped to it, and it drops to a short form when
-            // the long form will not fit — a readout that overwrites a panel is
-            // worse than a shorter readout.
-            let readout = if layout.preview.width >= 700.0 {
-                format!(
-                    "frame {}  scene={}  t={time_seconds:.2}s  bands={}  peak band={} ({band_centre_hz:.0} Hz)  rms={:.3}  audio frames={}",
-                    report.frames,
-                    app.scene.id().stable_name(),
-                    spectrum.band_count(),
-                    report.peak_band_last,
-                    frame.audio.rms,
-                    report.consumed_frames,
-                )
-            } else {
-                format!(
-                    "{}  t={time_seconds:.2}s  peak {} ({band_centre_hz:.0} Hz)",
-                    app.scene.id().stable_name(),
-                    report.peak_band_last,
-                )
-            };
-            // Drawn with the interface face like everything else, rather than
-            // raylib's default: this line is the evidence a capture is read for,
-            // and it was the last thing on screen still rendering in the bitmap
-            // face.
-            if !app.shell.hud_visible {
-                // Nothing drawn. The `readout` above is still built, because the
-                // report at the end of the run prints from the same figures and a
-                // probe that produced no numbers would be indistinguishable from
-                // one that produced wrong ones.
-            } else if layout.preview.is_empty() {
-                ui::widgets::draw_text(
-                    &mut ui_draw,
-                    fonts.ui(),
-                    &readout,
-                    12.0,
-                    12.0,
-                    18.0,
-                    Color::RAYWHITE,
-                );
-            } else {
-                let preview = ui::widgets::rectangle(layout.preview);
-                let mut scissor =
-                    ui::widgets::begin_scissor(&mut ui_draw, layout.preview, ui_scale);
-                ui::widgets::draw_text(
-                    &mut scissor,
-                    fonts.ui(),
-                    &readout,
-                    preview.x + 12.0,
-                    preview.y + 12.0,
-                    18.0,
-                    Color::RAYWHITE,
-                );
-            }
+            // Both forms are built here and the shell draws one
+            // (`Shell::hud_readout_line`): inside the preview, right of an open
+            // flyout, clipped to what is left, and the short form when the long
+            // one will not fit — a readout that overwrites a panel is worse than
+            // a shorter readout. Built even when hidden, because the report at
+            // the end of the run prints from the same figures.
+            let long = format!(
+                "frame {}  scene={}  t={time_seconds:.2}s  bands={}  peak band={} ({band_centre_hz:.0} Hz)  rms={:.3}  audio frames={}",
+                report.frames,
+                app.scene.id().stable_name(),
+                spectrum.band_count(),
+                report.peak_band_last,
+                frame.audio.rms,
+                report.consumed_frames,
+            );
+            let short = format!(
+                "{}  t={time_seconds:.2}s  peak {} ({band_centre_hz:.0} Hz)",
+                app.scene.id().stable_name(),
+                report.peak_band_last,
+            );
+            app.shell.hud_readout = Some((long, short));
+            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+            commands = app.shell.draw(&mut ui_draw, &layout, &shell_input);
             drop(ui_draw);
             if egui_active {
                 if let Err(error) = editor_backend.draw(&mut d, &thread) {

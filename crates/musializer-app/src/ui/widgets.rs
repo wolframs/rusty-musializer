@@ -958,6 +958,13 @@ pub fn measure(font: &UiFonts, text: &str, font_size: f32) -> f32 {
     font.measure_text(text, font_size, 0.0).x
 }
 
+/// Width of `text` as [`draw_text_tracked`] draws it with `spacing`: the same
+/// rounding, then the font's own snap of the spacing onto physical pixels.
+#[must_use]
+pub fn measure_tracked(font: &UiFonts, text: &str, font_size: f32, spacing: f32) -> f32 {
+    font.measure_text(text, font_size, spacing.round()).x
+}
+
 /// Width of proportional UI text with decimal digits laid out in equal cells.
 ///
 /// Space Grotesk remains the face — only its numeral advances become tabular,
@@ -1324,9 +1331,12 @@ fn fade_alpha(glyph_center: f32, right_edge: f32, fade_width: f32, base_alpha: f
 ///
 /// Only the welcome screen's masthead and format strip use it (`plug.c:7773`,
 /// `:7828`), where the extra space is what makes a short all-caps line read as a
-/// masthead rather than a label. Deliberately separate from [`draw_text`]: nothing
-/// tracked is measured for fitting, so the linearity [`measure`] depends on is
-/// never at risk.
+/// masthead rather than a label. Deliberately separate from [`draw_text`], so
+/// the linearity [`measure`] depends on is never at risk. Tracked text that has
+/// to fit (the lane head's label, the band's gesture hint) is measured with
+/// [`measure_tracked`], never as `measure + one pixel a character`: the font
+/// snaps the spacing to whole physical pixels, which at 150 % is 1.33 logical
+/// a character, and the shortfall clipped the hint and ran the label into Auto.
 #[allow(
     clippy::too_many_arguments,
     reason = "draw_text plus one spacing argument; a struct here would hide the position"

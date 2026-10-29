@@ -5347,6 +5347,14 @@ if [ -f "$LYRIC_PROJECT" ]; then
         *"open=none flyout=none") echo "a press outside the flyout closed it" ;;
         *) echo "FAIL: a press outside the flyout left it open: $(rail_line rail-outside rail)" >&2; RAIL_FAILED=1 ;;
     esac
+    # Escape closes it, through the shell's keyboard path (`key=escape`); the
+    # same run without the key keeps it open (control).
+    run_capture rail-escape runs "panel=none,time=2.5,play=0,flyout=scenes,key=escape" || RAIL_FAILED=1
+    run_capture rail-escape-control runs "panel=none,time=2.5,play=0,flyout=scenes" || RAIL_FAILED=1
+    case "$(rail_line rail-escape rail) / $(rail_line rail-escape-control rail)" in
+        *"open=none flyout=none / "*"open=scenes flyout=52,46,336,674") echo "Escape closed the flyout; without it the flyout stayed (control)" ;;
+        *) echo "FAIL: Escape and the flyout: $(rail_line rail-escape rail) / control $(rail_line rail-escape-control rail)" >&2; RAIL_FAILED=1 ;;
+    esac
     case "$(rail_line rail-inside rail) / $(run_line rail-inside)" in
         *"open=scenes flyout=52,46,336,674 / "*" selected=none "*) echo "a press inside the flyout over the lane selected nothing under it" ;;
         *) echo "FAIL: a press inside the flyout fell through: $(run_line rail-inside)" >&2; RAIL_FAILED=1 ;;
