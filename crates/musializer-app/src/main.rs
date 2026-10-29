@@ -426,6 +426,9 @@ fn run(
     };
     app.shell.set_ui_scale_override(options.ui_scale);
     app.shell.editor_open = options.editor_ui;
+    // WX-5d: the column layout's switch, read once so no frame sees half of
+    // it. Off unless `MUSIALIZER_COLUMN_LAYOUT=1`.
+    app.shell.column_layout = ui::column::column_layout_from_env();
     let mut editor_backend = ui::egui_backend::EguiBackend::default();
     let mut editor = ui::egui_editor::EditorState::default();
     let mut editor_was_active = false;
@@ -1047,6 +1050,15 @@ fn run(
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
+            }
+            // `column=` (WX-5d) names the view; `panel=` above was already set
+            // to its equivalent by the parser, and this makes the shell's
+            // state exactly what `Shell::column_view` reads back.
+            if let Some(view) = probe.column {
+                app.shell.set_column_view(view);
+            }
+            if let Some(width) = probe.column_width {
+                app.shell.ui_preferences.column_width = Some(width);
             }
             // `--ui-probe assist=` puts the panel in one of its four states
             // (review 4.2). Candidate, Running and Failed are synthesized in
@@ -6460,6 +6472,41 @@ impl Report {
         println!("rail:            {}", self.rail);
         println!("lane head:       {}", self.lane_head);
         println!("transport:       {}", self.transport);
+        // WX-5d: one line per column view, each from its builder's describe
+        // function. Those return "" until the view is built, and an empty
+        // line is not printed, so no report changes until there is something
+        // to say.
+        for (label, line) in [
+            ("column:", app.shell.describe_column(&app.workspace)),
+            (
+                "lyrics column:",
+                app.shell.describe_lyrics_column(&app.workspace),
+            ),
+            (
+                "caption style:",
+                app.shell.describe_caption_style(&app.workspace),
+            ),
+            (
+                "tune layout:",
+                app.shell.describe_tune_layout(&app.workspace),
+            ),
+            (
+                "assist column:",
+                app.shell.describe_assist_column(&app.workspace),
+            ),
+            (
+                "render view:",
+                app.shell.describe_render_view(&app.workspace),
+            ),
+            (
+                "export progress:",
+                app.shell.describe_export_progress(&app.workspace),
+            ),
+        ] {
+            if !line.is_empty() {
+                println!("{label:<17}{line}");
+            }
+        }
         println!(
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")

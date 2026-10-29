@@ -460,6 +460,59 @@ pub struct UiProbe {
     /// answer, so the gate can compare the recorded variant order against the
     /// JSONL (HX-5).
     pub protocol_flip: Option<String>,
+    /// `column=direct|lyrics|look|assist|render|closed` (WX-5d): show that
+    /// column view, by name. Also sets [`Self::panel`] to the panel the view
+    /// is today (`render` is `export`, `look` is `tune`) and `direct` opens
+    /// the dock, so every check that reads `panel` keeps working; refused
+    /// together with `panel=`, which would say it twice.
+    pub column: Option<crate::ui::shell::ColumnView>,
+    /// `column-width=N` (WX-5d): the column's dragged width, in the split
+    /// bounds every other width probe takes.
+    pub column_width: Option<f32>,
+    /// `lyrics-pane=cues|style|effects` (WX-5d): the Lyrics view's sub-view.
+    /// `style=caption|effects` stays as an alias and sets this too; giving
+    /// both is refused. `style` and `effects` also set the two flags above,
+    /// which are what today's panel reads.
+    #[allow(
+        dead_code,
+        reason = "WX-5d seam: the Lyrics builder's column reads it; today's panel reads the style flags"
+    )]
+    pub lyrics_pane: Option<LyricsPaneProbe>,
+    /// `assist-card=lyrics|scenes|feelings|full` (WX-5d): open that workflow's
+    /// card in the Assist view. The words are the cards'; the values are the
+    /// pipeline's own workflow kinds.
+    #[allow(
+        dead_code,
+        reason = "WX-5d seam: the Look & Assist builder's cards read it"
+    )]
+    pub assist_card: Option<musializer_core::assist::execution::WorkflowKind>,
+    /// `progress-shot=N` (WX-5d): photograph the export progress screen while
+    /// it encodes frame N (0-based), so the themed screen is reviewable.
+    #[allow(
+        dead_code,
+        reason = "WX-5d seam: the Frame builder's progress screen reads it"
+    )]
+    pub progress_shot: Option<u32>,
+}
+
+/// `lyrics-pane=` in a `--ui-probe` spec (WX-5d): the Lyrics view's three
+/// sub-views, by the segmented control's own words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LyricsPaneProbe {
+    Cues,
+    Style,
+    Effects,
+}
+
+impl LyricsPaneProbe {
+    fn from_word(word: &str) -> Option<Self> {
+        match word {
+            "cues" => Some(LyricsPaneProbe::Cues),
+            "style" => Some(LyricsPaneProbe::Style),
+            "effects" => Some(LyricsPaneProbe::Effects),
+            _ => None,
+        }
+    }
 }
 
 /// `assist=` in a `--ui-probe` spec (review 4.2).
@@ -1165,7 +1218,25 @@ pub fn parse_ui_probe_spec(spec: &str) -> Result<UiProbe, String> {
             ));
         }
     }
+    // Two spellings of one state (WX-5d): both given could disagree, and the
+    // grammar's rule is that a capture script cannot quietly photograph the
+    // wrong state.
+    for (old, new) in [("panel", "column"), ("style", "lyrics-pane")] {
+        if seen.contains(&old) && seen.contains(&new) {
+            return Err(format!(
+                "--ui-probe `{old}=` and `{new}=` name the same state; give one"
+            ));
+        }
+    }
     Ok(probe)
+}
+
+/// `lyrics-pane=` and its older spelling `style=`: one pane, written to the
+/// new field and to the two flags today's panel reads.
+fn apply_lyrics_pane(probe: &mut UiProbe, pane: LyricsPaneProbe) {
+    probe.lyrics_pane = Some(pane);
+    probe.caption_style_pane = pane != LyricsPaneProbe::Cues;
+    probe.caption_effects_pane = pane == LyricsPaneProbe::Effects;
 }
 
 /// One `key=value` pair, applied. `None` is "this build does not understand it",
@@ -1205,15 +1276,43 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "style" => {
             // `caption` opens the style form; `effects` its sibling effects
             // form. Both are bodies of the same pane.
-            match value {
-                "caption" => probe.caption_style_pane = true,
-                "effects" => {
-                    probe.caption_style_pane = true;
-                    probe.caption_effects_pane = true;
-                }
+            let pane = match value {
+                "caption" => LyricsPaneProbe::Style,
+                "effects" => LyricsPaneProbe::Effects,
                 _ => return None,
+            };
+            apply_lyrics_pane(probe, pane);
+        }
+        // WX-5d: the Lyrics view's segmented control, by its own words.
+        // `style=` above is the older spelling of the same thing.
+        "lyrics-pane" => apply_lyrics_pane(probe, LyricsPaneProbe::from_word(value)?),
+        "column" => {
+            use crate::ui::shell::ColumnView;
+            let view = ColumnView::from_name(value)?;
+            probe.column = Some(view);
+            probe.panel = match view {
+                ColumnView::Lyrics => UiPanel::Lyrics,
+                ColumnView::Assist => UiPanel::Assist,
+                ColumnView::Render => UiPanel::Export,
+                ColumnView::Look => UiPanel::Tune,
+                ColumnView::Direct | ColumnView::Closed => UiPanel::None,
+            };
+            if view == ColumnView::Direct {
+                probe.dock = true;
             }
         }
+        "column-width" => probe.column_width = Some(parse_split_position(value)?),
+        "assist-card" => {
+            use musializer_core::assist::execution::WorkflowKind;
+            probe.assist_card = Some(match value {
+                "lyrics" => WorkflowKind::Lyrics,
+                "scenes" => WorkflowKind::Sections,
+                "feelings" => WorkflowKind::Mimo,
+                "full" => WorkflowKind::All,
+                _ => return None,
+            });
+        }
+        "progress-shot" => probe.progress_shot = Some(value.parse().ok()?),
         "fonts" => {
             probe.font_browser = Some(if value == "consent" {
                 FontBrowserProbe::Consent
@@ -1536,6 +1635,11 @@ Diagnostics:
                           scene-family=sound|geometry|atmosphere|materials|living|type-stage|pixel-cats,
                           scene-pick=NAME selects a scene through the normal edit path,
                           flyout=tracks|scenes|none opens a rail flyout,
+                          column=direct|lyrics|look|assist|render|closed
+                          shows that column view (not with panel=),
+                          column-width=PX, lyrics-pane=cues|style|effects,
+                          assist-card=lyrics|scenes|feelings|full,
+                          progress-shot=N photographs export frame N,
                           key=escape presses Escape once,
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,
@@ -2560,6 +2664,103 @@ mod tests {
                 text.contains(id.stable_name()),
                 "help omits {}",
                 id.stable_name()
+            );
+        }
+    }
+
+    #[test]
+    fn column_names_every_view_and_says_it_as_todays_panel() {
+        use crate::ui::shell::ColumnView;
+        for (name, view, panel) in [
+            ("direct", ColumnView::Direct, UiPanel::None),
+            ("lyrics", ColumnView::Lyrics, UiPanel::Lyrics),
+            ("look", ColumnView::Look, UiPanel::Tune),
+            ("assist", ColumnView::Assist, UiPanel::Assist),
+            ("render", ColumnView::Render, UiPanel::Export),
+            ("closed", ColumnView::Closed, UiPanel::None),
+        ] {
+            let probe = parse_ui_probe_spec(&format!("column={name}")).unwrap();
+            assert_eq!(probe.column, Some(view), "{name}");
+            assert_eq!(probe.panel, panel, "{name}");
+            assert_eq!(probe.dock, view == ColumnView::Direct, "{name}");
+        }
+        assert!(parse_ui_probe("column=export").is_none());
+        assert!(parse_ui_probe("column=Lyrics").is_none());
+        // One state, two spellings: refused together, in either order.
+        assert!(parse_ui_probe_spec("panel=lyrics,column=lyrics").is_err());
+        assert!(parse_ui_probe_spec("column=assist,panel=none").is_err());
+    }
+
+    #[test]
+    fn column_width_takes_the_split_bounds() {
+        assert_eq!(
+            parse_ui_probe("column-width=500").unwrap().column_width,
+            Some(500.0)
+        );
+        for refused in ["79", "4097", "wide", "nan", "inf"] {
+            assert!(
+                parse_ui_probe(&format!("column-width={refused}")).is_none(),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn lyrics_pane_and_its_older_spelling_set_the_same_state() {
+        for (spec, pane, style, effects) in [
+            ("lyrics-pane=cues", LyricsPaneProbe::Cues, false, false),
+            ("lyrics-pane=style", LyricsPaneProbe::Style, true, false),
+            ("lyrics-pane=effects", LyricsPaneProbe::Effects, true, true),
+            ("style=caption", LyricsPaneProbe::Style, true, false),
+            ("style=effects", LyricsPaneProbe::Effects, true, true),
+        ] {
+            let probe = parse_ui_probe(spec).unwrap();
+            assert_eq!(probe.lyrics_pane, Some(pane), "{spec}");
+            assert_eq!(
+                (probe.caption_style_pane, probe.caption_effects_pane),
+                (style, effects),
+                "{spec}"
+            );
+        }
+        assert!(parse_ui_probe("lyrics-pane=fonts").is_none());
+        assert!(parse_ui_probe_spec("style=caption,lyrics-pane=style").is_err());
+    }
+
+    #[test]
+    fn assist_card_names_the_four_workflows() {
+        use musializer_core::assist::execution::WorkflowKind;
+        for (word, kind) in [
+            ("lyrics", WorkflowKind::Lyrics),
+            ("scenes", WorkflowKind::Sections),
+            ("feelings", WorkflowKind::Mimo),
+            ("full", WorkflowKind::All),
+        ] {
+            assert_eq!(
+                parse_ui_probe(&format!("assist-card={word}"))
+                    .unwrap()
+                    .assist_card,
+                Some(kind)
+            );
+        }
+        // The pipeline's own tokens are not the cards' words.
+        assert!(parse_ui_probe("assist-card=mimo").is_none());
+        assert!(parse_ui_probe("assist-card=all").is_none());
+    }
+
+    #[test]
+    fn progress_shot_takes_a_frame_index_from_zero() {
+        assert_eq!(
+            parse_ui_probe("progress-shot=0").unwrap().progress_shot,
+            Some(0)
+        );
+        assert_eq!(
+            parse_ui_probe("progress-shot=5760").unwrap().progress_shot,
+            Some(5760)
+        );
+        for refused in ["-1", "1.5", "last"] {
+            assert!(
+                parse_ui_probe(&format!("progress-shot={refused}")).is_none(),
+                "{refused}"
             );
         }
     }

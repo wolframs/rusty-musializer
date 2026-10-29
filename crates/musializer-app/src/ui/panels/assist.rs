@@ -85,6 +85,7 @@ use musializer_runtime::process::reveal::{self, RevealState};
 use musializer_runtime::project_files::sha256_file_hex;
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
 
+use super::super::column::Placement;
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
 use super::super::theme::{color, metric};
@@ -3412,6 +3413,13 @@ fn draw_blocking_reason(
 // The panel.
 // ---------------------------------------------------------------------------
 
+/// What Assist drew in its last frame, kept on `Shell::assist_column` for the
+/// `assist column:` line (WX-5d seam). Empty until the Look & Assist builder
+/// gives it fields; it lives in this file so that builder never edits
+/// `shell.rs`.
+#[derive(Clone, Debug, Default)]
+pub struct AssistColumn {}
+
 impl Shell {
     /// The timeline height an open Assist panel asks for (`plug.c:7669-7677`).
     ///
@@ -3446,6 +3454,16 @@ impl Shell {
         assist_ui_state::timeline_height(window.1, metric::HUD_BUTTON_SIZE, required)
     }
 
+    /// The `assist column:` report line (WX-5d §5): the four cards' rects,
+    /// the open one and its body state with its buttons, and Auto scenes.
+    /// **The Look & Assist builder's**; empty until built, and an empty line
+    /// is not printed.
+    #[must_use]
+    pub(crate) fn describe_assist_column(&self, _workspace: &Workspace) -> String {
+        let AssistColumn {} = &self.assist_column;
+        String::new()
+    }
+
     /// The Assist panel, in the timeline strip's place (`draw_assist_panel`,
     /// `plug.c:2166-2540`).
     ///
@@ -3459,7 +3477,11 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
+        placement: Placement,
     ) {
+        // WX-5d seam: the Column branch is the Look & Assist builder's;
+        // until it lands, the column draws what the band draws.
+        let _ = placement;
         let padding = metric::UI_PANEL_PADDING;
         let gap = metric::UI_CONTROL_GAP;
         let top = strip.y + strip.height + 28.0;

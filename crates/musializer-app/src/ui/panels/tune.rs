@@ -49,13 +49,14 @@ use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
 use serde::{Deserialize, Serialize};
 
+use super::super::column::Placement;
 use super::super::mapping_editor::{self, AnchorPair};
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::WorkspaceFrame;
 use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
-use crate::workspace::Track;
+use crate::workspace::{Track, Workspace};
 
 // -- geometry, from `plug.c:5517-5523` ---------------------------------------
 
@@ -938,7 +939,24 @@ pub(crate) fn tune_state_line(
     )
 }
 
+/// What Look drew in its last frame, kept on `Shell::look_column` for the
+/// `tune layout:` line (WX-5d seam). Empty until the Look & Assist builder
+/// gives it fields; it lives in this file so that builder never edits
+/// `shell.rs`.
+#[derive(Clone, Debug, Default)]
+pub struct LookColumn {}
+
 impl Shell {
+    /// The `tune layout:` report line (WX-5d §5): the drawn scene, its groups
+    /// with row counts, each row's rect with its track, value and route, the
+    /// explore tiles and the presets. **The Look & Assist builder's**; empty
+    /// until built, and an empty line is not printed.
+    #[must_use]
+    pub(crate) fn describe_tune_layout(&self, _workspace: &Workspace) -> String {
+        let LookColumn {} = &self.look_column;
+        String::new()
+    }
+
     /// The tuning inspector: one slider per setting of the active scene.
     ///
     /// Bounds, defaults and precision all come from the descriptor table in
@@ -950,7 +968,11 @@ impl Shell {
         frame: &WorkspaceFrame,
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
+        placement: Placement,
     ) {
+        // WX-5d seam: the Column branch is the Look & Assist builder's;
+        // until it lands, the inspector keeps its own column.
+        let _ = placement;
         if frame.inspector.is_empty() {
             return;
         }

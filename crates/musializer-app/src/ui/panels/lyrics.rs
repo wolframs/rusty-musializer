@@ -55,6 +55,7 @@ use raylib::consts::MouseCursor;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 use serde::{Deserialize, Serialize};
 
+use super::super::column::Placement;
 use super::super::mapping_editor;
 use super::super::shell::{draw_timeline_playhead, Shell, ShellCommand, ShellInput};
 use super::super::shell_layout::DEFAULT_TIMELINE_HEIGHT;
@@ -1991,6 +1992,23 @@ impl LyricEditor {
 }
 
 impl Shell {
+    /// The `lyrics column:` report line (WX-5d §5): pane, card, visible rows
+    /// with their rects, current and selected cue, follow, the sample caption
+    /// and the footer's controls. **The Lyrics builder's**; empty until built,
+    /// and an empty line is not printed.
+    #[must_use]
+    pub(crate) fn describe_lyrics_column(&self, _workspace: &Workspace) -> String {
+        String::new()
+    }
+
+    /// The `caption style:` report line (WX-5d §5): the Style pane's groups,
+    /// face chips, swatches and place, each with its rect. **The Lyrics
+    /// builder's**; empty until built.
+    #[must_use]
+    pub(crate) fn describe_caption_style(&self, _workspace: &Workspace) -> String {
+        String::new()
+    }
+
     /// The lyrics editor, in the timeline strip's place.
     ///
     /// Returns the y the zoom row should draw at — the bottom of the cue lane
@@ -2004,7 +2022,11 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
+        placement: Placement,
     ) -> f32 {
+        // WX-5d seam: the Column branch is the Lyrics builder's; until it
+        // lands, the column draws what the band draws.
+        let _ = placement;
         // Split borrow: the editor and the widget set are both fields of
         // `self`, and `draw_lyrics` needs them at once.
         let mut editor = std::mem::take(&mut self.lyrics);

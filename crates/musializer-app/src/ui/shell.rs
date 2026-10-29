@@ -740,6 +740,18 @@ pub struct Shell {
     /// `--ui-probe scene-family=`, held against the plan's scene changes
     /// until a family row is pressed (see [`Self::browse_scene_family`]).
     pub(crate) probe_family: Option<SceneFamily>,
+    /// `MUSIALIZER_COLUMN_LAYOUT=1` (WX-5d seam): the secondary panels draw
+    /// in the right column. Set once by the composition root at startup from
+    /// [`super::column::column_layout_from_env`]; see
+    /// [`Self::placement`](super::column).
+    pub column_layout: bool,
+    /// What Look drew in its last frame, for the `tune layout:` line (WX-5d).
+    /// Its type is `panels::tune`'s, so the Look & Assist builder grows it
+    /// without editing this file.
+    pub(crate) look_column: super::panels::tune::LookColumn,
+    /// What Assist drew in its last frame, for the `assist column:` line
+    /// (WX-5d). `panels::assist`'s type, for the same reason.
+    pub(crate) assist_column: super::panels::assist::AssistColumn,
 }
 
 /// The colour a save state's word draws in, wherever it is drawn: the tracks
@@ -836,6 +848,79 @@ impl ModeTab {
             ModeTab::Export => "Export",
             ModeTab::Assist => "Assist",
         }
+    }
+}
+
+impl ModeTab {
+    /// The column view this tab names (WX-5d): tabs are views onto one
+    /// [`ColumnView`]. `Export` is `Render` until the switch flips and Export
+    /// leaves the tabs for Render… (§3.5).
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "WX-5d seam: the Frame builder's tab press routes through it"
+    )]
+    pub fn column_view(self) -> ColumnView {
+        match self {
+            ModeTab::Direct => ColumnView::Direct,
+            ModeTab::Lyrics => ColumnView::Lyrics,
+            ModeTab::Look => ColumnView::Look,
+            ModeTab::Export => ColumnView::Render,
+            ModeTab::Assist => ColumnView::Assist,
+        }
+    }
+}
+
+/// What the right column shows (WX-5d §2): one value, which the tabs, the
+/// rail's column toggle and Render… are all views onto.
+///
+/// **In the seam it is derived, never stored**: [`Shell::column_view`] reads
+/// it off today's state (`panel`, `inspector_open`, `dock_open`) and
+/// [`Shell::set_column_view`] writes that state, so there is no second copy to
+/// disagree with. The Frame builder folds `UiPanel` and the inspector flag
+/// into it later. Persisted in `ui.json` as [`ColumnView::name`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColumnView {
+    /// The column is closed; the preview has its width.
+    Closed,
+    /// The dock: chats and terminals.
+    Direct,
+    Lyrics,
+    /// The Tune inspector.
+    Look,
+    Assist,
+    /// Render settings and the commit that renders (was the Export panel).
+    Render,
+}
+
+impl ColumnView {
+    pub const ALL: [ColumnView; 6] = [
+        ColumnView::Closed,
+        ColumnView::Direct,
+        ColumnView::Lyrics,
+        ColumnView::Look,
+        ColumnView::Assist,
+        ColumnView::Render,
+    ];
+
+    /// The token `column=` takes, the `column:` line prints and `ui.json`
+    /// stores. Stable: a rename breaks every file that stored the old one.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            ColumnView::Closed => "closed",
+            ColumnView::Direct => "direct",
+            ColumnView::Lyrics => "lyrics",
+            ColumnView::Look => "look",
+            ColumnView::Assist => "assist",
+            ColumnView::Render => "render",
+        }
+    }
+
+    /// [`Self::name`]'s inverse; `None` for anything else.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|view| view.name() == name)
     }
 }
 
@@ -1277,6 +1362,9 @@ impl Shell {
             hud_readout: None,
             transport_report: "none".to_owned(),
             probe_family: None,
+            column_layout: false,
+            look_column: super::panels::tune::LookColumn::default(),
+            assist_column: super::panels::assist::AssistColumn::default(),
         }
     }
 
@@ -1754,7 +1842,8 @@ impl Shell {
                 self.timeline_strip(d, frame, under, toolbar, &mut commands);
             }
             if self.inspector_open && !self.editor_open {
-                self.inspector(d, frame, under, &mut commands);
+                let placement = self.placement();
+                self.inspector(d, frame, under, &mut commands, placement);
             }
             if !self.editor_open {
                 self.splitters(d, frame, under, &mut commands);
@@ -3675,6 +3764,54 @@ impl Shell {
         self.panel = panel;
     }
 
+    /// The column's view, read off today's state (WX-5d seam).
+    ///
+    /// A bottom panel wins over the inspector: before the fold, Look could be
+    /// open beside one, and the panel is the bigger thing on screen. Then
+    /// the inspector, then the dock, else closed.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "WX-5d seam: the `column:` line and the tabs read it once the Frame builder builds them"
+    )]
+    pub fn column_view(&self) -> ColumnView {
+        match self.panel {
+            UiPanel::Lyrics => ColumnView::Lyrics,
+            UiPanel::Assist => ColumnView::Assist,
+            UiPanel::Export => ColumnView::Render,
+            UiPanel::None | UiPanel::Tune if self.inspector_open => ColumnView::Look,
+            UiPanel::None | UiPanel::Tune if self.dock_open => ColumnView::Direct,
+            UiPanel::None | UiPanel::Tune => ColumnView::Closed,
+        }
+    }
+
+    /// Shows `view`, by writing the state [`Self::column_view`] reads, so the
+    /// two round-trip for every view. One view at a time: Look no longer
+    /// coexists with a panel (§2). The dock is only opened (Direct) or closed
+    /// (Closed); behind another view it stays open, because hiding a chat
+    /// never ends it. No lyric-draft guard here: the tab press keeps its own,
+    /// and the probe sets state directly as `panel=` does.
+    pub fn set_column_view(&mut self, view: ColumnView) {
+        let (panel, inspector) = match view {
+            ColumnView::Closed | ColumnView::Direct => (UiPanel::None, false),
+            ColumnView::Lyrics => (UiPanel::Lyrics, false),
+            ColumnView::Look => (UiPanel::None, true),
+            ColumnView::Assist => (UiPanel::Assist, false),
+            ColumnView::Render => (UiPanel::Export, false),
+        };
+        self.panel = panel;
+        self.set_inspector_open(inspector);
+        match view {
+            ColumnView::Direct => self.dock_open = true,
+            ColumnView::Closed => {
+                self.dock_open = false;
+                self.dock_keyboard = false;
+            }
+            _ => {}
+        }
+        self.ui_preferences.dock_open = self.dock_open;
+    }
+
     /// Whether the state a top-bar tab names holds (WX-5c §4). `Look` can be
     /// selected together with one of the bottom panels; `Direct` only when
     /// neither is open. `UiPanel::Tune` is no bottom panel (see
@@ -5138,6 +5275,7 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) -> f32 {
         let below_strip = strip.y + strip.height;
+        let placement = self.placement();
         match self.panel {
             // The cue lane outlives the editor (D4). Only in these two states:
             // Export and Assist take the whole band for their own budgets, and
@@ -5148,12 +5286,12 @@ impl Shell {
                 self.closed_lyric_lane(d, input, content, strip, commands)
             }
             UiPanel::Export => {
-                self.export_panel(d, input, content, strip, commands);
+                self.export_panel(d, input, content, strip, commands, placement);
                 below_strip
             }
-            UiPanel::Lyrics => self.lyrics_panel(d, input, content, strip, commands),
+            UiPanel::Lyrics => self.lyrics_panel(d, input, content, strip, commands, placement),
             UiPanel::Assist => {
-                self.assist_panel(d, input, content, strip, commands);
+                self.assist_panel(d, input, content, strip, commands, placement);
                 below_strip
             }
         }
@@ -6921,5 +7059,73 @@ mod tests {
         // The whole document, not one cue: an edit that reached the wrong track
         // could have moved a boundary rather than a word.
         assert_eq!(workspace.get(1).expect("slot 1").lyrics, untouched);
+    }
+
+    #[test]
+    fn every_column_view_round_trips_through_todays_state() {
+        let mut shell = Shell::with_preferences(UiPreferences::default());
+        // Forwards and backwards through every pair, so no view leaves state
+        // behind that the next one reads.
+        for from in ColumnView::ALL {
+            for to in ColumnView::ALL {
+                shell.set_column_view(from);
+                assert_eq!(shell.column_view(), from, "{from:?}");
+                shell.set_column_view(to);
+                assert_eq!(shell.column_view(), to, "{from:?} -> {to:?}");
+                assert_eq!(shell.ui_preferences.dock_open, shell.dock_open);
+            }
+        }
+    }
+
+    #[test]
+    fn look_no_longer_coexists_with_a_panel_once_set_as_a_view() {
+        let mut shell = Shell::with_preferences(UiPreferences::default());
+        shell.panel = UiPanel::Lyrics;
+        shell.inspector_open = true;
+        // Before the fold, the panel wins the derived view…
+        assert_eq!(shell.column_view(), ColumnView::Lyrics);
+        // …and setting Look ends the pairing.
+        shell.set_column_view(ColumnView::Look);
+        assert_eq!((shell.panel, shell.inspector_open), (UiPanel::None, true));
+        shell.set_column_view(ColumnView::Assist);
+        assert_eq!(
+            (shell.panel, shell.inspector_open),
+            (UiPanel::Assist, false)
+        );
+    }
+
+    #[test]
+    fn a_hidden_dock_stays_open_behind_another_view_and_closing_releases_the_keyboard() {
+        let mut shell = Shell::with_preferences(UiPreferences::default());
+        shell.set_column_view(ColumnView::Direct);
+        shell.dock_keyboard = true;
+        shell.set_column_view(ColumnView::Lyrics);
+        assert!(shell.dock_open, "hiding a chat never ends it");
+        shell.set_column_view(ColumnView::Closed);
+        assert!(!shell.dock_open);
+        assert!(!shell.dock_keyboard);
+    }
+
+    #[test]
+    fn column_view_names_are_stable_and_unique() {
+        let names: Vec<&str> = ColumnView::ALL.iter().map(|view| view.name()).collect();
+        assert_eq!(
+            names,
+            ["closed", "direct", "lyrics", "look", "assist", "render"]
+        );
+        for view in ColumnView::ALL {
+            assert_eq!(ColumnView::from_name(view.name()), Some(view));
+        }
+        assert_eq!(ColumnView::from_name("export"), None);
+        assert_eq!(
+            ModeTab::ALL.map(ModeTab::column_view),
+            [
+                ColumnView::Direct,
+                ColumnView::Lyrics,
+                ColumnView::Look,
+                ColumnView::Render,
+                ColumnView::Assist,
+            ]
+        );
     }
 }

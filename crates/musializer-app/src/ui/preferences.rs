@@ -64,6 +64,14 @@ pub struct UiPreferences {
     /// the user dragged it. Screen facts, like the splits above.
     pub dock_open: bool,
     pub dock_width: Option<f32>,
+    /// The right column (WX-5d): whether it was open, on which view, and how
+    /// wide the user dragged it. `None` is "never written", which the column
+    /// reads as open on Direct, seeding its width from an older file's
+    /// `dock_width` (`wx5d-design.md` §2) — so an absent field and a stored
+    /// `false` stay different facts.
+    pub column_open: Option<bool>,
+    pub column_view: Option<super::shell::ColumnView>,
+    pub column_width: Option<f32>,
 }
 
 impl UiPreferences {
@@ -74,6 +82,7 @@ impl UiPreferences {
             self.inspector_width,
             self.timeline_height,
             self.dock_width,
+            self.column_width,
         ]
         .into_iter()
         .flatten()
@@ -131,6 +140,15 @@ struct Document {
     dock_open: bool,
     #[serde(default)]
     dock_width: Option<f32>,
+    /// `default` for the same reason, WX-5d. The view is stored by
+    /// [`ColumnView::name`](super::shell::ColumnView::name); a name this build
+    /// does not know is refused like any other field it cannot read.
+    #[serde(default)]
+    column_open: Option<bool>,
+    #[serde(default)]
+    column_view: Option<String>,
+    #[serde(default)]
+    column_width: Option<f32>,
 }
 
 #[must_use]
@@ -166,6 +184,12 @@ pub fn load(path: &Path) -> Result<Option<UiPreferences>, UiPreferencesError> {
         return Err(UiPreferencesError::Format);
     }
     let scale = UiScalePreference::parse(&document.scale).ok_or(UiPreferencesError::Format)?;
+    let column_view = match document.column_view.as_deref() {
+        None => None,
+        Some(name) => {
+            Some(super::shell::ColumnView::from_name(name).ok_or(UiPreferencesError::Format)?)
+        }
+    };
     let preferences = UiPreferences {
         theme: document.theme,
         scale,
@@ -176,6 +200,9 @@ pub fn load(path: &Path) -> Result<Option<UiPreferences>, UiPreferencesError> {
         lyric_tap_offset: document.lyric_tap_offset,
         dock_open: document.dock_open,
         dock_width: document.dock_width,
+        column_open: document.column_open,
+        column_view,
+        column_width: document.column_width,
     };
     preferences
         .sane()
@@ -201,6 +228,9 @@ pub fn save(path: &Path, preferences: UiPreferences) -> Result<(), UiPreferences
         lyric_tap_offset: preferences.lyric_tap_offset,
         dock_open: preferences.dock_open,
         dock_width: preferences.dock_width,
+        column_open: preferences.column_open,
+        column_view: preferences.column_view.map(|view| view.name().to_string()),
+        column_width: preferences.column_width,
     };
     let bytes = serde_json::to_vec_pretty(&document).map_err(|_| UiPreferencesError::Format)?;
     if let Some(parent) = path.parent() {
@@ -237,9 +267,119 @@ mod tests {
             lyric_tap_offset: Some(-0.1),
             dock_open: true,
             dock_width: Some(480.0),
+            column_open: Some(false),
+            column_view: Some(super::super::shell::ColumnView::Lyrics),
+            column_width: Some(420.0),
         };
         save(&path, preferences).unwrap();
         assert_eq!(load(&path).unwrap(), Some(preferences));
+    }
+
+    #[test]
+    fn every_column_view_round_trips_by_name() {
+        let path = scratch("column-views").join("ui.json");
+        for view in super::super::shell::ColumnView::ALL {
+            let preferences = UiPreferences {
+                column_open: Some(true),
+                column_view: Some(view),
+                ..UiPreferences::default()
+            };
+            save(&path, preferences).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains(&format!("\"column_view\": \"{}\"", view.name())),
+                "{text}"
+            );
+            assert_eq!(load(&path).unwrap(), Some(preferences));
+        }
+    }
+
+    #[test]
+    fn a_column_view_this_build_does_not_know_is_refused_and_left_alone() {
+        let path = scratch("column-view-unknown").join("ui.json");
+        let bytes = br#"{"schema":"musializer.ui-preferences/v1","scale":"auto",
+             "sidebar_width":null,"inspector_width":null,"timeline_height":null,
+             "column_view":"export"}"#;
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(load(&path), Err(UiPreferencesError::Format));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_column_width_obeys_the_split_bounds() {
+        let path = scratch("column-width").join("ui.json");
+        for refused in [0.0f32, 79.0, 5000.0, f32::NAN] {
+            let preferences = UiPreferences {
+                column_width: Some(refused),
+                ..UiPreferences::default()
+            };
+            assert!(!preferences.sane(), "{refused} is not a column width");
+            assert_eq!(save(&path, preferences), Err(UiPreferencesError::Format));
+        }
+    }
+
+    /// WX-5d's compatibility contract: every shape of `ui.json` this
+    /// application has written still loads, and none of them invents a column
+    /// state — an absent field reads as `None` ("never written"), which the
+    /// column interprets, rather than as a stored default.
+    #[test]
+    fn every_older_document_still_loads_with_no_column_state() {
+        let documents: [(&str, &[u8]); 6] = [
+            (
+                "pre-lane",
+                br#"{"schema":"musializer.ui-preferences/v1","scale":"auto",
+                     "sidebar_width":300.0,"inspector_width":null,"timeline_height":null}"#,
+            ),
+            (
+                "pre-tap-offset",
+                br#"{"schema":"musializer.ui-preferences/v1","scale":"auto",
+                     "sidebar_width":300.0,"inspector_width":null,"timeline_height":null,
+                     "lyric_lane_height":50.0}"#,
+            ),
+            (
+                "pre-dock",
+                br#"{"schema":"musializer.ui-preferences/v1","scale":"125",
+                     "sidebar_width":null,"inspector_width":320.0,"timeline_height":400.0,
+                     "lyric_lane_height":null,"lyric_tap_offset":-0.05}"#,
+            ),
+            (
+                "pre-theme",
+                br#"{"schema":"musializer.ui-preferences/v1","scale":"auto",
+                     "sidebar_width":null,"inspector_width":null,"timeline_height":null,
+                     "lyric_lane_height":null,"lyric_tap_offset":null,
+                     "dock_open":true,"dock_width":480.0}"#,
+            ),
+            (
+                "pre-column",
+                br#"{"theme":"black-amber","schema":"musializer.ui-preferences/v1",
+                     "scale":"auto","sidebar_width":null,"inspector_width":null,
+                     "timeline_height":null,"lyric_lane_height":null,
+                     "lyric_tap_offset":null,"dock_open":true,"dock_width":480.0}"#,
+            ),
+            (
+                "theme-only",
+                br#"{"theme":"light-blue","schema":"musializer.ui-preferences/v1",
+                     "scale":"auto","sidebar_width":null,"inspector_width":null,
+                     "timeline_height":null}"#,
+            ),
+        ];
+        for (name, bytes) in documents {
+            let path = scratch(&format!("older-{name}")).join("ui.json");
+            std::fs::write(&path, bytes).unwrap();
+            let loaded = load(&path)
+                .unwrap_or_else(|error| panic!("{name}: {error}"))
+                .unwrap_or_else(|| panic!("{name}: no preferences"));
+            assert_eq!(
+                (loaded.column_open, loaded.column_view, loaded.column_width),
+                (None, None, None),
+                "{name}"
+            );
+            // The one a WX-5d build seeds the column from: the dock's width
+            // survives the load.
+            if name == "pre-column" {
+                assert_eq!((loaded.dock_open, loaded.dock_width), (true, Some(480.0)));
+            }
+        }
     }
 
     #[test]

@@ -54,6 +54,7 @@ use raylib::prelude::{
     RaylibTexture2D, RaylibTextureModeExt, RaylibThread, RenderTexture2D,
 };
 
+use super::super::column::Placement;
 use super::super::shell::{Shell, ShellCommand, ShellInput};
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
@@ -293,6 +294,26 @@ const BAND_TO_BOUNDARY_OFFSET: f32 = widgets::PANEL_HEADER_HEIGHT
 pub(crate) const EXPORT_MIN_BAND_HEIGHT: f32 = EXPORT_CONTENT_MIN_HEIGHT + BAND_TO_BOUNDARY_OFFSET;
 
 impl Shell {
+    /// The `render view:` report line (WX-5d §5): the view's rect, the shape
+    /// tiles, size, frame rate, quality, clip, share frame and the commit with
+    /// its enabled state. **The Frame builder's**; empty until built, and an
+    /// empty line is not printed.
+    #[must_use]
+    pub(crate) fn describe_render_view(&self, _workspace: &crate::workspace::Workspace) -> String {
+        String::new()
+    }
+
+    /// The `export progress:` report line (WX-5d §5): state, frame, the bar's
+    /// and Cancel's rects and whether the encoded frame was drawn. **The Frame
+    /// builder's**; empty until built.
+    #[must_use]
+    pub(crate) fn describe_export_progress(
+        &self,
+        _workspace: &crate::workspace::Workspace,
+    ) -> String {
+        String::new()
+    }
+
     /// The export panel, in the timeline strip's place
     /// (`draw_export_panel`, `plug.c:2543-2659`).
     ///
@@ -311,7 +332,11 @@ impl Shell {
         content: UiRect,
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
+        placement: Placement,
     ) {
+        // WX-5d seam: the Column branch is the Render view, the Frame
+        // builder's; until it lands, the column draws what the band draws.
+        let _ = placement;
         let padding = metric::UI_PANEL_PADDING;
         let gap = metric::UI_CONTROL_GAP;
         // Below the strip *and* below the zoom readout beneath it. Drawing into
