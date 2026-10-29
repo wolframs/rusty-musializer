@@ -64,24 +64,21 @@ needs; the terms mention no expiry on credits.
 
 **Rate.** 8 credits per output second, which is **$0.222/s or $13.33/min**.
 
-**What is billed.** Each scene requests a whole number of seconds from the
-provider: `requestSeconds`, an integer from 5 to 15 that is at least
-`ceil(scene duration)`. The docs call that whole-second value "the render
-request and billing unit". The quote total is
-`ceil(quoted seconds × 8)`, frozen at quote time. A 7,125 ms scene therefore
-requests 8 s and probably bills 64 credits, not 57. The FAQ's "a first pass
-charges the exact saved timeline length" reads the other way, so this is
-**unverified until the first quote**.
+**What is billed (measured on the first real quotes, 2026-10-29).** The
+quote's basis is `scene-duration`: `ceil(exact scene seconds × 8)`, with no
+whole-second rounding per scene. A 6.53 s scene quoted 53 credits and a 5.3 s
+scene quoted 43. `requestSeconds` (whole seconds, 5–15) is only the length
+of the provider render and the silence padding of the audio slice; it isn't
+billed. The docs' line calling it "the billing unit" is wrong, or out of date.
 
-**Consequences of that rule:**
+**Consequences:**
 
-- The floor is 40 credits ($1.11) per generation. A short test clip costs the
-  same as a real 5 s scene, so the first real scene is the test.
-- Rounding up costs about 4 credits per scene on average. Scene boundaries
-  close to whole seconds save money, where the phrase boundaries allow it.
+- The floor is 40 credits ($1.11) per generation, which is a 5 s scene. A
+  short test costs the same as a real 5 s scene, so test with real scenes.
 - A reroll costs the full scene again. Short scenes make cheap rerolls, so keep
   the risky lip-sync shots short and the safe instrumental shots long.
-- The **scene count does not change the price**; only the seconds do.
+- **Neither the scene count nor where the boundaries fall changes the price**;
+  only the total seconds do.
 
 **Free:**
 
@@ -192,5 +189,5 @@ budget and first-scene-review gates.
 
 | Cut | Billed (est.) | Credits | USD | Leaves for rerolls |
 | --- | --- | --- | --- | --- |
-| Full song, ~18 scenes | ~211 s | ~1,690 | ~$47 | $50 pack: ~110 credits, about one reroll |
-| ~90 s trim | ~95 s | ~760 | ~$21 | $30 pack: ~320 credits, about 40 s of rerolls |
+| Full song (202.6 s) | 202.6 s | ~1,621 | ~$45 | $50 pack: ~179 credits |
+| ~90 s trim | ~90 s | ~720 | ~$20 | $30 pack: ~360 credits |
