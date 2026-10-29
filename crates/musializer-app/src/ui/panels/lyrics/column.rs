@@ -1739,7 +1739,7 @@ impl Shell {
         let anchor_index = index_of(CaptionAnchor::ALL, style.anchor);
         let mut anchors_report = Vec::new();
         let mut place_word = "bottom centre";
-        for cell in 0..9 {
+        for (cell, words) in ANCHOR_WORDS.iter().enumerate() {
             let press = s(pane.anchors[cell]);
             let dot = s(pane.anchor_dots[cell]);
             let value = anchor_value(cell);
@@ -1748,7 +1748,7 @@ impl Shell {
             let centre = Vector2::new(dot.x + dot.width * 0.5, dot.y + dot.height * 0.5);
             let on = anchor_index == value;
             if on {
-                place_word = ANCHOR_WORDS[cell];
+                place_word = words;
                 d.draw_circle_v(centre, layout::PLACE_DOT * 0.5 + 3.0, color::ui_ink());
                 d.draw_circle_v(
                     centre,
@@ -1775,7 +1775,7 @@ impl Shell {
             }
             anchors_report.push(format!(
                 "{}{}@{}",
-                ANCHOR_WORDS[cell].replace(' ', "-"),
+                words.replace(' ', "-"),
                 if on { "*" } else { "" },
                 rect_token(press)
             ));
@@ -2698,7 +2698,7 @@ mod tests {
         for pair in caption.windows(2) {
             assert!(pair[1] - pair[0] >= widgets::SLIDER_ROW_IDS, "{pair:?}");
         }
-        assert!(column_id::SIZE >= caption_id::ZONE_HINTS + 16);
+        const { assert!(column_id::SIZE >= caption_id::ZONE_HINTS + 16) };
         caption.extend([
             column_id::INK_PLUS,
             column_id::PLATE_PLUS,
@@ -2707,6 +2707,6 @@ mod tests {
         caption.sort_unstable();
         caption.dedup();
         assert_eq!(caption.len(), 13);
-        assert!(column_id::INK_PLUS >= column_id::SWEEP + widgets::SLIDER_ROW_IDS);
+        const { assert!(column_id::INK_PLUS >= column_id::SWEEP + widgets::SLIDER_ROW_IDS) };
     }
 }

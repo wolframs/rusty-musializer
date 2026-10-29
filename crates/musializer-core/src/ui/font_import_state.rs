@@ -902,6 +902,21 @@ mod tests {
     }
 
     #[test]
+    fn the_browser_fits_the_columns_292_px_and_keeps_the_oracles_numbers_from_420() {
+        // WX-5d: the narrowest column is 320 wide and 292 inside its padding.
+        assert_eq!(BROWSER_MIN_WIDTH, 292.0);
+        let narrow = BrowserLayout::measure(654.0, 98.0, 292.0, 530.0).expect("292 draws");
+        assert_eq!(narrow.search, (654.0, 98.0, 196.0, 28.0));
+        assert_eq!(narrow.action, (654.0, 596.0, 150.0, 30.0));
+        // From 420 up the search field leaves the oracle's 160 for the count,
+        // so the band's browser is the pixel it was.
+        let wide = BrowserLayout::measure(0.0, 0.0, 420.0, 400.0).expect("420 draws");
+        assert_eq!(wide.search.2, 260.0);
+        let just_under = BrowserLayout::measure(0.0, 0.0, 419.0, 400.0).expect("419 draws");
+        assert_eq!(just_under.search.2, 323.0);
+    }
+
+    #[test]
     fn the_browsers_list_window_never_overlaps_its_search_field_or_its_action_row() {
         // The failure this catches is the one a capture would show as rows
         // printed through the "Download and use" button: the list takes what is

@@ -37,9 +37,20 @@
 # LYRICS_COLUMN_BIN names a different binary, for a negative control without
 # replacing the build.
 #
-# NEGATIVE CONTROLS, run 2026-10-29 on the GPU path and on the CPU path
-# (MZ_GL_LAUNCH=""), each perturbation reverted byte for byte after:
-#   (filled in below the script's first green run; see the hand-over file)
+# NEGATIVE CONTROLS, run 2026-10-29 with --quick on the GPU path and on the CPU
+# path (MZ_GL_LAUNCH=""), each perturbation reverted with `git checkout` and the
+# file proven clean after. Every one failed exactly its own check, on both:
+#   - a row press that selects nothing (`if false &&` on the row's click):
+#     check 1, "left selected=#7" and "did not seek there"; the gap press
+#     stayed green;
+#   - the tick filled `ui_muted` instead of the accent: check 2, 0/40 exact;
+#   - an ink swatch press ignored: check 3, the second swatch not chosen; the
+#     three gap presses stayed green;
+#   - the sample dropped in `caption.rs`: check 4, 0 ink pixels (394 GPU,
+#     395 CPU when drawn), the Cues control 0 either way;
+#   - `SceneRenderer::sample_caption` cloned instead of taken, so the sample
+#     outlives the preview draw: check 4's still md5 differs (GPU and CPU);
+#   - `BROWSER_MIN_WIDTH` back at the oracle's 420: check 5, `too-small`.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

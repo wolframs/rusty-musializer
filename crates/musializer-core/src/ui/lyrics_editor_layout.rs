@@ -22,6 +22,16 @@
 //! kept, at its value, as two named legacy constants below, so the lyrics band
 //! does not move in WX-5c; relaxing it belongs to the wave that restructures
 //! the secondary panels.
+//!
+//! **WX-5d retires all of it** (`build/redesign/wx5d-design.md` §1): the cue
+//! list lives in the right column, so the band no longer has a lyrics budget,
+//! and with `MUSIALIZER_COLUMN_LAYOUT=1` nothing calls this module — the
+//! column's geometry is `lyrics_column_layout`. It stays only while the band
+//! (`Placement::Band`) does. When the merge deletes the band branches, delete
+//! `panel_height`, `panel_height_with_chrome`, `required_height`, `form_fits`,
+//! `LYRIC_EDITOR_SIDEBAR_MINIMUM` and the two legacy sidebar constants with
+//! them, and re-derive `lyrics.rs`'s `lane_height_ceiling` from the band's own
+//! ceiling (`window − 46 − 50 − 150`) instead of the sidebar minimum.
 
 /// The scene browser's content floor in the retired sidebar (`workspace_layout.h:55-57`:
 /// 27 header + 36 footer + 16 padding + four 4 px gaps + five 24 px rows).
