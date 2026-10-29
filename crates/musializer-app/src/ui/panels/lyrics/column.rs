@@ -331,8 +331,9 @@ impl Shell {
                     editor.set_pane(LyricsPane::Style);
                 }
                 editor.column.lyrics_line = format!(
-                    "{prefix} browser={} fonts=[{}] sample={sample}",
+                    "{prefix} browser={}:{} fonts=[{}] sample={sample}",
                     rect_token(area),
+                    self.font_browser.drawn_now(),
                     self.font_browser.describe()
                 );
             }
@@ -1057,8 +1058,8 @@ impl Shell {
         let last = (first + list.visible).min(cue_list.len());
         format!(
             "card={} cue={} prev@{} next@{} text@{} start@{} end@{} apply@{}:{} \
-             rows={}..{}/{} row@={} current={} selected={} follow={} follow@{} \
-             footer=add@{},import@{},export@{}",
+             list@{} rows={}..{}/{} row@={} current={} selected={} follow={} follow@{} \
+             footer@{} footer=add@{},import@{},export@{}",
             rect_token(card.card),
             if editor.draft_new {
                 "new".to_owned()
@@ -1073,6 +1074,7 @@ impl Shell {
             rect_token(card.end.field),
             rect_token(card.apply),
             if apply_enabled { "enabled" } else { "disabled" },
+            rect_token(list.rows),
             if cue_list.is_empty() { 0 } else { first + 1 },
             last,
             cue_list.len(),
@@ -1089,6 +1091,7 @@ impl Shell {
             },
             u8::from(editor.list_follow_selection),
             rect_token(list.follow),
+            rect_token(footer.footer),
             rect_token(footer.add),
             rect_token(footer.import),
             rect_token(footer.export),

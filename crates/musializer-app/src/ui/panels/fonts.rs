@@ -97,6 +97,12 @@ pub struct FontBrowser {
     /// The family the last "Download and use" asked for, so the Style pane's
     /// progress line can name it after the browser has gone (WX-5d §3.2).
     fetching_family: Option<String>,
+    /// What the pane drew this frame: a body's name, `too-small` for the
+    /// "Enlarge the window" sentence, or `none`. The `panel=` in
+    /// [`Self::describe`] is the importer's state, which holds whether or not
+    /// anything was drawn; this is the drawing (WX-5d, the 292 px column).
+    /// Reset by [`Self::begin_frame`].
+    drawn: &'static str,
 }
 
 /// A face download in flight, for the progress under the Style pane's face
@@ -136,7 +142,14 @@ impl FontBrowser {
             query_field_visible: false,
             query_field_drawn: false,
             fetching_family: None,
+            drawn: "none",
         }
+    }
+
+    /// What the pane drew so far this frame (see the field).
+    #[must_use]
+    pub(crate) fn drawn_now(&self) -> &'static str {
+        self.drawn
     }
 
     /// The face download in flight, if one is: only the face itself, not the
@@ -173,6 +186,7 @@ impl FontBrowser {
     /// the frame the user was looking at when they pressed the key.
     pub(crate) fn begin_frame(&mut self) {
         self.query_field_visible = std::mem::take(&mut self.query_field_drawn);
+        self.drawn = "none";
     }
 
     /// Whether the family filter is taking keystrokes as text.
@@ -330,6 +344,7 @@ fn draw_font_browser(
 
     let allowed = browser.view.network_allowed();
     let Some(layout) = BrowserLayout::measure(area.x, area.y, area.width, area.height) else {
+        browser.drawn = "too-small";
         // A control that does not fit is not drawn, and a sentence saying why
         // beats a truncated browser — and beats a blank region by more.
         widgets::draw_text(
@@ -344,6 +359,7 @@ fn draw_font_browser(
         return;
     };
 
+    browser.drawn = panel_name(browser.importer.panel(allowed));
     match browser.importer.panel(allowed) {
         FontImportPanel::Consent => return draw_font_consent(widgets, d, font, browser, area),
         panel @ (FontImportPanel::Loading
