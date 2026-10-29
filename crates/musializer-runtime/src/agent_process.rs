@@ -105,6 +105,20 @@ fn shell_path() -> Option<String> {
         .clone()
 }
 
+/// Where `program` would be found right now, without waiting: against the
+/// login shell's PATH if it has already answered, else this process's PATH.
+/// For the dock's empty state (WX-5d), which says whether each agent is
+/// installed before anyone presses Start; a frame cannot wait three seconds.
+#[must_use]
+pub fn locate(program: &str) -> Option<PathBuf> {
+    let path = RESOLVED
+        .get()
+        .cloned()
+        .flatten()
+        .or_else(|| std::env::var("PATH").ok())?;
+    resolve(program, &path)
+}
+
 /// Resolves `program` against `path` the way `execvp` would.
 fn resolve(program: &str, path: &str) -> Option<PathBuf> {
     if program.contains('/') {

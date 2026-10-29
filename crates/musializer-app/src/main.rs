@@ -1772,8 +1772,15 @@ fn run(
         // the Direct tab's dot is for, and a probe that only ran while the
         // dock was shown could never stage one.
         if column_layout {
+            let context = dock_context(&app, follow.as_ref(), time_seconds);
+            // The window's own treatment applies, noted in the shown chat.
+            dock.observe(&context);
             if let Some(probe) = options.ui_probe.as_ref() {
-                let context = dock_context(&app, follow.as_ref(), time_seconds);
+                if report.frames == 20 && (probe.dock_run.is_some() || probe.dock_focus) {
+                    // The terminals live in the Direct view's pane, which
+                    // starts empty; the probes type into one.
+                    dock.ensure_terminal(&context);
+                }
                 dock_probes(&mut dock, probe, report.frames, &context);
                 if report.frames == 40 {
                     if let Some(view) = probe.column_switch {
