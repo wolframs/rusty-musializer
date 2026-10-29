@@ -1,1070 +1,292 @@
 # Repository guide for coding agents
 
-Rusty Musializer is the current application and the sole implementation
-authority. The earlier C implementation is archived migration history; see
-`docs/archive/C_PORT_HISTORY.md`. Do not consult it for current behavior, make
-new work depend on its checkout, or preserve one of its defects for parity.
+`CLAUDE.md` is a symlink to this file; edit `AGENTS.md`. This file holds the
+rules. Detail, history and measurements live in the docs named below.
 
-**This is a shipped application that is still growing, not a port in progress.**
-The C was declared legacy on 2026-08-03 and the tree passed its capability
-ceiling well before that decision aged: twelve scenes against its ten, two of
-them with no oracle at all, plus track-relative dynamics, frame-persistence
-trails, aspect-aware export, clip and still output, an undo-backed lyric timing
-loop and a human-feedback protocol runner the C has no equivalent of. Frame work
-here as "what should this application do", not as "what did the C do".
+Rusty Musializer is a shipped, still-growing creative tool and the sole
+implementation authority. The earlier C (`../musializer`) is legacy since
+2026-08-03 (`docs/archive/C_PORT_HISTORY.md`): frame work as "what should this
+application do", never "what did the C do", and never preserve a C defect.
 
-**What is built is answered by the code, `cargo test` and `tools/verify.sh` — not
-by an inventory in this file.** Every list of "currently supported X" written here
-has gone stale within weeks; the code cannot. `FEATURE_PARITY_PLAN.md` is the one
-live queue and carries only what is still open.
-
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`.
+What is built is answered by the code, `cargo test` and `tools/verify.sh`, never
+by an inventory in a doc — every such list here went stale within weeks.
+`FEATURE_PARITY_PLAN.md` is the one live queue: read it before implementation
+work, claim and update tasks there, never start another plan.
 
 ## Who this is for (operator, 2026-08-07)
 
-This is a creative tool. Its user is someone who has learned to get the most
-out of AI music generation and is now looking for the next step: giving the
-music a video form that is **enticing**, through a tool that is **exciting to
-work with**. Build from that chair, not from the checkbox. Handling the work as
-numb instruction-following produces the wrong artifact here even when every
-item closes — the operator has watched agents do exactly that.
+The user is someone good at AI music generation who wants to give the music an
+**enticing** video form through a tool that is **exciting to work with**. Numb
+checkbox work produces the wrong artifact even when every item closes.
 
-Concretely: before calling a task done, run the feature the way this person
-would — music playing, entering from where they would enter — and ask what the
-moment of response feels like. A control should read as an invitation, a result
-should look like something worth posting, and an idle affordance should make
-the user want to try it. If the honest answer to "what does this feel like" is
-"nothing", the task is not done; say what is missing and either fix it or
-record it. The evidence rules elsewhere in this file are the floor for
-correctness, not a substitute for this judgment.
+Before calling a task done, run the feature as that person would — music
+playing, entering where they would enter — and judge the moment of response. A
+control should read as an invitation, a result should look worth posting, an
+idle affordance should make them want to try it. If it feels like nothing, it is
+not done: fix it or record what is missing. The evidence rules below are the
+floor, not a substitute.
 
 ## Commands
 
 ```sh
 tools/verify.sh                    # everything that can check itself, in order
 tools/verify.sh --quick            # same, minus the headless capture
-
-cargo build                        # no environment setup needed
-cargo test                         # headless; no window, no audio device
-cargo clippy --all-targets
-cargo fmt --check
-
-cargo run -- path/to/song.mp3      # the slice: window + audio + Spectrum
+cargo build / cargo test           # test is headless: no window, no audio device
+cargo clippy --all-targets && cargo fmt --check
+cargo run -- path/to/song.mp3      # window + audio + Spectrum
 cargo run --bin make-fixture-wav -- build/x.wav 8   # synthetic fixture audio
 
-tools/headless_check.sh            # the self-check: private Xvfb, evidence
-tools/headless_check.sh --skip-render  # Assist/routing checks without render/export suites
-tools/headless_run.sh ARGS...      # run the app isolated, muted, on the GPU; args pass through
-tools/treatment_check.sh           # the directing gate: --treatment, sheets, stills
-tools/poster_check.sh              # poster frames: determinism, isolation, invalidation, budget, the lane
-tools/align_lyrics.py song.mp3 song.lyrics.json   # time known lyrics (MMS CTC) for a treatment
-tools/install-linux-launcher.sh    # per-user desktop entry; --uninstall removes it
-
-cargo build --release              # ALWAYS run when a work stream finishes
+tools/headless_check.sh            # the self-check gate: private Xvfb, evidence
+tools/headless_check.sh --skip-render  # Assist/routing checks only
+tools/headless_run.sh ARGS...      # any hand launch: isolated, muted, on the GPU
+tools/treatment_check.sh           # directing gate: --treatment, sheets, stills
+tools/poster_check.sh              # poster frames gate
+tools/align_lyrics.py song.mp3 song.lyrics.json   # time known lyrics (MMS CTC)
+tools/install-linux-launcher.sh    # desktop entry; --uninstall removes it
+cargo build --release              # ALWAYS last in a work stream
 ```
 
-**Finish every work stream with `cargo build --release`** (operator request,
-2026-08-25). The operator's manual look runs the release binary with the UI
-live, so a stream that ends with only a debug build hands them a stale
-application — the change they were told is done is not the one on their screen.
-The debug build stays the vehicle for gates and probes; the release build is
-the deliverable.
+**End every work stream with `cargo build --release`** (operator, 2026-08-25).
+The operator's manual look runs the release binary; a debug-only build hands
+them a stale application.
 
-## Test audio must never reach the operator's headphones
+## Silence: test audio never reaches the operator's headphones
 
-At the start of any session that may run the application, scene probes or UI
-tests, identify every command that can initialize playback and confirm its mute
-mechanism **before launching it**. The required outcome is zero audible output
-from this process, not quieter test audio.
+Before launching anything that can open playback, identify its mute path. The
+requirement is zero audible output from this process, not quieter audio.
 
-- Pass `--mute` to every direct application invocation used for testing. It sets
-  raylib's master output volume to zero while leaving decoded samples, the audio
-  callback, analyzer input and scene PCM unchanged. Do not make a fixture silent
-  or zero its samples to achieve quiet playback; that invalidates the test.
-- Use `tools/headless_check.sh` for scene/UI automation when possible. It already
-  points `PULSE_SERVER` at an unresolvable private path in addition to using the
-  application's mute path, so it cannot reach the operator's real audio sink.
-- **For any launch you make by hand — a render, a still, a contact sheet, a
-  probe — use `tools/headless_run.sh`** and pass your arguments through it. It is
-  the gate's isolation as a tool rather than as a test: private Xvfb, the
-  `WAYLAND_DISPLAY` and `PULSE_SERVER` guards, the dialog `PATH` guard, a private
-  config directory and `--mute`, with VirtualGL when it is installed. Every one
-  of those has been got wrong by a hand-typed command line in this repository at
-  least once; a script that cannot forget them is the fix.
-- `cargo test` and pure differential harnesses do not open an audio device. If a
-  new test or helper does, give it an explicit per-process mute/null sink and
-  document why the PCM path remains real.
-- Never change the desktop, device or system-wide volume as test setup. That
-  mutates the operator's session and can still race with another process. Silence
-  must be scoped to the Musializer process under test.
-- If a command cannot be proven silent without changing the PCM being tested, do
-  not run it on the operator's session. Adapt it to `--mute`, isolate its sink, or
-  use the existing Xvfb/headless path first.
+- Direct test invocations take `--mute` (master volume 0; decoded samples,
+  callback, analyzer and scene PCM unchanged). Never silence or zero a fixture.
+- Every hand launch — render, still, contact sheet, probe — goes through
+  `tools/headless_run.sh`: private Xvfb, `WAYLAND_DISPLAY`/`PULSE_SERVER`
+  guards, dialog `PATH` guard, private `XDG_CONFIG_HOME`, `--mute`, VirtualGL.
+  Hand-typed command lines here have got each of those wrong at least once.
+- Scene/UI automation goes through `tools/headless_check.sh` (Xvfb `:77`).
+- `cargo test` and differential harnesses open no device. A new test that does
+  needs an explicit per-process mute/null sink.
+- Never change desktop, device or system volume. If a command cannot be proven
+  silent without altering the PCM under test, do not run it on the operator's
+  session.
 
-## Differential testing against the oracle
+## Evidence
 
-Every script compiles the relevant `../musializer/src/*.c` with output going into
-our own `build/`. The oracle is read, never written, and its own build directory
-is never touched.
+- A clean compile and exit 0 prove almost nothing about a renderer. Report
+  lines must separate "drew something" from "tracked the input". A surface that
+  can draw without its data must report which it did — a fallback that looks
+  like content hides an unwired feature indefinitely.
+- A surface nothing photographs is not reviewed; add a capture with every new
+  screen, and print whether every new asset loaded.
+- A control nothing presses is not verified, and hover is not press: use
+  `--ui-probe click=XxY`, including a click into a gap as the control.
+- A property assertion cannot pin a value (`x >= MIN` passes wrong formulas).
+  Where a number exists, pin the number, preferably differentially.
+- Every new check gets a negative control: perturb, watch it fail, revert
+  byte-for-byte, prove the tree clean, record what it caught.
+- Capture checks: opaque fills may be compared exactly; anything a blend or
+  hairline touches needs a classifier invariant under ±1 rounding and coverage
+  splitting. Put both renderers in the negative-control loop
+  (`MZ_GL_LAUNCH=""` forces the CPU path).
+- Headless probes are invented seams (`--probe-*`, `--ui-probe ...=`). Address
+  items by id from report lines, never by a pixel measured once.
 
-| Harness | Result |
-| --- | --- |
-| `differential_analyzer.sh` | 104 bands agree to 4e-10 (float print precision) |
-| `differential_settings.sh` | all 81 descriptors match exactly |
-| `differential_routes.sh` | 380 rows, including the clamp asymmetry |
-| `differential_route_persistence.sh` | 381 lines: parse grammar and the both-ways pairing |
-| `differential_event_merge.sh` | 12 cases, 15 merged events, ids and ordering exact |
-| `differential_assist_ui.sh` | 341 policy decisions exact |
-| `differential_preset_store.sh` | 11 scene tokens, 44 presets, 3660 bytes of store JSON |
-| `differential_song_atlas_map.sh` | 912 slices, 29374 values, largest delta **0** |
-| `differential_ascii_art.sh` | 53847 records, 329738 values, largest delta **0** |
-| `differential_project_io.sh` | 2550 values, **both `.musi` round trips** plus frame-lane boundaries, largest delta **0** |
-| `differential_timeline_view.sh` | 30865 records, 204953 values, largest delta **0** |
-| `differential_layout.sh` | 27547 records, 527187 values, largest delta **0** |
-| `differential_beat_tracker.sh` | 12352 records, 123522 values, largest delta **0** — **found a parity bug** |
+## Differential harnesses
 
-Two of those harnesses now compare in **two sections**. The tree has a scene the
-frozen C cannot have (Phosphor Dream, id 10, 2026-08-08), so `settings_dump` and
-`route_persistence_dump` print the C-era rows, a `--- post-legacy (no oracle) ---`
-marker, then the rest; the driver diffs the first half against the oracle exactly
-and the second against `tests/differential/*_post_legacy.txt`. Both controls were
-run: perturbing `settings.spectrum.trail`'s bound fails against the C, and
-perturbing `settings.phosphor.dwell`'s fails against the pinned file. Do not
-"simplify" this back to one diff — the point is that a post-legacy value is still
-a `.musi` compatibility surface and still has to fail loudly when it moves.
+`tools/differential_*.sh` compile `../musializer/src/*.c` into our `build/` and
+compare against `crates/musializer-core/examples/*_dump.rs`. Table, lessons and
+negative controls: `docs/DIFFERENTIAL_TESTING.md`.
 
-**This is the pattern to copy for every pure module.** A number to compare beats
-a paragraph of reasoning about whether a port is faithful, and it catches the
-class of error review misses — the settings harness exists because ~81
-descriptors were transcribed by hand and a single mistyped bound would surface
-much later as a scene quietly ignoring a saved setting.
-
-Compare integers exactly; give floats a tolerance, because libm and Rust's
-intrinsics may differ in the last bits. Duplicate the fixture generator between
-the C and Rust sides rather than sharing it — a shared generator can hide the
-difference you are looking for.
-
-**Build a negative control, and record what it caught.** A harness that has never
-failed proves nothing, and the two most recent ones both earned this rule: the
-Song Atlas harness was checked by moving the onset threshold 0.62 → 0.60, which
-made 20 `onset` flags disagree, and by perturbing a loudness coefficient by 1e-7,
-which made 17389 floats disagree with a smallest delta of 1.9e-9. Writing that
-control also exposed a hole in the comparator itself — `nan` and `inf` *parse* as
-floats in Python, and `abs(nan - nan) > tolerance` is `False`, so those columns had
-been passing unconditionally. Perturb, watch it fail, revert byte-for-byte, and
-prove the tree is clean.
-
-**A unit test suite ported from the oracle is not a substitute, and there is now a
-measurement rather than an opinion.** The `layout` harness was written because
-`ui/timeline_view.rs` had **1** exact assertion where `test_timeline_view.c` pins 32,
-and `workspace_layout`/`timeline_layout` were similarly range-heavy. Its two negative
-controls both left the ports' own unit tests **fully green**:
-
-| perturbation | the harness | the module's unit tests |
-| --- | --- | --- |
-| `>=` → `>` in `workspace_layout`'s mode ladder | 431 values fail | **9 passed** |
-| `margin * 2.0` → `* 2.0625` in `timeline_layout` (1/16 px) | 14673 values fail | **7 passed** |
-
-The second is the instructive one: the tightest unit expectation gives `scale` a 1e-3
-tolerance, and 0.375 px spread over a 628 px row lands inside it. So the rule is not
-"prefer harnesses"; it is that a **property assertion cannot pin a value**. `assert!(x
->= MIN)` and `assert!(rect.contains(inner))` are satisfied by wrong formulas, and a
-layout error is invisible in a capture because everything moves together and still
-looks self-coherent. Where the oracle pinned a number, pin the number — and prefer a
-differential comparison, because a hand-transcribed expectation can be mistyped or
-(worse) copied from our own output, and would then pass forever.
-
-Both harnesses found **no disagreement**: the ports were right. That is the other half
-of the point — a harness on a suspected module converts "we cannot tell" into "it is
-correct", which is worth as much as finding a bug.
-
-**And then the next one found an actual bug, in the place the argument predicted.**
-`beat_tracker` was chosen for a harness because its port's strongest evidence was a
-*hand-transcribed* eight-value table — `%.9g` phases pasted from a scratch C build
-that no longer exists, unre-derivable without redoing the work. Replacing 8 pinned
-values with 123522 compared ones surfaced this:
-
-`beat_tracker_update` returns false for two unrelated reasons. It refuses bad input
-*before* writing its out-parameter; or it computes a position inside `[0, 1)`,
-narrows it to a float that lands on exactly `1.0`, **writes that**, and refuses it
-afterwards (`beat_tracker.c:76-78`). `plug.c:1139-1144` keeps a
-`float beat_phase = 0.0f;`, passes its address, and uses whatever is in it either
-way — so the scene frame gets `0.0` in the first case and `1.0` in the second. The
-port returned `Option<f32>`, had nowhere to put the `1.0`, and collapsed both to
-`0.0`. `beat_phase` is a documented route source, so that is visible in a rendered
-MP4.
-
-Three things about how it was found are worth copying:
-
-- **It surfaced from writing the excuse down.** The first version of the harness
-  pinned this as an expected divergence, with a comment arguing it was an oracle
-  quirk the port deliberately did not reproduce. Reading the C's *caller* to justify
-  that sentence is what showed the sentence was false. Pin asymmetries as named
-  pairs — and then go check the claim you wrote in the pair.
-- **The `Option` was the disguise.** `None` reads as "no value", so two refusals
-  with different observable results looked identical at the type level. The fix is a
-  three-variant `BeatUpdate`, because the C's `(bool, out float)` pair carries
-  information an `Option` cannot.
-- **It is not a corner case.** The grid hits it **187 times in 12250 steps**: any
-  tick that nearly divides the beat interval drifts the position a hair under a
-  whole multiple, and 2⁻²⁵ below 1.0 is enough. A 0.3 s tick against the neutral
-  0.5 s clock does it by the tenth step.
-
-Its two other negative controls behaved like `layout`'s — **10 unit tests green**
-against 3 and 732 failing harness values, for `>` → `>=` on the discontinuity
-threshold and for an exclusive upper bound on the credible-gap range. Neither test
-suite has a case for a gap of exactly 0.75 s or exactly 1.5 s, which is why.
-
-Two smaller lessons from the same build, both from checks failing *before* the port
-was suspected:
-
-- **Echo the inputs, so a drift between the duplicated generators fails in a key
-  column.** `3.4028235e38f` in C is a *float* literal widened to a `double`
-  parameter — a different number from the same decimal parsed as a double. The two
-  harnesses disagreed by 3.4e30 on the first run, in the echoed `time` column, and
-  it was mine, not the port's.
-- **Clippy's `excessive_precision` can be reporting a dead test.** A row feeding
-  `0.0399999991` as "the float just below the 0.04 floor" rounds back *to* `0.04f`,
-  so it duplicated the row above it and the boundary looked tested while going
-  untested. The real value has to be computed (`nextafterf` / `from_bits`), not
-  written as a decimal.
-
-**Where the two sides cannot express the same rejection, pin the asymmetry as an
-expected pair.** The C takes bare pointers and Rust takes slices, so each can refuse
-an input the other cannot even represent: the C rejects a `NULL` buffer, and Rust
-rejects a 15-byte buffer for a 2x2 image that the C has no length parameter to
-notice. The `ascii_art` harness asserts those as four named pairs — including
-*deliberately not* calling the C with the truncated buffer, since that would read
-past the end — rather than quietly excluding the cases. An untested rejection path
-is where a difference hides.
-
-**These run on demand, not in `tools/verify.sh`.** Since 2026-08-16 the gate no
-longer reads the sibling C checkout, pins its commit or offers a differential mode
-(`docs/archive/C_PORT_HISTORY.md`), because a green tree must not depend on a
-read-only clone somebody else's machine may not have. Run
-`tools/differential_*.sh` directly when you touch a module one of them pins, or
-when the row above is the evidence you are relying on. A harness failing is still
-a contract broken; it is just no longer a build break.
-
-Adding one: put the C harness in `tests/differential/`, the Rust side in
-`crates/musializer-core/examples/` (examples need no manifest entry, so they
-never collide with a parallel agent), and the driver in `tools/`. Add a row above.
-
-`tools/headless_check.sh` is how this project checks its own work without
-occupying the operator's session. It runs on Xvfb `:77` with `WAYLAND_DISPLAY`
-pointed at an unresolvable socket name (**not** unset — see the trap below) and
-`PULSE_SERVER` pointed somewhere unresolvable, and writes artifacts
-under the gitignored `build/`. Read `../musializer/tools/UI_REVIEW.md` for the
-reasoning; the isolation rules there are not optional.
-
-**Check claims with evidence, not with a clean compile.** A build that succeeds
-and a process that exits 0 prove almost nothing about a renderer. The slice
-prints a report distinguishing "drew something" from "tracked the input", and
-that distinction is the point.
+- On demand, not in `verify.sh` (since 2026-08-16). Run one when you touch a
+  module it pins. A failure is still a broken contract.
+- Integers exact, floats with tolerance; `nan`/`inf` must fail explicitly
+  (`abs(nan - nan) > tol` is `False`).
+- Duplicate the fixture generator per side, never share it. Echo inputs into key
+  columns so generator drift fails visibly. Compute boundary floats
+  (`from_bits`/`nextafterf`), never type them as decimals.
+- Pin asymmetric rejections as named expected pairs, then go check the claim
+  written in the pair — that is how the `beat_tracker` parity bug was found.
+- `settings` and `route_persistence` dumps print C-era rows, a
+  `--- post-legacy (no oracle) ---` marker, then rows diffed against
+  `tests/differential/*_post_legacy.txt`. Keep both halves.
+- Diverging from a harness is a decision: update it to pin the new behaviour
+  and record why.
+- New harness: C side in `tests/differential/`, Rust side in
+  `crates/musializer-core/examples/`, driver in `tools/`, row in the doc.
 
 ## Crate map
 
 ```text
-crates/
-  raylib-link/    # builds + links raylib 6.0 from vendor/raylib-6.0
-  musializer-core/    # no raylib: analysis, scene contracts, model, layout
-  musializer-runtime/ # raylib, the audio bridge, processes, filesystem edges
-  musializer-app/     # the binary, CLI, scene drawing, UI
-                      #   ui/panels/ is one file per fan-out agent; nobody edits
-                      #   another's, and nobody edits a mod.rs
-vendor/
-  raylib-6.0/         # upstream raylib source (third-party, not ours)
-  clang-builtin-shim/ # five headers so bindgen can run; see its README
-resources/shaders/    # first-party GLSL
-resources/fonts/      # Space Grotesk + Alegreya + Font Awesome 4, SIL OFL 1.1
-                      #   (third-party; each carries its own licence file)
-resources/logo/       # generated by tools/make_rust_logo.py
-packaging/linux/      # desktop entry and MIME package templates
-docs/README.md            # documentation index and authority map
-docs/CODE_ARCHITECTURE.md # crate boundaries, state ownership, primary data flows
-docs/ASSIST_PIPELINE.md   # analysis/lyrics control flow, trust and timing policy
-docs/MUSIC_VIDEO_CLI.md   # directing from the command line: treatments, sheets, stills
-docs/PHASE0_INVENTORY.md  # CLI grammar, settings tables, schemas, env vars
+crates/raylib-link/        builds + links raylib 6.0 from vendor/raylib-6.0
+crates/musializer-core/    no raylib: analysis, scene contracts, model, layout
+crates/musializer-runtime/ raylib, audio bridge, processes, filesystem edges
+crates/musializer-app/     binary, CLI, scene drawing, UI (ui/panels/: one file per agent)
+vendor/raylib-6.0/         upstream raylib (third-party)
+vendor/clang-builtin-shim/ headers so bindgen runs; see its README
+resources/shaders/ fonts/ logo/   embedded via include_str!/include_bytes!
+packaging/linux/           desktop entry and MIME templates
+docs/README.md             doc index and authority map
+docs/CODE_ARCHITECTURE.md  crate boundaries, state ownership, data flows
+docs/PHASE0_INVENTORY.md   CLI grammar, settings tables, schemas, env vars
+docs/MUSIC_VIDEO_CLI.md    directing from the command line
+docs/ASSIST_PIPELINE.md    analysis/lyrics control flow and trust policy
 ```
 
-Shaders and fonts are **embedded** with `include_str!`/`include_bytes!` rather than
-read from `./resources/` at runtime, which is what the C does. The C's relative
-paths are why its launcher has to `cd` into the project root before exec; an
-interface that loses its font because it was started from the wrong directory is a
-failure mode worth deleting rather than reproducing.
-
-`musializer-core` must stay free of raylib handles, OS process handles, global
-mutable state, and filesystem side effects. That constraint is what made the C
-project's 327-test suite possible and it is the main bet of this rewrite.
-
-## The raylib binding decision
-
-The vendored raylib 6.0 source is built by `crates/raylib-link`, with
-`raylib`/`raylib-sys` 6.0.0 in `nobuild` mode supplying the bindings. The
-workspace requires Rust 1.92 for egui 0.35. See `docs/RAYLIB_6_UPGRADE.md`
-for upstream provenance, the preserved audio diagnostic and compatibility
-changes. The original 5.5 pin belonged to the archived migration.
-
-Two things about this that will otherwise waste a session:
-
-- `bindgen` cannot be turned off. The safe `raylib` crate depends on
-  `raylib-sys` without disabling its default features, and Cargo unifies
-  features, so `bindgen` is on whenever `raylib` is in the graph.
-- bindgen needs clang's builtin headers, which Ubuntu's `libclang1` does not
-  ship. `vendor/clang-builtin-shim/` supplies them via `CPATH`, and
-  `raylib-link/build.rs` strips `CPATH` before compiling raylib so those
-  minimal headers never shadow GCC's real ones. Full reasoning in
-  `vendor/clang-builtin-shim/README.md`.
-
-## `unsafe` inventory
-
-Small, named, reviewable islands. Every `unsafe` block carries a `SAFETY:`
-comment stating why it holds. Current islands:
-
-| Where | Why | Invariant |
-| --- | --- | --- |
-| `runtime::audio_bridge` | raylib's `AudioCallback` is a bare `extern "C"` fn with no user-data pointer, so the ring must be reachable from a `static`; the vendored output-underrun counter is exposed by one no-argument C function | The callback only touches a lock-free SPSC ring — no allocation, lock, or syscall. `attach`/`detach` are `unsafe` and document the stream-lifetime contract; the diagnostic getter locks inside C and returns only an integer |
-| `runtime::draw` | raylib's default 1x1 texture is a non-owning handle, and the safe `Texture2D` would unload it on drop | The ffi draw wrappers take a `&mut impl RaylibDraw`, so an active drawing context is proven at compile time |
-| `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
-| `runtime::draw::shaded_triangles` | every 2D fill raylib exposes — `DrawTriangleFan`, `DrawPoly`, `DrawCircleV` — takes **one colour for the whole shape**, so a value ramp across a filled polygon has no safe expression at all. That ramp is the difference between a diagram and a lit object, and the alternative (stacked translucent copies) costs a draw call per step and bands where the copies meet | One block, opening and closing an rlgl immediate-mode batch in the same expression, mirroring what raylib's own `DrawTriangleStrip` does (`rshapes.c:1439-1450`). The `&mut impl RaylibDraw` proves a drawing context is active, which is rlgl's only precondition; `rlBegin` resets the draw call's texture to rlgl's own default whenever the primitive mode changes (`rlgl.h:1479`), and that default is the 1x1 white texture the vertex colours multiply. Nothing between the `rlBegin` and the `rlEnd` can panic or allocate — `chunks_exact(3).flatten()` over a slice is infallible — so the batch cannot be left open and no RAII guard is needed. A partial trailing triangle is dropped rather than half-submitted |
-| `runtime::draw::SceneViewport` / `FramebufferAudit` | the 3D panel clip is rlgl viewport state the safe API does not expose, and the size authority it reads has two sources that disagree | Four blocks, all pure getters plus the `rlViewport`/`rlSetFramebuffer*` pair `Drop` restores. `begin_with_screen` reads `GetRenderWidth`/`Height` on the default framebuffer and rlgl's cached pair only inside a render target, because `EndTextureMode` restores the first and not the second (`rcore.c:1109-1131`, `rcore.c:3537`); `FramebufferAudit::observe` reads both and writes nothing, so the report line can state the invariant the headless gate asserts |
-| `runtime::process::process_group` | `std`'s `Child::kill` sends only `SIGKILL`, to only one process. `SIGTERM` and process-group delivery need `kill(2)`, and `libc` is not a dependency | One block wrapping a hand-declared `extern "C" fn kill(c_int, c_int) -> c_int`. Both arguments pass by value, nothing is written through a pointer, and every caller passes a pid it owns as a live `Child` (or its negation) |
-| `runtime::font` | raylib-rs's safe `load_font_from_memory` takes the glyph set as a `&str` and passes `str::len()` — a **byte** count — as the codepoint count, so a multi-byte set makes raylib read past the array. And `GetFontDefault` is a non-owning handle that `Font`'s `Drop` would unload | Four blocks, all inside `rasterize` and `default_face`, and every face goes through them — the four built-in ones (including the icon face, whose codepoints are all above U+F000 and so are exactly the multi-byte case the wrapper gets wrong) and a project's imported one. `LoadFontFromMemory` gets both lengths from the slices themselves, and raylib copies out what it needs before returning, so a heap buffer read from disk is as safe as an `include_bytes!` array; the result goes straight into `Font::from_raw`, whose `Drop` is `UnloadFont`. The default face is wrapped in `WeakFont`, whose drop is a no-op. `GenTextureMipmaps` borrows the font's own texture field so the level count is written back where `SetTextureFilter` reads it |
-| `runtime::decode::wave_samples` | raylib-rs's safe `Wave::load_samples` builds its slice as `(pointer, frameCount)` while `LoadWaveSamples` allocates `frameCount * channels` floats, so for any stereo track it hands back exactly half the decoded audio — silently | One block. The count comes from the wave's own format, the pointer is null-checked before a slice is formed, the slice is copied into a `Vec` inside the block, and the allocation goes straight back to `UnloadWaveSamples`. Nothing borrowed escapes, and the `ffi::Wave` it is called with is a bitwise copy of one whose owner outlives the call |
-| `runtime::decode::image_pixels_rgba8` | reading a decoded image's pixels needs `Image::data`, and the safe alternative — `get_image_data` — forms a slice from `LoadImageColors` without null-checking the pointer, which is the third instance of the same defect | One block, and the one every image reader in the tree goes through: `image_rgba8` calls it and copies, the export's per-frame readback calls it and does not. `ImageFormat` converts to `UNCOMPRESSED_R8G8B8A8` first, and the length is `GetPixelDataSize` — the same function raylib itself sizes the buffer with — checked against `width * height * 4` before the slice is formed, so a format `ImageFormat` silently declined to convert is refused rather than misread. The pointer is null-checked, and the returned slice borrows the caller's `&mut Image` for its whole life, so `UnloadImage` cannot run while it is alive and no second reference to the allocation can exist |
-| `runtime::font::rasterize_sdf` | `LoadFontFromMemory` hard-codes `FONT_DEFAULT`, so a signed-distance-field atlas has to be assembled from the three calls it makes internally — `LoadFontData(FONT_SDF)`, `GenImageFontAtlas`, `LoadTextureFromImage` — and raylib-rs wraps none of them | Five blocks in one function, each freeing what it owns on the way out: the glyph array and the rectangles come from raylib's allocator and go back to `UnloadFontData`/`MemFree` on every refusal path, the atlas image is unloaded immediately after the upload, and the assembled `raylib_sys::Font` goes straight to `Font::from_raw` whose `Drop` is `UnloadFont`. Both lengths are taken from the slices, and `glyphPadding` is set to the same constant handed to `GenImageFontAtlas`, because `DrawTextCodepoint` grows the source rect by it |
-| `runtime::font::flush_render_batch` | the on-demand atlases are built *inside* a begin/end drawing pair, which nothing else here does, and `rlLoadTexture` binds a texture behind the batch's back | One block wrapping `rlDrawRenderBatchActive`, which takes no arguments, writes through no caller pointer and only submits raylib's own batch. Belt and braces rather than a known defect, and it runs only on the handful of frames that rebuild an atlas |
-| `runtime::halo` | the caption glow halo and soft shadow are blurred offscreen mid-frame, and raylib texture modes do not nest: `EndTextureMode` always returns to the *default* framebuffer (`rcore.c:1110-1131`), so the safe guard would end the export's supersampled texture mode behind its back and redirect the rest of the frame to the screen | Six blocks. The batch is flushed and the active framebuffer captured (`rlGetActiveFramebuffer` plus the width/height pair `draw::SceneViewport` already trusts) before any GL call; each pass runs through by-value `BeginTextureMode` calls, which flush and rebind everything they touch; and the caller's framebuffer is restored on every exit path — `EndTextureMode` **plus an explicit `rlSetFramebufferWidth`/`Height`** for the screen, because `EndTextureMode` restores the viewport through `SetupViewport` (`rcore.c:1109-1131`, `rcore.c:3537`) but never rlgl's cached size pair, or a reconstructed `BeginTextureMode` for a render target, which reads only the id and the colour texture's dimensions and sets all three size authorities itself (`rcore.c:1079-1108`). `LoadRenderTexture`'s zero-id failure is checked before `RenderTexture2D::from_raw` takes ownership (its `Drop` is `UnloadRenderTexture`), and no pointer crosses the boundary anywhere. The shadow's luminance-as-alpha composite (`halo_mask.fs`) is safe code throughout |
-| `runtime::feedback` | frame-persistence needs the previous frame's buffer redrawn into this one, which is a render target mid-frame — the same pair of problems `runtime::halo` documents: a safe texture-mode guard would end an export's supersampled target behind its back, and `EndTextureMode` never restores rlgl's cached framebuffer size | Four blocks, and deliberately the *same* four `halo.rs` has, in the same order: the batch flush plus the active-framebuffer capture, the by-value `BeginTextureMode` into the buffer this struct owns, the unconditional restore (`EndTextureMode` **plus** the explicit `rlSetFramebufferWidth`/`Height` pair for the screen, or a reconstructed `BeginTextureMode` carrying id and dimensions for a render target), and the `LoadRenderTexture` pair whose zero-id failure is checked before `RenderTexture2D::from_raw` takes ownership (its `Drop` is `UnloadRenderTexture`) and whose filter/wrap calls take the colour texture by value. No pointer crosses the boundary. The `gl framebuffer:` report line the headless gate asserts is what proves the restore holds |
-| `runtime::transition` | a scene transition composites the last frame the outgoing section drew, and that frame has to be copied out of whichever framebuffer the scene was drawn into — the multisampled window in the preview, the supersampled target in an export | Four blocks. `Caller::capture` flushes the batch and reads the active framebuffer and its size (`GetRenderWidth`/`Height` on the default framebuffer, rlgl's cached pair inside a render target — `draw::SceneViewport`'s split); `HeldFrame::ensure` is the `LoadRenderTexture` pair with the zero-id check before `RenderTexture2D::from_raw` takes ownership; `Caller::restore` is `halo.rs`'s restore unchanged and runs only after an allocation, which is the only thing here that unbinds the caller; and `HeldFrame::capture` is three by-value framebuffer binds around one `rlBlitFramebuffer`, ending with the caller's framebuffer bound for read and draw again. A blit moves no viewport, projection or cached size. **`rlBlitFramebuffer`'s size parameters are far corners, not extents** (`rlgl.h:1891-1896`), and the rectangle is identical on both sides because a resolving blit requires equal dimensions. No pointer crosses the boundary |
-| `runtime::offscreen::Canvas` | the finish pass's bloom buffers and the threshold scene's nested scene draw into a render target mid-frame — the same pair of problems `runtime::halo` documents: texture modes do not nest, and `EndTextureMode` never restores rlgl's cached framebuffer size | Four blocks, deliberately `transition.rs`'s: the batch flush plus the active-framebuffer capture (`GetRenderWidth`/`Height` on the default framebuffer, rlgl's cached pair inside a render target), the `LoadRenderTexture` pair whose zero-id failure is checked before `RenderTexture2D::from_raw` takes ownership, the by-value `BeginTextureMode` into the buffer this struct owns, and the unconditional restore (`EndTextureMode` plus the explicit size pair for the screen, a reconstructed `BeginTextureMode` for a render target). A nested scene's own offscreen passes capture *this* canvas as their caller and return to it. No pointer crosses |
-| `runtime::post` `bind_sampler` | the finish shader reads two bloom buffers besides the frame, and raylib-rs's `set_shader_value_texture` wants an owned texture wrapper the canvases do not hand out | One block, `SetShaderValueTexture`'s two calls by value: `rlEnableShader` on a program this module owns, then `rlSetUniformSampler` recording a texture id for the next batch. Called **inside** the shader mode, because entering it flushes the batch and a flush forgets every registered unit (`rlgl.h`, "Reset active texture units for next batch"). The canvases outlive the draw |
-| `runtime::assist::env` | `std::env::remove_var` is `unsafe` in edition 2024, and E1 in `docs/ASSIST_PROVIDER_CONTRACTS.md` requires the app to take `OPENROUTER_API_KEY` out of its own environment after importing it, so no child — `ffmpeg`, `kdialog`/`zenity`, `codex`, a Python helper — can inherit it by accident | One block, inside `import_session_credentials`, which is itself an `unsafe fn` documenting the contract. `musializer-app`'s `main` calls it as its **first statement**, before the window, the audio device, `cli::parse` and any thread, so no other thread can be reading the environment concurrently. The value is copied into an owned `String` before the removal and nothing reads the environment after it |
-| `app::scenes::ascii_field` `DefaultFont` | `scene_ascii_field.c:154-160` deliberately draws through raylib's built-in font rather than the caption face; the safe wrapper has no way to borrow `GetFontDefault()`'s handle without a crate-private constructor. **Shared with `app::scenes::phosphor_dream`**, which needs the same monospaced face — one type rather than two identical ones, so this stays a single island | One block. `GetFontDefault` returns a non-owning handle that exists for as long as the window does; the newtype never calls `UnloadFont` on it |
-| `app::scenes::song_atlas` `Batch`/`LineWidth`/`color_to_hsv` | The Tideline relief's immediate-mode draw needs `rlBegin`/`rlVertex3f`/`rlColor4ub`/`rlEnd`/`rlSetLineWidth` and `ColorToHSV`, retaining the original wrapper boundary | Six blocks. `Batch`/`LineWidth` are RAII guards whose `Drop` closes what `begin`/`set` opened, so every call happens inside an already-open drawing context that `self` proves; `color_to_hsv` is pure arithmetic over a by-value colour |
-| `app::scenes::orbital_lattice` `color_brightness` | `ColorBrightness`, which the safe raylib API only exposes for images, not colours | One block. Pure arithmetic over a by-value colour, no global state |
-| `app::scenes::cadence` `glyph_alpha_at` | `cadence_glyph_alpha_at` (`:184-194`) reads a loaded TTF glyph's CPU-side bitmap so particles condense onto the letterform | One `unsafe fn`, documented with a `# Safety` section: the caller (`glyph_ink`) proves `data` is non-null with a supported format and positive dimensions before calling, and clamps `(x, y)` inside `width * height` first |
-| `core::audio::sample_ring` `SyncCell`/`push`/`pop` | The realtime audio callback must push/pop with no allocation, lock, or syscall, so the ring's per-slot storage needs interior mutability without `Mutex` | `unsafe impl Send + Sync for SyncCell`, plus the two index-guarded writes in `push`/`pop`. Synchronisation comes from the acquire/release pair on `head`/`tail`: a slot is only ever written by the producer while the consumer is proven not to be reading it, and only ever read by the consumer while the producer is proven not to be writing it |
-| `app::ui::egui_backend::flush_batch` | Texture uploads and egui drawing must flush raylib's queued geometry before touching GL state | One `rlDrawRenderBatchActive` call on the UI thread with a live window/context; no caller pointer is read or retained |
-| `runtime::font::FontFace::as_raw_mut` | raylib 6 exposes mutable font handles through unsafe `AsRawMut` | Delegates to the owned or weak font variant without changing the handle; callers retain the upstream ownership contract |
-
-Do not add an `unsafe` block without a `SAFETY:` comment and a row here.
-
-## Traps this rewrite has already paid for
-
-- **`WAYLAND_DISPLAY` must be *set to a name that cannot resolve*. Unsetting it
-  is not weaker isolation — it is none at all, and this entry told you to unset
-  it until 2026-08-08.** `wl_display_connect(NULL)` reads the variable and, when
-  it is missing, falls back to a **hardcoded `"wayland-0"`** (the literal is in
-  `libwayland-client.so.0`; check with `strings`). This operator's socket is
-  `$XDG_RUNTIME_DIR/wayland-0`. So `env -u WAYLAND_DISPLAY` resolves to exactly
-  the same compositor as changing nothing, and `DISPLAY=:77` alongside it changes
-  nothing either, because Qt and GTK prefer Wayland when they can reach it.
-
-  Proven rather than reasoned: a probe that calls `wl_display_connect(NULL)` and
-  disconnects (mapping no surface, so it is safe to run) **connects** under
-  `env -u WAYLAND_DISPLAY DISPLAY=:78`, and is refused under
-  `WAYLAND_DISPLAY=musializer-no-such-display`. `XDG_RUNTIME_DIR` pointed
-  somewhere empty also refuses, which is the belt to that braces.
-
-  Use `MZ_NO_WAYLAND`, which `tools/headless_check.sh` and
-  `tools/lyric_lane_capture.sh` define and pass at every launch. Never write
-  `env -u WAYLAND_DISPLAY` again, in a script or in a two-line shell test.
-
-  **Why it survived so long, which is the transferable part.** The guard was
-  wrong at 46 call sites while every capture passed, because the application
-  itself reaches Xvfb through X11 and never asks for Wayland — so a broken guard
-  is *invisible until something spawns a GUI child*. It was found when an agent
-  hand-ran a click probe onto the ASCII **Import** row without the separate
-  `PATH` guard that keeps `kdialog` off the search path, and file dialogs opened
-  on the operator's real screen. Two independent guards, one of them dead for
-  months, and only the live one was holding. `headless_check.sh` now opens with
-  an **isolation self-check** that connects unguarded (to prove the probe works
-  at all) and then asserts the guarded environment is refused; a guard nothing
-  tests is a guard you find out about like this.
-- **A second guard keeps GUI children unreachable, and it is per-call-site.**
-  `ENTRY_PATH_OVERRIDE`/`ENTRY_NO_DIALOG_PATH` in `tools/headless_check.sh` strip
-  `kdialog` and `zenity` from `PATH` for probes that press a control which opens a
-  picker. It lives in a shell variable at one call site, so **anything not routed
-  through `entry_capture` silently loses it** — which is exactly what happened
-  above. If you hand-run a probe that clicks anything, take the `PATH` guard with
-  it.
-- **Do not invoke `kdialog` with no display reachable.** It aborts with `SIGABRT`,
-  which on Ubuntu summons an Apport "internal error" report for a crash you caused.
-  `tools/rusty-musializer-launcher` guards against this by checking for a display
-  before it reaches for a dialog and printing to stderr otherwise; keep that guard.
-
-- **Never give the Python helpers their own process group from the parent.**
-  `os.setsid()` in `external_analysis.py` fails with `EPERM` if the caller is
-  already a group leader, so calling `process_group(0)` on the child would kill
-  the helper at startup. A test in `runtime::process::assist` fails loudly with
-  that explanation if anyone changes it, and the `ESRCH` fallback from
-  `kill(-pid)` to `kill(pid)` covers the race that leaves. Do not simplify it away.
-- **Read the `.c`, not the header comment.** `core::scene::events` was written
-  from `scene_event_merge.h`'s comment and was wrong in seven ways, including
-  using OR where the C uses XOR to namespace ids — which is not injective and
-  could have collapsed two distinct events into one. The comment was accurate
-  about intent and silent about every edge case.
-- **`take_screenshot` cannot write to a subdirectory.** raylib's
-  `TakeScreenshot` runs its argument through `GetFileName`, so `build/x/y.png`
-  lands in the working directory. Use `LoadImageFromScreen` + `ExportImage`.
-- **rustfmt destroys data tables.** Anything checked column-by-column against C
-  needs `#[rustfmt::skip]`, or it becomes one argument per line and stops being
-  checkable.
-- **A surface nothing photographs does not get reviewed.** The interface ran for a
-  whole session in raylib's 10 px bitmap face, and every capture in
-  `tools/headless_check.sh` passed a fixture, so the welcome screen — the first
-  thing a new user sees — was never in a frame at all. Both were found by the
-  operator, not by the checks. When you add a screen, add its capture; when you
-  add an asset the interface depends on, print whether it loaded.
-- **A control nothing presses does not get verified either, and hovering it is
-  not the same check.** Three of the export panel's four SIZE buttons could not
-  be clicked for as long as the panel existed. Every gate was green: `panel:`
-  said the panel opened, the ink gate said it drew, and `--ui-probe hover=` lit
-  the 720p button correctly at 100 % and 150 %, because a hover highlight comes
-  from `contains_point` and `contains_point` was never the problem. The press was
-  being cashed by a *different widget with the same id*. `--ui-probe click=XxY`
-  exists for this, it holds the press for three frames because the claim rule
-  drops a press and release that share one, and its gate section includes a click
-  into the 8 px gap between two buttons — without that, a probe that pressed
-  nothing satisfies every other assertion, since a no-op leaves the defaults.
-- **A widget id namespace may only be minted in `widgets::id`, and only in its
-  `ALL` table.** `panels/events.rs` picked `7` and `8` as bare literals with a
-  comment promising to fold them in at merge; they became `EXPORT` and `SEEK`.
-  The row draws first, so it silently ate three of four export sizes and four of
-  the preset picker's own controls. **Three collision tests were green the whole
-  time** — one each in `widgets.rs`, `events.rs` and `lyrics.rs` — because each
-  enumerated a different hand-written list and none of them contained the
-  colliding pair; `widgets.rs`'s had six entries and predated `EXPORT`. A
-  collision test over a hand-maintained subset proves nothing about the namespace
-  you just added, so the list lives beside the constants and a second test names
-  every constant individually.
-- **raylib-rs's `load_font_from_memory` miscounts codepoints.** It takes the glyph
-  set as `&str` and passes `str::len()`, a byte count, as the count of `i32`s. Fine
-  for ASCII, wrong for anything else. `runtime::font` calls the ffi directly for
-  this reason; do not "simplify" it back to the safe wrapper.
-- **raylib-rs's `Wave::load_samples` miscounts samples, the same way.** It builds
-  its slice as `(pointer, frameCount)`, but `LoadWaveSamples` allocates
-  `frameCount * channels` floats. For any stereo track the safe wrapper hands back
-  **half the decoded audio** with no error, which in an export would spread the
-  first half of the track across the whole timeline. `decode::wave_samples`
-  calls the ffi directly and takes the length from the wave's format. Assume the
-  next raylib-rs wrapper that returns a slice has the same defect until checked.
-- **That assumption paid off: `Image::get_image_data` is the third one.** It forms
-  its slice from `LoadImageColors` and never null-checks the pointer, so an
-  undecodable image is a null dereference rather than an error. Three wrappers in
-  this family have now been checked and all three were wrong, which is why
-  `runtime::decode` exists as one place with all of them — the fourth belongs there
-  too. Every length in it comes from the format the loader reports.
-- **A fallback that looks like content hides an unwired feature indefinitely.**
-  Three whole-track derivations — the timeline envelope, Song Atlas's terrain and
-  the ASCII glyph grid — were drawn through an `Option` that was `None` at every
-  call site for two whole bands. Nothing failed: ASCII Field drew its procedural
-  spectrogram, Song Atlas its live idle ring, and the strip a flat lane, and each
-  photographed as a perfectly plausible picture. Captures did not catch it and
-  could not. A report line naming what the surface *had* is what catches it, so a
-  scene that can draw without its data must say which one it did.
-- **`EndTextureMode` is not the inverse of `BeginTextureMode`, and the missing
-  half is global for the rest of the session.** `BeginTextureMode` moves three
-  size authorities (`rcore.c:1079-1107`); `EndTextureMode` restores the viewport
-  and the projection through `SetupViewport` and resets `currentFbo`, but leaves
-  rlgl's cached `framebufferWidth`/`Height` at the *target's* dimensions
-  (`rcore.c:1109-1131`, `rcore.c:3537`). Nothing later resets it — not
-  `BeginDrawing`, only a window resize. So one caption glow blur into a 188x50
-  buffer made `draw::SceneViewport` scale every later panel boundary by 0.15,
-  which drew a scene panel with nothing in it, or pinned the GL viewport to a
-  small rect at GL's bottom-left origin and squeezed the whole interface into the
-  corner. Both are *coherent* pictures, the process exits 0, and the ports' own
-  unit tests are green, so the only thing that catches it is a report line
-  stating the invariant — `gl framebuffer:` — which the headless gate asserts is
-  zero. **Assume every raylib `End*` pairs with fewer setters than its `Begin*`
-  and check the C, rather than assuming symmetry from the names.**
-- **A shader hash built on `fract` of a large product tears, and only along
-  the lattice.** The transition shader's first noise used the usual
-  `fract(p.x*p.y)` hash. It amplifies the last bit of its input a few thousand
-  times, and a driver may evaluate two inlined copies of one expression
-  differently — a fused multiply-add in one, not in the other — so the corner
-  two cells share hashed to two different values depending on which cell asked.
-  The burn drew with square holes on NVIDIA and on llvmpipe alike. It reads as
-  value-noise blockiness, and switching to gradient noise changed nothing,
-  which is what said the lattice itself was inconsistent. Hash lattice points
-  as **integers** (`uint` multiply-xorshift): integers have no last bit.
-- **`Faces::caption_at` lends one face at a time.** A `FaceRef` from the
-  at-size atlas cache holds a `RefCell` borrow of the cache. Ask for a second
-  face while the first is alive — one to measure a headline, one to draw a
-  number — and the second call panics on a double borrow, in the middle of a
-  frame, only on the layout that does it. Measure with a probe, drop it, then
-  ask for the face you draw with; or draw both things with the one face.
-- **`rlBlitFramebuffer` takes corners.** Its header names the parameters
-  `srcWidth`/`srcHeight` and it passes them to `glBlitFramebuffer` as
-  `srcX1`/`srcY1` (`rlgl.h:1891-1896`). At the origin the two readings are the
-  same rectangle, so the held transition frame worked in every export and
-  copied a 172 by 8 pixel sliver in the preview panel — with no GL error, since
-  a small valid rectangle is not an error. Found by photographing the preview,
-  which the gate now does; every export-path check had passed.
-- **`BLEND_ALPHA` eats the destination's alpha channel, and only a saved PNG can
-  see it.** raylib's default blend is `glBlendFunc(SRC_ALPHA,
-  ONE_MINUS_SRC_ALPHA)` applied to **all four** channels, so a translucent wash
-  over an opaque frame leaves it at `1 - a(1 - a)` — 0.84 where a vignette paints
-  at 0.2. Nothing on screen has an alpha channel to notice, the encoder throws
-  alpha away, and every gate stays green. `Save still` writes
-  `rlReadScreenPixels`' RGBA straight into a PNG, so the corners come out
-  *translucent in the file*, and UX0-C10's "the still is the video frame"
-  comparison drops **11 dB** (40.65 → 29.68) with r/g/b unmoved and every
-  decibel of it in the `a:` plane — which `ffmpeg -lavfi psnr`'s per-plane line
-  says out loud and its `average:` does not. Full-frame washes composite
-  **premultiplied** (`BLEND_ALPHA_PREMULTIPLY`, `glBlendFunc(ONE,
-  ONE_MINUS_SRC_ALPHA)`): identical colour, opaque destination preserved. Read
-  the per-plane numbers before blaming the encoder — blurring both images
-  changed that PSNR by 0.1 dB, which is what said the difference was not the
-  grain it looked like.
-- **`--probe-shot` photographs the frame before the last.** It reads the
-  framebuffer after the swap. A check that wants the frame in which something
-  happened has to run one frame longer than that frame: the poster gate's
-  isolation check passed with a deliberate draw-to-screen leak in frame 2
-  until the shot moved to a 3-frame run (WX-5b).
-
-## Before implementation work
-
-Read `FEATURE_PARITY_PLAN.md` first. It is the only live queue: what is open, in
-the order a session should pick it up. Claim and update work there; do not create
-another completion plan.
-
-Everything else with "plan" in its name is history, and reading it as instructions
-is the mistake this repository keeps making:
-
-- `docs/archive/FEATURE_PARITY_HISTORY.md` — the closed waves, with their
-  evidence, their negative controls and the operator quotes that opened them.
-  This is where a "why is it like that" answer lives.
-- `REWRITE_PLAN.md` — the 2026-07 rewrite's design record and NOTE ENTRIES. Its
-  phase sketches, source-ownership map and agent handoffs describe a fan-out that
-  is over. It stays at the root only because ~20 source doc comments cite it by
-  that path.
-- `docs/archive/` generally, including the 2026-08-03 UX perspective review.
-
-Add historical investigation detail to those when a later session would otherwise
-rediscover it expensively; add every live task to `FEATURE_PARITY_PLAN.md`.
-
-## The behavioral oracle
-
-`../musializer` is read-only. It is frozen at commit
-`9300af942bd00d8c85fc4e3c8c02cf2b6356764f` (`9300af9`) on branch `master` —
-note `master`, not `main`.
-
-- Never modify the C repository as a side effect of work here, including to
-  "fix parity". If the oracle looks wrong, say so; do not edit it.
-- Read `../musializer/CURRENT_FILE_POINTERS.md` before trusting any other
-  document there. It marks which documents describe behaviour and which
-  describe intent, and the difference has been expensive in that repository
-  before.
-- `EXTENSION_PLAN.md` is part roadmap with open decision gates, and
-  `cadence-overhauls-2026-07-26.md` is an unimplemented scratchpad. Neither
-  describes the frozen binary.
-- `../musializer/AGENTS.md` is gitignored there and absent from a fresh clone,
-  though it is present in the local working tree.
-- The code and its tests are authoritative about behaviour. Documents are not.
-
-### Outside inspiration: Le Biniou (operator, 2026-08-27)
-
-`~/Projects/lebiniou` and `~/Projects/lebiniou-data` are clones of Le Biniou
-(<https://biniou.net>), a classic framebuffer-feedback music visualizer with
-~130 effect plugins (`plugins/main/`) and a large colormap/image library in the
-data repository. The operator cloned them as **inspiration** for making scenes
-less flat — the effect vocabulary worth reading is the feedback family: per-frame
-blur/fade/zoom of the previous frame under fresh drawing, colormap cycling,
-kaleidoscope/rotozoom warps, beat-gated image pulses.
-
-Both repositories are **GPLv2 and not ours**. Read them for ideas and effect
-names; do not port their source into this tree line-by-line, copy their images
-or colormaps in, or add them as a build dependency — that is a licence decision
-the operator has not made. An effect reimplemented from its visible behaviour
-(what it does to a frame) is fine; a translation of its `.c` is not. They are
-reference material like the oracle: read-only, never modified from here.
-
-### The C is legacy (operator decision, 2026-08-03)
-
-The operator declared the C project superseded: it was never distributed, has no
-users, and this rewrite is now the canonical Musializer. What that changes, and
-what it does not:
-
-- **Backwards compatibility with the frozen C is no longer a requirement.** The
-  `.musi` format and schemas may gain fields and semantics the C cannot read.
-  Bump `schema_version` when they do, and keep opening every file *this*
-  application has ever written — the compatibility contract now runs against our
-  own releases, not the C's.
-- **The oracle remains read-only and remains useful** for behaviour not yet
-  ported. Nothing about how to read it changes.
-- **Existing differential harnesses stay green as regression anchors.** They pin
-  behaviour we chose to keep, not behaviour we are forbidden to change. Diverging
-  from one is now a decision, not a bug — but it must be deliberate: update the
-  harness to pin the new behaviour and record why, never let one fail quietly or
-  drift by accident.
-- `FEATURE_PARITY_PLAN.md` stays the task queue for completing capability parity
-  (features a user would otherwise lose in the switch). New features beyond the
-  C's ceiling need no parity justification at all.
-
-## The work is invention now, and this is the rule that bounds it
-
-Parity was the target and the tree went past it. What happens here is invention,
-and the rule that governed the port outlives it because it was never really about
-the C: **judge a change by what a user or a file can observe**, never by fidelity
-to any structure.
-
-Two facts from the migration explain the shape of the tree. The oracle was most
-useful for pure logic — analysis, layout policy, settings tables, file formats —
-which is exactly the part that went first, so what the C can still tell you is
-thin. And what was left at the end is what is most entangled with the things this
-rewrite deliberately does not reproduce: `plug.c`'s single global `Plug *p`, hot
-reload, tinyfiledialogs, and C idioms with no good Rust shape.
-
-**So when a faithful port is impossible, unavailable, or would be bad Rust: find
-the alternative and implement it.** Do not stall, do not leave a stub that
-explains what the oracle does instead, and do not stop to ask. Decide, build it,
-and record the divergence and its reason. This repository has been agent-driven
-since the fork, and the operator's standing instruction is that the agent does
-what it must. The table below is that record, and it is the most useful thing in
-this file — a divergence with no recorded reason gets "fixed" back into a defect
-by the next session.
-
-### What is negotiable, and what is not
-
-The distinction is the whole rule, because "find an alternative" must never
-become "reinvent the semantics".
-
-**Negotiable — the mechanism.** How a thing is built is yours. Precedents already
-in the tree:
-
-| The oracle | Here | Why |
-| --- | --- | --- |
-| tinyfiledialogs through FFI | `kdialog`/`zenity` as child processes | No new dependency, same thing tinyfd does on Linux, and it fits `process`'s existing supervise-and-reap machinery |
-| Fonts and shaders read from `./resources/` | `include_bytes!`/`include_str!` | The C's relative paths are why its launcher must `cd` first; an interface that loses its font to the wrong working directory is worth deleting, not reproducing |
-| One global `Plug *p` | `main.rs` owns resources; the shell returns `ShellCommand`s | Makes the shell drivable in a test, and is why there is no `Rc<RefCell<_>>` in this codebase |
-| `GuiSetFont`-style implicit face | `Face` threaded explicitly | Makes the fallback reachable in a test |
-| Hot reload | Not reproduced at all | An explicit first-pass non-goal |
-| — | `--probe-frames`, `--probe-shot`, `--probe-reopen`, `--ui-probe hover=` | Invented, because nothing in the oracle can drive a headless check |
-| Six text buttons in the transport row | Eleven icon controls, each with a tooltip and a text fallback | Operator request. Icons are square, so the row carries volume, fine seek and a readout toggle in less space than the six labels used |
-| No volume control (only `--mute` at startup) | Mute button and slider on the transport row | Operator request. `--mute` now sets a *flag* rather than the device volume, so the button can undo it |
-| `Full` hides the panels | `Full` also toggles the OS window | Operator request. Guarded off in probe runs: Xvfb has no window manager to restack the window, so a capture would photograph a size it did not ask for |
-| The diagnostic readout is always drawn | Off by default; `H`, the row's button and `--hud` turn it on, and probe runs default it on | Operator request. It is a developer HUD, and a capture that carries its own evidence is why the line exists |
-| One 64 px caption atlas, magnified to whatever the style asks for | An at-size atlas per drawn size, quantized up to a multiple of 8 and capped at 256 px, two cached | Operator request, 2026-08-03. A caption is drawn at `max(20 * pixel_scale, boundary.height * size_scale)` — past 400 px with the panels hidden, and further again under export supersampling — and a magnified bitmap atlas is a blur the C never had to answer for because nothing photographed it. Built over the codepoints the cue actually uses, so the atlas is 10--30 ms rather than the seconds the full 1,770-codepoint set would cost at that size |
-| Cadence typesets from the same bitmap atlas | A signed-distance-field atlas and a first-party fragment shader (`resources/shaders/glsl330/sdf_text.fs`) | Operator request, 2026-08-03. Cadence animates per-glyph scale continuously, so *no* raster size is right for the whole animation. The particle field still samples the bitmap atlas's glyph images — an SDF glyph is a distance ramp, and the C's 96/255 ink threshold applied to one would scatter particles around the letterform instead of onto it |
-| The rounded plate outlined by a sharp `DrawRectangleLinesEx` (`plug.c:1281-1285`) | `DrawRectangleRoundedLinesEx`, tracing the fill's own roundness | Operator request, 2026-08-03: a rounded box in a rectangular outline, called out by name. Roundness itself is now authorable (`effects.plate_roundness`, default the C's 0.12) |
-| Two fixed swatch rows for INK and PLATE | The swatches plus a hand-built free picker (SV square, hue bar, alpha bar) | Operator request, 2026-08-03, overriding the C's "few and opinionated" stance. The format always stored arbitrary RGBA; only the picker was missing |
-| No caption effects | `caption_style.effects`: audio-drivable glow (strength/radius/colour, RMS/bass/beat/flux/time pulse and hue drives), soft shadow, plate roundness | Operator request, 2026-08-03 — the first `.musi` extension past the frozen C. Resolution is pure per-frame math in `core::project::caption_effects`, so exports reproduce the preview's pulse exactly; a default block is never serialized, keeping pre-effects files byte-identical |
-| The glow drawn as 17 additive re-draws of the caption offset in two rings (`GLOW_TAPS`) | An offscreen two-pass separable Gaussian over the glyph coverage (`runtime::halo`, `resources/shaders/glsl330/halo_blur.fs`), composited additively at reduced resolution | Operator feedback, 2026-08-04 (UX0-C11): finite taps at a growing radius resolve into visible discrete copies of the text — "gravitational lensing" — and 100 % strength read thin. A blur widens one halo instead; the buffer is sized from the drawn font size and radius in pixels, so export supersampling scales it with everything else, and it stays in luminance (white-on-opaque-black) so premultiplied edge bleed is unstateable. The blur runs with no scissor active, which is why the preview's scene clip moved from `main.rs` into `SceneRenderer::draw` |
-| The soft shadow drawn as 9 normal-blended re-draws (`SHADOW_TAPS`) | The same `runtime::halo` blur, composited through `halo_mask.fs` — the buffer's luminance becomes coverage alpha in the shadow colour under normal blending | Operator-approved follow-up to UX0-C11, 2026-08-04: the tap table had the identical discrete-copy pathology, hidden only by a dark-on-dark fixture. A shadow is an occlusion, not a light, so the additive composite is wrong for it; the mask shader converts the one blurred buffer instead of blurring twice differently. `shadow_blur` 0 keeps the legacy single hard copy byte-exactly (pinned by the gate's hard-versus-legacy zero delta), and the shadow keeps its legacy decision of clipping to the caption box, unlike the glow, which spills on purpose |
-| Five route sources (`project.h:60-67`) | A sixth, `time` — the same eight-second triangle clock as the caption Time drive, one definition in `scene::routes::time_triangle` | Operator request, 2026-08-04 (UX0-C15). Additive: every C-era token keeps its meaning, the route differential harnesses stay green, and the C simply cannot read a `time` route (recorded in `PHASE0_INVENTORY.md`) |
-| Caption effect drives are bare choices | Each drive carries an optional `DriveTuning` — quiet/loud in→out windows, curve, clamp — edited in a mapping editor with a live meter and transfer graph | Operator feedback, 2026-08-04 (UX0-C14): the Tune inspector's mapping layer was the missing depth. The arithmetic is `ParameterMapping::evaluate_mapping`, factored out so caption tuning and scene routes share the pinned semantics; the editor is built from `ui/mapping_editor.rs`, the same componentry the route editor now draws with. A hue drive on an achromatic base also blends saturation (and value, for dark bases) in with the drive (UX0-C13), so a white or grey glow sweeps into colour instead of silently ignoring the control |
-| — | BLUR/SHADE/ROUND drawn beside BACKING on the Style pane, not under "Effects"; tooltips across the caption panes and the Tune editor | Operator feedback, 2026-08-04 (UX0-C12, C16): backing softness is styling, not an effect, and the tooltip path (`widgets::hint`) already existed — the styling controls just never called it |
-| One kind of lyric cue, all drawn in one amber | `CueOrigin` on every cue — user applied / AI certain / AI ambiguous / potential — colour-coded in the lane with a legend and tooltips | Operator request, 2026-08-06 (LX1). The C cannot tell a line placed by ear from one an aligner guessed at, so after an assist run nothing on screen said which placements to check. `at_time` refuses to hand a `Potential` cue to a frame and `cue_shadow` ignores proposals both ways, so provenance is load-bearing rather than decorative |
-| A line the localizer could not place is dropped | It becomes a `Potential` cue parked at its coarse proposal, editable in the lane | Operator request, 2026-08-06 (LX1-f). The proposal window was parsed, bounded and drawn nowhere — the same defect class as a lane that never reaches a frame. A line with **no** proposed time stays review-only, because a block at 0:00 is a lie |
-| Overlapping cues draw as one full-height rectangle | A cluster with three live cues fans into rows, each step 20 % darker, brightest on top | Operator request, 2026-08-06 (LX1-d). Row 0 is the cue `at_time` will actually resolve to, so brightness tracks "what you will see" rather than document order |
-| A fixed 22 px cue lane | 50 px (2.25x), dragged from its bottom edge to 66 px (3x), persisted in `~/.config/musializer/ui.json` | Operator request, 2026-08-06, revised upward the same day after seeing 1.5x on a real track: the whole lane height is the click target, so the constant *is* the affordance. A drawn grip was asked for in the same message, reversing the original "no visible border" instruction — the first version was invisible in every frame because it was painted before the lane's own fill, which is why the resize read as broken. The ceiling is derived from what the editing form and the sidebar floor still need: 46 px at 640, 50 from 720, the full 66 from 811 up (791 until WX-5b grew the scene section by 20 px) |
-| The zoom readout sits between the waveform and the cue lane | It draws below all three timed lanes, and `open_panel` reports where | Operator request, 2026-08-06 (LX1-c). Band chrome is unchanged to the pixel, which the existing compile-time assertion still checks |
-| A cue's boundary handle is a 2 px line, drawn only once the pointer is already inside the 5 px grab zone | Both ends of a hovered block show a grab band at the hit test's own width, the one under the pointer darkens and takes a `RESIZE_EW` cursor | Operator feedback, 2026-08-06 (LX2-a): the handles could only be found by zooming in until a block was wide enough to stumble onto one. An affordance you have to be standing on to see cannot be found by a pointer that never lands there — the same defect the lane's own resize had. The geometry is `hit_test`'s `true_left`/`true_right` and its two visibility flags, so a handle can never be painted where a press would not take it |
-| A cue block is a bare coloured rectangle | It carries the start of the cue's own text, typed through the authored face, fading out before the block's edge | Operator request, 2026-08-06 (LX2-b). The 2.25x lane bought room for a click target and the same room reads as a label. A fade rather than an ellipsis, which would cost three characters of the little that fits, or a hard cut, which reads as a rendering fault. `widgets::draw_text_faded` is generic over a `TextFace` so authored text can use it — the chrome bank is Latin-only, and a cue drawn through it is UX0-A05 again |
-| The wheel zooms only over the PCM strip | All three timed lanes take it, through `Shell::request_timeline_zoom` | Operator request, 2026-08-06 (LX2-c). They are one axis, and the lane a user is aiming a 2 s cue in is the one they want to zoom from. First claim of the frame wins, because one notch is reported to every caller and two acceptances would multiply the factor |
-| — | `--ui-probe wheel=NOTCHES`, delivered on one frame wherever `hover=` parked the pointer, and a `timeline:` report line | Invented, LX2. Xvfb has no wheel any more than it has a pointer, so the binding above was unphotographable; three modules draw the three lanes against three rectangles, which is where a region test is wrong in a way that reads correctly in the source |
-| Selecting a scene makes it the base scene and switches the retained plan off (`track_select_base_scene`, `plug.c:963-977`) | While the plan is enabled it retargets **one segment** — the one selected in the lane, else the one under the playhead — and the plan keeps driving | Operator bugs, 2026-08-06 (LX3-a). The side effect was two reports in one: the plan stopped, so the whole track previewed one scene, and with no cue driving every tuning edit fell through to the track-wide per-scene-kind table. `--scene` on the command line is *not* routed here; the CLI grammar is a documented contract and `--scene X` still means "start on X" |
-| The Tune header names the scene | It names what a slider will move: `segment 3 of 6 (01:30.500)`, `base scene - 6 segments are paused`, or `base scene - this segment captured no tuning` | Operator, 2026-08-06 (LX3-b): *"I'm not sure which one gets the tuning applied to"*. A plan on screen and a base-scene edit is a state the interface had no sentence for |
-| — | `--ui-probe scene-pick=NAME` and a `scene segments:` report line | Invented, LX3. Nothing headless could press a scene tile, so "the plan survived the click" and "the click switched the plan off" produced the same picture — both leave the picked scene on screen at that playhead |
-| — | `--ui-probe click=XxY`, plus `export config:` and `click probe:` report lines | Invented, EX1. `hover=` proved a control lights up; nothing could prove it *takes* the press, and that is exactly where three of the export panel's four SIZE buttons had been dead since the panel was written. Injected at `Widgets`' pointer seam over three frames (press, hold, release), because raylib exposes no way to synthesize a button and the claim rule drops a press and release that share a frame |
-| Four resolution buttons, all 16:9 (`render_export.c:31-32`) | An ASPECT row beside them: 16:9, 9:16, 1:1, 4:5, with the rung naming the **short** edge | Operator request, EX2. The pipeline already accepted any even geometry and `--resolution 1080x1920` already worked; only a way to ask for it was missing. The short-edge reading makes 16:9 byte-identical to the C's own table and makes "1080p" mean the same amount of picture in every shape |
-| The caption sizes and margins from `boundary.height` (`plug.c:1219-1307`) | From `min(width, height)`, and its line cap preserves text *area* rather than line count | EX2. The C is right for its own frames — the height *is* the short edge on all four of its presets — and wrong for a 9:16 one, where it gives 78 % larger type in a 3.1x narrower measure and the three-line cap then discards ~60 % of a normal lyric. Landscape is unchanged as an equality, not as a claim |
-| ASCII Field's live grid is a fixed 80x42 (`scene_ascii_field.c:260-261`) | The cell edge derives from the frame's short axis and the counts fill it | EX2. 80x42 min-fitted into 1080x1920 draws a band across 28 % of the height. The 1920x1080 MP4 is byte-identical before and after — same md5, not "looks the same" |
-| The preview panel *is* the frame | The preview is framed to the export's aspect, with a one-pixel edge, and `preview frame:` reports both rects | EX2. Once an export can be 9:16 the panel stops being a picture of the output, and a user places captions against a shape their file will not have. It costs preview area at every aspect — with a bottom panel open the band is routinely 3:1 — and buys the only honest answer. The edge rule exists because a capture showed near-black scene against near-black surround with no visible seam |
-| The route affordance is a `~` (`plug.c:6169-6186`) | A word — `Route` / `Routed` / `Editing` — with a *dynamic* tip naming the route it would open | Operator plan UX0-B08, 2026-08-07 (PX6). A tilde abbreviates nothing and has no meaning in an audio interface, so its tooltip was the only thing in the application that explained it — and a tooltip is a thing you have to already suspect before you hover it. A word is readable with the pointer parked somewhere else. Apply and Remove, when disabled, gained a hit target of their own purely so `hint` can say *why*: `disabled_button` returns no `ButtonState`, so a reason had nowhere to hang |
-| The readout is text; a value moves only by dragging its slider | The readout is a chip that opens a text field (Enter commits, Escape reverts), the wheel over a row steps one unit of the descriptor's `precision` and Shift ten, and the label resets that one setting | Operator plan UX0-B09, 2026-08-07 (PX6). Clamping is load-bearing rather than cosmetic: `SceneSettings::set` **rejects** out-of-range values rather than clamping (`scene_settings.c:143-149`), so a raw typed 99 would vanish with no message at all. A leading `*` marks a setting moved from its default, which is also the answer to "what have I changed on this scene". A new `TextEntrySurface::TuneValue` suppresses global shortcuts while typing — the same registry UX0-A06 was fixed by |
-| A slider drag writes an arbitrary float; only `precision == 0` rounds | Every value this panel writes is snapped to the descriptor's own `precision` | PX6, and **the one change here a `.musi` file can see**. The readout prints two places, so before this the number on screen was a rounded picture of the number in the file and a typed 1.23 differed from a dragged "1.23". `differential_settings.sh` covers the descriptor table, not slider output, and stays green untouched |
-| A preset Apply overwrites the tuning, with no way back | Any exploratory gesture opens an audition: A/B, Revert and Keep, with Revert **bit-for-bit** | Operator plan UX0-C04, 2026-08-07 (PX6). An explicit snapshot A/B rather than hold-to-audition, because a held button cannot be compared against *while it is held* and what a user wants is to flip back and forth with the track playing. A `SettingsSnapshot` is 12 `f32`s copied back — the same operation loading a cue performs — so the revert is exact rather than close. The session is keyed to `(track_slot, scene, cue)` and ends when the target moves, so a base-scene snapshot can never be written into a segment it was not captured from (LX3) |
-| — | Nudge and Surprise: bounded randomize, inside every descriptor's own range | Operator plan UX0-C07, 2026-08-07 (PX6). Randomness is **injected** (`RandomSource`, a seeded `SplitMix64`), never ambient, so `--ui-probe tune-seed=` makes a random feature photographable and the bounds are swept over 200 seeds x 10 scenes rather than over whatever a lucky run produced. Biased to be worth pressing: snapped to precision, 5 % clear of both ends (where the degenerate looks live), 75 % of sliders moved so the scene stays recognisable, toggles flipped 25 % of the time. Sliders draw triangular about the descriptor default; the five `-180..180` angle controls draw uniform, because hue is circular and has no designed centre to pull toward |
-| — | `--ui-probe tune-seed=`, `tune-explore=`, `tune-type=`, plus `tune values:` and `tune entry:` | Invented, PX6. `click=` presses one control per run and is the only thing that proves a control is wired at all (EX1); it cannot state a claim about a *sequence*, and every UX0-C04 claim is one. The gate cross-checks the two: the same seed through the Surprise **button** and through the sequence probe must give byte-identical `tune values:`. That line prints shortest-round-trip floats, not the readout's two places, because "restored it exactly" and "restored it to two decimals" are different claims |
-| No history of any kind; the welcome screen's right column is empty | A recent-project list there — name, relative age, folder, one click to reopen, a forget cross per row — persisted in a **second** per-user file, `recent.json` | UX0-C06. A second file rather than a field in `ui.json` *because* both stores are refused wholesale when they do not parse: folding them together would make one truncated write cost the operator their splits **and** their history. Three states are drawn, not two — no history, an unreadable history, and a history whose files have moved are different facts, and a blank column is indistinguishable from a broken one. `--project` on the command line records an entry only in a session run (`is_session_run`), or `tools/verify.sh` would append a dozen scratch fixtures to the operator's real config as a side effect of being run |
-| Every dropped file is handed to the audio decoder | `classify_drop` sends `.musi` to project open, PNG/JPEG/BMP to ASCII import, everything else to audio — and the failure notice names the type that was *attempted* | D1. The else branch is still the oracle's (`plug.c:7559`) rather than a whitelist: the list of formats raylib can open is raylib's to know, and a fourth "unsupported" arm would start silently refusing files that work. The match is **case-insensitive**, which `IsFileExtension` is not — a `.PNG` off a camera is unambiguously an image, and sending it to the audio decoder to be reported as a corrupt song is a defect, not a contract |
-| — | `--ui-probe drop=PATH`, and a `drop probe:` report line naming the branch the shell dispatched | Invented, D1. Xvfb has no drag-and-drop, so a three-arm branch on a file extension was unreachable from every check this repository has — the exact shape of EX1's SIZE row. The line records what `dropped_files` *did*, not what a reporter recomputed, so it cannot read green while the branch is dead |
-| ASCII imagery is reachable only from `--ascii-image` and a drop | An Import row and a Clear row under the scene tiles, Clear drawn only when the current track owns an image-backed grid | D2. The footer reserves **both** heights either way, so importing an image cannot make ten scene tiles jump a row and clearing it cannot make them jump back. Clearing drops one `Option`, so path, digest, cells and dimensions cannot part ways — "together" is structural rather than a discipline four assignments have to keep |
-| A cue-list row click selects and never seeks (`lyrics_editor_ui.c:1255`) | It selects **and seeks to the cue's start** | PX2 (UX0-B02). Checking a line meant reading its timecode off the row and scrubbing to it by hand, and the review counted ~360 precise clicks to time 60 lines. The start rather than the middle, so pressing play immediately answers "is this on the beat" |
-| No way to stamp a time at all | `LyricTap`: arm a run, then one **Enter** per line, each press closing the line before it and opening the next at the playhead | PX2 (UX0-C03). The pairing is review 1.14's rule applied as a gesture rather than as a default, which is what makes a run of taps produce contiguous captions instead of cues with whatever durations they arrived with. **Enter by elimination**: `T`/`M`/`S`/`F`/`H`/Space/Tab/arrows are all shell globals fired unconditionally once no field has focus, and the shell reads the keyboard before any panel draws — a panel key shadowing one fires both. The cue id order is snapshotted at arming time, because a stamp *moves* a cue and the document sorts by start: a cursor walking canonical order hands out line 2 twice and never reaches line 1 |
-| `begin_new` focuses the text field, and a focused field stands every transport key down | Tap mode and text entry are **mutually exclusive states** — arming blurs the field, focusing a field disarms the run | PX2 (UX0-B02). The review's finding was that the natural add→type→play→tap loop broke exactly at the tap. Rather than carve an exception into the focus rule, there is no key that means two things, so there is nothing to get wrong |
-| No undo anywhere; Delete is one unconfirmed click | `LyricHistory` — 64 whole-document snapshots, one per drained batch | PX2 (UX0-B03). A 3 px accidental lane drag committed a 64-cue `ShiftMany` with no way back. **Snapshots rather than inverse edits, deliberately**: `split` allocates an id, `merge` destroys one, and `update`/`retime` overwrite the `CueOrigin` that `at_time` reads, so an inverse log that misses one yields a valid document quietly different from the user's. `revision` deliberately does not round-trip — an undo *is* a change |
-| A fixed 0.1 s nudge pair per time row, no repeat (`:219-250`) | The transport's Ctrl/Shift ladder at a tenth of its scale (0.01/0.1/1.0), hold-to-repeat counted in frames, and labels that state the step the modifiers currently mean | PX2 (UX0-B04). A cue boundary is placed against a syllable and a playhead against a section, so the *shape* is shared and the numbers are not — a user who learned Ctrl on the transport does not learn it twice. A fixed "-0.1" label lies whenever Ctrl is down. Frames rather than seconds because a headless probe has no wall clock worth trusting |
-| Times shown to the millisecond and typeable only in tenths | The readout is a text field; `parse_cue_timestamp` refuses rather than guessing | PX2 (UX0-B04). `-1:30`, `1e3`, `+30` and `1:60` are all refused, because a silently-clamped typed time is a control that lies about what it took. The parser is in `core` and the formatter in the app, so a round-trip test pins the pair |
-| `lyrics_split`/`lyrics_merge` ported, tested and with no call site | Ctrl+B / Ctrl+J and two buttons; split divides the text at the space nearest the seam's position through the line | PX2 (UX0-B05). Splitting a long imported line is the commonest subtitle edit there is, and the only route was retyping both halves. Never returns an empty half, because `validate_text` refuses empty text and a refusal *after* the user committed is worse than a rough guess |
-| Export/Import offered unconditionally (`:1084-1140`) | Export is disabled for a document `bridge_export` would refuse, and import is transactional through `import_bridge_document` | PX2 (D3). A dialog that ends in an error is worse than a button that says it cannot. Import re-bases the file's **own** duration onto this track's rather than adopting it — adopting would silently re-length the destination and put every cue past the real end out of the timeline's reach |
-| The cue lane exists only while the lyrics editor is open | It draws in every state except Export and Assist, in slack the band already reserved | PX2 (D4). Timing is judged against the waveform and the scene plan, which stay on screen when the editor does not — so closing the editor to see more preview took the cue blocks with it. Growing the band instead would move `workspace_layout`'s sidebar guarantee at 720p, which is the arithmetic that already forced the manual event row out of the lyrics band |
-| — | `--ui-probe lyric-tap=N` and `lyric-undo=1`, plus `tap …, last stamp …, history u/r, typing …` on the `lyrics:` report line | Invented, PX2. Xvfb has no keyboard any more than it has a wheel. An armed run and a disarmed one differ by one 11 px line of hint text; a stamp that landed leaves exactly the frame a refused one does, because the difference is in the cue spans. Both defects the first capture found — a tap leaving the draft spuriously dirty, and the undo probe racing the drain — were invisible to every unit test and to the picture |
-| An event marker is coloured by type and says nothing about which lane it came from (`plug.c:3086-3100`) | Type keeps the colour, and the **lane is the head's shape** — filled disc for manual, ring for semantic, with a tooltip naming both | D4. The two axes cross, so the C's one channel cannot carry both: the manual event row's `+ Feel` button records `EventType::Semantic` into the **manual** lane (`plug.c:2897`), so an amber marker may be either. After an Assist run the question a user has is "did I put that there, or did the model?" — the same question `CueOrigin` answers in the cue lane (LX1). Shape rather than a second colour, because a second colour would have to fight the four type colours for the same channel and would make a lyric marker and a cue marker indistinguishable, which is the information the C chose to show |
-| Only the wheel and a middle-drag move the timeline view | **Shift**-wheel pans it too, across all three timed lanes, through the same `request_timeline_zoom` seam | D4. One notch is a fixed 15 % of the *visible span*, so the gesture keeps its feel at every zoom — the same argument the 1.2x-per-notch zoom makes multiplicatively. Routed through the shell rather than each call site, which is what gives the lyric cue lane the gesture without that file changing |
-| The export always covers the whole track; a window exists only as `--render-window` on the command line (`render_export.c`) | A CLIP row above SIZE — `Full track`, `In <- playhead`, `Out <- playhead` — over `core::timing::render_export::ClipSelection`, driving the existing windowed `RenderPlan`; `--render-window` now seeds the panel's clip so flag and panel are one state | PX3 (UX0-C01), post-legacy extension. `In` alone selects to the end of the track, so the common "from the drop onward" teaser is one click. `suggest_clip_path` names the file after the window so a teaser cannot overwrite a full render. Session-only: whether the clip belongs in `.musi` is an open operator decision recorded in the PX3 plan section |
-| No still-frame output of any kind | `Save still`: the playhead frame as a PNG through the same offline renderer an encoded frame uses (`with_export_frame`/`draw_offline_frame`, shared with `ExportSession::step`) | PX3 (UX0-C10), post-legacy extension. One renderer rather than two, so analyzer feed, beat phase, scene plan, routed settings and the EX3 linear-light resolve cannot diverge between the still and the video — proven at 45.55 dB against the MP4's own frame, and the check earned its keep by catching the still shipping vertically mirrored (`rlReadScreenPixels` is bottom-row-first) |
-| — | `--ui-probe save-to=PATH`, plus `export clip:` and `export still:` report lines | Invented, PX3. A headless run cannot answer a destination dialog, and "the CLIP row took the press" and "it drew a highlight" are different observations |
-| — | `--ui-probe middle-drag=FROMxTO` and `wheel-shift=0|1`, plus `gesture=` and `markers=` on the `timeline:` line | Invented, D4. `click=` cannot reach the pan — it goes through `Widgets`' pointer seam and the pan reads `MOUSE_BUTTON_MIDDLE` from raylib directly, since it claims nothing from the bank. And a **stranded pointer claim is invisible in a picture**: the view sits where the hand left it either way, and the symptom is the *next* interaction misbehaving. `gesture=none` is the only way a capture can say the release was taken |
-| Ten scenes, `COUNT_SCENES == 10` | **Eleven.** Phosphor Dream (`phosphor`, id 10) — a generative ASCII screensaver: ten procedural fields cycling on a dwell clock, dithered crossfades between character alphabets, a CRT of bloom, colour split, scanlines and a rolling refresh band | Operator request, 2026-08-08, adapted with permission from Digi's Python offline renderer (`OUTSIDE-DROPS/`; <https://github.com/digi-the-robot>, <https://x.com/digi_dot_exe>). The first scene here with **no oracle at all**, so its evidence is its own tests rather than a diff. Appended at id 10, never inserted, so every C-era id keeps its meaning and every earlier `.musi` still resolves its scenes. `SCENE_COUNT` grew again on 2026-08-24 (Clawd, below) and is now 12; `ORACLE_SCENE_COUNT` stays 10 and the harnesses read the second |
-| — | Two-section differential dumps: the C-era scenes diffed against the frozen C byte-for-byte, then a `--- post-legacy (no oracle) ---` marker, then rows diffed against a checked-in expectation | The eleventh scene made three harnesses fail for a reason unrelated to what they test. Splitting rather than relaxing keeps *both* halves a contract: a C-era bound still fails against the C, and a post-legacy one fails against a file somebody has to update on purpose. `settings` and `route_persistence` split; `preset_store` instead scopes its **fixture** to `ORACLE_ALL`, because its divergence is interleaved inside one JSON line and a marker cannot cut it — the coverage that gives up is taken back by a named unit test |
-| — | **Clawd** (`clawd`, id 11) — thebes' twelve-petalled flower character as a scene: petals are twelve spectrum band groups, the head squash-and-stretches on the beat, and the face is an expression state machine (resting smile, onset scrunch, sustained-flux dizzy spirals, long-quiet pleading, a cooldown-gated head-explode). ASCII kaomoji cats bounce on the floor, a hue-wheel petal show ignites on the track's own biggest pulsing moments (hysteresis, minimum hold, slow fade, cooldown), and a `terminal` toggle (default off, phosphor's `titles` argument) types the track's own lyric cue behind a prompt | Operator request, 2026-08-24, an homage to the character drawn by **thebes** (<https://x.com/voooooogel>) — built procedurally, no artwork copied. The second scene with no oracle; appended at id 11. The `--scene claude` alias exists as a courtesy; the persisted token is `clawd` because a scene is not the assistant. The face never spins (the petal ring does), expressions are a state machine with dwell times rather than a per-frame map so the character reacts instead of strobing, and every drawn string is ASCII because the built-in face is Latin-1 — a test walks them |
-| — | `clawd:` report line — face, `amp`/`bass`, track-relative `energy` and `dyn=track/none`, peak petal and which, beat count, kick count, bounce, drawn cats, `show=phase@level`, terminal state, daylight, `warmth`/`mouth`/`semantic` | Invented, same argument as `phosphor dream:` — a dead expression machine is a permanent smile, petals uncoupled from their bands are a symmetric flower, and an empty floor that should hold three cats photographs as a perfectly plausible cute picture. The headless gate asserts face is named, petal peak coupled, three default cats drew, and the frame is not dark at default daylight |
-| Every frame is drawn from nothing | **Clawd keeps its light** (2026-08-27): a ping-pong `FeedbackBuffer` (`runtime::feedback`) carries the previous frame — faded on a half-life, crept outward from the head, swirled during a show — with this frame's petal fills laid over it, composited *under* the crisp character | Operator direction, inspired by Le Biniou's feedback family (read for behaviour, nothing ported). The frame was flat: a clip-art flower on an empty cream field, with the ring's spin, the petals' breathing and the boom's scatter all invisible in any single frame. A ghost is what makes motion visible in a still, which is what a poster and a paused video are. Petals deposit and the face, ink and cats do not, so "smeared light, crisp face" is structural rather than a value to keep tuned. **Composite mode follows the backdrop** for the reason the bass glow already documents — additive over cream saturates to white and vanishes — so a light ground takes premultiplied paint *over* it and a dark ground added light |
-| — | No control for it: half-life, outward creep, swirl, deposit and composite strength are constants that lerp up with the **petal show's level and a boom's opening**, and the `.musi` surface does not change | The clawd descriptor table is full at `MAX_CONTROLS` (twelve) and no slot there is worth less than what it already buys (`scene/settings.rs:444-455`). Coupling the tuning to the music instead is the better answer anyway: the trail is a whisper in ordinary playback and streamers when the track earns them, which is what a control set by hand cannot be |
-| — | Frame-persistence **reset** at an export session's start and a still's replay, plus a `(scene, seed)` identity check inside `SceneRenderer::draw`, and a **warmup** — the last 3 s before a still's target frame or a windowed export's first frame are drawn but never encoded | Export determinism is a contract and the preview shares the renderer, so a cold start is not optional: without the reset, an export of the track on screen opens with a smear of what the user was looking at. The warmup is the other half, and it is what keeps *two* invariants: `render_job`'s "a windowed export is bit-identical to the same frames of a full one" (measured at 47.6 dB against a 25.9 dB neighbouring-frame control), and UX0-C10's "the still is the video frame" — a cold buffer had put that at 36.8 dB against the 42.3 dB the same pair measures without trails |
-| — | `trail=on@0.42` / `trail=off` / `trail=unavailable` on the `clawd:` report line | Invented, same argument as the line's other tokens: a frame with no accumulated light, a boundary that never reached the accumulate and a driver that refused the render textures are three states and one picture — the ghosts are the faintest thing in the frame and the first thing a luma check stops noticing. `on@` carries the composite strength, so a show's streamers are a number rather than an impression, and the gate asserts it |
-| Flat fills throughout: twelve one-colour triangle fans and one flat white disc | **Clawd is lit** (2026-08-27): one fixed light (`LIGHT`, upper-left) read by three consumers — a base-to-tip value ramp plus a rim highlight per petal, a one-sided top-light on the head disc, and a soft contact shadow on the cats' own floor line | The frame was a diagram. A flat fill carries nothing about form, so a scene whose whole argument is "procedural geometry is exact at 12 px and at 1200" was throwing that away at every size. The ramp is **axial**, along each petal's own axis rather than the frame's, because the ring spins and a screen-space gradient would slide across the flower as it turns — which reads as a rendering fault, not as shape. One light with three consumers is what makes a frame read as an object in a room; three plausible lights read as none, which is why `cat_size` and `floor` are now resolved *before* the flower instead of beside the cats |
-| — | The shading is applied **after** the show's hue-wheel lerp, the energy brilliance, the `hue` rotation and the warmth tint (`lit`) | The one ordering that matters. Shading the base colour first is overwritten by the show's own lerp, so the effect would vanish on exactly the frames worth looking at. Judged from renders at rest, mid-show and mid-boom: the show stays vivid and gains shape |
-| — | The rim highlight sits on an **inset ring**, not on the outline's own vertices | Written the obvious way first and it was invisible: `stroke` is ~6 px at 1080p, so a highlight on the perimeter is drawn and then painted over by the outline pass. The petal mesh is therefore three rings — centre, rim band, outline — rather than a plain fan, and `PETAL_SEGMENTS` went 18 → 24 because the segment count now sets the smoothness of the light as well as the roundness of the silhouette |
-| — | The head's ramp only ever goes **down** from the cream, and the shadow scales with `daylight` | Both learned from captures. A symmetric swing on a 250-value cream clips within a few degrees of the light and leaves a flat white cap with a hard edge where it stops; darkening only keeps the lit side byte-identical to the flat disc it replaced. And a shadow is the absence of a light that has to be there first — on the dark backdrop there is nothing casting one, so a dark ellipse there would be a smudge with no cause |
-| — | No report-line change | Deliberate, against this file's own habit. Every other Clawd token exists because two states photograph identically; a light does not — a culled mesh loses the petals outright, and the shading itself is a constant, so a token naming it could only ever say "on". The regression anchors are unit tests instead: one walks every emitted triangle's signed area (a winding mistake is what makes rlgl cull the whole mesh silently), and three pin the normals, the axial ramp and `lit`'s neutral |
-| The backdrop is one vertical gradient | **Clawd has air** (2026-08-27): a corner vignette, sparse film grain and a temperature lean on the gradient itself, all drawn **under** the subject — before the contact shadow, the bass glow, the trail and the flower | The sweep was a studio backdrop and the flower a sticker on it. Under rather than over is the whole placement argument: a vignette on the finished frame is a filter, it dims the trail's streamers exactly where they are already faintest, and on a 9:16 export it darkens a corner of the character. Under it, the character is the subject and the frame has depth. Judged from renders at rest, mid-show, mid-boom, at a genuinely quiet moment (t=100 s, `energy=0.01`), on a forced dark backdrop and in a 1080x1920 portrait |
-| — | The vignette's falloff is an **elliptical** radius (1.0 at an edge midpoint, √2 at a corner), smoothstepped, drawn as a 28x28 Gouraud grid through `draw::shaded_triangles` | A plain distance falloff on a 16:9 panel puts the left edge 1.8x further out than the top, so it darkens the sides almost to the corner value and leaves the top and bottom clean — a letterbox, not an atmosphere. Normalising each axis by its own half-extent makes the corners the only thing that reaches full strength, at every aspect the export panel can be. Smoothstep because a linear ramp's start line is visible as a ring on flat cream, and the grain drawn on top dithers what is left of the grid's own 8-bit steps |
-| — | Film grain: sparse specks on a cell grid, hashed from `(cell, cell, tick)` where the tick is `floor(time_seconds * 15)` | Deterministic by construction — no ambient RNG, and **time** rather than a frame counter, because grain resampled per frame crawls at 60 fps and strobes at 24, and two renders of the same moment must produce the same specks or export determinism is gone. Sparse rather than a low-alpha field over everything: full coverage at any strength reads as video static and specks with gaps read as film. The cell is `min(w, h) / 152`, so grain is the same size relative to the picture in a 470 px preview panel and in a supersampled 1080p export — grain that gets finer with resolution disappears in the thing you were going to post. Sign follows `daylight` (dark specks on cream, light on the night ground); the first pass at 1/104 and twice the alpha read as blocky static and was retuned off the frames |
-| — | The lean is **asymmetric**: `AIR_NEUTRAL` sits at 0.35 of the energy mix, and the sky's top moves twice as far as its bottom | Centred at 0.5 the quiet end of a real track pushed the full cool excursion and the tiki cream went grey, so two frames of one scene 90 s apart read as two palettes rather than one room at two moments. Moving the top further than the bottom is what reads as the light in the room changing instead of a colour grade over the whole picture. The drive is `state.energy()` — the smoothed track-relative envelope every other loudness gate already reads — plus a smaller lean during the petal show; **never a second follower of the same quantity**, which would disagree with the petals on exactly the transitions worth watching |
-| The dark backdrop got `draw::vignette` over the *finished* frame | Removed; the air pass is the only vignette, and it runs at every `daylight` | Two vignettes of different shapes stacked on the night ground is a picture nobody chose. The one that stayed is the one under the subject — the four edge bars also cut across the bottom of the frame, which is exactly where the cats stand |
-| — | Both air meshes composite **premultiplied** (`BLEND_ALPHA_PREMULTIPLY`), not through `BLEND_ALPHA` | Not taste, correctness, and it was found by measuring rather than by reading. raylib's alpha blend applies `glBlendFunc(SRC_ALPHA, ONE_MINUS_SRC_ALPHA)` to **all four** channels, so a translucent wash over an opaque frame leaves its alpha at `1 - a(1 - a)`. Invisible on screen — and `Save still` writes the framebuffer's alpha straight into the PNG, so the corners would be translucent in the file. It cost **11 dB** on the still-versus-its-own-video-frame check (40.65 → 29.68), every decibel of it in the alpha plane, with r/g/b unmoved. Premultiplied is `glBlendFunc(ONE, ONE_MINUS_SRC_ALPHA)`: identical colour, opaque destination preserved, and the still is back at **40.64 dB** against a 23.1 dB neighbouring-frame control |
-| — | `air=+0.61/7071` on the `clawd:` report line — the signed temperature lean and the number of specks drawn | Invented, and the reason this pass gets a token where the lighting pass deliberately did not: a 12/255 temperature shift on a cream gradient is under the noise floor of any luma probe, and a grain field that laid down nothing photographs as exactly the clean frame the scene had the day before — the fallback-that-looks-like-content shape once more. The gate asserts the speck count is nonzero |
-| The shade blocks `░▒▓█` as font glyphs | 4x4 dither patterns drawn from geometry (`SHADE_PATTERNS`) | raylib's built-in face is Latin-1 and stops; the whole `blocks` alphabet is above U+2500. Bundling a monospace TTF is a new asset and licence for ~20 glyphs, and a bitmap glyph magnified under export supersampling is the blur the caption work already answered for once. The **dither** specifically, rather than a flat rectangle at matching coverage: a capture of Plasma drawn with flat rectangles came out as three featureless teal blobs, correct in coverage and no longer recognisable as a grid of characters |
-| The source's filmic rolloff, applied to `frame + 0.9 * glow` | Not reproduced | Reaching the bloomed signal needs a second full-frame render target. Running the same curve on the bare cell value is not a cheaper approximation of it — it is a 40 % dimmer, which a capture caught. Additive blending saturating against white does approximately the same job at the top of the range |
-| The source surfaces six hardcoded words out of the field | The `titles` toggle surfaces the **track's own lyric cue**, through a built-in 5x7 face, and defaults **off** | This application has authored cue timing and a document behind it. Putting a canned `BREATHE` over somebody's track is not a thing it should do on their behalf, and two word layers fighting for one frame is the wrong default even though the effect is worth keeping |
-| — | `phosphor dream:` report line — field, alphabet, grid, `amp`/`bass`, mean and peak cell, bloom outcome | Invented. This scene draws a plausible frame in several wrong states: the wrong field, a grid collapsed to its floor, a bloom that never built, an audio coupling reading zero. None are distinguishable in a capture, and two of them were found by reading this line rather than by looking at the picture |
-| Every scene gate is an absolute constant | `TrackDynamics` (post-legacy, 2026-08-26): robust 10th/95th-percentile loudness bounds profiled from the whole decoded track in the same eager pass as the timeline waveform, riding every `SceneFrame` | Operator + second-opinion design. On real material the amplitude envelope's *median* is 0.94 — absolute "quiet" gates below ~0.8 are unreachable, and Clawd's pleading face had fired on 8 of 5736 frames across a whole track. Percentiles rather than extrema so one freak transient cannot flatten the range, a minimum-span guard so a compressed track cannot amplify noise, and a scene using it must report `dyn=track`/`none` because fallback gates draw the same picture on a loud track. Clawd's pleading/boom/party/show gates read it; the boom and dizzy also moved off the absolute `onset`/flux lanes onto the kick detector, which the same probe showed is the only transient lane real mixes reach |
-| — | `--protocol PATH` and a `*.protocol.json` drop arm: a **human-feedback protocol** — timed questions over a named track (path **and** sha256), items as bottom-anchored timeline pennants, a keyboard-first question card, answers appended to `*.answers.jsonl` as they land | Operator proposal, 2026-08-08 (HX). The loop it replaces — agent writes prose, operator holds it in their head, reports back in chat — cannot *blind* a comparison: a plan section naming "current" vs "proposed" has already unblinded it. The application is the only party that can apply variant `a` or `b` without saying which. `core::feedback` is the schema and it is strict in the `.musi` codec's sense; the wrong audio is refused by digest, like an ASCII asset. Quitting mid-session loses nothing: every answer is flushed before its handler returns |
-| — | An A/B item's two tunings are shown only as "first look"/"second look", opener seeded per item; the exact variant order the app played is recorded **in the answers file at answer time**, never on screen | HX's blinding contract, structural rather than disciplinary: the card cannot name `a`/`b` because the drawing code never learns which is which beyond the order token it prints nowhere. The unblinding survives on disk for the agent that wrote the protocol |
-| — | `--ui-probe protocol-flip=ID` / `protocol-answer=ID:CHOICE[+ID:CHOICE]`, and a `protocol:` report line | Invented, HX-5. Xvfb can neither hear the track nor press `2` — and items are addressed by **id, never by pixel**, because GX-1 is what a pixel-addressed probe costs. The gate answers two items headlessly, reads the JSONL back, asserts the recorded variant order equals the claimed one, and proves a wrong digest refuses with a nonzero exit |
-| A route cell for a configured-but-unimplemented route is disabled and reads "not available" | The cell stays enabled and reads `<route> → inherit`; activating it **removes the override**, returning the contract to its inherited recommendation (2026-08-31, operator screenshot) | The old cell was a dead end for a state the settings schema still permits saving: `TC-VERIFY`'s inherited value is "no route", so there was no way to clear a stale OpenRouter override from the UI at all — the operator had to hand-edit `assist.json`. Do not "harden" this back to a disabled cell: the truthful capability matrix stays as the source of what *runs* (`core::assist::contracts`), the cell's job is only to make every saved state recoverable. The stale profile shape is pinned by `stale_route_overrides_are_enabled_for_repair_and_clear_independently` and photographed through the real input path by the gate's `assist-stale-routes` capture; `--skip-render` runs that capture without the render suites |
-| A job's child process inherits the parent's ambient `OPENROUTER_API_KEY` unless a route authorized one | `spawn_assistant` **removes** the variable from the child's environment when no authorized credential is in the spec, and sets it only when one is (§4 E1) | The startup scrub lives in the app binary's `main`, so any other entry point into the spawn — the library tests first among them — ran with whatever the invoking shell exported, and the pinned local-only refusal failed in exactly the normal dev shell that has a real key. The E1 guarantee is now a property of the spawn boundary itself rather than of one caller's discipline; both halves are pinned by the credential tests in `runtime::process::assist`, which therefore no longer need a scrubbed shell |
-| A scene plan, its per-section tuning, the lyric timing and the caption style can only be authored in the window | `--treatment FILE`: a whole video as one strict JSON file — which scene plays when, each section's tuning *by setting name*, per-scene routes, timed lines, caption style, output shape — compiled into exactly the state the editors produce (`core::treatment`) | Operator request, 2026-10-11 (MV1): *"extend the CLI interface such that you can create music videos yourself"*. The command line could render a project and could not author one, so a caller with no pointer could export a visualizer and could not direct a video. **Not the `.musi`, deliberately**: a section's tuning there is a bare positional array, the plan must already be contiguous to the millisecond, and a caption style is all-or-nothing — right for a file the application round-trips and wrong for a file somebody writes, where a transposed pair of values is a valid project that looks subtly different. A treatment states only where a section *starts*, names every control, and refuses an unknown name or an out-of-range value by name with the bounds rather than clamping. `--save-project` after it writes an ordinary `.musi` |
-| — | An absent `lyrics` (or `events`) key leaves the track's own lane alone; an empty list removes it | MV1. Lines timed by ear are the slowest thing in a project to get right, and the natural second step is to direct the picture over them (`--project timed.musi --treatment look.json`). A treatment that says nothing about lyrics must not be read as "there are none" |
-| — | `--vocabulary`: every scene (with a one-line description of how it looks), setting, bound, default, route source, curve and caption option as JSON; a pre-pass flag like `--help`, so it answers with no window and no display | MV1. The descriptor tables can say a control is called `weight` and runs 0.4 to 2.2; they cannot say what a scene *is*, and a caller choosing between a dozen of them from a command line has never seen one. Generated from the tables the parser reads, for the reason this file refuses to list "currently supported X" anywhere. `treatment::scene_look` is an exhaustive match, so adding a scene without describing it does not compile; a test resolves every name the document prints through the parser it documents |
-| A still exists only as a button in the Export panel (`Save still`, UX0-C10) | `--still SECONDS FILE` (repeatable) and `--contact-sheet FILE` with `--sheet-at even:N\|segments\|lyrics\|T,T,…`: labelled frames across the track or the `--render-window`, through the export's own offline path | MV1. A contact sheet is how something with no window reviews a video — the same argument as `--probe-shot`, one level up: a surface nothing photographs does not get reviewed, and a four-minute MP4 is not a photograph. The label under each tile is read from the *project* (timecode, section and scene, the line on screen), so it says what the treatment asks for and the tile says what was drawn. Both exit without entering the main loop, as `--save-project` does |
-| The still's replay runs from frame zero to one target frame | One replay serves any number of capture moments (`prepare_frames`), and the persistence buffer is reset after each capture | MV1. A sheet is two dozen stills; replaying from zero for each made the review loop cost what it exists to save. The reset is what keeps each capture the picture a *separate* still would have been, by construction: the next one warms up over the frames a fresh replay would have drawn, from the same cold buffer. Its negative control (reset removed) fails the gate's byte-equality — but only once both stills were moved inside the one scene that keeps light, which is the part worth remembering |
-| `still_frame_index` clamps a time past the end to the last frame | `--still` refuses a time at or past the end of the track by name | MV1, found by the gate's own refusal check. The panel is handed a playhead that is on the track by construction, so clamping only absorbs rounding. A typed `--still 400` on a four-minute track, clamped, writes the final frame to a file the caller named after some other moment |
-| — | `tools/headless_run.sh`: the gate's isolation as a pass-through launcher | MV1. The application needs an X display even to export, so a caller without one either fails or opens a window on whoever is logged in. Private Xvfb, both guards, the dialog `PATH` guard, a private `XDG_CONFIG_HOME`, `--mute`, VirtualGL when present; it picks whichever of the release and debug binaries was built last, so a stale release build is never preferred over the code just compiled |
-| — (the halo billboards are this rewrite's own; `scene_orbital_lattice.c` draws none). They ran with the 3D depth test on | Orbital Lattice's additive light pass runs with the depth test off, bracketed by the shader mode's own two flushes | MV1, found by raising `nodes` to 1.6 in a treatment: black squares around the brightest pearls. Each halo is a square quad whose corners the circle shader leaves transparent, but a quad writes depth across all of itself, so a nearer halo punched its empty corners out of every farther one — and at the default size the same fight striped each pearl's core against its own halo, which every earlier capture had photographed as texture. Additive light has no order to get wrong. **This changes Orbital Lattice's pixels on purpose** (34 dB against the old frame at defaults); the toggle must bracket a *flush* because `rlDisableDepthTest` is immediate while the quads are batched |
-| Cadence has seven controls and one fixed palette (`scene_settings.c:93-101`) | Twelve: `hue`, `saturation`, `halo`, `reveal` and `ribbons` are appended, a seven-value snapshot stays loadable (`count_is_legacy`), and `settings::oracle_count` keeps the differential dump's C-era section at seven rows with the rest under `extra` after the post-legacy marker | Operator, 2026-10-12, after the first video directed from the command line: *"somewhat undercooked … no color controls or fancy effects besides the text showing"*. Appended rather than inserted so every earlier index and every saved snapshot keeps its meaning. `reveal` is 0 condense (the C's), 1 rise, 2 cascade, 3 pop — each a pure function of a word's focus (`cadence::glyph_pose`), so a word leaves the way it came and preview and export cannot disagree |
-| raylib's SDF defaults: four texels of field falling at 64 per texel, rasterized here at 64 px | Twelve texels at 10 per texel (`FONT_SDF_CHAR_PADDING`, `FONT_SDF_PIXEL_DIST_SCALE` defined in `crates/raylib-link/build.rs`; both are `#ifndef`-guarded in `rtext.c`, so the vendored source is untouched), rasterized at 96 px | Same request: *"aliasing on the font is ugly at that size"*. It was not aliasing. A ramp that saturates within two texels cannot be reconstructed by bilinear filtering at a corner, so strokes drew lumpy at 300 px, and the fix is a gentler slope rather than more samples. The wider field is also what holds the type halo: `sdf_text.fs` gained a second pass reading light out of the same texture, replacing the C's single offset ghost glyph. `runtime::font::SDF_FIELD_TEXELS`/`SDF_UNITS_PER_TEXEL` restate the two definitions and must move with them |
-| A line's words split the whole cue span (`scene_cadence_timing.c:31-50`) | The split is scaled into the cue's first `timing::reveal_span` — about nine glyphs a second at the slowest — and the line then holds at full strength | Same request: a two-word line held six seconds took three to appear. Right for a line sung across its span, wrong for a held one; a line already faster than the cap is untouched as an equality |
-| Cadence keeps a seed and no history; its backdrop reads the frame's raw `rms` and its hue leans on raw spectral flux | One loudness follower in `CadenceState` (fast up, slow down), a raised-cosine beat coil, particles sized from the trailing band smear, and no flux term | Same request: *"its bubble animations are weirdly pulsing"*. The bubbles were the lens shapes between crossing ribbons, whose width tracked a number that moves every analyzer tick. The follower is advanced by the same deterministic replay every stateful scene already depends on. **This changes Cadence's pixels in every saved project, on purpose** |
-| The scene plan changes scene on a frame boundary and nothing else (`scene_switch.c:255-279`) | A cue carries a `Transition` (kind and seconds) for how it arrives, the plan carries an `outro`, and the first cue's plays out of black: twelve kinds drawn by one fragment shader (`transition.fs`) over a held copy of the outgoing section's last frame (`core::project::transition`, `runtime::transition`). A `.musi` extension: a cut is never written, so a project without transitions is byte-identical to before | Operator, 2026-10-12: *"Intro effects? Scene transitions? Be creative and bold"* (MV3). **Held rather than replayed**, deliberately: two live scenes need a second settings table, a second route pass and scene state run past its own cut, and inside half a second a held frame that burns or shatters away is the same picture. Everything is arithmetic over the playhead (`transition::resolve`), so a still, a clip and a full export agree; a replay that starts inside a transition draws from before its cut (`transition::warmup_seconds`). The preview refuses a held frame that was not drawn just before the cut — a seek into a transition draws a cut rather than dissolving out of somewhere else |
-| — | `transition:` report line — whether the shader compiled, what the last frame did (`idle`, `holding`, `burn@0.37 from previous`, `skipped (no frame held)`, `unavailable`), and how many frames composited one | Invented, MV3. A transition that silently became a cut — a refused shader, a refused buffer, no frame held — is the same picture as a plan that asked for a cut. It earned its keep at once: `ripple skipped (no frame held)` is how a second still inside one transition was found drawing as a cut, because the reset between two captures of one replay was dropping the frame both needed |
-| Every scene draws the sound; the lyric is a caption over it, or one typographic treatment in Cadence | **Stage** (`stage`, id 13): the current lyric line drawn as one of six stagings — poster, terminal, chat bubble, stamped card, placards, ticker — picked by a `layout` setting, so a treatment cuts one section per line and stages each for what it says. A procedural black cat (`familiar`) is the one prop. No oracle; appended at id 13 | Operator, 2026-10-12, after comparing the first video with a lyric video that had gone viral: every line there had its own staged gag and nothing here knew what a line *said*. **Per section rather than per cue**, deliberately for now: sections already carry a scene, tuning and a transition, so staging needed no format change (MV8-a records the cue-level hint). Stage reads no raw audio level — a staged line that trembles with the mix reads as a fault — and every staging finishes inside the line's reveal, so a still from the back half of a cue shows the whole line. `layout` is a persisted index: append, never reorder |
-| — | `stage:` report line — the staging, word and row counts, type size, `atlas=sized/shared`, and whether the cat drew | Invented, same argument as Cadence's: a staged line and a bare ground are both plausible frames, and a layout that fell back to the shared 64 px atlas is a soft picture no capture can tell from a soft export |
-| A video's look is whatever each scene draws; the "Door, No Room" video held it with an external GPU Python pass | A **grade** per section (a luminance gradient map over named or listed stops, plus one selective hue turn) and a **finish** per video (bloom, shoulder, split toning, vignette, grain), drawn by `runtime::post` (MV9-a/b, 2026-10-21) | Operator, 2026-10-21, after that video: build what the compositor did into the renderer so preview, still and export are one picture again. **The grade is applied before the transition**, which is what made the external pass's flash-detection unnecessary: a held outgoing picture already carries its own grade, and a `flash` to white is drawn after it, so it can never come out lavender. **The finish is applied last**, over the caption and a fade to black. Grain is an integer hash of a pixel cell and a tick of track *time* — the `fract` trap and the frame-counter trap both avoided by construction. A `.musi` extension on the MV3 rule: absent is never written |
-| A section's tuning snaps on its cut (`scene_switch.c:255-279`) | A cue's `glide` eases it in from the same-scene section before it (smoothstep), in preview and export through one `App::frame_settings`; toggles and whole-number controls with fewer than sixteen steps snap | MV9-c. The intro of that video was a door opening over 2.6 s and a camera walking forward, which is two sections and a glide. Snapping the narrow integers is the point: easing Stage's `layout` from 0 to 4 would flash three stagings nobody asked for, while a hue in degrees is a quantity and eases |
-| — | **Threshold** (`threshold`, alias `door`, id 14): a ray-traced room with a door whose doorway shows another scene **live**; the scene registry moved to `musializer-core::scenes::descriptor` so a scene can construct another | MV9-d. The video's opening and closing shot, made a scene. The nested scene runs inside `ThresholdState` and is drawn into a `runtime::offscreen::Canvas` by the same `draw_body` every scene uses. **It is handed across the cut** (`SceneState::take_nested`/`adopt_nested`, done in `apply_auto_scene_switch`), and it wears the grade of its own nearest section (`SceneSwitchTimeline::grade_near`), because a doorway that walks into a restarted or differently coloured picture is a visible seam. Fitted to the doorway far away and the identity at distance 0 (`scenes::threshold::beyond_map`) is what makes the cut invisible at all. One nesting level: a threshold never nests itself |
-| Captions appear and vanish on the frame | `entrance_seconds` / `exit_seconds` in the caption effects: the ink fades with the line's presence and a blurred copy in the ink's colour carries the rest | MV9-f. The video's spoken intro needed lines that condensed out of a haze. A line shorter than both ramps shares its length between them rather than never arriving |
-| Lyric timing comes from the Assist pipeline or the editor | `tools/align_lyrics.py`: the file's own lyric tag forced onto the audio in one whole-track MMS CTC pass, written as `musializer.aligned-lyrics/v1` that a treatment takes by path; the application refuses it when aligned against different audio | MV9-g. Measured on that video: 88 lines in 6 s, and the two placements the chorus-repetition offsets disagreed with were the two lowest scores — so the tool prints both. It is not the Assist route (LT2), which stays Whisper-led and local; it is the short path for a director who already has the words |
-| Every line of a duet looks the same | Named `voices` on the lyrics block and a `voice` on each line: Cadence's type and Stage's accent take the voice's colour, the caption its ink and glow | MV9-h. The Door video coloured its two singers by hand, a section at a time. The hue is **absolute** (a colour on the wheel) and each scene maps it with its own base — Cadence's ink sits at 323° plus its offset, Stage's accent at 68° — because one offset painted one voice lavender in Cadence and red in Stage, which the first sheet showed. Assignments live beside the cues, keyed by id, not on `LyricCue`: the first version forgot that `replace` and `normalize_duration` copy cue lists, and the voices vanished between the treatment and the frame |
-| — | `look:` and `threshold:` report lines | Invented, the usual argument: a grade or finish that silently failed is the same picture as a video that asked for none, and a doorway whose nested scene failed to draw still shows plausible fog |
-| No terminal anywhere; agents direct videos from a separate window | **The dock** (WX-1/2, 2026-10-21): a right-hand egui region with real terminals (`alacritty_terminal`'s VT core and PTY, drawn by `ui/dock/terminal_view.rs`) and one-click tabs that start Claude Code, Codex or Antigravity in the project's folder with `MUSIALIZER_BIN`/`_PROJECT`/`_TRACK`/`_GUIDE` set. Toolbar button and Ctrl+backtick; open state and width persist in `ui.json` | Operator, 2026-10-21: *"even just having a terminal emulator in there to run coding agents next to the work window would be good"*. **Beside the workspace, not over it**: the shell is handed a window narrower by the dock's width, so no panel is covered and no hit test moves. **Keyboard ownership is a `TextEntrySurface`** (`Dock`), so every global stands down while a terminal has focus — Space pausing the song under a shell prompt is UX0-A06 again — and the dock is built *before* the Editor in one egui pass, consuming the keys it used, because Escape both interrupts an agent and closes the Editor. Right Alt no longer counts as Alt in the egui bridge: it is AltGr on Linux and types `@`, `{`, `[` and `~` on a German keyboard. Closing a tab sends `SIGHUP` to the shell's process group; the PTY thread is detached so a shell that ignores it cannot freeze the window |
-| — | `--ui-probe dock=`, `dock-run=COMMAND`, `dock-focus=` and a `dock:` report line carrying the tabs, the active session's state, `keyboard=` and its screen text | Invented, WX-2. Xvfb has no keyboard, and a terminal that never ran anything photographs as a dark rectangle — a dead PTY and a live idle one are the same picture. The screen text is read from the grid, so the gate asserts what the program printed rather than what the pixels might be |
-| `--treatment` is applied once, at startup | In a **session**, `--treatment` follows the file: every save is compiled and applied at the playhead, a refused one changes nothing and says why, and a dropped `*.treatment.json` does the same (WX-3). A treatment's audio block also matches the open track **by content**, so it can direct a project whose audio is the bundled `Song.assets/audio/<sha>.mp3` copy | Operator, 2026-10-21, the same request as the dock: agents direct the window next to it. **Debounced on a quiet poll** (size and mtime unchanged across one 15-frame poll), because an editor or an agent's write can land in pieces and a refusal for a half-written file is noise. A batch run still applies once — a render must not change under itself — and `--ui-probe follow=1` opts a probe run in so the gate can edit the file mid-run. Its negative control, the same edit without following, leaves the first plan on screen. Each apply marks the project dirty, so autosave keeps the `.musi` in step with the treatment; that is the point, since the treatment is now the source |
-| — | **Native agent chats in the dock** (WX-4): Claude Code (`claude -p` stream-json with `--permission-prompt-tool stdio`), Codex (`codex app-server`, JSON-RPC) and Antigravity (`agy` stream-json) behind one transcript (`core::agent`), one line-pumping child process (`runtime::agent_process`, its own process group) and one chat view; Allow/Deny rows for permission prompts; a "playhead" line prefixed to a message; standing directing instructions per session. "in terminal" opens the agent's own TUI in a terminal tab instead | Operator, 2026-10-21: *"take inspiration from pingdotgg/t3-code and implement Claude Code, Codex and Antigravity into the musializer main window"*. **The wire shapes were read off live sessions** of each CLI, and they differ more than their flags suggest: Antigravity's input is `{"event":"user","message":{"content":…}}`, not Claude's, and its `-p` swallows the next word. Unknown events are ignored, because these protocols grow weekly; prose on stdout is shown as an error, because it means the agent was started wrong. Agents run with the login shell's interactive PATH (a desktop launch reads no `.zshrc`); `MUSIALIZER_AGENT_<NAME>` overrides the program, and that override is the only way the gate starts one — `tools/fake_agent.py`, never a real CLI. Antigravity cannot ask permission in this mode, so its denials are explained in the chat and "let it run commands" restarts it with `--dangerously-skip-permissions`, per chat, off by default |
-| — | `--ui-probe agent=claude/codex/agy`, `agent-say=TEXT`, `agent-decide=allow/deny`, and the chat's counts on the `dock:` line | Invented, WX-4. A conversation is a sequence, and Xvfb can neither type a message nor press Allow. The gate's negative control is the unanswered prompt: without `agent-decide=` the fake must still be waiting, or a reply saying "permission: allow" could be the fake's own invention rather than the dock's answer arriving on the wire |
-| Every scene draws at the output resolution in its own colours; the meow video got its pixel look from a separate Python renderer | **The pixel cartridge** (2026-10-24): the finish's `pixel` look and a per-section override — the frame at a low short-edge pixel count, a palette (`handheld`, `grey`, `home`, `fantasy`, root-spaced `levels`, a listed ramp or set, or `none`) with ordered Bayer dithering, a grid, scanlines, glow and an optional curve, and whole-cell split, shake and zoom on the kick (`core::project::pixel`, `runtime::post`, `post_pixel*.fs`). Picked in a treatment or in the Editor's Tune tab | Operator, 2026-10-24, after a model's chiptune video for him: *"an absolute masterstroke"*. **After the caption, the transition and the fade to black, before the rest of the finish**, because a cartridge has one framebuffer: anywhere earlier a transition's smooth edge or a caption's anti-aliased serif sits over the pixels at full resolution, which is the cheap-mosaic look. **The cell is worked out on the output size and multiplied by the supersample factor**, so a 2x export's box downsample never straddles a cell (the gate's 160-pixel case exists to tell the two rules apart; 180 divides both sizes). The kick is a stateless function of the frame's own bands and trails, because a renderer-held envelope is not replayed for a still. Two sections' looks dissolve cell by cell across the transition, or the **glide** on a cut — the unlock over a live scene. Negative controls: framebuffer-sized grid, no palette, a filtered upscale — 3, 3 and 6 gate failures |
-| One scene per look; Stage's six stagings are one scene picked by a `layout` setting | **Pixel Cats** (`pixel-boot`, `pixel-shell`, `pixel-run`, `pixel-quartet`, `pixel-chapel`, `pixel-rave`, ids 22–27): six pixel-art stagings of the lyric line, each its own scene in a seventh picker family, sharing one implementation (`core::scenes::pixel_cats`) and one settings shape stamped per scene by a macro | Operator, 2026-10-24, after a model in a plain chat made his meow track a video from Python, numpy and ffmpeg ("an absolute masterstroke"), and then: *"the different pixel cat scenes could become a new scene group with sub scenes"*. **The canvas is drawn on the CPU**, about 180 rows at the integer factor nearest the output (`canvas_size`), and uploaded into one texture allocated once: a frame is the same bytes on every GPU, each staging's response to the music is a unit test, and preview, still and export are one pure function. Every staging is byte-identical across loud and silent audio at `response` 0, which is the negative control for its reaction test, in core and through the app (`tools/pixel_cats_check.py`). Hits shake, punch in and split; nothing flashes the frame. Six, not eight, because six is the most a family shows unscrolled at the minimum panel; the tabs stay two rows by being as wide as their labels |
-| — | `pixel cats:` report line — staging, palette, canvas and factor, the typewriter (`none`, `typing N/M`, `complete N`), the shell's tag, glyphs, cats, pops, beats, kicks, ticks, onsets, `dyn=track/none`, the hit's shake/split/zoom, glitch rows, `power=`, the staging's own evidence, `crt=shader/plain/FALLBACK/REFUSED` and the canvas's CPU time | Invented, same argument as `stage:`: a staging with no line and one whose typewriter never started, a floor that should hold cats and an empty one, a four-shade palette that fell back to colour and a refused CRT pass are each a plausible frame. The check script reads the staging, the completed line, glyphs, cats and `crt=shader` off it |
-| One scene per look, each drawn at the output resolution | **Glyph Lattice** (`glyphs`, id 28): a wireframe solid lit on a fixed honeycomb of tiny glyphs, the cells computed on the CPU (`core::scenes::glyph_lattice::field`) at a pitch that is a fraction of the short side, drawn by `glyph_lattice.fs` as signed-distance glyphs whose tier follows the cell's distance from the stroke's centre. Kicks run comets along the edges, the spectrum lights edges by height, hat ticks ripple the glyphs over, `solid` picks cube/octahedron/dodecahedron/icosahedron/tesseract/knot per section and a change morphs, `words` sets the line in an authored stroke font | Operator, 2026-10-24, after a hero animation on modal.com: *"the style is super cool, I'd want it"* and *"I wouldn't want to steal it 1:1"*. **Reimplemented from three captured images only**, by the Le Biniou rule: none of the site's code, shaders or SVG icons was read, the glyph set and stroke font are this scene's own, and the default is aqua, not the reference's green. **The star tetrahedron was dropped** for the dodecahedron: down a diagonal, or side-on, it is a hexagram. **Comets, not floods**: a pulse spreading along every edge at once turned a 30-edge icosahedron white on every kick. **Ripples ride the hats**: the absolute onset lane fired 16 times in 67 s of a real mix. A fresh state starts assembled, so the scene picked while paused is not an empty honeycomb |
-| — | `glyphs:` report line — the solid and whether it is the cycle's, assembly, the solid exhaling, lattice and pitch, cells by tier (`dim/body/core/hot`), ghost cells, echoes, giants, live waves, ripples and washed cells, peak bloom, the line (`"text" strokes=N/M live/dissolving`), level, bass, treble, kicks, pulses, onsets, `dyn=track/none`, and the field's CPU time | Invented, same argument as `pixel cats:`: a lattice with no core, a detector that never fired, comets that never ran, a line that never drew and a lost track profile each still draw a plausible honeycomb. `scene_gallery_check.py` reads the tiers, ghosts, pulses, kicks, ripples and `dyn=track` off it |
-| One accent (the C's blue, or amber in the dark skin) on the selected track, the selected scene, Auto, every slider, every panel heading, every focus ring and the waveform | **The accent means *now*** (WX-5a, 2026-10-24): the playhead, the scene section under it (an inset outline), the current cue row, the live reading on a mapping plot, the render progress bar and the primary action (`ButtonStyle::Primary`: Render, Open audio, Recover session). Selection and focus are an outline and a tint (`ui_selected`/`ui_selected_edge`, `widgets::button_look`), headings and emphasis are ink, filled amounts (slider, meter, scrub bar, the played waveform) are the warm `ui_level` | The mockup the operator approved (WX-0) and the brief for this run. With the accent everywhere nothing stood out, including the playhead. **Do not give a selected state the accent back**: `theme::tests::the_accent_is_worn_by_nothing_else` measures every role, the notice severities and the event-type colours against it, and the gate's accent census (`tools/accent_census.py`) fails on any accent pixel outside the preview that is not the playhead, its section, a thin marker or the counted primary action |
-| The semantic ("Feel") event type in the C's amber `#F2BE42` (`plug.c:1521-1530`); the notice card's warning in amber | Chartreuse `#B9D35A`, and an orange `#F3926B` warning | WX-5a. The dark accent became an amber that means the playhead, and the C's semantic amber sat four degrees of hue from it: two feel markers on the waveform read as two more playheads. Only the interface draws event-type colours (no file, render or harness carries them); `timeline_event_markers.py` and the gate's warning-stripe masks moved with them on purpose |
-| The event row's `+ Feel`/`+ Scene`/`+ Custom` each outlined at 2 px in their category colour beside a full-height strip (`plug.c:2860-2866`); an INFO notice in blue; a track row's name at the label size | The outline is gone and the category is a short 3 px swatch inside the rounded control; INFO draws in the card's neutral muted tone; a track name in the authored face is drawn at `metric::UI_FONT_AUTHORED_ROW` (18) | WX-5a polish. On the dark workspace three saturated boxes were the loudest thing in the chrome, louder than Render, for controls that record a marker — the swatch alone tells them apart. A blue INFO stripe sat six degrees of hue from the light accent, so "project opened" read as *now*; success, warning and error keep their colours because they ask something. Alegreya at 14 stood 9 px against the 16 px Space Grotesk buttons above it and read as the sidebar's smallest print; 18 is the optical match, not a bigger size. The swatch stays taller than wide, which `tools/timeline_event_markers.py` separates it from a marker head by |
-| The Assist panel outlined in the warning colour in every state | Orange only while the panel waits on the user — a confirmation (the data boundary a run is about to cross) or a staged candidate — and the quiet `ui_rule` otherwise | WX-5b polish. On the dark workspace an idle Assist panel was the loudest outline on screen, which left the colour nothing to say when a send or a result did need attention. The two states are the ones `AssistPanelContent` names as waiting; Ready, Running, Cancelling and Empty ask nothing |
-| A light/blue default and a black/amber alternative with its own hard-coded egui colours, egui text in monospace, and egui sizes (20/15/15/12) apart from the chrome's (19/16/13/15) | **The dark mockup look is the default** and the light appearance runs on the same roles (`theme::Palette`, `palette::DARK`/`LIGHT`). egui's `Visuals`, text styles and face (Space Grotesk) derive from `ui/theme.rs`; one type scale for both toolkits (header 16, label 14, value 14, caption 13, micro 11, fitted rows capped at 16); controls rounded at 4 px, lanes and list rows square | Operator, 2026-10-24: *"the dark mockup look becomes the default; the light appearance is kept"*. `ui.json`'s `black-amber`/`light-blue` keep their names and now mean dark/light, so every file written before still loads. Caption stays 13 because `EVENT_ROW_HEIGHT` reserves it and moving the band moves every lane the gate measures. The palette test that required 3:1 control edges became one that requires the *selection* outline to clear 3:1, plus a sweep of every chrome label over the hover and selected tints |
-| — | `appearance:` report line (the drawn appearance and the roles a capture classifies by), and `pixels X,Y,W,H` on `preview frame:` | Invented, WX-5a. A check calibrated on one appearance reading a capture of the other fails like a layout bug, or — worse — passes: the light export-ink check read the dark panel's own fill as ink. **The gate runs as a user who chose the light appearance** (a theme-only `ui.json` in its private config), because every pixel threshold in it was measured there, and the dark default has its own section (`=== the dark appearance, as a new user gets it ===`): the default, one time axis (`timeline_lane_alignment.py ... black-amber`, whose border classifier inverts on a dark ground), the accent census with a synthetic negative control, ink measured against the crop's own fill (`tools/chrome_probe.py`), and a tooltip |
-| One block per plan section (`plug.c`'s lane: a coloured rectangle per cue), 24 px tall | **Runs** (WX-5b, 2026-10-24): consecutive sections of one scene fold into one block (`core::ui::plan_runs::fold_runs`), the scene colour mixed toward the ground, a poster slot at its left, an opaque `ui_run_cut` hairline at each internal cut, and each section's transition edge, glide ramp, grade bar and pixel mark inside its own span. The run under the playhead wears an inset accent outline, its section an accent tick. The lane is 44 px | The mockup the operator approved (WX-0): Door, No Room's 70 sections read as a barcode. **A run breaks on a scene change and nothing else** — a grade, transition, glide or pixel change shows as a mark inside it; pinned by `plan_runs` tests and the gate's `--run-plan` fixtures. **Hit testing stays per section** (`scene_lane_edit::hit_test` is untouched), so folding cannot cost an editing gesture: a cut inside a run is still grabbed and dragged where it is drawn. Double-clicking a run zooms the view to it (6 % margin either side), which is how its sections are "opened"; Zoom out and the wheel undo it. The band grows by 20 px with the lane — every budget reads `SCENE_SECTION_HEIGHT` |
-| — | `scene runs:` report line (runs, sections, cuts, hairlines drawn, arriving transitions, graded sections, the run and section under the playhead, the selection, the opened run, posters drawn/ready and unavailable, the lane's rect and the view), `--ui-probe run-open=N` (1-based, as the line counts), and `scene marks:` asserted | Invented, WX-5b. A run that swallowed a mark draws exactly like a plan without one, so the gate asserts the line *and* reads the pixels: `tools/run_lane_check.py` counts exact-colour hairline columns and measures the grade bar's step across a cut, with an alternating-scene plan (seven runs, no hairline) and a one-grade plan (no step) as controls. The probe aims at a cut from the report's `lane=`/`view=`, never at a coordinate measured once |
-| The scene plan lane read the mouse from raylib directly | Through `Widgets::pointer`, the seam a button's press goes through | WX-5b, so `--ui-probe click=` can press the lane: without it a probe could open a run and never touch a cut inside it. With no probe installed it is the same reads, so nothing a hand does changes |
-| A cue block is its origin colour at 38 % over the lane with a full-strength outline (LX1-d) | A neutral opaque block (`ui_cue_block`) with muted Alegreya words. The line on screen (`at_time` at the playhead) is `ui_cue_now` with ink words. Provenance is a 1 px top line on every block plus a 3 px stripe down the start of a block wide enough for words. `Potential` keeps its hatch, selection is an outline and a tint, stacked rows darken 20 % a step and the marks take whichever shade stands further off the row's fill | WX-5b, the mockup's `.ly`. A track of user-applied lines read as a green barcode in which the words were the quietest thing. The stripe is gated on width because on a whole-track view most cues are a few pixels wide, and a 3 px bar made each a third green. *Now* is the display resolver's answer rather than every block the playhead crosses, so a proposal or a talked-over line is never dressed as the line on screen. No hover tint: `ui_hover` is within a few levels of the block in both appearances |
-| Origin colours `#1F7A4D`/`#2563C7`/`#D07A00`/`#7C7C86`, measured against the white lane only | `#238A57`/`#2C75EB`/`#B16800`/`#7C7C86`, one set for both appearances, each ≥ 3.32:1 on all ten surfaces the marks touch (lane, trough, block, now, selected × dark, light) | The old blue read 2.65:1 on the dark *now* fill and the old amber 2.81:1 on the light block. A colour clears 3:1 from near-black to white only with relative luminance near 0.19, so each kept its hue and saturation and moved its value. One set means one gate mask for both appearances |
-| `AuthoredText` draws at the requested size | Alegreya draws at 1.154× the requested size, centred on the requested line box, in both `measure_text` and `draw_text`. Space Grotesk and the chrome bank stay at 1.0 | Its x-height is 13 % below Space Grotesk's at one raylib size, measured from the embedded `hhea`/`OS/2` tables, so the user's own words were the smallest print in every row. Centring keeps the baseline and x-height within 2 % of the size of the chrome's, so mixed rows share a baseline |
-| Song Atlas ochre (197,137,46), Voronoi Bloom gold (220,177,94), Pixel Chapel gold (220,190,120) | Olive (140,146,70), ruby (196,64,98), candle yellow (200,202,130) | The accent means *now*. Voronoi and Chapel failed `reads_apart` against the dark accent at 1.07:1 and 1.04:1. Song Atlas passed only by lightness, at 1.61:1 and 2° of hue, and a run re-lit toward its ground takes that lightness away |
-| — | **Poster frames** (WX-5b): one 256x144 frame per plan-lane run, replayed from this track's own audio by a **second `SceneRenderer`** with its own analyzer, beat tracker and `SceneInstance`, through the export's per-frame sequence, starting at the moment minus a 2 s analyzer pre-roll plus the scene's run-up (`core::render::poster`, `app::posters`, `docs/POSTER_FRAMES.md`) | CX-5's ruling: a thumbnail has to be *this* track at *that* moment, and a stale one confidently lies. **Not the still path**: `prepare_frames`/`with_preview_stopped` stop and reset the preview, and a replay from zero for each of ~21 runs is the cost the design existed to avoid. So a poster is close to its export frame, **not bit-identical**, and is never written as a still. The service never touches `app.scene`, the preview's analyzer, renderer, stream or plan cursor; the gate proves the frame is byte-equal with posters on and off. Invalidation is the recipe's key moving (FNV-1a over a `Debug`-derived recipe, so a new field is in the key by construction), never an edit event. **A poster is stored top row first, with mipmaps**: the lane draws it as an ordinary texture with a *positive* source height, and `tools/poster_check.sh` matches each slot against the dumped poster upright versus flipped, because the lane was first written for a render target's bottom-row-first buffer and drew every poster upside down |
-| — | Clawd's poster run-up is 1.0 s, not the export's 3.0 s; Fluid Ink's pre-roll is 1.0 s and it is replayed only while paused (`posters::recipe::scene_cap`) | Measured, release, GPU (WX-5b note §4a): every other scene costs 12–17 ms a poster; Clawd's drawn run-up cost 184 ms, Fluid Ink's CPU simulation 600 ms (~10 ms a frame, three times the playing budget). Capped: 66–115 ms and 300–340 ms. Fluid at 0.5 s was cheaper but showed blobs, not ink. Cadence posters also wait while the song plays until the shared SDF atlas exists (`Faces::cadence_sdf_built`), so its one-off ~300 ms build never lands in a playing frame. Do not "fix" these back to the export's numbers: the poster is a thumbnail, and the caps are what keeps every other run's poster arriving in a second |
-| Keep no samples after the load-time decode (`ensure_song_atlas_map`'s ~105 MB argument) | `Track::poster_audio`: channel 0 of that decode as `i16`, ~31 MB for a 5.4-minute track | The export's analyzer hears channel 0 only (`ChannelMode::Select(0)`), so the other channels are dead weight, and `i16` halves the rest; quantisation is 96 dB down. The alternative was a second whole-track decode (2.2 s for that track) the first time a poster is asked for |
-| — | `--ui-probe posters=settle\|off`, `poster-dump=DIR`, the `MUSIALIZER_POSTER_*` measurement knobs, and the `posters:` report line | Invented, WX-5b. A pending poster and a missing one draw the same lane, and a stale poster that never refreshed looks like a fresh one. `refreshed=` is the stale-then-ready path an edit takes; `step-worst`/`frame-worst` are what the budget claim is checked against |
-
-**SX4 design decision (2026-09-05).** The operator rejected Atlas's appearance
-and Cadence's discontinuous motion in the CX-4 listening session and authorized
-a creative rework. Atlas now renders Tideline, a spiral relief with analytic
-traveling folds, musical deformation and flowing light; Cadence has continuous
-cue/beat envelopes and soft ambient strata.
-This deliberately changes saved projects' appearance while retaining their
-settings keys, bounds, defaults and file schemas. The shared Atlas audio map is
-unchanged. See `docs/SCENE_DESIGN.md` for control interpretation, render evidence
-and the negative control; human acceptance remains SX4 in the live queue.
-
-**Not negotiable by accident — anything a user or a file can observe.** Since
-the 2026-08-03 legacy decision these may change *deliberately* (with a schema
-version bump or an updated harness and a recorded reason), but an unplanned
-difference in any of them is still a bug, not a design choice:
-
-- The `.musi` format and every schema in `docs/PHASE0_INVENTORY.md`. A project
-  saved by any earlier build of *this* application must open here and back
-  again; the C-interchange requirement is retired.
-- Analysis numbers. The analyzer, beat tracker and band layout are checked
-  against the C numerically; a "nicer" formulation that shifts a band is wrong.
-- Settings semantics: descriptor keys, bounds, defaults, precision and clamping.
-  81 descriptors, verified column-by-column, and a mistyped bound surfaces much
-  later as a scene quietly ignoring a saved value.
-- Export determinism. The same project must produce the same frames.
-- The CLI grammar, including flag order effects and exit status.
-- Anything with a differential harness. If a harness exists, it is the contract.
-
-The test to apply: **if the difference is visible in a `.musi` file, a rendered
-MP4, a number, or a documented command line, it is a parity bug. If it is visible
-only in the source, take the better option and write down why.**
-
-### The transport row is the first thing here that is not a port at all
-
-Four operator-requested additions landed together, and they are worth reading as
-one decision rather than four: an icon row, a volume control, tooltips, and fine
-seek. The oracle has none of them.
-
-**Icons cost discoverability, and it is paid for in two places rather than waved
-at.** Every control carries a tooltip naming it *and its keyboard shortcut*
-(`ui/icons.rs`), because once the labels went the tooltip became the only place a
-binding is written down — there is a test asserting every bound control names its
-key. And every control carries a **text fallback**: the icon face is the one face
-whose absence cannot be approximated, since raylib's default has no Private Use
-Area coverage and an icon drawn through it is an empty box. `Faces::icons_available`
-is the seam, `describe()` reports which interface is on screen, and the headless
-gate fails if the atlas silently stopped loading.
-
-**The layout arithmetic is in `core::ui::transport_bar`, raylib-free, for the usual
-reason** — and it earned that immediately. Its width sweep caught a defect no
-capture would have: with the volume slider falling back from 96 px to 64 px,
-greedy placement made **mute vanish and then reappear** as the window narrowed,
-because dropping the slider freed enough room for it. The fix is to choose a whole
-configuration from a ladder whose widths strictly decrease, which makes the defect
-unstateable rather than fixed. The property to assert is *monotonicity in width*,
-not "X is shed before Y": monotonicity is what makes resizing feel stable, and a
-lucky ordering cannot satisfy it.
-
-**A hover state that nothing can photograph is a hover state nobody reviews.**
-A headless run has no pointer — `GetMousePosition` is the origin forever — so
-`--ui-probe hover=XxY` parks it and the probe zeroes the tooltip dwell. Without
-that, tooltips would have joined the welcome screen and the three `None` fallbacks
-on the list of things this repository shipped unreviewed for weeks. The gate
-measures the tip rather than trusting the exit status: peak luma inside the box
-where the text should be.
-
-**The readout HUD is off by default and probe runs turn it back on.** It is a
-developer HUD, and leaving a frame counter over a music visualiser is the
-interface addressing the wrong audience — but a capture that carries its own
-evidence is the whole reason the line exists, so the default is context-dependent
-rather than a constant. `--hud=0|1` overrides either way, and the gate checks all
-three states by measuring the preview's top-left luma: 21 when clean, 236 when
-drawn.
-
-Two smaller things, both found by capture rather than by test:
-
-- **A slider knob is centred on its value, so at 0 and 1 half of it hangs outside
-  the rect.** At 960 px with the inspector open the full-volume knob touched the
-  fullscreen button beside it. `widgets::SLIDER_KNOB_RADIUS` is public so a caller
-  packing a slider against a neighbour can inset by it.
-- **`--ui-probe hover=1121,449` silently fails**, because the spec is itself
-  comma-separated. It is `hover=XxY`, matching `size=WxH`, and there is a test
-  pinning that — the warning it produced named no key, so it cost a capture
-  round-trip to diagnose.
-
-### Missing beats pretending
-
-A feature that is not built yet says so **in the interface**, by name, where the
-control would be — see the disabled buttons and `ShellCommand::NotImplemented`.
-A blank region is indistinguishable from a broken one, and a control that
-silently does nothing is worse than one that explains itself. This is also what
-makes an unfinished area show up in a capture instead of in a bug report.
-
-## Persistent file storage (operator decisions, 2026-08-04)
-
-- **Downloadable model weights** (aligners, separators, ASR): the app lets the
-  user choose the directory. Default is `<install dir>/models/`; if that is not
-  writable, fall back to a `musializer` directory in the user's home. Never a
-  location the user was not shown.
-- On this dev machine, research model downloads live under
-  `~/.local/share/musializer/models/`, one subdirectory per model. The existing
-  `~/.local/share/musializer/lyrics-align/` venv stays as is and nothing is ever
-  installed into it.
-- Anything fetched by Hugging Face id (not a local model dir) lands in
-  `~/.cache/huggingface/hub`, which on this machine is a symlink to
-  `/run/media/wolfram/Bigger SSD/AI/huggingface/hub`. The SSD auto-mounts at
-  desktop login only; if `mountpoint -q "/run/media/wolfram/Bigger SSD"` fails,
-  run `udisksctl mount -b '/dev/disk/by-label/Bigger\x20SSD'` first.
-- **Remote-provider credentials**: no OS/vendor wallet — kwallet/Secret Service
-  rejected 2026-08-04 for cross-platform reasons. Persist to a 0600-permission
-  credentials file under the per-user config directory (the `gh`/`aws` model),
-  with session-only storage and env-var import as alternatives. Never in `.musi`
-  files, preference JSON, argv, logs, analysis artifacts, or a repository `.env`.
-- **Non-secret preferences**: versioned, atomically replaced, per-user config
-  directory (XDG on Linux).
-
-## Use the GPU for exports you are only going to look at (2026-08-08)
-
-This machine has an RTX 3090 and FFmpeg has `h264_nvenc` and `hevc_nvenc`. Pass
-`--encoder nvenc` for **every export an agent makes to check its own work**.
-Leave the default (`x264`) alone for anything the operator will keep or post:
-x264 `slow` still wins on quality per byte.
-
-**The headless gate's own MP4 renders pick NVENC automatically** (2026-08-08)
-when a one-frame test encode succeeds, the same detect-and-fall-back shape as
-VirtualGL; `MZ_ENCODER=x264` forces the CPU path and the `encoder:` line names
-which one a run took. This is safe against the gate's own assertions because
-both were measured rather than assumed: two NVENC encodes of the same frames
-are **byte-identical** (same md5), and the still cross-check's matched pair
-reads 45.64 dB under NVENC against 45.55 under x264, both ~5.6 dB above the
-40 dB floor with the 21.5 dB negative control unchanged. `export_probe` keeps
-its deliberate X264 pin — it digests the frames *fed to* the encoder, so the
-encoder cannot move its numbers and swapping it would prove nothing. A check
-that compares two exports by md5 still has to hold the encoder fixed; the
-gate's determinism checks satisfy that by comparing two runs of the *same*
-`$MZ_ENC` invocation, never an NVENC file against an x264 one.
-
-```sh
-cargo run -- --mute track.mp3 --scene phosphor --encoder nvenc --render /tmp/check.mp4
-```
-
-`--encoder` takes `x264` (default), `nvenc`, or `nvenc-hevc`. An unknown name is
-**refused**, not ignored, because an export that quietly used a different encoder
-is not something anyone notices until they compare file sizes. The `video
-encoder:` report line names what a run would use.
-
-**Measured on this machine, so nobody re-derives it.** 600 frames of 1080p:
-
-| step | x264 `slow -crf 16` | `h264_nvenc p4 -cq 23` |
-| --- | --- | --- |
-| encode only | 5.66 s | **2.29 s** |
-| file size | 26.8 MB | 25.9 MB |
-| a real 20 s export, end to end | 59.0 s | 56.6 s |
-
-Read the last row before reaching for this expecting a transformation. Those
-three rows were measured **on the CPU rendering path**, before VirtualGL: the
-encoder was about 4 % of an export's wall clock and the other 54 seconds was
-rendering through Mesa's `llvmpipe`, because Xvfb has no GPU of its own. With the
-rendering on the GPU as well (next section) that ratio inverts and the encoder
-choice is a real share of the clock — which is why this rule exists. The end-to-end
-row has not been re-measured under VirtualGL; do not quote it as a current number.
-
-Two things not to get wrong:
-
-- **NVENC's `-cq` is not x264's `-crf`** and the numbers do not transfer. The
-  mapping lives in `ExportQuality::nvenc_cq`, offset rather than copied; copying
-  them is what makes a GPU export look obviously worse and get blamed on the
-  silicon.
-- **`-b:v 0` is load-bearing.** Without it NVENC caps at its 2 Mbit default and a
-  1080p frame of high-frequency ASCII turns to mush.
-- **The 3090 cannot encode AV1.** `av1_nvenc` is listed by `ffmpeg -encoders`
-  because the *driver* supports it; the encode silicon is Ada and later. There is
-  deliberately no `--encoder av1`.
-
-**The encoder is session state, not project state.** It is on `RenderRequest`,
-not on `RenderExportConfig`, so a `.musi` carried to a machine with no NVIDIA
-card cannot insist on `h264_nvenc`. It does not change what is rendered — every
-encoder is fed byte-identical frames, and the determinism contract is about
-frames — but it does change the *file*, so a check that compares two exports by
-md5 must hold the encoder fixed.
-
-## The headless gate runs on the GPU
-
-**This is the normal state on this machine.** VirtualGL 3.1.4 is installed and
-`tools/headless_check.sh` resolves `vglrun` at detection time and uses it, printing
-which path it took on its `gpu:` line. Read a gate run assuming the GPU path; a
-`gpu:` line saying otherwise is the thing that needs explaining, not the default.
-
-**Measured 2026-08-27: 6 min 55 s, against ~45 min on `llvmpipe`.** The gate
-launches the application dozens of times, several in loops, and on the CPU path
-every frame is rasterized by Mesa — 23 s for a 240-frame Spectrum capture, 50 s
-for Phosphor Dream. That was the whole of the gate's wall clock. It was never the
-Rust (`[profile.dev] opt-level = 1` moved it by a quarter and no further) and it
-is not the differential harnesses, which have not run inside the gate since
-2026-08-16.
-
-`MZ_GL_LAUNCH` overrides the detection either way (set it empty to force the CPU
-path, which is how the two are compared and how a new capture check gets its
-second renderer); `MZ_VGL_DEVICE` picks the VirtualGL device, default `egl0` — the
-EGL back end, which is the one that needs no X server on the GPU side. A machine
-without `vglrun` still passes, just slowly:
-
-```sh
-curl -LO https://github.com/VirtualGL/virtualgl/releases/download/3.1.4/virtualgl_3.1.4_amd64.deb
-sudo dpkg -i virtualgl_3.1.4_amd64.deb
-```
-
-**"Nothing else changes" was written before anyone had run the GPU path**, and
-the first complete run took four attempts. Three defects, all in the gate's own
-instruments, none in the application, and each one is a template for the next
-capture check somebody writes:
-
-- **The launcher must be an absolute path.** Three probe families launch with
-  `PATH` stripped to the no-dialog guard directory (the kdialog/zenity
-  isolation), and a bare `vglrun` under that `PATH` is exit 127 — which
-  photographed as three unrelated sections failing. `MZ_GL` now resolves
-  through `command -v` at detection time; the guard's job is hiding dialog
-  binaries from the app, not hiding the launcher from the shell.
-- **Blends round renderer-dependently; opaque fills do not.** The chrome's
-  translucent rule strokes (`UI_RULE` at 40–50 % over `UI_SURFACE`) land
-  anywhere from distance 1 to 3 of `UI_LANE_TROUGH` depending on who rounds
-  the blend, so the lane-seam detector's ±4 colour window filled the frame
-  with phantom seams on NVIDIA (7 at 1280x720, **31** at 150 %) while every
-  real seam is an opaque fill both rasterizers write **bit-exactly** —
-  verified at 905/1995/1249 exact pixels per seam row across GPU, GPU@150 %
-  and llvmpipe. The detector now matches the trough exactly, tolerance zero:
-  exactness is the one classifier blend rounding cannot reach.
-- **A 1px stroke at a fractional x splits its coverage.** llvmpipe snaps it
-  into one full-dark column; NVIDIA splits it across two partial ones — the
-  AI dialog's divider became 228/228 where the CPU wrote one 210 (the rail
-  scan gained 1px of slack against its 14-vs-0 defect), and a lane border
-  became (244,244,245)+(219,219,222), which no colour window around
-  `UI_RULE`±6 can catch without swallowing the trough at distance 20. Border
-  columns are now found by a **darkness ceiling** (every band row ≤ 238 on
-  the brightest channel): every split leaves its majority column far below
-  it, and the split is a function of x alone, so all lanes still see the
-  identical column and the cross-lane equality keeps its teeth.
-
-The general rule the three add up to: **a capture check calibrated on
-bit-exact llvmpipe output is calibrated to an accident.** Fills may be
-compared exactly; anything a hairline or a blend touches needs a classifier
-that is invariant under ±1 rounding and coverage splitting, and the two
-renderers must both be in the negative-control loop when such a check is
-written (`MZ_GL_LAUNCH=""` forces the CPU path for exactly this).
-
-## Rules for this repository
+- `musializer-core` stays free of raylib handles, OS process handles, global
+  mutable state and filesystem side effects.
+- Shaders and fonts are embedded, never read from `./resources/` at runtime.
+- raylib 6.0 is vendored and built by `crates/raylib-link`; `raylib`/`raylib-sys`
+  6.0.0 run in `nobuild` mode. Rust 1.92 (egui 0.35). See
+  `docs/RAYLIB_6_UPGRADE.md`. `bindgen` cannot be turned off (Cargo feature
+  unification). It needs clang builtin headers Ubuntu lacks, supplied by
+  `vendor/clang-builtin-shim/` via `CPATH`; `raylib-link/build.rs` strips
+  `CPATH` before compiling raylib.
+
+## `unsafe`
+
+Small, named islands. Every block carries a `SAFETY:` comment and a row in
+`docs/UNSAFE.md`. Never add one without both.
+
+## Traps already paid for
+
+One line each; why and how each was found is in `docs/TRAPS.md`.
+
+- **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
+  never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
+  compositor. Never write `env -u WAYLAND_DISPLAY`.
+- **The dialog `PATH` guard** (`ENTRY_NO_DIALOG_PATH`) is per call site; a hand
+  probe that clicks anything must carry it.
+- **`kdialog` with no display** aborts with `SIGABRT` and summons Apport. Keep
+  the launcher's display check.
+- **Never give the Python helpers their own process group** from the parent
+  (`os.setsid()` then fails with `EPERM`). Keep the `ESRCH` fallback.
+- **Read the `.c`, not the header comment.**
+- **`take_screenshot` ignores subdirectories**; use `LoadImageFromScreen` +
+  `ExportImage`.
+- **rustfmt destroys data tables**: `#[rustfmt::skip]` on anything checked
+  column by column.
+- **Widget id namespaces are minted only in `widgets::id`'s `ALL` table.** A
+  collision test over a hand-written subset proves nothing.
+- **raylib-rs slice wrappers are wrong until checked**: `load_font_from_memory`,
+  `Wave::load_samples` and `Image::get_image_data` all were. Image and sample
+  readers go through `runtime::decode`, fonts through `runtime::font`.
+- **`EndTextureMode` leaves rlgl's cached framebuffer size at the target's.**
+  Assume every raylib `End*` undoes less than its `Begin*`; check the C. The
+  `gl framebuffer:` report line asserts it.
+- **Shader hashes are integer** (`uint` multiply-xorshift), never `fract` of a
+  large product, which tears along the lattice.
+- **`Faces::caption_at` lends one face at a time**; a second live borrow panics.
+- **`rlBlitFramebuffer` takes far corners, not extents.**
+- **`BLEND_ALPHA` eats destination alpha**, visible only in a saved PNG.
+  Full-frame washes use `BLEND_ALPHA_PREMULTIPLY`. Read per-plane PSNR.
+- **`--probe-shot` photographs the frame before the last**; run one frame past
+  the frame you care about.
+- **A stranded pointer claim is invisible in a picture**; the next interaction
+  misbehaves. `gesture=none` on `timeline:` proves the release was taken.
+- **`--ui-probe hover=XxY`**, not a comma; the spec is comma-separated.
+- **A slider knob hangs outside its rect at 0 and 1**; inset neighbours by
+  `widgets::SLIDER_KNOB_RADIUS`.
+- **`rlDisableDepthTest` is immediate, geometry is batched**: bracket the
+  toggle with a flush.
+
+## Judge by what a user or a file can observe
+
+Mechanism is negotiable; observable behaviour changes only on purpose.
+
+- When a faithful port is impossible, unavailable or bad Rust: decide, build the
+  alternative, and record the divergence and its reason in
+  `docs/DIVERGENCES.md`. Do not stall, stub or ask. An unrecorded divergence
+  gets "fixed" back into a defect by the next session.
+- These change only deliberately, with a schema bump or an updated harness and
+  a recorded reason: the `.musi` format and every schema in
+  `docs/PHASE0_INVENTORY.md` (every file this application ever wrote must open
+  and round-trip; bump `schema_version`); analysis numbers; settings semantics
+  (keys, bounds, defaults, precision, clamping); export determinism; the CLI
+  grammar including flag order and exit status; anything with a harness.
+- The test: visible in a `.musi`, an MP4, a number or a documented command line
+  → deliberate or a bug. Visible only in source → take the better option and
+  write down why.
+- Features past the C need no parity justification. Scene ids and persisted
+  indices append, never insert or reorder. A `.musi` extension never writes its
+  default, so older files stay byte-identical.
+- **Missing beats pretending**: an unbuilt feature says so in the interface, by
+  name, where the control would be (a disabled control with its reason,
+  `ShellCommand::NotImplemented`). Never a blank region or a silent no-op.
+
+## The oracle and outside references
+
+- `../musializer` is read-only, frozen at `9300af9` on `master` (not `main`).
+  Never modify it or its build directory. If it looks wrong, say so. Its code and
+  tests are authoritative about its behaviour, its documents are not; read its
+  `CURRENT_FILE_POINTERS.md` first.
+- **Outside inspiration: Le Biniou** (operator, 2026-08-27).
+  `~/Projects/lebiniou` and `~/Projects/lebiniou-data` are GPLv2, not ours.
+  Read them for effect ideas (the feedback family: blur/fade/zoom of the previous
+  frame, colormap cycling, warps, beat-gated pulses). Reimplement from visible
+  behaviour; never translate source, copy images or colormaps, or depend on
+  them. The same rule covers any reference look (e.g. modal.com for Glyph
+  Lattice): from captured images only, no code, assets or brand.
+
+## Where detail lives
+
+- `docs/DIVERGENCES.md` — every deliberate difference and invented mechanism,
+  with its reason. Look here before "fixing" anything that looks odd.
+- `docs/UNSAFE.md`, `docs/TRAPS.md`, `docs/DIFFERENTIAL_TESTING.md`,
+  `docs/HEADLESS_GPU.md`.
+- History, not instructions: `docs/archive/` (`FEATURE_PARITY_HISTORY.md`
+  answers "why is it like that"), `REWRITE_PLAN.md` (at the root only because
+  source comments cite it). Put expensive-to-rediscover investigation there,
+  live tasks in `FEATURE_PARITY_PLAN.md`.
+
+## GPU
+
+Measurements and the defects the GPU path surfaced: `docs/HEADLESS_GPU.md`.
+
+- The headless gate runs on the GPU through VirtualGL; its `gpu:` line names
+  the path, and a CPU line is the thing to explain. `MZ_GL_LAUNCH` overrides
+  (empty forces `llvmpipe`), `MZ_VGL_DEVICE` picks the device (default `egl0`).
+  The launcher must resolve to an absolute path, because probes strip `PATH`.
+- Pass `--encoder nvenc` for every export you only look at; leave the default
+  x264 for anything the operator keeps or posts. The gate picks NVENC itself
+  (`MZ_ENCODER=x264` forces CPU). Unknown encoder names are refused.
+- NVENC `-cq` is not x264 `-crf` (mapping in `ExportQuality::nvenc_cq`);
+  `-b:v 0` is load-bearing; the 3090 cannot encode AV1. The encoder is session
+  state (`RenderRequest`), never project state. An md5 comparison of two exports
+  must hold the encoder fixed.
+
+## Persistent storage (operator, 2026-08-04)
+
+- Model weights: a directory the user chooses. Default `<install dir>/models/`,
+  falling back to a `musializer` directory in the user's home. Never a location
+  the user was not shown.
+- On this machine, research downloads go under
+  `~/.local/share/musializer/models/<model>/`. Never install into the
+  `~/.local/share/musializer/lyrics-align/` venv.
+- Hugging Face ids land in `~/.cache/huggingface/hub`, a symlink onto the
+  `Bigger SSD`. If `mountpoint -q "/run/media/wolfram/Bigger SSD"` fails, run
+  `udisksctl mount -b '/dev/disk/by-label/Bigger\x20SSD'`.
+- Credentials: no OS wallet. A 0600 file under the per-user config directory,
+  session-only storage, or env import. Never in `.musi`, preference JSON, argv,
+  logs, analysis artifacts or a repository `.env`.
+- Non-secret preferences: versioned, atomically replaced, XDG config directory.
+
+## Repository rules
 
 - Preserve unrelated work in both repositories.
-- Keep first-party application code in Rust. Retaining raylib as an external C
-  dependency through Rust bindings is intentional and in scope, as is FFmpeg as
-  an external executable and the existing Python helpers as independent tools.
-- Do not copy credentials, `.env`, user audio, generated video, analysis
-  caches, or build artifacts into this repository. Synthetic fixtures only.
-- Prefer small compiling checkpoints, but optimize for a fast Linux-first hobby
-  rewrite rather than release-engineering ceremony.
-- Only the integration owner edits the root manifest or broad application
-  state. Leaf agents request dependencies rather than adding them.
+- First-party code is Rust. raylib through bindings, FFmpeg as an executable and
+  the Python helpers as independent tools are intended.
+- Never commit credentials, `.env`, user audio, generated video, analysis caches
+  or build artifacts. Synthetic fixtures only.
+- Parallel agents: one file each under `ui/panels/`; nobody edits another's or a
+  `mod.rs`. Only the integration owner edits the root manifest or broad
+  application state; leaf agents request dependencies.
+- Small compiling checkpoints at hobby pace, not release ceremony.
 
 ## Style
 
-- Cite the oracle. Where a function reproduces C behaviour, name the C file and
-  line in the doc comment. It is the difference between a port a later reader can
-  check and one they have to trust.
-- Say why, not what, in comments — especially where the oracle looks wrong. Those
-  are the lines a future session will otherwise "fix" back into a parity bug.
-- Data tables that are checked column-by-column against C carry
-  `#[rustfmt::skip]`, because rustfmt explodes them into one argument per line
-  and destroys the thing that makes them checkable.
-- `cargo fmt` and a clippy-clean tree are the baseline; deviations are marked
-  with `#[allow(...)]` and a reason.
+- Where code reproduces C behaviour, cite the C file and line.
+- Comments say why, especially where the oracle looks wrong or a choice looks
+  fixable.
+- `cargo fmt` and clippy clean; deviations carry `#[allow(...)]` with a reason.
 
 ## Not built, and not going to be
 
-Recorded here rather than only in the plan, because this is where a user would
-look for the difference list. Parity is declared *with* these, not despite them.
-
-- **Microphone capture** (`MUSIALIZER_MICROPHONE`). Operator's call, 2026-07-27.
-  A build-flag feature of the frozen binary; nothing else depends on it, and it
-  needs a second audio path the bridge does not have.
-- **Hot reload.** An explicit first-pass non-goal since the fork.
-- **Non-Linux platforms, including Windows, macOS and OpenBSD.** Linux-first
-  hobby rewrite.
-
-## Still to be filled in
-
-`FEATURE_PARITY_PLAN.md`'s **Open work** table is the authoritative ordered list,
-and it is deliberately not restated here — the summary that used to sit in this
-spot outlived the work it described by weeks. The deliberate exclusions
-immediately above and the rules throughout this guide remain authoritative.
+Microphone capture (operator, 2026-07-27), hot reload, non-Linux platforms.

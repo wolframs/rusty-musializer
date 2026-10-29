@@ -46,7 +46,7 @@ const PI: f32 = std::f32::consts::PI;
 ///
 /// Shared with `scenes::phosphor_dream`, which needs the same monospaced face
 /// for the same reason. One type rather than two identical ones so the `unsafe`
-/// inventory in `AGENTS.md` keeps naming a single island.
+/// inventory in `docs/UNSAFE.md` keeps naming a single island.
 pub(crate) struct DefaultFont(raylib_sys::Font);
 
 impl DefaultFont {

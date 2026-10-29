@@ -117,10 +117,18 @@ alone. Read them in this order if you are changing localization:
 
 - [`../FEATURE_PARITY_PLAN.md`](../FEATURE_PARITY_PLAN.md) is the **only** live
   completion queue. Do not grow a second backlog inside documentation.
-- [`../AGENTS.md`](../AGENTS.md) carries the engineering constraints: the
-  `unsafe` inventory, the test-silence requirements, the GPU headless-gate path,
-  the traps this rewrite has already paid for, and the negative-control rules.
-  It is authoritative wherever it and a document here disagree.
+- [`../AGENTS.md`](../AGENTS.md) carries the engineering rules: test silence,
+  evidence and negative controls, the parity test, storage, and one line per
+  trap. It is authoritative wherever it and a document here disagree. Its
+  detail lives in:
+  - [`DIVERGENCES.md`](DIVERGENCES.md) — every deliberate difference from the
+    C and every invented mechanism, with its reason;
+  - [`UNSAFE.md`](UNSAFE.md) — the `unsafe` inventory;
+  - [`TRAPS.md`](TRAPS.md) — the traps, with how each was found;
+  - [`DIFFERENTIAL_TESTING.md`](DIFFERENTIAL_TESTING.md) — the harness table
+    and its lessons;
+  - [`HEADLESS_GPU.md`](HEADLESS_GPU.md) — NVENC measurements and the
+    VirtualGL gate.
 
 ## Historical material
 

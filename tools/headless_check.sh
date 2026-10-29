@@ -122,7 +122,7 @@ if [ -n "$MZ_GL" ]; then
     echo "gpu: launching through '$MZ_GL'"
 else
     echo "gpu: none — rendering through Mesa on the CPU."
-    echo "     Install VirtualGL to put this on the GPU; see AGENTS.md."
+    echo "     Install VirtualGL to put this on the GPU; see docs/HEADLESS_GPU.md."
 fi
 
 # The same shape for the video encoder: use NVENC for this script's own MP4

@@ -198,7 +198,7 @@ They are independent unless a line says otherwise. Every one finishes with
    mockup's surfaces. Lives in `ui/theme.rs` (palette and egui visuals) and
    the shell's draw calls. It touches both themes. Expect the headless gate's
    colour assertions to move: update them on purpose, never loosen them
-   (see "The headless gate runs on the GPU" in `AGENTS.md`). Done when a capture of Door, No Room
+   (see `docs/HEADLESS_GPU.md`). Done when a capture of Door, No Room
    at 1920x1080 reads like the mockup's chrome.
 2. **WX-5b: the plan lane as runs.** *Done 2026-10-24, lane and poster
    service together.* Consecutive sections of one scene

@@ -22,7 +22,7 @@
 //! the optimizer, which is what stops the stores being eliminated as dead — the
 //! same outcome a volatile write buys, without an unsafe island in the pure
 //! crate. If a later reader wants literal volatile semantics, the change is one
-//! loop body plus an `AGENTS.md` inventory row; it is a deliberate choice, not
+//! loop body plus a `docs/UNSAFE.md` row; it is a deliberate choice, not
 //! an oversight.
 
 use std::fmt;

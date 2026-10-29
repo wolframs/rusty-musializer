@@ -25,7 +25,7 @@
  * interval < 0.60`, `phase > 0.25 && phase < 0.28`), inherited from
  * `../musializer/tests/test_beat_tracker.c`, which pins 7 values out of 18
  * expectations and gives every float a 1e-6 tolerance. A range is satisfied by a
- * wrong formula; see AGENTS.md's measured table.
+ * wrong formula; see docs/DIFFERENTIAL_TESTING.md's measured table.
  *
  * What is compared, and why that is the whole observable surface. `Beat_Tracker`
  * has seven fields; the Rust port exposes three of them (`interval_seconds`,

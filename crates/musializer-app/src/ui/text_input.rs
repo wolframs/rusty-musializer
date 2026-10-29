@@ -122,7 +122,7 @@ impl TextField {
     /// Returns what happened, for the caller's notices. The field claims no
     /// widget id: it is not a button, and taking the shared `active_button_id`
     /// for the length of a selection drag would freeze every other control the
-    /// way a stranded claim does (`ui_widgets.c`, and AGENTS.md's note on it).
+    /// way a stranded claim does (`ui_widgets.c`, and the trap in `docs/TRAPS.md`).
     ///
     /// The face is the caller's choice — the lyric editor passes the caption
     /// atlas so a user's own words are legible while typed (review 1.5); a

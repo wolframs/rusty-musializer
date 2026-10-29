@@ -133,8 +133,7 @@ pub struct Palette {
     /// frame, so the lanes read as rows of one table rather than as boxes that
     /// happen to be stacked. Never a colour text is drawn on, and always an
     /// **exact** fill distinct from [`Self::ui_surface`] and [`Self::ui_raised`]:
-    /// the gate's seam detector matches it with tolerance zero (AGENTS.md, "The
-    /// headless gate runs on the GPU").
+    /// the gate's seam detector matches it with tolerance zero (`docs/HEADLESS_GPU.md`).
     pub ui_lane_trough: u32,
     /// A filled amount: slider and meter fills, the scrub bar, the played part
     /// of the waveform. A *warm* grey, and the waveform ahead of the playhead
@@ -154,7 +153,7 @@ pub struct Palette {
     /// the mockup's `.ly.now`). The accent is the playhead crossing it.
     pub ui_cue_now: u32,
     /// The hairline at a cut *inside* a plan-lane run (WX-5b). Opaque, so the
-    /// gate can count it by exact colour (AGENTS.md: opaque fills are the one
+    /// gate can count it by exact colour (`docs/HEADLESS_GPU.md`: opaque fills are the one
     /// thing every renderer writes bit-exactly), and a colour nothing else in
     /// the lane uses.
     pub ui_run_cut: u32,
