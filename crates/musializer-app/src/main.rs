@@ -796,6 +796,12 @@ fn run(
     // `--ui-probe key=escape`: frames left before the one Escape, on the
     // frame `click=` would press, after the same settling frames.
     let mut escape_in: Option<u32> = None;
+    // `--ui-probe progress-shot=N` (WX-5d), and whether frame N is past.
+    let mut progress_shot: Option<u32> = options
+        .ui_probe
+        .as_ref()
+        .and_then(|probe| probe.progress_shot);
+    let mut progress_shot_armed = false;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -1547,6 +1553,26 @@ fn run(
         // the analyzer and the scene for the duration, and draws its own progress
         // screen (`musializer.c:641-651`).
         if export.is_some() {
+            // `--ui-probe progress-shot=N` (WX-5d): photograph the progress
+            // screen once frame N has been encoded. One tick after it was
+            // drawn, because a readback returns the frame before the last
+            // (`docs/TRAPS.md`), and the line reported is that frame's.
+            if let (Some(target), Some(path)) = (progress_shot, options.probe_shot.as_ref()) {
+                let encoded = export.as_ref().map_or(0, ExportSession::encoded_frames);
+                if progress_shot_armed {
+                    let path = progress_shot_path(path);
+                    with_preview_paused(music.as_ref(), || {
+                        let image = rl.load_image_from_screen(&thread);
+                        image.export_image(&path.to_string_lossy());
+                    });
+                    app.shell.render_view.progress_at_shot =
+                        Some(app.shell.render_view.progress_previous.clone());
+                    progress_shot = None;
+                    progress_shot_armed = false;
+                } else if encoded > u64::from(target) {
+                    progress_shot_armed = true;
+                }
+            }
             let finished = export.as_mut().expect("just checked").tick(
                 &mut rl,
                 &thread,
@@ -1790,7 +1816,8 @@ fn run(
             }
             app.shell.dock_keyboard = app.shell.dock_open && dock.wants_keyboard();
             if editor_active {
-                let bounds = ui::shell_layout::editor_rect(workspace_window);
+                let bounds = app.shell.editor_panel(workspace_window);
+                editor.column_skin = column_layout;
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
@@ -6721,4 +6748,17 @@ mod tests {
         assert_eq!(scene_clock_delta(&mut previous, 4.75), 0.0);
         assert!((scene_clock_delta(&mut previous, 4.8) - 0.05).abs() < 1.0e-6);
     }
+}
+
+/// Where `progress-shot=` writes: beside `--probe-shot`, with `-progress`
+/// before the extension, so one run can photograph the progress screen and
+/// the workspace after it.
+fn progress_shot_path(shot: &Path) -> PathBuf {
+    let stem = shot
+        .file_stem()
+        .map_or_else(|| "shot".into(), |stem| stem.to_string_lossy().into_owned());
+    let extension = shot
+        .extension()
+        .map_or_else(|| "png".into(), |ext| ext.to_string_lossy().into_owned());
+    shot.with_file_name(format!("{stem}-progress.{extension}"))
 }

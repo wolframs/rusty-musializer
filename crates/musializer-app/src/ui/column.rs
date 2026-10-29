@@ -173,6 +173,24 @@ impl Shell {
             .then(|| column_layout::column_width(window_width, self.ui_preferences.column_width))
     }
 
+    /// Where the F8 Editor's panel goes (WX-5d §3.6): with the column layout
+    /// the column's own place — its x, the full height, 16 px from the top,
+    /// the bottom and the window's right edge — so opening it moves nothing
+    /// on the right. Without it, the Editor's own rule.
+    #[must_use]
+    pub fn editor_panel(&self, window: (f32, f32)) -> UiRect {
+        if !self.column_layout {
+            return super::shell_layout::editor_rect(window);
+        }
+        let width = column_layout::column_width(window.0, self.ui_preferences.column_width);
+        UiRect::new(
+            window.0 - width,
+            16.0,
+            (width - 16.0).max(0.0),
+            (window.1 - 32.0).max(0.0),
+        )
+    }
+
     /// The frame with the column (§1); `Shell::frame_for` calls it while the
     /// switch is on and the frame is neither fullscreen nor the editor.
     #[must_use]
@@ -281,7 +299,7 @@ impl Shell {
             return;
         }
         if rect.is_empty() {
-            self.column_report.drawn = Some((ColumnView::Closed, rect));
+            self.column_report.drawn = Some((self.column_view(), rect));
             return;
         }
         widgets::fill(d, rect, color::ui_surface());
@@ -334,7 +352,9 @@ impl Shell {
         let at = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
         let badge = format!("direct:{}", self.column_report.badge.name());
         if rect.is_empty() {
-            return format!("view=closed open=0 badge={badge}");
+            // Closed, or hidden by a frame that has no column (fullscreen,
+            // the Editor): the view is still the one it will come back on.
+            return format!("view={} open=0 badge={badge}", view.name());
         }
         let head = widgets::column_head_layout(rect, 0.0);
         format!(

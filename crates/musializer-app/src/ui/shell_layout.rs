@@ -345,8 +345,16 @@ impl WorkspaceFrame {
 
     /// Editing gives the complete scene the space beside the toolkit panel.
     /// Inactive workspace controls are hidden instead of implying they can be used.
+    #[cfg(test)]
     pub fn editor(window: (f32, f32)) -> Self {
-        let panel = editor_rect(window);
+        Self::editor_beside(window, editor_rect(window))
+    }
+
+    /// [`Self::editor`] beside a given panel: with the column layout the
+    /// Editor takes the column's place (WX-5d §3.6), so F8 no longer moves
+    /// the right edge.
+    #[must_use]
+    pub fn editor_beside(window: (f32, f32), panel: UiRect) -> Self {
         let mut frame = Self::fullscreen(window.0, window.1, false);
         frame.preview = UiRect::new(
             16.0,

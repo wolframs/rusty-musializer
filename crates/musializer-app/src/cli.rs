@@ -488,10 +488,6 @@ pub struct UiProbe {
     pub assist_card: Option<musializer_core::assist::execution::WorkflowKind>,
     /// `progress-shot=N` (WX-5d): photograph the export progress screen while
     /// it encodes frame N (0-based), so the themed screen is reviewable.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Frame builder's progress screen reads it"
-    )]
     pub progress_shot: Option<u32>,
 }
 

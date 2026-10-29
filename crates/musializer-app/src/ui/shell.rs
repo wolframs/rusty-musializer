@@ -758,6 +758,9 @@ pub struct Shell {
     pub(crate) column_frame: UiRect,
     /// What the column drew in the last frame, for the `column:` line.
     pub(crate) column_report: super::column::ColumnReport,
+    /// The Render view's scroll and what it and the progress screen drew,
+    /// for the `render view:` and `export progress:` lines (WX-5d).
+    pub(crate) render_view: super::panels::export::RenderView,
 }
 
 /// The colour a save state's word draws in, wherever it is drawn: the tracks
@@ -1381,6 +1384,7 @@ impl Shell {
             assist_column: super::panels::assist::AssistColumn::default(),
             column_frame: UiRect::default(),
             column_report: super::column::ColumnReport::default(),
+            render_view: super::panels::export::RenderView::default(),
         }
     }
 
@@ -1617,7 +1621,7 @@ impl Shell {
     #[must_use]
     pub fn frame_for(&self, window: (f32, f32), workspace: &Workspace) -> WorkspaceFrame {
         if self.editor_open && !self.assist_settings.is_open() {
-            return WorkspaceFrame::editor(window);
+            return WorkspaceFrame::editor_beside(window, self.editor_panel(window));
         }
         if self.fullscreen {
             return WorkspaceFrame::fullscreen(window.0, window.1, true);
