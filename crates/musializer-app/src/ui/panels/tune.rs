@@ -3021,7 +3021,7 @@ impl Shell {
         };
         match (explore, audition) {
             (tune_groups::ExploreLayout::Tiles { nudge, surprise }, _) => {
-                for (tile, slot_index, strength, icon, title, line, tip) in [
+                for (tile, slot_index, strength, icon, title, line, short, tip) in [
                     (
                         *nudge,
                         column_slot::NUDGE,
@@ -3029,6 +3029,7 @@ impl Shell {
                         musializer_runtime::font::Icon::Sliders,
                         "Nudge",
                         "Small steps around this look",
+                        "Small steps",
                         "Move every value a little, at random. The trial card brings it back.",
                     ),
                     (
@@ -3037,6 +3038,7 @@ impl Shell {
                         Strength::Surprise,
                         musializer_runtime::font::Icon::Random,
                         "Surprise",
+                        "A bold new look",
                         "A bold new look",
                         "Re-tune this scene at random, inside every value's own range. The trial card brings it back.",
                     ),
@@ -3082,6 +3084,14 @@ impl Shell {
                         15.0,
                         color::ui_ink(),
                     );
+                    // The full invitation when it fits; at the 320 column the
+                    // first words carry it rather than a faded half sentence.
+                    let room = (tile.width - 24.0).max(0.0);
+                    let line = if widgets::measure(font, line, metric::UI_FONT_CAPTION) <= room {
+                        line
+                    } else {
+                        short
+                    };
                     widgets::draw_text_faded(
                         d,
                         font,
