@@ -42,8 +42,22 @@
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
 #
 # NEGATIVE CONTROLS, run 2026-10-29 on the GPU path and on llvmpipe
-# (MZ_GL_LAUNCH=""), each perturbation reverted byte for byte after:
-#   (filled in below the checks' first green run; see the end of this file)
+# (MZ_GL_LAUNCH=""), each a binary built from a perturbed tree that was then
+# restored with `git checkout` and shown clean; identical failures on both:
+#   A (16 failures): the tab press calling nothing (check 1's five, the gap
+#     control still green, and check 4's restart, whose save is a tab
+#     press); the column 1 px wider on Lyrics (check 2 at all four sizes);
+#     the commit drawn Neutral (check 3: census 0, no accent in the commit);
+#     the keyboard release removed (check 5: keyboard=true after leaving);
+#     the progress ground cleared to the old background (check 7).
+#   B (8 failures): Render… left Primary while its view is open (census 2,
+#     ~1900 accent px on Render…); the dock_width seed removed (check 4's
+#     old file); the Direct dot never set (reply and waiting fail, the
+#     on-Direct control still `none`); the bar filled in the level tone
+#     instead of the accent (check 7's exact bar; the frame-0 control green).
+# The frame-0 control first failed on llvmpipe alone: a readback there
+# returned the newest frame, not the one before (docs/TRAPS.md), so the
+# probe now holds the encoder and photographs a still screen.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
