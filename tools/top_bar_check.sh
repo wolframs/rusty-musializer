@@ -142,18 +142,18 @@ case "$(line_of panel "$OUT/tab-gap.log")|$(line_of 'top bar' "$OUT/tab-gap.log"
 esac
 
 # 3. Still and Contact sheet, through the export path.
-run still "$OUT/show.treatment.json" 30 "time=3,click=$(centre "$base" still),save-to=$OUT/still.png"
+run still "$OUT/show.treatment.json" 30 "time=3,click=$(centre "$base" still),save-to=$OUT/written-still.png"
 grep -q '^export still: ' "$OUT/still.log" || fail "Still printed no export still: line"
-[ -s "$OUT/still.png" ] || fail "Still wrote no file"
-run sheet "$OUT/show.treatment.json" 30 "time=3,click=$(centre "$base" sheet),save-to=$OUT/sheet.png"
+[ -s "$OUT/written-still.png" ] || fail "Still wrote no file"
+run sheet "$OUT/show.treatment.json" 30 "time=3,click=$(centre "$base" sheet),save-to=$OUT/written-sheet.png"
 sheet_line="$(line_of 'contact sheet' "$OUT/sheet.log")"
 printf '%s\n' "$sheet_line"
 case "$sheet_line" in
     *'3 tiles from'*) ;;
     *) fail "Contact sheet did not write one tile per section (3)" ;;
 esac
-[ -s "$OUT/sheet.png" ] || fail "Contact sheet wrote no file"
-python3 - "$OUT/sheet.png" "$OUT/still.png" <<'PY' || fail "a written file is not the image it should be"
+[ -s "$OUT/written-sheet.png" ] || fail "Contact sheet wrote no file"
+python3 - "$OUT/written-sheet.png" "$OUT/written-still.png" <<'PY' || fail "a written file is not the image it should be"
 import sys
 from PIL import Image
 sheet, still = Image.open(sys.argv[1]), Image.open(sys.argv[2])
@@ -198,14 +198,14 @@ def ink(png, box):
     """Pixels far from the bar's own fill: glyph cores, not anti-aliasing.
     Invariant under the ±1 a blend rounds to on either renderer."""
     image = Image.open(png).convert("RGB").crop(box)
-    return sum(1 for p in image.getdata()
+    return sum(1 for p in image.get_flattened_data()
                if max(abs(a - b) for a, b in zip(p, surface)) > 40)
 
 def fill_share(png, box):
     """Share of pixels that are the bar's surface exactly: an opaque fill,
     which every renderer writes bit-exactly."""
     image = Image.open(png).convert("RGB").crop(box)
-    pixels = list(image.getdata())
+    pixels = list(image.get_flattened_data())
     return sum(1 for p in pixels if p == surface) / len(pixels)
 
 x, y, w, h = word
