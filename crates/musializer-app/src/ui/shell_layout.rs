@@ -302,6 +302,47 @@ impl WorkspaceFrame {
         }
     }
 
+    /// The frame with the right column (WX-5d §1, behind
+    /// `MUSIALIZER_COLUMN_LAYOUT`): the top bar spans the whole window, the
+    /// column runs from under it to the window's bottom edge, and the
+    /// workspace — rail, preview, transport, band — is everything left of it.
+    ///
+    /// `column_width` is `None` when the column is closed, which gives the
+    /// workspace the whole window. The inspector is empty here; the shell
+    /// points it at the column while Look is the view.
+    #[must_use]
+    pub fn with_column(
+        window_width: f32,
+        window_height: f32,
+        column_width: Option<f32>,
+        timeline_height: f32,
+    ) -> Self {
+        let column_width = column_width
+            .filter(|width| width.is_finite() && *width > 0.0)
+            .map_or(0.0, |width| width.min(window_width.max(0.0)));
+        let workspace_width = (window_width - column_width).max(0.0);
+        let mut frame = Self::layout_with_overrides(
+            workspace_width,
+            window_height,
+            false,
+            timeline_height,
+            LayoutOverrides::default(),
+        );
+        frame.top_bar.width = window_width.max(0.0);
+        let top = frame.top_bar.height;
+        frame.column = if column_width > 0.0 {
+            UiRect::new(
+                workspace_width,
+                top,
+                column_width,
+                (window_height - top).max(0.0),
+            )
+        } else {
+            UiRect::new(window_width.max(0.0), top, 0.0, 0.0)
+        };
+        frame
+    }
+
     /// Editing gives the complete scene the space beside the toolkit panel.
     /// Inactive workspace controls are hidden instead of implying they can be used.
     pub fn editor(window: (f32, f32)) -> Self {
@@ -1021,5 +1062,40 @@ mod tests {
             assert!(full.column.is_empty());
             assert!(WorkspaceFrame::editor((width, height)).column.is_empty());
         }
+    }
+
+    /// WX-5d §1's table, measured from the mockup bases: the column costs the
+    /// 16:9 frame nothing because the preview is height-bound with the band
+    /// at 260, and the band and preview are identical in every view.
+    #[test]
+    fn the_column_frame_is_the_designs_table() {
+        use musializer_core::ui::column_layout::column_width;
+        for (window, column, preview) in [
+            ((960.0, 640.0), 320.0, (588.0, 284.0)),
+            ((1280.0, 720.0), 358.0, (870.0, 364.0)),
+            ((1920.0, 1080.0), 460.0, (1408.0, 724.0)),
+            ((1707.0, 960.0), 460.0, (1195.0, 604.0)),
+        ] {
+            let width = column_width(window.0, None);
+            assert_eq!(width, column);
+            let frame = WorkspaceFrame::with_column(window.0, window.1, Some(width), 260.0);
+            assert_eq!(
+                frame.column,
+                UiRect::new(window.0 - column, 46.0, column, window.1 - 46.0)
+            );
+            assert_eq!(frame.top_bar, UiRect::new(0.0, 0.0, window.0, 46.0));
+            assert_eq!((frame.preview.width, frame.preview.height), preview);
+            assert_eq!(
+                frame.timeline,
+                UiRect::new(0.0, window.1 - 260.0, window.0 - column, 260.0)
+            );
+            assert!(frame.inspector.is_empty());
+            assert!(!frame.preview.overlaps(frame.column));
+            assert!(!frame.timeline.overlaps(frame.column));
+        }
+        let closed = WorkspaceFrame::with_column(1280.0, 720.0, None, 260.0);
+        assert!(closed.column.is_empty());
+        assert_eq!(closed.preview.width, 1228.0);
+        assert_eq!(closed.timeline.width, 1280.0);
     }
 }

@@ -90,6 +90,16 @@ pub const DOCK: Control = Control::new(
 /// The rail's two flyouts (WX-5c §1). Neither has a key: every letter a
 /// flyout could take is already a global, and both are one press away on the
 /// rail, which is always on screen beside the preview.
+/// The rail's column toggle (WX-5d §2), in the Dock's slot: the dock is the
+/// Direct view of the column now.
+pub const COLUMN: Control = Control::new(
+    Icon::Columns,
+    "Panel",
+    "Show or hide the side panel: Direct, Lyrics, Look, Assist [Ctrl+`]",
+);
+/// The Render view's close button (WX-5d §3.5).
+pub const CLOSE_VIEW: Control = Control::new(Icon::Times, "Close", "Close [Render\u{2026}]");
+
 pub const RAIL_TRACKS: Control = Control::new(
     Icon::Music,
     "Trk",
@@ -179,6 +189,8 @@ mod tests {
             LYRICS,
             ASSIST,
             DOCK,
+            COLUMN,
+            CLOSE_VIEW,
             RAIL_TRACKS,
             RAIL_SCENES,
             READOUT,

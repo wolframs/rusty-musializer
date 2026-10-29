@@ -120,6 +120,12 @@ impl Shell {
                 RailIcon::Tracks => (icons::RAIL_TRACKS, self.open_flyout == Some(Flyout::Tracks)),
                 RailIcon::Scenes => (icons::RAIL_SCENES, self.open_flyout == Some(Flyout::Scenes)),
                 RailIcon::Editor => (icons::EDITOR, self.editor_open),
+                // WX-5d: with the column the dock is its Direct view, and
+                // this slot shows or hides the whole column.
+                RailIcon::Dock if self.column_layout => (
+                    icons::COLUMN,
+                    self.column_view() != super::shell::ColumnView::Closed,
+                ),
                 RailIcon::Dock => (icons::DOCK, self.dock_open),
             };
             let id = widgets::widget_id(widgets::id::RAIL, slot as u32);
@@ -158,6 +164,9 @@ impl Shell {
                         self.open_flyout = None;
                         self.editor_open = true;
                     }
+                }
+                RailIcon::Dock if self.column_layout => {
+                    self.toggle_column(input.workspace, commands);
                 }
                 RailIcon::Dock => commands.push(self.toggle_dock()),
             }

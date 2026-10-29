@@ -238,6 +238,17 @@ pub struct Dock {
     /// agent's own TUI in a terminal tab.
     agents_in_terminal: bool,
     opened: u64,
+    /// Drawn as the column's Direct view (WX-5d): the column owns the grip,
+    /// and the head is the column's 40 px head.
+    in_column: bool,
+    /// The head's `+` asked for a terminal; opened by the header, which has
+    /// the context a new tab needs.
+    pending_terminal: bool,
+    /// Agent replies the user has had on screen; more than this is an
+    /// unseen reply, the Direct tab's ink dot.
+    seen_replies: usize,
+    /// A permission prompt has already posted its notice while away.
+    waiting_noticed: bool,
 }
 
 impl Dock {
@@ -446,6 +457,77 @@ impl Dock {
         )
     }
 
+    /// Draw as the column's Direct view (WX-5d) rather than beside the
+    /// workspace: no grip of the dock's own, the column's head.
+    pub fn set_in_column(&mut self, in_column: bool) {
+        self.in_column = in_column;
+    }
+
+    /// Gives up the keyboard (WX-5d §2): the dock left the screen, so no
+    /// surface of it may keep keystrokes. Also drops egui's focus, which
+    /// would otherwise hand the keyboard straight back to the terminal the
+    /// next time the dock is shown without anyone asking.
+    pub fn release_keyboard(&mut self, ctx: &Context) {
+        self.keyboard = false;
+        ctx.memory_mut(|memory| {
+            if let Some(id) = memory.focused() {
+                memory.surrender_focus(id);
+            }
+        });
+    }
+
+    /// The Direct tab's dot, and a notice to post once when an agent starts
+    /// waiting on Allow/Deny while the dock is away (WX-5d §2). `shown` is
+    /// whether the dock is on screen this frame, which is when its replies
+    /// count as seen.
+    pub fn badge(&mut self, shown: bool) -> (crate::ui::column::DirectBadge, Option<String>) {
+        use crate::ui::column::DirectBadge;
+        let mut working = false;
+        let mut waiting: Option<Agent> = None;
+        let mut replies = 0;
+        for tab in &self.tabs {
+            if let Body::Chat(chat) = &tab.body {
+                let (busy, asks, count) = chat.activity();
+                working |= busy;
+                if asks && waiting.is_none() {
+                    waiting = Some(chat.agent);
+                }
+                replies += count;
+            }
+        }
+        if shown {
+            self.seen_replies = replies;
+            self.waiting_noticed = waiting.is_some();
+            return (DirectBadge::None, None);
+        }
+        // A closed tab can take replies with it; never count below zero.
+        self.seen_replies = self.seen_replies.min(replies);
+        let notice = match waiting {
+            Some(agent) if !self.waiting_noticed => {
+                self.waiting_noticed = true;
+                Some(format!(
+                    "{} asks to run a command \u{00b7} open Direct to answer",
+                    agent.label()
+                ))
+            }
+            Some(_) => None,
+            None => {
+                self.waiting_noticed = false;
+                None
+            }
+        };
+        let badge = if waiting.is_some() {
+            DirectBadge::Waiting
+        } else if replies > self.seen_replies {
+            DirectBadge::Reply
+        } else if working {
+            DirectBadge::Working
+        } else {
+            DirectBadge::None
+        };
+        (badge, notice)
+    }
+
     /// Builds the dock into `rect` (egui points).
     pub fn show(&mut self, ctx: &Context, rect: Rect, context: &DockContext) -> DockOutput {
         let mut output = DockOutput::default();
@@ -468,11 +550,40 @@ impl Dock {
                     [rect.left_top(), rect.left_bottom()],
                     Stroke::new(1.0, rule),
                 );
-                self.grip(ui, rect, &mut output);
+                if !self.in_column {
+                    self.grip(ui, rect, &mut output);
+                }
                 let inner = rect.shrink2(egui::vec2(0.0, 0.0));
+                let content = if self.in_column {
+                    // The column's head (WX-5d §2): a 40 px row of session
+                    // tabs over a hairline, the same head every view has.
+                    let head = Rect::from_min_size(
+                        rect.min,
+                        egui::vec2(rect.width(), crate::ui::widgets::COLUMN_HEAD_HEIGHT),
+                    );
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(head.left(), head.bottom() - 0.5),
+                            egui::pos2(head.right(), head.bottom() - 0.5),
+                        ],
+                        Stroke::new(1.0, rule),
+                    );
+                    let mut head_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_max(
+                                egui::pos2(head.left() + 14.0, head.top()),
+                                egui::pos2(head.right() - 10.0, head.bottom() - 1.0),
+                            ))
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    );
+                    self.session_tabs(&mut head_ui);
+                    Rect::from_min_max(egui::pos2(rect.left(), head.bottom()), rect.max)
+                } else {
+                    inner
+                };
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(inner.shrink2(egui::vec2(10.0, 8.0)))
+                        .max_rect(content.shrink2(egui::vec2(10.0, 8.0)))
                         .layout(egui::Layout::top_down(egui::Align::Min)),
                 );
                 output.stop_following = self.header(&mut child, context);
@@ -544,42 +655,112 @@ impl Dock {
         self.dragging
     }
 
+    /// The column head's session tabs (WX-5d §3.1): each a state dot and
+    /// its name, the selected one in the selection look, `×` on the
+    /// selected one, `+` for a new terminal.
+    fn session_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut close = None;
+        let mut open = false;
+        let mut select = None;
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            let selected = index == self.active;
+            let (dot, name) = match &tab.body {
+                Body::Chat(chat) => {
+                    let (busy, waiting, _) = chat.activity();
+                    let dot = if waiting {
+                        color32::ui_warning()
+                    } else if busy {
+                        color32::ui_success()
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
+                    (dot, chat.agent.label().to_owned())
+                }
+                Body::Terminal(_) => {
+                    let dot = if tab.exited() {
+                        ui.visuals().weak_text_color()
+                    } else {
+                        color32::ui_success()
+                    };
+                    (dot, tab.title())
+                }
+            };
+            // The state dot, painted: the interface face has no U+25CF.
+            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(6.0, 6.0), egui::Sense::hover());
+            ui.painter().circle_filled(dot_rect.center(), 3.0, dot);
+            let text = RichText::new(name).color(if selected {
+                ui.visuals().strong_text_color()
+            } else {
+                ui.visuals().weak_text_color()
+            });
+            if ui.selectable_label(selected, text).clicked() {
+                select = Some(index);
+            }
+            if selected
+                && ui
+                    .small_button("\u{00d7}")
+                    .on_hover_text("Close this tab and hang up on what runs in it")
+                    .clicked()
+            {
+                close = Some(index);
+            }
+        }
+        if ui.small_button("+").on_hover_text("New terminal").clicked() {
+            open = true;
+        }
+        if let Some(index) = select {
+            self.active = index;
+            if let Some(tab) = self.tabs.get_mut(index) {
+                tab.focus();
+            }
+        }
+        if let Some(index) = close {
+            self.close_tab(index);
+        }
+        if open {
+            self.pending_terminal = true;
+        }
+    }
+
     /// Returns whether "stop following" was pressed.
     fn header(&mut self, ui: &mut egui::Ui, context: &DockContext) -> bool {
         let mut stop = false;
         let mut close = None;
         let mut open: Option<Option<Agent>> = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            for (index, tab) in self.tabs.iter().enumerate() {
-                let selected = index == self.active;
-                let title = tab.title();
-                let exited = tab.exited();
-                let text = if exited {
-                    RichText::new(format!("{title} ·")).weak()
-                } else {
-                    RichText::new(title)
-                };
-                if ui.selectable_label(selected, text).clicked() {
-                    self.active = index;
-                    if let Some(tab) = self.tabs.get_mut(index) {
-                        tab.focus();
+        if !self.in_column {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (index, tab) in self.tabs.iter().enumerate() {
+                    let selected = index == self.active;
+                    let title = tab.title();
+                    let exited = tab.exited();
+                    let text = if exited {
+                        RichText::new(format!("{title} ·")).weak()
+                    } else {
+                        RichText::new(title)
+                    };
+                    if ui.selectable_label(selected, text).clicked() {
+                        self.active = index;
+                        if let Some(tab) = self.tabs.get_mut(index) {
+                            tab.focus();
+                        }
+                        break;
                     }
-                    break;
+                    if selected
+                        && ui
+                            .small_button("×")
+                            .on_hover_text("Close this tab and hang up on what runs in it")
+                            .clicked()
+                    {
+                        close = Some(index);
+                    }
                 }
-                if selected
-                    && ui
-                        .small_button("×")
-                        .on_hover_text("Close this tab and hang up on what runs in it")
-                        .clicked()
-                {
-                    close = Some(index);
+                if ui.small_button("+").on_hover_text("New terminal").clicked() {
+                    open = Some(None);
                 }
-            }
-            if ui.small_button("+").on_hover_text("New terminal").clicked() {
-                open = Some(None);
-            }
-        });
+            });
+        }
         let mut chat = None;
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -647,6 +828,9 @@ impl Dock {
         }
         if let Some(index) = close {
             self.close_tab(index);
+        }
+        if std::mem::take(&mut self.pending_terminal) && open.is_none() {
+            open = Some(None);
         }
         if let Some(agent) = open {
             self.open_tab(agent, context, true);

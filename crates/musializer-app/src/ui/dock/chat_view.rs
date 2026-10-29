@@ -197,6 +197,19 @@ impl ChatTab {
         }
     }
 
+    /// What the Direct tab's dot reads while the column shows another view
+    /// (WX-5d §2): whether the agent works, waits on Allow/Deny, and how many
+    /// replies it has written.
+    #[must_use]
+    pub fn activity(&self) -> (bool, bool, usize) {
+        let (_, replies, _, _) = self.transcript.counts();
+        (
+            self.transcript.busy,
+            self.transcript.awaiting_permission(),
+            replies,
+        )
+    }
+
     #[must_use]
     pub fn title(&self) -> String {
         let marker = if self.transcript.awaiting_permission() {

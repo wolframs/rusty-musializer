@@ -429,6 +429,9 @@ fn run(
     // WX-5d: the column layout's switch, read once so no frame sees half of
     // it. Off unless `MUSIALIZER_COLUMN_LAYOUT=1`.
     app.shell.column_layout = ui::column::column_layout_from_env();
+    if app.shell.column_layout {
+        app.shell.seed_column_from_preferences();
+    }
     let mut editor_backend = ui::egui_backend::EguiBackend::default();
     let mut editor = ui::egui_editor::EditorState::default();
     let mut editor_was_active = false;
@@ -1367,32 +1370,65 @@ fn run(
         // the terminal reports the chord itself (`DockOutput::toggle`), so the
         // key means one thing whether or not the dock has focus.
         let mut dock_commands: Vec<ShellCommand> = Vec::new();
+        let column_layout = app.shell.column_layout;
         if !dock.wants_keyboard()
             && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
         {
-            dock_commands.push(app.shell.toggle_dock());
-            if app.shell.dock_open {
-                dock.focus_active();
+            if column_layout {
+                // WX-5d §2: Ctrl+` opens the column on Direct and focuses
+                // the terminal, or closes the column from Direct.
+                app.shell.toggle_column_view(
+                    ui::shell::ColumnView::Direct,
+                    &app.workspace,
+                    &mut dock_commands,
+                );
+                if app.shell.column_view() == ui::shell::ColumnView::Direct {
+                    dock.focus_active();
+                }
+            } else {
+                dock_commands.push(app.shell.toggle_dock());
+                if app.shell.dock_open {
+                    dock.focus_active();
+                }
             }
         }
         // Agents keep working, and terminals keep draining, whether or not
         // the dock is on screen.
         dock.tick();
         let full_logical = ui_scale.logical_size(physical_window);
-        let dock_rect = (app.shell.dock_open && !app.shell.fullscreen)
-            .then(|| {
-                ui::dock::Dock::rect(
-                    full_logical,
-                    dock.dragged_width().or(app.shell.ui_preferences.dock_width),
-                )
-            })
-            .flatten();
-        let workspace_window = dock_rect.map_or(full_logical, |rect| (rect.x, full_logical.1));
+        let dock_rect = if column_layout {
+            // WX-5d: the dock is the column's Direct view, drawn into the
+            // column; the workspace is not narrowed for it any more.
+            (app.shell.column_view() == ui::shell::ColumnView::Direct)
+                .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
+                .filter(|rect| !rect.is_empty())
+        } else {
+            (app.shell.dock_open && !app.shell.fullscreen)
+                .then(|| {
+                    ui::dock::Dock::rect(
+                        full_logical,
+                        dock.dragged_width().or(app.shell.ui_preferences.dock_width),
+                    )
+                })
+                .flatten()
+        };
+        let workspace_window = if column_layout {
+            full_logical
+        } else {
+            dock_rect.map_or(full_logical, |rect| (rect.x, full_logical.1))
+        };
         if dock_rect.is_none() {
             app.shell.dock_keyboard = false;
+            // Leaving Direct, or hiding the dock, releases the keyboard
+            // (WX-5d §2). Without this a terminal that hid the dock with
+            // Ctrl+` kept the keyboard, and the chord could not reopen it.
+            if dock.wants_keyboard() {
+                dock.release_keyboard(editor_backend.ctx());
+            }
         }
+        dock.set_in_column(column_layout);
         // Reasserted every frame rather than set once, so the tooltip a capture is
         // after is in the shot regardless of how many frames the run lasts — and
         // so a window that only gets its geometry after the first frame cannot
@@ -1734,7 +1770,15 @@ fn run(
                 }
                 let output = dock.show(editor_backend.ctx(), rect, &context);
                 if output.toggle {
-                    dock_commands.push(app.shell.toggle_dock());
+                    if column_layout {
+                        app.shell.toggle_column_view(
+                            ui::shell::ColumnView::Direct,
+                            &app.workspace,
+                            &mut dock_commands,
+                        );
+                    } else {
+                        dock_commands.push(app.shell.toggle_dock());
+                    }
                 }
                 if output.stop_following {
                     dock_commands.push(ShellCommand::StopFollowingTreatment);
@@ -1776,6 +1820,17 @@ fn run(
                 welcome_input_blocked = owns_input;
             }
             editor_backend.end_frame(&mut rl);
+        }
+
+        // The Direct tab's dot, and one notice when an agent starts waiting
+        // on Allow/Deny while another view has the column (WX-5d §2).
+        if column_layout {
+            let (badge, notice) = dock.badge(dock_rect.is_some());
+            app.shell.column_report.badge = badge;
+            if let Some(detail) = notice {
+                app.shell
+                    .notify(Severity::Warning, "An agent is waiting on you", &detail);
+            }
         }
 
         // The shape the export will actually be (EX2). Falls back to the default

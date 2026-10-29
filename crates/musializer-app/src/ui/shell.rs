@@ -752,6 +752,12 @@ pub struct Shell {
     /// What Assist drew in its last frame, for the `assist column:` line
     /// (WX-5d). `panels::assist`'s type, for the same reason.
     pub(crate) assist_column: super::panels::assist::AssistColumn,
+    /// The column's rect in the frame being drawn (WX-5d), set at the top of
+    /// [`Self::draw`]; empty when the switch is off, the column is closed,
+    /// or the frame hides it. Read through [`Self::column_rect`].
+    pub(crate) column_frame: UiRect,
+    /// What the column drew in the last frame, for the `column:` line.
+    pub(crate) column_report: super::column::ColumnReport,
 }
 
 /// The colour a save state's word draws in, wherever it is drawn: the tracks
@@ -818,6 +824,16 @@ pub enum ModeTab {
 }
 
 impl ModeTab {
+    /// The tabs with the column layout (WX-5d §2): Export left for Render…,
+    /// which opens the Render view, so the four are the views kept open while
+    /// watching.
+    pub const COLUMN: [ModeTab; 4] = [
+        ModeTab::Direct,
+        ModeTab::Lyrics,
+        ModeTab::Look,
+        ModeTab::Assist,
+    ];
+
     pub const ALL: [ModeTab; 5] = [
         ModeTab::Direct,
         ModeTab::Lyrics,
@@ -856,10 +872,6 @@ impl ModeTab {
     /// [`ColumnView`]. `Export` is `Render` until the switch flips and Export
     /// leaves the tabs for Render… (§3.5).
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Frame builder's tab press routes through it"
-    )]
     pub fn column_view(self) -> ColumnView {
         match self {
             ModeTab::Direct => ColumnView::Direct,
@@ -928,6 +940,8 @@ impl ColumnView {
 enum SplitKind {
     Inspector,
     Timeline,
+    /// The column's left edge (WX-5d): one width for every view.
+    Column,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1365,6 +1379,8 @@ impl Shell {
             column_layout: false,
             look_column: super::panels::tune::LookColumn::default(),
             assist_column: super::panels::assist::AssistColumn::default(),
+            column_frame: UiRect::default(),
+            column_report: super::column::ColumnReport::default(),
         }
     }
 
@@ -1606,6 +1622,9 @@ impl Shell {
         if self.fullscreen {
             return WorkspaceFrame::fullscreen(window.0, window.1, true);
         }
+        if self.column_layout {
+            return self.column_frame_for(window);
+        }
         let timeline = self.resolved_timeline_height(window, workspace);
         // `ui_preferences.sidebar_width` is still read from `ui.json`, so a
         // file written before WX-5c loads, and nothing lays out by it: the
@@ -1827,6 +1846,13 @@ impl Shell {
         let toolbar = self.toolbar(d, frame, under, &mut commands);
         self.last_rail = frame.rail_layout;
         self.last_flyout = None;
+        self.column_frame = if self.column_layout && !self.fullscreen && !self.editor_open {
+            frame.column
+        } else {
+            UiRect::default()
+        };
+        // The column's surface and edge, under every view's own drawing.
+        self.column_chrome(d, under);
 
         if !self.fullscreen {
             // WX-5c: the top bar and the rail. Both rects are empty in the
@@ -1841,9 +1867,15 @@ impl Shell {
             if !modal {
                 self.timeline_strip(d, frame, under, toolbar, &mut commands);
             }
-            if self.inspector_open && !self.editor_open {
+            // With the column layout Look is one view among five, drawn only
+            // while it is the view (`frame.inspector` is the column then).
+            let look = !self.column_layout || self.column_view() == ColumnView::Look;
+            if self.inspector_open && !self.editor_open && look {
                 let placement = self.placement();
                 self.inspector(d, frame, under, &mut commands, placement);
+            }
+            if self.column_layout && !self.editor_open {
+                self.column_views(d, frame, under, &mut commands);
             }
             if !self.editor_open {
                 self.splitters(d, frame, under, &mut commands);
@@ -2617,6 +2649,16 @@ impl Shell {
         }
         let mut keys = KeyboardFrame::read(d);
         keys.escape |= std::mem::take(&mut self.probe_escape);
+        if self.column_layout && keys.toggle_inspector {
+            // T is Look's tab (WX-5d §2): it opens Look, and on Look it
+            // closes the column, as pressing the selected tab does. Here
+            // rather than in `keyboard_actions`, which has no workspace for
+            // the lyric-draft guard a view change takes.
+            keys.toggle_inspector = false;
+            if !self.text_entry_has_focus() && !keys.control {
+                self.toggle_column_view(ColumnView::Look, input.workspace, commands);
+            }
+        }
         self.keyboard_actions(keys, KeyboardContext::of(input), commands);
     }
 
@@ -2748,6 +2790,8 @@ impl Shell {
             }
         }
         if keys.toggle_inspector {
+            // With the column layout `keyboard` answers T before this runs,
+            // because leaving Lyrics for Look needs the draft guard.
             self.set_inspector_open(!self.inspector_open);
         }
         // Ctrl+S / Ctrl+Shift+S (review 1.12, UX0-A12). Deliberately *not*
@@ -3770,10 +3814,6 @@ impl Shell {
     /// open beside one, and the panel is the bigger thing on screen. Then
     /// the inspector, then the dock, else closed.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the `column:` line and the tabs read it once the Frame builder builds them"
-    )]
     pub fn column_view(&self) -> ColumnView {
         match self.panel {
             UiPanel::Lyrics => ColumnView::Lyrics,
@@ -3818,6 +3858,11 @@ impl Shell {
     /// [`Self::timeline_height`]), so it counts as Direct.
     #[must_use]
     pub(crate) fn mode_tab_selected(&self, tab: ModeTab) -> bool {
+        // WX-5d: one view at a time, so a tab is selected exactly when the
+        // column shows it.
+        if self.column_layout {
+            return self.column_view() == tab.column_view();
+        }
         match tab {
             ModeTab::Direct => {
                 matches!(self.panel, UiPanel::None | UiPanel::Tune) && !self.inspector_open
@@ -3834,7 +3879,16 @@ impl Shell {
     /// toggle behind the lyric-draft guard that every context change takes.
     /// `Direct` closes both, behind the same guard, since leaving the lyrics
     /// editor with a half-typed cue is a context change too.
-    pub(crate) fn activate_mode_tab(&mut self, tab: ModeTab, workspace: &Workspace) {
+    pub(crate) fn activate_mode_tab(
+        &mut self,
+        tab: ModeTab,
+        workspace: &Workspace,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if self.column_layout {
+            self.toggle_column_view(tab.column_view(), workspace, commands);
+            return;
+        }
         let panel = match tab {
             ModeTab::Look => {
                 self.set_inspector_open(!self.inspector_open);
@@ -3879,9 +3933,11 @@ impl Shell {
             return;
         }
         const HIT: f32 = 8.0;
-        let inspector = self
-            .inspector_open
+        let inspector = (self.inspector_open && !self.column_layout)
             .then(|| UiRect::new(frame.inspector.x - HIT * 0.5, 0.0, HIT, input.window.1));
+        // WX-5d: the column's left edge, one grip for every view.
+        let column = (self.column_layout && !frame.column.is_empty())
+            .then(|| super::column::column_grip(frame.column));
         let timeline = UiRect::new(
             0.0,
             frame.timeline.y - HIT * 0.5,
@@ -3892,6 +3948,11 @@ impl Shell {
         let hovered = inspector
             .filter(|rect| rect.contains_point(mouse.x, mouse.y))
             .map(|_| SplitKind::Inspector)
+            .or_else(|| {
+                column
+                    .filter(|rect| rect.contains_point(mouse.x, mouse.y))
+                    .map(|_| SplitKind::Column)
+            })
             .or_else(|| {
                 timeline
                     .contains_point(mouse.x, mouse.y)
@@ -3909,6 +3970,7 @@ impl Shell {
                     match kind {
                         SplitKind::Inspector => self.ui_preferences.inspector_width = None,
                         SplitKind::Timeline => self.ui_preferences.timeline_height = None,
+                        SplitKind::Column => self.ui_preferences.column_width = None,
                     }
                     self.split_drag = None;
                     self.notify(
@@ -3934,6 +3996,14 @@ impl Shell {
                         self.ui_preferences.timeline_height =
                             Some((input.window.1 - mouse.y).clamp(80.0, 4096.0))
                     }
+                    // The drag bounds; the workspace floor is the layout's.
+                    SplitKind::Column => {
+                        self.ui_preferences.column_width =
+                            Some((input.window.0 - mouse.x).round().clamp(
+                                musializer_core::ui::column_layout::COLUMN_DRAG_MIN,
+                                musializer_core::ui::column_layout::COLUMN_DRAG_MAX,
+                            ))
+                    }
                 }
             } else {
                 self.split_drag = None;
@@ -3949,7 +4019,7 @@ impl Shell {
         let active = self.split_drag.or(hovered);
         d.set_mouse_cursor(match active {
             Some(SplitKind::Timeline) => MouseCursor::MOUSE_CURSOR_RESIZE_NS,
-            Some(SplitKind::Inspector) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
+            Some(SplitKind::Inspector | SplitKind::Column) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
             None => self
                 .pointer_cursor
                 .unwrap_or(MouseCursor::MOUSE_CURSOR_DEFAULT),
@@ -3958,6 +4028,9 @@ impl Shell {
         draw_splitter(d, timeline, SplitKind::Timeline, active);
         if let Some(rect) = inspector {
             draw_splitter(d, rect, SplitKind::Inspector, active);
+        }
+        if let Some(rect) = column {
+            draw_splitter(d, rect, SplitKind::Column, active);
         }
     }
 
@@ -5276,6 +5349,16 @@ impl Shell {
     ) -> f32 {
         let below_strip = strip.y + strip.height;
         let placement = self.placement();
+        if placement == super::column::Placement::Column {
+            // WX-5d: the band is the same in every view. Lyrics owns its
+            // cue lane there and its view in the column; every other view
+            // leaves the band to the cue lane, and draws in the column from
+            // `column_views`.
+            return match self.panel {
+                UiPanel::Lyrics => self.lyrics_panel(d, input, content, strip, commands, placement),
+                _ => self.closed_lyric_lane(d, input, content, strip, commands),
+            };
+        }
         match self.panel {
             // The cue lane outlives the editor (D4). Only in these two states:
             // Export and Assist take the whole band for their own budgets, and
@@ -5747,7 +5830,7 @@ fn draw_splitter(
     };
     let thickness = if selected { 2.0 } else { 1.0 };
     match kind {
-        SplitKind::Inspector => {
+        SplitKind::Inspector | SplitKind::Column => {
             let x = hit.x + hit.width * 0.5;
             d.draw_line_ex(
                 Vector2::new(x, hit.y),
@@ -5791,22 +5874,22 @@ mod tests {
         shell.panel = UiPanel::Tune;
         assert_eq!(selected(&shell), ["direct"]);
 
-        shell.activate_mode_tab(ModeTab::Export, &workspace);
+        shell.activate_mode_tab(ModeTab::Export, &workspace, &mut Vec::new());
         assert_eq!(shell.panel, UiPanel::Export);
         assert_eq!(selected(&shell), ["export"]);
-        shell.activate_mode_tab(ModeTab::Look, &workspace);
+        shell.activate_mode_tab(ModeTab::Look, &workspace, &mut Vec::new());
         assert!(shell.inspector_open);
         assert_eq!(selected(&shell), ["look", "export"]);
         // A second press on a panel's tab closes it, as its transport button did.
-        shell.activate_mode_tab(ModeTab::Export, &workspace);
+        shell.activate_mode_tab(ModeTab::Export, &workspace, &mut Vec::new());
         assert_eq!(shell.panel, UiPanel::None);
         assert_eq!(selected(&shell), ["look"]);
 
-        shell.activate_mode_tab(ModeTab::Lyrics, &workspace);
-        shell.activate_mode_tab(ModeTab::Direct, &workspace);
+        shell.activate_mode_tab(ModeTab::Lyrics, &workspace, &mut Vec::new());
+        shell.activate_mode_tab(ModeTab::Direct, &workspace, &mut Vec::new());
         assert_eq!((shell.panel, shell.inspector_open), (UiPanel::None, false));
         assert_eq!(selected(&shell), ["direct"]);
-        shell.activate_mode_tab(ModeTab::Assist, &workspace);
+        shell.activate_mode_tab(ModeTab::Assist, &workspace, &mut Vec::new());
         assert_eq!(selected(&shell), ["assist"]);
     }
 

@@ -211,11 +211,24 @@ pub enum Icon {
     Music,
     /// The rail's scenes flyout (WX-5c).
     ThLarge,
+    /// The rail's column toggle (WX-5d): a panel on the right.
+    Columns,
+    /// Close a view (the Render view's ×, WX-5d).
+    Times,
+    /// Add: a cue, a chat, a swatch (WX-5d).
+    Plus,
+    /// Set to the playhead (the cue card's START and END, WX-5d).
+    Crosshairs,
+    /// Undo and redo in the column views (WX-5d).
+    Undo,
+    Redo,
+    /// Surprise, in Look's explore tiles (WX-5d).
+    Random,
 }
 
 impl Icon {
     /// Every icon, which is exactly what the atlas is built over.
-    pub const ALL: [Icon; 19] = [
+    pub const ALL: [Icon; 26] = [
         Icon::Play,
         Icon::Pause,
         Icon::Film,
@@ -235,6 +248,13 @@ impl Icon {
         Icon::Info,
         Icon::Music,
         Icon::ThLarge,
+        Icon::Columns,
+        Icon::Times,
+        Icon::Plus,
+        Icon::Crosshairs,
+        Icon::Undo,
+        Icon::Redo,
+        Icon::Random,
     ];
 
     /// The Font Awesome 4 codepoint.
@@ -260,6 +280,13 @@ impl Icon {
             Icon::Info => 0xF05A,
             Icon::Music => 0xF001,
             Icon::ThLarge => 0xF009,
+            Icon::Columns => 0xF0DB,
+            Icon::Times => 0xF00D,
+            Icon::Plus => 0xF067,
+            Icon::Crosshairs => 0xF05B,
+            Icon::Undo => 0xF0E2,
+            Icon::Redo => 0xF01E,
+            Icon::Random => 0xF074,
         }
     }
 
