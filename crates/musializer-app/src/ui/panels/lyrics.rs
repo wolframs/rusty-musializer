@@ -2743,9 +2743,7 @@ impl Shell {
         if boundary.is_empty() {
             return;
         }
-        let rect = widgets::rectangle(boundary);
-        d.draw_rectangle_rec(rect, color::ui_tooltip_surface());
-        d.draw_rectangle_lines_ex(rect, 1.0, color::ui_tooltip_edge());
+        widgets::tooltip_plate(d, boundary);
         let (text_x, text_y) = widgets::tooltip_text_origin(boundary);
         authored.draw_text(
             d,

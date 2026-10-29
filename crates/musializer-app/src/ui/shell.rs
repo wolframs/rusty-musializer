@@ -727,6 +727,8 @@ pub struct Shell {
     pub(crate) last_rail: Option<musializer_core::ui::workspace_layout::WorkspaceRail>,
     /// Where the open flyout drew in the last frame, for the same line.
     pub(crate) last_flyout: Option<UiRect>,
+    /// What the notice tray drew in the last frame, for the `notices:` line.
+    notices_drawn: NoticeTrayReport,
     /// The developer readout for this frame, long and short forms, handed in
     /// by `main.rs` before [`Shell::draw`]. The shell draws it because only
     /// the shell knows what floats over the preview: drawn after the shell,
@@ -1271,6 +1273,7 @@ impl Shell {
             open_flyout: None,
             last_rail: None,
             last_flyout: None,
+            notices_drawn: NoticeTrayReport::default(),
             hud_readout: None,
             transport_report: "none".to_owned(),
             probe_family: None,
@@ -1788,7 +1791,17 @@ impl Shell {
                 }
             }
         }
-        self.notice_tray(d, input.fonts.ui(), notice_region);
+        // The tray also starts past the flyout's shadow: a card laid on that
+        // gradient reads as dimmed on its left edge, half under the flyout.
+        if let Some(rect) = flyout {
+            let shadow_end = (rect.x + rect.width + super::rail::FLYOUT_SHADOW)
+                .min(notice_region.x + notice_region.width);
+            if shadow_end > notice_region.x {
+                notice_region.width = (notice_region.x + notice_region.width - shadow_end).max(0.0);
+                notice_region.x = shadow_end;
+            }
+        }
+        self.notice_tray(d, input.fonts.ui(), input.ui_scale.value(), notice_region);
         self.fullscreen_attention(d, input);
         // Over everything above, under the AI settings modal and the tooltip.
         if flyout.is_some() {
@@ -1901,20 +1914,31 @@ impl Shell {
         let right = input.window.0 - 10.0;
         let centre_y = 10.0;
         if expanded {
+            // A floating pill in the save state's own words (WX-5 follow-up):
+            // the dot and then the label, as the top bar says "● Unsaved",
+            // on the opaque floating surface rather than a translucent slab
+            // whose contrast depended on the frame under it.
             let label = attention.label();
-            let width = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION) + 24.0;
-            let pill = UiRect::new(right - width, 4.0, width, 22.0);
-            widgets::fill(d, pill, widgets::alpha(color::ui_surface(), 0.94));
+            let text = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION);
+            let width =
+                ATTENTION_PILL_PAD + ATTENTION_DOT + ATTENTION_DOT_GAP + text + ATTENTION_PILL_PAD;
+            let pill = UiRect::new(right - width, 4.0, width, ATTENTION_PILL_HEIGHT);
+            widgets::floating_surface(d, pill);
+            let centre = pill.y + pill.height * 0.5;
+            d.draw_circle_v(
+                Vector2::new(pill.x + ATTENTION_PILL_PAD + ATTENTION_DOT * 0.5, centre),
+                ATTENTION_DOT * 0.5,
+                tint,
+            );
             widgets::draw_text(
                 d,
                 input.fonts.ui(),
                 label,
-                pill.x + 9.0,
-                pill.y + 4.0,
+                pill.x + ATTENTION_PILL_PAD + ATTENTION_DOT + ATTENTION_DOT_GAP,
+                centre - metric::UI_FONT_CAPTION * 0.5 - 1.0,
                 metric::UI_FONT_CAPTION,
                 tint,
             );
-            d.draw_circle((right - 4.0) as i32, centre_y as i32, 3.0, tint);
         } else {
             d.draw_circle(right as i32, centre_y as i32, 3.0, tint);
         }
@@ -2188,7 +2212,7 @@ impl Shell {
         // The tray covers the whole window here, not a preview rectangle: there is
         // no preview, and a load failure is exactly the message this screen has to
         // be able to show (`plug.c:7830`).
-        self.notice_tray(d, font, UiRect::new(0.0, 0.0, w, h));
+        self.notice_tray(d, font, input.ui_scale.value(), UiRect::new(0.0, 0.0, w, h));
         self.notices.tick(f64::from(d.get_frame_time()));
 
         // Last, as in [`Shell::draw`], and for the same reason: `hint` only
@@ -5138,13 +5162,19 @@ impl Shell {
     /// The notice tray, over the preview's bottom-left corner
     /// (`notice_tray`, `plug.c`).
     ///
-    /// Three things here are review 1.11 (UX0-A11) rather than the oracle:
+    /// A card is a floating surface ([`widgets::floating_surface`]): the
+    /// appearance's raised surface, a hairline, the 4 px corner and a soft
+    /// shadow, the same object as a flyout or a tooltip (WX-5 follow-up). Its
+    /// head is a dot and a micro, tracked label, the way the top bar's save
+    /// state speaks; Info is neutral, and nothing on it wears the accent. Its
+    /// colours come from [`super::theme::Palette::notice_severity`] and
+    /// [`super::theme::Palette::float_surface`], which the palette sweep walks in both
+    /// appearances. Why the card follows the appearance rather than staying a
+    /// fixed dark card: `docs/DIVERGENCES.md`, "Notice card".
     ///
-    /// - **The severity label is a dark-surface colour.** It used to be the
-    ///   chrome palette's, which is chosen for a near-white panel: on this card
-    ///   INFO measured 1.69:1 and ERROR 3.19:1, so at a glance a failure and a
-    ///   confirmation looked the same. `theme::rgba::Surface` now makes the
-    ///   contrast sweep walk these pairs.
+    /// Three things here are review 1.11 (UX0-A11) rather than the oracle, and
+    /// they stay:
+    ///
     /// - **The card is opaque.** At alpha 232 the colour the user read was the
     ///   card composited over whatever the scene drew that frame, so no ratio
     ///   measured against it was true.
@@ -5153,25 +5183,36 @@ impl Shell {
     ///   characters — so a failure message ran across the preview and off the
     ///   window. [`notice::wrap_detail`] caps it and ellipsizes what is left, and
     ///   the card is sized from the lines that came back.
-    ///
-    /// Every card carries a close box, because [`Severity::Error`] notices are
-    /// persistent now and a notice that never expires needs a way out that is not
-    /// "restart the application".
-    fn notice_tray(&mut self, d: &mut RaylibDrawHandle<'_>, font: &UiFonts, preview: UiRect) {
+    /// - **Every card carries a close box**, keyed by the notice's id, because
+    ///   [`Severity::Error`] notices are persistent and a notice that never
+    ///   expires needs a way out that is not "restart the application".
+    fn notice_tray(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        scale: f32,
+        preview: UiRect,
+    ) {
+        self.notices_drawn = NoticeTrayReport {
+            scale,
+            region: preview,
+            queued: self.notices.len(),
+            cards: Vec::new(),
+        };
         if preview.is_empty() || self.notices.is_empty() {
             return;
         }
-        let width = NOTICE_CARD_WIDTH.min(preview.width - 24.0);
+        let width = NOTICE_CARD_WIDTH.min(preview.width - NOTICE_MARGIN * 2.0);
         if width <= 0.0 {
             return;
         }
-        let text_width = width - NOTICE_PADDING * 2.0 - NOTICE_CLOSE_SIZE;
-        if text_width <= 0.0 {
+        let text_width = width - NOTICE_PADDING * 2.0;
+        if text_width <= NOTICE_CLOSE_SIZE {
             return;
         }
         let measure = |text: &str, size: f32| widgets::measure(font, text, size);
 
-        let mut bottom = preview.y + preview.height - 12.0;
+        let mut bottom = preview.y + preview.height - NOTICE_MARGIN;
         let mut dismissed = None;
         // Newest last in the queue, so draw from the end upward: the most recent
         // notice sits closest to the bottom edge where the eye already is.
@@ -5180,46 +5221,35 @@ impl Shell {
                 notice::wrap_detail(&notice.detail, text_width, NOTICE_DETAIL_MAX_LINES, {
                     |text| measure(text, metric::UI_FONT_CAPTION)
                 });
-            let height = if detail.is_empty() {
-                NOTICE_TITLE_TOP + metric::UI_FONT_LABEL + NOTICE_BOTTOM_PADDING
-            } else {
-                NOTICE_DETAIL_TOP + detail.len() as f32 * NOTICE_DETAIL_LINE + NOTICE_BOTTOM_PADDING
-            };
+            let height = notice_card_height(detail.len());
             let y = bottom - height;
             // The tray never climbs past the top of the preview: a card drawn over
             // the toolbar would sit on controls it does not own.
             if y < preview.y {
                 break;
             }
-            let boundary = UiRect::new(preview.x + 12.0, y, width, height);
-            let accent = match notice.severity {
-                // Neutral, not blue (WX-5a). An info notice asks nothing of
-                // the user, and in the light appearance a blue stripe and label
-                // shared the accent's hue six degrees apart, so "project opened"
-                // read as *now*. The three severities that do ask something
-                // keep their colours.
-                Severity::Info => color::ui_overlay_muted(),
-                Severity::Success => color::notice_success_on_dark(),
-                Severity::Warning => color::notice_warning_on_dark(),
-                Severity::Error => color::notice_error_on_dark(),
-            };
-            widgets::fill(d, boundary, color::ui_overlay_surface());
-            widgets::fill(
-                d,
-                UiRect::new(boundary.x, boundary.y, 3.0, boundary.height),
-                accent,
+            let boundary = UiRect::new(preview.x + NOTICE_MARGIN, y, width, height);
+            widgets::floating_surface(d, boundary);
+
+            // The head: a dot and the severity, small and tracked.
+            let tone = color::notice_severity(notice.severity);
+            let dot = Vector2::new(
+                boundary.x + NOTICE_PADDING + NOTICE_DOT_SIZE * 0.5,
+                boundary.y + NOTICE_HEAD_TOP + metric::UI_FONT_MICRO * 0.5,
             );
-            widgets::draw_text(
+            d.draw_circle_v(dot, NOTICE_DOT_SIZE * 0.5, tone);
+            widgets::draw_text_tracked(
                 d,
                 font,
                 notice.severity.label(),
-                boundary.x + NOTICE_PADDING,
-                boundary.y + 4.0,
-                metric::UI_FONT_CAPTION,
-                accent,
+                boundary.x + NOTICE_PADDING + NOTICE_DOT_SIZE + NOTICE_DOT_GAP,
+                boundary.y + NOTICE_HEAD_TOP,
+                metric::UI_FONT_MICRO,
+                NOTICE_LABEL_TRACKING,
+                tone,
             );
             // The title is bounded too. It is capacity-limited to 79 bytes, which
-            // is still wider than the card at 16 px.
+            // is still wider than the card at 14 px.
             for line in notice::wrap_detail(&notice.title, text_width, 1, {
                 |text| measure(text, metric::UI_FONT_LABEL)
             }) {
@@ -5230,7 +5260,7 @@ impl Shell {
                     boundary.x + NOTICE_PADDING,
                     boundary.y + NOTICE_TITLE_TOP,
                     metric::UI_FONT_LABEL,
-                    color::ui_overlay_ink(),
+                    color::ui_ink(),
                 );
             }
             for (index, line) in detail.iter().enumerate() {
@@ -5241,27 +5271,28 @@ impl Shell {
                     boundary.x + NOTICE_PADDING,
                     boundary.y + NOTICE_DETAIL_TOP + index as f32 * NOTICE_DETAIL_LINE,
                     metric::UI_FONT_CAPTION,
-                    color::ui_overlay_muted(),
+                    color::ui_muted(),
                 );
             }
 
-            // The close box. Keyed by the notice's own id rather than by its
-            // position in the list, so a press claimed on one card cannot be
-            // released by whichever card inherited its index after an eviction.
+            // The close box, a ghost control: its glyph in muted ink until the
+            // pointer is on it, then the hover fill under ink. Keyed by the
+            // notice's own id rather than by its position in the list, so a
+            // press claimed on one card cannot be released by whichever card
+            // inherited its index after an eviction.
             let close = UiRect::new(
-                boundary.x + boundary.width - NOTICE_CLOSE_SIZE - 4.0,
-                boundary.y + 4.0,
+                boundary.x + boundary.width - NOTICE_CLOSE_INSET - NOTICE_CLOSE_SIZE,
+                boundary.y + NOTICE_CLOSE_INSET,
                 NOTICE_CLOSE_SIZE,
                 NOTICE_CLOSE_SIZE,
             );
             let id = widgets::widget_id(widgets::id::NOTICE, notice.id as u32);
             let state = self.widgets.button(d, id, close);
-            let tint = if state.hovered {
-                color::ui_overlay_ink()
-            } else {
-                color::ui_overlay_muted()
-            };
-            let inset = 5.0;
+            let look = widgets::button_look(ButtonStyle::Ghost, false, state.hovered);
+            if state.hovered {
+                widgets::control_box(d, close, look.fill, look.edge, 1.0);
+            }
+            let inset = (NOTICE_CLOSE_SIZE - NOTICE_CLOSE_GLYPH) * 0.5;
             d.draw_line_ex(
                 Vector2::new(close.x + inset, close.y + inset),
                 Vector2::new(
@@ -5269,18 +5300,25 @@ impl Shell {
                     close.y + close.height - inset,
                 ),
                 1.5,
-                tint,
+                look.ink,
             );
             d.draw_line_ex(
                 Vector2::new(close.x + close.width - inset, close.y + inset),
                 Vector2::new(close.x + inset, close.y + close.height - inset),
                 1.5,
-                tint,
+                look.ink,
             );
             self.widgets.hint(d, state, id, close, "Dismiss");
             if state.clicked {
                 dismissed = Some(notice.id);
             }
+            self.notices_drawn.cards.push(DrawnNotice {
+                id: notice.id,
+                severity: notice.severity,
+                card: boundary,
+                dot,
+                close,
+            });
 
             bottom = y - NOTICE_GAP;
         }
@@ -5288,6 +5326,50 @@ impl Shell {
         if let Some(id) = dismissed {
             self.notices.dismiss(id);
         }
+    }
+
+    /// The `notices:` report line: what the tray drew in the last frame.
+    ///
+    /// `none` when the queue is empty. Otherwise the tray's region, how many
+    /// notices are queued and how many fitted, then each drawn card newest
+    /// first (bottom to top): its id, severity, card rect, dot centre and
+    /// close box, in logical pixels at `scale=`. A capture check addresses a
+    /// card by these rather than by a pixel measured once.
+    #[must_use]
+    pub fn describe_notices(&self) -> String {
+        let report = &self.notices_drawn;
+        if report.queued == 0 {
+            return "none".to_owned();
+        }
+        let at = |area: UiRect| {
+            format!(
+                "{:.0},{:.0},{:.0},{:.0}",
+                area.x, area.y, area.width, area.height
+            )
+        };
+        let cards: Vec<String> = report
+            .cards
+            .iter()
+            .map(|card| {
+                format!(
+                    "id={} {} card={} dot={:.1},{:.1} close={}",
+                    card.id,
+                    card.severity.label().to_lowercase(),
+                    at(card.card),
+                    card.dot.x,
+                    card.dot.y,
+                    at(card.close),
+                )
+            })
+            .collect();
+        format!(
+            "queued={} drawn={} scale={:.2} region={} cards=[{}]",
+            report.queued,
+            report.cards.len(),
+            report.scale,
+            at(report.region),
+            cards.join("; "),
+        )
     }
 }
 
@@ -5298,6 +5380,11 @@ enum TrackAttention {
 }
 
 const FULLSCREEN_ATTENTION_EXPAND_SECONDS: f64 = 2.5;
+/// The expanded fullscreen pill: 4/8 rhythm, the save dot's size.
+const ATTENTION_PILL_HEIGHT: f32 = 24.0;
+const ATTENTION_PILL_PAD: f32 = 10.0;
+const ATTENTION_DOT: f32 = 7.0;
+const ATTENTION_DOT_GAP: f32 = 7.0;
 
 fn fullscreen_attention_expanded(since: f64, now: f64) -> bool {
     now - since < FULLSCREEN_ATTENTION_EXPAND_SECONDS
@@ -5347,20 +5434,60 @@ impl TrackAttention {
 
 /// Widest a notice card is drawn.
 const NOTICE_CARD_WIDTH: f32 = 380.0;
-const NOTICE_PADDING: f32 = 10.0;
-/// The title's baseline offset inside the card, under the severity label.
-const NOTICE_TITLE_TOP: f32 = 19.0;
-const NOTICE_DETAIL_TOP: f32 = 37.0;
-const NOTICE_DETAIL_LINE: f32 = 15.0;
+/// The tray's inset from the preview's left and bottom edges, and the room
+/// between cards. On the 4/8 rhythm the top bar and the flyouts keep.
+const NOTICE_MARGIN: f32 = 16.0;
+const NOTICE_GAP: f32 = 8.0;
+const NOTICE_PADDING: f32 = 12.0;
+/// The head row: the dot and the micro severity label, at this top.
+const NOTICE_HEAD_TOP: f32 = 10.0;
+const NOTICE_DOT_SIZE: f32 = 6.0;
+const NOTICE_DOT_GAP: f32 = 6.0;
+/// The micro heads' tracking, as the panel heads draw it.
+const NOTICE_LABEL_TRACKING: f32 = 1.0;
+/// The title's top inside the card, under the head row.
+const NOTICE_TITLE_TOP: f32 = 27.0;
+const NOTICE_DETAIL_TOP: f32 = 47.0;
+const NOTICE_DETAIL_LINE: f32 = 16.0;
 /// The card grows to its wrapped detail, but only this far.
 ///
 /// Three lines is about 160 characters at this width, which covers the detail
 /// strings the application actually produces; past that the tray would start
 /// taking the preview it floats over, and the ellipsis says so honestly.
 const NOTICE_DETAIL_MAX_LINES: usize = 3;
-const NOTICE_BOTTOM_PADDING: f32 = 8.0;
-const NOTICE_CLOSE_SIZE: f32 = 18.0;
-const NOTICE_GAP: f32 = 4.0;
+const NOTICE_BOTTOM_PADDING: f32 = 9.0;
+/// The close box sits in the head row's corner; the title and the detail run
+/// under it, so the box costs the text no width.
+const NOTICE_CLOSE_SIZE: f32 = 20.0;
+const NOTICE_CLOSE_INSET: f32 = 6.0;
+const NOTICE_CLOSE_GLYPH: f32 = 8.0;
+
+/// A notice card's height for `detail_lines` lines of wrapped detail.
+fn notice_card_height(detail_lines: usize) -> f32 {
+    if detail_lines == 0 {
+        NOTICE_TITLE_TOP + metric::UI_FONT_LABEL + NOTICE_BOTTOM_PADDING + 2.0
+    } else {
+        NOTICE_DETAIL_TOP + detail_lines as f32 * NOTICE_DETAIL_LINE + NOTICE_BOTTOM_PADDING - 3.0
+    }
+}
+
+/// What the notice tray drew in one frame, for [`Shell::describe_notices`].
+#[derive(Clone, Debug, Default)]
+struct NoticeTrayReport {
+    scale: f32,
+    region: UiRect,
+    queued: usize,
+    cards: Vec<DrawnNotice>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DrawnNotice {
+    id: u64,
+    severity: Severity,
+    card: UiRect,
+    dot: Vector2,
+    close: UiRect,
+}
 
 /// The least of a track row that may still be drawn, as a fraction of its height
 /// (review 1.12, UX0-A12).

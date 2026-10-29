@@ -131,6 +131,14 @@ rules it encodes:
   which with the palette applied was the panel's own colour.
 - **Controls are rounded** (`metric::UI_RADIUS`, `widgets::control_box`); lanes
   and list rows stay square because they are data on an axis.
+- **Things that float are one object** (2026-10-29): a notice card, the
+  protocol card, the fullscreen pill and anything else drawn over the work
+  rather than in the layout use `widgets::floating_surface` — the raised fill
+  (`Palette::float_surface`), a hairline, the control radius and a soft shadow
+  composited premultiplied. Tooltips take the same shape on their own dark
+  tokens (`widgets::tooltip_plate`); egui popups get `popup_shadow`. A status
+  speaks as a dot and a micro, tracked label (`Palette::notice_severity`), the
+  way the top bar's save state does, never as a stripe.
 - **One type scale** for both toolkits, in logical pixels (egui points):
   header 16, label 14, value 14, caption 13, micro 11, and fitted button rows
   capped at 16. egui draws in Space Grotesk, the face the raylib chrome uses;
