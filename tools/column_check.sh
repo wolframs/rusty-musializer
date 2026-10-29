@@ -63,6 +63,11 @@
 #     old file); the Direct dot never set (reply and waiting fail, the
 #     on-Direct control still `none`); the bar filled in the level tone
 #     instead of the accent (check 7's exact bar; the frame-0 control green).
+#   C (4 failures, the Direct chat): the empty state not drawn (no Start
+#     rows); your bubble left-aligned (gap 155 px from the right); Allow
+#     drawn on the raised fill and the prompt outlined in the rule tone
+#     (outline 0.00, Allow brightness 27 against >= 170); the window's apply
+#     never noted — while the unrewritten-treatment control stayed green.
 # The frame-0 control first failed on llvmpipe alone: a readback there
 # returned the newest frame, not the one before (docs/TRAPS.md), so the
 # probe now holds the encoder and photographs a still screen.
