@@ -92,9 +92,6 @@ pub struct EditorState {
     // away and back must never move a draft onto another song with the same id.
     drafts: BTreeMap<(PathBuf, u64), CueDraft>,
     last_applied: Option<(PathBuf, u64)>,
-    /// Drawn in the column's vocabulary (WX-5d §3.6): set by the composition
-    /// root while `MUSIALIZER_COLUMN_LAYOUT` is on.
-    pub column_skin: bool,
 }
 
 /// Apply the selected skin without changing the renderer or document styling.
@@ -359,44 +356,29 @@ impl EditorState {
                 ui.set_width(rect.width());
                 ui.set_height(rect.height());
                 ui.set_clip_rect(rect);
-                // WX-5d §3.6: with the column layout the Editor is a floating
-                // surface — 4 px corners, a hairline, a shadow — headed by
-                // the micro `EDITOR` and a ghost ×, like every column view.
-                let frame = if self.column_skin {
-                    egui::Frame::new()
-                        .fill(ui.visuals().panel_fill)
-                        .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                        .corner_radius(4.0)
-                        .shadow(ui.visuals().popup_shadow)
-                        .inner_margin(14.0)
-                } else {
-                    egui::Frame::new()
-                        .fill(ui.visuals().panel_fill)
-                        .stroke(ui.visuals().window_stroke)
-                        .inner_margin(14.0)
-                };
+                // WX-5d §3.6: a floating surface — 4 px corners, a hairline,
+                // a shadow — headed by the micro `EDITOR` and a ghost ×, like
+                // every column view.
+                let frame = egui::Frame::new()
+                    .fill(ui.visuals().panel_fill)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(4.0)
+                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(14.0);
                 frame.show(ui, |ui| {
                     ui.set_min_size(egui::vec2(
                         (rect.width() - 28.0).max(0.0),
                         (rect.height() - 28.0).max(0.0),
                     ));
                     ui.horizontal(|ui| {
-                        if self.column_skin {
-                            ui.label(
-                                RichText::new("EDITOR")
-                                    .size(super::theme::metric::UI_FONT_MICRO)
-                                    .extra_letter_spacing(1.0)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        } else {
-                            ui.heading("Editor");
-                        }
+                        ui.label(
+                            RichText::new("EDITOR")
+                                .size(super::theme::metric::UI_FONT_MICRO)
+                                .extra_letter_spacing(1.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let close = if self.column_skin {
-                                ui.add(egui::Button::new("\u{00d7}").frame(false))
-                            } else {
-                                ui.button("Close")
-                            };
+                            let close = ui.add(egui::Button::new("\u{00d7}").frame(false));
                             output.close_requested |= close
                                 .on_hover_text(
                                     "Close editor (Esc or F8). Unapplied lyric drafts are kept.",
@@ -1321,7 +1303,7 @@ mod tests {
         );
         draw(&mut editor, &ctx, &track, vec![]);
         let (frame, _) = draw(&mut editor, &ctx, &track, vec![]);
-        let close = click(&mut editor, &ctx, &track, text_point(&frame, "Close"));
+        let close = click(&mut editor, &ctx, &track, text_point(&frame, "\u{00d7}"));
         assert!(close.close_requested);
         let draft = editor.drafts.get(&(track.file_path.clone(), 9)).unwrap();
         assert_eq!(draft.text, "Changed phrase");

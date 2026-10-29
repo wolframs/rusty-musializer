@@ -479,10 +479,6 @@ pub struct UiProbe {
     /// `style=caption|effects` stays as an alias and sets this too; giving
     /// both is refused. `style` and `effects` also set the two flags above,
     /// which are what today's panel reads.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Lyrics builder's column reads it; today's panel reads the style flags"
-    )]
     pub lyrics_pane: Option<LyricsPaneProbe>,
     /// `assist-card=lyrics|scenes|feelings|full` (WX-5d): open that workflow's
     /// card in the Assist view. The words are the cards'; the values are the

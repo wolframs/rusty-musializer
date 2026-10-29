@@ -2666,47 +2666,4 @@ mod tests {
         seen.sort_unstable();
         assert_eq!(seen, (0..9).collect::<Vec<_>>());
     }
-
-    #[test]
-    fn the_columns_widget_indices_stay_clear_of_the_bands() {
-        // The band's ACTIONS indices are 0..=8; its CAPTION ones end in the
-        // zone hints, which take a dozen slots from 160.
-        for index in [
-            action::PANES,
-            action::PANES + 2,
-            action::BACK_TO_STYLE,
-            action::PREVIOUS,
-            action::NEXT,
-            action::FOLLOW,
-            action::PLAYHEAD_WORD,
-            action::PLAYHEAD_WORD + 1,
-        ] {
-            assert!(index > 8, "{index}");
-        }
-        let mut caption = vec![
-            column_id::SIZE,
-            column_id::WIDTH,
-            column_id::BLUR,
-            column_id::SHADE,
-            column_id::ROUND,
-            column_id::INSET,
-            column_id::GLOW,
-            column_id::RADIUS,
-            column_id::DEPTH,
-            column_id::SWEEP,
-        ];
-        for pair in caption.windows(2) {
-            assert!(pair[1] - pair[0] >= widgets::SLIDER_ROW_IDS, "{pair:?}");
-        }
-        const { assert!(column_id::SIZE >= caption_id::ZONE_HINTS + 16) };
-        caption.extend([
-            column_id::INK_PLUS,
-            column_id::PLATE_PLUS,
-            column_id::IMPORT_CANCEL,
-        ]);
-        caption.sort_unstable();
-        caption.dedup();
-        assert_eq!(caption.len(), 13);
-        const { assert!(column_id::INK_PLUS >= column_id::SWEEP + widgets::SLIDER_ROW_IDS) };
-    }
 }

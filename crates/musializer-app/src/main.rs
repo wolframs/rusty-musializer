@@ -6698,43 +6698,6 @@ impl Report {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::display_refusal;
-    use super::scene_clock_delta;
-
-    #[test]
-    fn a_launch_with_no_display_is_refused_by_name() {
-        let refusal = display_refusal(None).expect("no DISPLAY offered");
-        assert!(refusal.contains("DISPLAY"), "{refusal}");
-        assert!(refusal.contains("xvfb-run"), "{refusal}");
-        // Empty is what a stripped environment leaves behind, and it connects to
-        // nothing; a blank value must not read as an offer.
-        assert!(display_refusal(Some("")).is_some());
-        assert!(display_refusal(Some("  ")).is_some());
-    }
-
-    #[test]
-    fn the_projects_own_isolation_pairing_is_never_refused() {
-        // The headless gate's environment is a real Xvfb display beside a Wayland
-        // name chosen so it cannot resolve (AGENTS.md's `MZ_NO_WAYLAND`). Reading
-        // only `DISPLAY` is what makes that pairing unrefusable — and refusing it
-        // would break every capture in the tree.
-        assert_eq!(display_refusal(Some(":77")), None);
-        assert_eq!(display_refusal(Some(":0")), None);
-    }
-
-    #[test]
-    fn scene_clock_turns_transport_discontinuities_into_zero_delta() {
-        let mut previous = None;
-        assert_eq!(scene_clock_delta(&mut previous, 12.0), 0.0);
-        assert!((scene_clock_delta(&mut previous, 12.025) - 0.025).abs() < 1.0e-6);
-        assert_eq!(scene_clock_delta(&mut previous, 4.0), 0.0);
-        assert_eq!(scene_clock_delta(&mut previous, 4.75), 0.0);
-        assert!((scene_clock_delta(&mut previous, 4.8) - 0.05).abs() < 1.0e-6);
-    }
-}
-
 /// Where `progress-shot=` writes: beside `--probe-shot`, with `-progress`
 /// before the extension, so one run can photograph the progress screen and
 /// the workspace after it.
@@ -6778,5 +6741,42 @@ fn dock_probes(
         if probe.dock_focus {
             dock.focus_active();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::display_refusal;
+    use super::scene_clock_delta;
+
+    #[test]
+    fn a_launch_with_no_display_is_refused_by_name() {
+        let refusal = display_refusal(None).expect("no DISPLAY offered");
+        assert!(refusal.contains("DISPLAY"), "{refusal}");
+        assert!(refusal.contains("xvfb-run"), "{refusal}");
+        // Empty is what a stripped environment leaves behind, and it connects to
+        // nothing; a blank value must not read as an offer.
+        assert!(display_refusal(Some("")).is_some());
+        assert!(display_refusal(Some("  ")).is_some());
+    }
+
+    #[test]
+    fn the_projects_own_isolation_pairing_is_never_refused() {
+        // The headless gate's environment is a real Xvfb display beside a Wayland
+        // name chosen so it cannot resolve (AGENTS.md's `MZ_NO_WAYLAND`). Reading
+        // only `DISPLAY` is what makes that pairing unrefusable — and refusing it
+        // would break every capture in the tree.
+        assert_eq!(display_refusal(Some(":77")), None);
+        assert_eq!(display_refusal(Some(":0")), None);
+    }
+
+    #[test]
+    fn scene_clock_turns_transport_discontinuities_into_zero_delta() {
+        let mut previous = None;
+        assert_eq!(scene_clock_delta(&mut previous, 12.0), 0.0);
+        assert!((scene_clock_delta(&mut previous, 12.025) - 0.025).abs() < 1.0e-6);
+        assert_eq!(scene_clock_delta(&mut previous, 4.0), 0.0);
+        assert_eq!(scene_clock_delta(&mut previous, 4.75), 0.0);
+        assert!((scene_clock_delta(&mut previous, 4.8) - 0.05).abs() < 1.0e-6);
     }
 }

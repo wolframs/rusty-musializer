@@ -74,15 +74,12 @@ const EXPORT_WIDGETS: u32 = widgets::id::EXPORT;
 /// each (to draw and to answer the press) and a mistyped second copy would be a
 /// button that highlights and never fires.
 mod clip_ids {
-    pub(super) const FULL_TRACK: u32 = 40;
     pub(super) const SET_IN: u32 = 41;
     pub(super) const SET_OUT: u32 = 42;
     /// The footer's still-frame button (UX0-C10).
     pub(super) const STILL: u32 = 43;
     /// Restore the ordinary first frame of the output.
     pub(super) const SHARE_NORMAL: u32 = 44;
-    /// Replace encoded frame zero with the deterministic playhead frame.
-    pub(super) const SHARE_PLAYHEAD: u32 = 45;
     /// The Render view's × (WX-5d).
     pub(super) const CLOSE_VIEW: u32 = 47;
     /// The Render view's CLIP switch (WX-5d): Whole track here, Range at the
@@ -132,7 +129,7 @@ fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::new();
     for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             out.push('\u{2009}');
         }
         out.push(digit);
@@ -140,10 +137,9 @@ fn grouped(value: u64) -> String {
     out
 }
 
-/// The CLIP row's readout, in the two lengths the panel can afford.
+/// The CLIP section's readout under its switch.
 struct ClipReadout {
     long: String,
-    short: String,
 }
 
 /// What the CLIP row says about the current selection.
@@ -161,7 +157,6 @@ fn clip_readout(clip: ClipSelection, duration_seconds: f64, fps: u32) -> ClipRea
                 "whole track  |  {}  |  {frames} frames",
                 widgets::format_timestamp(duration_seconds)
             ),
-            short: format!("whole track  |  {frames} frames"),
         },
         Some((start, length)) => {
             let long = format!(
@@ -169,14 +164,7 @@ fn clip_readout(clip: ClipSelection, duration_seconds: f64, fps: u32) -> ClipRea
                 widgets::format_timestamp(start),
                 widgets::format_timestamp(start + length),
             );
-            ClipReadout {
-                long,
-                short: format!(
-                    "{} -> {}",
-                    widgets::format_timestamp(start),
-                    widgets::format_timestamp(start + length)
-                ),
-            }
+            ClipReadout { long }
         }
     }
 }
@@ -248,104 +236,7 @@ fn quality_detail(quality: Quality) -> &'static str {
 /// of the same numbers the drawing code uses; rather than a second, independently
 /// hand-picked guess that could drift out of agreement with the layout it is
 /// supposed to describe.
-mod body_layout {
-    /// Y offset (from the boundary's top) of the CLIP row (UX0-C01).
-    ///
-    /// **First, above SIZE, and that ordering is load-bearing twice.** It reads
-    /// in the order the questions are asked — *which part of the track*, then
-    /// what shape and how good — and, because the timeline band grows upward
-    /// from the window's bottom edge while the footer stays pinned to it, a row
-    /// added at the top leaves every control below it at the same screen
-    /// position it had before. That is what kept EX1's and EX2's click-probe
-    /// coordinates valid rather than silently aiming a press one row off.
-    ///
-    /// The 62 it replaced was the SIZE row's, under a full-width description
-    /// line. Three control rows plus that line ask 424 px of timeline band,
-    /// and a 640 px window can only give 410 — which would have put the export
-    /// panel back behind its own "needs a taller timeline" notice at the
-    /// smallest supported size, the exact defect review 1.4 exists about. The
-    /// description moved up beside the EXPORT title, which costs no vertical
-    /// space at all, and the row starts where it used to end.
-    pub(super) const FIRST_ROW_Y: f32 = 36.0;
-    /// Vertical distance from the CLIP row down to the SIZE/FPS row.
-    pub(super) const ROW_ADVANCE: f32 = 46.0;
-    /// Y offset (from the QUALITY row's own y) of the quality-detail line —
-    /// the last thing this panel draws before the footer.
-    pub(super) const DETAIL_OFFSET: f32 = 73.0;
-    /// Point size of the quality-detail line.
-    pub(super) const DETAIL_FONT_SIZE: f32 = 14.0;
-    /// How far above the boundary's bottom edge the footer row sits.
-    pub(super) const FOOTER_BOTTOM_MARGIN: f32 = 44.0;
-
-    /// Y offset of the SIZE/FPS row.
-    pub(super) const SECOND_ROW_Y: f32 = FIRST_ROW_Y + ROW_ADVANCE;
-    /// Y offset of the QUALITY/ASPECT row.
-    pub(super) const THIRD_ROW_Y: f32 = SECOND_ROW_Y + ROW_ADVANCE;
-    /// Bottom of the quality-detail line — the lowest body text the footer
-    /// must clear.
-    pub(super) const DETAIL_BOTTOM: f32 = THIRD_ROW_Y + DETAIL_OFFSET + DETAIL_FONT_SIZE;
-}
-
-/// The least content-box (`boundary`) height at which [`Shell::export_panel`]
-/// draws its body instead of the one-line "too small" notice.
-///
-/// Derived from [`body_layout`]'s offsets plus [`metric::UI_CONTROL_GAP`] as
-/// the buffer between the quality-detail line and the footer row — the same
-/// spacing unit this panel already uses between its own controls, rather than
-/// a new invented margin. Review 1.4 found the panel's old gate (a bare
-/// `80.0`) was never checked against this arithmetic and was well short of it.
-pub(crate) const EXPORT_CONTENT_MIN_HEIGHT: f32 =
-    body_layout::DETAIL_BOTTOM + metric::UI_CONTROL_GAP + body_layout::FOOTER_BOTTOM_MARGIN;
-
-/// This panel's own gap between the timeline strip above it and its boundary
-/// (`top = strip.y + strip.height + 28.0`, in [`Shell::export_panel`] below).
-/// Named so [`EXPORT_MIN_BAND_HEIGHT`] can reference the same number the
-/// function actually adds, instead of repeating the literal.
-const STRIP_GAP: f32 = 28.0;
-
-/// The timeline strip's height cap, at generous room.
-///
-/// This is `shell.rs::timeline_strip`'s `56.0f32.min(...)` literal, duplicated
-/// rather than imported: that literal lives in a file this panel does not own
-/// (see the file-ownership rule in `AGENTS.md`), and there is no constant
-/// there yet to reference. If that literal changes, this one has to move with
-/// it — recorded here so the next reader looking for why [`EXPORT_MIN_BAND_HEIGHT`]
-/// is what it is does not have to rediscover the dependency.
-const ASSUMED_STRIP_HEIGHT: f32 = 56.0;
-
-/// How much of the *band* — the timeline height `Shell::resolved_timeline_height`
-/// hands to the whole strip — is spent before this panel's own `boundary` ever
-/// begins: the TIMELINE panel header (`widgets::panel` consumes it before
-/// returning the content rect — a real 27 px this constant once missed, caught
-/// only by measuring a capture), two lots of panel padding (one above the
-/// scene section, one at the bottom of this panel's own boundary
-/// calculation), the scene section (lane head and plan lane), the timeline
-/// strip itself, and this panel's own gap under the strip. Traced in
-/// `shell.rs::timeline_strip` and [`Shell::export_panel`]'s `boundary`
-/// construction.
-///
-/// [`SCENE_SECTION_HEIGHT`](super::scene_timeline::SCENE_SECTION_HEIGHT) is
-/// imported rather than duplicated, so a change to the section's budget cannot
-/// silently reopen this gap the way the `260.0` floor did. The manual event
-/// row it once also counted left the band in WX-5c (its markers are lane-head
-/// chips), and with it the 66 px this budget added and the shell took off.
-const BAND_TO_BOUNDARY_OFFSET: f32 = widgets::PANEL_HEADER_HEIGHT
-    + metric::UI_PANEL_PADDING * 2.0
-    + super::scene_timeline::SCENE_SECTION_HEIGHT
-    + ASSUMED_STRIP_HEIGHT
-    + STRIP_GAP;
-
-/// The minimum band height `Shell::resolved_timeline_height`'s Export floor
-/// must supply so this panel's `boundary` clears [`EXPORT_CONTENT_MIN_HEIGHT`]
-/// and draws its controls, rather than the one-line notice.
-///
-/// Single source of truth for review 1.4: the floor used to be a bare `260.0`
-/// that nothing checked against what this function actually consumes above
-/// its own boundary, and a user who persisted a shorter timeline height (legal
-/// in every other panel) got a lit Export button over a blank white band with
-/// no path to an MP4, across restarts. See the session report for the
-/// `shell.rs` edit this constant is meant to replace `260.0` with.
-pub(crate) const EXPORT_MIN_BAND_HEIGHT: f32 = EXPORT_CONTENT_MIN_HEIGHT + BAND_TO_BOUNDARY_OFFSET;
+mod body_layout {}
 
 impl Shell {
     /// The `render view:` report line (WX-5d §5): the view's rect, the shape
@@ -392,279 +283,6 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         self.render_view(d, input, commands);
-    }
-
-    /// The CLIP row: full track, the two playhead marks, and what they add up to
-    /// (UX0-C01).
-    ///
-    /// **Nothing in the frozen C draws this.** `render_export_window_frames`
-    /// exists there and `plug.c` calls it only from
-    /// `plug_configure_render_window` — a command-line entry point — so a clip
-    /// was expressible on a command line and nowhere a user could see it. The
-    /// row is the missing half.
-    ///
-    /// The two marks read from the playhead rather than from a text field on
-    /// purpose: the gesture a person actually performs is "play until it sounds
-    /// right, then press", and a field would ask them to read a number off the
-    /// transport and type it back in. It is also why one press is enough to get
-    /// a renderable clip — [`ClipSelection::set_start`] selects to the end of
-    /// the track — so "post from the drop onward" costs one click and the
-    /// destination dialog.
-    fn clip_row(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        boundary: UiRect,
-        row: UiRect,
-        config: RenderExportConfig,
-        duration_seconds: f64,
-    ) {
-        let font = input.fonts.ui();
-        let gap = metric::UI_CONTROL_GAP;
-        let padding = metric::UI_PANEL_PADDING;
-        widgets::draw_text(
-            d,
-            font,
-            "CLIP",
-            boundary.x + padding,
-            row.y + 10.0,
-            13.0,
-            color::ui_muted(),
-        );
-
-        let has_track = duration_seconds > 0.0;
-        let mut x = boundary.x + 68.0;
-        let buttons: [(u32, f32, &str, &str); 3] = [
-            (
-                clip_ids::FULL_TRACK,
-                92.0,
-                "Full track",
-                "Export the whole track",
-            ),
-            (
-                clip_ids::SET_IN,
-                116.0,
-                "In <- playhead",
-                "Start the export at the playhead (to the end, until you set an out point)",
-            ),
-            (
-                clip_ids::SET_OUT,
-                116.0,
-                "Out <- playhead",
-                "End the export at the playhead",
-            ),
-        ];
-        for (index, width, label, hint) in buttons {
-            let button = UiRect::new(x, row.y, width, row.height);
-            x += width + gap;
-            if !boundary.contains(button) {
-                continue;
-            }
-            let selected = match index {
-                clip_ids::FULL_TRACK => !self.export_clip.is_enabled(),
-                _ => false,
-            };
-            if !has_track {
-                // Named and refused rather than absent: a row of live-looking
-                // buttons over a workspace with no track is the "a control that
-                // silently does nothing" failure this repository already paid
-                // for once.
-                self.widgets.disabled_button(d, font, button, label, None);
-                continue;
-            }
-            let state = self.widgets.text_button(
-                d,
-                font,
-                widgets::widget_id(EXPORT_WIDGETS, index),
-                button,
-                label,
-                selected,
-                ButtonStyle::Neutral,
-                None,
-            );
-            self.widgets.hint(
-                d,
-                state,
-                widgets::widget_id(EXPORT_WIDGETS, index),
-                button,
-                hint,
-            );
-            if state.clicked {
-                match index {
-                    clip_ids::FULL_TRACK => self.export_clip.clear(),
-                    clip_ids::SET_IN => {
-                        self.export_clip
-                            .set_start(input.time_seconds, duration_seconds, config.fps)
-                    }
-                    _ => {
-                        self.export_clip
-                            .set_end(input.time_seconds, duration_seconds, config.fps);
-                    }
-                }
-            }
-        }
-
-        // The readout. Long form while it fits, short form otherwise, because
-        // the panel narrows with the window and a clipped readout that ends
-        // mid-number would be worse than one that never showed the seconds.
-        let readout = clip_readout(self.export_clip, duration_seconds, config.fps);
-        let available = (boundary.x + boundary.width - padding - x - 12.0).max(0.0);
-        let text = if widgets::measure(font, &readout.long, 14.0) <= available {
-            readout.long
-        } else {
-            readout.short
-        };
-        if widgets::measure(font, &text, 14.0) <= available {
-            widgets::draw_text(
-                d,
-                font,
-                &text,
-                x + 12.0,
-                row.y + 11.0,
-                14.0,
-                // The warning tone while a clip is live, muted otherwise. The
-                // only other sign the export has stopped covering the whole
-                // track is "Full track" losing its highlight, and a capture
-                // showed ink against muted reading as no distinction at all on
-                // the one line that says how much of the track is about to be
-                // rendered. This was the accent until WX-5a; the accent means
-                // *now*, and "your render is a window" is a caution.
-                if self.export_clip.is_enabled() {
-                    color::ui_warning()
-                } else {
-                    color::ui_muted()
-                },
-            );
-        }
-    }
-
-    /// The whole window while an export runs (`rendering_screen`'s drawing half,
-    /// `plug.c:7919-7976`).
-    ///
-    /// Returns `true` when the user asked to cancel — either with the button or
-    /// with Escape, both of which the oracle honours (`plug.c:7889`).
-    ///
-    /// This is not a panel. An export replaces the workspace, because a
-    /// workspace whose controls edit state the running export has already
-    /// snapshotted would be lying about what it is about to produce.
-    pub(crate) fn export_progress(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        fonts: &Faces,
-        ui_scale: super::super::scale::UiScale,
-        job: &RenderJob,
-    ) -> bool {
-        let (w, h) =
-            ui_scale.logical_size((d.get_screen_width() as f32, d.get_screen_height() as f32));
-        let font = fonts.ui();
-        self.widgets.begin_frame(ui_scale);
-        d.clear_background(color::background());
-
-        let window_frames = job.plan().encoded_frames();
-        let encoded = job.encoded_frames();
-        let progress = job.progress();
-        let elapsed = job.elapsed_seconds();
-        let remaining = job.remaining_seconds();
-        let label = if job.is_finishing() {
-            "Finishing encoder"
-        } else if job.is_fast_forwarding() {
-            "Preparing window state"
-        } else {
-            "Exporting video"
-        };
-        let title_width = widgets::measure(font, label, 34.0);
-        widgets::draw_text(
-            d,
-            font,
-            label,
-            w / 2.0 - title_width / 2.0,
-            h / 2.0 - 92.0,
-            34.0,
-            color::white(),
-        );
-
-        let detail = if job.is_finishing() {
-            format!("{window_frames} frames encoded  |  finalizing MP4")
-        } else if job.is_fast_forwarding() {
-            format!(
-                "{} / {} deterministic frames prepared",
-                job.frame_index(),
-                job.plan().frames.start
-            )
-        } else {
-            format!(
-                "{encoded} / {window_frames} frames  |  {:02}:{:02} elapsed  |  about {:02}:{:02} remaining",
-                (elapsed / 60.0) as u32,
-                (elapsed % 60.0) as u32,
-                (remaining / 60.0) as u32,
-                (remaining % 60.0) as u32,
-            )
-        };
-        let detail_width = widgets::measure(font, &detail, 18.0);
-        widgets::draw_text(
-            d,
-            font,
-            &detail,
-            w / 2.0 - detail_width / 2.0,
-            h / 2.0 - 43.0,
-            18.0,
-            // `ColorAlpha(WHITE, 0.72)` (`plug.c:7957`), not `ui_muted`: this
-            // screen is the only dark surface in the interface, and the palette's
-            // muted grey was picked — and contrast-checked — against the light
-            // ones. A capture of the progress screen is what showed it reading
-            // as barely-there grey on near-black.
-            widgets::alpha(color::white(), 0.72),
-        );
-
-        let bar_width = w * 2.0 / 3.0;
-        let bar = UiRect::new(w / 2.0 - bar_width / 2.0, h / 2.0, bar_width, 14.0);
-        widgets::fill(
-            d,
-            UiRect::new(bar.x, bar.y, bar.width * progress as f32, bar.height),
-            color::accent(),
-        );
-        d.draw_rectangle_lines_ex(widgets::rectangle(bar), 1.0, color::white());
-
-        // The destination, clipped rather than truncated: a long path is worth
-        // showing the start of.
-        {
-            let mut clip = widgets::begin_scissor(
-                d,
-                UiRect::new(bar.x, bar.y + 27.0, bar.width, 24.0),
-                ui_scale,
-            );
-            widgets::draw_text(
-                &mut clip,
-                font,
-                &job.destination().display().to_string(),
-                bar.x,
-                bar.y + 29.0,
-                14.0,
-                // `ColorAlpha(WHITE, 0.52)` (`plug.c:7968`); see the detail line.
-                widgets::alpha(color::white(), 0.52),
-            );
-        }
-
-        let mut cancelled = d.is_key_pressed(raylib::consts::KeyboardKey::KEY_ESCAPE);
-        let cancel = UiRect::new(w - 146.0, 24.0, 122.0, 38.0);
-        if !job.is_finishing()
-            && self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    widgets::widget_id(EXPORT_WIDGETS, 26),
-                    cancel,
-                    "Cancel export",
-                    false,
-                    ButtonStyle::Danger,
-                    None,
-                )
-                .clicked
-        {
-            cancelled = true;
-        }
-        cancelled
     }
 }
 
@@ -3665,57 +3283,12 @@ mod tests {
         assert!(matches!(commands[1], ShellCommand::SetRenderConfig(_)));
     }
 
-    /// The CLIP row's own ids, and every other index this panel mints, are
-    /// distinct (UX0-C01).
-    ///
-    /// `widgets::id::ALL` protects *namespaces*; nothing protects the indices
-    /// inside one, and this panel now allocates five groups by hand — 0, 8, 16,
-    /// 24 and 32 — with the clip row wedged in at 40. EX1 is the whole argument
-    /// for why an index collision is worth a test rather than a careful read:
-    /// two controls with one id draw correctly, highlight correctly, and one of
-    /// them silently never takes a press.
-    #[test]
-    fn the_panels_own_widget_indices_never_collide() {
-        let mut used: Vec<(u32, &str)> = Vec::new();
-        let mut claim = |index: u32, name: &'static str| {
-            if let Some((_, other)) = used.iter().find(|(taken, _)| *taken == index) {
-                panic!("export index {index} is claimed by both {other} and {name}");
-            }
-            used.push((index, name));
-        };
-        for index in 0..Resolution::ALL.len() as u32 {
-            claim(index, "SIZE");
-        }
-        for index in 0..FrameRate::ALL.len() as u32 {
-            claim(8 + index, "FPS");
-        }
-        for index in 0..Quality::ALL.len() as u32 {
-            claim(16 + index, "QUALITY");
-        }
-        claim(24, "render");
-        claim(25, "close");
-        claim(26, "cancel");
-        for index in 0..Aspect::ALL.len() as u32 {
-            claim(32 + index, "ASPECT");
-        }
-        claim(clip_ids::FULL_TRACK, "clip full track");
-        claim(clip_ids::SET_IN, "clip in");
-        claim(clip_ids::SET_OUT, "clip out");
-        claim(clip_ids::STILL, "save still");
-        claim(clip_ids::SHARE_NORMAL, "normal share frame");
-        claim(clip_ids::SHARE_PLAYHEAD, "playhead share frame");
-        // 4 sizes + 3 rates + 3 qualities + 3 footer + 4 aspects + 6 clip/share.
-        assert_eq!(used.len(), 23);
-    }
-
-    /// The CLIP row's readout says what the export will cover, in whichever
-    /// length the panel can afford.
+    /// The CLIP readout says what the export will cover.
     #[test]
     fn the_clip_readout_names_the_window_and_its_frames() {
         let (duration, fps) = (8.0, 30u32);
         let full = clip_readout(ClipSelection::full_track(), duration, fps);
         assert_eq!(full.long, "whole track  |  00:08.000  |  240 frames");
-        assert_eq!(full.short, "whole track  |  240 frames");
 
         let mut clip = ClipSelection::full_track();
         clip.set_start(2.0, duration, fps);
@@ -3725,132 +3298,9 @@ mod tests {
             readout.long,
             "in 00:02.000  ->  out 00:05.000  |  3.0 s  |  90 frames"
         );
-        assert_eq!(readout.short, "00:02.000 -> 00:05.000");
-        // The short form is what a narrow panel falls back to, so it must
-        // really be shorter — a "fallback" that does not fit is not one.
-        assert!(readout.short.len() < readout.long.len());
 
         // No track: a sentence rather than a divide-by-zero or a lie.
         let empty = clip_readout(ClipSelection::full_track(), 0.0, fps);
         assert_eq!(empty.long, "whole track  |  00:00.000  |  0 frames");
-    }
-
-    /// **The invariant that let a third row be added without moving anything.**
-    ///
-    /// The export panel's boundary is pinned to the window's bottom edge and the
-    /// timeline band grows upward, so the *distance from the bottom* of the
-    /// content box is what fixes a control's screen position. Every gate
-    /// coordinate EX1 and EX2 aimed by hand — 542 for the SIZE row, 589 for
-    /// QUALITY — depends on this number being unchanged, and a press aimed one
-    /// row off does not fail: it presses a different control and asserts against
-    /// its result.
-    ///
-    /// 185 is the SIZE row's distance from the bottom of the minimum content
-    /// box before the CLIP row existed (`247 - 62`). Adding a row above it moved
-    /// both the row and the box by the same amount, which is why it still holds.
-    #[test]
-    fn adding_a_row_above_size_leaves_every_control_below_it_in_place() {
-        assert_eq!(
-            EXPORT_CONTENT_MIN_HEIGHT - body_layout::SECOND_ROW_Y,
-            185.0,
-            "the SIZE row moved relative to the panel's bottom edge; every \
-             click-probe coordinate in tools/headless_check.sh is now aimed \
-             one row off"
-        );
-        assert_eq!(
-            EXPORT_CONTENT_MIN_HEIGHT - body_layout::THIRD_ROW_Y,
-            139.0,
-            "the QUALITY/ASPECT row moved relative to the panel's bottom edge"
-        );
-        // And the CLIP row is genuinely a row above SIZE, not an overlap.
-        // A compile-time comparison, so it is a build failure rather than a
-        // test failure — the same shape as the band-chrome assertion LX1-c
-        // kept.
-        const _: () = assert!(
-            body_layout::FIRST_ROW_Y + metric::UI_BUTTON_HEIGHT <= body_layout::SECOND_ROW_Y
-        );
-    }
-
-    /// Review 1.4's core claim, pinned as arithmetic: at exactly
-    /// [`EXPORT_CONTENT_MIN_HEIGHT`], the footer row must not overlap the
-    /// quality-detail line above it, and one pixel less must. This is the
-    /// same comparison `export_panel` makes (`boundary.height <=
-    /// EXPORT_CONTENT_MIN_HEIGHT`) and the same offsets it draws with
-    /// ([`body_layout`]), so a future edit to any offset in that module
-    /// breaks this test instead of silently reopening the overlap.
-    #[test]
-    fn export_content_min_height_is_exactly_where_the_footer_stops_overlapping() {
-        let detail_bottom = body_layout::DETAIL_BOTTOM;
-        // The height at which the footer sits flush against the detail line,
-        // with no slack at all.
-        let tight_min = detail_bottom + body_layout::FOOTER_BOTTOM_MARGIN;
-
-        // EXPORT_CONTENT_MIN_HEIGHT is the tight minimum plus one control gap
-        // of breathing room — the same spacing unit this panel already uses
-        // between its own controls — not the tight minimum itself.
-        assert_eq!(
-            EXPORT_CONTENT_MIN_HEIGHT,
-            tight_min + metric::UI_CONTROL_GAP
-        );
-
-        let footer_top = EXPORT_CONTENT_MIN_HEIGHT - body_layout::FOOTER_BOTTOM_MARGIN;
-        assert!(
-            footer_top >= detail_bottom,
-            "footer starts at {footer_top}, before the detail line ends at {detail_bottom}"
-        );
-
-        // One pixel inside the safety gap — below the *tight* minimum — is
-        // where the footer actually starts overlapping the line above it.
-        let one_pixel_into_the_gap = tight_min - 1.0;
-        let footer_top_short = one_pixel_into_the_gap - body_layout::FOOTER_BOTTOM_MARGIN;
-        assert!(
-            footer_top_short < detail_bottom,
-            "the tight minimum is not pinned: {one_pixel_into_the_gap} still leaves room"
-        );
-    }
-
-    /// The band-height counterpart of the test above: replays the exact chain
-    /// `shell.rs::timeline_strip` and `Shell::export_panel` use to turn a band
-    /// height into `boundary.height` — panel padding, the scene section, the
-    /// timeline strip, and this panel's own gap underneath it — and asserts
-    /// that handing it [`EXPORT_MIN_BAND_HEIGHT`] produces *exactly*
-    /// [`EXPORT_CONTENT_MIN_HEIGHT`] of boundary, not merely "enough".
-    /// `SCENE_SECTION_HEIGHT` is the real constant that module exports, not a
-    /// copy, so a change to the section's budget moves this test rather than
-    /// being missed by it.
-    #[test]
-    fn export_min_band_height_reproduces_the_panels_own_boundary_formula() {
-        let padding = metric::UI_PANEL_PADDING;
-        let scene_row = super::super::scene_timeline::SCENE_SECTION_HEIGHT;
-
-        // The band, exactly as `Shell::timeline_strip` receives it — and then
-        // the TIMELINE header `widgets::panel` consumes before handing back the
-        // content rect. The first version of this test skipped that step and
-        // passed while a real capture showed the too-small notice: the replay
-        // must include every rect transformation on the real path.
-        let band = UiRect::new(0.0, 0.0, 1280.0, EXPORT_MIN_BAND_HEIGHT);
-        let content = UiRect::new(
-            band.x,
-            band.y + widgets::PANEL_HEADER_HEIGHT,
-            band.width,
-            band.height - widgets::PANEL_HEADER_HEIGHT,
-        );
-
-        // `shell.rs::timeline_strip`'s construction of `strip`.
-        let strip_y = content.y + padding + scene_row;
-        let strip_height =
-            ASSUMED_STRIP_HEIGHT.min((content.height - padding * 2.0 - scene_row).max(0.0));
-
-        // `Shell::export_panel`'s construction of `boundary`.
-        let top = strip_y + strip_height + STRIP_GAP;
-        let boundary_height = (content.y + content.height - top - padding).max(0.0);
-
-        assert!(
-            (boundary_height - EXPORT_CONTENT_MIN_HEIGHT).abs() < 0.01,
-            "EXPORT_MIN_BAND_HEIGHT ({}) should reproduce EXPORT_CONTENT_MIN_HEIGHT \
-             ({}) through the panel's own formula, got {boundary_height}",
-            EXPORT_MIN_BAND_HEIGHT,
-            EXPORT_CONTENT_MIN_HEIGHT,
-        );
     }
 }

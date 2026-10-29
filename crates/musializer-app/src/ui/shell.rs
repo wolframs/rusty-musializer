@@ -3551,17 +3551,6 @@ impl Shell {
         }
     }
 
-    /// Opens or hides the dock and remembers the choice. Hiding keeps its
-    /// terminals running; only closing a tab ends one.
-    pub fn toggle_dock(&mut self) -> ShellCommand {
-        self.dock_open = !self.dock_open;
-        if !self.dock_open {
-            self.dock_keyboard = false;
-        }
-        self.ui_preferences.dock_open = self.dock_open;
-        ShellCommand::SaveUiPreferences(self.ui_preferences)
-    }
-
     /// Whether any text field is taking keystrokes.
     ///
     /// The shell reads the keyboard before any panel is drawn, so a panel with a
@@ -3681,14 +3670,6 @@ impl Shell {
     /// diagnose.
     fn set_inspector_open(&mut self, open: bool) {
         self.inspector_open = open;
-    }
-
-    fn toggle_panel(&mut self, panel: UiPanel) {
-        if self.panel == panel {
-            self.panel = UiPanel::None;
-            return;
-        }
-        self.panel = panel;
     }
 
     /// The column's view, read off today's state (WX-5d seam).
@@ -5677,7 +5658,10 @@ mod tests {
                 .map(ModeTab::name)
                 .collect()
         };
-        assert!(selected(&shell).is_empty(), "a new shell's column is closed");
+        assert!(
+            selected(&shell).is_empty(),
+            "a new shell's column is closed"
+        );
         for tab in ModeTab::ALL {
             shell.activate_mode_tab(tab, &workspace, &mut commands);
             assert_eq!(selected(&shell), [tab.name()], "one view at a time");
@@ -5735,17 +5719,11 @@ mod tests {
             let frame = shell.frame_for((1280.0, 720.0), &workspace);
             frames.push((frame.timeline, frame.preview, frame.column));
         }
-        assert!(frames.windows(2).all(|pair| pair[0] == pair[1]), "{frames:?}");
+        assert!(
+            frames.windows(2).all(|pair| pair[0] == pair[1]),
+            "{frames:?}"
+        );
         assert_eq!(frames[0].0, UiRect::new(0.0, 460.0, 922.0, 260.0));
-    }
-
-    #[test]
-    fn toggling_a_real_panel_twice_returns_to_the_timeline_without_a_stub_notice() {
-        let mut shell = Shell::new();
-        shell.toggle_panel(UiPanel::Export);
-        assert_eq!(shell.panel, UiPanel::Export);
-        shell.toggle_panel(UiPanel::Export);
-        assert_eq!(shell.panel, UiPanel::None);
     }
 
     // The toolbar's composition — what it sheds, in what order, and that the
@@ -6415,7 +6393,6 @@ mod tests {
         assert_eq!(shell.split_drag, None);
         assert_eq!(commands, vec![ShellCommand::SetFullscreen(true)]);
     }
-
 
     /// The same stranding, one gesture over: a scrub pauses playback when it
     /// starts, so abandoning it silently would leave the track paused at a

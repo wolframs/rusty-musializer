@@ -358,9 +358,11 @@ mod tests {
 
     #[test]
     fn an_older_files_dock_width_seeds_the_column_once() {
-        let mut preferences = super::super::preferences::UiPreferences::default();
-        preferences.dock_open = true;
-        preferences.dock_width = Some(480.0);
+        let mut preferences = super::super::preferences::UiPreferences {
+            dock_open: true,
+            dock_width: Some(480.0),
+            ..Default::default()
+        };
         let mut shell = Shell::with_preferences(preferences);
         shell.seed_column_from_preferences();
         assert_eq!(shell.ui_preferences.column_width, Some(480.0));
@@ -373,5 +375,4 @@ mod tests {
         assert_eq!(shell.column_view(), ColumnView::Closed);
         assert_eq!(shell.column_width(1920.0), None);
     }
-
 }

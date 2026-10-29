@@ -34,16 +34,11 @@ use std::path::PathBuf;
 use egui::{Context, Rect, RichText, Stroke};
 
 use crate::ui::theme::color32;
-use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::terminal::{GridSize, Session, Spawn};
 
 use chat_view::ChatTab;
 use terminal_view::TerminalView;
 
-/// The narrowest the workspace may become beside an open dock. Below this the
-/// timeline's controls start shedding, and a dock that costs the workspace its
-/// transport is the wrong trade.
-pub const WORKSPACE_MINIMUM: f32 = 640.0;
 /// The dock's own bounds. 360 is about 44 columns, the least an agent's TUI
 /// is still usable in.
 pub const MINIMUM: f32 = 360.0;
@@ -263,29 +258,6 @@ pub struct Dock {
 }
 
 impl Dock {
-    /// The dock's width for a logical window, honouring the user's dragged
-    /// width when there is room. `0.0` means the window is too narrow to hold
-    /// a dock beside a usable workspace.
-    #[must_use]
-    pub fn width_for(window_width: f32, preferred: Option<f32>) -> f32 {
-        let wanted = preferred.unwrap_or_else(|| (window_width * 0.32).clamp(420.0, 640.0));
-        let room = window_width - WORKSPACE_MINIMUM;
-        let width = wanted.clamp(MINIMUM, MAXIMUM).min(room);
-        if width < MINIMUM {
-            0.0
-        } else {
-            width.floor()
-        }
-    }
-
-    /// The rect the dock occupies in a logical window, or `None` when it does
-    /// not fit.
-    #[must_use]
-    pub fn rect(window: (f32, f32), preferred: Option<f32>) -> Option<UiRect> {
-        let width = Self::width_for(window.0, preferred);
-        (width > 0.0).then(|| UiRect::new(window.0 - width, 0.0, width, window.1))
-    }
-
     /// Whether a terminal held the keyboard at the end of the last frame.
     #[must_use]
     pub fn wants_keyboard(&self) -> bool {
@@ -485,12 +457,6 @@ impl Dock {
         )
     }
 
-    /// Draw as the column's Direct view (WX-5d) rather than beside the
-    /// workspace: no grip of the dock's own, the column's head.
-    pub fn set_in_column(&mut self, in_column: bool) {
-        self.in_column = in_column;
-    }
-
     /// Gives up the keyboard (WX-5d §2): the dock left the screen, so no
     /// surface of it may keep keystrokes. Also drops egui's focus, which
     /// would otherwise hand the keyboard straight back to the terminal the
@@ -651,12 +617,6 @@ impl Dock {
         }
     }
 
-    /// The live width while the grip is being dragged.
-    #[must_use]
-    pub fn dragged_width(&self) -> Option<f32> {
-        self.dragging
-    }
-
     /// Returns whether "stop following" was pressed.
     fn header(&mut self, ui: &mut egui::Ui, context: &DockContext) -> bool {
         let mut stop = false;
@@ -799,36 +759,5 @@ fn terminal_state(terminal: &Terminal) -> (String, String) {
 impl Drop for Dock {
     fn drop(&mut self) {
         self.shutdown();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_dock_never_squeezes_the_workspace_below_its_floor() {
-        for window in [1000.0f32, 1280.0, 1440.0, 1920.0, 2560.0, 3840.0] {
-            for preferred in [None, Some(300.0), Some(500.0), Some(2000.0)] {
-                let width = Dock::width_for(window, preferred);
-                if width > 0.0 {
-                    assert!(
-                        window - width >= WORKSPACE_MINIMUM,
-                        "{window} {preferred:?}"
-                    );
-                    assert!(
-                        (MINIMUM..=MAXIMUM).contains(&width),
-                        "{window} {preferred:?}"
-                    );
-                }
-            }
-        }
-        // Too narrow for both: no dock rather than a useless one.
-        assert_eq!(Dock::width_for(960.0, None), 0.0);
-        assert!(Dock::rect((960.0, 640.0), None).is_none());
-        // The default at 1920 is a third of the window, inside the bounds.
-        assert_eq!(Dock::width_for(1920.0, None), 614.0);
-        // A dragged width is honoured when it fits.
-        assert_eq!(Dock::width_for(1920.0, Some(500.0)), 500.0);
     }
 }
