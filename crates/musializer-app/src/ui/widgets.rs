@@ -873,6 +873,23 @@ const TOOLTIP_PADDING_Y: f32 = 6.0;
 const TOOLTIP_GAP: f32 = 6.0;
 const TOOLTIP_MARGIN: f32 = 4.0;
 
+/// A tooltip's plate, for [`draw_tooltip`] and for a caller that types its
+/// own text on it (the cue lane's tip, in the authored face).
+///
+/// The floating-surface shape (WX-5 follow-up): the 4 px corner and the soft
+/// shadow a notice card has. The tooltip keeps its own tokens — dark in both
+/// appearances, the convention a tip is read by.
+pub fn tooltip_plate(d: &mut RaylibDrawHandle<'_>, boundary: UiRect) {
+    floating_shadow(d, boundary);
+    control_box(
+        d,
+        boundary,
+        color::ui_tooltip_surface(),
+        color::ui_tooltip_edge(),
+        1.0,
+    );
+}
+
 /// Draws a tooltip above everything else.
 ///
 /// Opaque theme-specific colors keep tooltip text readable over chrome or video.
@@ -888,9 +905,7 @@ pub fn draw_tooltip(
     if boundary.is_empty() {
         return;
     }
-    let rect = rectangle(boundary);
-    d.draw_rectangle_rec(rect, color::ui_tooltip_surface());
-    d.draw_rectangle_lines_ex(rect, 1.0, color::ui_tooltip_edge());
+    tooltip_plate(d, boundary);
     draw_text(
         d,
         font,
@@ -1547,15 +1562,17 @@ pub fn floating_shadow(d: &mut RaylibDrawHandle<'_>, boundary: UiRect) {
     // overlap, near the edge, the shadow is darkest, and it falls off outward.
     // Premultiplied black is plain black with alpha, so the tint is unchanged.
     const RINGS: u8 = FLOAT_SHADOW_SPREAD as u8;
-    const RING_ALPHA: u8 = 14;
+    const RING_ALPHA: u8 = 9;
     d.draw_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY, |mut blend| {
         for ring in 1..=RINGS {
             let grow = f32::from(ring);
+            // Each ring reaches half as far above the surface as below it,
+            // so the shadow falls under the surface rather than haloing it.
             let rect = UiRect::new(
                 boundary.x - grow,
-                boundary.y - grow + FLOAT_SHADOW_DROP,
+                boundary.y - grow * 0.5 + FLOAT_SHADOW_DROP,
                 boundary.width + grow * 2.0,
-                boundary.height + grow * 2.0,
+                boundary.height + grow * 1.5,
             );
             let short = rect.width.min(rect.height);
             let roundness = ((metric::UI_RADIUS + grow) * 2.0 / short).clamp(0.0, 1.0);

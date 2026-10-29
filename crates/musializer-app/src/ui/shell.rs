@@ -1914,20 +1914,31 @@ impl Shell {
         let right = input.window.0 - 10.0;
         let centre_y = 10.0;
         if expanded {
+            // A floating pill in the save state's own words (WX-5 follow-up):
+            // the dot and then the label, as the top bar says "● Unsaved",
+            // on the opaque floating surface rather than a translucent slab
+            // whose contrast depended on the frame under it.
             let label = attention.label();
-            let width = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION) + 24.0;
-            let pill = UiRect::new(right - width, 4.0, width, 22.0);
-            widgets::fill(d, pill, widgets::alpha(color::ui_surface(), 0.94));
+            let text = widgets::measure(input.fonts.ui(), label, metric::UI_FONT_CAPTION);
+            let width =
+                ATTENTION_PILL_PAD + ATTENTION_DOT + ATTENTION_DOT_GAP + text + ATTENTION_PILL_PAD;
+            let pill = UiRect::new(right - width, 4.0, width, ATTENTION_PILL_HEIGHT);
+            widgets::floating_surface(d, pill);
+            let centre = pill.y + pill.height * 0.5;
+            d.draw_circle_v(
+                Vector2::new(pill.x + ATTENTION_PILL_PAD + ATTENTION_DOT * 0.5, centre),
+                ATTENTION_DOT * 0.5,
+                tint,
+            );
             widgets::draw_text(
                 d,
                 input.fonts.ui(),
                 label,
-                pill.x + 9.0,
-                pill.y + 4.0,
+                pill.x + ATTENTION_PILL_PAD + ATTENTION_DOT + ATTENTION_DOT_GAP,
+                centre - metric::UI_FONT_CAPTION * 0.5 - 1.0,
                 metric::UI_FONT_CAPTION,
                 tint,
             );
-            d.draw_circle((right - 4.0) as i32, centre_y as i32, 3.0, tint);
         } else {
             d.draw_circle(right as i32, centre_y as i32, 3.0, tint);
         }
@@ -5369,6 +5380,11 @@ enum TrackAttention {
 }
 
 const FULLSCREEN_ATTENTION_EXPAND_SECONDS: f64 = 2.5;
+/// The expanded fullscreen pill: 4/8 rhythm, the save dot's size.
+const ATTENTION_PILL_HEIGHT: f32 = 24.0;
+const ATTENTION_PILL_PAD: f32 = 10.0;
+const ATTENTION_DOT: f32 = 7.0;
+const ATTENTION_DOT_GAP: f32 = 7.0;
 
 fn fullscreen_attention_expanded(since: f64, now: f64) -> bool {
     now - since < FULLSCREEN_ATTENTION_EXPAND_SECONDS

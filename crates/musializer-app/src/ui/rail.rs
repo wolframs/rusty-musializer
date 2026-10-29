@@ -14,7 +14,9 @@
 use musializer_core::scene::SceneId;
 use musializer_core::ui::scene_browser::{PickerLayout, SceneFamily};
 use musializer_core::ui::workspace_layout::{RailIcon, UiRect};
-use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
+use raylib::prelude::{
+    BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, Vector2,
+};
 
 use super::icons;
 use super::scene_colors::scene_color;
@@ -190,15 +192,21 @@ impl Shell {
             return;
         }
         // A soft edge on the preview side, so the flyout reads as lifted off
-        // the work rather than as a panel that pushed it aside.
-        d.draw_rectangle_gradient_h(
-            (rect.x + rect.width) as i32,
-            rect.y as i32,
-            FLYOUT_SHADOW as i32,
-            rect.height as i32,
-            Color::new(0, 0, 0, 70),
-            Color::new(0, 0, 0, 0),
-        );
+        // the work rather than as a panel that pushed it aside. Premultiplied,
+        // as every floating surface's shadow is (`widgets::floating_shadow`):
+        // `BLEND_ALPHA` would leave these pixels translucent in a saved PNG
+        // (`docs/TRAPS.md`). Premultiplied black is black, so the picture is
+        // the same.
+        d.draw_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY, |mut blend| {
+            blend.draw_rectangle_gradient_h(
+                (rect.x + rect.width) as i32,
+                rect.y as i32,
+                FLYOUT_SHADOW as i32,
+                rect.height as i32,
+                Color::new(0, 0, 0, 70),
+                Color::new(0, 0, 0, 0),
+            );
+        });
         match kind {
             Flyout::Tracks => self.tracks_panel(d, rect, input, commands),
             Flyout::Scenes => self.scene_browser(d, rect, input, commands),

@@ -135,7 +135,15 @@ pub fn apply_theme(ctx: &Context, theme: UiTheme) {
     visuals.window_corner_radius = radius;
     visuals.menu_corner_radius = radius;
     visuals.window_shadow = egui::epaint::Shadow::NONE;
-    visuals.popup_shadow = egui::epaint::Shadow::NONE;
+    // Popups and menus (the theme picker, combo lists) are floating surfaces
+    // and lift the way the raylib ones do (`widgets::floating_surface`): a
+    // short soft shadow falling below. Windows stay flat; they are panels.
+    visuals.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 2],
+        blur: 8,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(48),
+    };
     visuals.window_stroke = Stroke::new(1.0, edge);
     for widgets in [
         &mut visuals.widgets.noninteractive,
