@@ -66,6 +66,7 @@ use crate::cli::{CaptionPickerProbe, CaptionTuneProbe, UiProbe};
 use crate::workspace::{Track, Workspace};
 
 mod column;
+use column::LyricsPane;
 
 /// The cue lane's default height, and the gap between it and the editor below.
 ///
@@ -1035,6 +1036,10 @@ pub struct LyricEditor {
     nudge_repeat: HoldRepeat,
     /// What the column view drew last frame, and its pane's scroll (WX-5d).
     column: column::ColumnEvidence,
+    /// A family list `--ui-probe fonts=PATH` named, waiting for the shell to
+    /// hand it to the font browser: this editor sees the probe, the shell owns
+    /// the browser.
+    probe_catalogue: Option<PathBuf>,
 }
 
 /// The authored form fields recovery must preserve without applying them to the
@@ -1167,6 +1172,7 @@ impl LyricEditor {
             time_edit: None,
             nudge_repeat: HoldRepeat::default(),
             column: column::ColumnEvidence::default(),
+            probe_catalogue: None,
         }
     }
 
@@ -1765,11 +1771,14 @@ impl LyricEditor {
             self.style_pane = true;
             self.effects_pane = true;
         }
-        if probe.font_browser.is_some() {
+        if let Some(browser) = probe.font_browser.as_ref() {
             // The browser is a pane *inside* the style pane, and its own Back
             // button returns there (`lyrics_editor_ui.c:1165-1174`).
             self.style_pane = true;
             self.font_pane = true;
+            if let crate::cli::FontBrowserProbe::Catalogue(path) = browser {
+                self.probe_catalogue = Some(path.clone());
+            }
         }
         if let Some(target) = probe.caption_picker {
             // A disclosure inside the style pane, so it turns the pane on the
@@ -2034,7 +2043,13 @@ impl Shell {
     /// and always `None` with the switch off.
     #[must_use]
     pub(crate) fn sample_cue_id(&self, workspace: &Workspace, seconds: f64) -> Option<u64> {
-        if !self.lyrics_column_shown() || !self.lyrics.pane().shapes_caption() {
+        self.sample_cue_for(self.lyrics.pane(), workspace, seconds)
+    }
+
+    /// [`Self::sample_cue_id`] for a pane named by the caller: the column draws
+    /// with the editor taken out of `self`, so it passes its own.
+    fn sample_cue_for(&self, pane: LyricsPane, workspace: &Workspace, seconds: f64) -> Option<u64> {
+        if !self.lyrics_column_shown() || !pane.shapes_caption() {
             return None;
         }
         let track = workspace.current()?;
@@ -2097,6 +2112,17 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
         placement: Placement,
     ) -> f32 {
+        // `fonts=PATH`: nothing else hands the browser its local family list,
+        // so without this only the consent body could ever be photographed.
+        if let Some(path) = self.lyrics.probe_catalogue.take() {
+            match self.font_browser.load_catalogue_from_file(&path) {
+                // The consent the browsing body needs, as `allow_network`'s
+                // own comment intends for a probe. It starts no request: only
+                // Download does, and no probe presses it.
+                Ok(()) => self.font_browser.allow_network(),
+                Err(error) => eprintln!("FONTS: --ui-probe fonts={}: {error}", path.display()),
+            }
+        }
         // WX-5d: in the column the band keeps only the cue lane, exactly as
         // every other view has it, and the editor draws in the column's rect.
         if placement == Placement::Column {

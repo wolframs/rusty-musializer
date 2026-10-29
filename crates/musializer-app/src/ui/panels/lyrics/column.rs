@@ -288,7 +288,7 @@ impl Shell {
             return;
         };
         let sample = self
-            .sample_cue_id(input.workspace, input.time_seconds)
+            .sample_cue_for(pane, input.workspace, input.time_seconds)
             .map_or_else(|| "none".to_owned(), |id| format!("#{id}"));
         let prefix = format!(
             "pane={} rect={} head={} seg={seg_report}",
@@ -648,8 +648,11 @@ impl Shell {
         }
 
         // Apply (strong), Discard, Delete (danger text).
+        // Apply is offered only for a change: an ink slab on an untouched cue
+        // would say a commit is waiting when none is (the mockup dims it).
+        let dirty = editor.has_unsaved_draft(document);
         let apply_enabled = match editor.draft_edit() {
-            Some(edit) if bound => {
+            Some(edit) if bound && dirty => {
                 if self
                     .widgets
                     .text_button(
@@ -1175,7 +1178,7 @@ impl Shell {
             value = typed;
         }
         let hint = format!("{step} s. Ctrl for 0.01 s, Shift for 1 s. Hold to repeat.");
-        for (index, rect, glyph) in [(0u32, row.minus, "\u{2212}"), (1, row.plus, "+")] {
+        for (index, rect, glyph) in [(0u32, row.minus, "-"), (1, row.plus, "+")] {
             let id = widgets::widget_id(ns::FORM, id_base + index);
             let state = self.widgets.text_button(
                 d,
