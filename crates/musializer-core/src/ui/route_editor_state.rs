@@ -836,7 +836,10 @@ pub fn column_editor_layout(card: UiRect, band: bool) -> ColumnEditorLayout {
         y += COLUMN_EDITOR_ACTION_HEIGHT + COLUMN_EDITOR_ACTION_GAP;
     }
     let button = |left: f32, w: f32| UiRect::new(left, y, w, COLUMN_EDITOR_ACTION_HEIGHT);
-    let swap = button(x + width - COLUMN_EDITOR_SWAP_WIDTH, COLUMN_EDITOR_SWAP_WIDTH);
+    let swap = button(
+        x + width - COLUMN_EDITOR_SWAP_WIDTH,
+        COLUMN_EDITOR_SWAP_WIDTH,
+    );
     let clamp = button(
         swap.x - COLUMN_EDITOR_ACTION_GAP - COLUMN_EDITOR_CLAMP_WIDTH,
         COLUMN_EDITOR_CLAMP_WIDTH,
@@ -1195,7 +1198,9 @@ mod tests {
         assert_eq!(narrow.swap, UiRect::new(244.0, 350.0, 52.0, 30.0));
         assert_eq!(narrow.remove, UiRect::new(170.0, 314.0, 70.0, 30.0));
         assert_eq!(narrow.card.height, 390.0);
-        assert_eq!(narrow.swap.y + narrow.swap.height + 10.0, narrow.card.height);
+        assert_eq!(
+            narrow.swap.y + narrow.swap.height + 10.0,
+            narrow.card.height
+        );
     }
-
 }

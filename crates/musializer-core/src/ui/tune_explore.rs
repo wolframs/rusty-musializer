@@ -11,7 +11,7 @@
 //! randomness**. [`surprise`] and [`nudge`] take a [`RandomSource`] by reference
 //! so a test can seed them and get the same tuning twice, which is also what
 //! makes "the result is inside every descriptor's bounds" checkable across all
-//! 81 descriptors rather than across whatever a lucky run produced.
+//! 271 descriptors rather than across whatever a lucky run produced.
 //!
 //! # Why a snapshot rather than an edit log
 //!
@@ -553,6 +553,37 @@ impl Audition {
     #[must_use]
     pub fn before(&self) -> SettingsSnapshot {
         self.before
+    }
+
+    /// How many of `scene`'s values the trial moved: the explored tuning
+    /// against the one it started from, bit for bit. The explored tuning is
+    /// `live` while it is on screen and the stashed copy while A is (WX-5d:
+    /// the audition card's `5 VALUES MOVED`).
+    #[must_use]
+    pub fn moved(&self, scene: SceneId, live: &SceneSettings) -> usize {
+        (0..settings::descriptors(scene).len())
+            .filter(|&index| {
+                let after = match self.stashed_after {
+                    Some(stashed) => stashed.values[index],
+                    None => live.get(scene, index),
+                };
+                after.to_bits() != self.before.values[index].to_bits()
+            })
+            .count()
+    }
+}
+
+/// The audition card's micro head (WX-5d §3.3): what is being tried, named so
+/// the card reads as an invitation to keep going rather than a status.
+#[must_use]
+pub fn audition_head(session: &Audition) -> String {
+    match (session.showing, session.source) {
+        (Side::Before, _) => "Listening to before".to_string(),
+        (Side::After, ExploreSource::Nudge | ExploreSource::Surprise) => {
+            format!("Trying {} {}", session.source.label(), session.steps)
+        }
+        (Side::After, ExploreSource::Preset) => "Trying a saved look".to_string(),
+        (Side::After, ExploreSource::Manual) => "Trying your edits".to_string(),
     }
 }
 
@@ -1375,6 +1406,48 @@ mod tests {
         assert_eq!(
             audition_label(&state.session(target()).unwrap()),
             "Auditioning: preset (4 steps)"
+        );
+    }
+    #[test]
+    fn the_card_counts_moved_values_on_either_side_and_names_the_trial() {
+        let target = TuneTarget {
+            track_slot: 0,
+            scene: SceneId::Cadence,
+            cue: None,
+        };
+        let mut live = SceneSettings::default();
+        let mut state = ExploreState::new();
+        assert!(state.begin(target, &live, ExploreSource::Surprise));
+        let session = state.session(target).unwrap();
+        assert_eq!(session.moved(SceneId::Cadence, &live), 0);
+        assert_eq!(audition_head(&session), "Trying Surprise 1");
+        let scale = settings::descriptor(SceneId::Cadence, 0).unwrap();
+        let halo = settings::descriptor(SceneId::Cadence, 9).unwrap();
+        assert!(live.set(SceneId::Cadence, 0, scale.default_value + 0.25));
+        assert!(live.set(SceneId::Cadence, 9, halo.default_value + 0.25));
+        assert_eq!(
+            state
+                .session(target)
+                .unwrap()
+                .moved(SceneId::Cadence, &live),
+            2
+        );
+        // A on screen: the live tuning is the original again, and the count
+        // still reads the stashed trial.
+        let before = state.compare(target, &live).expect("A");
+        for (index, _) in settings::descriptors(SceneId::Cadence).iter().enumerate() {
+            live.set(SceneId::Cadence, index, before.values[index]);
+        }
+        let session = state.session(target).unwrap();
+        assert_eq!(session.moved(SceneId::Cadence, &live), 2);
+        assert_eq!(audition_head(&session), "Listening to before");
+        let mut fresh = ExploreState::new();
+        assert!(fresh.begin(target, &live, ExploreSource::Nudge));
+        fresh.note_manual_edit(target);
+        let state = fresh;
+        assert_eq!(
+            audition_head(&state.session(target).unwrap()),
+            "Trying your edits"
         );
     }
 }

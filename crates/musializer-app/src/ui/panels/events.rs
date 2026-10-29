@@ -261,8 +261,6 @@ impl Shell {
     /// 98 px when it has. The collapsed state exists because the full block cost
     /// 98 px of a panel whose first slider is what the user opened it for, and
     /// with nothing saved only `Save new` did anything (`plug.c:5995-5999`).
-    // No call site yet: its caller is `tune.rs`, another agent's file.
-    #[allow(dead_code)]
     pub(crate) fn preset_block(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -535,6 +533,273 @@ impl Shell {
                 Severity::Warning,
                 "Shared presets are read-only",
                 "Fix or remove the preset library file, then restart Musializer.",
+            );
+        }
+    }
+}
+
+/// Saved looks in Look's column (WX-5d §3.3): the preset block in the column's
+/// vocabulary. Chips, one per preset, each a press that loads it; `+ Save this
+/// look`; and, for the selected chip, Update and Delete at the right end of the
+/// section head. Every action the oracle's block had is here: `<`/`>` became
+/// pressing a chip, `Load` became the same press.
+pub(crate) struct SavedLooks {
+    pub labels: Vec<String>,
+    pub chip_widths: Vec<f32>,
+    pub save_label: &'static str,
+    pub save_width: f32,
+    /// The empty library's sentence, and its width; empty when there are presets.
+    pub hint: &'static str,
+    pub hint_width: f32,
+    /// Update and Delete (or Confirm), present only with a selection.
+    pub action_labels: Vec<&'static str>,
+    pub action_widths: Vec<f32>,
+    pub selected: Option<usize>,
+}
+
+/// Padding either side of a chip's label.
+const LOOK_CHIP_PADDING: f32 = 12.0;
+/// Padding either side of a head action's label.
+const HEAD_ACTION_PADDING: f32 = 8.0;
+/// Chip ids in [`PRESET_NAMESPACE`], after the oracle block's six.
+const CHIP_SLOT: u32 = 10;
+
+impl SavedLooks {
+    /// What the column will draw for `scene`, measured in `font`.
+    pub(crate) fn measure(
+        font: &musializer_runtime::font::UiFonts,
+        presets: &SharedPresetsView<'_>,
+        scene: musializer_core::scene::SceneId,
+    ) -> Self {
+        let size = metric::UI_FONT_CAPTION;
+        let scene_presets = presets.library.presets(scene);
+        let count = scene_presets.len();
+        let labels: Vec<String> = scene_presets
+            .iter()
+            .map(|preset| preset.name.clone())
+            .collect();
+        let chip_widths = labels
+            .iter()
+            .map(|label| (widgets::measure(font, label, size) + LOOK_CHIP_PADDING * 2.0).ceil())
+            .collect();
+        let save_label = if count >= PRESETS_PER_SCENE {
+            "Library full"
+        } else {
+            "+ Save this look"
+        };
+        let hint = if count == 0 {
+            "Saved looks follow you to every project."
+        } else {
+            ""
+        };
+        let selected = (count > 0).then(|| preset_store::clamp_selection(count, presets.selected));
+        let action_labels: Vec<&'static str> = if selected.is_some() {
+            vec![
+                "Update",
+                if presets.delete_armed {
+                    "Confirm delete"
+                } else {
+                    "Delete"
+                },
+            ]
+        } else {
+            Vec::new()
+        };
+        Self {
+            chip_widths,
+            save_width: (widgets::measure(font, save_label, size) + LOOK_CHIP_PADDING * 2.0).ceil(),
+            hint_width: if hint.is_empty() {
+                0.0
+            } else {
+                widgets::measure(font, hint, size).ceil()
+            },
+            action_widths: action_labels
+                .iter()
+                .map(|label| {
+                    (widgets::measure(font, label, size) + HEAD_ACTION_PADDING * 2.0).ceil()
+                })
+                .collect(),
+            labels,
+            save_label,
+            hint,
+            action_labels,
+            selected,
+        }
+    }
+}
+
+impl Shell {
+    /// Draws Look's saved looks at the rects `tune_groups::look_layout` gave
+    /// them and returns what was pressed, as the oracle block's actions.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the measured content, every rect the layout produced, the view and the sink"
+    )]
+    pub(crate) fn saved_looks(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        looks: &SavedLooks,
+        head: UiRect,
+        action_rects: &[UiRect],
+        chips: &[UiRect],
+        save: UiRect,
+        hint: Option<UiRect>,
+        actions: &mut Vec<PresetAction>,
+    ) {
+        let font = input.fonts.ui();
+        let presets = input.presets;
+        let count = looks.labels.len();
+        let count_text = format!("{count}");
+        let total_text = format!("{PRESETS_PER_SCENE}");
+        widgets::section_head(
+            d,
+            font,
+            UiRect::new(
+                head.x,
+                head.y,
+                action_rects
+                    .first()
+                    .map_or(head.width, |first| first.x - 8.0 - head.x),
+                head.height,
+            ),
+            &[
+                widgets::MicroRun::muted("Saved looks · "),
+                widgets::MicroRun::ink(&count_text),
+                widgets::MicroRun::muted(" / "),
+                widgets::MicroRun::muted(&total_text),
+            ],
+        );
+
+        for (index, (rect, label)) in chips.iter().zip(&looks.labels).enumerate() {
+            let selected = looks.selected == Some(index);
+            let id = widgets::widget_id(PRESET_NAMESPACE, CHIP_SLOT + index as u32);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                *rect,
+                label,
+                selected,
+                ButtonStyle::Neutral,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            if state.clicked {
+                // One press is the oracle's `<`/`>` and `Load` together: the
+                // chip a user presses is the look they want to see.
+                actions.push(PresetAction::Select(index));
+                actions.push(PresetAction::Apply(index));
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                *rect,
+                "Load this look. Revert on the trial card brings back what you had.",
+            );
+        }
+
+        if count >= PRESETS_PER_SCENE {
+            self.widgets.disabled_button(
+                d,
+                font,
+                save,
+                looks.save_label,
+                Some(metric::UI_FONT_CAPTION),
+            );
+        } else {
+            let id = widgets::widget_id(PRESET_NAMESPACE, 5);
+            let state = self.widgets.text_button(
+                d,
+                font,
+                id,
+                save,
+                looks.save_label,
+                false,
+                ButtonStyle::Ghost,
+                Some(metric::UI_FONT_CAPTION),
+            );
+            if !state.hovered {
+                // Ghost draws nothing idle; a dashed-looking hairline would be
+                // noise, a plain one says "this is a place to put something".
+                widgets::control_box(d, save, color::ui_surface(), color::ui_rule(), 1.0);
+                widgets::text_label(
+                    d,
+                    font,
+                    save,
+                    looks.save_label,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_ink(),
+                );
+            }
+            if state.clicked {
+                self.request_preset_write(&presets, PresetAction::SaveNew, actions);
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                save,
+                "Save these values as a look for this scene, in every project",
+            );
+        }
+        if let Some(hint) = hint {
+            widgets::draw_text_faded(
+                d,
+                font,
+                looks.hint,
+                hint.x,
+                hint.y + (hint.height - metric::UI_FONT_CAPTION) * 0.5,
+                hint.width,
+                metric::UI_FONT_CAPTION + 4.0,
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+        }
+
+        let Some(selected) = looks.selected else {
+            return;
+        };
+        for (slot, (rect, label)) in action_rects.iter().zip(&looks.action_labels).enumerate() {
+            let delete = slot == 1;
+            let id = widgets::widget_id(PRESET_NAMESPACE, if delete { 4 } else { 3 });
+            let state = self.widgets.button(d, id, *rect);
+            if state.hovered {
+                widgets::control_box(d, *rect, color::ui_hover(), color::ui_hover(), 1.0);
+            }
+            widgets::text_label(
+                d,
+                font,
+                *rect,
+                label,
+                metric::UI_FONT_CAPTION,
+                if delete {
+                    color::ui_danger()
+                } else if state.hovered {
+                    color::ui_ink()
+                } else {
+                    color::ui_muted()
+                },
+            );
+            if state.clicked {
+                if !delete {
+                    self.request_preset_write(&presets, PresetAction::Replace(selected), actions);
+                } else if presets.delete_armed {
+                    self.request_preset_write(&presets, PresetAction::Delete(selected), actions);
+                } else {
+                    actions.push(PresetAction::ArmDelete(selected));
+                }
+            }
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                *rect,
+                if delete {
+                    "Delete the selected look; a second press confirms"
+                } else {
+                    "Replace the selected look with the values on screen"
+                },
             );
         }
     }

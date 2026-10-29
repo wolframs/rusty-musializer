@@ -35,7 +35,9 @@
 
 use musializer_core::project::preset_store::PresetAction;
 use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
-use musializer_core::scene::settings::{self, SceneSettings, SettingDescriptor, SettingsSnapshot};
+use musializer_core::scene::settings::{
+    self, SceneSettings, SettingDescriptor, SettingsSnapshot, PRESETS_PER_SCENE,
+};
 use musializer_core::scene::SceneId;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::route_editor_state::{self, RouteEditorDraft, RouteEditorState};
@@ -44,6 +46,7 @@ use musializer_core::ui::text_edit::TextRules;
 use musializer_core::ui::tune_explore::{
     self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
 };
+use musializer_core::ui::tune_groups;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
@@ -142,12 +145,14 @@ mod slot {
     /// Every constant above, named individually, plus the two bare literals the
     /// row loop uses (`index` for the slider, `900` for Reset scene).
     #[cfg(test)]
-    pub const ALL_SLOTS: [(&str, u32, u32); 20] = [
+    pub const ALL_SLOTS: [(&str, u32, u32); 24] = [
         // (name, first slot, count)
         ("SLIDER", 0, 12),
         ("ROUTE_TOGGLE", ROUTE_TOGGLE, 12),
         ("ROUTED_SUMMARY", ROUTED_SUMMARY, 12),
-        ("SOURCE", SOURCE, 6),
+        // Ten: every `AnalysisSource`, one per item (it read 6 while ten
+        // were claimed; nothing sat in 206..209, so it never bit).
+        ("SOURCE", SOURCE, 10),
         ("BAND_PREVIOUS", BAND_PREVIOUS, 1),
         ("BAND_NEXT", BAND_NEXT, 1),
         ("INPUT_LOW", INPUT_LOW, 1),
@@ -164,6 +169,11 @@ mod slot {
         ("AB", AB_COMPARE, 3),
         ("ACTION_DISABLED", ACTION_DISABLED, 2),
         ("HIDDEN_DRAFT", HIDDEN_DRAFT, 2),
+        // WX-5d's column (`column_slot`): twelve rows of four ids each.
+        ("COLUMN_ROW", super::column_slot::ROW, 48),
+        ("COLUMN_TILES", super::column_slot::NUDGE, 2),
+        ("COLUMN_TRIAL", super::column_slot::COMPARE, 7),
+        ("RESET_SCENE (column too)", 900, 0),
     ];
 }
 
@@ -939,12 +949,75 @@ pub(crate) fn tune_state_line(
     )
 }
 
-/// What Look drew in its last frame, kept on `Shell::look_column` for the
-/// `tune layout:` line (WX-5d seam). Empty until the Look & Assist builder
-/// gives it fields; it lives in this file so that builder never edits
-/// `shell.rs`.
+/// Look's column state across frames, kept on `Shell::look_column` (WX-5d).
+/// It lives in this file so this view never edits `shell.rs`.
 #[derive(Clone, Debug, Default)]
-pub struct LookColumn {}
+pub struct LookColumn {
+    /// The list's scroll offset, in logical px.
+    offset: f32,
+    /// What the offset is for: a new track or scene starts at the top.
+    context: Option<(usize, SceneId)>,
+    /// Scroll the open route editor into view on the next frame.
+    reveal_editor: bool,
+    /// The last track press, `(descriptor index, time)`, for double-click reset.
+    last_track_press: Option<(usize, f64)>,
+    /// The `tune layout:` line for the last frame Look drew in the column.
+    report: String,
+}
+
+/// Two presses on one track within this many seconds reset it (§3.3).
+const DOUBLE_PRESS_SECONDS: f64 = 0.4;
+/// How far one wheel notch scrolls the list.
+const LOOK_WHEEL_STEP: f32 = 48.0;
+/// The scene name's type size (the design's 20 px header).
+const LOOK_TITLE_SIZE: f32 = 20.0;
+
+/// Slots in `widgets::id::INSPECTOR` for the column (WX-5d), past the 900
+/// Reset scene keeps. Rows stride by `widgets::SLIDER_ROW_IDS`.
+mod column_slot {
+    pub const ROW: u32 = 1000;
+    pub const NUDGE: u32 = 1100;
+    pub const SURPRISE: u32 = 1101;
+    /// The A / B switch: two consecutive items.
+    pub const COMPARE: u32 = 1110;
+    pub const REVERT: u32 = 1112;
+    pub const KEEP: u32 = 1113;
+    pub const AGAIN: u32 = 1114;
+    pub const ANOTHER: u32 = 1115;
+    /// Keep's hover target while A is on screen and Keep is refused.
+    pub const KEEP_REFUSED: u32 = 1116;
+}
+
+/// The row label column's width for a row `width` wide: a third of the row,
+/// held between what a two-word label needs and what leaves the track room
+/// (118 at the mockup's 1280 width, 147 at 1920).
+#[must_use]
+pub(crate) fn look_label_width(width: f32) -> f32 {
+    (width * 0.34).round().clamp(96.0, 150.0)
+}
+
+/// Look's scope sentence (WX-5d §3.3): where a change lands, in words. The
+/// column twin of [`tune_scope_label`], with "section" for the plan's unit as
+/// the plan lane now names it.
+#[must_use]
+pub(crate) fn look_scope_sentence(
+    cue: Option<(usize, f64)>,
+    sections: usize,
+    plan_enabled: bool,
+) -> String {
+    match cue {
+        Some((position, start_seconds)) => format!(
+            "Changes apply to section {}, from {}",
+            position + 1,
+            widgets::format_timestamp(start_seconds)
+        ),
+        None if sections == 0 => "Changes apply to the base scene".to_string(),
+        None if plan_enabled => {
+            "Changes apply to the base scene \u{00b7} this section captured no tuning".to_string()
+        }
+        None => format!("Changes apply to the base scene \u{00b7} {sections} sections are paused"),
+    }
+}
 
 impl Shell {
     /// The `tune layout:` report line (WX-5d §5): the drawn scene, its groups
@@ -953,8 +1026,12 @@ impl Shell {
     /// until built, and an empty line is not printed.
     #[must_use]
     pub(crate) fn describe_tune_layout(&self, _workspace: &Workspace) -> String {
-        let LookColumn {} = &self.look_column;
-        String::new()
+        if self.placement() != Placement::Column
+            || self.column_view() != super::super::shell::ColumnView::Look
+        {
+            return String::new();
+        }
+        self.look_column.report.clone()
     }
 
     /// The tuning inspector: one slider per setting of the active scene.
@@ -970,9 +1047,13 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
         placement: Placement,
     ) {
-        // WX-5d seam: the Column branch is the Look & Assist builder's;
-        // until it lands, the inspector keeps its own column.
-        let _ = placement;
+        if placement == Placement::Column {
+            // WX-5d: the column view. `frame` is not read: the shell's column
+            // rect is the one source of where the column is.
+            let column = self.column_rect();
+            self.look_view(d, column, input, commands);
+            return;
+        }
         if frame.inspector.is_empty() {
             return;
         }
@@ -2569,6 +2650,1278 @@ impl Shell {
     }
 }
 
+// -- Look in the column (WX-5d §3.3) -------------------------------------------
+
+impl Shell {
+    /// Look, drawn in the right column: the scene, the scope in words, the
+    /// two explore tiles (or the trial card), saved looks, the parameters in
+    /// groups with the route editor inline, and the footer. Every rect comes
+    /// from [`tune_groups::look_layout`] and
+    /// [`route_editor_state::column_editor_layout`].
+    ///
+    /// The same state and the same commands as the inspector above: a row's
+    /// drag, its typed value, its reset and its route all go through the
+    /// paths the inspector's controls use, so nothing here can write
+    /// somewhere a slider could not.
+    pub(crate) fn look_view(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        column: UiRect,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if column.is_empty() {
+            self.look_column.report.clear();
+            return;
+        }
+        let font = input.fonts.ui();
+        let scene = input.scene;
+        let track_slot = input.workspace.current_index().unwrap_or(0);
+        self.with_editor(|host| host.track_slot = track_slot);
+        let target = self.tune_target(input, track_slot);
+        self.with_editor(|host| host.explore.retarget(target));
+        if self.look_column.context != Some((track_slot, scene)) {
+            self.look_column.context = Some((track_slot, scene));
+            self.look_column.offset = 0.0;
+        }
+
+        // The head: LOOK, and where the change lands as a count.
+        let active_cue = input.workspace.current().and_then(Track::active_cue);
+        let (sections, plan_enabled) = input.workspace.current().map_or((0, false), |track| {
+            (track.scene_switches.len(), track.scene_switches.enabled)
+        });
+        let head = widgets::column_head(d, font, column, &[widgets::MicroRun::muted("Look")]);
+        let position_text = active_cue.map(|(index, _)| format!("{}", index + 1));
+        let total_text = format!("{sections}");
+        let trailing: Vec<widgets::MicroRun<'_>> = match position_text.as_deref() {
+            Some(position) => vec![
+                widgets::MicroRun::muted("Section "),
+                widgets::MicroRun::ink(position),
+                widgets::MicroRun::muted(" of "),
+                widgets::MicroRun::ink(&total_text),
+            ],
+            None => vec![widgets::MicroRun::muted("Base scene")],
+        };
+        let trailing_width = widgets::micro_width(font, &trailing);
+        let trailing_box = head.trailing_right(trailing_width, metric::UI_FONT_MICRO);
+        widgets::draw_micro(d, font, trailing_box.x, trailing_box.y, &trailing);
+
+        // What the list holds this frame.
+        let groups = tune_groups::groups(scene);
+        let order: Vec<usize> = groups
+            .iter()
+            .flat_map(|rows| rows.indices.iter().copied())
+            .collect();
+        let focused = self.focused_route_row(track_slot, scene);
+        let draft_bar = self.route_editor.state.is_dirty() && focused.is_none();
+        let audition = self.peek_editor(|host| host.explore.session(target));
+        let looks = super::events::SavedLooks::measure(font, &input.presets, scene);
+        let card_width = (head.body.width - tune_groups::LOOK_PADDING * 2.0).max(0.0);
+        let band = self
+            .route_editor
+            .state
+            .draft()
+            .is_some_and(|draft| draft.source == AnalysisSource::Band);
+        let spec = tune_groups::LookSpec {
+            groups: groups
+                .iter()
+                .map(|rows| (rows.group, rows.indices.len()))
+                .collect(),
+            draft_bar,
+            audition: audition.is_some(),
+            chip_widths: looks.chip_widths.clone(),
+            save_width: looks.save_width,
+            empty_hint_width: looks.hint_width,
+            preset_action_widths: looks.action_widths.clone(),
+            editor: focused.and_then(|index| {
+                order.iter().position(|&row| row == index).map(|position| {
+                    (
+                        position,
+                        route_editor_state::column_editor_height(band, card_width),
+                    )
+                })
+            }),
+        };
+
+        // Scroll: the wheel moves the list unless Alt asks for a value step.
+        let mouse = input.ui_scale.mouse(d);
+        let alt = d.is_key_down(KeyboardKey::KEY_LEFT_ALT)
+            || d.is_key_down(KeyboardKey::KEY_RIGHT_ALT)
+            || self.probe_wheel_alt;
+        let (scroll_wheel, value_wheel) = tune_wheel(self.wheel_delta(d), alt);
+        let mut layout = tune_groups::look_layout(head.body, &spec, self.look_column.offset);
+        if scroll_wheel != 0.0 && layout.viewport.contains_point(mouse.x, mouse.y) {
+            layout = tune_groups::look_layout(
+                head.body,
+                &spec,
+                layout.offset - scroll_wheel * LOOK_WHEEL_STEP,
+            );
+        }
+        if self.look_column.reveal_editor {
+            self.look_column.reveal_editor = false;
+            if let Some(editor) = layout.editor {
+                let offset = tune_groups::reveal_offset(&layout, editor);
+                layout = tune_groups::look_layout(head.body, &spec, offset);
+            }
+        }
+        self.look_column.offset = layout.offset;
+
+        // The fixed header: the scene's name and the scope sentence.
+        widgets::draw_text(
+            d,
+            font,
+            scene.display_name(),
+            layout.title.x,
+            layout.title.y + (layout.title.height - LOOK_TITLE_SIZE) * 0.5,
+            LOOK_TITLE_SIZE,
+            color::ui_ink(),
+        );
+        let scope = look_scope_sentence(
+            active_cue.map(|(index, cue)| (index, cue.start_seconds)),
+            sections,
+            plan_enabled,
+        );
+        widgets::draw_text_faded(
+            d,
+            font,
+            &ascii_fallback(font.all_loaded(), &scope),
+            layout.scope.x,
+            layout.scope.y,
+            layout.scope.width,
+            24.0,
+            metric::UI_FONT_CAPTION,
+            color::ui_muted(),
+        );
+
+        let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
+        let mut report_rows = Vec::with_capacity(order.len());
+        let explore_report;
+        let mut editor_report = String::from("none");
+        {
+            let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
+            let d = &mut *clip;
+            if let Some(bar) = layout.draft_bar {
+                self.hidden_route_draft_bar(d, input, bar, commands);
+            }
+            explore_report =
+                self.look_explore(d, input, &layout.explore, target, audition, commands);
+
+            let mut presets = Vec::new();
+            self.saved_looks(
+                d,
+                input,
+                &looks,
+                layout.presets_head,
+                &layout.preset_actions,
+                &layout.chips,
+                layout.save,
+                layout.empty_hint,
+                &mut presets,
+            );
+            if !presets.is_empty() {
+                self.with_editor(|host| host.reset_arm.disarm());
+            }
+            if presets
+                .iter()
+                .any(|action| matches!(action, PresetAction::Apply(_)))
+            {
+                self.begin_audition(target, input.settings, ExploreSource::Preset);
+            }
+            commands.extend(presets.into_iter().map(ShellCommand::Preset));
+
+            let label_width = look_label_width(card_width);
+            for group in &layout.groups {
+                widgets::section_head(
+                    d,
+                    font,
+                    group.head,
+                    &[widgets::MicroRun::muted(group.group.title())],
+                );
+                for &(position, row) in &group.rows {
+                    let index = order[position];
+                    let line = self.look_row(
+                        d,
+                        input,
+                        row,
+                        index,
+                        label_width,
+                        target,
+                        value_wheel,
+                        layout.viewport,
+                        commands,
+                    );
+                    report_rows.push(line);
+                }
+            }
+            if let (Some(card), Some(index)) = (layout.editor, focused) {
+                editor_report = self.route_editor_column(d, input, card, scene, index, commands);
+            }
+        }
+        self.widgets.set_input_clip(old_clip);
+        if !layout.scrollbar.is_empty() {
+            widgets::rounded_box(
+                d,
+                layout.scrollbar,
+                2.0,
+                color::ui_control_edge(),
+                color::ui_control_edge(),
+                1.0,
+            );
+        }
+
+        // The footer: Reset scene… (two presses) and the hint.
+        widgets::fill(d, layout.footer, color::ui_surface());
+        widgets::fill(
+            d,
+            UiRect::new(layout.footer.x, layout.footer.y, layout.footer.width, 1.0),
+            color::ui_rule(),
+        );
+        let armed = self.peek_editor(|host| host.reset_arm.is_armed_for(track_slot, scene));
+        let reset_id = widgets::widget_id(widgets::id::INSPECTOR, RESET_SCENE_SLOT);
+        let reset_state = if armed {
+            self.widgets.text_button(
+                d,
+                font,
+                reset_id,
+                layout.reset,
+                "Confirm reset",
+                true,
+                ButtonStyle::Danger,
+                Some(metric::UI_FONT_CAPTION),
+            )
+        } else {
+            self.text_action(
+                d,
+                font,
+                reset_id,
+                layout.reset,
+                "Reset scene\u{2026}",
+                color::ui_danger(),
+            )
+        };
+        if reset_state.clicked {
+            if armed {
+                self.with_editor(|host| host.reset_arm.disarm());
+                commands.push(ShellCommand::ResetScene(scene));
+            } else {
+                self.with_editor(|host| host.reset_arm.arm(track_slot, scene));
+            }
+        }
+        self.widgets.hint(
+            d,
+            reset_state,
+            reset_id,
+            layout.reset,
+            if armed {
+                "Press again to put every value of this scene back to its default"
+            } else {
+                "Every value back to its default; a second press confirms"
+            },
+        );
+        let hint = [widgets::MicroRun::muted(
+            "~ follows the music \u{00b7} double-click resets",
+        )];
+        let hint_width = widgets::micro_width(font, &hint);
+        if hint_width <= layout.footer_hint.width {
+            widgets::draw_micro(
+                d,
+                font,
+                layout.footer_hint.x + layout.footer_hint.width - hint_width,
+                layout.footer_hint.y + (layout.footer_hint.height - metric::UI_FONT_MICRO) * 0.5,
+                &hint,
+            );
+        }
+
+        // The report line (§5), from the rects just drawn.
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let groups_text: Vec<String> = groups
+            .iter()
+            .map(|rows| format!("{}:{}", rows.group.token(), rows.indices.len()))
+            .collect();
+        let chips_text: Vec<String> = layout.chips.iter().map(|chip| rect(*chip)).collect();
+        self.look_column.report = format!(
+            "scene={} head={} title={} viewport={} offset={:.0}/{:.0} groups={} rows={} explore={} presets={}/{} chips={} save@{} reset@{}{} editor={}",
+            scene.stable_name(),
+            rect(head.head),
+            rect(layout.title),
+            rect(layout.viewport),
+            layout.offset,
+            layout.max_offset,
+            groups_text.join(","),
+            report_rows.join(";"),
+            explore_report,
+            looks.labels.len(),
+            PRESETS_PER_SCENE,
+            if chips_text.is_empty() {
+                "none".to_string()
+            } else {
+                chips_text.join(";")
+            },
+            rect(layout.save),
+            rect(layout.reset),
+            if armed { "*" } else { "" },
+            editor_report,
+        );
+    }
+
+    /// A word that is a button: a hover box, no frame, the label in `tint`
+    /// (Reset scene…, the danger-text actions of §3).
+    fn text_action(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        id: u64,
+        rect: UiRect,
+        label: &str,
+        tint: raylib::prelude::Color,
+    ) -> widgets::ButtonState {
+        let state = self.widgets.button(d, id, rect);
+        if state.hovered {
+            widgets::control_box(d, rect, color::ui_hover(), color::ui_hover(), 1.0);
+        }
+        widgets::text_label(d, font, rect, label, metric::UI_FONT_CAPTION, tint);
+        state
+    }
+
+    /// The explore block: Nudge and Surprise as tiles, or the trial card.
+    /// Returns its part of the report line.
+    fn look_explore(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        explore: &tune_groups::ExploreLayout,
+        target: TuneTarget,
+        audition: Option<tune_explore::Audition>,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        let font = input.fonts.ui();
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let press = |shell: &mut Shell, strength: Strength, commands: &mut Vec<ShellCommand>| {
+            shell.begin_audition(
+                target,
+                input.settings,
+                if strength == Strength::Surprise {
+                    ExploreSource::Surprise
+                } else {
+                    ExploreSource::Nudge
+                },
+            );
+            let seed = shell.next_explore_seed(input.scene);
+            let mut rng = SplitMix64::new(seed);
+            let snapshot = tune_explore::explore(&mut rng, input.scene, input.settings, strength);
+            push_snapshot(input.scene, &snapshot, commands);
+            shell.with_editor(|host| host.reset_arm.disarm());
+        };
+        match (explore, audition) {
+            (tune_groups::ExploreLayout::Tiles { nudge, surprise }, _) => {
+                for (tile, slot_index, strength, icon, title, line, tip) in [
+                    (
+                        *nudge,
+                        column_slot::NUDGE,
+                        Strength::Nudge,
+                        musializer_runtime::font::Icon::Sliders,
+                        "Nudge",
+                        "Small steps around this look",
+                        "Move every value a little, at random. The trial card brings it back.",
+                    ),
+                    (
+                        *surprise,
+                        column_slot::SURPRISE,
+                        Strength::Surprise,
+                        musializer_runtime::font::Icon::Random,
+                        "Surprise",
+                        "A bold new look",
+                        "Re-tune this scene at random, inside every value's own range. The trial card brings it back.",
+                    ),
+                ] {
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, slot_index);
+                    let state = self.widgets.button(d, id, tile);
+                    widgets::rounded_box(
+                        d,
+                        tile,
+                        6.0,
+                        if state.pressed {
+                            color::ui_selected()
+                        } else if state.hovered {
+                            color::ui_hover()
+                        } else {
+                            color::ui_raised()
+                        },
+                        if state.hovered {
+                            color::ui_selected_edge()
+                        } else {
+                            color::ui_control_edge()
+                        },
+                        1.0,
+                    );
+                    let mut text_x = tile.x + 12.0;
+                    if input.fonts.icons_available() {
+                        d.draw_text_ex(
+                            input.fonts.icons(),
+                            &icon.glyph().to_string(),
+                            raylib::prelude::Vector2::new(tile.x + 12.0, tile.y + 14.0),
+                            15.0,
+                            0.0,
+                            color::ui_ink(),
+                        );
+                        text_x += 22.0;
+                    }
+                    widgets::draw_text(
+                        d,
+                        font,
+                        title,
+                        text_x,
+                        tile.y + 12.0,
+                        15.0,
+                        color::ui_ink(),
+                    );
+                    widgets::draw_text_faded(
+                        d,
+                        font,
+                        line,
+                        tile.x + 12.0,
+                        tile.y + 37.0,
+                        (tile.width - 24.0).max(0.0),
+                        18.0,
+                        metric::UI_FONT_CAPTION,
+                        color::ui_muted(),
+                    );
+                    if state.clicked {
+                        press(self, strength, commands);
+                    }
+                    self.widgets.hint(d, state, id, tile, tip);
+                }
+                format!("nudge@{},surprise@{}", rect(*nudge), rect(*surprise))
+            }
+            (tune_groups::ExploreLayout::Audition(card), Some(session)) => {
+                widgets::rounded_box(
+                    d,
+                    card.card,
+                    6.0,
+                    color::ui_surface(),
+                    color::ui_selected_edge(),
+                    1.0,
+                );
+                let head = tune_explore::audition_head(&session);
+                let moved = session.moved(input.scene, input.settings);
+                let moved_text =
+                    format!("{moved} value{} moved", if moved == 1 { "" } else { "s" });
+                let words: Vec<&str> = head.splitn(2, ' ').collect();
+                let runs = match words.as_slice() {
+                    [first, rest] => vec![
+                        widgets::MicroRun::muted(first),
+                        widgets::MicroRun::muted(" "),
+                        widgets::MicroRun::ink(rest),
+                    ],
+                    _ => vec![widgets::MicroRun::ink(&head)],
+                };
+                let y = card.line.y + (card.line.height - metric::UI_FONT_MICRO) * 0.5;
+                widgets::draw_micro(d, font, card.line.x, y, &runs);
+                let moved_runs = [widgets::MicroRun::muted(&moved_text)];
+                let moved_width = widgets::micro_width(font, &moved_runs);
+                widgets::draw_micro(
+                    d,
+                    font,
+                    card.line.x + card.line.width - moved_width,
+                    y,
+                    &moved_runs,
+                );
+
+                let showing_before = session.showing == Side::Before;
+                let segmented = self.widgets.segmented(
+                    d,
+                    font,
+                    widgets::id::INSPECTOR,
+                    column_slot::COMPARE,
+                    card.compare,
+                    &["A \u{00b7} before", "B \u{00b7} this"],
+                    Some(usize::from(!showing_before)),
+                    widgets::SegmentedFit::Hug,
+                );
+                if let Some(pick) = segmented.clicked {
+                    if (pick == 0) != showing_before {
+                        let swap =
+                            self.with_editor(|host| host.explore.compare(target, input.settings));
+                        if let Some(snapshot) = swap {
+                            push_snapshot(input.scene, &snapshot, commands);
+                        }
+                    }
+                }
+
+                let id = widgets::widget_id(widgets::id::INSPECTOR, column_slot::REVERT);
+                let state = self.widgets.text_button(
+                    d,
+                    font,
+                    id,
+                    card.revert,
+                    "Revert",
+                    false,
+                    ButtonStyle::Ghost,
+                    Some(metric::UI_FONT_CAPTION),
+                );
+                if state.clicked {
+                    if let Some(snapshot) = self.with_editor(|host| host.explore.revert(target)) {
+                        push_snapshot(input.scene, &snapshot, commands);
+                    }
+                    self.with_editor(|host| host.reset_arm.disarm());
+                }
+                self.widgets.hint(
+                    d,
+                    state,
+                    id,
+                    card.revert,
+                    "Put every value back exactly as it was before you started",
+                );
+                if showing_before {
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        card.keep,
+                        "Keep",
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, column_slot::KEEP_REFUSED);
+                    let hover = self.widgets.button(d, id, card.keep);
+                    self.widgets.hint(
+                        d,
+                        hover,
+                        id,
+                        card.keep,
+                        "Switch back to B first - Keep here would discard the trial",
+                    );
+                } else {
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, column_slot::KEEP);
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        card.keep,
+                        "Keep",
+                        false,
+                        ButtonStyle::Strong,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    if state.clicked {
+                        self.with_editor(|host| host.explore.keep(target));
+                    }
+                    self.widgets.hint(
+                        d,
+                        state,
+                        id,
+                        card.keep,
+                        "Settle on this look and close the trial",
+                    );
+                }
+                for (button, slot_index, strength, label) in [
+                    (
+                        card.again,
+                        column_slot::AGAIN,
+                        Strength::Nudge,
+                        "Nudge again",
+                    ),
+                    (
+                        card.another,
+                        column_slot::ANOTHER,
+                        Strength::Surprise,
+                        "Another",
+                    ),
+                ] {
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, slot_index);
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        button,
+                        label,
+                        false,
+                        ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    if state.clicked {
+                        press(self, strength, commands);
+                    }
+                }
+                let items: Vec<String> = segmented
+                    .layout
+                    .items
+                    .iter()
+                    .map(|item| rect(*item))
+                    .collect();
+                format!(
+                    "trial@{} a@{} b@{} revert@{} keep@{} again@{} another@{} moved={moved}",
+                    rect(card.card),
+                    items.first().map_or("-", String::as_str),
+                    items.get(1).map_or("-", String::as_str),
+                    rect(card.revert),
+                    rect(card.keep),
+                    rect(card.again),
+                    rect(card.another),
+                )
+            }
+            (tune_groups::ExploreLayout::Audition(_), None) => String::from("none"),
+        }
+    }
+
+    /// One parameter row (§3.3): label with the changed dot, the track with
+    /// its default tick, the value (press to type), and `~`. Returns its
+    /// entry in the report line.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's worth of context: where, which setting, and where the edit lands"
+    )]
+    fn look_row(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        row: UiRect,
+        index: usize,
+        label_width: f32,
+        target: TuneTarget,
+        value_wheel: f32,
+        viewport: UiRect,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        let font = input.fonts.ui();
+        let scene = input.scene;
+        let Some(descriptor) = settings::descriptor(scene, index) else {
+            return String::new();
+        };
+        let track_slot = input.workspace.current_index().unwrap_or(0);
+        let committed = committed_route(input, scene, index).cloned();
+        let routed = committed.is_some();
+        let open = self.focused_route_row(track_slot, scene) == Some(index);
+        let value = input.settings.get(scene, index);
+        let effective = input
+            .routed
+            .map_or(value, |routed| routed.get(scene, index));
+        let span = descriptor.maximum - descriptor.minimum;
+        let fraction = |v: f32| {
+            if span > 0.0 {
+                ((v - descriptor.minimum) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        let modified = value.to_bits() != descriptor.default_value.to_bits();
+        let pulse_auto = scene == SceneId::PulseField
+            && descriptor.key == "settings.pulse.petals"
+            && effective < 0.5
+            && !routed;
+        let value_text = if pulse_auto {
+            "Auto".to_string()
+        } else {
+            format!("{:.*}", descriptor.precision as usize, effective)
+        };
+        let label = ascii_fallback(font.all_loaded(), descriptor.label);
+        let first = column_slot::ROW + index as u32 * widgets::SLIDER_ROW_IDS;
+        let result = self.widgets.slider_row(
+            d,
+            font,
+            widgets::id::INSPECTOR,
+            first,
+            row,
+            &widgets::SliderRow {
+                label: &label,
+                value_text: &value_text,
+                normalized: fraction(effective),
+                default: Some(fraction(descriptor.default_value)),
+                changed: modified,
+                route: Some(routed || open),
+                label_width,
+            },
+        );
+        let layout = result.layout;
+        let id = |offset: u32| widgets::widget_id(widgets::id::INSPECTOR, first + offset);
+        let editable = !routed && !open;
+
+        // The label resets a changed value, as it did in the inspector.
+        if modified && result.label.clicked {
+            self.begin_audition(target, input.settings, ExploreSource::Manual);
+            commands.push(ShellCommand::SetSetting {
+                scene,
+                index,
+                value: descriptor.default_value,
+            });
+            self.with_editor(|host| host.reset_arm.disarm());
+        }
+        self.widgets.hint(
+            d,
+            result.label,
+            id(1),
+            layout.label,
+            &if modified {
+                format!(
+                    "{} - click to reset to {:.*}",
+                    descriptor.label, descriptor.precision as usize, descriptor.default_value
+                )
+            } else {
+                format!("{} - at its default", descriptor.label)
+            },
+        );
+
+        // The track: a drag writes onto the descriptor's grid; two presses
+        // reset. A routed value belongs to its route, so the track only shows it.
+        if editable {
+            if let Some(fraction) = result.drag {
+                let proposed =
+                    tune_explore::conform(descriptor, descriptor.minimum + fraction * span);
+                if proposed.to_bits() != value.to_bits() {
+                    commands.push(ShellCommand::SetSetting {
+                        scene,
+                        index,
+                        value: proposed,
+                    });
+                    self.with_editor(|host| {
+                        host.explore.note_manual_edit(target);
+                        host.reset_arm.disarm();
+                    });
+                }
+            }
+            if result.track.clicked {
+                let now = d.get_time();
+                let double = self
+                    .look_column
+                    .last_track_press
+                    .is_some_and(|(last, at)| last == index && now - at <= DOUBLE_PRESS_SECONDS);
+                if double {
+                    self.look_column.last_track_press = None;
+                    self.begin_audition(target, input.settings, ExploreSource::Manual);
+                    commands.push(ShellCommand::SetSetting {
+                        scene,
+                        index,
+                        value: descriptor.default_value,
+                    });
+                } else {
+                    self.look_column.last_track_press = Some((index, now));
+                }
+            }
+            // Alt+wheel steps the value under the pointer; Shift makes ten.
+            if value_wheel != 0.0 {
+                let pointer = input.ui_scale.mouse(d);
+                if row.contains_point(pointer.x, pointer.y)
+                    && viewport.contains_point(pointer.x, pointer.y)
+                {
+                    let coarse = d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+                        || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
+                        || self.probe_wheel_shift;
+                    let steps = (value_wheel.round() as i32) * if coarse { 10 } else { 1 };
+                    let stepped = tune_explore::step(descriptor, value, steps);
+                    if stepped.to_bits() != value.to_bits() {
+                        commands.push(ShellCommand::SetSetting {
+                            scene,
+                            index,
+                            value: stepped,
+                        });
+                        self.with_editor(|host| {
+                            host.reset_arm.disarm();
+                            host.explore.note_manual_edit(target);
+                        });
+                    }
+                }
+            }
+        }
+
+        // The value: a press opens typed entry; while typing, the field sits
+        // over the value, a little wider so a long number fits.
+        let typing_here = self.peek_editor(|host| {
+            host.typing
+                .as_ref()
+                .is_some_and(|entry| entry.scene == scene && entry.index == index)
+        });
+        let field = UiRect::new(
+            layout.value.x - 22.0,
+            layout.value.y + 4.0,
+            layout.value.width + 22.0,
+            layout.value.height - 8.0,
+        );
+        if typing_here {
+            if !viewport.contains(field) {
+                self.with_editor(|host| host.typing = None);
+            } else {
+                self.value_chip(
+                    d,
+                    input,
+                    field,
+                    index,
+                    descriptor,
+                    effective,
+                    &value_text,
+                    target,
+                    commands,
+                );
+            }
+        } else if editable && result.value.clicked {
+            let precision = descriptor.precision;
+            self.with_editor(|host| {
+                host.typing = Some(TypedEntry::open(scene, index, value, precision));
+            });
+        }
+        self.widgets.hint(
+            d,
+            result.value,
+            id(2),
+            layout.value,
+            &if editable {
+                format!(
+                    "Type a value ({:.*} to {:.*}) - Alt+wheel steps, Shift by ten",
+                    descriptor.precision as usize,
+                    descriptor.minimum,
+                    descriptor.precision as usize,
+                    descriptor.maximum,
+                )
+            } else {
+                "This value follows the music; open ~ to change how".to_string()
+            },
+        );
+
+        // `~`: open, close or refuse, as the inspector's route button.
+        if result.route.clicked {
+            self.toggle_route_editor(track_slot, scene, index, committed.as_ref());
+            if self.focused_route_row(track_slot, scene) == Some(index) {
+                self.look_column.reveal_editor = true;
+            }
+        }
+        self.widgets.hint(
+            d,
+            result.route,
+            id(3),
+            layout.route,
+            &match (open, committed.as_ref()) {
+                (true, _) if self.route_edit_is_dirty() => {
+                    "Discard this unapplied route".to_string()
+                }
+                (true, _) => "Close the route editor".to_string(),
+                (false, Some(route)) => format!(
+                    "Follows {} - click to edit",
+                    ascii_fallback(
+                        font.all_loaded(),
+                        &route_editor_state::summary(route, descriptor.precision)
+                    )
+                ),
+                (false, None) => "Let the music move this value".to_string(),
+            },
+        );
+
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        format!(
+            "{}{}@{}(track@{},value@{},route@{},label@{})",
+            descriptor.key,
+            match (modified, routed) {
+                (true, true) => "*~",
+                (true, false) => "*",
+                (false, true) => "~",
+                (false, false) => "",
+            },
+            rect(layout.row),
+            rect(layout.track),
+            rect(layout.value),
+            rect(layout.route),
+            rect(layout.label),
+        )
+    }
+
+    /// The route editor as the column draws it (§3.3): the same draft and
+    /// commands as [`Self::route_editor_row`], in the column's vocabulary.
+    /// Returns its part of the report line.
+    fn route_editor_column(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        card: UiRect,
+        scene: SceneId,
+        index: usize,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        let Some(descriptor) = settings::descriptor(scene, index) else {
+            return "none".to_string();
+        };
+        let Some(draft) = self.peek_editor(|host| host.state.draft().cloned()) else {
+            return "none".to_string();
+        };
+        let font = input.fonts.ui();
+        let layout =
+            route_editor_state::column_editor_layout(card, draft.source == AnalysisSource::Band);
+        let (dirty, can_apply, has_committed) = self.peek_editor(|host| {
+            (
+                host.state.is_dirty(),
+                host.state.can_apply(),
+                host.state
+                    .session()
+                    .is_some_and(|session| session.committed.is_some()),
+            )
+        });
+        widgets::rounded_box(
+            d,
+            layout.card,
+            6.0,
+            color::ui_raised(),
+            color::ui_control_edge(),
+            1.0,
+        );
+
+        // Head: what follows the music, and whether it is applied.
+        let label = ascii_fallback(font.all_loaded(), descriptor.label);
+        let head = [
+            widgets::MicroRun::muted("Follows the music \u{00b7} "),
+            widgets::MicroRun::ink(&label),
+        ];
+        let y = layout.head.y + (layout.head.height - metric::UI_FONT_MICRO) * 0.5;
+        let state_word = if has_committed && !dirty {
+            "Applied"
+        } else {
+            "Not applied yet"
+        };
+        let state_runs = [widgets::MicroRun::muted(state_word)];
+        let state_width = widgets::micro_width(font, &state_runs);
+        widgets::draw_micro(d, font, layout.head.x, y, &head);
+        if widgets::micro_width(font, &head) + state_width + 12.0 <= layout.head.width {
+            widgets::draw_micro(
+                d,
+                font,
+                layout.head.x + layout.head.width - state_width,
+                y,
+                &state_runs,
+            );
+        }
+
+        // Sources: two segmented rows of five.
+        let selected = AnalysisSource::ALL
+            .iter()
+            .position(|source| *source == draft.source);
+        let mut source_items = Vec::new();
+        for (row_index, boundary) in layout.sources.iter().enumerate() {
+            let start = row_index * route_editor_state::COLUMN_EDITOR_SOURCES_PER_ROW;
+            let end = (start + route_editor_state::COLUMN_EDITOR_SOURCES_PER_ROW)
+                .min(AnalysisSource::ALL.len());
+            let labels: Vec<&str> = AnalysisSource::ALL[start..end]
+                .iter()
+                .map(|source| route_editor_state::source_label(*source))
+                .collect();
+            let segmented = self.widgets.segmented(
+                d,
+                font,
+                widgets::id::INSPECTOR,
+                slot::SOURCE + start as u32,
+                *boundary,
+                &labels,
+                selected.and_then(|picked| picked.checked_sub(start)),
+                widgets::SegmentedFit::Fill,
+            );
+            if let Some(pick) = segmented.clicked {
+                let source = AnalysisSource::ALL[start + pick];
+                self.with_editor(|host| host.state.set_source(source));
+            }
+            source_items.extend(segmented.layout.items);
+        }
+
+        // The band stepper, only for the band source.
+        if draft.source == AnalysisSource::Band {
+            let band_limit = if input.band_count > 0 {
+                input.band_count
+            } else {
+                musializer_core::audio::analyzer::MAX_BANDS
+            };
+            let row = layout.band;
+            for (id_slot, delta, label, boundary) in [
+                (
+                    slot::BAND_PREVIOUS,
+                    -1,
+                    "<",
+                    UiRect::new(row.x, row.y, 34.0, row.height),
+                ),
+                (
+                    slot::BAND_NEXT,
+                    1,
+                    ">",
+                    UiRect::new(row.x + row.width - 34.0, row.y, 34.0, row.height),
+                ),
+            ] {
+                let id = widgets::widget_id(widgets::id::INSPECTOR, id_slot);
+                if self
+                    .widgets
+                    .text_button(
+                        d,
+                        font,
+                        id,
+                        boundary,
+                        label,
+                        false,
+                        ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    )
+                    .clicked
+                {
+                    self.with_editor(|host| host.state.step_band(delta, band_limit));
+                }
+            }
+            widgets::text_label(
+                d,
+                font,
+                row,
+                &format!("Band {} of {} (low to high)", draft.band_index, band_limit),
+                metric::UI_FONT_CAPTION,
+                color::ui_ink(),
+            );
+        }
+
+        // The live level: the source's name, where it sits in the window, the
+        // reading.
+        let live = self.live_value(input, draft.source, draft.band_index);
+        let name = [widgets::MicroRun::muted(route_editor_state::source_label(
+            draft.source,
+        ))];
+        let level_y = layout.level.y + (layout.level.height - metric::UI_FONT_MICRO) * 0.5;
+        widgets::draw_micro(d, font, layout.level.x, level_y, &name);
+        let reading = live.map_or_else(|| "no signal".to_string(), |value| format!("{value:.2}"));
+        let reading_width = widgets::measure_tabular(font, &reading, metric::UI_FONT_CAPTION);
+        widgets::draw_text_tabular(
+            d,
+            font,
+            &reading,
+            layout.level.x + layout.level.width - reading_width,
+            layout.level.y + (layout.level.height - metric::UI_FONT_CAPTION) * 0.5,
+            metric::UI_FONT_CAPTION,
+            color::ui_ink(),
+        );
+        let meter = UiRect::new(
+            layout.level.x + 52.0,
+            layout.level.y + (layout.level.height - 4.0) * 0.5,
+            (layout.level.width - 52.0 - reading_width - 12.0).max(0.0),
+            4.0,
+        );
+        self.route_meter(d, input, meter, &draft);
+
+        // The transfer plot: the live reading is the accent dot (5a's rule).
+        let span = descriptor.maximum - descriptor.minimum;
+        let span = if span <= 0.0 { 1.0 } else { span };
+        mapping_editor::transfer_graph(
+            d,
+            layout.plot,
+            (draft.input_min, draft.input_max),
+            f64::from(descriptor.minimum),
+            f64::from(span),
+            live,
+            &|source| draft.output_value(descriptor, source),
+        );
+
+        // The two anchors: the shared pair, so Lyrics' `~ Tune` matches.
+        for (anchor, rect) in layout.anchors.iter().enumerate() {
+            let high = anchor == 1;
+            let name = route_editor_state::anchor_label(draft.source, high);
+            let (anchor_input, anchor_output) = if high {
+                (draft.input_max, draft.output_max)
+            } else {
+                (draft.input_min, draft.output_min)
+            };
+            let caption = format!(
+                "{name}  {anchor_input:.2} {} {:.*}",
+                mapping_editor::arrow(font.all_loaded()),
+                descriptor.precision as usize,
+                anchor_output
+            );
+            let (input_slot, output_slot) = if high {
+                (slot::INPUT_HIGH, slot::OUTPUT_HIGH)
+            } else {
+                (slot::INPUT_LOW, slot::OUTPUT_LOW)
+            };
+            let edit = mapping_editor::anchor_pair(
+                d,
+                &mut self.widgets,
+                font,
+                rect.x,
+                rect.y,
+                rect.width,
+                &AnchorPair {
+                    caption: &caption,
+                    input_fraction: anchor_input as f32,
+                    output_fraction: (anchor_output as f32 - descriptor.minimum) / span,
+                    input_id: widgets::widget_id(widgets::id::INSPECTOR, input_slot),
+                    output_id: widgets::widget_id(widgets::id::INSPECTOR, output_slot),
+                    arrow_ok: font.all_loaded(),
+                },
+            );
+            if let Some(fraction) = edit.input {
+                self.with_editor(|host| {
+                    if high {
+                        host.state.set_input_max(f64::from(fraction))
+                    } else {
+                        host.state.set_input_min(f64::from(fraction))
+                    }
+                });
+            }
+            if let Some(fraction) = edit.output {
+                let value = f64::from(descriptor.minimum + fraction * span);
+                self.with_editor(|host| {
+                    if high {
+                        host.state.set_output_high(value)
+                    } else {
+                        host.state.set_output_low(value)
+                    }
+                });
+            }
+        }
+
+        if let Some(next) = mapping_editor::curve_stepper(
+            d,
+            &mut self.widgets,
+            font,
+            layout.curve.x,
+            layout.curve.y,
+            layout.curve.width,
+            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_PREVIOUS),
+            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_NEXT),
+            draft.interpolation,
+        ) {
+            self.with_editor(|host| host.state.set_curve(next));
+        }
+
+        // The actions: Apply strong; Discard; Remove for a committed route;
+        // Clamp and Swap at the right.
+        let size = Some(metric::UI_FONT_CAPTION);
+        let action =
+            |slot_index: u32| widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION + slot_index);
+        let apply_live = can_apply && (dirty || !has_committed);
+        if apply_live {
+            let state = self.widgets.text_button(
+                d,
+                font,
+                action(2),
+                layout.apply,
+                "Apply",
+                false,
+                ButtonStyle::Strong,
+                size,
+            );
+            if state.clicked {
+                commands.push(ShellCommand::ApplyRoute {
+                    scene,
+                    route: draft.clone(),
+                });
+                self.discard_route_draft();
+            }
+        } else {
+            self.widgets.disabled_button(
+                d,
+                font,
+                layout.apply,
+                if has_committed { "Applied" } else { "Apply" },
+                size,
+            );
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION_DISABLED);
+            let hover = self.widgets.button(d, id, layout.apply);
+            self.widgets.hint(
+                d,
+                hover,
+                id,
+                layout.apply,
+                if !can_apply {
+                    "The quiet and loud levels are the same, so this route has nothing to map"
+                } else {
+                    "Already applied - change something above to apply it again"
+                },
+            );
+        }
+        let close = self.widgets.text_button(
+            d,
+            font,
+            action(4),
+            layout.discard,
+            if dirty { "Discard" } else { "Close" },
+            false,
+            ButtonStyle::Ghost,
+            size,
+        );
+        if close.clicked {
+            self.discard_route_draft();
+        }
+        if has_committed {
+            let state = self.text_action(
+                d,
+                font,
+                action(3),
+                layout.remove,
+                "Remove",
+                color::ui_danger(),
+            );
+            if state.clicked {
+                commands.push(ShellCommand::RemoveRoute {
+                    scene,
+                    parameter: draft.parameter.clone(),
+                });
+                self.discard_route_draft();
+            }
+        }
+        let clamp = self.widgets.text_button(
+            d,
+            font,
+            action(0),
+            layout.clamp,
+            "Clamp",
+            draft.clamp,
+            ButtonStyle::Ghost,
+            size,
+        );
+        if clamp.clicked {
+            let next = !draft.clamp;
+            self.with_editor(|host| host.state.set_clamp(next));
+        }
+        self.widgets.hint(
+            d,
+            clamp,
+            action(0),
+            layout.clamp,
+            "Hold the source inside the quiet/loud window; off lets the curve extrapolate",
+        );
+        let swap = self.widgets.text_button(
+            d,
+            font,
+            action(1),
+            layout.swap,
+            "Swap",
+            false,
+            ButtonStyle::Ghost,
+            size,
+        );
+        if swap.clicked {
+            self.with_editor(|host| host.state.swap_output());
+        }
+        self.widgets.hint(
+            d,
+            swap,
+            action(1),
+            layout.swap,
+            "Exchange the two output values, inverting the response",
+        );
+
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let sources: Vec<String> = AnalysisSource::ALL
+            .iter()
+            .zip(&source_items)
+            .map(|(source, item)| {
+                format!(
+                    "{}{}@{}",
+                    source.canonical_name(),
+                    if *source == draft.source { "*" } else { "" },
+                    rect(*item)
+                )
+            })
+            .collect();
+        format!(
+            "{}@{}(sources={} plot@{} apply@{}{} discard@{} clamp@{} swap@{} dirty={})",
+            descriptor.key,
+            rect(layout.card),
+            sources.join(";"),
+            rect(layout.plot),
+            rect(layout.apply),
+            if apply_live { "" } else { "!" },
+            rect(layout.discard),
+            rect(layout.clamp),
+            rect(layout.swap),
+            u8::from(dirty),
+        )
+    }
+}
+
 /// The committed route driving one setting of the current track, if any
 /// (`route_editor_find_route`, `route_editor_state.c:296-309`).
 ///
@@ -3015,6 +4368,48 @@ mod tests {
     /// break this panel is to mint a base that another band grows into, which is
     /// exactly what `EXPORT`/`SEEK` did one level up. The table is beside the
     /// constants and this sweeps all of it, rather than a hand-written subset.
+    #[test]
+    fn the_column_rows_stride_by_the_widgets_ids_per_row() {
+        assert_eq!(widgets::SLIDER_ROW_IDS, 4);
+        assert_eq!(
+            slot::ALL_SLOTS
+                .iter()
+                .find(|(name, _, _)| *name == "COLUMN_ROW")
+                .map(|(_, _, count)| *count),
+            Some(12 * widgets::SLIDER_ROW_IDS)
+        );
+        assert_eq!(column_slot::ANOTHER + 1, column_slot::KEEP_REFUSED);
+    }
+
+    #[test]
+    fn look_scope_sentence_names_the_section_or_the_base_scene() {
+        assert_eq!(
+            look_scope_sentence(Some((20, 92.583)), 70, true),
+            "Changes apply to section 21, from 01:32.583"
+        );
+        assert_eq!(
+            look_scope_sentence(None, 0, false),
+            "Changes apply to the base scene"
+        );
+        assert_eq!(
+            look_scope_sentence(None, 70, true),
+            "Changes apply to the base scene \u{00b7} this section captured no tuning"
+        );
+        assert_eq!(
+            look_scope_sentence(None, 6, false),
+            "Changes apply to the base scene \u{00b7} 6 sections are paused"
+        );
+    }
+
+    #[test]
+    fn the_label_column_is_a_third_of_the_row_within_its_bounds() {
+        assert_eq!(look_label_width(330.0), 112.0);
+        assert_eq!(look_label_width(432.0), 147.0);
+        assert_eq!(look_label_width(292.0), 99.0);
+        assert_eq!(look_label_width(200.0), 96.0);
+        assert_eq!(look_label_width(900.0), 150.0);
+    }
+
     #[test]
     fn no_two_inspector_slot_bands_overlap() {
         let mut taken: Vec<(u32, &str)> = Vec::new();

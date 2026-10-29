@@ -194,9 +194,7 @@ pub fn groups(scene: SceneId) -> Vec<GroupRows> {
             let indices: Vec<usize> = descriptors
                 .iter()
                 .enumerate()
-                .filter(|(_, descriptor)| {
-                    group_of(descriptor.key).unwrap_or(Group::Scene) == group
-                })
+                .filter(|(_, descriptor)| group_of(descriptor.key).unwrap_or(Group::Scene) == group)
                 .map(|(index, _)| index)
                 .collect();
             (!indices.is_empty()).then_some(GroupRows { group, indices })
@@ -289,10 +287,7 @@ pub struct LookSpec {
 /// The explore block: two tiles, or the audition card that replaces them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExploreLayout {
-    Tiles {
-        nudge: UiRect,
-        surprise: UiRect,
-    },
+    Tiles { nudge: UiRect, surprise: UiRect },
     Audition(AuditionLayout),
 }
 
@@ -353,7 +348,9 @@ pub struct LookLayout {
 impl LookLayout {
     /// Every row in flat order, `(position, rect)`.
     pub fn rows(&self) -> impl Iterator<Item = (usize, UiRect)> + '_ {
-        self.groups.iter().flat_map(|group| group.rows.iter().copied())
+        self.groups
+            .iter()
+            .flat_map(|group| group.rows.iter().copied())
     }
 }
 
@@ -415,7 +412,12 @@ pub fn look_layout(body: UiRect, spec: &LookSpec, offset: f32) -> LookLayout {
         let card = UiRect::new(x, y, width, AUDITION_CARD_HEIGHT);
         let inner_x = x + AUDITION_PADDING;
         let inner_width = (width - AUDITION_PADDING * 2.0).max(0.0);
-        let line = UiRect::new(inner_x, y + AUDITION_PADDING, inner_width, AUDITION_LINE_HEIGHT);
+        let line = UiRect::new(
+            inner_x,
+            y + AUDITION_PADDING,
+            inner_width,
+            AUDITION_LINE_HEIGHT,
+        );
         let second = line.y + line.height + 10.0;
         let keep = UiRect::new(
             inner_x + inner_width - AUDITION_KEEP_WIDTH,
@@ -474,7 +476,12 @@ pub fn look_layout(body: UiRect, spec: &LookSpec, offset: f32) -> LookLayout {
     for &action in spec.preset_action_widths.iter().rev() {
         let action = action.max(0.0);
         right -= action;
-        preset_actions.push(UiRect::new(right, y - 4.0, action, SECTION_HEAD_HEIGHT + 8.0));
+        preset_actions.push(UiRect::new(
+            right,
+            y - 4.0,
+            action,
+            SECTION_HEAD_HEIGHT + 8.0,
+        ));
         right -= PRESET_ACTION_GAP;
     }
     preset_actions.reverse();
@@ -712,10 +719,7 @@ mod tests {
                     Group::Motion,
                     vec!["Swarm spread", "Focus speed", "Beat breathing"]
                 ),
-                (
-                    Group::Colour,
-                    vec!["Semantic hue swing", "Hue", "Colour"]
-                ),
+                (Group::Colour, vec!["Semantic hue swing", "Hue", "Colour"]),
                 (Group::Light, vec!["Particle glow", "Backdrop ribbons"]),
             ]
         );
@@ -829,7 +833,10 @@ mod tests {
         let layout = look_layout(BODY_1920, &spec, 0.0);
         let rows: Vec<(usize, UiRect)> = layout.rows().collect();
         assert_eq!(rows[6].1, UiRect::new(1474.0, 546.0, 432.0, 30.0));
-        assert_eq!(layout.editor, Some(UiRect::new(1474.0, 580.0, 432.0, 354.0)));
+        assert_eq!(
+            layout.editor,
+            Some(UiRect::new(1474.0, 580.0, 432.0, 354.0))
+        );
         assert_eq!(rows[7].1.y, 592.0 + 4.0 + 354.0 + 8.0 + 24.0);
         // Now it scrolls, and the editor can be brought fully into view.
         assert!(layout.max_offset > 0.0);
@@ -883,9 +890,18 @@ mod tests {
         let body = UiRect::new(0.0, 0.0, 358.0, 900.0);
         let layout = look_layout(body, &spec, 0.0);
         let head = layout.presets_head;
-        assert_eq!(layout.chips[0], UiRect::new(14.0, head.y + 24.0, 90.0, 28.0));
-        assert_eq!(layout.chips[2], UiRect::new(206.0, head.y + 24.0, 90.0, 28.0));
-        assert_eq!(layout.chips[3], UiRect::new(14.0, head.y + 58.0, 90.0, 28.0));
+        assert_eq!(
+            layout.chips[0],
+            UiRect::new(14.0, head.y + 24.0, 90.0, 28.0)
+        );
+        assert_eq!(
+            layout.chips[2],
+            UiRect::new(206.0, head.y + 24.0, 90.0, 28.0)
+        );
+        assert_eq!(
+            layout.chips[3],
+            UiRect::new(14.0, head.y + 58.0, 90.0, 28.0)
+        );
         assert_eq!(layout.save, UiRect::new(110.0, head.y + 58.0, 120.0, 28.0));
         assert_eq!(layout.empty_hint, None);
         assert_eq!(
