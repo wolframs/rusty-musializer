@@ -1073,6 +1073,9 @@ fn run(
             if let Some(view) = probe.column {
                 app.shell.set_column_view(view);
             }
+            if let Some(kind) = probe.assist_card {
+                ui::panels::assist::apply_card_probe(&app.workspace, kind);
+            }
             if let Some(width) = probe.column_width {
                 app.shell.ui_preferences.column_width = Some(width);
             }
@@ -2003,6 +2006,8 @@ fn run(
                     d.draw_rectangle_rec(surround, ui::theme::color::preview_surround());
                 }
                 let preview = ui::widgets::rectangle(ui_scale.physical_rect(framed));
+                // WX-5d: the sample caption, preview only (the draw takes it).
+                renderer.sample_caption = app.shell.sample_caption(&app.workspace, time_seconds);
                 renderer.draw(&mut d, &fonts, &app.scene, &frame, assets, preview, 1.0);
                 // The frame edge, drawn *after* the scene and only when there is
                 // one. A capture of Pentagram Orbits pillarboxed against the

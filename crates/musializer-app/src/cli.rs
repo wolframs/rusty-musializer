@@ -487,10 +487,6 @@ pub struct UiProbe {
     /// `assist-card=lyrics|scenes|feelings|full` (WX-5d): open that workflow's
     /// card in the Assist view. The words are the cards'; the values are the
     /// pipeline's own workflow kinds.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Look & Assist builder's cards read it"
-    )]
     pub assist_card: Option<musializer_core::assist::execution::WorkflowKind>,
     /// `progress-shot=N` (WX-5d): photograph the export progress screen while
     /// it encodes frame N (0-based), so the themed screen is reviewable.

@@ -2076,10 +2076,6 @@ impl Shell {
     /// preview only: `main.rs` hands it to `SceneRenderer::sample_caption`
     /// before the preview draw, and the export path never does.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "the one call is main.rs's (Frame's file); its line is in build/redesign/wx5d-lyrics-gate.md"
-    )]
     pub(crate) fn sample_caption(
         &self,
         workspace: &Workspace,
