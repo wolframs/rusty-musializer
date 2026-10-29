@@ -466,110 +466,6 @@ pub fn lyric_sibling_path(audio_path: &str) -> Option<String> {
     Some(format!("{}.lyrics.txt", &audio_path[..stem_end]))
 }
 
-/// Panel-relative geometry for the Assist panel (`assist_ui_state.h:69-81`).
-///
-/// Pixel geometry stays `f32` as in C, so a layout computed here and one computed
-/// by the drawing code cannot disagree by a rounding step.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct AssistUiLayout {
-    pub mode_columns: usize,
-    pub mode_rows: usize,
-    pub mode_top: f32,
-    pub mode_row_height: f32,
-    pub status_y: f32,
-    pub content_y: f32,
-    /// Where the lyric-reference line starts, relative to the panel. Zero when
-    /// there is no such row, which is also what makes "is the row present?" a
-    /// question the drawing code can ask without repeating the policy.
-    pub reference_y: f32,
-    pub required_height: f32,
-}
-
-/// Pure layout policy shared by the raylib surface and headless tests
-/// (`assist_ui_state.c:219-253`).
-///
-/// Widths at and above the supported 960 px window keep all modes on one row;
-/// narrower embedders receive a two-column grid rather than clipped buttons.
-///
-/// `reference_row` is a parameter rather than an assumption because the row only
-/// exists for modes that use a lyric reference, and a panel that reserves height
-/// it never draws pushes the scene preview down for nothing. It grows only the
-/// confirmation step — the step where the user actually decides — and its buttons
-/// share the label's row rather than taking one of their own, because a taller
-/// panel here comes straight out of the scene preview, which at the supported
-/// 960x640 minimum has only 150 px to give.
-#[must_use]
-pub fn ui_layout(
-    panel_width: f32,
-    content: AssistPanelContent,
-    reference_row: bool,
-) -> AssistUiLayout {
-    let mode_columns: usize = if panel_width.is_finite() && panel_width >= 760.0 {
-        4
-    } else {
-        2
-    };
-    let mode_rows = AssistMode::ALL.len().div_ceil(mode_columns);
-    let mode_top = 60.0f32;
-    let mode_row_height = 58.0f32;
-    let status_y = mode_top + mode_rows as f32 * mode_row_height + 3.0;
-    let content_y = status_y + 25.0;
-
-    let mut content_height: f32 = match content {
-        AssistPanelContent::Ready => 22.0,
-        AssistPanelContent::Confirmation => 84.0,
-        AssistPanelContent::Running => 84.0,
-        AssistPanelContent::Cancelling => 44.0,
-        AssistPanelContent::Candidate => 118.0,
-        AssistPanelContent::Empty => 84.0,
-    };
-    let mut reference_y = 0.0f32;
-    if reference_row && content == AssistPanelContent::Confirmation {
-        reference_y = content_y + 42.0;
-        content_height += 34.0;
-    }
-    AssistUiLayout {
-        mode_columns,
-        mode_rows,
-        mode_top,
-        mode_row_height,
-        status_y,
-        content_y,
-        reference_y,
-        required_height: content_y + content_height + 10.0,
-    }
-}
-
-/// Converts a desired Assist content height into a timeline height while keeping
-/// a useful scene preview at supported small-window sizes
-/// (`assist_ui_state.c:255-270`).
-///
-/// Controls, transport, waveform lane, and their margins consume 158 px in
-/// `timeline()`. At least 150 px is preserved for the scene at the small-window
-/// boundary; larger windows receive the exact requested panel height.
-#[must_use]
-pub fn timeline_height(screen_height: f32, toolbar_height: f32, panel_height: f32) -> f32 {
-    if !screen_height.is_finite()
-        || !toolbar_height.is_finite()
-        || !panel_height.is_finite()
-        || screen_height <= 0.0
-        || toolbar_height < 0.0
-        || panel_height <= 0.0
-    {
-        return 0.0;
-    }
-    let desired = panel_height + 158.0;
-    let mut maximum = screen_height - toolbar_height - 150.0;
-    if maximum < 150.0 {
-        maximum = 150.0;
-    }
-    if desired < maximum {
-        desired
-    } else {
-        maximum
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The panel's own state and geometry.
 //
@@ -1045,74 +941,6 @@ fn truncate_bytes(text: &str, limit: usize) -> &str {
         end -= 1;
     }
     &text[..end]
-}
-
-/// The confirmation step's four buttons, in panel coordinates
-/// (`plug.c:2352-2408`).
-///
-/// `choose` and `clear` are only *drawn* when [`Self::reference_room`] is true.
-/// That is not cosmetic and the C says why at `:2371-2372`: a control painted
-/// past the panel edge still claims presses from whatever is underneath it,
-/// which is the same click-hijack this repository already paid for once in
-/// `workspace_layout`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AssistConfirmationButtons {
-    pub choose: UiRect,
-    pub clear: UiRect,
-    /// Whether `choose` and `clear` fit beside the reference label.
-    pub reference_room: bool,
-    pub start: UiRect,
-    pub cancel: UiRect,
-}
-
-/// Places them (`plug.c:2366-2387`).
-///
-/// `padding`, `gap` and `button_height` are parameters rather than constants
-/// because the palette and metrics live app-side; passing them keeps this
-/// function pure and lets a test drive the boundary case directly.
-#[must_use]
-pub fn confirmation_buttons(
-    panel: UiRect,
-    layout: &AssistUiLayout,
-    padding: f32,
-    gap: f32,
-    button_height: f32,
-) -> AssistConfirmationButtons {
-    let action_y = panel.y + layout.content_y;
-    let reference_present = layout.reference_y > 0.0;
-    let reference_y = panel.y + layout.reference_y;
-
-    let choose = UiRect::new(
-        panel.x + panel.width - padding - 152.0,
-        reference_y - 4.0,
-        152.0,
-        button_height,
-    );
-    let clear = UiRect::new(choose.x - 84.0 - gap, choose.y, 84.0, button_height);
-    let reference_room = reference_present && clear.x > panel.x + padding + 240.0;
-
-    // With the reference row present the Start button sits 40 px below it;
-    // without it, 48 px below the workflow text (`plug.c:2341`, `:2385`).
-    let start_offset = if reference_present {
-        layout.reference_y - layout.content_y + 40.0
-    } else {
-        48.0
-    };
-    let start = UiRect::new(
-        panel.x + padding,
-        action_y + start_offset,
-        144.0,
-        button_height,
-    );
-    let cancel = UiRect::new(start.x + start.width + gap, start.y, 94.0, button_height);
-
-    AssistConfirmationButtons {
-        choose,
-        clear,
-        reference_room,
-        start,
-        cancel,
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1930,35 +1758,6 @@ mod tests {
     }
 
     #[test]
-    fn assist_layout_fits_supported_small_and_large_windows() {
-        let small = ui_layout(948.0, AssistPanelContent::Candidate, false);
-        let large = ui_layout(1908.0, AssistPanelContent::Candidate, false);
-        assert_eq!(small.mode_columns, 4);
-        assert_eq!(small.mode_rows, 1);
-        assert_eq!(large.mode_columns, 4);
-        assert!(small.required_height <= 282.0);
-        assert_eq!(small.required_height, large.required_height);
-
-        // The supported minimum is 960x640 with a 50 px toolbar. The Assist panel
-        // still receives enough room for its longest staged-result state.
-        let timeline = timeline_height(640.0, 50.0, small.required_height);
-        assert!(timeline <= 440.0);
-        assert!(timeline - 158.0 >= small.required_height - 0.01);
-    }
-
-    #[test]
-    fn assist_layout_degrades_to_two_columns_when_embedded_narrowly() {
-        let narrow = ui_layout(620.0, AssistPanelContent::Confirmation, false);
-        assert_eq!(narrow.mode_columns, 2);
-        assert_eq!(narrow.mode_rows, 2);
-        assert!(narrow.status_y > 175.0);
-        assert!(
-            narrow.required_height
-                > ui_layout(948.0, AssistPanelContent::Confirmation, false).required_height
-        );
-    }
-
-    #[test]
     fn assist_never_replaces_an_active_authored_lyric_draft() {
         assert!(candidate_conflicts_with_lyric_draft(true, true, true));
         assert!(!candidate_conflicts_with_lyric_draft(false, true, true));
@@ -1972,38 +1771,6 @@ mod tests {
         assert!(!result_has_changes(1, 2));
         assert!(result_has_changes(1, 1));
         assert!(result_has_changes(7, 4));
-    }
-
-    #[test]
-    fn assist_lyric_reference_row_only_grows_the_step_that_shows_it() {
-        // The row belongs to the review step, where the user decides. Every other
-        // panel state must be exactly the height it was.
-        let others = [
-            AssistPanelContent::Ready,
-            AssistPanelContent::Running,
-            AssistPanelContent::Cancelling,
-            AssistPanelContent::Candidate,
-            AssistPanelContent::Empty,
-        ];
-        for content in others {
-            assert_eq!(
-                ui_layout(948.0, content, true).required_height,
-                ui_layout(948.0, content, false).required_height
-            );
-            assert_eq!(ui_layout(948.0, content, true).reference_y, 0.0);
-        }
-
-        let without = ui_layout(948.0, AssistPanelContent::Confirmation, false);
-        let with = ui_layout(948.0, AssistPanelContent::Confirmation, true);
-        assert_eq!(without.reference_y, 0.0);
-        assert!(with.reference_y > with.content_y);
-        assert!(with.required_height > without.required_height);
-        // The row must sit inside the panel it grew, not past the bottom of it.
-        assert!(with.reference_y + 34.0 <= with.required_height);
-
-        // And the taller panel must still fit the supported minimum window.
-        let timeline = timeline_height(640.0, 50.0, with.required_height);
-        assert!(timeline - 158.0 >= with.required_height - 0.01);
     }
 
     #[test]
@@ -2262,54 +2029,6 @@ mod tests {
         assert_eq!(truncate_bytes(text, 99), text);
     }
 
-    #[test]
-    fn the_reference_controls_are_dropped_rather_than_drawn_past_the_edge() {
-        // plug.c:2371-2372. A control painted outside the panel still claims the
-        // press, which is the click hijack `workspace_layout` was written for.
-        let layout = ui_layout(948.0, AssistPanelContent::Confirmation, true);
-        let wide = confirmation_buttons(
-            UiRect::new(0.0, 100.0, 948.0, layout.required_height),
-            &layout,
-            10.0,
-            8.0,
-            36.0,
-        );
-        assert!(wide.reference_room);
-        assert!(wide.choose.x + wide.choose.width <= 948.0 - 10.0 + 0.01);
-        assert!(wide.clear.x + wide.clear.width < wide.choose.x);
-
-        // A narrow embedder: the label stays, the buttons go.
-        let narrow_layout = ui_layout(480.0, AssistPanelContent::Confirmation, true);
-        let narrow = confirmation_buttons(
-            UiRect::new(0.0, 0.0, 480.0, narrow_layout.required_height),
-            &narrow_layout,
-            10.0,
-            8.0,
-            36.0,
-        );
-        assert!(!narrow.reference_room);
-
-        // Start and Cancel never overlap, at either width.
-        for buttons in [wide, narrow] {
-            assert!(!buttons.start.overlaps(buttons.cancel));
-        }
-    }
-
-    #[test]
-    fn start_sits_below_the_reference_row_only_when_there_is_one() {
-        // Without the row the offset is a flat 48 px; with it, 40 px below the
-        // row's own top (`plug.c:2341`, `:2385`).
-        let panel = UiRect::new(0.0, 0.0, 948.0, 400.0);
-        let without = ui_layout(948.0, AssistPanelContent::Confirmation, false);
-        let with = ui_layout(948.0, AssistPanelContent::Confirmation, true);
-        let a = confirmation_buttons(panel, &without, 10.0, 8.0, 36.0);
-        let b = confirmation_buttons(panel, &with, 10.0, 8.0, 36.0);
-        assert_eq!(a.start.y, without.content_y + 48.0);
-        assert_eq!(b.start.y, with.reference_y + 40.0);
-        assert!(b.start.y > a.start.y, "the row pushes Start down, not up");
-        // And the whole block still lands inside the height the layout asked for.
-        assert!(b.start.y + b.start.height <= with.required_height + 0.01);
-    }
     const COLUMN_BODY_1920: UiRect = UiRect::new(1460.0, 86.0, 460.0, 994.0);
 
     fn confirming_lyrics() -> AssistColumnSpec {
