@@ -1877,7 +1877,7 @@ fn flush_render_batch() {
 /// glyph data, atlas image, texture — are done here with `FONT_SDF` in the first.
 /// That is also why this is ffi rather than a safe wrapper; there is no safe
 /// wrapper for this path in raylib-rs at all, and the three that do exist in this
-/// family were each defective (see the `unsafe` inventory in `AGENTS.md`).
+/// family were each defective (see `docs/UNSAFE.md`).
 ///
 /// Two numbers are a single decision rather than two: the padding handed to
 /// `GenImageFontAtlas` and the `glyphPadding` stored on the font. `DrawTextCodepoint`

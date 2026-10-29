@@ -90,7 +90,7 @@ Rail and preview (5c)
   into context (selection, flyout, a compact toolbar) — still reachable.
 - `core::ui::workspace_layout` changes on purpose: update
   `tools/differential_layout.sh`/its dump deliberately and record the divergence
-  and its reason in AGENTS.md's table.
+  and its reason in `docs/DIVERGENCES.md`.
 - The picker in a flyout owns the Pixel Cats decisions WORKSTATION.md records
   (six stagings because six fit unscrolled; two rows of family tabs). Fix the
   picker shape; building the four unbuilt stagings is out of scope.
@@ -112,7 +112,7 @@ Rail and preview (5c)
   started before you report.
 - `cargo fmt`, clippy clean, `cargo test` green; `tools/verify.sh` green at the
   end of each step; `cargo build --release` at the end of each step.
-- Docs: WORKSTATION.md status per part, AGENTS.md divergence rows where the
+- Docs: WORKSTATION.md status per part, `docs/DIVERGENCES.md` rows where the
   window now does something on purpose that a later session might "fix" back,
   UI_TOOLKIT.md where the egui/theme boundary changes.
 - Commit messages: conventional style as in `git log` (`feat(wx5a): …`,

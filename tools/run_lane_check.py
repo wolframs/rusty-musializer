@@ -10,7 +10,7 @@ and `view=` span, so nothing here is a coordinate measured off a screenshot:
       Columns inside the lane where every row of the run body is exactly
       `ui_run_cut`. The hairline is an opaque whole-pixel fill, and opaque fills
       are the one thing every renderer this gate supports writes bit-exactly
-      (AGENTS.md, "The headless gate runs on the GPU"), so the match has no
+      (docs/HEADLESS_GPU.md), so the match has no
       tolerance. Prints the count.
 
   grade-step PNG REPORT

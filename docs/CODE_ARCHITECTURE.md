@@ -53,8 +53,8 @@ button requests it.
 Anything that manipulates GL state a scene cannot restore by itself belongs in
 runtime, not in an `app::scenes` module — an offscreen blur or a persistence
 buffer has to capture and restore the caller's framebuffer, and getting that
-wrong corrupts the rest of the frame globally rather than locally. `AGENTS.md`'s
-`unsafe` inventory carries the invariant each such adapter must hold.
+wrong corrupts the rest of the frame globally rather than locally. `docs/UNSAFE.md`
+carries the invariant each such adapter must hold.
 
 **Two unrelated modules are called `feedback`.**
 [`core::feedback`](../crates/musializer-core/src/feedback.rs) is the human A/B

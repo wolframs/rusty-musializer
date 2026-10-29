@@ -22,8 +22,8 @@ Roughly a dozen source doc comments cite `FEATURE_PARITY_PLAN.md` plus an id
 file does not list is a closed item** — its record is in the archive under the
 same id. Nothing was renamed.
 
-Other standing references: `AGENTS.md` for repository rules, the `unsafe`
-inventory, the divergence table and the deliberate exclusions; `REWRITE_PLAN.md`
+Other standing references: `AGENTS.md` for repository rules and the deliberate exclusions,
+`docs/UNSAFE.md` and `docs/DIVERGENCES.md` for the `unsafe` inventory and the divergence table; `REWRITE_PLAN.md`
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 

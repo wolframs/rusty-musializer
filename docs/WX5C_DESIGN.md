@@ -218,7 +218,7 @@ on the first capture; don't assume it.**
     1/16 px and the flyout's top by 1 px; both must fail the post-legacy
     diff while the unit tests stay green (the layout harness's own history).
   - It stays out of `verify.sh` (it reads the oracle checkout).
-- **AGENTS.md rows:**
+- **`docs/DIVERGENCES.md` rows:**
   1. sidebar → rail + flyouts, with the harness retirement and why;
   2. event row + segment controls → lane head;
   3. the transport row;
@@ -282,7 +282,7 @@ on the first capture; don't assume it.**
 - tools: `headless_check.sh`, `differential_layout.sh`, `knot_check.*`,
   `accent_census.py`, `run_lane_check.py`, `dark_theme_check.sh`,
   `ui_ux_check.sh`;
-- docs: `WORKSTATION.md`, `UI_TOOLKIT.md`, `AGENTS.md`.
+- docs: `WORKSTATION.md`, `UI_TOOLKIT.md`, `docs/DIVERGENCES.md`.
 
 **Top bar owns:**
 - `ui/top_bar.rs`;

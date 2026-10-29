@@ -610,7 +610,7 @@ Found while making the first video, each one from a contact sheet:
 - **Push a setting to its end before trusting the scene.** Orbital Lattice at
   `nodes: 1.6` drew black squares around its brightest pearls — a depth-test
   defect in the halo pass that the default size had been hiding as texture
-  since the scene was written. It is fixed (`AGENTS.md`, MV1), and it was found
+  since the scene was written. It is fixed (`docs/DIVERGENCES.md`, MV1), and it was found
   by an audition sheet, not by a test.
 - **A transition is reviewed from stills inside it.** `--sheet-at segments`
   photographs every section's midpoint, where no transition is running. List
