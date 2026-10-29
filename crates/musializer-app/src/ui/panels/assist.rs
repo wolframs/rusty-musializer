@@ -3642,10 +3642,8 @@ impl Shell {
             reference.summary()
         };
         let reference_lines = wrap_to_width(reference_summary, inner, 3, &measure13);
-        let route_lines: Vec<(String, raylib::prelude::Color)> = routes
-            .as_ref()
-            .map(column_route_lines)
-            .unwrap_or_default();
+        let route_lines: Vec<(String, raylib::prelude::Color)> =
+            routes.as_ref().map(column_route_lines).unwrap_or_default();
         let running_text = wrap_to_width(
             "No percentage is reported, so none is drawn. Playback stays available, and nothing changes until you apply a result.",
             inner,
