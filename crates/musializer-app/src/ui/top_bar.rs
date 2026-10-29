@@ -22,7 +22,9 @@
 //!   ([`draw_mark`]);
 //! - the title (the project's own, else the file's stem) and, when the
 //!   project names one, the artist (`metadata.artist`, schema v2). Both are
-//!   the user's words and go through the authored face, as a track name does.
+//!   the user's words: drawn in the interface face as the mockup sets them
+//!   when the chrome bank covers every character, else in the authored face,
+//!   which covers the user's alphabet.
 //!   **No artist is drawn when there is none**: nothing on disk carries one
 //!   unless a treatment or a v2 `.musi` said so, and a guess from a file name
 //!   is the thing the operator asked not to see;
@@ -597,9 +599,20 @@ impl Shell {
         );
 
         let ui = input.fonts.ui();
-        let authored = input.fonts.authored();
         let title = project_title(track);
         let artist = project_artist(track);
+        // The mockup sets the name in the interface face, and so does this —
+        // whenever the chrome bank can draw every character of it. A title or
+        // artist the bank cannot draw (it is Latin-only) goes through the
+        // authored face instead, which covers the user's alphabet; the bar
+        // never draws a `?` for a character in a name.
+        let chrome = musializer_runtime::font::AuthoredText::from_ui(ui);
+        let names = format!("{title}{}", artist.as_deref().unwrap_or(""));
+        let authored = if chrome.missing(&names) == 0 {
+            chrome
+        } else {
+            input.fonts.authored()
+        };
         let info = info_line(track.duration_seconds, &track.render_config);
         let state = track.save_state();
         let reason = (state == SaveState::Failed)
