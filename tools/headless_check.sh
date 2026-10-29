@@ -561,20 +561,23 @@ tools/treatment_check.sh "$OUT_DIR/treatment" || SWEEP_FAILED=1
 # frame eight. The removed renderer pass used that boolean to paint a full-width
 # white gradient across the reflection floor — the short flash reported in both
 # preview and exports. Pin a quiet region far from the active bands. Negative
-# control: restoring the old pass raises this crop's YMAX from 21 to 55.
+# control: restoring the old pass raises this crop's YMAX from 21 to 55. Re-run
+# at the WX-5c frame (critic, 2026-10-29): 10 -> 47 on the GPU, 10 -> 54 on
+# the CPU (`MZ_GL_LAUNCH=""`), against the threshold of 30.
 #
 # Pin the split on this capture: per-user timeline preferences are intentionally
 # honoured elsewhere in the sweep, but letting one move a renderer negative
 # control made this crop sample white timeline chrome instead of the scene.
 #
 # The requested height must be a height the band can actually take, because
-# `Shell::resolved_timeline_height` clamps it up to
-# `SCENE_SECTION_HEIGHT + EVENT_ROW_HEIGHT + 150` and a *silently clamped*
-# request moves the split without moving this comment. 276 is that floor today
-# (60 + 66 + 150); it was 270 until LX1-e spent a lane gap inside the scene
-# section, and the six pixels the band gained put white chrome inside the old
-# y=386 crop. To re-derive after a band constant moves: the preview's last row
-# is `720 - band - 50`, so the crop is the 12 px ending two rows above it.
+# `Shell::resolved_timeline_height` clamps it up to `SCENE_SECTION_HEIGHT +
+# 150` and a *silently clamped* request moves the split without moving this
+# comment. 276 was written as that floor when the section was 60 (60 + the
+# 66 px event row + 150); WX-5b grew the section to 80, WX-5c took the event
+# row out of the band, and the floor is 230 now, so 276 is honoured as asked
+# and every number below was measured with it. The crop is read from
+# the preview's own rect (next paragraph), so the split no longer has to be
+# re-derived by hand when a band constant moves.
 capture "spectrum-onset-floor" 1280x720 --scene spectrum --probe-frames 8 \
     --ui-probe "play=1,timeline-height=276" \
     || SWEEP_FAILED=1
@@ -5348,7 +5351,9 @@ if [ -f "$LYRIC_PROJECT" ]; then
         *) echo "FAIL: a press outside the flyout left it open: $(rail_line rail-outside rail)" >&2; RAIL_FAILED=1 ;;
     esac
     # Escape closes it, through the shell's keyboard path (`key=escape`); the
-    # same run without the key keeps it open (control).
+    # same run without the key keeps it open (control). Negative control
+    # (2026-10-29): with the flyout's Escape branch in `keyboard_actions`
+    # disabled, the key=escape run reports open=scenes and this fails.
     run_capture rail-escape runs "panel=none,time=2.5,play=0,flyout=scenes,key=escape" || RAIL_FAILED=1
     run_capture rail-escape-control runs "panel=none,time=2.5,play=0,flyout=scenes" || RAIL_FAILED=1
     case "$(rail_line rail-escape rail) / $(rail_line rail-escape-control rail)" in
