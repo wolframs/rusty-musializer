@@ -54,7 +54,7 @@
 #   - Revert pushing no snapshot: look 4's bit-for-bit comparison fails;
 #   - the card press not calling select_mode: assist 1 reads body=Ready;
 #   - the dialog drawn with the pre-WX-5d frame and header: dialog 1 fails
-#     both the corner and the header comparison.
+#     both the corner and the header comparison, in both appearances.
 # The GPU and CPU runs read the same verdicts and the same pixel counts on
 # the opaque fills; see build/redesign/wx5d-look-assist-gate.md.
 
@@ -330,15 +330,17 @@ right, top = cx + cw + 14, cy - 7
 left = image.width - right
 surface = image.getpixel((left + 5, top + 300))   # the rail's left margin
 header = [image.getpixel((x, top + 5)) for x in range(left + 8, left + 120)]
-# A square frame's corner pixel is its hairline, the same colour as the left
-# edge further down; a 4 px rounded corner leaves the scrim there instead.
+# A 4 px rounded corner leaves the scrim (and the shadow's faintest ring) in
+# the dialog's corner pixel, the same as the pixel just outside it; a square
+# frame puts its own edge or header there. Compared with a tolerance of 12
+# summed levels: the shadow rings and ±1 rounding, never a fill.
 corner = image.getpixel((left, top))
-edge = image.getpixel((left, top + 200))
+outside = image.getpixel((left - 1, top))
 problems = []
 if any(p != surface for p in header):
     problems.append(f"header {sorted(set(header))[:3]} is not the surface {surface}")
-if corner == edge:
-    problems.append(f"corner {corner} is the edge's colour: square")
+if sum(abs(a - b) for a, b in zip(corner, outside)) > 12:
+    problems.append(f"corner {corner} is not the scrim {outside}: square")
 print("ok" if not problems else "; ".join(problems))
 PY
 )"
