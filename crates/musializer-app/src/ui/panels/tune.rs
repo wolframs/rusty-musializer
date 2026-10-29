@@ -3106,15 +3106,18 @@ impl Shell {
                 let moved = session.moved(input.scene, input.settings);
                 let moved_text =
                     format!("{moved} value{} moved", if moved == 1 { "" } else { "s" });
-                let words: Vec<&str> = head.splitn(2, ' ').collect();
-                let runs = match words.as_slice() {
-                    [first, rest] => vec![
-                        widgets::MicroRun::muted(first),
-                        widgets::MicroRun::muted(" "),
-                        widgets::MicroRun::ink(rest),
-                    ],
-                    _ => vec![widgets::MicroRun::ink(&head)],
-                };
+                // The verb muted, what is tried in ink (`TRYING SURPRISE 3`). The space
+                // stays inside the first run: a run of one space measures as nothing
+                // once tracked.
+                let (verb, rest) = head
+                    .split_once(' ')
+                    .map_or((String::new(), head.clone()), |(verb, rest)| {
+                        (format!("{verb} "), rest.to_string())
+                    });
+                let runs = [
+                    widgets::MicroRun::muted(&verb),
+                    widgets::MicroRun::ink(&rest),
+                ];
                 let y = card.line.y + (card.line.height - metric::UI_FONT_MICRO) * 0.5;
                 widgets::draw_micro(d, font, card.line.x, y, &runs);
                 let moved_runs = [widgets::MicroRun::muted(&moved_text)];

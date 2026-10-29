@@ -1115,6 +1115,657 @@ pub fn confirmation_buttons(
     }
 }
 
+// ---------------------------------------------------------------------------
+// The Assist view in the right column (WX-5d §3.4).
+//
+// Four workflow cards stacked in the column, the one waiting on the user open
+// in place, then Auto scenes and a status footer. Text is wrapped app-side in
+// the faces it draws with; this lays out the line counts it is handed, so
+// every rect is pinned here and in `tools/differential_assist_ui.sh`'s
+// post-legacy section.
+// ---------------------------------------------------------------------------
+
+/// The column body's side inset (the head's 14 px).
+pub const COLUMN_PADDING: f32 = 14.0;
+/// The intro sentence's line height (13 px type).
+pub const COLUMN_INTRO_LINE: f32 = 20.0;
+const COLUMN_INTRO_TOP: f32 = 12.0;
+const COLUMN_INTRO_GAP: f32 = 12.0;
+/// A card's inner padding.
+pub const CARD_PADDING: f32 = 13.0;
+/// The card's title row: the workflow's name and its boundary dot.
+pub const CARD_TITLE_HEIGHT: f32 = 22.0;
+/// One line of the card's description (13 px type).
+pub const CARD_LINE: f32 = 19.0;
+/// The `REPLACES · 83 LYRIC CUES` micro line.
+pub const CARD_REPLACES_HEIGHT: f32 = 16.0;
+/// Between two cards.
+pub const CARD_GAP: f32 = 10.0;
+/// The boundary dot label's box at the title row's right end.
+pub const CARD_BOUNDARY_WIDTH: f32 = 150.0;
+/// A micro head inside an open card (`DATA BOUNDARY`).
+pub const CARD_MICRO_HEIGHT: f32 = 16.0;
+/// One line of the consent sentence (14 px type).
+pub const CARD_CONSENT_LINE: f32 = 20.0;
+/// One line of the P4 route block.
+pub const CARD_ROUTE_LINE: f32 = 15.0;
+/// One lane line of a candidate (`Lyrics: 81 → 83`).
+pub const CARD_LANE_LINE: f32 = 20.0;
+/// A buttons row inside a card.
+pub const CARD_BUTTON_HEIGHT: f32 = 30.0;
+/// The copy links' row.
+pub const CARD_LINK_HEIGHT: f32 = 18.0;
+/// The running card's indeterminate sweep.
+pub const CARD_SWEEP_HEIGHT: f32 = 4.0;
+const CARD_SECTION_GAP: f32 = 12.0;
+const CARD_BUTTON_GAP: f32 = 8.0;
+const START_WIDTH: f32 = 120.0;
+const CANCEL_WIDTH: f32 = 72.0;
+const CHOOSE_WIDTH: f32 = 128.0;
+const CLEAR_WIDTH: f32 = 64.0;
+const CANCEL_JOB_WIDTH: f32 = 108.0;
+const APPLY_WIDTH: f32 = 128.0;
+const DISCARD_WIDTH: f32 = 76.0;
+/// Auto scenes: its section head, then the On / Off switch and its sentence.
+const AUTO_TOP_GAP: f32 = 18.0;
+const AUTO_HEAD_HEIGHT: f32 = 18.0;
+const AUTO_ROW_HEIGHT: f32 = 30.0;
+/// The On / Off switch's width.
+pub const AUTO_SWITCH_WIDTH: f32 = 92.0;
+const CONTENT_BOTTOM: f32 = 12.0;
+/// The status footer pinned at the column's bottom.
+pub const COLUMN_FOOTER_HEIGHT: f32 = 34.0;
+
+/// What the open card shows, with the line counts its text wrapped to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenCardSpec {
+    Confirmation {
+        consent_lines: usize,
+        /// The lyric source block's summary lines; `None` for a workflow that
+        /// reads no lyric reference.
+        reference_lines: Option<usize>,
+        /// The P4 route block's lines; `0` for none.
+        route_lines: usize,
+    },
+    Running {
+        lines: usize,
+    },
+    Cancelling {
+        lines: usize,
+    },
+    Candidate {
+        lanes: usize,
+        /// The lyric source line, or the first staged lyric.
+        extra_line: bool,
+        /// The blocking reason's wrapped lines; `0` when Apply is not blocked.
+        reason_lines: usize,
+        /// The LT1 review block's height, as the review draws it; `0` for none.
+        review_height: u32,
+    },
+    Empty {
+        lines: usize,
+    },
+}
+
+/// What the column has to place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AssistColumnSpec {
+    pub intro_lines: usize,
+    /// Each card's description lines, in [`AssistMode::ALL`] order.
+    pub description_lines: [usize; 4],
+    /// The open card and its body.
+    pub open: Option<(AssistMode, OpenCardSpec)>,
+}
+
+/// One card's rects.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CardLayout {
+    pub card: UiRect,
+    /// The title row: the press target that opens (or closes) the card.
+    pub title: UiRect,
+    /// The boundary dot label's box, right-aligned in the title row.
+    pub boundary: UiRect,
+    pub description: UiRect,
+    pub replaces: UiRect,
+    /// The hairline between the summary and an open body; empty when closed.
+    pub divider: UiRect,
+}
+
+/// The open card's body, by state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OpenBodyLayout {
+    Confirmation {
+        boundary_head: UiRect,
+        consent: UiRect,
+        reference_head: Option<UiRect>,
+        reference: Option<UiRect>,
+        choose: Option<UiRect>,
+        clear: Option<UiRect>,
+        routes: Option<UiRect>,
+        start: UiRect,
+        cancel: UiRect,
+        /// `STOPS BY ITSELF AT 40:00`, right-aligned in the rest of the row.
+        deadline: UiRect,
+    },
+    Running {
+        status: UiRect,
+        sweep: UiRect,
+        text: UiRect,
+        cancel_job: UiRect,
+    },
+    Cancelling {
+        text: UiRect,
+    },
+    Candidate {
+        validated: UiRect,
+        lanes: UiRect,
+        extra: Option<UiRect>,
+        reason: Option<UiRect>,
+        review: Option<UiRect>,
+        apply: UiRect,
+        discard: UiRect,
+        links: [UiRect; 3],
+    },
+    Empty {
+        text: UiRect,
+        links: [UiRect; 3],
+    },
+}
+
+/// The whole view below its head, scrolled by `offset` (clamped here).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistColumnLayout {
+    pub intro: UiRect,
+    pub cards: [CardLayout; 4],
+    pub open: Option<(AssistMode, OpenBodyLayout)>,
+    pub auto_head: UiRect,
+    pub auto_switch: UiRect,
+    pub auto_sentence: UiRect,
+    pub viewport: UiRect,
+    pub footer: UiRect,
+    /// The footer's status line, inside its padding.
+    pub status: UiRect,
+    pub content_height: f32,
+    pub max_offset: f32,
+    pub offset: f32,
+}
+
+fn lines_height(lines: usize, line: f32) -> f32 {
+    lines as f32 * line
+}
+
+/// The open body's height for `spec`, as [`assist_column_layout`] lays it out.
+#[must_use]
+pub fn open_body_height(spec: OpenCardSpec) -> f32 {
+    match spec {
+        OpenCardSpec::Confirmation {
+            consent_lines,
+            reference_lines,
+            route_lines,
+        } => {
+            CARD_MICRO_HEIGHT
+                + 4.0
+                + lines_height(consent_lines, CARD_CONSENT_LINE)
+                + CARD_SECTION_GAP
+                + reference_lines.map_or(0.0, |lines| {
+                    CARD_MICRO_HEIGHT
+                        + 4.0
+                        + lines_height(lines, CARD_LINE)
+                        + 8.0
+                        + CARD_BUTTON_HEIGHT
+                        + CARD_SECTION_GAP
+                })
+                + if route_lines > 0 {
+                    CARD_MICRO_HEIGHT
+                        + 4.0
+                        + lines_height(route_lines, CARD_ROUTE_LINE)
+                        + CARD_SECTION_GAP
+                } else {
+                    0.0
+                }
+                + CARD_BUTTON_HEIGHT
+        }
+        OpenCardSpec::Running { lines } => {
+            CARD_LANE_LINE
+                + 8.0
+                + CARD_SWEEP_HEIGHT
+                + CARD_SECTION_GAP
+                + lines_height(lines, CARD_LINE)
+                + CARD_SECTION_GAP
+                + CARD_BUTTON_HEIGHT
+        }
+        OpenCardSpec::Cancelling { lines } => lines_height(lines, CARD_LINE),
+        OpenCardSpec::Candidate {
+            lanes,
+            extra_line,
+            reason_lines,
+            review_height,
+        } => {
+            CARD_MICRO_HEIGHT
+                + 8.0
+                + lines_height(lanes, CARD_LANE_LINE)
+                + if extra_line { 18.0 } else { 0.0 }
+                + if reason_lines > 0 {
+                    4.0 + lines_height(reason_lines, 18.0)
+                } else {
+                    0.0
+                }
+                + if review_height > 0 {
+                    8.0 + review_height as f32
+                } else {
+                    0.0
+                }
+                + CARD_SECTION_GAP
+                + CARD_BUTTON_HEIGHT
+                + 8.0
+                + CARD_LINK_HEIGHT
+        }
+        OpenCardSpec::Empty { lines } => {
+            lines_height(lines, CARD_LINE) + CARD_SECTION_GAP + CARD_LINK_HEIGHT
+        }
+    }
+}
+
+/// A closed card's height for `lines` of description.
+#[must_use]
+pub fn card_height(lines: usize) -> f32 {
+    CARD_PADDING
+        + CARD_TITLE_HEIGHT
+        + 2.0
+        + lines_height(lines, CARD_LINE)
+        + 4.0
+        + CARD_REPLACES_HEIGHT
+        + CARD_PADDING
+}
+
+/// Three equal link cells across `row`.
+fn link_cells(x: f32, y: f32, width: f32) -> [UiRect; 3] {
+    let third = (width / 3.0).floor();
+    [
+        UiRect::new(x, y, third, CARD_LINK_HEIGHT),
+        UiRect::new(x + third, y, third, CARD_LINK_HEIGHT),
+        UiRect::new(x + third * 2.0, y, width - third * 2.0, CARD_LINK_HEIGHT),
+    ]
+}
+
+fn open_body(spec: OpenCardSpec, x: f32, top: f32, width: f32) -> OpenBodyLayout {
+    let mut y = top;
+    let row = |y: f32, height: f32| UiRect::new(x, y, width, height);
+    match spec {
+        OpenCardSpec::Confirmation {
+            consent_lines,
+            reference_lines,
+            route_lines,
+        } => {
+            let boundary_head = row(y, CARD_MICRO_HEIGHT);
+            y += CARD_MICRO_HEIGHT + 4.0;
+            let consent = row(y, lines_height(consent_lines, CARD_CONSENT_LINE));
+            y += consent.height + CARD_SECTION_GAP;
+            let (mut reference_head, mut reference, mut choose, mut clear) =
+                (None, None, None, None);
+            if let Some(lines) = reference_lines {
+                reference_head = Some(row(y, CARD_MICRO_HEIGHT));
+                y += CARD_MICRO_HEIGHT + 4.0;
+                let summary = row(y, lines_height(lines, CARD_LINE));
+                y += summary.height + 8.0;
+                reference = Some(summary);
+                let choose_rect = UiRect::new(x, y, CHOOSE_WIDTH.min(width), CARD_BUTTON_HEIGHT);
+                choose = Some(choose_rect);
+                clear = Some(UiRect::new(
+                    choose_rect.x + choose_rect.width + CARD_BUTTON_GAP,
+                    y,
+                    CLEAR_WIDTH,
+                    CARD_BUTTON_HEIGHT,
+                ));
+                y += CARD_BUTTON_HEIGHT + CARD_SECTION_GAP;
+            }
+            let routes = (route_lines > 0).then(|| {
+                let block = row(
+                    y,
+                    CARD_MICRO_HEIGHT + 4.0 + lines_height(route_lines, CARD_ROUTE_LINE),
+                );
+                y += block.height + CARD_SECTION_GAP;
+                block
+            });
+            let start = UiRect::new(x, y, START_WIDTH.min(width), CARD_BUTTON_HEIGHT);
+            let cancel = UiRect::new(
+                start.x + start.width + CARD_BUTTON_GAP,
+                y,
+                CANCEL_WIDTH,
+                CARD_BUTTON_HEIGHT,
+            );
+            let deadline_x = cancel.x + cancel.width + CARD_BUTTON_GAP;
+            OpenBodyLayout::Confirmation {
+                boundary_head,
+                consent,
+                reference_head,
+                reference,
+                choose,
+                clear,
+                routes,
+                start,
+                cancel,
+                deadline: UiRect::new(
+                    deadline_x,
+                    y,
+                    (x + width - deadline_x).max(0.0),
+                    CARD_BUTTON_HEIGHT,
+                ),
+            }
+        }
+        OpenCardSpec::Running { lines } => {
+            let status = row(y, CARD_LANE_LINE);
+            y += CARD_LANE_LINE + 8.0;
+            let sweep = row(y, CARD_SWEEP_HEIGHT);
+            y += CARD_SWEEP_HEIGHT + CARD_SECTION_GAP;
+            let text = row(y, lines_height(lines, CARD_LINE));
+            y += text.height + CARD_SECTION_GAP;
+            OpenBodyLayout::Running {
+                status,
+                sweep,
+                text,
+                cancel_job: UiRect::new(x, y, CANCEL_JOB_WIDTH, CARD_BUTTON_HEIGHT),
+            }
+        }
+        OpenCardSpec::Cancelling { lines } => OpenBodyLayout::Cancelling {
+            text: row(y, lines_height(lines, CARD_LINE)),
+        },
+        OpenCardSpec::Candidate {
+            lanes,
+            extra_line,
+            reason_lines,
+            review_height,
+        } => {
+            let validated = row(y, CARD_MICRO_HEIGHT);
+            y += CARD_MICRO_HEIGHT + 8.0;
+            let lanes_rect = row(y, lines_height(lanes, CARD_LANE_LINE));
+            y += lanes_rect.height;
+            let extra = extra_line.then(|| {
+                let line = row(y, 18.0);
+                y += 18.0;
+                line
+            });
+            let reason = (reason_lines > 0).then(|| {
+                y += 4.0;
+                let block = row(y, lines_height(reason_lines, 18.0));
+                y += block.height;
+                block
+            });
+            let review = (review_height > 0).then(|| {
+                y += 8.0;
+                let block = row(y, review_height as f32);
+                y += block.height;
+                block
+            });
+            y += CARD_SECTION_GAP;
+            let apply = UiRect::new(x, y, APPLY_WIDTH.min(width), CARD_BUTTON_HEIGHT);
+            let discard = UiRect::new(
+                apply.x + apply.width + CARD_BUTTON_GAP,
+                y,
+                DISCARD_WIDTH,
+                CARD_BUTTON_HEIGHT,
+            );
+            y += CARD_BUTTON_HEIGHT + 8.0;
+            OpenBodyLayout::Candidate {
+                validated,
+                lanes: lanes_rect,
+                extra,
+                reason,
+                review,
+                apply,
+                discard,
+                links: link_cells(x, y, width),
+            }
+        }
+        OpenCardSpec::Empty { lines } => {
+            let text = row(y, lines_height(lines, CARD_LINE));
+            y += text.height + CARD_SECTION_GAP;
+            OpenBodyLayout::Empty {
+                text,
+                links: link_cells(x, y, width),
+            }
+        }
+    }
+}
+
+fn shift_rect(rect: UiRect, by: f32) -> UiRect {
+    UiRect::new(rect.x, rect.y + by, rect.width, rect.height)
+}
+
+fn shift_body(body: OpenBodyLayout, by: f32) -> OpenBodyLayout {
+    let s = |rect: UiRect| shift_rect(rect, by);
+    let o = |rect: Option<UiRect>| rect.map(s);
+    match body {
+        OpenBodyLayout::Confirmation {
+            boundary_head,
+            consent,
+            reference_head,
+            reference,
+            choose,
+            clear,
+            routes,
+            start,
+            cancel,
+            deadline,
+        } => OpenBodyLayout::Confirmation {
+            boundary_head: s(boundary_head),
+            consent: s(consent),
+            reference_head: o(reference_head),
+            reference: o(reference),
+            choose: o(choose),
+            clear: o(clear),
+            routes: o(routes),
+            start: s(start),
+            cancel: s(cancel),
+            deadline: s(deadline),
+        },
+        OpenBodyLayout::Running {
+            status,
+            sweep,
+            text,
+            cancel_job,
+        } => OpenBodyLayout::Running {
+            status: s(status),
+            sweep: s(sweep),
+            text: s(text),
+            cancel_job: s(cancel_job),
+        },
+        OpenBodyLayout::Cancelling { text } => OpenBodyLayout::Cancelling { text: s(text) },
+        OpenBodyLayout::Candidate {
+            validated,
+            lanes,
+            extra,
+            reason,
+            review,
+            apply,
+            discard,
+            links,
+        } => OpenBodyLayout::Candidate {
+            validated: s(validated),
+            lanes: s(lanes),
+            extra: o(extra),
+            reason: o(reason),
+            review: o(review),
+            apply: s(apply),
+            discard: s(discard),
+            links: links.map(s),
+        },
+        OpenBodyLayout::Empty { text, links } => OpenBodyLayout::Empty {
+            text: s(text),
+            links: links.map(s),
+        },
+    }
+}
+
+/// The Assist view below its head. `body` is the column minus its head.
+#[must_use]
+pub fn assist_column_layout(
+    body: UiRect,
+    spec: &AssistColumnSpec,
+    offset: f32,
+) -> AssistColumnLayout {
+    let x = body.x + COLUMN_PADDING;
+    let width = (body.width - COLUMN_PADDING * 2.0).max(0.0);
+    let footer_height = COLUMN_FOOTER_HEIGHT.min(body.height.max(0.0));
+    let footer = UiRect::new(
+        body.x,
+        body.y + body.height - footer_height,
+        body.width.max(0.0),
+        footer_height,
+    );
+    let viewport = UiRect::new(
+        body.x,
+        body.y,
+        body.width.max(0.0),
+        (footer.y - body.y).max(0.0),
+    );
+
+    // Laid out from y = 0, shifted by the scroll once the height is known.
+    let mut y = COLUMN_INTRO_TOP;
+    let intro = UiRect::new(
+        x,
+        y,
+        width,
+        lines_height(spec.intro_lines, COLUMN_INTRO_LINE),
+    );
+    y += intro.height + COLUMN_INTRO_GAP;
+
+    let inner_x = x + CARD_PADDING;
+    let inner_width = (width - CARD_PADDING * 2.0).max(0.0);
+    let mut cards = [CardLayout {
+        card: UiRect::default(),
+        title: UiRect::default(),
+        boundary: UiRect::default(),
+        description: UiRect::default(),
+        replaces: UiRect::default(),
+        divider: UiRect::default(),
+    }; 4];
+    let mut open = None;
+    for (index, mode) in AssistMode::ALL.into_iter().enumerate() {
+        if index > 0 {
+            y += CARD_GAP;
+        }
+        let top = y;
+        let title = UiRect::new(inner_x, top + CARD_PADDING, inner_width, CARD_TITLE_HEIGHT);
+        let boundary_width = CARD_BOUNDARY_WIDTH.min(inner_width * 0.5).floor();
+        let boundary = UiRect::new(
+            inner_x + inner_width - boundary_width,
+            title.y,
+            boundary_width,
+            CARD_TITLE_HEIGHT,
+        );
+        let lines = spec.description_lines[index];
+        let description = UiRect::new(
+            inner_x,
+            title.y + CARD_TITLE_HEIGHT + 2.0,
+            inner_width,
+            lines_height(lines, CARD_LINE),
+        );
+        let replaces = UiRect::new(
+            inner_x,
+            description.y + description.height + 4.0,
+            inner_width,
+            CARD_REPLACES_HEIGHT,
+        );
+        let mut bottom = replaces.y + replaces.height;
+        let mut divider = UiRect::new(inner_x, bottom, inner_width, 0.0);
+        if let Some((open_mode, body_spec)) = spec.open.filter(|(open, _)| *open == mode) {
+            divider = UiRect::new(inner_x, bottom + CARD_SECTION_GAP, inner_width, 1.0);
+            let body_top = divider.y + 1.0 + CARD_SECTION_GAP;
+            open = Some((
+                open_mode,
+                open_body(body_spec, inner_x, body_top, inner_width),
+            ));
+            bottom = body_top + open_body_height(body_spec);
+        }
+        let card = UiRect::new(x, top, width, bottom + CARD_PADDING - top);
+        y = card.y + card.height;
+        cards[index] = CardLayout {
+            card,
+            title,
+            boundary,
+            description,
+            replaces,
+            divider,
+        };
+    }
+
+    y += AUTO_TOP_GAP;
+    let auto_head = UiRect::new(x, y, width, AUTO_HEAD_HEIGHT);
+    y += AUTO_HEAD_HEIGHT + 8.0;
+    let auto_switch = UiRect::new(x, y, AUTO_SWITCH_WIDTH.min(width), AUTO_ROW_HEIGHT);
+    let sentence_x = auto_switch.x + auto_switch.width + 12.0;
+    let auto_sentence = UiRect::new(
+        sentence_x,
+        y,
+        (x + width - sentence_x).max(0.0),
+        AUTO_ROW_HEIGHT,
+    );
+    y += AUTO_ROW_HEIGHT;
+    let content_height = y + CONTENT_BOTTOM;
+    let max_offset = (content_height - viewport.height).max(0.0);
+    let offset = if offset.is_finite() {
+        offset.clamp(0.0, max_offset)
+    } else {
+        0.0
+    };
+    let by = viewport.y - offset;
+    let s = |rect: UiRect| shift_rect(rect, by);
+
+    AssistColumnLayout {
+        intro: s(intro),
+        cards: cards.map(|card| CardLayout {
+            card: s(card.card),
+            title: s(card.title),
+            boundary: s(card.boundary),
+            description: s(card.description),
+            replaces: s(card.replaces),
+            divider: s(card.divider),
+        }),
+        open: open.map(|(mode, body)| (mode, shift_body(body, by))),
+        auto_head: s(auto_head),
+        auto_switch: s(auto_switch),
+        auto_sentence: s(auto_sentence),
+        viewport,
+        footer,
+        status: UiRect::new(x, footer.y + 1.0, width, (footer.height - 1.0).max(0.0)),
+        content_height,
+        max_offset,
+        offset,
+    }
+}
+
+/// Which card is open, and why, for a session in this state (WX-5d §3.4):
+/// the workflow that is confirming, running, cancelling, staged or finished.
+/// `None` while nothing waits on the user, so every card reads as an offer.
+#[must_use]
+pub fn open_card(
+    content: AssistPanelContent,
+    mode: AssistMode,
+    candidate_mode: AssistMode,
+) -> Option<AssistMode> {
+    match content {
+        AssistPanelContent::Ready => None,
+        AssistPanelContent::Candidate => Some(candidate_mode),
+        AssistPanelContent::Confirmation
+        | AssistPanelContent::Running
+        | AssistPanelContent::Cancelling
+        | AssistPanelContent::Empty => Some(mode),
+    }
+}
+
+/// The card's boundary word and whether it leaves the machine (`LOCAL AUDIO`
+/// in success, `SENDS AUDIO` in warning). `audio_lyrics` is the Lyrics route
+/// that sends audio, as the band's badge already says.
+#[must_use]
+pub fn card_boundary(mode: AssistMode, audio_lyrics: bool) -> (&'static str, bool) {
+    match mode {
+        AssistMode::Lyrics if audio_lyrics => ("Sends audio", true),
+        AssistMode::Lyrics | AssistMode::Sections => ("Local audio", false),
+        AssistMode::Mimo | AssistMode::All => ("Sends audio", true),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1640,5 +2291,182 @@ mod tests {
         assert!(b.start.y > a.start.y, "the row pushes Start down, not up");
         // And the whole block still lands inside the height the layout asked for.
         assert!(b.start.y + b.start.height <= with.required_height + 0.01);
+    }
+    const COLUMN_BODY_1920: UiRect = UiRect::new(1460.0, 86.0, 460.0, 994.0);
+
+    fn confirming_lyrics() -> AssistColumnSpec {
+        AssistColumnSpec {
+            intro_lines: 2,
+            description_lines: [1, 1, 1, 1],
+            open: Some((
+                AssistMode::Lyrics,
+                OpenCardSpec::Confirmation {
+                    consent_lines: 2,
+                    reference_lines: Some(2),
+                    route_lines: 0,
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn the_1920_column_stacks_four_cards_with_the_confirming_one_open() {
+        let layout = assist_column_layout(COLUMN_BODY_1920, &confirming_lyrics(), 0.0);
+        assert_eq!(layout.intro, UiRect::new(1474.0, 98.0, 432.0, 40.0));
+        let cards: Vec<UiRect> = layout.cards.iter().map(|card| card.card).collect();
+        assert_eq!(
+            cards,
+            vec![
+                UiRect::new(1474.0, 150.0, 432.0, 324.0),
+                UiRect::new(1474.0, 484.0, 432.0, 89.0),
+                UiRect::new(1474.0, 583.0, 432.0, 89.0),
+                UiRect::new(1474.0, 682.0, 432.0, 89.0),
+            ]
+        );
+        let lyrics = layout.cards[0];
+        assert_eq!(lyrics.title, UiRect::new(1487.0, 163.0, 406.0, 22.0));
+        assert_eq!(lyrics.boundary, UiRect::new(1743.0, 163.0, 150.0, 22.0));
+        assert_eq!(lyrics.description, UiRect::new(1487.0, 187.0, 406.0, 19.0));
+        assert_eq!(lyrics.replaces, UiRect::new(1487.0, 210.0, 406.0, 16.0));
+        assert_eq!(lyrics.divider, UiRect::new(1487.0, 238.0, 406.0, 1.0));
+        assert!(layout.cards[1].divider.is_empty());
+        let Some((
+            AssistMode::Lyrics,
+            OpenBodyLayout::Confirmation {
+                boundary_head,
+                consent,
+                reference_head,
+                choose,
+                clear,
+                routes,
+                start,
+                cancel,
+                deadline,
+                ..
+            },
+        )) = layout.open
+        else {
+            panic!("the lyrics card is not confirming");
+        };
+        assert_eq!(boundary_head, UiRect::new(1487.0, 251.0, 406.0, 16.0));
+        assert_eq!(consent, UiRect::new(1487.0, 271.0, 406.0, 40.0));
+        assert_eq!(
+            reference_head,
+            Some(UiRect::new(1487.0, 323.0, 406.0, 16.0))
+        );
+        assert_eq!(choose, Some(UiRect::new(1487.0, 389.0, 128.0, 30.0)));
+        assert_eq!(clear, Some(UiRect::new(1623.0, 389.0, 64.0, 30.0)));
+        assert_eq!(routes, None);
+        assert_eq!(start, UiRect::new(1487.0, 431.0, 120.0, 30.0));
+        assert_eq!(cancel, UiRect::new(1615.0, 431.0, 72.0, 30.0));
+        assert_eq!(deadline, UiRect::new(1695.0, 431.0, 198.0, 30.0));
+        // The card ends one padding under its last row.
+        assert_eq!(start.y + start.height + CARD_PADDING, 474.0);
+        assert_eq!(layout.auto_head, UiRect::new(1474.0, 789.0, 432.0, 18.0));
+        assert_eq!(layout.auto_switch, UiRect::new(1474.0, 815.0, 92.0, 30.0));
+        assert_eq!(
+            layout.auto_sentence,
+            UiRect::new(1578.0, 815.0, 328.0, 30.0)
+        );
+        assert_eq!(layout.footer, UiRect::new(1460.0, 1046.0, 460.0, 34.0));
+        assert_eq!(layout.status, UiRect::new(1474.0, 1047.0, 432.0, 33.0));
+        assert_eq!(layout.max_offset, 0.0);
+    }
+
+    #[test]
+    fn every_open_body_ends_where_its_height_says() {
+        let bodies = [
+            OpenCardSpec::Confirmation {
+                consent_lines: 3,
+                reference_lines: None,
+                route_lines: 4,
+            },
+            OpenCardSpec::Running { lines: 2 },
+            OpenCardSpec::Cancelling { lines: 2 },
+            OpenCardSpec::Candidate {
+                lanes: 3,
+                extra_line: true,
+                reason_lines: 2,
+                review_height: 120,
+            },
+            OpenCardSpec::Empty { lines: 3 },
+        ];
+        for body in bodies {
+            let spec = AssistColumnSpec {
+                open: Some((AssistMode::Mimo, body)),
+                ..confirming_lyrics()
+            };
+            let layout = assist_column_layout(COLUMN_BODY_1920, &spec, 0.0);
+            let card = layout.cards[2];
+            let top = card.divider.y + 1.0 + 12.0;
+            assert_eq!(
+                card.card.y + card.card.height,
+                top + open_body_height(body) + CARD_PADDING,
+                "{body:?}"
+            );
+            let last = match layout.open.expect("open").1 {
+                OpenBodyLayout::Confirmation { start, .. } => start,
+                OpenBodyLayout::Running { cancel_job, .. } => cancel_job,
+                OpenBodyLayout::Cancelling { text } => text,
+                OpenBodyLayout::Candidate { links, .. } => links[2],
+                OpenBodyLayout::Empty { links, .. } => links[2],
+            };
+            assert_eq!(
+                last.y + last.height,
+                top + open_body_height(body),
+                "{body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tall_card_scrolls_the_list_and_never_the_footer() {
+        let spec = AssistColumnSpec {
+            open: Some((
+                AssistMode::All,
+                OpenCardSpec::Candidate {
+                    lanes: 3,
+                    extra_line: true,
+                    reason_lines: 0,
+                    review_height: 240,
+                },
+            )),
+            ..confirming_lyrics()
+        };
+        let body = UiRect::new(640.0, 86.0, 320.0, 554.0);
+        let top = assist_column_layout(body, &spec, 0.0);
+        let bottom = assist_column_layout(body, &spec, 1.0e9);
+        assert!(top.max_offset > 0.0);
+        assert_eq!(bottom.offset, bottom.max_offset);
+        assert_eq!(top.footer, bottom.footer);
+        assert_eq!(
+            bottom.auto_switch.y + bottom.auto_switch.height + 12.0,
+            bottom.footer.y
+        );
+        assert_eq!(top.intro.y - bottom.intro.y, bottom.max_offset);
+        assert_eq!(assist_column_layout(body, &spec, f32::NAN).offset, 0.0);
+    }
+
+    #[test]
+    fn the_open_card_follows_the_body_and_the_boundary_word_the_route() {
+        use AssistMode::{All, Lyrics, Mimo, Sections};
+        assert_eq!(open_card(AssistPanelContent::Ready, Lyrics, Mimo), None);
+        assert_eq!(
+            open_card(AssistPanelContent::Candidate, Lyrics, Mimo),
+            Some(Mimo)
+        );
+        for content in [
+            AssistPanelContent::Confirmation,
+            AssistPanelContent::Running,
+            AssistPanelContent::Cancelling,
+            AssistPanelContent::Empty,
+        ] {
+            assert_eq!(open_card(content, Sections, Mimo), Some(Sections));
+        }
+        assert_eq!(card_boundary(Lyrics, false), ("Local audio", false));
+        assert_eq!(card_boundary(Lyrics, true), ("Sends audio", true));
+        assert_eq!(card_boundary(Sections, true), ("Local audio", false));
+        assert_eq!(card_boundary(Mimo, false), ("Sends audio", true));
+        assert_eq!(card_boundary(All, false), ("Sends audio", true));
     }
 }
