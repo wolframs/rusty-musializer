@@ -49,10 +49,6 @@ OUT="$(realpath "$OUT")"
 
 export MZ_BIN="${TOP_BAR_BIN:-$(realpath target/debug/musializer)}"
 export MZ_STATE_DIR="$OUT/state"
-# DROP AT MERGE (wx5-topbar): gives the bar its 46 px on the top bar's own
-# branch. Rail's frame gives it 46 px natively, and the variable is then read
-# by nothing.
-export MZ_WX5C_TOP_BAR=46
 
 cargo run --quiet --bin make-fixture-wav -- "$OUT/fixture.wav" 6 >/dev/null
 

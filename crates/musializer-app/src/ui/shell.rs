@@ -144,10 +144,6 @@ pub enum ShellCommand {
     /// (WX-5c §4, the top bar's Contact sheet). Separate from
     /// [`Self::ExportStill`] for the reason that one is separate from
     /// [`Self::StartRender`].
-    #[allow(
-        dead_code,
-        reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
-    )]
     ExportContactSheet,
     /// The manual event row's outcome (`plug.c:2834-2971`).
     ManualEvent(ManualEventAction),
@@ -785,10 +781,6 @@ impl Flyout {
 /// do. Declared here rather than in `ui::top_bar` because the state they read
 /// is this file's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
-)]
 pub enum ModeTab {
     /// No bottom panel and the inspector closed.
     Direct,
@@ -803,10 +795,6 @@ pub enum ModeTab {
     Assist,
 }
 
-#[allow(
-    dead_code,
-    reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
-)]
 impl ModeTab {
     pub const ALL: [ModeTab; 5] = [
         ModeTab::Direct,
@@ -3615,10 +3603,6 @@ impl Shell {
     /// neither is open. `UiPanel::Tune` is no bottom panel (see
     /// [`Self::timeline_height`]), so it counts as Direct.
     #[must_use]
-    #[allow(
-        dead_code,
-        reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
-    )]
     pub(crate) fn mode_tab_selected(&self, tab: ModeTab) -> bool {
         match tab {
             ModeTab::Direct => {
@@ -3636,10 +3620,6 @@ impl Shell {
     /// toggle behind the lyric-draft guard that every context change takes.
     /// `Direct` closes both, behind the same guard, since leaving the lyrics
     /// editor with a half-typed cue is a context change too.
-    #[allow(
-        dead_code,
-        reason = "the WX-5c seam: ui::top_bar builds against it, and its first caller lands with the top bar"
-    )]
     pub(crate) fn activate_mode_tab(&mut self, tab: ModeTab, workspace: &Workspace) {
         let panel = match tab {
             ModeTab::Look => {

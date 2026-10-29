@@ -693,9 +693,10 @@ impl Shell {
                         render,
                         render_label,
                         false,
-                        // The primary action, and the one control that wears the
-                        // accent as a fill (WX-5a).
-                        ButtonStyle::Primary,
+                        // Neutral since WX-5c: the top bar's Render… is the same
+                        // action and the one accent fill on every workspace
+                        // frame, so this panel does not add a second.
+                        ButtonStyle::Neutral,
                         Some(footer_font),
                     )
                     .clicked

@@ -537,15 +537,9 @@ impl Shell {
     /// `icons=` entries are `name@x,y,w,h` separated by `;`, like the scene
     /// picker's `tiles=`, because the rects carry commas of their own. A probe
     /// that presses an icon reads its point from here.
-    ///
-    /// **It carries two more lines**, `lane head:` and `transport:`, after
-    /// newlines. The composition root prints this one string, and the report
-    /// is `main.rs`'s to extend — another agent's file during WX-5c — so the
-    /// two new lines ride on the one the seam already prints until it gives
-    /// them a `println!` each.
     #[must_use]
     pub fn describe_rail(&self) -> String {
-        let rail = match self.last_rail {
+        match self.last_rail {
             None => "none".to_owned(),
             Some(rail) => {
                 let icons: Vec<String> = RailIcon::ALL
@@ -567,12 +561,7 @@ impl Shell {
                     self.last_flyout.map_or("none".to_owned(), rect_token),
                 )
             }
-        };
-        format!(
-            "{rail}\nlane head:       {}\ntransport:       {}",
-            self.scene_lane.describe_head(),
-            self.describe_transport(),
-        )
+        }
     }
 }
 

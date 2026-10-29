@@ -5280,7 +5280,7 @@ print(f'{round(x + (3.0 - start) / (end - start) * w)}x{round(y + h / 2)}')
 
     # The accent still marks only now, with runs.
     python3 tools/accent_census.py "$RUN_DIR/runs.png" "$RUN_DIR/runs.txt" \
-        --expect-appearance light-blue || RUN_FAILED=1
+        --expect-appearance light-blue --primary 1 || RUN_FAILED=1
     lane_alignment_runs() {
         printf '%-30s lanes=3 scale=100\n' "$1"
         python3 tools/timeline_lane_alignment.py "$RUN_DIR/$1.png" 3 100 || RUN_FAILED=1
@@ -5387,7 +5387,7 @@ if [ -f "$LYRIC_PROJECT" ]; then
         *) echo "FAIL: Split here did not add a section: $(run_line rail-split)" >&2; RAIL_FAILED=1 ;;
     esac
     python3 tools/accent_census.py "$RUN_DIR/rail-inside.png" "$RUN_DIR/rail-inside.txt" \
-        --expect-appearance light-blue || RAIL_FAILED=1
+        --expect-appearance light-blue --primary 1 || RAIL_FAILED=1
     printf '%-30s lanes=3 scale=100\n' rail-base
     python3 tools/timeline_lane_alignment.py "$RUN_DIR/rail-base.png" 3 100 || RAIL_FAILED=1
 fi
@@ -5516,17 +5516,19 @@ if python3 tools/timeline_lane_alignment.py "$OUT_DIR/panel-none-1280x720.png" 3
     DARK_FAILED=1
 fi
 
-# 3. The accent census.
-for spec in "dark-none-1280x720 0" "dark-none-960x640 0" "dark-lyrics-1280x720 0" \
-            "dark-tune-1280x720 0" "dark-150-2560x1440 0" "dark-export-1280x720 1" \
-            "dark-flyout-1280x720 0"; do
+# 3. The accent census. Since WX-5c every workspace frame has exactly one
+# primary fill, the top bar's Render…; the Export panel's own render button is
+# neutral, so an open panel does not make it two.
+for spec in "dark-none-1280x720 1" "dark-none-960x640 1" "dark-lyrics-1280x720 1" \
+            "dark-tune-1280x720 1" "dark-150-2560x1440 1" "dark-export-1280x720 1" \
+            "dark-flyout-1280x720 1"; do
     read -r dark_name dark_primary <<<"$spec"
     python3 tools/accent_census.py "$DARK_DIR/$dark_name.png" "$DARK_DIR/$dark_name.txt" \
         --expect-appearance black-amber --primary "$dark_primary" || DARK_FAILED=1
 done
 # The light appearance obeys the same rule.
 python3 tools/accent_census.py "$OUT_DIR/panel-none-1280x720.png" \
-    "$OUT_DIR/panel-none-1280x720.txt" --expect-appearance light-blue || DARK_FAILED=1
+    "$OUT_DIR/panel-none-1280x720.txt" --expect-appearance light-blue --primary 1 || DARK_FAILED=1
 python3 tools/accent_census.py "$OUT_DIR/panel-export-1280x720.png" \
     "$OUT_DIR/panel-export-1280x720.txt" --expect-appearance light-blue --primary 1 \
     || DARK_FAILED=1
@@ -5542,7 +5544,7 @@ ImageDraw.Draw(image).rectangle((8, 98, 43, 133), fill=(0xF0, 0xB3, 0x47))
 image.save(sys.argv[2])
 PYSLAB
 if python3 tools/accent_census.py "$DARK_DIR/census-control.png" \
-        "$DARK_DIR/dark-none-1280x720.txt" >/dev/null 2>&1; then
+        "$DARK_DIR/dark-none-1280x720.txt" --primary 1 >/dev/null 2>&1; then
     echo "FAIL: the accent census passed a frame with an accent slab on the rail" >&2
     DARK_FAILED=1
 else
@@ -5650,7 +5652,7 @@ if [ ! -f "$SAVE_STATE_DIR/show.musi" ]; then
     SAVE_STATE_FAILED=1
 fi
 SAVED_STATE="$(save_state_run save-state-saved 40 --project "$SAVE_STATE_DIR/show.musi" \
-    --ui-scale 100 --ui-probe flyout=tracks)"
+    --ui-scale 100)"
 expect_save_state "saved, no edit" "$SAVED_STATE" "*saved"
 
 # 3. C4, end to end. `scene-pick` is a durable edit (it retargets the base scene),
@@ -5703,7 +5705,7 @@ RO_CLEAN_STATE="$(save_state_run save-state-readonly-clean 40 --project "$RO_DIR
 expect_save_state "read-only, no edit" "$RO_CLEAN_STATE" "*saved"
 
 RO_STATE="$(save_state_run save-state-failed 240 \
-    --project "$RO_DIR/show.musi" --ui-scale 100 --ui-probe scene-pick=pulse-field,flyout=tracks)"
+    --project "$RO_DIR/show.musi" --ui-scale 100 --ui-probe scene-pick=pulse-field)"
 expect_save_state "read-only, edited" "$RO_STATE" "*failed("
 # The reason is the actionable half; a bare "Save failed" is the silent amber dot
 # this task exists to delete.
@@ -5715,16 +5717,13 @@ if [ "$RO_BEFORE" != "$RO_AFTER" ]; then
     SAVE_STATE_FAILED=1
 fi
 
-# The badge has to be *drawn*, not merely computed. The TRACKS header carries the
-# word, so a capture with no ink in that strip means the state is reaching the
-# report and not the user — the exact split this repository keeps rediscovering.
-#
-# INTERIM (WX-5c, Rail): the TRACKS header is the tracks flyout's since the
-# sidebar went, so both captures open it (`flyout=tracks`, at 100 %) and the
-# crop is the right half of its header row, read from the `rail:` line's
-# `flyout=` rect. The top bar carries the same word from WX-5c on; the Top bar
-# agent hands over the crop of *that* at merge, and this block is replaced by
-# it rather than kept beside it.
+# The badge has to be *drawn*, not merely computed. The top bar carries the
+# word (WX-5c), so a capture with no ink where its `top bar:` line says the
+# word is means the state is reaching the report and not the user — the exact
+# split this repository keeps rediscovering. The crop is read from the line,
+# never measured once; a strip as wide in the bar's empty stretch beside it
+# must carry no ink, so a crop that drifted onto anti-aliasing or the wrong
+# appearance cannot pass.
 for shot in save-state-saved save-state-failed; do
     if [ ! -f "$OUT_DIR/$shot.png" ]; then
         echo "FAIL: no capture for $shot" >&2
@@ -5737,20 +5736,32 @@ import sys
 from PIL import Image
 
 path, name, report = sys.argv[1], sys.argv[2], sys.argv[3]
-flyout = re.search(r"^rail:.* flyout=(\d+),(\d+),(\d+),(\d+)", open(report).read(), re.M)
-if not flyout:
-    print(f"FAIL: {name} drew no tracks flyout to read the badge from", file=sys.stderr)
+bar = re.search(r"^top bar:.*", open(report, encoding="utf-8").read(), re.M)
+word = bar and re.search(r" scale=([\d.]+) .* word=(\d+),(\d+),(\d+),(\d+)", bar.group(0))
+if not word:
+    print(f"FAIL: {name} drew no save-state word in the top bar", file=sys.stderr)
     sys.exit(1)
-x, y, w, h = (int(v) for v in flyout.groups())
-# The right half of the flyout's TRACKS header row, where the state word is
-# drawn; the header is 27 px tall.
-badge = Image.open(path).convert("L").crop((x + w // 2, y + 4, x + w - 4, y + 26))
-# `tobytes` rather than `getdata`: the latter is deprecated in Pillow 14 and
-# printed a warning into the middle of this gate's output.
+scale = float(word.group(1))
+x, y, w, h = (round(int(v) * scale) for v in word.groups()[1:])
+group = re.search(r"tabs=direct\*?@(\d+)", bar.group(0))
+inset = round(8 * scale)
+image = Image.open(path).convert("L")
+# The word's own box, as the top bar reports it, less the bar's vertical
+# padding; and, as the control, a strip as wide in the empty stretch between
+# the save state and the tabs, which must carry no ink at all.
+badge = image.crop((x, y + inset, x + w, y + h - inset))
+empty_x = x + w + round(24 * scale)
+empty = image.crop((empty_x, y + inset,
+                    min(empty_x + w, round(int(group.group(1)) * scale) - 4), y + h - inset))
+# `tobytes` rather than `getdata`: the latter is deprecated in Pillow 14.
 ink = sum(1 for pixel in badge.tobytes() if pixel < 160)
-print(f"{name}: {ink} ink pixels in the TRACKS header badge")
+stray = sum(1 for pixel in empty.tobytes() if pixel < 160)
+print(f"{name}: {ink} ink pixels in the top bar's save word, {stray} in the empty stretch")
 if ink < 20:
-    print(f"FAIL: {name} drew no save-state word in the TRACKS header", file=sys.stderr)
+    print(f"FAIL: {name} drew no save-state word in the top bar", file=sys.stderr)
+    sys.exit(1)
+if stray:
+    print(f"FAIL: {name}'s control strip beside the save word is not empty", file=sys.stderr)
     sys.exit(1)
 PYEOF
 done

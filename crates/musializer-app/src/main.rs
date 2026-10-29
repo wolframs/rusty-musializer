@@ -2799,6 +2799,8 @@ fn run(
     report.scene_runs = app.shell.describe_runs(&app.workspace);
     report.top_bar = app.shell.describe_top_bar();
     report.rail = app.shell.describe_rail();
+    report.lane_head = app.shell.scene_lane.describe_head().to_owned();
+    report.transport = app.shell.describe_transport().to_owned();
     report.posters = posters.describe();
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
@@ -5775,6 +5777,8 @@ struct Report {
     /// `top bar:` and `rail:` (WX-5c), what the last frame drew.
     top_bar: String,
     rail: String,
+    lane_head: String,
+    transport: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -5852,6 +5856,8 @@ impl Default for Report {
             posters: String::new(),
             top_bar: String::new(),
             rail: String::new(),
+            lane_head: String::new(),
+            transport: String::new(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -6447,6 +6453,8 @@ impl Report {
         // WX-5c: the top bar and the rail, from the last frame drawn.
         println!("top bar:         {}", self.top_bar);
         println!("rail:            {}", self.rail);
+        println!("lane head:       {}", self.lane_head);
+        println!("transport:       {}", self.transport);
         println!(
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")
