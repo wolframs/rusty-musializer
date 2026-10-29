@@ -269,6 +269,12 @@ pub struct SceneRenderer {
     /// `unavailable` — because a frame with no halo and a frame whose halo
     /// silently failed to build are the same picture.
     caption_halo_last: &'static str,
+    /// The sample caption (WX-5d §3.2): a cue the preview draws, marked
+    /// `SAMPLE`, while the Lyrics view's Style or Effects pane is open and no
+    /// line is live. **Preview only**: `main.rs` sets it just before the
+    /// preview's draw, and the draw takes it, so it is gone before anything
+    /// else — an export frame, a still, a poster — can draw with it.
+    pub sample_caption: Option<musializer_core::scene::LyricCue>,
     /// The transition shader (MV3). `None` when the driver refused it, which
     /// turns every transition into a cut and says so on the report line.
     transition_shader: Option<raylib::shaders::Shader>,
@@ -367,6 +373,7 @@ impl SceneRenderer {
             cadence_text: "none",
             caption_halo: HaloBlur::load(rl, thread),
             caption_halo_last: "none",
+            sample_caption: None,
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
             clawd: scenes::clawd::ClawdResources::new(),
             knot: scenes::openai_knot::KnotResources::load(rl, thread),
@@ -1050,6 +1057,9 @@ impl SceneRenderer {
             || core_scenes::pixel_cats::Staging::of(id).is_some()
             || (id == SceneId::GlyphLattice
                 && frame.setting(id, musializer_core::scene::settings::index::glyphs::WORDS) > 0.5);
+        // Taken whether or not this scene draws a caption, so a sample set
+        // for one preview frame can never reach a later draw.
+        let sample = self.sample_caption.take();
         if !draws_its_line {
             if let Some(style) = assets.caption_style {
                 // The effect drives read the same frame the scene just drew
@@ -1065,6 +1075,7 @@ impl SceneRenderer {
                 self.caption_halo_last = scenes::caption::draw_scene_lyric_overlay(
                     d,
                     frame.lyric,
+                    sample.as_ref(),
                     fonts,
                     boundary,
                     pixel_scale,

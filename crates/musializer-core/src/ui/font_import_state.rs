@@ -376,8 +376,14 @@ pub fn outcome_expired(state: FontImportJobState, finished_at: f64, now: f64) ->
 /// Below this the pane draws one sentence instead of a browser
 /// (`FONT_BROWSER_MIN_HEIGHT`, `lyrics_editor_ui.c:583`).
 pub const BROWSER_MIN_HEIGHT: f32 = 150.0;
-/// `FONT_BROWSER_MIN_WIDTH` (`:584`).
-pub const BROWSER_MIN_WIDTH: f32 = 420.0;
+/// The narrowest pane the browser draws in. `FONT_BROWSER_MIN_WIDTH` was 420
+/// (`:584`); WX-5d's right column is 292 px inside at its narrowest (§3.2), so
+/// the browser has to fit that, and does: the search field gives the count
+/// less room below [`BROWSER_WIDE_WIDTH`].
+pub const BROWSER_MIN_WIDTH: f32 = 292.0;
+/// From here up the search field leaves the oracle's 160 px for the count;
+/// below, 96, which "1832 of 1832" at 13 px still fits.
+pub const BROWSER_WIDE_WIDTH: f32 = 420.0;
 /// `FONT_BROWSER_ROW_HEIGHT` (`:585`). The stride; a row is drawn 2 px shorter.
 pub const BROWSER_ROW_HEIGHT: f32 = 26.0;
 /// The C's `indices[64]` (`:728`), which caps how many rows one frame collects
@@ -426,7 +432,17 @@ impl BrowserLayout {
             0
         };
         Some(Self {
-            search: (x, y, width - 160.0, 28.0),
+            search: (
+                x,
+                y,
+                width
+                    - if width >= BROWSER_WIDE_WIDTH {
+                        160.0
+                    } else {
+                        96.0
+                    },
+                28.0,
+            ),
             list: (x, list_top, width, (list_bottom - list_top).max(0.0)),
             action: (x, y + height - 32.0, 150.0, 30.0),
             visible_rows: visible_rows.min(BROWSER_MAX_VISIBLE_ROWS),

@@ -94,6 +94,20 @@ pub struct FontBrowser {
     /// The same fact for the frame in progress, which is what
     /// [`FontBrowser::begin_frame`] promotes.
     query_field_drawn: bool,
+    /// The family the last "Download and use" asked for, so the Style pane's
+    /// progress line can name it after the browser has gone (WX-5d §3.2).
+    fetching_family: Option<String>,
+}
+
+/// A face download in flight, for the progress under the Style pane's face
+/// chips (WX-5d §3.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImportProgress {
+    pub family: String,
+    /// The importer's own status sentence.
+    pub status: String,
+    /// Cancel was pressed and the helper has not stopped yet.
+    pub cancelling: bool,
 }
 
 impl Default for FontBrowser {
@@ -121,7 +135,34 @@ impl FontBrowser {
             pending_import: None,
             query_field_visible: false,
             query_field_drawn: false,
+            fetching_family: None,
         }
+    }
+
+    /// The face download in flight, if one is: only the face itself, not the
+    /// family list (that one draws in the browser, which is still open).
+    #[must_use]
+    pub(crate) fn import_progress(&self) -> Option<ImportProgress> {
+        let panel = self.importer.panel(self.view.network_allowed());
+        if !matches!(
+            panel,
+            FontImportPanel::Fetching | FontImportPanel::Cancelling
+        ) {
+            return None;
+        }
+        Some(ImportProgress {
+            family: self
+                .fetching_family
+                .clone()
+                .unwrap_or_else(|| "the face".to_owned()),
+            status: self.importer.status().to_owned(),
+            cancelling: panel == FontImportPanel::Cancelling,
+        })
+    }
+
+    /// Stops the download in flight, as the browser's own Cancel does.
+    pub(crate) fn cancel_import(&mut self) {
+        self.importer.cancel();
     }
 
     /// Call once per frame, before the shell reads the keyboard.
@@ -590,8 +631,13 @@ fn draw_action_row(
         // than doing nothing.
         let family = browser.view.selected().unwrap_or_default().to_string();
         browser.importer.fetch(allowed, &family, track_present);
+        browser.fetching_family = Some(family);
     }
 }
+
+/// The narrowest pane the consent's fixed line breaks fit (13 px, the longest
+/// line is about 440 px); narrower, the prose wraps.
+const CONSENT_FIXED_LINES_WIDTH: f32 = 470.0;
 
 /// `draw_font_consent` (`lyrics_editor_ui.c:617-648`).
 ///
@@ -626,7 +672,28 @@ fn draw_font_consent(
     // left above it. A consent panel that keeps its prose and loses its button
     // is a question with no way to answer it.
     let allow = UiRect::new(area.x, area.y + area.height - 30.0, 200.0, 30.0);
-    for (index, line) in LINES.iter().enumerate() {
+    // The band's pane is wide enough for the oracle's own line breaks; the
+    // WX-5d column (292 px at its narrowest) is not, so there the two
+    // paragraphs are wrapped to the pane instead of running off its edge.
+    let lines: Vec<String> = if area.width >= CONSENT_FIXED_LINES_WIDTH {
+        LINES.iter().map(|line| (*line).to_owned()).collect()
+    } else {
+        let measure = |text: &str| widgets::measure(font, text, 13.0);
+        let mut wrapped = Vec::new();
+        for paragraph in LINES.split(|line| line.is_empty()) {
+            if !wrapped.is_empty() {
+                wrapped.push(String::new());
+            }
+            wrapped.extend(musializer_core::ui::notice::wrap_detail(
+                &paragraph.join(" "),
+                area.width,
+                8,
+                measure,
+            ));
+        }
+        wrapped
+    };
+    for (index, line) in lines.iter().enumerate() {
         let y = area.y + 26.0 + index as f32 * 17.0;
         if y + 17.0 > allow.y - 6.0 {
             break;

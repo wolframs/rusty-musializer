@@ -65,6 +65,8 @@ use super::super::widgets::{self, ButtonStyle};
 use crate::cli::{CaptionPickerProbe, CaptionTuneProbe, UiProbe};
 use crate::workspace::{Track, Workspace};
 
+mod column;
+
 /// The cue lane's default height, and the gap between it and the editor below.
 ///
 /// 22 px was the oracle's lane ([`ORACLE_LANE_HEIGHT`]). **50 is 2.25x that**
@@ -1031,6 +1033,8 @@ pub struct LyricEditor {
     time_edit: Option<TimeEdit>,
     /// Hold-to-repeat state for whichever nudge button is down.
     nudge_repeat: HoldRepeat,
+    /// What the column view drew last frame, and its pane's scroll (WX-5d).
+    column: column::ColumnEvidence,
 }
 
 /// The authored form fields recovery must preserve without applying them to the
@@ -1162,6 +1166,7 @@ impl LyricEditor {
             seek_request: None,
             time_edit: None,
             nudge_repeat: HoldRepeat::default(),
+            column: column::ColumnEvidence::default(),
         }
     }
 
@@ -1998,7 +2003,10 @@ impl Shell {
     /// and an empty line is not printed.
     #[must_use]
     pub(crate) fn describe_lyrics_column(&self, _workspace: &Workspace) -> String {
-        String::new()
+        if !self.lyrics_column_shown() {
+            return String::new();
+        }
+        self.lyrics.column.lyrics_line.clone()
     }
 
     /// The `caption style:` report line (WX-5d §5): the Style pane's groups,
@@ -2006,7 +2014,72 @@ impl Shell {
     /// builder's**; empty until built.
     #[must_use]
     pub(crate) fn describe_caption_style(&self, _workspace: &Workspace) -> String {
-        String::new()
+        if !self.lyrics_column_shown() {
+            return String::new();
+        }
+        self.lyrics.column.style_line.clone()
+    }
+
+    /// Whether the Lyrics view is in the column: the switch is on and the
+    /// view is Lyrics. Read by the report lines, which are printed at
+    /// shutdown, so a view left mid-run cannot report what it drew before.
+    fn lyrics_column_shown(&self) -> bool {
+        self.placement() == Placement::Column
+            && self.column_view() == super::super::shell::ColumnView::Lyrics
+    }
+
+    /// The cue the preview shows as a sample caption this frame (§3.2): the
+    /// nearest displayable cue, while Style, Effects or the font browser is
+    /// open in the column and no cue is live at `seconds`. `None` otherwise,
+    /// and always `None` with the switch off.
+    #[must_use]
+    pub(crate) fn sample_cue_id(&self, workspace: &Workspace, seconds: f64) -> Option<u64> {
+        if !self.lyrics_column_shown() || !self.lyrics.pane().shapes_caption() {
+            return None;
+        }
+        let track = workspace.current()?;
+        // Liveness by the renderer's own rule (`at_time`), so the sample can
+        // never claim a frame the real line is drawn on.
+        if track.lyrics.at_time(seconds).is_some() {
+            return None;
+        }
+        let displayable: Vec<&lyrics::LyricCue> = track
+            .lyrics
+            .cues()
+            .iter()
+            .filter(|cue| cue.origin.is_displayable())
+            .collect();
+        let spans: Vec<(f64, f64)> = displayable
+            .iter()
+            .map(|cue| (cue.start_seconds, cue.end_seconds))
+            .collect();
+        let index = musializer_core::ui::lyrics_column_layout::sample_cue(true, &spans, seconds)?;
+        Some(displayable[index].id)
+    }
+
+    /// [`Self::sample_cue_id`] as the cue the scene renderer draws, for the
+    /// preview only: `main.rs` hands it to `SceneRenderer::sample_caption`
+    /// before the preview draw, and the export path never does.
+    #[must_use]
+    #[allow(
+        dead_code,
+        reason = "the one call is main.rs's (Frame's file); its line is in build/redesign/wx5d-lyrics-gate.md"
+    )]
+    pub(crate) fn sample_caption(
+        &self,
+        workspace: &Workspace,
+        seconds: f64,
+    ) -> Option<musializer_core::scene::LyricCue> {
+        let id = self.sample_cue_id(workspace, seconds)?;
+        let track = workspace.current()?;
+        let cue = track.lyrics.find(id)?;
+        Some(musializer_core::scene::LyricCue {
+            id: cue.id,
+            start_seconds: cue.start_seconds,
+            end_seconds: cue.end_seconds,
+            text: cue.text.clone(),
+            voice: track.lyrics.voice_of(cue.id).map(|voice| voice.style),
+        })
     }
 
     /// The lyrics editor, in the timeline strip's place.
@@ -2024,9 +2097,19 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
         placement: Placement,
     ) -> f32 {
-        // WX-5d seam: the Column branch is the Lyrics builder's; until it
-        // lands, the column draws what the band draws.
-        let _ = placement;
+        // WX-5d: in the column the band keeps only the cue lane, exactly as
+        // every other view has it, and the editor draws in the column's rect.
+        if placement == Placement::Column {
+            let zoom_row_y = self.band_lyric_lane(d, input, content, strip, commands, true);
+            let column = self.column_rect();
+            let mut editor = std::mem::take(&mut self.lyrics);
+            self.lyrics_column(d, input, &mut editor, column, commands);
+            if let Some(seconds) = editor.take_seek_request() {
+                commands.push(ShellCommand::Seek(seconds));
+            }
+            self.lyrics = editor;
+            return zoom_row_y;
+        }
         // Split borrow: the editor and the widget set are both fields of
         // `self`, and `draw_lyrics` needs them at once.
         let mut editor = std::mem::take(&mut self.lyrics);
@@ -2078,6 +2161,22 @@ impl Shell {
         strip: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) -> f32 {
+        self.band_lyric_lane(d, input, content, strip, commands, false)
+    }
+
+    /// [`Self::closed_lyric_lane`], and the lane under the column's editor
+    /// (`editor_open`): then the card's fields keep the keyboard, because they
+    /// are on screen, and a draft carried in from another track is dropped
+    /// out loud, as the band's editor does.
+    fn band_lyric_lane(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        content: UiRect,
+        strip: UiRect,
+        commands: &mut Vec<ShellCommand>,
+        editor_open: bool,
+    ) -> f32 {
         let below_strip = strip.y + strip.height;
         let Some(track) = input.workspace.current() else {
             return below_strip;
@@ -2092,15 +2191,23 @@ impl Shell {
         // The same binding the panel does, and for the same reason: an edit this
         // lane pushes is stamped with the editor's owner slot, and an unbound
         // editor would stamp it `None` and have it refused at the drain.
-        editor.enter_track(input.workspace.current_index());
+        if editor.enter_track(input.workspace.current_index()) && editor_open {
+            self.notify(
+                Severity::Warning,
+                "Unsaved lyric draft was dropped",
+                "The new cue belonged to the track that was open before this one.",
+            );
+        }
         // Neither text surface is on screen here, so neither may keep the
         // keyboard. This is the UX0-A02 stranded-state shape one field over: a
         // time readout left mid-edit when the panel closed would make
         // `lyric_lane_keys` stand down for the rest of the session, and the
         // lane's own keys would silently stop working with nothing on screen
-        // to explain why.
-        editor.text.set_focused(false);
-        editor.time_edit = None;
+        // to explain why. Under the column's editor they are on screen.
+        if !editor_open {
+            editor.text.set_focused(false);
+            editor.time_edit = None;
+        }
         editor.cue_count = track.lyrics.len();
         editor.lane_selection.prune(&track.lyrics);
         // Capped at the slack rather than at the window, so this never grows the
@@ -4289,8 +4396,17 @@ impl Shell {
             94.0,
             boundary.height - 4.0,
         );
+        // The band's readout: 18 px, 4 px in, 3 px down; 17 px while typing.
         if let Some(typed) = self.time_readout(
-            d, font, authored, editor, readout, is_start, *value, id_base,
+            d,
+            font,
+            authored,
+            editor,
+            readout,
+            is_start,
+            *value,
+            id_base,
+            (18.0, 3.0, 4.0, 17.0),
         ) {
             *value = typed;
         }
@@ -4391,6 +4507,7 @@ impl Shell {
         is_start: bool,
         value: f64,
         id_base: u32,
+        (display_size, text_dy, text_dx, edit_size): (f32, f32, f32, f32),
     ) -> Option<f64> {
         use raylib::consts::KeyboardKey as Key;
 
@@ -4408,9 +4525,9 @@ impl Shell {
                 d,
                 font,
                 &widgets::format_timestamp(value),
-                boundary.x + 4.0,
-                boundary.y + 3.0,
-                18.0,
+                boundary.x + text_dx,
+                boundary.y + text_dy,
+                display_size,
                 color::ui_ink(),
             );
             self.widgets.hint(
@@ -4439,7 +4556,7 @@ impl Shell {
         // stop, so the chrome bank would serve it identically — this is an API
         // shape rather than a UX0-A05 decision.
         edit.field
-            .draw_with_face(d, authored, boundary, 17.0, "MM:SS.mmm", true);
+            .draw_with_face(d, authored, boundary, edit_size, "MM:SS.mmm", true);
         let commit = d.is_key_pressed(Key::KEY_ENTER) || d.is_key_pressed(Key::KEY_KP_ENTER);
         let abandon = d.is_key_pressed(Key::KEY_ESCAPE);
         // Clicking away is neither of those, and it is the case worth thinking

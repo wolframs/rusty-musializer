@@ -209,6 +209,7 @@ fn compose(
 pub fn draw_scene_lyric_overlay(
     d: &mut RaylibDrawHandle<'_>,
     lyric: Option<&LyricCue>,
+    sample: Option<&LyricCue>,
     fonts: &Faces,
     boundary: Rectangle,
     pixel_scale: f32,
@@ -216,8 +217,13 @@ pub fn draw_scene_lyric_overlay(
     inputs: &EffectInputs,
     blur: &mut HaloBlur,
 ) -> &'static str {
-    let Some(lyric) = lyric else {
-        return "off";
+    // The live line always wins; the sample (WX-5d §3.2, preview only) stands
+    // in only when nothing is live, so the user styling a caption always has
+    // one to look at.
+    let (lyric, is_sample) = match (lyric, sample) {
+        (Some(lyric), _) => (lyric, false),
+        (None, Some(sample)) => (sample, true),
+        (None, None) => return "off",
     };
     let Some(font_size) = caption_font_size(boundary, &lyric.text, pixel_scale, style) else {
         return "off";
@@ -243,12 +249,18 @@ pub fn draw_scene_lyric_overlay(
     // the backing fade with the line's presence, and a blurred copy in the
     // ink's own colour carries the rest, so the line condenses out of a soft
     // haze rather than fading in through nothing.
-    let presence = caption_effects::presence(
-        &style.effects,
-        lyric.start_seconds,
-        lyric.end_seconds,
-        inputs.time_seconds,
-    );
+    // A sample is outside its own span by definition, so it is shown fully
+    // present rather than faded to nothing.
+    let presence = if is_sample {
+        1.0
+    } else {
+        caption_effects::presence(
+            &style.effects,
+            lyric.start_seconds,
+            lyric.end_seconds,
+            inputs.time_seconds,
+        )
+    };
     if presence <= 0.0 {
         return "off";
     }
@@ -387,7 +399,56 @@ pub fn draw_scene_lyric_overlay(
         );
     }
     drop(clipped);
+    if is_sample {
+        draw_sample_pill(d, fonts, composition.box_rect, boundary);
+    }
     glow_status
+}
+
+/// The `SAMPLE` micro pill at the caption's top-left corner (WX-5d §3.2), so
+/// a line shown only because the Style pane is open is never mistaken for one
+/// the video will carry there. Opaque fills only (`BLEND_ALPHA` trap).
+fn draw_sample_pill(
+    d: &mut RaylibDrawHandle<'_>,
+    fonts: &Faces,
+    caption: Rectangle,
+    boundary: Rectangle,
+) {
+    let font = fonts.ui();
+    let size = (short_edge(boundary) * 0.028).clamp(11.0, 22.0);
+    let tracking = size / 11.0;
+    let word = "SAMPLE";
+    let text_width = crate::ui::widgets::measure_tracked(font, word, size, tracking);
+    let pad_x = size * 0.7;
+    let height = (size * 1.8).round();
+    let width = (text_width + pad_x * 2.0).round();
+    let gap = (size * 0.5).round();
+    let x = caption.x.max(boundary.x + gap);
+    let above = caption.y - gap - height;
+    let y = if above >= boundary.y + gap {
+        above
+    } else {
+        caption.y + caption.height + gap
+    };
+    let pill = Rectangle::new(x.round(), y.round(), width, height);
+    d.draw_rectangle_rounded(pill, 1.0, 8, crate::ui::theme::color::ui_surface());
+    d.draw_rectangle_rounded_lines_ex(
+        pill,
+        1.0,
+        8,
+        1.0,
+        crate::ui::theme::color::ui_control_edge(),
+    );
+    crate::ui::widgets::draw_text_tracked(
+        d,
+        font,
+        word,
+        pill.x + pad_x,
+        (pill.y + (height - size) * 0.5).round(),
+        size,
+        tracking,
+        crate::ui::theme::color::ui_ink(),
+    );
 }
 
 /// Builds and composites the blurred glow halo (UX0-C11).
