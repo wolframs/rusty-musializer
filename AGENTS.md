@@ -190,6 +190,8 @@ number disagrees, grep it there before debugging from scratch.
   `widgets::SLIDER_KNOB_RADIUS`.
 - **`rlDisableDepthTest` is immediate, geometry is batched**: bracket the
   toggle with a flush.
+- **`--ui-probe route=` opens on the scene frame 0 draws**; read `plot@` in
+  the report before believing the editor is open.
 
 ## Judge by what a user or a file can observe
 

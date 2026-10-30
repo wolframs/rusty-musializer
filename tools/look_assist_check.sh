@@ -45,7 +45,8 @@
 #           view line must be printed and every rect it names must lie inside
 #           the column the `column:` line reports.
 #
-# NEGATIVE CONTROLS, 2026-10-29, each run on the GPU and on llvmpipe
+# NEGATIVE CONTROLS, 2026-10-29 and again 2026-10-30 on the merged tree, each run
+# on the GPU and on llvmpipe
 # (MZ_GL_LAUNCH=""), perturbed, watched fail, reverted byte for byte:
 #   - the row's drag write removed (look_row): look 2 fails, 0.5 wanted,
 #     1 read; the gap press stays green;
@@ -53,8 +54,9 @@
 #     false from look_row): look 3 reads 0 ink pixels on the moved row;
 #   - Revert pushing no snapshot: look 4's bit-for-bit comparison fails;
 #   - the card press not calling select_mode: assist 1 reads body=Ready;
-#   - the dialog drawn with the pre-WX-5d frame and header: dialog 1 fails
-#     both the corner and the header comparison, in both appearances.
+#   - the dialog drawn square with a raised header (the old skin's code went
+#     with the flip, so this is its look, restored by hand): dialog 1 fails,
+#     in both appearances.
 # The GPU and CPU runs read the same verdicts and the same opaque-fill
 # colours (dialog 1 compares them exactly); the changed dot, an antialiased
 # disc, reads 25 ink pixels on the GPU and 21 on llvmpipe against a floor of

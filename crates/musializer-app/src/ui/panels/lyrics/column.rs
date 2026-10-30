@@ -1,5 +1,5 @@
 //! The Lyrics view in the right column (WX-5d §3.2): Cues, Style, Effects and
-//! the font browser, behind `Placement::Column`.
+//! the font browser.
 //!
 //! **Owner: the Lyrics builder.** A child of [`super`] so it shares the
 //! editor's private state and the band's helpers (the time readout, the free
@@ -159,7 +159,7 @@ const fn anchor_value(cell: usize) -> usize {
 }
 
 impl Shell {
-    /// The Lyrics view, drawn into the column (`Placement::Column`).
+    /// The Lyrics view, drawn into the column.
     pub(super) fn lyrics_column(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,

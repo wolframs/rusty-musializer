@@ -170,9 +170,7 @@ pub struct WorkspaceFrame {
     /// Right-hand tuning inspector; empty when closed.
     pub inspector: UiRect,
     /// The right column every secondary view draws in (WX-5d,
-    /// [`super::column`]). **In the seam it is the inspector's rect**, so
-    /// nothing moves; the Frame builder gives it the column rule
-    /// (`wx5d-design.md` §1) behind `MUSIALIZER_COLUMN_LAYOUT`.
+    /// [`super::column`]); empty when closed.
     pub column: UiRect,
     /// The scene preview. This is what every other region takes from.
     pub preview: UiRect,
@@ -282,8 +280,7 @@ impl WorkspaceFrame {
         }
     }
 
-    /// The frame with the right column (WX-5d §1, behind
-    /// `MUSIALIZER_COLUMN_LAYOUT`): the top bar spans the whole window, the
+    /// The frame with the right column (WX-5d §1): the top bar spans the whole window, the
     /// column runs from under it to the window's bottom edge, and the
     /// workspace — rail, preview, transport, band — is everything left of it.
     ///

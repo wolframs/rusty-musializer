@@ -37,8 +37,8 @@
 # LYRICS_COLUMN_BIN names a different binary, for a negative control without
 # replacing the build.
 #
-# NEGATIVE CONTROLS, run 2026-10-29 with --quick on the GPU path and on the CPU
-# path (MZ_GL_LAUNCH=""), each perturbation reverted with `git checkout` and the
+# NEGATIVE CONTROLS, run 2026-10-29 and again 2026-10-30 on the merged tree, with
+# --quick on the GPU path and on the CPU path (MZ_GL_LAUNCH=""), each perturbation reverted with `git checkout` and the
 # file proven clean after. Every one failed exactly its own check, on both:
 #   - a row press that selects nothing (`if false &&` on the row's click):
 #     check 1, "left selected=#7" and "did not seek there"; the gap press

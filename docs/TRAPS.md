@@ -179,3 +179,9 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   read a filled bar at frame 0 on llvmpipe only). Photograph a still screen
   — hold the state for two frames — rather than counting frames.
 
+- **`--ui-probe route=KEY` opens on the scene frame 0 draws.** The probe runs
+  before `time=` has seeked, so a route on a later segment's scene prints
+  `not on the drawn scene`, the editor stays shut, and a census of "the route
+  editor open" passes on a frame with no editor. Check for `plot@` in the
+  report before believing it (WX-5d: `column_check.sh` ran that way until its
+  own slab control asked).
