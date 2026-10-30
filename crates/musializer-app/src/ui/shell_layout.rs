@@ -536,6 +536,19 @@ impl WelcomeFrame {
         }
     }
 
+    /// Bottom-left tray below the welcome actions and steps. The recent list
+    /// keeps its own column; notices cannot climb back over Open audio.
+    #[must_use]
+    pub fn notice_region(&self) -> UiRect {
+        let y = self.steps[0].y + self.steps[0].height + 16.0;
+        UiRect::new(
+            16.0,
+            y,
+            (self.column_rule_x - 32.0).max(0.0),
+            (self.formats.y - 8.0 - y).max(0.0),
+        )
+    }
+
     /// Whether everything this screen needs is inside the window.
     ///
     /// Reported rather than enforced, because the answer at the sizes the
@@ -556,6 +569,34 @@ mod tests {
     /// The minimum supported window (`musializer.c:354`). Every "does it fit"
     /// assertion below is measured against what *this* produces.
     const MIN: (f32, f32) = (960.0, 640.0);
+
+    #[test]
+    fn welcome_tray_has_its_own_pinned_seat_below_the_actions() {
+        for (w, h, y, width, height) in [
+            (960.0, 640.0, 449.0, 659.2, 135.0),
+            (1280.0, 720.0, 465.0, 889.6, 199.0),
+        ] {
+            let frame = WelcomeFrame::layout(w, h, false);
+            let region = frame.notice_region();
+            assert_eq!(region.y, y);
+            assert!((region.width - width).abs() < 0.001);
+            assert_eq!(region.height, height);
+        }
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            for (w, h) in [(960.0, 640.0), (1280.0, 720.0), (2560.0, 1440.0)] {
+                for recovery in [false, true] {
+                    let frame = WelcomeFrame::layout(w / scale, h / scale, recovery);
+                    let region = frame.notice_region();
+                    assert!(!region.overlaps(frame.open_audio));
+                    assert!(!region.overlaps(frame.open_project));
+                    if let Some(recovery) = frame.recovery {
+                        assert!(!region.overlaps(recovery.recover));
+                        assert!(!region.overlaps(recovery.dismiss));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_closed_inspector_gives_the_workspace_the_whole_window() {

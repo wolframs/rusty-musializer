@@ -181,3 +181,9 @@ copy of the frame's input whose scale reports the pointer far outside the
 window while it is over the flyout, and swaps the widget bank to that scale
 for the same span. egui's dock is beside the workspace and never under a
 flyout, so it is untouched.
+
+WX-5 polish adds `protocol_marker`: an opaque violet graphic on each
+appearance's lane fill (7.186638077640:1 dark, 6.230594944630:1 light), separate
+from the blue light accent. Answered protocol pennants shorten instead of
+fading below the contrast bar. READY reasons use tracked micro text and wrap in
+a 130 px seat, keeping their full sentence visible.

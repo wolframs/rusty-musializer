@@ -159,6 +159,8 @@ pub struct Palette {
     /// thing every renderer writes bit-exactly), and a colour nothing else in
     /// the lane uses.
     pub ui_run_cut: u32,
+    /// Protocol pennants, independent of the accent that means now.
+    pub protocol_marker: u32,
 }
 
 /// The two appearances.
@@ -199,6 +201,7 @@ pub mod palette {
         ui_cue_block:       0x2024_2AFF,
         ui_cue_now:         0x2B26_18FF,
         ui_run_cut:         0x5A5E_66FF,
+        protocol_marker:    0xB59A_DFFF,
     };
 
     /// The light appearance: the pre-WX-5a light/blue palette moved onto the
@@ -233,6 +236,7 @@ pub mod palette {
         ui_cue_block:       0xEEEE_F2FF,
         ui_cue_now:         0xF6EC_D8FF,
         ui_run_cut:         0xFBFA_F7FF,
+        protocol_marker:    0x7550_9AFF,
     };
 }
 
@@ -271,7 +275,7 @@ impl Palette {
         dead_code,
         reason = "the palette audit in this module's tests is its only reader"
     )]
-    pub const fn entries(&self) -> [(&'static str, u32, Surface); 26] {
+    pub const fn entries(&self) -> [(&'static str, u32, Surface); 27] {
         [
             ("accent", self.accent, Surface::Chrome),
             ("on_accent", self.on_accent, Surface::OnAccent),
@@ -299,6 +303,7 @@ impl Palette {
             ("ui_cue_block", self.ui_cue_block, Surface::Fill),
             ("ui_cue_now", self.ui_cue_now, Surface::Fill),
             ("ui_run_cut", self.ui_run_cut, Surface::Fill),
+            ("protocol_marker", self.protocol_marker, Surface::Graphic),
         ]
     }
 
@@ -406,19 +411,6 @@ pub mod rgba {
     /// enough not to compete with the scene.
     pub const PREVIEW_FRAME_EDGE: u32 = 0x4A4A_52FF;
 
-    /// The listening protocol's pennants on the timeline (HX-2): one per
-    /// question, full at the current one, faded once answered.
-    ///
-    /// It was the dark notice card's INFO blue (`NOTICE_INFO_ON_DARK`) until
-    /// the notice card and the protocol card moved onto the appearance's own
-    /// floating surface; the pennants are its last user, so it carries their
-    /// name. A content colour, not chrome, and fixed in both appearances. On
-    /// the dark lanes it reads; on the light lanes it measures about 2:1,
-    /// under the 3:1 a graphic needs, so it is declared a fill here rather
-    /// than measured against a surface it is not drawn on. Theming the pennant
-    /// is open (`build/redesign/wx5-leftover-survey.md`).
-    pub const PROTOCOL_MARKER: u32 = 0x8AB4_F8FF;
-
     /// The dim laid over the workspace behind a modal dialog. Translucent by
     /// design, so it is not a palette entry: nothing is ever measured against it.
     pub const SCRIM: u32 = 0x0A0B_0EBE;
@@ -428,10 +420,9 @@ pub mod rgba {
         dead_code,
         reason = "the palette audit in this module's tests is its only reader"
     )]
-    pub const ALL: [(&str, u32, super::Surface); 3] = [
+    pub const ALL: [(&str, u32, super::Surface); 2] = [
         ("background", BACKGROUND, super::Surface::Fill),
         ("white", WHITE, super::Surface::Fill),
-        ("protocol_marker", PROTOCOL_MARKER, super::Surface::Fill),
     ];
 }
 
@@ -487,6 +478,7 @@ pub mod color {
         ui_cue_block;
         ui_cue_now;
         ui_run_cut;
+        protocol_marker;
     }
 
     /// [`super::Palette::float_surface`] in the current appearance.
@@ -506,7 +498,6 @@ pub mod color {
         white = WHITE;
         preview_surround = PREVIEW_SURROUND;
         preview_frame_edge = PREVIEW_FRAME_EDGE;
-        protocol_marker = PROTOCOL_MARKER;
         scrim = SCRIM;
     }
 }
@@ -621,6 +612,16 @@ mod tests {
     use musializer_core::ui::contrast;
 
     const BOTH: [(&str, &Palette); 2] = [("dark", &palette::DARK), ("light", &palette::LIGHT)];
+
+    #[test]
+    fn protocol_pennants_pin_both_lane_contrasts_and_do_not_mean_now() {
+        for ((name, palette), expected) in BOTH.into_iter().zip([7.18663807764, 6.23059494463]) {
+            let ratio = contrast::ratio(palette.protocol_marker, palette.ui_raised);
+            assert!((ratio - expected).abs() < 1e-9, "{name}: {ratio}");
+            assert!(ratio >= contrast::AA_COMPONENT);
+            assert!(reads_apart(palette.protocol_marker, palette.accent));
+        }
+    }
 
     #[test]
     fn the_default_appearance_is_the_dark_mockup_and_old_names_still_load() {

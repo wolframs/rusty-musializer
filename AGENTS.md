@@ -156,6 +156,9 @@ number disagrees, grep it there before debugging from scratch.
 - **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
   never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
   compositor. Never write `env -u WAYLAND_DISPLAY`.
+- **A nested gate already holds `MUSIALIZER_CAPTURE_DISPLAY`.** The wrapper's
+  exact-display opt-in is `MZ_XVFB_DISPLAY`; never implicitly reuse the parent
+  gate's display for nested private-wrapper launches.
 - **The dialog `PATH` guard** (`ENTRY_NO_DIALOG_PATH`) is per call site; a hand
   probe that clicks anything must carry it.
 - **`kdialog` with no display** aborts with `SIGABRT` and summons Apport. Keep

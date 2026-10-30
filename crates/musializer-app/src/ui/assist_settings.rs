@@ -827,11 +827,8 @@ impl Readiness {
 
     /// The full sentence behind the badge, for its tooltip.
     ///
-    /// The badge itself is 96 px wide and its text is ellipsized to fit, which
-    /// turned "pip install torchaudio into the alignment venv" into
-    /// "pip inst…" — a remediation nobody could act on (AP3-R S9). The label is
-    /// the short form and this is the long one, and the badge is hoverable so
-    /// that both exist.
+    /// The label wraps across two lines; the unbuilt-route reason fits in
+    /// full. Arbitrary longer remediation stays available on hover (AP3-R S9).
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
@@ -1403,20 +1400,21 @@ pub const RAIL_MINIMUM_WIDTH: f32 = 790.0;
 /// collapse at 900 px, come back at 810, and collapse again at 730. That is
 /// exactly the vanish-and-reappear defect `core::ui::transport_bar` was rebuilt
 /// to make unstateable, and the property to assert is monotonicity, not a
-/// threshold. 928 is where a rail-mode body reaches the 722 px the six columns
+/// threshold. 962 is where a rail-mode body reaches the 756 px the six columns
 /// need; below it every layout stacks, rail or tabs.
 ///
 /// It was 882 against a 676 px body until AP3-R S9 widened the CONTRACT column
 /// to carry a plain-language name. The pair moves together and a test checks
 /// that it did.
-pub const ROUTING_MATRIX_DIALOG_WIDTH: f32 = 928.0;
+// WX-5 polish: READY reserves 130 px for its complete, two-line reason.
+pub const ROUTING_MATRIX_DIALOG_WIDTH: f32 = 962.0;
 
 /// The narrowest body the six-column matrix fits in: the five fixed columns, the
 /// five gaps, and the 90 px floor under the flexible MODEL column. Read by the
 /// test that ties the two constants together — the dialog threshold above is
 /// only correct *because* it produces at least this body.
 #[cfg(test)]
-pub const ROUTING_MATRIX_BODY_WIDTH: f32 = 722.0;
+pub const ROUTING_MATRIX_BODY_WIDTH: f32 = 756.0;
 
 impl DialogLayout {
     #[must_use]
@@ -1943,6 +1941,7 @@ pub struct AssistSettingsDialog {
     /// window is narrow" from "the table is broken" — so the report names which
     /// arrangement is in the picture.
     last_layout: Option<(bool, bool)>,
+    readiness_drawn: Vec<String>,
     /// The whole layout from the last drawn frame, so the report can print the
     /// section list's two gaps in pixels rather than the constants they were
     /// derived from. A capture is checked against these numbers.
@@ -2010,6 +2009,7 @@ impl AssistSettingsDialog {
             status: None,
             now: None,
             last_layout: None,
+            readiness_drawn: Vec::new(),
             last_geometry: None,
             last_starved_band: None,
         }
@@ -2835,7 +2835,7 @@ impl AssistSettingsDialog {
     }
 
     /// Readiness for one resolved route: [`execution::evaluate_route`]'s answer,
-    /// dressed for a 96 px badge.
+    /// shared with the execution gate.
     ///
     /// §5 invariant 4: **every** required piece has to be present, and the badge
     /// names the *first* one that is not. Before AP3-R S3 this answered `Ready`
@@ -3121,6 +3121,7 @@ impl AssistSettingsDialog {
             self.draft.catalog.network_allowed,
             self.draft.catalog.show_experimental,
         ));
+        lines.extend(self.readiness_drawn.iter().cloned());
         lines
     }
 }
@@ -3368,6 +3369,7 @@ impl AssistSettingsDialog {
             return;
         }
         self.widgets.begin_frame(ui_scale);
+        self.readiness_drawn.clear();
         // Once per frame, before anything asks whether it has the focus. See
         // the field comment: this used to be rebuilt inside every `is_focused`.
         self.refresh_ring();
@@ -3814,12 +3816,8 @@ impl AssistSettingsDialog {
         state.clicked || self.take_activation(focus)
     }
 
-    /// A readiness pill with a tooltip carrying the whole remediation.
-    ///
-    /// The badge is 96 px and ellipsizes; the sentence a user has to act on is
-    /// longer than that in every interesting case (AP3-R S9). Registering the
-    /// box as a widget is what makes it hoverable at all — `badge` is a free
-    /// function that only draws.
+    /// A readiness dot and two-line reason, with full remediation on hover.
+    /// Its widget target covers both lines (WX-5 polish).
     fn readiness_badge(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -3833,9 +3831,32 @@ impl AssistSettingsDialog {
         }
         let id = widgets::widget_id(DIALOG_WIDGETS, widget);
         let state = self.widgets.button(d, id, boundary);
-        // WX-5d: a dot and a word, which also ends the pill's clipping; the
-        // whole remediation stays on hover.
-        widgets::status_dot_label(d, font, boundary, readiness.tone(), &readiness.label());
+        // Readiness is a reason, not a token: keep its full sentence visible.
+        // Keep the status vocabulary: dot plus tracked micro text, on two lines.
+        let label = readiness.label();
+        let lines = musializer_core::ui::notice::wrap_detail(
+            &label.to_uppercase(),
+            (boundary.width - 12.0).max(0.0),
+            2,
+            |text| widgets::micro_width(font, &[widgets::MicroRun::muted(text)]),
+        );
+        d.draw_circle_v(
+            raylib::prelude::Vector2::new(boundary.x + 3.0, boundary.y + 7.0),
+            3.0,
+            readiness.tone().color(),
+        );
+        for (index, line) in lines.iter().enumerate() {
+            widgets::draw_micro(
+                d,
+                font,
+                boundary.x + 12.0,
+                boundary.y + index as f32 * 14.0,
+                &[widgets::MicroRun::muted(line)],
+            );
+        }
+        self.readiness_drawn.push(format!(
+            "assist settings ready: {widget}@{:.0},{:.0},{:.0},{:.0} text={label:?} lines={lines:?}",
+            boundary.x, boundary.y, boundary.width, boundary.height));
         self.widgets.hint(d, state, id, boundary, &readiness.hint());
     }
 
@@ -4466,7 +4487,7 @@ impl AssistSettingsDialog {
     /// [`ROUTING_MATRIX_DIALOG_WIDTH`] moved with it — the two constants are
     /// tied together by a test.
     fn routing_columns(width: f32) -> [f32; 6] {
-        let fixed = [150.0f32, 132.0, 118.0, 106.0, 96.0];
+        let fixed = [150.0f32, 132.0, 118.0, 106.0, 130.0];
         let gaps = 6.0 * 5.0;
         let model = (width - fixed.iter().sum::<f32>() - gaps).max(90.0);
         [fixed[0], fixed[1], fixed[2], model, fixed[3], fixed[4]]
@@ -4585,7 +4606,7 @@ impl AssistSettingsDialog {
                 d,
                 font,
                 900 + index as u32,
-                UiRect::new(x, row_y + 3.0, columns[5], 20.0),
+                UiRect::new(x, row_y, columns[5], 30.0),
                 &readiness,
             );
 
@@ -4610,7 +4631,7 @@ impl AssistSettingsDialog {
             } else {
                 contract.token().to_string()
             };
-            let available = (body.width - 108.0).max(40.0);
+            let available = (body.width - 142.0).max(40.0);
             widgets::draw_text(
                 d,
                 font,
@@ -4630,10 +4651,10 @@ impl AssistSettingsDialog {
                 font,
                 900 + index as u32,
                 UiRect::new(
-                    body.x + body.width - 96.0,
+                    body.x + body.width - 130.0,
                     *cursor - 3.0,
-                    96.0f32.min(body.width),
-                    18.0,
+                    130.0f32.min(body.width),
+                    30.0,
                 ),
                 &readiness,
             );
@@ -7462,6 +7483,17 @@ mod tests {
     /// back whole — the reader threads exist because `try_wait` does not drain
     /// them, and a child that filled its pipe buffer would deadlock against a
     /// supervisor waiting for it.
+    #[test]
+    fn readiness_reserves_a_pinned_two_line_seat() {
+        assert_eq!(
+            AssistSettingsDialog::routing_columns(756.0),
+            [150.0, 132.0, 118.0, 90.0, 106.0, 130.0]
+        );
+        assert_eq!(ROUTING_MATRIX_DIALOG_WIDTH, 962.0);
+        assert!(DialogLayout::of((960.0, 640.0)).routing_compact());
+        assert!(!DialogLayout::of((1280.0, 720.0)).routing_compact());
+    }
+
     #[test]
     fn a_child_that_answers_in_time_keeps_its_output() {
         let script = "printf 'x%.0s' $(seq 1 200000); printf 'done\\n' 1>&2";
