@@ -499,8 +499,11 @@ mod tests {
             .map(|e| e.unwrap().path())
             .filter(|p| {
                 matches!(
-                    p.extension().and_then(|e| e.to_str()),
-                    Some("ttf" | "otf" | "woff" | "woff2")
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .map(str::to_ascii_lowercase)
+                        .as_deref(),
+                    Some("ttf" | "otf" | "ttc" | "otc" | "woff" | "woff2" | "bdf" | "fnt")
                 )
             })
             .map(|p| p.file_name().unwrap().to_str().unwrap().to_owned())

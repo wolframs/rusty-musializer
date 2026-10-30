@@ -27,9 +27,9 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
-## About and attribution — in progress 2026-10-30
+## About and attribution — implemented, lead review pending 2026-10-30
 
-`t3/about-credits-window`: source-audited credits and embedded notices, modal, report-addressed press gate. Implementation sub-agent; no push or merge.
+`t3/about-credits-window`: source-audited credits and embedded notices, modal, report-addressed press gate and dark/light/150% captures. Evidence and final verification receipts in `build/about/`. Implementation sub-agent; no push or merge.
 
 ## First-start agent cards — implemented, lead review pending 2026-10-30
 

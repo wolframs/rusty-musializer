@@ -33,8 +33,8 @@ pub struct About {
 }
 
 fn layout(window: (f32, f32)) -> (UiRect, UiRect) {
-    let width = (window.0 - 32.0).min(760.0).max(0.0);
-    let height = (window.1 - 32.0).min(620.0).max(0.0);
+    let width = (window.0 - 32.0).clamp(0.0, 760.0);
+    let height = (window.1 - 32.0).clamp(0.0, 620.0);
     let panel = UiRect::new(
         (window.0 - width) * 0.5,
         (window.1 - height) * 0.5,
