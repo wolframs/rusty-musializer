@@ -225,9 +225,9 @@ pub struct Dock {
     terminal_height: Option<f32>,
     /// The followed treatment's apply count already noted in the chat.
     applied_seen: u32,
-    /// The empty state's Start buttons as last drawn, for `dock:`; empty
-    /// while a chat is shown.
-    start_rects: Vec<(&'static str, egui::Rect)>,
+    /// The empty state's Start buttons and discovery states as last drawn,
+    /// for `dock:`; empty while a chat is shown.
+    start_rects: Vec<(&'static str, egui::Rect, &'static str)>,
 }
 
 impl Dock {
