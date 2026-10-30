@@ -252,7 +252,7 @@ pub const CREDITS: &[Credit] = &[
     Credit {
         group: "Fonts",
         name: "Noto Emoji (egui fallback)",
-        author: "Google and the Noto project contributors",
+        author: "Google Inc.; Monotype Design Team",
         license: Some("OFL-1.1"),
         urls: &["https://github.com/googlefonts/noto-emoji"],
         notice: Some(include_str!("../../../resources/licenses/OFL.txt")),
@@ -262,7 +262,7 @@ pub const CREDITS: &[Credit] = &[
     Credit {
         group: "Fonts",
         name: "Ubuntu Light (egui fallback)",
-        author: "Canonical Ltd.; Ubuntu font contributors",
+        author: "Canonical Ltd.; Dalton Maag Ltd",
         license: Some("Ubuntu-font-1.0"),
         urls: &["https://design.ubuntu.com/font"],
         notice: Some(include_str!("../../../resources/licenses/UFL.txt")),
@@ -335,7 +335,7 @@ pub const CREDITS: &[Credit] = &[
         group: "Optional tools",
         name: "PyTorch / TorchAudio — not bundled",
         author: "PyTorch contributors",
-        license: None,
+        license: Some("PyTorch BSD-style; TorchAudio BSD-2-Clause"),
         urls: &["https://pytorch.org/audio"],
         notice: None,
         dependency: None,

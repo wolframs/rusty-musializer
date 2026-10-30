@@ -104,7 +104,7 @@ impl Shell {
     }
 
     pub(crate) fn about_welcome(&mut self, d: &mut RaylibDrawHandle<'_>, input: &ShellInput<'_>) {
-        let rect = UiRect::new(input.window.0 - 116.0, 32.0, 84.0, 28.0);
+        let rect = UiRect::new(200.0, 28.0, 84.0, 28.0);
         self.about.welcome = rect;
         if self
             .widgets

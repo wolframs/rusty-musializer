@@ -22,6 +22,8 @@ use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct EguiBackend {
+    /// Draw the existing dock/welcome under About without forwarding any input.
+    pub input_suspended: bool,
     ctx: Context,
     textures: HashMap<TextureId, Texture2D>,
     pixels_per_point: f32,
@@ -42,7 +44,17 @@ impl EguiBackend {
         } else {
             1.0
         };
-        let input = input::gather_input(rl, self.pixels_per_point, keyboard_enabled);
+        let mut input = input::gather_input(
+            rl,
+            self.pixels_per_point,
+            keyboard_enabled && !self.input_suspended,
+        );
+        if self.input_suspended {
+            input.events.clear();
+            input.events.push(egui::Event::PointerGone);
+            input.modifiers = egui::Modifiers::default();
+            input.focused = false;
+        }
         self.ctx.set_pixels_per_point(self.pixels_per_point);
         self.ctx.begin_pass(input);
     }

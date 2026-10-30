@@ -38,4 +38,11 @@ External tool licences are identified separately in the credits table; the tools
 model weights, agent programs and remote services are not shipped in this binary.
 FFmpeg's licence depends on its build options. MMS_FA is CC-BY-NC-4.0 per
 https://docs.pytorch.org/audio/stable/generated/torchaudio.pipelines.MMS_FA.html .
+Python uses PSF-2.0, NumPy BSD-3-Clause, Whisper MIT, and the external
+PyTorch/TorchAudio installations their upstream BSD-style/BSD-2-Clause terms.
+Sources: https://docs.python.org/3/license.html ,
+https://numpy.org/doc/stable/license.html ,
+https://github.com/openai/whisper/blob/main/LICENSE ,
+https://github.com/pytorch/pytorch/blob/main/LICENSE , and
+https://github.com/pytorch/audio/blob/main/LICENSE .
 Configured agent/provider terms vary and are deliberately not assigned a licence.

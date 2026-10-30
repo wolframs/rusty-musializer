@@ -131,3 +131,4 @@ fading below the contrast bar. READY reasons use tracked micro text and wrap in
 a 130 px seat, keeping their full sentence visible.
 
 About opens from the top-left logo (tooltip: “About Musializer”) or the quiet welcome control; its theme-role floating surface, scrollable credits and embedded notices close with ×, Escape or the scrim and own input while open.
+The existing shell preserves a 960×640 logical minimum by clamping scale; About's 150% captures therefore use 1440×960 and 1920×1080 physical windows. Its pure geometry test also pins the smaller logical space of physical 960×640 and 1280×720 at 150%, without changing the shell's scale policy.

@@ -1819,7 +1819,8 @@ fn run(
                 }
             }
         }
-        let egui_active = !app.shell.about.open && (welcome_theme_active || dock_rect.is_some());
+        let egui_active = welcome_theme_active || dock_rect.is_some();
+        egui_backend.input_suspended = app.shell.about.open;
         if egui_active {
             egui_backend.begin_frame(
                 &mut rl,
