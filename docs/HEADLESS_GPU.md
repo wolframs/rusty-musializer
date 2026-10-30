@@ -356,3 +356,18 @@ No poster assertion or timing tolerance was loosened.
 standalone CPU `headless_check.sh` does not invoke this separate poster gate;
 its own poster data/drawing checks still run. Raw integrated reports and the
 process/load samples are under `build/wx5-integrated/cpu-poster*`.
+
+### Integrated real-song visual replay boundary
+
+The final dark/light Direct, Scenes and artist captures play the copied
+322.52 s Door fixture for 480 frames. Each consumes analyzed PCM and reports
+zero output underruns; each also records 13–14 lifetime analyzer-tap rejection
+counts and a 100% lifetime peak. No epoch trace was made for these runs, so do
+not attribute those counts to startup or the poster service. The completed
+synthetic gates do not establish lossless playback of this larger project.
+This is recorded as a follow-up, with no assertion weakened or playback change.
+
+The first screenshot attempt used the explicitly unbounded `posters=settle`
+while playing, causing an 829.7 ms forced step and 55 output underruns. The
+accepted final captures use the ordinary budgeted path; the failed diagnostic
+attempt remains in `build/wx5-integrated/playing-settle-attempt/`.

@@ -338,8 +338,6 @@ They are independent unless a line says otherwise. Every one finishes with
    **Left:**
    - `UiPanel` and the `inspector_open`/`dock_open` flags still exist, and
      `ColumnView` is derived from them rather than replacing them.
-   - In the 320 and 358 px columns the route editor's Clamp and Swap take
-     a second row (deliberate layout).
    - `headless_check.sh`'s pixel checks run with the column closed, because
      they aim at a full-width band. The column open, the default, is
      covered by the column checks and the gate's dark section.
@@ -498,8 +496,9 @@ notice cards still in the pre-redesign style.
   fails. Reverted byte for byte. The palette sweep walks the card's inks on
   the floating surface in both appearances; perturbing Info to the disabled
   tone fails it at 3.12:1.
-- **Left**: `build/redesign/wx5-leftover-survey.md` in the main checkout lists
-  every surface still in the old look, with sizes.
+- **Historical survey**: `build/redesign/wx5-leftover-survey.md` in the main
+  checkout predates the integrated polish. Current remaining work is under
+  Next sessions above; the survey is not a current completion inventory.
 
 **WX-1/2 (2026-10-21).**
 
@@ -603,3 +602,40 @@ mutant binary; the normal debug binary was rebuilt afterwards. Existing polish
 mutants were replayed through the integrated launcher: 36 surface failures and
 4 count failures per renderer, as intended. Source/diff digests and complete
 logs are in `build/wx5-integrated/`.
+
+Final integrated verification: **20 passed, 0 failed**, **1624.75 s**; includes
+current code map, both new WX-5 gates, and the ordinary GPU poster gate. The
+complete CPU headless gate also passed, **610.58 s**, through protocol resume
+and bad-digest rejection. CPU's controlled stall peaked at 6720/8192 with zero
+additional drops/underruns; cold-start lifetime loss is still reported. The CPU
+sampler recorded no competing Xvfb/compiler. The full-verify sampler has four
+unowned reparented-Xvfb observations, so its wall clock is not certified quiet.
+
+Requested differentials passed: layout **12.91 s** (348285 values plus 1388
+rail/2477 column records), Assist UI **15.21 s** (199 decisions plus 324 column
+rows), project I/O **15.11 s** (3061 values, six comparisons, maximum delta 0).
+They ran concurrently, so these are individual wall clocks including Cargo
+lock waits. No additional changed core module has a differential harness.
+The separate optional CPU poster timing failure remains recorded in
+`HEADLESS_GPU.md`; it was not loosened or folded into the CPU headless gate.
+
+Raw logs, checksums, negative controls and 1280x720 dark/light review captures
+are under `build/wx5-integrated/`. Only the copied fixture was opened; artist
+commit captures use a second local project copy. The handoffs remain outside
+the tracked tree in the main checkout's `build/redesign/`.
+
+All eight final 1280x720 PNGs were inspected: welcome notices clear the entry
+actions; scene tile pictures remain distinct with readable names; committed
+artist text fits the top bar; Direct's composer remains visible beside the
+playing preview. Direct uses the scripted fake agent without sending a prompt.
+The final playing Direct/Scenes/Look captures use ordinary budgeted scheduling,
+have nonzero analyzed PCM and zero output underruns, but report **13–14 lifetime
+analyzer-tap rejections**. Their epoch was not localized; these pictures are
+visual evidence, not lossless-playback proof. This remains an investigation
+note in the live queue. No playback formula was changed for it.
+
+An initial playing screenshot mistakenly requested `posters=settle`; that
+intentional unbounded diagnostic blocked for 829.7 ms and reported 55 output
+underruns. Its raw artifacts remain in `playing-settle-attempt/`. The accepted
+capture run uses ordinary scheduling; the screenshot-only assertion was not
+loosened. Original copied fixture bytes still match the main checkout's copy.

@@ -71,7 +71,9 @@ failure is diagnosed and fixed on `t3/headless-wx6`: it predates WX-5d (5/5
 quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
 the first drain, not during the injected stall. Five quiet poster gates passed;
 no poster change was needed. See `docs/HEADLESS_GPU.md` for evidence and the
-CPU counter contract.
+CPU counter contract. Real-song integration captures also report 13–14 lifetime
+analyzer-tap rejections with zero output underruns; their epoch is not localized.
+Investigate separately before claiming lossless playback of that fixture.
 
 The paired-look/open-column prototype exceeded the operator's +1/3 GPU runtime
 cap: **553.38 s baseline, 849.83 s pilot (+53.57%)**, both quiet. Its pixel
@@ -83,12 +85,14 @@ lyric lane cannot grow past the fixed band's slack. Integration reproduced a
 working shrink to 30 px (the actual minimum request is 22). Growing the band
 through this grip remains a layout decision, separate from appearance coverage.
 
-**WX-5 integration — claimed by `t3/integrate-wx5-wx6-features` (2026-10-30).**
-Integrate the three completed branches, consolidate display ownership, pin drawn
-route geometry, and run final GPU/CPU and differential gates. Polish, scene
-posters and inline artist editing are implemented; lead review remains open.
-The handoffs are archived in the main checkout's `build/redesign/`; durable
-behavior and evidence belong in `WORKSTATION.md` and `POSTER_FRAMES.md`.
+**WX-5 polish and features — integrated, awaiting lead review (2026-10-30).**
+`t3/integrate-wx5-wx6-features` contains the three requested no-ff merges,
+scene posters and inline artist editing, consolidated capture ownership, and
+exact drawn route-card checks. Full verification is 20/20; the complete CPU
+headless gate also passes. Lead/operator review remains open; nothing was
+pushed or merged to master. Evidence: `WORKSTATION.md`, `POSTER_FRAMES.md`,
+`HEADLESS_GPU.md`, and the archive's integration entry. WX-6 appearance work
+above remains open, as does its separate band-growth layout decision.
 
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),

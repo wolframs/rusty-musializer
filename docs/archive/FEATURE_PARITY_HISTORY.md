@@ -4888,3 +4888,38 @@ still open: its quiet GPU pilot took 849.83 s versus 553.38 s (+53.57%),
 exceeded the runtime cap and exposed classifier,
 probe-targeting and a default lyric resize-grip issue; no pixel loosening was
 committed. See the live queue and headless report before resuming it.
+
+## WX-5 integration verification (2026-10-30)
+
+From `be507e1`, branch `t3/integrate-wx5-wx6-features` merged, with `--no-ff`
+and in this order: `t3/headless-wx6` (`2095b69`),
+`t3/wx5-ui-polish-fixes` (`4841d30`), and
+`t3/scene-posters-artist-edit` (`474e5cf`). The lead reviews before master;
+no push or master merge was performed. Integration code/map checkpoint:
+`9a2e51f`.
+
+One `MUSIALIZER_CAPTURE_DISPLAY` mechanism reserves a validated exact display
+and reuses only an ancestor-owned Xvfb, preserving all isolation/mute guards
+and VirtualGL's cut/hostname utilities. Route checks pin narrow 390/418 and
+wide 354/382 px cards at explicit 100% scale, with report/layout agreement.
+Both new gates are in verify.sh; source handoff documents were copied out of
+the repository before deletion. Living decisions/evidence are in
+DIVERGENCES, TRAPS, POSTER_FRAMES and WORKSTATION.
+
+The default lyric grip is not entirely dead: real press/drag probes shrink
+49 to 30 px, persist and release. Downward requests are capped by fixed-band
+slack; growing the band remains a separate layout decision. The actual minimum
+request is 22, correcting the pilot's claimed 50. A private staged left-drag
+and drawn-rect/ownership report make that boundary observable without changing
+production resize formulas. Its disabled-handler control fails 10 times per
+renderer. Route controls fail 36 perturbations, launcher permissive/over-strict
+faults fail both renderers, and original polish mutants fail 36 surface/4 count
+checks per renderer. Restorations are byte-for-byte, with source/diff receipts.
+
+Full verify: 20/20, 1624.75 s. Complete CPU headless: exit 0, 610.58 s, no
+competing Xvfb/compiler sampled. Layout/Assist UI/project I/O differentials
+pass in 12.91/15.21/15.11 s respectively (parallel wall clocks). Optional quiet
+CPU poster gate still fails one extra frame (25.6 ms versus off's 16.7 ms),
+39.07 s; the existing assertion is unchanged. The ordinary GPU poster check
+passes in verify. WX-6's both-look conversion remains open on the measured
++53.57% cap failure. Logs and review PNGs: build/wx5-integrated/.
