@@ -2,6 +2,8 @@
 """Run ONLY as MZ_BIN under headless_run.sh; type into a probe-pressed value chip."""
 import ctypes as C
 import os
+import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -29,12 +31,34 @@ try:
     x.XSetInputFocus(display,children[count.value-1],2,0)
     def key(sym, down):
         test.XTestFakeKeyEvent(display,x.XKeysymToKeycode(display,sym),down,0); x.XFlush(display); time.sleep(.06)
-    key(0xffe3,1); key(ord('a'),1); key(ord('a'),0); key(0xffe3,0)
-    for char in '216': key(ord(char),1); key(ord(char),0)
-    sym=0xff1b if os.environ.get('PIXEL_LOOK_CANCEL') else 0xff0d
-    key(sym,1); key(sym,0)
-    # The field has released focus: save through the workspace's real chord.
-    key(0xffe3,1); key(ord('s'),1); key(ord('s'),0); key(0xffe3,0)
+    def chord(letter):
+        key(0xffe3,1); key(ord(letter),1); key(ord(letter),0); key(0xffe3,0)
+    if os.environ.get('PIXEL_LOOK_LYRIC_INPUT'):
+        controls=json.loads(os.environ['PIXEL_LOOK_LYRIC_INPUT'])
+        test.XTestFakeMotionEvent.argtypes=[C.c_void_p,C.c_int,C.c_int,C.c_int,C.c_ulong]
+        test.XTestFakeButtonEvent.argtypes=[C.c_void_p,C.c_uint,C.c_int,C.c_ulong]
+        def click(name):
+            px,py=controls[name]
+            test.XTestFakeMotionEvent(display,0,px,py,0); x.XFlush(display); time.sleep(.08)
+            test.XTestFakeButtonEvent(display,1,1,0); x.XFlush(display); time.sleep(.08)
+            test.XTestFakeButtonEvent(display,1,0,0); x.XFlush(display); time.sleep(.15)
+        click('next'); click('prev'); click('text')
+        chord('a')
+        for char in 'verified column phrase': key(ord(char),1); key(ord(char),0)
+        click('start'); chord('a')
+        for char in '1.250': key(ord(char),1); key(ord(char),0)
+        key(0xff0d,1); key(0xff0d,0)
+        click('apply'); chord('s'); time.sleep(.4)
+        project=Path(os.environ['PIXEL_LOOK_LYRIC_PROJECT'])
+        project.with_suffix('.after-apply.json').write_bytes(project.read_bytes())
+        chord('z'); chord('s'); time.sleep(.4)
+    else:
+        key(0xffe3,1); key(ord('a'),1); key(ord('a'),0); key(0xffe3,0)
+        for char in '216': key(ord(char),1); key(ord(char),0)
+        sym=0xff1b if os.environ.get('PIXEL_LOOK_CANCEL') else 0xff0d
+        key(sym,1); key(sym,0)
+        # The field has released focus: save through the workspace's real chord.
+        key(0xffe3,1); key(ord('s'),1); key(ord('s'),0); key(0xffe3,0)
     sys.exit(process.wait(timeout=15))
 finally:
     if process.poll() is None: process.terminate(); process.wait(timeout=5)
