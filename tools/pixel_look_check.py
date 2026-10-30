@@ -30,9 +30,16 @@ def line(log, label):
     return found[-1]
 def run(name, scope='video', click=None, size='1280x720', theme='dark', owned=True, state=None, reveal=True, typed=None):
     probe=f'size={size},column=look,time=2,play=0'+(f',pixel={scope}' if reveal else '')
-    if typed: probe+=f',save-to={out/name}.musi'
     if click: probe+=f',click={click[0]}x{click[1]}'
-    cmd=['tools/headless_run.sh','--treatment',str(out/f'{owned}.treatment.json'),'--ui-scale','100','--hud=0',
+    source=['--treatment',str(out/f'{owned}.treatment.json')]
+    if typed:
+        # Project Save has its own destination dialog; export's save-to= seam
+        # deliberately does not replace it. Seed a named synthetic project.
+        named=out/f'{name}.musi'
+        with (out/f'{name}-seed.log').open('w') as seed_log:
+            subprocess.run(['tools/headless_run.sh',*source,'--save-project',str(named)],env=dict(env,MZ_STATE_DIR=str(out/f'state-{name}-seed')),stdout=seed_log,stderr=subprocess.STDOUT,check=True)
+        source=['--project',str(named)]
+    cmd=['tools/headless_run.sh',*source,'--ui-scale','100','--hud=0',
          '--ui-probe',probe,'--probe-frames','180' if typed else '24','--probe-shot',str(out/f'{name}.png')]
     if theme: cmd+=['--ui-theme',theme]
     run_env=dict(env,MZ_STATE_DIR=str(state or out/f'state-{name}'))
