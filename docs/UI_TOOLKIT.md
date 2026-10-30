@@ -134,3 +134,5 @@ About opens from the top-left logo (tooltip: “About Musializer”) or the quie
 The existing shell preserves a 960×640 logical minimum by clamping scale; About's 150% captures therefore use 1440×960 and 1920×1080 physical windows. Its pure geometry test also pins the smaller logical space of physical 960×640 and 1280×720 at 150%, without changing the shell's scale policy.
 
 The legal reader keeps the interface face for its covered text and uses the built-in authored face for supplementary contributor alphabets (including Cyrillic); the About report names the serving face and missing-glyph count. Notice wrapping is cached by row, width, scale and available face.
+
+About retains its pointer occlusion through the late notice tray; the overlay restores real input only for its own controls. The gate presses the covered tray close rectangle and pins the unchanged tray state.

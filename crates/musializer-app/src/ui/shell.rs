@@ -1778,6 +1778,11 @@ impl Shell {
             self.splitters(d, frame, under, &mut commands);
         }
         self.widgets.set_ui_scale(pointer_scale);
+        // About also covers the late notice tray. The final overlay restores
+        // real input after both native chrome and egui have drawn underneath.
+        if self.about.open {
+            self.widgets.set_ui_scale(under.ui_scale);
+        }
         // The protocol question card sits over the preview's bottom edge, and
         // the notice tray stacks *above* it rather than over it — the first
         // smoke capture had the session-start notice covering the question

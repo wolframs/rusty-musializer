@@ -73,6 +73,19 @@ def surface(name, report, scale, theme, size):
     patch = [image.getpixel((px+dx, py+dy)) for dx in range(-1, 2) for dy in range(-1, 2)]
     check(all(c == expected for c in patch), name+': visible floating surface uses the appearance role')
 
+def covered_notice_case(opened_log):
+    # This empty part of About covers a real close control in the notice tray.
+    notice_report = line(opened_log, 'notices')
+    covered_point = point(notice_report.replace('close=', 'close@'), 'close')
+    covered, covered_log = run('covered-notice', about=True, click=covered_point)
+    check('open=true' in covered and line(covered_log, 'notices') == notice_report,
+          'a press over the covered notice close leaves the underlying tray unchanged')
+
+if os.environ.get('ABOUT_CHECK_TRAY_ONLY') == '1':
+    _, tray_log = run('tray-baseline', about=True)
+    covered_notice_case(tray_log)
+    raise SystemExit(0)
+
 baseline, base_log = run('baseline')
 check('open=false' in baseline, 'About starts closed')
 opened, opened_log = run('logo', click=point(baseline, 'logo'))
@@ -85,6 +98,7 @@ if os.environ.get('ABOUT_CHECK_NEGATIVE_ONLY') == '1':
 
 gap, gap_log = run('gap', about=True, click=point(opened, 'gap'))
 check('open=true' in gap and 'notice=none' in gap and 'claimed=nothing' in line(gap_log, 'click probe'), 'pressing an interior gap leaves About unchanged')
+covered_notice_case(opened_log)
 scrim, _ = run('scrim', about=True, click=point(opened, 'scrim'))
 check('open=false' in scrim and 'action=scrim' in scrim, 'pressing the scrim closes About')
 closed, _ = run('close', about=True, click=point(opened, 'close'))

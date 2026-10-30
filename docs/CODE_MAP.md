@@ -13,7 +13,7 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 75 | 85,494 | 557 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 75 | 85,499 | 557 |
 | [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `atmosphere_probe` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `fluid_probe` (example), `layout_dump` (example), `listening_defaults` (example), `organic_probe` (example), `pixel_cats_bench` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 143 | 94,260 | 1,284 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 32 | 18,602 | 202 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 109 | 0 |
@@ -130,7 +130,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/rail.rs`](../crates/musializer-app/src/ui/rail.rs) | 775 | 3 | The rail and its flyouts (WX-5c, `docs/WX5C_DESIGN.md` §1). |
 | [`src/ui/scale.rs`](../crates/musializer-app/src/ui/scale.rs) | 274 | 4 | Logical UI units and their mapping to the window framebuffer. |
 | [`src/ui/scene_colors.rs`](../crates/musializer-app/src/ui/scene_colors.rs) | 169 | 2 | Each scene's identity colour: the swatch the plan lane, and anything else that names a scene by colour, draws it in. |
-| [`src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,992 | 44 | The workspace shell: one frame of chrome around the scene preview. |
+| [`src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,997 | 44 | The workspace shell: one frame of chrome around the scene preview. |
 | [`src/ui/shell_layout.rs`](../crates/musializer-app/src/ui/shell_layout.rs) | 951 | 21 | Where the workspace's regions go. |
 | [`src/ui/text_input.rs`](../crates/musializer-app/src/ui/text_input.rs) | 404 | 0 | The single-line text field: pixels, keyboard, and the caret's blink. |
 | [`src/ui/theme.rs`](../crates/musializer-app/src/ui/theme.rs) | 925 | 12 | The workspace palette, type scale and metrics: the one source of truth for how the chrome looks, read by the raylib widgets and by egui alike (WX-5a). |
@@ -339,8 +339,8 @@ with the module documentation and searching for a narrow symbol before scrolling
 | Source | Lines | Tests |
 | --- | ---: | ---: |
 | [`crates/musializer-app/src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,647 | 67 |
+| [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,997 | 44 |
 | [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 6,992 | 4 |
-| [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 6,992 | 44 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,532 | 61 |
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 5,716 | 47 |
 | [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 3,872 | 47 |

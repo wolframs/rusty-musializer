@@ -245,3 +245,13 @@ unchanged ancestor-ownership check in headless_run, and kills **and waits** in
 its EXIT trap. Do not weaken ownership checks or remove another server's lock.
 Every child launch still carries mute, unreachable Wayland/audio, dialog PATH
 and private-config guards.
+
+## A modal's pointer mask includes late chrome
+
+About's panels used an occluded widget scale, but `Shell::draw` restored the
+plain scale before drawing the notice tray. A press in an empty part of About
+could therefore claim the covered notice's close button before the dialog saw
+it. Mask every underlay widget, including the late tray; restore real input in
+the final overlay after native chrome and egui. `about_check.py` addresses that
+covered close from `notices:` and pins the unchanged tray, alongside the normal
+interior-gap control. No fixed pixel is a substitute for that report target.
