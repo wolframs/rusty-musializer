@@ -1618,12 +1618,16 @@ fn run(
         // desynchronizes the picture from the music and leaves no trace in any
         // number the report prints. Peak occupancy is the one figure that does.
         if let Some(ring) = audio_bridge::ring() {
-            report.observe_ring(ring.len(), ring.capacity());
+            // One observation feeds both epochs. Separate reads could straddle
+            // a callback and make the scoped peak exceed the lifetime peak.
+            let used = ring.len();
+            let capacity = ring.capacity();
+            report.observe_ring(used, capacity);
             if let Some(window) = report.audio_stall.as_mut() {
                 window.observe(
                     report.frames,
-                    ring.len(),
-                    ring.capacity(),
+                    used,
+                    capacity,
                     ring.dropped(),
                     audio_bridge::output_underruns(),
                 );

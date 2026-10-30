@@ -46,6 +46,8 @@ def check(report, renderer):
     # the occupancy stochastic; the intervention, bounds and zero deltas are not.
     if not 4096 < peak < capacity:
         errors.append(f"stall occupancy {peak}/{capacity} is outside the silent band (4096, 8192)")
+    if capacity == 0 or not round(100 * peak / capacity) <= int(audio[3]) <= 100:
+        errors.append(f"lifetime peak {audio[3]}% does not contain the controlled peak {peak}/{capacity}")
     if da != db or int(audio[2]) != da:
         errors.append(f"the stall/recovery dropped frames: before={db} after={da} lifetime={audio[2]}")
     if (ub, ua, int(output[1])) != (0, 0, 0):
@@ -54,7 +56,7 @@ def check(report, renderer):
         errors.append("the analyzer consumed no PCM")
     if renderer == "gpu" and (db, da) != (0, 0):
         errors.append(f"GPU lifetime playback lost frames: {db}..{da}")
-    detail = (peak, capacity, db, da, int(audio[3]))
+    detail = (peak, capacity, db, da, int(audio[3]), ub, ua)
     return errors, detail
 
 
@@ -64,8 +66,8 @@ def main(argv):
         return 2
     errors, detail = check(argv[1], argv[2])
     if detail:
-        peak, capacity, before, after, lifetime_peak = detail
-        print(f"EX4-c {argv[2]}: controlled peak={peak}/{capacity}, dropped={after - before}, underruns=0 required")
+        peak, capacity, before, after, lifetime_peak, ub, ua = detail
+        print(f"EX4-c {argv[2]}: controlled peak={peak}/{capacity}, dropped={after - before}, underruns={ua - ub} (zero deltas required)")
         if argv[2] == "cpu":
             print(
                 "CPU cold-start limitation: "
