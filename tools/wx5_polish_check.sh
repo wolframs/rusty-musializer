@@ -70,7 +70,10 @@ def capture(name, probe, args=(), extra=None, frames=30):
         check('Window closed successfully' in log.read_text(), name+' completed capture')
     text=log.read_text()
     assert png.is_file(), log
-    return text, np.array(Image.open(png).convert('RGB'))
+    with Image.open(png) as shot:
+        check(shot.format=='PNG' and shot.size==tuple(map(int,current_size.split('x'))), name+' PNG dimensions')
+        pixels=np.array(shot.convert('RGB'))
+    return text, pixels
 def crop(im,r):
     x,y,w,h=r; k=current_scale/100
     return im[round(y*k):round((y+h)*k),round(x*k):round((x+w)*k)]
