@@ -3832,13 +3832,13 @@ impl AssistSettingsDialog {
         let id = widgets::widget_id(DIALOG_WIDGETS, widget);
         let state = self.widgets.button(d, id, boundary);
         // Readiness is a reason, not a token: keep its full sentence visible.
-        // 130 px gives the unbuilt-route reason two 13 px lines in the native face.
+        // Keep the status vocabulary: dot plus tracked micro text, on two lines.
         let label = readiness.label();
         let lines = musializer_core::ui::notice::wrap_detail(
-            &label,
+            &label.to_uppercase(),
             (boundary.width - 12.0).max(0.0),
             2,
-            |text| widgets::measure(font, text, metric::UI_FONT_CAPTION),
+            |text| widgets::micro_width(font, &[widgets::MicroRun::muted(text)]),
         );
         d.draw_circle_v(
             raylib::prelude::Vector2::new(boundary.x + 3.0, boundary.y + 7.0),
@@ -3846,14 +3846,12 @@ impl AssistSettingsDialog {
             readiness.tone().color(),
         );
         for (index, line) in lines.iter().enumerate() {
-            widgets::draw_text(
+            widgets::draw_micro(
                 d,
                 font,
-                line,
                 boundary.x + 12.0,
                 boundary.y + index as f32 * 14.0,
-                metric::UI_FONT_CAPTION,
-                color::ui_muted(),
+                &[widgets::MicroRun::muted(line)],
             );
         }
         self.readiness_drawn.push(format!(

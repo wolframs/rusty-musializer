@@ -73,6 +73,26 @@ def capture(name, probe, args=(), extra=None, frames=30):
 def crop(im,r):
     x,y,w,h=r; k=current_scale/100
     return im[round(y*k):round((y+h)*k),round(x*k):round((x+w)*k)]
+def ai_check(tag):
+    dialog,dim=capture('ai-settings-'+tag,'column=assist,play=0',['--treatment',treatment],
+        {'MUSIALIZER_ASSIST_SETTINGS_OPEN':'routing','MUSIALIZER_ASSIST_SETTINGS_SCROLL':'10000'})
+    ready=list({l.split('@')[0]:l for l in dialog.splitlines() if l.startswith('assist settings ready:')}.values())
+    check(bool(ready), 'READY rows reported '+tag)
+    long=[]
+    for entry in ready:
+        text=ast.literal_eval(re.search(r'text=(".*?") lines=',entry).group(1))
+        lines=ast.literal_eval(entry.split(' lines=')[1])
+        check(' '.join(lines)==text.upper(), 'READY reason unabridged '+tag+' '+text)
+        if text=='Not implemented in this build':
+            long.append(entry)
+            check(lines==['NOT IMPLEMENTED','IN THIS BUILD'], 'READY exact two lines '+tag)
+            boundary=tuple(map(float,re.search(r'@([\d.-]+),([\d.-]+),([\d.-]+),([\d.-]+)',entry).groups()))
+            check(boundary[2:]==(130.,30.), 'READY exact seat '+tag)
+            textpixels=crop(dim,(boundary[0]+12,boundary[1]+14,boundary[2]-12,13))
+            background=np.array((23,26,31) if current_theme=='dark' else (255,255,255))
+            coverage=np.abs(textpixels.astype(int)-background).sum(axis=2)
+            check(np.count_nonzero(coverage>80)>=12, 'READY second line actually visible '+tag)
+    check(bool(long), 'unbuilt route reason visible '+tag)
 # The exact values below are independent pins, not copied from the report.
 # Fill checks inspect opaque interiors. Text uses coverage against its
 # background, allowing antialiased glyphs and renderer rounding.
@@ -81,6 +101,9 @@ if os.environ.get('WX5_POLISH_FAST')=='1': matrix=matrix[:1]
 for current_size,current_scale in matrix:
   for current_theme in ['dark','light']:
     tag=f'{current_theme}-{current_size}-{current_scale}'
+    if os.environ.get('WX5_POLISH_ONLY')=='ai':
+        ai_check(tag)
+        continue
     surface=(17,19,23) if current_theme=='dark' else (247,247,248)
     hover=(29,33,39) if current_theme=='dark' else (239,239,242)
     pennant=(181,154,223) if current_theme=='dark' else (117,80,154)
@@ -114,25 +137,7 @@ for current_size,current_scale in matrix:
     proto,pim=capture('protocol-'+tag,'column=closed,play=0', ['--protocol',protocol])
     n=np.count_nonzero(np.all(pim==pennant,axis=2))
     check(n>=30*(current_scale/100)**2, 'protocol opaque pennants '+tag)
-    dialog,dim=capture('ai-settings-'+tag,'column=assist,play=0',['--treatment',treatment],
-        {'MUSIALIZER_ASSIST_SETTINGS_OPEN':'routing','MUSIALIZER_ASSIST_SETTINGS_SCROLL':'10000'})
-    ready=list({l.split('@')[0]:l for l in dialog.splitlines() if l.startswith('assist settings ready:')}.values())
-    check(bool(ready), 'READY rows reported '+tag)
-    long=[]
-    for entry in ready:
-        text=ast.literal_eval(re.search(r'text=(".*?") lines=',entry).group(1))
-        lines=ast.literal_eval(entry.split(' lines=')[1])
-        check(' '.join(lines)==text, 'READY reason unabridged '+tag+' '+text)
-        if text=='Not implemented in this build':
-            long.append(entry)
-            check(lines==['Not implemented in this','build'], 'READY exact two lines '+tag)
-            boundary=tuple(map(float,re.search(r'@([\d.-]+),([\d.-]+),([\d.-]+),([\d.-]+)',entry).groups()))
-            check(boundary[2:]==(130.,30.), 'READY exact seat '+tag)
-            textpixels=crop(dim,(boundary[0]+12,boundary[1]+14,boundary[2]-12,13))
-            background=np.array((23,26,31) if current_theme=='dark' else (255,255,255))
-            coverage=np.abs(textpixels.astype(int)-background).sum(axis=2)
-            check(np.count_nonzero(coverage>80)>=12, 'READY second line actually visible '+tag)
-    check(bool(long), 'unbuilt route reason visible '+tag)
+    ai_check(tag)
     for source,args,expected in [
       ('fresh',[],390),
       ('band',['--route','loom.weight:band:2:0:1:0.4:2.2:smoothstep'],418)]:
