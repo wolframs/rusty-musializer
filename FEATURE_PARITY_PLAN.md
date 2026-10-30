@@ -27,9 +27,9 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
-## F8 retirement — implementation claimed 2026-10-30
+## F8 retirement — implemented, lead review pending 2026-10-30
 
-`t3/retire-f8-editor`: inventory in `build/redesign/wx5-editor-inventory.md`; move pixel filter and appearance to Look, retire the duplicate modal in a separate commit, replace coverage and retake the README. Lead review before master.
+`t3/retire-f8-editor`: pixel filter and appearance moved into Look; modal deletion is its own commit; replacement press/state/persistence checks and the Direct README capture are implemented. Inventory and handoff evidence are in `build/redesign/`; negative controls and captures in `build/wx5-editor/`. The single guarded lyric-draft policy and in-field shortcut ownership are flagged for lead review. Nothing is pushed or merged to master.
 
 ## UI toolkit follow-through
 
