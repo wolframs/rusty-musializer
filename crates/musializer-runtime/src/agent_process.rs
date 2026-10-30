@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::process::process_group::{signal_group_or_process, Signal};
 
@@ -67,6 +67,7 @@ struct ShellPath {
     receiver: Receiver<Option<String>>,
     // None means pending; Some(None) means the shell answered without a PATH.
     resolved: Option<Option<String>>,
+    locations: HashMap<String, Location>,
 }
 
 impl ShellPath {
@@ -83,14 +84,21 @@ impl ShellPath {
 
     fn locate(&mut self, program: &str, fallback: &str) -> Location {
         self.poll(Duration::ZERO);
+        if let Some(location) = self.locations.get(program) {
+            return location.clone();
+        }
         let path = self.resolved.as_ref().and_then(Option::as_deref);
-        if let Some(found) = resolve(program, path.unwrap_or(fallback)) {
+        let location = if let Some(found) = resolve(program, path.unwrap_or(fallback)) {
             Location::Found(found)
         } else if self.resolved.is_none() {
             Location::Checking
         } else {
             Location::NotFound
+        };
+        if self.resolved.is_some() {
+            self.locations.insert(program.to_owned(), location.clone());
         }
+        location
     }
 }
 
@@ -104,36 +112,71 @@ pub fn warm_shell_path() {
         Mutex::new(ShellPath {
             receiver,
             resolved: None,
+            locations: HashMap::new(),
         })
     });
 }
 
 fn ask_shell_for_path() -> Option<String> {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty())?;
-    // A marker, because an interactive rc may print a greeting.
-    let output = Command::new(shell)
-        .args(["-ic", "printf '\\n__MUSIALIZER_PATH__%s\\n' \"$PATH\""])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .find_map(|line| line.strip_prefix("__MUSIALIZER_PATH__").map(str::to_owned))
-        .filter(|path| !path.is_empty())
+    detached_shell_path(&shell, Duration::from_secs(4))
 }
 
-/// The login shell's PATH, waiting up to three seconds for the first answer.
+fn detached_shell_path(shell: &str, timeout: Duration) -> Option<String> {
+    // setsid detaches the interactive shell from the launcher's controlling
+    // terminal: bash job control must never SIGTTIN the backgrounded app.
+    // This is only agent discovery, never the Python Assist helpers (which
+    // establish their own session).
+    let mut child = Command::new("/usr/bin/setsid")
+        .args([
+            "--wait",
+            shell,
+            "-ic",
+            "printf '\\n__MUSIALIZER_PATH__%s\\n' \"$PATH\"",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(path) = line.strip_prefix("__MUSIALIZER_PATH__") {
+                let _ = tx.send(path.to_owned());
+            }
+        }
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return rx
+                    .recv_timeout(Duration::from_millis(100))
+                    .ok()
+                    .filter(|p| !p.is_empty())
+            }
+            Err(_) => break,
+            Ok(None) if Instant::now() >= deadline => break,
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+    let _ = signal_group_or_process(child.id(), Signal::Kill);
+    let _ = child.wait();
+    None
+}
+
+/// Collect the shell's answer without waiting; spawning never stalls a frame.
 fn shell_path() -> Option<String> {
     warm_shell_path();
     let mut state = SHELL_PATH.get()?.lock().ok()?;
-    state.poll(Duration::from_secs(3));
-    // A timeout leaves discovery pending, so later frames can collect it.
+    state.poll(Duration::ZERO);
     state.resolved.clone().flatten()
 }
 
 /// An executable lookup must distinguish a pending shell PATH from absence.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Location {
     Checking,
     Found(PathBuf),
@@ -443,6 +486,7 @@ mod tests {
         let mut state = ShellPath {
             receiver,
             resolved: None,
+            locations: HashMap::new(),
         };
         assert_eq!(state.locate("sh", "/nonexistent"), Location::Checking);
         tx.send(Some("/bin".into())).unwrap();
@@ -462,6 +506,7 @@ mod tests {
         let mut state = ShellPath {
             receiver,
             resolved: None,
+            locations: HashMap::new(),
         };
         state.poll(Duration::ZERO);
         assert_eq!(

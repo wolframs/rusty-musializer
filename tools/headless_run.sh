@@ -150,6 +150,7 @@ if [ "${#REUSE_DISPLAY[@]}" -gt 0 ]; then
     exec env "${REUSE_DISPLAY[@]}" \
         WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
         PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
+    SHELL= \
         XDG_CONFIG_HOME="$STATE_DIR/config" \
         PATH="$STATE_DIR/bin" \
         "${GL[@]}" "$BIN" --mute "$@"
@@ -158,6 +159,7 @@ exec xvfb-run "${DISPLAY_ARGS[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \
     WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
     PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
+    SHELL= \
     XDG_CONFIG_HOME="$STATE_DIR/config" \
     PATH="$STATE_DIR/bin" \
     "${GL[@]}" "$BIN" --mute "$@"
