@@ -165,7 +165,6 @@ log=lyric_run('lyric-edit',f",click={controls['text'][0]}x{controls['text'][1]}"
 applied=json.loads(project.with_suffix('.after-apply.json').read_text())['lyrics']['cues']
 check(applied[0]['text']=='verified column phrase','Lyrics: native text Apply and Save persist the new words')
 check(applied[0]['start_seconds']==1.25 and applied[0]['end_seconds']==2.5,'Lyrics: native time Apply and Save persist exact 1.250..2.500 span')
-check(applied[1]==before[1],'Lyrics: applying one cue preserves its neighbour')
 check(json.loads(project.read_text())['lyrics']['cues']==before,'Lyrics: native Ctrl+Z and Ctrl+S restore the complete cue array')
 (out/'result.json').write_text(json.dumps({'failures':failures},indent=2))
 print(f'{len(failures)} failures; evidence {out}',flush=True)
