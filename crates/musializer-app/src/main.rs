@@ -5417,7 +5417,7 @@ fn dock_instructions(
             path.display()
         )),
         None => lines.push(
-            "The window follows no treatment yet. If you write one, the operator can drop it \
+            "The window follows no treatment yet. If you write one, the user can drop it \
              on the window, and from then on every save is applied live."
                 .to_string(),
         ),

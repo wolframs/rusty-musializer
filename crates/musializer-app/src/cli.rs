@@ -216,14 +216,14 @@ pub struct UiProbe {
     /// (UX0-C14). Implies `style=effects`; refuses to combine with `picker=`,
     /// which claims the same column.
     pub caption_tune: Option<CaptionTuneProbe>,
-    /// `route=KEY`: open the Tune inspector's route editor on the setting that
+    /// `route=KEY`: open Look's route editor on the setting that
     /// `KEY` names, e.g. `route=loom.weight` or the full `settings.loom.weight`.
     ///
     /// **Invented, not the oracle's.** The frozen C has no probe for it because
     /// nothing in the C can drive a headless capture at all; the editor is a
     /// 260 px block of drawing that a click is otherwise the only way to reach,
     /// and a surface nothing photographs does not get reviewed. Same rationale as
-    /// `--probe-frames` and `--probe-shot`. Needs `panel=tune`, and the key must
+    /// `--probe-frames` and `--probe-shot`. Needs `column=look`, and the key must
     /// belong to the scene being drawn.
     pub route_editor: Option<String>,
     /// `assist=confirm|candidate|running|failed`: put the Assist panel in one of
@@ -443,7 +443,7 @@ pub struct UiProbe {
     /// after it — the `.mp4` extension rule, the alias checks, the geometry —
     /// still applies.
     pub save_to: Option<PathBuf>,
-    /// `share-frame=playhead`: seed the Export panel's first-frame choice from
+    /// `share-frame=playhead`: seed the Render view's first-frame choice from
     /// `time=` before a single `click=` is delivered.
     ///
     /// **Invented because the claim is about two presses.** A person first
@@ -1585,7 +1585,7 @@ fn parse_probe_flag(text: &str) -> Option<bool> {
 pub fn help_text(program: &str) -> String {
     format!(
         "\
-Musializer (Rust rewrite) - deterministic music visualization workspace
+Musializer - make music videos from audio files
 
 Usage: {program} [options] [audio-file | project.musi]
 
@@ -1654,13 +1654,13 @@ Diagnostics:
   --ui-probe SPEC         Open a workspace panel and park the transport
                           for reproducible headless UI capture. SPEC is
                           comma-separated key=value pairs:
-                          panel=none|tune|export|lyrics|assist,
+                          panel=none|tune|export|lyrics|assist (older spelling of column=),
                           scene-family=sound|geometry|atmosphere|materials|living|type-stage|pixel-cats,
                           scene-pick=NAME selects a scene through the normal edit path,
                           flyout=tracks|scenes|none opens a rail flyout,
                           column=direct|lyrics|look|assist|render|closed
-                          pixel=video|section reveals Look’s pixel filter
                           shows that column view (not with panel=),
+                          pixel=video|section reveals Look's pixel filter,
                           column-width=PX, column-switch=VIEW (frame 40),
                           lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,
@@ -1671,8 +1671,8 @@ Diagnostics:
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
-                          sidebar=PX, inspector=PX, timeline-height=PX
-                          set logical split positions for capture,
+                          timeline-height=PX sets the split for capture;
+                          sidebar=PX and inspector=PX are accepted and lay nothing out,
                           assist=confirm|candidate|running|failed puts the
                           Assist panel in that state, lyric=N selects the
                           nth lyric cue (needs panel=assist),
@@ -1682,10 +1682,9 @@ Diagnostics:
                           pane (needs panel=lyrics),
                           lyrics-file=PATH selects an authored lyric
                           sheet for the next Assist lyrics run,
-                          route=KEY opens the Tune inspector's route
-                          editor on that setting, e.g. route=loom.weight
-                          (needs panel=tune, and the key's scene has to
-                          be the one being drawn),
+                          route=KEY opens Look's route editor on that setting,
+                          e.g. route=loom.weight (needs column=look, and the key's
+                          scene has to be the one being drawn),
                           fonts=consent shows the face browser's network
                           consent panel; fonts=PATH loads a family list
                           from disk instead, so a capture never opens a
@@ -1693,7 +1692,8 @@ Diagnostics:
                           drop=PATH synthesizes one file drop of PATH,
                           through the same typed dispatch a real drop
                           takes (.musi opens, PNG/JPEG/BMP imports as
-                          ASCII, anything else is tried as audio),
+                          ASCII, .treatment.json is followed, .protocol.json runs,
+                          anything else is tried as audio),
                           play=0|1. The transport is parked unless
                           play=1; audio-reactive scenes need play=1 but
                           then capture a frame that is not reproducible.
@@ -1702,7 +1702,7 @@ Diagnostics:
                           tooltip dwell; click=XxY presses there over
                           three frames; wheel=NOTCHES turns the wheel
                           once wherever hover= parked it,
-                          share-frame=playhead seeds the Export panel's
+                          share-frame=playhead seeds the Render view's
                           first-frame choice from time= before click=,
                           scene-pick=NAME presses that scene tile,
                           picker=ink|plate|glow and tune=pulse|hue open

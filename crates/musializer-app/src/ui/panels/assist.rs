@@ -856,7 +856,7 @@ impl AssistController {
         vec![AssistNotice::new(
             Severity::Info,
             "Suggestions discarded",
-            format!("The staged result for {name} was discarded. Editor content is unchanged."),
+            format!("The staged result for {name} was discarded. The project is unchanged."),
         )]
     }
 
@@ -3386,7 +3386,7 @@ impl Shell {
             if session.job_state == AssistJobState::TimingOut {
                 "The 40:00 deadline was reached. Verifying that the whole process tree stopped."
             } else {
-                "Waiting for the helper and its child processes to stop. Editor content is unchanged."
+                "Waiting for the helper and its child processes to stop. The project is unchanged."
             },
             inner,
             3,
@@ -5138,7 +5138,7 @@ mod tests {
 
         let notices = controller().discard(&mut workspace);
         assert_eq!(notices.len(), 1);
-        assert!(notices[0].detail.contains("Editor content is unchanged"));
+        assert!(notices[0].detail.contains("The project is unchanged"));
         assert!(workspace.assist.candidate.is_none());
         let track = &workspace.tracks()[0];
         assert_eq!(track.lyrics.len(), 0);

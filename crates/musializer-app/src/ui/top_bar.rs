@@ -564,7 +564,7 @@ fn tab_tip(tab: ModeTab) -> &'static str {
     match tab {
         ModeTab::Direct => "Direct: agent chats and the terminal",
         ModeTab::Lyrics => "Lyrics: the lines and their timing",
-        ModeTab::Look => "Look: the tuning inspector [T]",
+        ModeTab::Look => "Look: tune the scene [T]",
         ModeTab::Assist => "Assist: analysis and lyric timing",
     }
 }
