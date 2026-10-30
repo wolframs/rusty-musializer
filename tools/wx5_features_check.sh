@@ -142,7 +142,7 @@ if only in ('all','artist'):
     committed=run('artist-commit',f'size=960x640,time=3,click={point},artist-text=Fixture Artist,artist-action=commit',150,project=seed)
     check('artist="Fixture Artist"' in line(committed,'top bar') and not 'artist-editing=true' in line(committed,'top bar'), 'Enter outcome commits artist and releases focus')
     data=json.loads(seed.read_text())
-    check(data['schema_version']=='musializer.project/v2' and data['metadata']['artist']=='Fixture Artist','UI commit autosaves the artist as v2')
+    check(data['schema_version']=='musializer.project/v2' and data.get('metadata',{}).get('artist')=='Fixture Artist','UI commit autosaves the artist as v2')
     point=centre(rect(committed,'top bar','artist'))
     clear=run('artist-clear',f'size=960x640,time=3,click={point},artist-action=clear',150,project=seed)
     check('artist=none' in line(clear,'top bar') and seed.read_bytes()==original, 'clearing in the UI restores byte-identical v1')
