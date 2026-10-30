@@ -2916,6 +2916,7 @@ impl Shell {
                 }
             }
         }
+        report.push(format!("playhead={shown_time:.3}"));
         self.transport_report = report.join(" ");
         ToolbarResult {
             timecode_inline: row.timecode.is_some(),
@@ -3553,7 +3554,7 @@ impl Shell {
     ///
     /// It asks every surface in [`TextEntrySurface`] and nothing else; that enum
     /// is where a new one is declared (review 1.6, UX0-A06).
-    fn text_entry_has_focus(&self) -> bool {
+    pub(crate) fn text_entry_has_focus(&self) -> bool {
         TextEntrySurface::ALL
             .iter()
             .any(|surface| self.text_entry_focused(*surface))
