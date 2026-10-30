@@ -1158,7 +1158,8 @@ default `""`).
 
 **Post-legacy, schema v2 (WX-5c, 2026-10-27): `artist`** (string 1..128 bytes,
 written after `title`). Who made the music, shown after the title in the
-window's top bar; set from a treatment's top-level `artist`. It is the only
+window's top bar; set from a treatment's top-level `artist` or the inline
+top-bar editor (Enter commits, Escape cancels, empty clears). It is the only
 v2 member, and the version follows it: a project is written as
 `"musializer.project/v2"` only when it names an artist, and as v1 otherwise —
 so every project without one is byte-identical to what earlier builds wrote,

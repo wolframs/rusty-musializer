@@ -58,11 +58,58 @@ use crate::workspace::{Track, Workspace};
 /// One run the lane drew this frame and wants a poster for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PosterRequest {
+    /// Picker requests have their own identity, separate from every plan cue.
+    pub picker: bool,
     pub track_slot: usize,
     pub run: RunSpan,
     /// Inside the lane's visible span this frame. Visible runs are served
     /// first, then by distance from the playhead.
     pub visible: bool,
+}
+
+/// A cache seat cannot alias a plan cue, even if its id equals a scene index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PosterId {
+    Run(u64),
+    Picker(musializer_core::scene::SceneId),
+}
+
+impl std::fmt::Display for PosterId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Run(id) => write!(f, "{id}"),
+            Self::Picker(scene) => write!(f, "picker-{}", scene.stable_name()),
+        }
+    }
+}
+
+impl PosterRequest {
+    fn identity(&self) -> PosterId {
+        if self.picker {
+            PosterId::Picker(self.run.scene)
+        } else {
+            PosterId::Run(self.run.first_cue_id)
+        }
+    }
+
+    /// A stable representative moment of this track, rather than a moving
+    /// playhead which would invalidate every unfinished job during playback.
+    pub fn scene(track: &Track, track_slot: usize, scene: musializer_core::scene::SceneId) -> Self {
+        Self {
+            track_slot,
+            picker: true,
+            visible: true,
+            run: RunSpan {
+                scene,
+                start_seconds: 0.0,
+                end_seconds: track.duration_seconds,
+                // Outside the plan: never apply a different scene's snapshot.
+                first_section: track.scene_switches.cues().len(),
+                sections: 0,
+                first_cue_id: 0,
+            },
+        }
+    }
 }
 
 /// What the lane draws for a run.
@@ -121,7 +168,7 @@ const SETTLE_FRAME_LIMIT: u64 = 2_000_000;
 /// One finished poster.
 struct Entry {
     track: PathBuf,
-    run_id: u64,
+    run_id: PosterId,
     key: PosterKey,
     aspect: f32,
     canvas: Canvas,
@@ -276,7 +323,7 @@ impl PosterBoard {
         None
     }
 
-    fn entry(&self, track: &Path, run_id: u64) -> Option<&Entry> {
+    fn entry(&self, track: &Path, run_id: PosterId) -> Option<&Entry> {
         self.entries
             .iter()
             .find(|entry| entry.run_id == run_id && entry.track == track)
@@ -284,11 +331,24 @@ impl PosterBoard {
 
     /// What the lane should draw for `run` of the track in `track_slot`.
     pub fn view(&self, track: &Track, _track_slot: usize, run: &RunSpan) -> PosterView<'_> {
+        self.view_request(
+            track,
+            &PosterRequest {
+                track_slot: _track_slot,
+                run: *run,
+                picker: false,
+                visible: true,
+            },
+        )
+    }
+
+    /// Same service and budget as the plan lane, a distinct cache seat per scene.
+    pub fn view_request(&self, track: &Track, request: &PosterRequest) -> PosterView<'_> {
         if let Some(reason) = self.refused(track) {
             return PosterView::Unavailable(reason);
         }
-        let key = recipe::resolve(track, run, &self.tuning).key;
-        match self.entry(&track.file_path, run.first_cue_id) {
+        let key = recipe::resolve(track, &request.run, &self.tuning).key;
+        match self.entry(&track.file_path, request.identity()) {
             Some(entry) => {
                 let Some(texture) = entry.canvas.render_texture() else {
                     return PosterView::Pending;
@@ -486,7 +546,7 @@ impl PosterBoard {
                 continue;
             };
             let current = self
-                .entry(&track.file_path, request.run.first_cue_id)
+                .entry(&track.file_path, request.identity())
                 .is_some_and(|entry| entry.key == key);
             if current || self.failed.contains(&key) {
                 continue;
@@ -516,7 +576,7 @@ impl PosterBoard {
             return false;
         };
         let item = &mut survey[index];
-        let (slot, run_id) = (item.request.track_slot, item.request.run.first_cue_id);
+        let (slot, run_id) = (item.request.track_slot, item.request.identity());
         let Some(resolved) = item.resolved.take() else {
             return false;
         };
@@ -569,8 +629,7 @@ impl PosterBoard {
         let wanted = survey
             .iter()
             .find(|item| {
-                item.request.track_slot == job.track_slot
-                    && item.request.run.first_cue_id == job.run_id
+                item.request.track_slot == job.track_slot && item.request.identity() == job.run_id
             })
             .and_then(|item| item.key)
             .filter(|key| *key == job.resolved.key);
@@ -735,7 +794,7 @@ impl PosterBoard {
                 stats.3 += 1;
                 continue;
             };
-            let run_id = item.request.run.first_cue_id;
+            let run_id = item.request.identity();
             match self
                 .entries
                 .iter_mut()
@@ -866,5 +925,30 @@ fn write_dump(entry: &Entry, path: &Path) {
         println!("poster dump:     {}", path.display());
     } else {
         eprintln!("posters: could not write {}", path.display());
+    }
+}
+
+#[cfg(test)]
+mod picker_tests {
+    use super::*;
+    use musializer_core::scene::SceneId;
+
+    #[test]
+    fn picker_seats_cannot_alias_cues_and_force_each_requested_scene() {
+        let track = Track::new("fixture.wav".into(), 20.0, SceneId::Spectrum, 7).unwrap();
+        let tuning = Tuning {
+            preroll_seconds: 2.0,
+            box_size: (256, 144),
+        };
+        for scene in SceneId::ALL {
+            let request = PosterRequest::scene(&track, 0, scene);
+            assert_eq!(request.identity(), PosterId::Picker(scene));
+            assert_ne!(request.identity(), PosterId::Run(scene.index() as u64));
+            let resolved = recipe::resolve(&track, &request.run, &tuning);
+            assert_eq!(resolved.recipe.scene, scene);
+            assert_eq!(resolved.recipe.frame_index, 300);
+            assert_eq!(resolved.recipe.seed, 7);
+            assert_eq!(resolved.recipe.audio, "fixture.wav");
+        }
     }
 }

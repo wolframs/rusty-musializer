@@ -984,6 +984,7 @@ impl Shell {
             );
             if let Some(slot) = track_slot {
                 self.poster_requests.push(crate::posters::PosterRequest {
+                    picker: false,
                     track_slot: slot,
                     run: *run,
                     visible: geometry.is_some(),

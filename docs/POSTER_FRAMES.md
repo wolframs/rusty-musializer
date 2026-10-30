@@ -159,3 +159,21 @@ Two things about the isolation check cost a run to learn:
 The gate passes on both renderers (VirtualGL and `MZ_GL_LAUNCH=""`). Its
 comparisons are exact equalities of whole images, which both rasterizers
 reproduce run to run.
+
+## Scene picker (WX-5 follow-up, 2026-10-30)
+
+The Scenes flyout uses the same board, replay, renderer, LRU and budget. A
+`PosterRequest::scene` covers the track with a forced scene and no plan-section
+snapshot; the moment is the nearest lyric midpoint to the track midpoint, or
+the track midpoint. It stays still during playback so work can finish. Scene
+settings, routes and all other recipe inputs are the track's own.
+
+Cache identity is `(track path, Picker(SceneId))`, separate from
+`(track path, Run(cue_id))` even for equal numerical ids. Only visible tiles
+request work. The picker shows the picture upright, fitted above the name;
+pending, stale and unavailable have visible labels and tooltip explanations.
+`scene picker: … posters=scene:state@x,y,w,h;…` reports each visible tile's
+actual draw state. Song Atlas without its terrain reports `ready-idle` rather
+than claiming the terrain was rendered. Dumps use
+`<scene>-picker-<scene>-<key>.png`. `tools/wx5_features_check.sh` compares every
+tile with its own dump and every other visible scene as controls.

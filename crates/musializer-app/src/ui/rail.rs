@@ -361,6 +361,7 @@ impl Shell {
             .is_some_and(|track| track.scene_switches.enabled && !track.scene_switches.is_empty());
         let mut visible = Vec::new();
         let mut tiles = Vec::new();
+        let mut posters = Vec::new();
         let mut smallest = TILE_FONT_SIZES[0];
         let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
         {
@@ -385,13 +386,108 @@ impl Shell {
                     look.fill
                 };
                 widgets::control_box(&mut clip, rect, fill, look.edge, 1.0);
+                let image = UiRect::new(
+                    rect.x + 3.0,
+                    rect.y + 3.0,
+                    (rect.width - 6.0).max(0.0),
+                    (rect.height - 38.0).max(0.0),
+                );
+                widgets::fill(&mut clip, image, color::ui_surface());
+                let mut note = "A frame from this track";
+                let mut status = "unavailable";
+                let mut picture = None;
+                if let (Some(track), Some(slot)) =
+                    (input.workspace.current(), input.workspace.current_index())
+                {
+                    let request = crate::posters::PosterRequest::scene(track, slot, id);
+                    match input.posters.view_request(track, &request) {
+                        crate::posters::PosterView::Ready { texture, aspect } => {
+                            status = if id == SceneId::SongAtlas && track.atlas_map().is_none() {
+                                note =
+                                    "Song Atlas terrain is not built; showing its live audio ring";
+                                "ready-idle"
+                            } else {
+                                "ready"
+                            };
+                            picture = Some((texture, aspect, 1.0));
+                        }
+                        crate::posters::PosterView::Stale { texture, aspect } => {
+                            status = "stale";
+                            note = "Refreshing this track's frame";
+                            picture = Some((texture, aspect, 0.45));
+                        }
+                        crate::posters::PosterView::Pending => {
+                            status = "pending";
+                            note =
+                                "Rendering this track's frame; expensive scenes wait while playing";
+                        }
+                        crate::posters::PosterView::Unavailable(reason) => note = reason,
+                    }
+                    self.poster_requests.push(request);
+                }
+                if let Some((texture, aspect, opacity)) = picture {
+                    let width = image.width.min(image.height * aspect);
+                    let height = width / aspect;
+                    let dest = UiRect::new(
+                        image.x + (image.width - width) * 0.5,
+                        image.y + (image.height - height) * 0.5,
+                        width,
+                        height,
+                    );
+                    let source: &raylib::ffi::Texture2D = texture.as_ref();
+                    // Posters are stored top row first, as in the plan lane.
+                    clip.draw_texture_pro(
+                        texture,
+                        raylib::prelude::Rectangle::new(
+                            0.0,
+                            0.0,
+                            source.width as f32,
+                            source.height as f32,
+                        ),
+                        widgets::rectangle(dest),
+                        Vector2::zero(),
+                        0.0,
+                        widgets::alpha(Color::WHITE, opacity),
+                    );
+                }
+                if status != "ready" && status != "ready-idle" {
+                    let label = match status {
+                        "pending" => "Rendering…",
+                        "stale" => "Refreshing…",
+                        _ => "No preview",
+                    };
+                    let size = metric::UI_FONT_MICRO;
+                    let label_width = widgets::measure(font, label, size);
+                    let plate = UiRect::new(
+                        image.x,
+                        image.y + (image.height - size - 6.0) * 0.5,
+                        image.width,
+                        size + 6.0,
+                    );
+                    widgets::fill(&mut clip, plate, color::ui_surface());
+                    widgets::draw_text(
+                        &mut clip,
+                        font,
+                        label,
+                        image.x + (image.width - label_width) * 0.5,
+                        plate.y + 3.0,
+                        size,
+                        color::ui_muted(),
+                    );
+                }
+                posters.push(format!(
+                    "{}:{}@{}",
+                    id.stable_name(),
+                    status,
+                    rect_token(image)
+                ));
                 widgets::fill(
                     &mut clip,
                     UiRect::new(
                         rect.x + TILE_STRIP_X,
-                        rect.y + 8.0,
+                        image.y + image.height + 5.0,
                         TILE_STRIP_WIDTH,
-                        (rect.height - 16.0).max(0.0),
+                        22.0,
                     ),
                     scene_color(id, 255),
                 );
@@ -401,7 +497,9 @@ impl Shell {
                 smallest = smallest.min(size);
                 let leading = size + 2.0;
                 let block = leading * lines.len() as f32 - 2.0;
-                let mut y = rect.y + (rect.height - block) * 0.5;
+                let mut y = image.y
+                    + image.height
+                    + (rect.y + rect.height - image.y - image.height - block) * 0.5;
                 for line in &lines {
                     widgets::draw_text(
                         &mut clip,
@@ -419,7 +517,7 @@ impl Shell {
                     state,
                     widget,
                     hit,
-                    crate::scene_host::scene_picker_hint(id),
+                    &format!("{} — {note}", crate::scene_host::scene_picker_hint(id)),
                 );
                 if state.clicked && (id != input.scene || plan_is_driving) {
                     commands.push(ShellCommand::SelectScene(id));
@@ -436,7 +534,7 @@ impl Shell {
         let (import, clear) = self.ascii_image_footer(d, input, footer, commands);
         self.scene_picker_report = format!(
             "family={} active={} visible=[{}] offset={:.1}/{:.1} viewport={:.0}x{:.0}@{:.0},{:.0} \
-             font={:.1} tabs={} tiles={} footer=import@{};clear@{}",
+             font={:.1} tabs={} tiles={} footer=import@{};clear@{} posters={}",
             self.scene_picker.family.stable_name(),
             input.scene.stable_name(),
             visible.join(","),
@@ -455,6 +553,7 @@ impl Shell {
             },
             rect_token(import),
             rect_token(clear),
+            posters.join(";"),
         );
     }
 

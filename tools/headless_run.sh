@@ -35,6 +35,7 @@
 #                   installed (GPU rendering), otherwise none (Mesa on the CPU,
 #                   correct but several times slower). Set it empty to force CPU.
 #   MZ_VGL_DEVICE   the VirtualGL device, default egl0.
+#   MUSIALIZER_CAPTURE_DISPLAY  optional fixed private display (e.g. :82).
 #   MZ_SCREEN       the virtual screen, default 2560x1440x24.
 #   MZ_STATE_DIR    where the private config lives, default build/headless-run.
 
@@ -107,7 +108,11 @@ done
     fi
 } >&2
 
-exec xvfb-run -a -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
+DISPLAY_ARGS=(-a)
+if [ -n "${MUSIALIZER_CAPTURE_DISPLAY:-}" ]; then
+    DISPLAY_ARGS=(--server-num "${MUSIALIZER_CAPTURE_DISPLAY#:}")
+fi
+exec xvfb-run "${DISPLAY_ARGS[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \
     WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
     PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \

@@ -66,6 +66,12 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**WX-5 scene posters and inline artist — in progress (2026-10-30).**
+Claimed by `t3/scene-posters-artist-edit`, from `be507e1`: track-specific
+scene flyout posters through the budgeted service; in-place artist editing
+with v1 byte restoration on clear. Gate: `tools/wx5_features_check.sh`.
+
+
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
 after the modal.com hero the operator wanted in his own form. Kicks run comets
