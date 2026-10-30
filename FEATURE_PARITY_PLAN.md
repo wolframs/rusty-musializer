@@ -27,12 +27,13 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
-## Public-push review fixes — in progress 2026-10-30
+## Public-push review fixes — implemented, lead review pending 2026-10-30
 
-`t3/fix-review-findings`: confirmed source review findings 1–12 and in-app wording;
-implementation and scoped regression evidence owned by this branch. Handoff in
-`build/review-fixes/`; no push or merge. Documentation reconciliation is owned by
-the parallel docs agent (only divergence/unsafe rows and final code map here).
+`t3/fix-review-findings`: findings 1–12 and in-app wording implemented after source
+confirmation. Scoped regression and negative-control receipts and the final gate
+handoff are in `build/review-fixes/`. Additional null-clipboard fix was exposed by
+native Paste coverage. No push or merge; documentation reconciliation remains
+owned by the parallel docs agent (divergence/trap/unsafe rows and final code map here).
 
 ## First-start agent cards — implemented, lead review pending 2026-10-30
 
