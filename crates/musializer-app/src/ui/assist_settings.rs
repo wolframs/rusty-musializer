@@ -3832,7 +3832,7 @@ impl AssistSettingsDialog {
         let id = widgets::widget_id(DIALOG_WIDGETS, widget);
         let state = self.widgets.button(d, id, boundary);
         // Readiness is a reason, not a token: keep its full sentence visible.
-        // 130 px gives the longest reason two 13 px lines in the native face.
+        // 130 px gives the unbuilt-route reason two 13 px lines in the native face.
         let label = readiness.label();
         let lines = musializer_core::ui::notice::wrap_detail(
             &label,
