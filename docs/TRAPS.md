@@ -232,3 +232,16 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   125% scale still gives a narrow route card (390/418 px). The integrated
   route-height sweep explicitly selects 100% before pinning wide 354/382 px
   cards; every assertion also checks the final drawn-card/layout agreement.
+
+### Sequential fixed-display launches must reap their server (2026-10-30)
+
+`xvfb-run` sends SIGTERM in its EXIT cleanup without waiting for Xvfb. A fast
+Python gate launching the next process on the same fixed display can find that
+previous server still exiting, now parented outside its ancestor chain; the
+launcher's foreign-owner refusal is correct. It happened both in the full
+pixel gate and a standalone three-launch CPU lyric check after reboot. The
+pixel gate now holds one Xvfb as its own child, reuses it only through the
+unchanged ancestor-ownership check in headless_run, and kills **and waits** in
+its EXIT trap. Do not weaken ownership checks or remove another server's lock.
+Every child launch still carries mute, unreachable Wayland/audio, dialog PATH
+and private-config guards.

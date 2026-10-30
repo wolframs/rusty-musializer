@@ -158,6 +158,7 @@ number disagrees, grep it there before debugging from scratch.
   compositor. Never write `env -u WAYLAND_DISPLAY`.
 - **Auto scale changes logical card width.** Pin route geometry at an explicit
   scale, and compare both drawn reports; see `docs/TRAPS.md`.
+- **Sequential fixed-display launches must reap Xvfb.** `xvfb-run` kills without waiting; tight gates own one server and `kill` + `wait` it. Never loosen the foreign-owner refusal. See `docs/TRAPS.md`.
 - **A nested gate already holds `MUSIALIZER_CAPTURE_DISPLAY`.** Reuse only
   an Xvfb owned by a calling ancestor; refuse other process trees. Keep every
   isolation guard on both the reuse and new-server paths. See `docs/TRAPS.md`.
