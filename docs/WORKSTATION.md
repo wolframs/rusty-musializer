@@ -331,16 +331,15 @@ They are independent unless a line says otherwise. Every one finishes with
    **Left:**
    - `UiPanel` and the `inspector_open`/`dock_open` flags still exist, and
      `ColumnView` is derived from them rather than replacing them.
-   - The Direct chat's note about a rewritten treatment says it was applied
-     once; it has no "40 s ago" and no count of the sections it changed.
-   - The AI settings dialog's READY column is 96 px, so "Not implemented in
-     this build" ellipsizes; its hover carries the sentence.
-   - `open_route_editor_probe` still reports the inspector-row height (314,
-     338); the card the column draws is on `tune layout: … editor=`.
+   - Direct apply age and section-count polish: implemented on
+     `t3/wx5-ui-polish-fixes`; capture gate `tools/wx5_polish_check.sh`.
+   - READY copy polish: 130 px, two full lines; see the polish divergence rows.
+   - Route probe polish: the final report uses the drawn card; the shared gate
+     still needs its old 314/338 expectations updated by its owner.
    - In the 320 and 358 px columns the route editor's Clamp and Swap take
      a second row.
-   - The band's two widget-index collision tests went with the band; the
-     column's indices have no such test yet.
+   - Lyrics column indices now generate allocation tables and have a collision
+     sweep against the retained controls and all `widgets::id::ALL` namespaces.
    - `tools/headless_check.sh` stops at "120 ms was outside the silent band"
      on llvmpipe (`MZ_GL_LAUNCH=""`), and passes on the GPU. It is audio
      timing, and it was not run on `master` to see whether it predates

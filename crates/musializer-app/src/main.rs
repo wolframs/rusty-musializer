@@ -2166,6 +2166,10 @@ fn run(
         if follow_due {
             if let Some(state) = follow.as_mut() {
                 let path = state.path.clone();
+                let before = app
+                    .workspace
+                    .current()
+                    .map(|track| track.scene_switches.cues().to_vec());
                 match apply_treatment(
                     &path,
                     &audio,
@@ -2179,6 +2183,13 @@ fn run(
                     Ok(line) => {
                         state.applied += 1;
                         state.last_error = None;
+                        state.last_applied_at = Some(std::time::Instant::now());
+                        state.changed_sections = before
+                            .as_deref()
+                            .zip(app.workspace.current())
+                            .map(|(before, track)| {
+                                changed_sections(before, track.scene_switches.cues())
+                            });
                         if let Some(track) = app.workspace.current_mut() {
                             track.mark_dirty(rl.get_time());
                         }
@@ -5119,6 +5130,8 @@ struct TreatmentFollow {
     applied: u32,
     refused: u32,
     last_error: Option<String>,
+    last_applied_at: Option<std::time::Instant>,
+    changed_sections: Option<usize>,
     forced: bool,
 }
 
@@ -5133,6 +5146,8 @@ impl TreatmentFollow {
             applied: 0,
             refused: 0,
             last_error: None,
+            last_applied_at: None,
+            changed_sections: None,
             forced: false,
         };
         // What is on disk now is what startup applied.
@@ -5193,6 +5208,34 @@ impl TreatmentFollow {
     }
 }
 
+/// Count additions, removals and edits, matching sections by their start time.
+/// IDs are publication bookkeeping, so a republish alone is not an edit.
+/// Splitting a section counts the changed original and the new section.
+fn changed_sections(
+    before: &[musializer_core::project::scene_switch::SceneSwitchCue],
+    after: &[musializer_core::project::scene_switch::SceneSwitchCue],
+) -> usize {
+    let edited = after
+        .iter()
+        .filter(|next| {
+            !before.iter().any(|old| {
+                let mut old = *old;
+                old.id = next.id;
+                old == **next
+            })
+        })
+        .count();
+    let removed = before
+        .iter()
+        .filter(|old| {
+            !after
+                .iter()
+                .any(|next| next.start_seconds == old.start_seconds)
+        })
+        .count();
+    edited + removed
+}
+
 /// Where a new dock tab starts and what it is told (WX-2): the project's
 /// folder, else the track's, else home; and the paths an agent started there
 /// needs to direct this window from the command line.
@@ -5210,6 +5253,8 @@ fn dock_context(
         ui::dock::Following {
             name: follow.name(),
             applied: follow.applied,
+            last_applied_at: follow.last_applied_at,
+            changed_sections: follow.changed_sections,
             error: follow.last_error.clone(),
         }
     });
@@ -6397,6 +6442,23 @@ impl Report {
                 (None, None) => println!("ascii:           none (procedural mode)"),
             },
         }
+        if app.workspace.current().is_none() {
+            let frame = ui::shell_layout::WelcomeFrame::layout(
+                self.logical_window.0,
+                self.logical_window.1,
+                app.shell.recovery_available,
+            );
+            let rect = |r: musializer_core::ui::workspace_layout::UiRect| {
+                format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height)
+            };
+            println!(
+                "welcome:         open-audio@{} open-project@{} recent@{} tray@{}",
+                rect(frame.open_audio),
+                rect(frame.open_project),
+                rect(frame.recent_rows[0]),
+                rect(frame.notice_region())
+            );
+        }
         // The welcome screen's recent list (UX0-C06). `store=` distinguishes the
         // two states an empty column can be in — a new user and a refused file —
         // which is the whole reason the column draws different words for them.
@@ -6555,6 +6617,7 @@ impl Report {
                 "caption style:",
                 app.shell.describe_caption_style(&app.workspace),
             ),
+            ("route editor:", app.shell.describe_route_editor()),
             (
                 "tune layout:",
                 app.shell.describe_tune_layout(&app.workspace),
@@ -6750,6 +6813,44 @@ fn dock_probes(
 mod tests {
     use super::display_refusal;
     use super::scene_clock_delta;
+
+    #[test]
+    fn treatment_section_changes_count_edits_additions_and_removals_not_republished_ids() {
+        use crate::changed_sections;
+        use musializer_core::project::scene_switch::SceneSwitchCue;
+        let a = SceneSwitchCue {
+            id: 1,
+            end_seconds: 2.0,
+            ..Default::default()
+        };
+        let b = SceneSwitchCue {
+            id: 2,
+            start_seconds: 2.0,
+            end_seconds: 4.0,
+            ..a
+        };
+        assert_eq!(
+            changed_sections(&[a, b], &[SceneSwitchCue { id: 9, ..a }, b]),
+            0
+        );
+        let edited = SceneSwitchCue {
+            scene_index: 1,
+            ..b
+        };
+        assert_eq!(changed_sections(&[a, b], &[a, edited]), 1);
+        assert_eq!(changed_sections(&[a], &[a, b]), 1);
+        assert_eq!(changed_sections(&[a, b], &[a]), 1);
+        assert_eq!(changed_sections(&[a, b], &[edited]), 2);
+        let split = SceneSwitchCue {
+            end_seconds: 1.0,
+            ..a
+        };
+        let added = SceneSwitchCue {
+            start_seconds: 1.0,
+            ..a
+        };
+        assert_eq!(changed_sections(&[a], &[split, added]), 2);
+    }
 
     #[test]
     fn a_launch_with_no_display_is_refused_by_name() {

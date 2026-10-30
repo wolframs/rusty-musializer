@@ -2217,10 +2217,7 @@ impl Shell {
 
         self.recent_column(d, input, &frame, &mut commands);
 
-        // The tray covers the whole window here, not a preview rectangle: there is
-        // no preview, and a load failure is exactly the message this screen has to
-        // be able to show (`plug.c:7830`).
-        self.notice_tray(d, font, input.ui_scale.value(), UiRect::new(0.0, 0.0, w, h));
+        self.notice_tray(d, font, input.ui_scale.value(), frame.notice_region());
         self.notices.tick(f64::from(d.get_frame_time()));
 
         // Last, as in [`Shell::draw`], and for the same reason: `hint` only
@@ -2395,11 +2392,6 @@ impl Shell {
             let state = self.widgets.button(d, open_id, open_area);
             if state.hovered && !missing {
                 widgets::fill(d, row, color::ui_hover());
-                widgets::fill(
-                    d,
-                    UiRect::new(row.x - 6.0, row.y, 2.0, row.height),
-                    color::ui_selected_edge(),
-                );
             }
             // A missing file's row is *not* clickable, and that is the difference
             // between offering removal and erroring: pressing it would raise a

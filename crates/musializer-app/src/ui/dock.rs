@@ -100,6 +100,8 @@ pub struct DockContext {
 pub struct Following {
     pub name: String,
     pub applied: u32,
+    pub last_applied_at: Option<std::time::Instant>,
+    pub changed_sections: Option<usize>,
     /// Why the last change was refused, while it still stands.
     pub error: Option<String>,
 }

@@ -47,6 +47,7 @@ pub struct ChatTab {
     id: egui::Id,
     /// Tool chips opened to show what they returned (the column's chat).
     expanded: std::collections::HashSet<usize>,
+    note_times: std::collections::HashMap<usize, std::time::Instant>,
     /// What the column's chat drew in its last frame, kind and rect, for the
     /// `dock:` line (WX-5d): every probe and pixel check reads its rects here.
     pub layout: Vec<(&'static str, egui::Rect)>,
@@ -82,6 +83,7 @@ impl ChatTab {
             composer_focused: false,
             id,
             expanded: std::collections::HashSet::new(),
+            note_times: std::collections::HashMap::new(),
             layout: Vec::new(),
         };
         tab.start(context, None);
@@ -292,8 +294,18 @@ impl ChatTab {
     #[must_use]
     pub fn describe(&self) -> String {
         let (users, replies, tools, prompts) = self.transcript.counts();
+        let notes: Vec<_> = self
+            .note_times
+            .iter()
+            .filter_map(|(index, at)| match self.transcript.entries.get(*index) {
+                Some(Entry::Notice { text, .. }) => {
+                    Some(format!("{text} · {}", note_age(at.elapsed().as_secs())))
+                }
+                _ => None,
+            })
+            .collect();
         format!(
-            "chat users={users} replies={replies} tools={tools} prompts={prompts} busy={} model={} last={:?}{}",
+            "chat users={users} replies={replies} tools={tools} prompts={prompts} busy={} model={} last={:?}{} notes={notes:?}",
             self.transcript.busy,
             self.transcript.model.as_deref().unwrap_or("?"),
             self.transcript.last_reply().unwrap_or("").chars().take(120).collect::<String>(),
@@ -301,6 +313,16 @@ impl ChatTab {
                 .as_deref()
                 .map_or_else(String::new, |error| format!(" error={error:?}")),
         )
+    }
+}
+
+pub(super) fn note_age(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds} s ago")
+    } else if seconds < 3600 {
+        format!("{} min ago", seconds / 60)
+    } else {
+        format!("{} h ago", seconds / 3600)
     }
 }
 
@@ -398,7 +420,10 @@ impl ChatTab {
     /// Appends a line the window says, not the agent: the treatment it
     /// applied (WX-5d §3.1, "the window's own applies appear in the
     /// transcript of the chat that is following").
-    pub fn note(&mut self, text: String) {
+    pub fn note(&mut self, text: String, applied_at: Option<std::time::Instant>) {
+        if let Some(at) = applied_at {
+            self.note_times.insert(self.transcript.entries.len(), at);
+        }
         self.transcript
             .entries
             .push(Entry::Notice { text, error: false });
@@ -678,6 +703,12 @@ impl ChatTab {
                                     layout.push(("permission", card.response.rect));
                                 }
                                 Entry::Notice { text, error } => {
+                                    let text = self.note_times.get(&index).map_or_else(
+                                        || text.clone(),
+                                        |at| {
+                                            format!("{text} · {}", note_age(at.elapsed().as_secs()))
+                                        },
+                                    );
                                     let line = ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 8.0;
                                         let tone = if *error { c.danger } else { c.good };
@@ -896,4 +927,16 @@ impl ChatTab {
 /// The controls' edge in egui.
 fn of_edge() -> egui::Color32 {
     crate::ui::theme::color32::of(crate::ui::theme::palette().ui_control_edge)
+}
+
+#[cfg(test)]
+mod polish_tests {
+    #[test]
+    fn treatment_note_age_uses_elapsed_wall_time() {
+        assert_eq!(super::note_age(0), "0 s ago");
+        assert_eq!(super::note_age(40), "40 s ago");
+        assert_eq!(super::note_age(59), "59 s ago");
+        assert_eq!(super::note_age(60), "1 min ago");
+        assert_eq!(super::note_age(3600), "1 h ago");
+    }
 }

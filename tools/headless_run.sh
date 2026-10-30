@@ -107,7 +107,11 @@ done
     fi
 } >&2
 
-exec xvfb-run -a -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
+XVFB_DISPLAY=(-a)
+if [ -n "${MUSIALIZER_CAPTURE_DISPLAY:-}" ]; then
+    XVFB_DISPLAY=(--server-num="${MUSIALIZER_CAPTURE_DISPLAY#:}")
+fi
+exec xvfb-run "${XVFB_DISPLAY[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \
     WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
     PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
