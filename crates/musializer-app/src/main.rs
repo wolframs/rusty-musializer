@@ -1586,6 +1586,18 @@ fn run(
         // primed stream, which is the condition the diagnostic must detect.
         if report.frames == 60 {
             if let Some(milliseconds) = audio_stall_ms.take() {
+                // EX4-c measures this intervention, not cold startup. On
+                // llvmpipe the ring can already be full before frame 0's first
+                // drain, although the later 120 ms stall itself fits at 82%.
+                // Keep the lifetime counters intact and name both boundaries.
+                if let Some(ring) = audio_bridge::ring() {
+                    report.audio_stall = Some(AudioStallWindow::begin(
+                        report.frames,
+                        milliseconds,
+                        ring.dropped(),
+                        audio_bridge::output_underruns(),
+                    ));
+                }
                 std::thread::sleep(std::time::Duration::from_millis(milliseconds));
             }
         }
@@ -1606,7 +1618,20 @@ fn run(
         // desynchronizes the picture from the music and leaves no trace in any
         // number the report prints. Peak occupancy is the one figure that does.
         if let Some(ring) = audio_bridge::ring() {
-            report.observe_ring(ring.len(), ring.capacity());
+            // One observation feeds both epochs. Separate reads could straddle
+            // a callback and make the scoped peak exceed the lifetime peak.
+            let used = ring.len();
+            let capacity = ring.capacity();
+            report.observe_ring(used, capacity);
+            if let Some(window) = report.audio_stall.as_mut() {
+                window.observe(
+                    report.frames,
+                    used,
+                    capacity,
+                    ring.dropped(),
+                    audio_bridge::output_underruns(),
+                );
+            }
         }
         let drained = audio_bridge::drain_interleaved(&mut scratch);
         if drained > 0 {
@@ -5820,6 +5845,71 @@ fn select_track<'audio>(
     bind_audio(opened, analysis, music, app, scratch, true)
 }
 
+/// Raw counter boundaries make pre-control losses distinguishable from losses
+/// caused by the intervention. No counter is reset and no subtraction saturates.
+#[derive(Debug)]
+struct AudioStallWindow {
+    requested_ms: u64,
+    first_frame: u64,
+    last_frame: u64,
+    observed: u64,
+    peak_frames: usize,
+    capacity: usize,
+    dropped_before: usize,
+    dropped_after: usize,
+    underruns_before: u64,
+    underruns_after: u64,
+}
+
+impl AudioStallWindow {
+    fn begin(frame: u64, requested_ms: u64, dropped: usize, underruns: u64) -> Self {
+        Self {
+            requested_ms,
+            first_frame: frame,
+            last_frame: frame,
+            observed: 0,
+            peak_frames: 0,
+            capacity: 0,
+            dropped_before: dropped,
+            dropped_after: dropped,
+            underruns_before: underruns,
+            underruns_after: underruns,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        frame: u64,
+        used: usize,
+        capacity: usize,
+        dropped: usize,
+        underruns: u64,
+    ) {
+        self.last_frame = frame;
+        self.observed += 1;
+        self.peak_frames = self.peak_frames.max(used);
+        self.capacity = capacity;
+        self.dropped_after = dropped;
+        self.underruns_after = underruns;
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "requested={}ms frames={}..{} observed={} peak={}/{} dropped={}..{} underruns={}..{}",
+            self.requested_ms,
+            self.first_frame,
+            self.last_frame,
+            self.observed,
+            self.peak_frames,
+            self.capacity,
+            self.dropped_before,
+            self.dropped_after,
+            self.underruns_before,
+            self.underruns_after,
+        )
+    }
+}
+
 /// The slice report. `tools/headless_check.sh` reads this, and its shape is the
 /// reason the check can distinguish "drew something" from "tracked the input".
 #[derive(Debug)]
@@ -5888,6 +5978,9 @@ struct Report {
     frames_over_budget: u64,
     /// Peak occupancy of the audio bridge ring, as a fraction of its capacity.
     peak_ring_fill: f32,
+    /// The injected stall and recovery, excluding initialization before it.
+    /// Lifetime audio diagnostics above remain unchanged.
+    audio_stall: Option<AudioStallWindow>,
     /// The preview panel and the rect the scene was actually drawn into (EX2).
     ///
     /// Two rects rather than one, because the whole point is the difference: a
@@ -5949,6 +6042,7 @@ impl Default for Report {
             worst_frame_index: 0,
             frames_over_budget: 0,
             peak_ring_fill: 0.0,
+            audio_stall: None,
             preview_panel: (0.0, 0.0),
             preview_pixels: (0.0, 0.0, 0.0, 0.0),
             preview_framed: (0.0, 0.0),
@@ -6163,6 +6257,9 @@ impl Report {
             self.peak_ring_fill * 100.0
         );
         println!("output underruns: {}", audio_bridge::output_underruns());
+        if let Some(window) = &self.audio_stall {
+            println!("audio stall:     {}", window.describe());
+        }
         println!("bands:           {band_count}");
         println!("peak seen:       {:.4}", self.peak_seen);
         // Evidence, not existence. `beat_phase` is a documented route source and it

@@ -37,6 +37,9 @@
 #   MZ_VGL_DEVICE   the VirtualGL device, default egl0.
 #   MZ_SCREEN       the virtual screen, default 2560x1440x24.
 #   MZ_STATE_DIR    where the private config lives, default build/headless-run.
+#   MZ_CAPTURE_DISPLAY  optional fixed display (e.g. :83); refuses an occupied
+#                   display. Separate from MUSIALIZER_CAPTURE_DISPLAY so a
+#                   gate's child tools can still allocate their own servers.
 
 set -euo pipefail
 
@@ -89,8 +92,8 @@ mkdir -p "$STATE_DIR/config" "$STATE_DIR/bin"
 # kdialog/zenity by searching PATH, so a PATH without them is what makes a
 # stray picker unreachable. Everything it legitimately spawns is linked in here
 # by absolute path instead.
-# The last four are what `vglrun`, itself a shell script, calls on its way up.
-for tool in ffmpeg ffprobe python3 env sh bash dirname basename sed uname; do
+# The trailing shell utilities are also used by `vglrun` on its way up.
+for tool in ffmpeg ffprobe python3 env sh bash dirname basename sed uname cut hostname; do
     if resolved="$(command -v "$tool" 2>/dev/null)"; then
         ln -sf "$resolved" "$STATE_DIR/bin/$tool"
     fi
@@ -107,7 +110,20 @@ done
     fi
 } >&2
 
-exec xvfb-run -a -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
+SERVER=(-a)
+if [ -n "${MZ_CAPTURE_DISPLAY:-}" ]; then
+    if [[ ! "$MZ_CAPTURE_DISPLAY" =~ ^:[0-9]+$ ]]; then
+        echo "headless_run: MZ_CAPTURE_DISPLAY must be :NUMBER" >&2
+        exit 2
+    fi
+    if [ -e "/tmp/.X11-unix/X${MZ_CAPTURE_DISPLAY#:}" ]; then
+        echo "headless_run: $MZ_CAPTURE_DISPLAY is already in use" >&2
+        exit 1
+    fi
+    SERVER=(-n "${MZ_CAPTURE_DISPLAY#:}")
+fi
+
+exec xvfb-run "${SERVER[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \
     WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
     PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
