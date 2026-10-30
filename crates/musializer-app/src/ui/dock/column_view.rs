@@ -111,7 +111,13 @@ impl Dock {
         };
         if let Some(index) = self.current_chat() {
             if let Body::Chat(chat) = &mut self.tabs[index].body {
-                chat.note(text);
+                let text = following.changed_sections.map_or(text.clone(), |count| {
+                    format!(
+                        "{text} · {count} section{} changed",
+                        if count == 1 { "" } else { "s" }
+                    )
+                });
+                chat.note(text, following.last_applied_at);
             }
         }
     }
@@ -167,12 +173,12 @@ impl Dock {
                 if let Some(following) = &context.following {
                     let row = Rect::from_min_max(
                         egui::pos2(rect.left(), top),
-                        egui::pos2(rect.right(), top + 44.0),
+                        egui::pos2(rect.right(), top + 82.0),
                     );
                     let mut row_ui = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(row.shrink2(egui::vec2(14.0, 10.0)))
-                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                            .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
                     output.stop_following = following_chips(&mut row_ui, following);
                     ui.painter().line_segment(
@@ -626,6 +632,22 @@ impl Dock {
     }
 }
 
+fn following_status(following: &super::Following) -> String {
+    let Some(at) = following.last_applied_at else {
+        return "applies on save".to_owned();
+    };
+    let age = super::chat_view::note_age(at.elapsed().as_secs());
+    following.changed_sections.map_or_else(
+        || format!("applied · {age}"),
+        |count| {
+            format!(
+                "{count} section{} changed · {age}",
+                if count == 1 { "" } else { "s" }
+            )
+        },
+    )
+}
+
 /// `following native.treatment.json · stop` and how often it applied.
 /// Returns whether stop was pressed.
 fn following_chips(ui: &mut egui::Ui, following: &super::Following) -> bool {
@@ -648,7 +670,10 @@ fn following_chips(ui: &mut egui::Ui, following: &super::Following) -> bool {
     ui.spacing_mut().item_spacing.x = 6.0;
     chip(ui, &mut |ui| {
         ui.label(RichText::new("following").size(12.0).color(weak));
-        ui.add(egui::Label::new(RichText::new(&following.name).size(12.0).color(ink)).truncate());
+        ui.add_sized(
+            egui::vec2((ui.available_width() - 46.0).max(0.0), 16.0),
+            egui::Label::new(RichText::new(&following.name).size(12.0).color(ink)).truncate(),
+        );
         stop = ui
             .add(
                 egui::Button::new(RichText::new("\u{00b7} stop").size(12.0).color(weak))
@@ -668,13 +693,9 @@ fn following_chips(ui: &mut egui::Ui, following: &super::Following) -> bool {
         }
         None => {
             ui.label(
-                RichText::new(match following.applied {
-                    0 => "applies on save".to_owned(),
-                    1 => "applied once".to_owned(),
-                    n => format!("applied {n} times"),
-                })
-                .size(12.0)
-                .color(weak),
+                RichText::new(following_status(following))
+                    .size(12.0)
+                    .color(weak),
             );
         }
     });

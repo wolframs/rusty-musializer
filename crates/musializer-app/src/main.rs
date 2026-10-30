@@ -798,6 +798,8 @@ fn run(
         .as_ref()
         .and_then(|probe| probe.progress_shot);
     let mut progress_shot_wait: Option<u8> = None;
+    let mut left_drag: Option<(f32, f32)> = None;
+    let mut left_drag_phase: u32 = 0;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -1056,6 +1058,7 @@ fn run(
             app.shell.probe_wheel_shift = probe.wheel_shift;
             app.shell.probe_wheel_alt = probe.wheel_alt;
             middle_drag = probe.middle_drag;
+            left_drag = probe.left_drag;
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
@@ -1379,7 +1382,8 @@ fn run(
         // the terminal reports the chord itself (`DockOutput::toggle`), so the
         // key means one thing whether or not the dock has focus.
         let mut dock_commands: Vec<ShellCommand> = Vec::new();
-        if !dock.wants_keyboard()
+        if !app.shell.artist_editing()
+            && !dock.wants_keyboard()
             && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
@@ -1456,6 +1460,37 @@ fn run(
                 _ => None,
             });
             click_phase = click_phase.saturating_add(1);
+        }
+        if let Some((to_x, to_y)) = left_drag {
+            let (from_x, from_y) = hover_at.unwrap_or((0.0, 0.0));
+            let fraction = match left_drag_phase {
+                0..=3 => 0.0,
+                4 => 0.5,
+                _ => 1.0,
+            };
+            rl.set_mouse_position(Vector2::new(
+                from_x + (to_x - from_x) * fraction,
+                from_y + (to_y - from_y) * fraction,
+            ));
+            app.shell.widgets.set_pointer_probe(match left_drag_phase {
+                3 => Some(ui::widgets::PointerProbe {
+                    down: true,
+                    pressed: true,
+                    released: false,
+                }),
+                4 | 5 => Some(ui::widgets::PointerProbe {
+                    down: true,
+                    pressed: false,
+                    released: false,
+                }),
+                6 => Some(ui::widgets::PointerProbe {
+                    down: false,
+                    pressed: false,
+                    released: true,
+                }),
+                _ => None,
+            });
+            left_drag_phase = left_drag_phase.saturating_add(1);
         }
         match escape_in {
             Some(0) => {
@@ -1586,6 +1621,18 @@ fn run(
         // primed stream, which is the condition the diagnostic must detect.
         if report.frames == 60 {
             if let Some(milliseconds) = audio_stall_ms.take() {
+                // EX4-c measures this intervention, not cold startup. On
+                // llvmpipe the ring can already be full before frame 0's first
+                // drain, although the later 120 ms stall itself fits at 82%.
+                // Keep the lifetime counters intact and name both boundaries.
+                if let Some(ring) = audio_bridge::ring() {
+                    report.audio_stall = Some(AudioStallWindow::begin(
+                        report.frames,
+                        milliseconds,
+                        ring.dropped(),
+                        audio_bridge::output_underruns(),
+                    ));
+                }
                 std::thread::sleep(std::time::Duration::from_millis(milliseconds));
             }
         }
@@ -1606,7 +1653,20 @@ fn run(
         // desynchronizes the picture from the music and leaves no trace in any
         // number the report prints. Peak occupancy is the one figure that does.
         if let Some(ring) = audio_bridge::ring() {
-            report.observe_ring(ring.len(), ring.capacity());
+            // One observation feeds both epochs. Separate reads could straddle
+            // a callback and make the scoped peak exceed the lifetime peak.
+            let used = ring.len();
+            let capacity = ring.capacity();
+            report.observe_ring(used, capacity);
+            if let Some(window) = report.audio_stall.as_mut() {
+                window.observe(
+                    report.frames,
+                    used,
+                    capacity,
+                    ring.dropped(),
+                    audio_bridge::output_underruns(),
+                );
+            }
         }
         let drained = audio_bridge::drain_interleaved(&mut scratch);
         if drained > 0 {
@@ -1764,12 +1824,24 @@ fn run(
                 }
             }
         }
+        if app.shell.artist_editing() && dock.wants_keyboard() {
+            dock.release_keyboard(editor_backend.ctx());
+            app.shell.dock_keyboard = false;
+        }
+        if report.frames == 12 {
+            if let Some(probe) = options.ui_probe.as_ref() {
+                if let Some(action) = probe.artist_action {
+                    app.shell.probe_artist(probe.artist_text.clone(), action);
+                }
+            }
+        }
         let egui_active = editor_active || welcome_theme_active || dock_rect.is_some();
         if egui_active {
             editor_backend.begin_frame(
                 &mut rl,
                 ui_scale.value(),
-                editor_active || welcome_theme_active || dock.wants_keyboard(),
+                (editor_active || welcome_theme_active || dock.wants_keyboard())
+                    && !app.shell.artist_editing(),
             );
             if let Some(bounds) = dock_rect {
                 ui::egui_editor::apply_theme(editor_backend.ctx(), editor.theme);
@@ -2166,6 +2238,10 @@ fn run(
         if follow_due {
             if let Some(state) = follow.as_mut() {
                 let path = state.path.clone();
+                let before = app
+                    .workspace
+                    .current()
+                    .map(|track| track.scene_switches.cues().to_vec());
                 match apply_treatment(
                     &path,
                     &audio,
@@ -2179,6 +2255,13 @@ fn run(
                     Ok(line) => {
                         state.applied += 1;
                         state.last_error = None;
+                        state.last_applied_at = Some(std::time::Instant::now());
+                        state.changed_sections = before
+                            .as_deref()
+                            .zip(app.workspace.current())
+                            .and_then(|(before, track)| {
+                                changed_sections(before, track.scene_switches.cues())
+                            });
                         if let Some(track) = app.workspace.current_mut() {
                             track.mark_dirty(rl.get_time());
                         }
@@ -2302,6 +2385,15 @@ fn run(
                             seconds,
                             &mut scene_clock_previous,
                         );
+                    }
+                }
+                ShellCommand::SetArtist { track, artist } => {
+                    if let Some(current) = app
+                        .workspace
+                        .current_mut()
+                        .filter(|current| current.file_path == track)
+                    {
+                        ui::top_bar::commit_artist(current, &artist, rl.get_time());
                     }
                 }
                 ShellCommand::SelectScene(id) => {
@@ -5119,6 +5211,8 @@ struct TreatmentFollow {
     applied: u32,
     refused: u32,
     last_error: Option<String>,
+    last_applied_at: Option<std::time::Instant>,
+    changed_sections: Option<usize>,
     forced: bool,
 }
 
@@ -5133,6 +5227,8 @@ impl TreatmentFollow {
             applied: 0,
             refused: 0,
             last_error: None,
+            last_applied_at: None,
+            changed_sections: None,
             forced: false,
         };
         // What is on disk now is what startup applied.
@@ -5193,6 +5289,32 @@ impl TreatmentFollow {
     }
 }
 
+/// Exact payload changes when section timing is unchanged. Treatment IDs are
+/// regenerated by position (`treatment.rs`), so a re-cut has no durable identity
+/// correspondence: omit its count rather than counting a moved cue twice.
+fn changed_sections(
+    before: &[musializer_core::project::scene_switch::SceneSwitchCue],
+    after: &[musializer_core::project::scene_switch::SceneSwitchCue],
+) -> Option<usize> {
+    if before.len() != after.len()
+        || before.iter().zip(after).any(|(old, next)| {
+            old.start_seconds != next.start_seconds || old.end_seconds != next.end_seconds
+        })
+    {
+        return None;
+    }
+    let changed = before
+        .iter()
+        .zip(after)
+        .filter(|(old, next)| {
+            let mut old = **old;
+            old.id = next.id;
+            old != **next
+        })
+        .count();
+    Some(changed)
+}
+
 /// Where a new dock tab starts and what it is told (WX-2): the project's
 /// folder, else the track's, else home; and the paths an agent started there
 /// needs to direct this window from the command line.
@@ -5210,6 +5332,8 @@ fn dock_context(
         ui::dock::Following {
             name: follow.name(),
             applied: follow.applied,
+            last_applied_at: follow.last_applied_at,
+            changed_sections: follow.changed_sections,
             error: follow.last_error.clone(),
         }
     });
@@ -5820,6 +5944,71 @@ fn select_track<'audio>(
     bind_audio(opened, analysis, music, app, scratch, true)
 }
 
+/// Raw counter boundaries make pre-control losses distinguishable from losses
+/// caused by the intervention. No counter is reset and no subtraction saturates.
+#[derive(Debug)]
+struct AudioStallWindow {
+    requested_ms: u64,
+    first_frame: u64,
+    last_frame: u64,
+    observed: u64,
+    peak_frames: usize,
+    capacity: usize,
+    dropped_before: usize,
+    dropped_after: usize,
+    underruns_before: u64,
+    underruns_after: u64,
+}
+
+impl AudioStallWindow {
+    fn begin(frame: u64, requested_ms: u64, dropped: usize, underruns: u64) -> Self {
+        Self {
+            requested_ms,
+            first_frame: frame,
+            last_frame: frame,
+            observed: 0,
+            peak_frames: 0,
+            capacity: 0,
+            dropped_before: dropped,
+            dropped_after: dropped,
+            underruns_before: underruns,
+            underruns_after: underruns,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        frame: u64,
+        used: usize,
+        capacity: usize,
+        dropped: usize,
+        underruns: u64,
+    ) {
+        self.last_frame = frame;
+        self.observed += 1;
+        self.peak_frames = self.peak_frames.max(used);
+        self.capacity = capacity;
+        self.dropped_after = dropped;
+        self.underruns_after = underruns;
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "requested={}ms frames={}..{} observed={} peak={}/{} dropped={}..{} underruns={}..{}",
+            self.requested_ms,
+            self.first_frame,
+            self.last_frame,
+            self.observed,
+            self.peak_frames,
+            self.capacity,
+            self.dropped_before,
+            self.dropped_after,
+            self.underruns_before,
+            self.underruns_after,
+        )
+    }
+}
+
 /// The slice report. `tools/headless_check.sh` reads this, and its shape is the
 /// reason the check can distinguish "drew something" from "tracked the input".
 #[derive(Debug)]
@@ -5888,6 +6077,9 @@ struct Report {
     frames_over_budget: u64,
     /// Peak occupancy of the audio bridge ring, as a fraction of its capacity.
     peak_ring_fill: f32,
+    /// The injected stall and recovery, excluding initialization before it.
+    /// Lifetime audio diagnostics above remain unchanged.
+    audio_stall: Option<AudioStallWindow>,
     /// The preview panel and the rect the scene was actually drawn into (EX2).
     ///
     /// Two rects rather than one, because the whole point is the difference: a
@@ -5949,6 +6141,7 @@ impl Default for Report {
             worst_frame_index: 0,
             frames_over_budget: 0,
             peak_ring_fill: 0.0,
+            audio_stall: None,
             preview_panel: (0.0, 0.0),
             preview_pixels: (0.0, 0.0, 0.0, 0.0),
             preview_framed: (0.0, 0.0),
@@ -6163,6 +6356,9 @@ impl Report {
             self.peak_ring_fill * 100.0
         );
         println!("output underruns: {}", audio_bridge::output_underruns());
+        if let Some(window) = &self.audio_stall {
+            println!("audio stall:     {}", window.describe());
+        }
         println!("bands:           {band_count}");
         println!("peak seen:       {:.4}", self.peak_seen);
         // Evidence, not existence. `beat_phase` is a documented route source and it
@@ -6397,6 +6593,23 @@ impl Report {
                 (None, None) => println!("ascii:           none (procedural mode)"),
             },
         }
+        if app.workspace.current().is_none() {
+            let frame = ui::shell_layout::WelcomeFrame::layout(
+                self.logical_window.0,
+                self.logical_window.1,
+                app.shell.recovery_available,
+            );
+            let rect = |r: musializer_core::ui::workspace_layout::UiRect| {
+                format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height)
+            };
+            println!(
+                "welcome:         open-audio@{} open-project@{} recent@{} tray@{}",
+                rect(frame.open_audio),
+                rect(frame.open_project),
+                rect(frame.recent_rows[0]),
+                rect(frame.notice_region())
+            );
+        }
         // The welcome screen's recent list (UX0-C06). `store=` distinguishes the
         // two states an empty column can be in — a new user and a refused file —
         // which is the whole reason the column draws different words for them.
@@ -6555,6 +6768,7 @@ impl Report {
                 "caption style:",
                 app.shell.describe_caption_style(&app.workspace),
             ),
+            ("route editor:", app.shell.describe_route_editor()),
             (
                 "tune layout:",
                 app.shell.describe_tune_layout(&app.workspace),
@@ -6750,6 +6964,52 @@ fn dock_probes(
 mod tests {
     use super::display_refusal;
     use super::scene_clock_delta;
+
+    #[test]
+    fn treatment_section_changes_are_exact_for_a_stable_partition() {
+        use crate::changed_sections;
+        use musializer_core::project::scene_switch::SceneSwitchCue;
+        let a = SceneSwitchCue {
+            id: 1,
+            end_seconds: 2.0,
+            ..Default::default()
+        };
+        let b = SceneSwitchCue {
+            id: 2,
+            start_seconds: 2.0,
+            end_seconds: 4.0,
+            ..a
+        };
+        assert_eq!(
+            changed_sections(&[a, b], &[SceneSwitchCue { id: 9, ..a }, b]),
+            Some(0)
+        );
+        let edited = SceneSwitchCue {
+            scene_index: 1,
+            ..b
+        };
+        assert_eq!(changed_sections(&[a, b], &[a, edited]), Some(1));
+        assert_eq!(changed_sections(&[a], &[a, b]), None);
+        assert_eq!(changed_sections(&[a, b], &[a]), None);
+        let moved_a = SceneSwitchCue {
+            end_seconds: 2.5,
+            ..a
+        };
+        let moved_b = SceneSwitchCue {
+            start_seconds: 2.5,
+            ..b
+        };
+        assert_eq!(changed_sections(&[a, b], &[moved_a, moved_b]), None);
+        let split = SceneSwitchCue {
+            end_seconds: 1.0,
+            ..a
+        };
+        let added = SceneSwitchCue {
+            start_seconds: 1.0,
+            ..a
+        };
+        assert_eq!(changed_sections(&[a], &[split, added]), None);
+    }
 
     #[test]
     fn a_launch_with_no_display_is_refused_by_name() {

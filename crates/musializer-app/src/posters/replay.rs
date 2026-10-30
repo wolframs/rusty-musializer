@@ -51,7 +51,7 @@ pub struct JobTimes {
 /// A poster being replayed.
 pub struct Job {
     pub track_slot: usize,
-    pub run_id: u64,
+    pub run_id: super::PosterId,
     pub resolved: Resolved,
     audio: PosterAudio,
     analyzer: Box<AudioAnalyzer>,
@@ -81,7 +81,7 @@ impl Job {
     /// A job for `resolved`, hearing `audio` from the replay's first frame.
     pub fn new(
         track_slot: usize,
-        run_id: u64,
+        run_id: super::PosterId,
         resolved: Resolved,
         audio: PosterAudio,
         renderer: &mut SceneRenderer,

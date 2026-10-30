@@ -177,6 +177,8 @@ if [ "$QUICK" -eq 0 ]; then
         step "column (views, the frame, census, dock, render, progress)" tools/column_check.sh
         step "lyrics column (cues, style, sample caption, 292 px browser)" tools/lyrics_column_check.sh
         step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
+        step "WX-5 polish (welcome, protocol, Direct, READY, route geometry)" tools/wx5_polish_check.sh
+        step "scene posters and inline artist (tiles, editing, v1 bytes)" tools/wx5_features_check.sh
         step "fluid ink gate (audio and persistent replay)" tools/fluid_ink_check.sh
         step "scene gallery (families, audio, replay)" tools/scene_gallery_check.py
         step "pixel cats (six stagings, audio, replay)" tools/pixel_cats_check.py

@@ -766,6 +766,7 @@ pub struct LyricEditor {
     /// under a short band instead of being written down to it — and so the
     /// report line states the drawn number, which is the one a capture shows.
     lane_drawn: f32,
+    lane_rect: UiRect,
     /// Whether the bottom-edge drag has the pointer.
     lane_resizing: bool,
     /// Whether the grip should draw in its emphasised form this frame. Set by
@@ -972,6 +973,7 @@ impl LyricEditor {
             lane_drag: LaneDrag::default(),
             lane_height: LANE_HEIGHT,
             lane_drawn: LANE_HEIGHT,
+            lane_rect: UiRect::default(),
             lane_resizing: false,
             lane_resize_hovered: false,
             clipboard: LyricClipboard::default(),
@@ -1678,7 +1680,7 @@ impl LyricEditor {
         format!(
             "{} cues, pane {}, selected {}, owner {}, lane {}, draft {}, shadowed {}, \
              face={} field={} missing={} picker={} tune={}, origins {}, stack rows {}, \
-             lane height {:.0}, clipboard {}, tip {}, {}",
+             lane height {:.0}, clipboard {}, tip {}, {}, lane rect={:.0},{:.0},{:.0},{:.0} resizing={}",
             track.lyrics.len(),
             pane,
             selected,
@@ -1723,6 +1725,8 @@ impl LyricEditor {
             self.clipboard.len(),
             if self.tooltip_visible { "on" } else { "off" },
             self.describe_timing(),
+            self.lane_rect.x, self.lane_rect.y, self.lane_rect.width, self.lane_rect.height,
+            self.lane_resizing,
         )
     }
 
@@ -2019,6 +2023,7 @@ impl Shell {
         if lane.is_empty() {
             return;
         }
+        editor.lane_rect = lane;
         self.timeline_pan_gesture(d, input, lane);
         // The resize claims the pointer before the cue gesture sees it, because
         // its strip is inside the lane and a press there must never also be a
@@ -2539,9 +2544,7 @@ impl Shell {
         lane: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) -> bool {
-        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
-
-        let mouse = input.ui_scale.mouse(d);
+        let mouse = self.widgets.pointer(d);
         let strip = UiRect::new(
             lane.x,
             lane.y + lane.height - LANE_RESIZE_GRAB_PIXELS,
@@ -2561,7 +2564,7 @@ impl Shell {
         }
 
         if editor.lane_resizing {
-            if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
+            if mouse.down {
                 editor.lane_height = clamp_lane_height(mouse.y - lane.y, input.window.1);
                 self.ui_preferences.lyric_lane_height = Some(editor.lane_height);
             } else {
@@ -2574,7 +2577,7 @@ impl Shell {
             return true;
         }
 
-        if hovered && d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) {
+        if hovered && mouse.pressed {
             editor.lane_resizing = true;
             return true;
         }

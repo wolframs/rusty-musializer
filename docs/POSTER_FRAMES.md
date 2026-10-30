@@ -159,3 +159,49 @@ Two things about the isolation check cost a run to learn:
 The gate passes on both renderers (VirtualGL and `MZ_GL_LAUNCH=""`). Its
 comparisons are exact equalities of whole images, which both rasterizers
 reproduce run to run.
+
+## Scene picker (WX-5 follow-up, 2026-10-30)
+
+The Scenes flyout uses the same board, replay, renderer, LRU and budget. A
+`PosterRequest::scene` covers the track with a forced scene and no plan-section
+snapshot; the moment is the nearest lyric midpoint to the track midpoint, or
+the track midpoint. It stays still during playback so work can finish. Scene
+settings, routes and all other recipe inputs are the track's own.
+
+Cache identity is `(track path, Picker(SceneId))`, separate from
+`(track path, Run(cue_id))` even for equal numerical ids. Only visible tiles
+request work. The picker shows the picture upright, fitted above the name;
+pending, stale and unavailable have visible labels and tooltip explanations.
+`scene picker: … posters=scene:state@x,y,w,h;…` reports each visible tile's
+actual draw state. Song Atlas without its terrain reports `ready-idle` rather
+than claiming the terrain was rendered. Dumps use
+`<scene>-picker-<scene>-<key>.png`. `tools/wx5_features_check.sh` compares every
+tile with its own dump and every other visible scene as controls.
+
+## Scene flyout and inline artist integration (2026-10-30)
+
+Scene tiles request `Picker(SceneId)` seats, distinct from `Run(cue_id)`, in
+this same 96-entry LRU and isolated renderer. Only visible tiles request work.
+The representative moment is the track midpoint or the nearest displayable
+lyric midpoint; it stays fixed during playback so replay can finish. Tuning,
+routes, lyrics, look and finish remain in the recipe; a forced scene never
+reads an unrelated section snapshot. Tiles are 84..104 px tall with names
+below. Pending says Rendering…, stale says Refreshing… over its dimmed image,
+and unavailable says No preview with the actual reason on hover. Song Atlas
+without terrain reports ready-idle and names its live audio ring.
+
+`tools/wx5_features_check.sh` checks all 29 scene identities, dumped-image
+agreement and distinctness, states, real tile/gap presses, and playing budget
+scheduling (3 ms / 8 ms, with the existing one-replay-frame allowance). It also
+checks the inline artist slot, cancel/commit/released focus, v2 autosave and
+byte-equal v1 restoration after clearing. Artist input is a 128-byte Unicode
+track-bound draft: Enter commits, Escape/click-away cancels, blank clears;
+`TextEntrySurface::TopBarArtist` suppresses shortcuts and egui collection.
+Its private draft probe shares the real outcome handler rather than OS keys.
+
+Branch controls caught invisible/wrong posters, false ready reports, 105 px
+tiles, tile/artist gap hitboxes, hover selection, disabled draft ownership,
+reversed commit/cancel, 3000 ms playing budgets, and failure to clear artist
+metadata on both renderers. Handoff copies and original receipts remain under
+the main checkout's `build/redesign/` and the source workers' ignored build
+folders. Integrated receipts live in `build/wx5-integrated/`.

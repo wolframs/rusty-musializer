@@ -414,9 +414,9 @@ esac
 # could distinguish it from a clean run. `peak ring fill` is the figure that
 # can, and `frame budget:` names the frame it happened on.
 #
-# 120 ms is chosen to sit *inside* the band on purpose: the assertions below
-# require `dropped=0` and `underruns=0`, so this fails if the new lines ever
-# stop being the only ones that fire.
+# 120 ms sits inside the band after startup. The scoped diagnostic below
+# pins zero losses during the intervention and recovery on both renderers;
+# GPU must also retain lifetime zero losses. CPU startup is reported separately.
 echo "=== the silent stall band ==="
 STALL_REPORT="$OUT_DIR/frame-stall-negative-control.txt"
 set +e
@@ -440,29 +440,14 @@ STALL_AUDIO="$(sed -n 's/^audio frames: *//p' "$STALL_REPORT")"
 STALL_UNDERRUNS="$(sed -n 's/^output underruns: *//p' "$STALL_REPORT")"
 echo "stalled run:  $STALL_BUDGET"
 echo "stalled run:  $STALL_AUDIO"
-case "$STALL_BUDGET" in
-    *"0 of 120 stalled"*|'')
-        echo "FAIL: a forced 120 ms stall was not counted by 'frame budget:'" >&2
-        exit 1
-        ;;
-esac
-case "$STALL_AUDIO" in
-    *"peak ring fill 0%"*|*"peak ring fill 1"[0-9]"%"|'')
-        echo "FAIL: a forced 120 ms stall did not move 'peak ring fill'" >&2
-        exit 1
-        ;;
-esac
-# The half that makes the line worth having: at 120 ms the counters that already
-# existed are still clean, so this run is indistinguishable from a healthy one
-# without the two new figures.
-case "$STALL_AUDIO" in
-    *"0 dropped"*) : ;;
-    *) echo "FAIL: 120 ms was outside the silent band (frames were dropped)" >&2; exit 1 ;;
-esac
-if [ "${STALL_UNDERRUNS:-1}" != "0" ]; then
-    echo "FAIL: 120 ms was outside the silent band (underruns=$STALL_UNDERRUNS)" >&2
-    exit 1
-fi
+# The lifetime peak includes startup: llvmpipe can fill the ring before
+# frame 0's first drain, while this later stall itself peaks at 82%.
+# Keep both lifetime lines, and measure the intervention and recovery using
+# raw frame-60..119 counter boundaries. No counter is reset. GPU must also
+# preserve lifetime dropped=0/underruns=0; CPU names the startup limitation.
+STALL_RENDERER=gpu
+[ -n "$MZ_GL" ] || STALL_RENDERER=cpu
+python3 tools/audio_stall_check.py "$STALL_REPORT" "$STALL_RENDERER" || exit 1
 # And a clean run must read clean, or the two lines are noise rather than signal.
 #
 # GX-2: clean *on a quiet machine*. The 25 ms budget has ~8.3 ms of headroom
@@ -5073,81 +5058,39 @@ case "$beat_line" in
         ;;
 esac
 
-echo "=== the route editor row, inside the Tune inspector ==="
-# Three states of the same row, at 720p and at the 960x640 minimum, because the
-# expanded editor is the tallest thing the inspector ever hosts and the minimum
-# window is where it stops fitting:
-#
-#   collapsed  a routed setting shows its summary and live meter instead of a
-#              slider, which is the state a user reaches without opening anything
-#   band       the editor opened onto a committed band route, which is the taller
-#              of the two shapes (the band stepper adds 24 px)
-#   fresh      the editor opened on an unrouted setting, so the draft is the
-#              full-range RMS route `route_editor_open` seeds
-#
-# The `route editor:` line is the evidence a screenshot cannot give: it names the
-# setting, the row height that was actually asked for, and whether the draft came
-# from a committed route or was seeded fresh.
+echo "=== lyric grip press/drag, default and expanded band ==="
+python3 tools/lyric_grip_check.py "$OUT_DIR/lyric-grip"
+
+echo "=== the route editor card, inside the Tune inspector ==="
+# At explicit 100% scale, narrow columns wrap Clamp/Swap; wider columns
+# seat them in one row. Auto scale at 1080p would still be a narrow column.
+# Read the final drawn card and require its exact agreement with tune layout.
 ROUTE_EDITOR_FAILED=0
-for size in 1280x720 960x640; do
+for size in 1280x720 960x640 1600x1080; do
+    fresh_height=390
+    band_height=418
+    if [ "$size" = 1600x1080 ]; then fresh_height=354; band_height=382; fi
     capture "route-collapsed-$size" "$size" \
-        --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
+        --ui-scale 100 --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --ui-probe "panel=tune,play=1" || ROUTE_EDITOR_FAILED=1
-
     capture "route-editor-band-$size" "$size" \
-        --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
+        --ui-scale 100 --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --ui-probe "panel=tune,play=1,route=loom.weight" || ROUTE_EDITOR_FAILED=1
-
     capture "route-editor-fresh-$size" "$size" \
-        --scene loom --ui-probe "panel=tune,play=1,route=loom.density" \
+        --ui-scale 100 --scene loom --ui-probe "panel=tune,play=1,route=loom.density" \
         || ROUTE_EDITOR_FAILED=1
+    python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-band-$size.txt" \
+        "$band_height" Band 1 settings.loom.weight || ROUTE_EDITOR_FAILED=1
+    python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-fresh-$size.txt" \
+        "$fresh_height" RMS 0 settings.loom.density || ROUTE_EDITOR_FAILED=1
 done
 
-for name in band fresh; do
-    for size in 1280x720 960x640; do
-        line="$(sed -n 's/^route editor: //p' "$OUT_DIR/route-editor-$name-$size.txt" | head -n1)"
-        printf '%-30s %s\n' "route-editor-$name-$size" "${line:-<absent>}"
-        case "$line" in
-            *" open row="*) ;;
-            *)
-                echo "FAIL: the route editor did not open for $name at $size" >&2
-                ROUTE_EDITOR_FAILED=1
-                ;;
-        esac
-    done
-done
-
-# Pulse Field is the reason the post-legacy perceptual sources exist. Its legacy
-# `0 = auto` petal fold opens as the exact hidden rule made editable:
-# Balance (bass-heavy..treble-heavy) -> 3..9. Use 1080p because this is the sixth
-# setting and the application deliberately asks a 720p user to enlarge rather
-# than putting a second scrollbar inside the inspector.
+# Pulse's auto petal fold is a fresh Balance draft, in the wide card.
 capture "route-editor-pulse-balance-1600x1080" 1600x1080 \
-    --scene pulse --ui-probe "panel=tune,play=1,route=pulse.petals" \
+    --ui-scale 100 --scene pulse --ui-probe "panel=tune,play=1,route=pulse.petals" \
     || ROUTE_EDITOR_FAILED=1
-PULSE_BALANCE_ROW="$(sed -n 's/^route editor: //p' \
-    "$OUT_DIR/route-editor-pulse-balance-1600x1080.txt" | head -n1)"
-echo "pulse auto fold: ${PULSE_BALANCE_ROW:-<absent>}"
-case "$PULSE_BALANCE_ROW" in
-    *"settings.pulse.petals open row=314px source=Balance committed=0"*) ;;
-    *)
-        echo "FAIL: Pulse petal auto did not open as a fresh Balance -> 3..9 route" >&2
-        ROUTE_EDITOR_FAILED=1
-        ;;
-esac
-
-# The committed route is 24 px taller than the fresh one, because its source is
-# `band` and the band stepper is a row. Asserting the difference is what
-# distinguishes "the editor opened" from "the editor opened onto the right draft".
-BAND_ROW="$(sed -n 's/^route editor: .* row=\([0-9.]*\)px .*/\1/p' \
-    "$OUT_DIR/route-editor-band-1280x720.txt" | head -n1)"
-FRESH_ROW="$(sed -n 's/^route editor: .* row=\([0-9.]*\)px .*/\1/p' \
-    "$OUT_DIR/route-editor-fresh-1280x720.txt" | head -n1)"
-echo "row heights: band=${BAND_ROW:-?} fresh=${FRESH_ROW:-?} (band is 24 px taller)"
-if [ "${BAND_ROW:-0}" != "338" ] || [ "${FRESH_ROW:-0}" != "314" ]; then
-    echo "FAIL: expected row heights 338 (band) and 314 (fresh)" >&2
-    ROUTE_EDITOR_FAILED=1
-fi
+python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-pulse-balance-1600x1080.txt" \
+    354 Balance 0 settings.pulse.petals || ROUTE_EDITOR_FAILED=1
 
 # A key that names no setting must fail the command line rather than quietly
 # photographing an unexpanded row. This is the negative control for the whole

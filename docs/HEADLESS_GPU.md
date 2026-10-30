@@ -131,3 +131,243 @@ that is invariant under ±1 rounding and coverage splitting, and the two
 renderers must both be in the negative-control loop when such a check is
 written (`MZ_GL_LAUNCH=""` forces the CPU path for exactly this).
 
+
+## EX4-c: a lifetime peak is not the injected stall (2026-10-30)
+
+The CPU failure **predates WX-5d**. Five accepted quiet trials per commit used
+that commit's native gate prefix and native light preferences, the same synthetic
+WAV (SHA-256 `e178c3dcb8f19c435fedc73615aa82b523a4789df0ebc2544d92338a071c0b93`),
+`MZ_GL_LAUNCH=""`, and display `:83`:
+
+| commit | worst frame, ms (five trials) | lifetime dropped | lifetime peak | output underruns | old assertion |
+| --- | --- | --- | --- | --- | --- |
+| pre-wave `3ec989e` | 123.8, 124.0, 124.0, 124.2, 124.3 | 2, 2, 2, 1, 1 | 100% in all five | 0 in all five | failed 5/5 |
+| WX-5d `be507e1` | 124.1, 124.1, 124.1, 124.1, 124.1 | 1, 2, 2, 1, 2 | 100% in all five | 0 in all five | failed 5/5 |
+
+The dropped column is the raw diagnostic counter, not a count of every lost
+PCM frame: the tap callback stops after its first rejected push and discards
+the remainder of that callback. Zero still means no rejected push; nonzero
+magnitudes undercount the lost tail. No counter semantics changed here.
+Every trial counted exactly one late frame, frame 61 of 120, against 25 ms.
+Accepted load-1 ranges were 1.91–4.37 and 2.46–3.22 respectively on 24 cores.
+A process/load sampler checked throughout: no neighbouring Xvfb, Rust compiler
+or model-lock holder overlapped accepted trials. Two pre-wave attempts with
+`:82` captures were discarded. Earlier exploratory comparisons are also
+**discarded**: passing the newer preference shape to the old binary rejected
+`column_open`, silently selected dark and posted a warning. The corrected
+comparison asserts `appearance: light-blue` and no preference warning before
+accepting a sample. The throwaway pre-wave worktree was removed afterwards.
+
+A temporary, reverted trace located the occupancy: **8192 frames at frame 0**,
+5056 at frame 1, 1440 at frame 2; **6720 at the injected stall, frame 60**.
+Immediately before that sleep the ring held 960; 120 ms at 48 kHz added 5760,
+so the stall peak was 6720/8192 = 82%, matching EX4-c's historical measurement.
+Draining 4096 left 2624; the next drain cleared it. The ordinary CPU run also
+reached 8160 before its first drain while steady frames remained 16.7 ms.
+The evidence identifies the pre-drain startup epoch, not a particular GL call.
+It does **not** show WX-5d consuming the 120 ms band's headroom.
+
+The existing frame budget excludes initialization; the old ring peak and loss
+counter included it. This was an assertion-scope accident exposed by llvmpipe's
+cold startup, not an app playback regression. No UI, playback or buffer sizing
+was changed. A private `audio stall:` report records raw boundaries and peak
+occupancy from the existing intervention through recovery (frames 60..119).
+The lifetime figures remain intact. Both epochs share one occupancy snapshot,
+so a callback between two reads cannot make the window exceed its lifetime.
+
+The checker pins requested 120 ms, frame 61 as the single late frame of 120,
+25.0 ms budget, 60 observations, frames 60..119 and capacity 8192. It requires
+`4096 < peak < 8192`: the lower boundary is one analyzer drain, the upper is
+ring overflow, **not percentages fitted to a driver**. Callback phase makes
+occupancy stochastic. GPU requires lifetime `dropped=0` and `underruns=0`.
+CPU requires **zero additional drops during the intervention/recovery and
+zero lifetime output underruns**, prints its pre-control loss count and names
+cold startup as the limitation. Thus CPU proves the local silent-band example;
+it does not claim lossless cold startup. All paths retain the lifetime peak
+and require it to contain the measured window.
+
+### Assertion changes and controls
+
+| assertion | before | after | evidence/reason |
+| --- | --- | --- | --- |
+| intervention/budget | 120 ms, 25 ms; any nonzero late count | same times; finite worst ≥120 ms, exactly 1/120 at frame 61 | both commits' ten quiet runs |
+| occupancy | lifetime peak rejected only 0% and 10–19% | window strictly (4096,8192), capacity pinned 8192; lifetime contains it and is ≤100% | drain/ring capacities and reverted frame trace |
+| drops | shell substring `0 dropped` in lifetime | parsed numeric counters; GPU lifetime zero; CPU window delta zero and final lifetime equals window endpoint | startup losses versus 6720-frame stall peak |
+| underruns | lifetime zero | lifetime and both window boundaries zero | unchanged zero-starvation meaning |
+| analyzer consumption | not checked here | parsed count >0 | final GPU 101760 / CPU 108512 consumed; callback phase makes the exact total stochastic |
+| timing/pixel tolerances | existing values | unchanged | no numeric tolerance widened |
+
+**35 negative controls failed (17 per renderer plus GPU pre-control loss)**, with each diagnostic input
+perturbed in place, checked, restored byte-for-byte, and the tracked working
+diff compared before/after. Real 1 ms and 750 ms interventions used the same
+muted launcher on CPU and GPU. Only their request metadata was relabelled 120
+in the checker input: the 1 ms run fails timing/occupancy; the 750 ms run fails
+overflow, loss delta and starvation (45 CPU / 49 GPU underruns in the final-code repeat). Further controls
+reject zero PCM consumption, nonfinite frame time, missing window/peak, missing or inconsistent lifetime peak, shifted or
+doubled late frames, requested 121 ms, 59 observations, capacity 4096, ten added
+drops, loss after the window, a reset counter one underrun and GPU pre-control loss with no further delta. Ten drops also
+exposes the old shell substring bug (`10 dropped` contains `0 dropped`). Both
+positive inputs still pass after restoration. Temporary trace instrumentation
+was restored byte-for-byte before the production seam was written.
+
+The isolated launcher originally gained a branch-local fixed-display option.
+Integration consolidates it to `MUSIALIZER_CAPTURE_DISPLAY=:N` for all callers;
+see `DIVERGENCES.md` and `TRAPS.md`. Malformed assignments and foreign or
+unverifiable occupied displays are refused. An ancestor gate's Xvfb may be
+reused, with every isolation guard still applied. VirtualGL needs `cut` and
+`hostname` in the guarded PATH; no dialog program is exposed.
+
+### WX-6 appearance pilot and runtime cap
+
+The shipping light-only, column-closed gate passed fully on the final code:
+
+| final-code full gate | wall clock | renderer reports | controlled stall |
+| --- | --- | --- | --- |
+| GPU | 553.38 s / 9.22 min | 379 NVIDIA RTX 3090, no llvmpipe | 122.3 ms, 6720/8192, dropped 0..0, underruns 0..0 |
+| CPU (`MZ_GL_LAUNCH=""`) | 584.80 s / 9.75 min | 379 llvmpipe LLVM 21.1.8, no NVIDIA | 124.6 ms, 6720/8192, dropped 2..2, underruns 0..0 |
+
+Both reached the final protocol/resume/digest checks and exited 0, with exactly
+one late frame at 61 in their controlled stall. CPU lifetime peak was still
+100%. The CPU sampler recorded load 1.59–6.59 on 24 cores and no other capture,
+compiler or model-lock holder. No other CPU check needed a change or exemption.
+An earlier pre-snapshot-fix CPU run also passed, in 615.82 s (10.26 min).
+All exports held the existing NVENC encoder choice; CPU/GPU here names the
+GL rasterizer, not the encoder.
+
+An exploratory GPU baseline took 676.90 s (11.28 min); the paired-UI pilot took
+928.42 s (15.47 min), +37.16%, exceeding the one-third cap of 902.53 s.
+Other sessions compiled/captured during parts of these runs, so they are
+**loaded exploratory timings**, not the quiet comparison. A subsequent full
+verification's GPU gate passed in 549.49 s (9.16 min). The final-code quiet GPU baseline passed in **553.38 s (9.22 min)**; its
+one-third cap is **737.83 s (12.30 min)**. A descendant-aware sampler recorded
+no other capture, compiler or model-lock holder during that baseline. The
+unchanged candidate completed in **849.83 s (14.16 min), +53.57%**. Its
+receipt is quiet throughout (load 1.24–4.00; baseline 2.11–3.94 on 24 cores),
+with no neighbouring capture, compiler or model-lock holder. The pilot
+tracked 53 owned Xvfb PIDs through cleanup. This confirms the cap failure;
+the candidate needs **at least 112.00 s removed** to reach 737.83 s, as well
+as corrected assertions. It exited 1 after reaching the final protocol
+section; the baseline exited 0. All temporarily substituted tools were
+restored byte-for-byte.
+A completed 851.39 s pilot is excluded from that verdict: its sampler flagged
+four Xvfb cleanup observations without sufficient ownership receipts. The
+repeat retains known owned PIDs through reparenting and ignores dead zombies.
+Interrupted attempts and a refused stale owned display are excluded too; the
+stale lock was removed only after its recorded owned PID was verified dead.
+
+The unmerged pilot repeats legacy UI pixels in light-blue and black-amber,
+uses column-open frames, and leaves scene exports single-pass. It ran through
+the final protocol section but failed several new assertions. Implementation
+stopped at the runtime cap, and all pixel changes were restored out of the
+branch. The candidate remains in the ignored review artifact
+`build/wx6-evidence/wx6-pixels-unmerged.patch`; **WX-6 conversion is not done**.
+No proposed pixel thresholds from that candidate ship here. In particular:
+
+- Fixed Render/key crops no longer describe the frame. A Render crop landed in
+  the former bottom band; the key crop sampled the Replace label instead of
+  password bullets. Follow reported control rectangles and test the active
+  credential field before claiming a privacy check.
+- The dark hover's opaque fill `(29,33,39)` rounds to BT.601 luma 32; the first
+  pilot incorrectly expected 33. Blend and hairline checks need contrast or
+  coverage classifiers, not swapped light RGB constants. The open-column run
+  hairline reported two when the report said three in both looks. The flyout
+  accent census failed when its chosen playhead was occluded. These require
+  geometry/visibility work, not relaxed thresholds.
+- Embedded lane-alignment probes omitted the explicit appearance and looked
+  for light seams in dark frames. Every environment boundary needs the native
+  preferences and an appearance assertion.
+- The default frame caps the lyric lane to **49 px**. The pilot called its
+  grip dead and attributed it to a 50 px minimum. Integration's press/drag
+  reproduction corrects that diagnosis: the actual minimum is **22 px**, and
+  an upward drag shrinks the default lane to **30 px**, persists and releases.
+  A downward request is capped at 49 by fixed-band slack; an expanded 330 px
+  band permits 66. Growing the band through this grip remains a layout choice.
+  `tools/lyric_grip_check.py` pins both directions.
+
+To fit the cap, replay only pixel-bearing captures; do not duplicate discovery
+rungs, input scripts and state/persistence suites. Then resolve the classifier,
+visibility, field-targeting and grip issues above, and run CPU/GPU negative
+controls for every changed pixel assertion. Default-frame checks should use
+column open; retain a closed full-width band only for a documented geometry
+contract that actually needs it. None of those placement decisions is claimed
+implemented in the shipping gate. The concrete placement decisions for the
+next attempt are:
+
+| check family | frame to photograph | why |
+| --- | --- | --- |
+| Assist hover/review, route editor, Render summary/progress | default column open | their actual panel lives in the column; use its reported rectangles |
+| AI modal divider, focus ring, tabs and masked credential field | default column open underneath the modal | the modal needs no full-width timeline; pin the field actually focused |
+| timed-lane alignment, run hairlines, poster/accent census, rail/flyouts, event markers/ticks | default column open | all are contracts of the operator's time axis; derive its current bounds |
+| lyric cue colour, clipping, alignment and resize | default column open, plus one explicitly enlarged band for the max-height request | test the default grip separately; do not use an enlarged band to hide the dead default grip |
+| column toggle / closed-band layout itself | one explicitly column-closed capture | the closed layout is the subject, so retain and comment this exception |
+| scene still/video comparisons and data response | authored output/preview contract, single appearance-independent pass | repeating chrome cannot add evidence about exported scene PCM/determinism |
+
+These are placement decisions for the open WX-6 queue item; the unmerged
+candidate has not satisfied them.
+
+### Poster budget: five quiet repetitions
+
+Five complete quiet GPU poster gates passed. Each budget-on and budget-off
+run had **0/150 frames past 25 ms**, worst 16.7 ms; replay frame-worst was
+2.2 ms, step-worst 9.2 ms (the existing 8 ms budget permits one replay plus
+0.5 ms). Whole-gate times were 37.86–37.94 s. Accepted load-1 was 1.97–6.25
+on 24 cores, with no neighbouring capture/compiler/model-lock holder during
+any accepted sample. Three additional attempts that overlapped captures were
+discarded and repeated. The contention symptom did not recur; no poster code
+or budget changed.
+
+Raw reports, process/load receipts, binary hashes, controls and rejected pilot
+are retained under `build/wx6-evidence/` for the lead's local review. They are
+ignored artifacts, not committed fixture data.
+
+### Final verification and disposition
+
+`tools/verify.sh` completed: **17 passed, only the expected stale code-map
+check failed** (1340.31 s overall). After making the two occupancy epochs share
+one snapshot, `tools/verify.sh --quick` completed with seven passes and the
+same sole expected code-map failure, followed by the full final-code GPU and
+CPU gates above. `cargo fmt --check` passed. Clippy exited 0; existing warnings
+in untouched code remain under Rust 1.96.1 (see the verification log), and no
+UI cleanup was mixed into this change. `docs/CODE_MAP.md` was not regenerated.
+
+The final-code 1 ms / 750 ms launcher controls were repeated on both renderers,
+then all 35 diagnostic perturbations were rerun from a clean committed tree;
+each original positive input and the clean tree were restored byte-for-byte.
+The fixed-display refusal controls cover both renderer environments as well.
+The only application change is the private report seam; the extra launcher
+change reserves :83 for isolated hand probes and supplies VirtualGL's shell
+utilities. No app UI or poster implementation changed. The pre-wave throwaway
+worktree is gone. The final handoff includes a release build and no owned
+background process; its command result is reported with the branch commits.
+
+## Integrated CPU poster timing (2026-10-30)
+
+The integrated code retains the optional CPU poster failure under a process-
+ownership sampler: `poster_check.sh` exited 1 in **39.07 s**, with **1/150**
+frames over 25 ms with posters (worst **25.6 ms**, frame 20), versus **0/150**
+without (worst **16.7 ms**). No competing Xvfb, cargo or rustc was sampled;
+`gpu-run status` reported the model lock free before the run. This does not
+identify a cause, but quiet GPU passes do not establish a CPU pass. The source
+Features branch also reproduced a failure on `be507e1` (4 versus 0 stalls);
+its paired runs establish variability, not a regression introduced here.
+No poster assertion or timing tolerance was loosened.
+
+`verify.sh` invokes `poster_check.sh` in its normal GPU environment. The
+standalone CPU `headless_check.sh` does not invoke this separate poster gate;
+its own poster data/drawing checks still run. Raw integrated reports and the
+process/load samples are under `build/wx5-integrated/cpu-poster*`.
+
+### Integrated real-song visual replay boundary
+
+The final dark/light Direct, Scenes and artist captures play the copied
+322.52 s Door fixture for 480 frames. Each consumes analyzed PCM and reports
+zero output underruns; each also records 13–14 lifetime analyzer-tap rejection
+counts and a 100% lifetime peak. No epoch trace was made for these runs, so do
+not attribute those counts to startup or the poster service. The completed
+synthetic gates do not establish lossless playback of this larger project.
+This is recorded as a follow-up, with no assertion weakened or playback change.
+
+The first screenshot attempt used the explicitly unbounded `posters=settle`
+while playing, causing an 829.7 ms forced step and 55 output underruns. The
+accepted final captures use the ordinary budgeted path; the failed diagnostic
+attempt remains in `build/wx5-integrated/playing-settle-attempt/`.

@@ -156,6 +156,11 @@ number disagrees, grep it there before debugging from scratch.
 - **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
   never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
   compositor. Never write `env -u WAYLAND_DISPLAY`.
+- **Auto scale changes logical card width.** Pin route geometry at an explicit
+  scale, and compare both drawn reports; see `docs/TRAPS.md`.
+- **A nested gate already holds `MUSIALIZER_CAPTURE_DISPLAY`.** Reuse only
+  an Xvfb owned by a calling ancestor; refuse other process trees. Keep every
+  isolation guard on both the reuse and new-server paths. See `docs/TRAPS.md`.
 - **The dialog `PATH` guard** (`ENTRY_NO_DIALOG_PATH`) is per call site; a hand
   probe that clicks anything must carry it.
 - **`kdialog` with no display** aborts with `SIGABRT` and summons Apport. Keep
@@ -190,6 +195,9 @@ number disagrees, grep it there before debugging from scratch.
   `widgets::SLIDER_KNOB_RADIUS`.
 - **`rlDisableDepthTest` is immediate, geometry is batched**: bracket the
   toggle with a flush.
+- **Cross-commit probes use native preference shapes** and assert `appearance:`; a rejected newer field can silently select the dark fallback.
+- **Quiet timing excludes only owned process descendants**; nested gates start Xvfb servers too.
+- **A lifetime ring peak includes startup**; injected-stall assertions use raw counter boundaries, and zero counters are parsed numerically.
 - **`--ui-probe route=` opens on the scene frame 0 draws**; read `plot@` in
   the report before believing the editor is open.
 

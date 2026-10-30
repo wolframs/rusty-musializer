@@ -110,11 +110,9 @@ pub const FAMILY_FLOOR: f32 = 18.0;
 pub const COLUMN_GAP: f32 = 10.0;
 /// Between two rows, or two tiles.
 pub const GAP: f32 = 4.0;
-/// A tile seats a scene's name in up to two lines, so it is never shorter
-/// than two lines of caption plus its padding, and never taller than reads as
-/// a tile rather than a card.
-pub const TILE_FLOOR: f32 = 36.0;
-pub const TILE_CEILING: f32 = 48.0;
+/// A tile seats a real poster above its name, with a legible fallback state.
+pub const TILE_FLOOR: f32 = 84.0;
+pub const TILE_CEILING: f32 = 104.0;
 /// The scrollbar's lane, taken from the tiles' width only when they scroll.
 pub const SCROLL_GUTTER: f32 = 12.0;
 
@@ -126,7 +124,7 @@ pub const SCROLL_GUTTER: f32 = 12.0;
 /// two rows of label-width tabs over a viewport about 100 px tall, which is why
 /// Pixel Cats stopped at six stagings — six was what a family showed
 /// unscrolled at the minimum picker. In the flyout the tiles get the flyout's
-/// height: at 960x640 a family shows twenty tiles before it scrolls.
+/// height: at 960x640 a family shows ten poster tiles before it scrolls.
 #[derive(Clone, Copy, Debug)]
 pub struct PickerLayout {
     pub area: UiRect,
@@ -319,26 +317,25 @@ mod tests {
         assert_eq!(layout.tab(0), UiRect::new(62.0, 83.0, 96.0, 30.0));
         assert_eq!(layout.tab(6), UiRect::new(62.0, 287.0, 96.0, 30.0));
         assert_eq!(layout.columns, 2);
-        assert_eq!(layout.tile_height, 48.0);
+        assert_eq!(layout.tile_height, 104.0);
         assert_eq!(layout.tile_width, 103.0);
-        assert_eq!(layout.tile(0, 0.0), UiRect::new(168.0, 83.0, 103.0, 48.0));
-        assert_eq!(layout.tile(5, 0.0), UiRect::new(275.0, 187.0, 103.0, 48.0));
+        assert_eq!(layout.tile(0, 0.0), UiRect::new(168.0, 83.0, 103.0, 104.0));
+        assert_eq!(layout.tile(5, 0.0), UiRect::new(275.0, 299.0, 103.0, 104.0));
         assert_eq!(layout.max_scroll, 0.0);
     }
 
-    /// The constraint WX-5c lifts: a family shows twenty tiles unscrolled at
-    /// the minimum window, so Pixel Cats can grow to ten stagings and well
-    /// past them without a scrollbar.
+    /// Real posters need height: ten scenes fit; larger families scroll.
     #[test]
-    fn a_family_of_twenty_fits_the_minimum_flyout_unscrolled() {
-        for count in [6, 10, 20] {
+    fn a_family_of_ten_posters_fits_and_larger_families_scroll() {
+        for count in [6, 10] {
             let layout = PickerLayout::new(MINIMUM_AREA, count);
             assert_eq!(layout.max_scroll, 0.0, "{count} tiles scroll");
             assert!(layout.scrollbar().is_none());
             let last = layout.tile(count - 1, 0.0);
             assert!(layout.viewport.contains(last), "{count}: {last:?}");
         }
-        assert_eq!(PickerLayout::new(MINIMUM_AREA, 20).tile_height, 48.0);
+        assert_eq!(PickerLayout::new(MINIMUM_AREA, 20).tile_height, 84.0);
+        assert_eq!(PickerLayout::new(MINIMUM_AREA, 20).max_scroll, 359.0);
         // Twenty-two rows of floor height do not fit 517 px, and scroll.
         assert!(PickerLayout::new(MINIMUM_AREA, 44).max_scroll > 0.0);
         // Every family as the scenes are registered today.

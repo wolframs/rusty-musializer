@@ -377,13 +377,14 @@ pub(crate) fn draw_markers(
         let is_current = session.current == Some(index);
         let answered = session.is_answered(&item.id);
         let base = color::protocol_marker();
-        let tint = if is_current {
-            base
-        } else if answered {
-            widgets::alpha(base, 0.35)
+        // Keep the pennant opaque: fading it used to lose 3:1 contrast on
+        // light lanes. An answered item is distinguished by a shorter pennant.
+        let height = if answered && !is_current {
+            MARKER_HEIGHT * 0.6
         } else {
-            widgets::alpha(base, 0.8)
+            MARKER_HEIGHT
         };
+        let tint = base;
         let bottom = strip.y + strip.height;
         if is_current {
             clip.draw_line_ex(
@@ -395,7 +396,7 @@ pub(crate) fn draw_markers(
         }
         // An upward-pointing pennant off the lane's bottom edge.
         clip.draw_triangle(
-            Vector2::new(x, bottom - MARKER_HEIGHT),
+            Vector2::new(x, bottom - height),
             Vector2::new(x - MARKER_HALF_WIDTH, bottom),
             Vector2::new(x + MARKER_HALF_WIDTH, bottom),
             tint,

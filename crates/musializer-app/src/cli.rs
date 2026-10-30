@@ -317,6 +317,9 @@ pub struct UiProbe {
     /// write a test that presses nothing. Spelled `FROMxTO` for the same reason
     /// `hover=` is `XxY`: the spec is comma-separated.
     pub middle_drag: Option<(f32, f32)>,
+    /// `left-drag=XxY`: press at `hover=`, move twice to this point, release.
+    /// Private input seam through the same pointer reader as real lane resizing.
+    pub left_drag: Option<(f32, f32)>,
     /// `scene-pick=NAME`: click the scene browser's tile for `NAME`, once (LX3).
     ///
     /// **Invented, and it exists because the gate could not reach the one
@@ -375,6 +378,9 @@ pub struct UiProbe {
     /// because it is the one whose effect (closing a flyout) no click can
     /// stand in for; another key is added by name, never by keycode.
     pub key_escape: bool,
+    /// Artist draft input at frame 12; requires click= to focus the real slot.
+    pub artist_text: Option<String>,
+    pub artist_action: Option<crate::ui::top_bar::ArtistAction>,
     /// `notices=all` or `notices=info+warning+...` (WX-5 follow-up): post one
     /// sample notice of each named severity, in that order, through the
     /// shell's own `notify`, so a capture can photograph every kind of card
@@ -1384,6 +1390,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "wheel-shift" => probe.wheel_shift = parse_probe_flag(value)?,
         "wheel-alt" => probe.wheel_alt = parse_probe_flag(value)?,
         "middle-drag" => probe.middle_drag = Some(parse_point(value)?),
+        "left-drag" => probe.left_drag = Some(parse_point(value)?),
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
@@ -1439,6 +1446,18 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
                     })
                     .collect::<Option<Vec<_>>>()?
             };
+        }
+        "artist-text" => {
+            probe.artist_text = Some(value.to_owned());
+        }
+        "artist-action" => {
+            probe.artist_action = Some(match value {
+                "draft" => crate::ui::top_bar::ArtistAction::Draft,
+                "commit" => crate::ui::top_bar::ArtistAction::Commit,
+                "cancel" => crate::ui::top_bar::ArtistAction::Cancel,
+                "clear" => crate::ui::top_bar::ArtistAction::Clear,
+                _ => return None,
+            });
         }
         "key" => match value {
             "escape" => probe.key_escape = true,
@@ -1638,6 +1657,8 @@ Diagnostics:
                           lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,
                           progress-shot=N photographs export frame N,
+                          artist-text=TEXT,artist-action=draft|commit|cancel|clear
+                          types into the artist slot at frame 12 (requires click=),
                           key=escape presses Escape once,
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,
@@ -2384,7 +2405,7 @@ mod tests {
             "panel=assist,assist=confirm,lyric=3,play=1,fullscreen=0,\
              time=12.5,zoom=4,size=960x640,sidebar=400,inspector=440,\
              timeline-height=330,lyrics-file=/tmp/a.txt,drop=/tmp/b.musi,\
-             share-frame=playhead",
+             share-frame=playhead,hover=1x2,left-drag=40x50",
         )
         .unwrap();
         assert_eq!(probe.panel, UiPanel::Assist);
@@ -2404,6 +2425,8 @@ mod tests {
         );
         assert_eq!(probe.drop_file, Some(PathBuf::from("/tmp/b.musi")));
         assert!(probe.share_frame_playhead);
+        assert_eq!(probe.left_drag, Some((40.0, 50.0)));
+        assert_eq!(probe.hover, Some((1.0, 2.0)));
 
         let probe = parse_ui_probe("panel=lyrics,style=caption,fonts=consent").unwrap();
         assert!(probe.caption_style_pane);

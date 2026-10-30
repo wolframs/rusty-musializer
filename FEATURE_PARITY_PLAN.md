@@ -66,6 +66,34 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
+failure is diagnosed and fixed on `t3/headless-wx6`: it predates WX-5d (5/5
+quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
+the first drain, not during the injected stall. Five quiet poster gates passed;
+no poster change was needed. See `docs/HEADLESS_GPU.md` for evidence and the
+CPU counter contract. Real-song integration captures also report 13–14 lifetime
+analyzer-tap rejections with zero output underruns; their epoch is not localized.
+Investigate separately before claiming lossless playback of that fixture.
+
+The paired-look/open-column prototype exceeded the operator's +1/3 GPU runtime
+cap: **553.38 s baseline, 849.83 s pilot (+53.57%)**, both quiet. Its pixel
+changes were reverted and remain unmerged; `headless_check.sh` and
+`lyric_lane_capture.sh` still need the appearance conversion. Replay only
+pixel-bearing captures, resolve the classifier/targeting failures in the
+headless report, then run both-renderer negative controls. The default 49 px
+lyric lane cannot grow past the fixed band's slack. Integration reproduced a
+working shrink to 30 px (the actual minimum request is 22). Growing the band
+through this grip remains a layout decision, separate from appearance coverage.
+
+**WX-5 polish and features — integrated, awaiting lead review (2026-10-30).**
+`t3/integrate-wx5-wx6-features` contains the three requested no-ff merges,
+scene posters and inline artist editing, consolidated capture ownership, and
+exact drawn route-card checks. Full verification is 20/20; the complete CPU
+headless gate also passes. Lead/operator review remains open; nothing was
+pushed or merged to master. Evidence: `WORKSTATION.md`, `POSTER_FRAMES.md`,
+`HEADLESS_GPU.md`, and the archive's integration entry. WX-6 appearance work
+above remains open, as does its separate band-growth layout decision.
+
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
 after the modal.com hero the operator wanted in his own form. Kicks run comets
@@ -181,7 +209,7 @@ a CX ruling, not a preference.
 | --- | --- | --- | --- |
 | 1 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
 | 2 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`). **Needs an explicit operator go-ahead**: it sends audio to OpenRouter and spends credits | — | one session |
-| 3 | **The remaining CX rulings, in their stated order.** CX-5 scene thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
+| 3 | **The remaining CX rulings, in their stated order.** Review the implemented track-specific CX-5 scene thumbnails, then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
 | 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-5, PXF-12 | medium |
 | 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D7, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2 | large |
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
@@ -189,7 +217,7 @@ a CX ruling, not a preference.
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 | 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
 | 10 | **The compositor's work, moved into the renderer** — all of MV9 landed 2026-10-21; editing it in the window is the one follow-up | MV9-l | medium, UI |
-| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-4 landed 2026-10-21, WX-5a (dark look, one accent) and WX-5b (plan lane as runs, poster frames) 2026-10-24; WX-5c is planned in [`docs/WX5C_DESIGN.md`](docs/WX5C_DESIGN.md); the next sessions' briefs are in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-5c, WX-4 follow-ups, secondary-panel restructure | 5c: seam + two parallel Opus + critic |
+| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-4 landed 2026-10-21, WX-5a (dark look, one accent) and WX-5b (plan lane as runs, poster frames) 2026-10-24; WX-5c/d and their polish, scene posters and inline artist are implemented, awaiting review; WX-6 appearance coverage remains open in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-6, WX-4 follow-ups | gate runtime cap and small independent follow-ups |
 | 12 | **Generated video as material** — scoping only: five 1080p+ picks from OpenRouter, all with first/last-frame input, prices and image inputs in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md); `tools/openrouter_video_prices.py --hd` refreshes them. Building it spends money and needs the Assist consent route | VG | not started; operator interest 2026-10-21 |
 
 ### The items, in one line each
@@ -212,8 +240,9 @@ prefix.
   derives `Default`, 0.0, and core tests pin it). Since PXF-2 the persistence
   path defers to `LyricTap::default()`, so the ruling is one constant plus
   `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
-- **CX-5** — scene thumbnails, but only the **track-specific** kind. Prerequisite:
-  PXF-7.
+- **CX-5** — track-specific scene thumbnails are implemented through the poster
+  service; awaiting lead/operator review. The stable representative moment does
+  not require resume-position persistence (PXF-7 remains its own open item).
 
 **PXF — PX-wave debrief follow-ups.** PXF-6, PXF-8, PXF-9 and PXF-11 are not
 separate work: they are the *questions* CX-5, CX-1, CX-2 and CX-4 answered, and

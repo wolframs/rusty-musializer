@@ -35,6 +35,7 @@
 #                   installed (GPU rendering), otherwise none (Mesa on the CPU,
 #                   correct but several times slower). Set it empty to force CPU.
 #   MZ_VGL_DEVICE   the VirtualGL device, default egl0.
+#   MUSIALIZER_CAPTURE_DISPLAY  optional fixed private display (e.g. :82).
 #   MZ_SCREEN       the virtual screen, default 2560x1440x24.
 #   MZ_STATE_DIR    where the private config lives, default build/headless-run.
 
@@ -89,8 +90,8 @@ mkdir -p "$STATE_DIR/config" "$STATE_DIR/bin"
 # kdialog/zenity by searching PATH, so a PATH without them is what makes a
 # stray picker unreachable. Everything it legitimately spawns is linked in here
 # by absolute path instead.
-# The last four are what `vglrun`, itself a shell script, calls on its way up.
-for tool in ffmpeg ffprobe python3 env sh bash dirname basename sed uname; do
+# The trailing shell utilities are also used by VirtualGL.
+for tool in ffmpeg ffprobe python3 env sh bash dirname basename sed uname cut hostname; do
     if resolved="$(command -v "$tool" 2>/dev/null)"; then
         ln -sf "$resolved" "$STATE_DIR/bin/$tool"
     fi
@@ -107,7 +108,53 @@ done
     fi
 } >&2
 
-exec xvfb-run -a -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
+DISPLAY_ARGS=(-a)
+REUSE_DISPLAY=()
+if [ -n "${MUSIALIZER_CAPTURE_DISPLAY:-}" ]; then
+    if [[ ! "$MUSIALIZER_CAPTURE_DISPLAY" =~ ^:[0-9]+$ ]]; then
+        echo "headless_run: MUSIALIZER_CAPTURE_DISPLAY must be :NUMBER" >&2
+        exit 2
+    fi
+    CAPTURE_NUMBER="${MUSIALIZER_CAPTURE_DISPLAY#:}"
+    DISPLAY_ARGS=(--server-num "$CAPTURE_NUMBER")
+    # headless_check owns one Xvfb for its whole gate, including the nested
+    # treatment gate which calls this wrapper. Reuse only a server whose
+    # immediate parent is OUR ancestor; a different agent's server is refused.
+    # No attachment to an arbitrary existing display or the desktop.
+    if [ -S "/tmp/.X11-unix/X$CAPTURE_NUMBER" ] && [ -r "/tmp/.X$CAPTURE_NUMBER-lock" ]; then
+        CAPTURE_PID="$(tr -d '[:space:]' <"/tmp/.X$CAPTURE_NUMBER-lock")"
+        [[ "$CAPTURE_PID" =~ ^[0-9]+$ ]] || { echo "headless_run: invalid Xvfb lock; refusing" >&2; exit 2; }
+        CAPTURE_PARENT="$(ps -o ppid= -p "$CAPTURE_PID" | tr -d '[:space:]' || true)"
+        CAPTURE_EXE="$(readlink -f "/proc/$CAPTURE_PID/exe" || true)"
+        CAPTURE_ANCESTOR="$PPID"
+        while [[ "$CAPTURE_ANCESTOR" =~ ^[0-9]+$ ]] && [ "$CAPTURE_ANCESTOR" -gt 1 ] && [ "${CAPTURE_EXE##*/}" = Xvfb ]; do
+            if [ "$CAPTURE_ANCESTOR" = "$CAPTURE_PARENT" ]; then
+                REUSE_DISPLAY=("DISPLAY=$MUSIALIZER_CAPTURE_DISPLAY")
+                echo "headless_run: reuse $MUSIALIZER_CAPTURE_DISPLAY (Xvfb owned by an ancestor gate)" >&2
+                break
+            fi
+            CAPTURE_ANCESTOR="$(ps -o ppid= -p "$CAPTURE_ANCESTOR" | tr -d '[:space:]' || true)"
+        done
+        if [ "${#REUSE_DISPLAY[@]}" -eq 0 ]; then
+            echo "headless_run: $MUSIALIZER_CAPTURE_DISPLAY belongs to another process tree; refusing" >&2
+            exit 2
+        fi
+    elif [ -e "/tmp/.X11-unix/X$CAPTURE_NUMBER" ] || [ -e "/tmp/.X$CAPTURE_NUMBER-lock" ]; then
+        echo "headless_run: $MUSIALIZER_CAPTURE_DISPLAY has an unverified socket/lock; refusing" >&2
+        exit 2
+    fi
+fi
+if [ "${#REUSE_DISPLAY[@]}" -gt 0 ]; then
+    # The ancestor owns server teardown. The app still gets every isolation
+    # guard and --mute, exactly as with a newly started private server below.
+    exec env "${REUSE_DISPLAY[@]}" \
+        WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
+        PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
+        XDG_CONFIG_HOME="$STATE_DIR/config" \
+        PATH="$STATE_DIR/bin" \
+        "${GL[@]}" "$BIN" --mute "$@"
+fi
+exec xvfb-run "${DISPLAY_ARGS[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \
     WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
     PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \

@@ -54,7 +54,7 @@ spec:
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
 | WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail, top bar, big preview) done 2026-10-29; 5d (one right column for every secondary panel) landed 2026-10-30 |
-| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); `tools/column_check.sh`, `tools/lyrics_column_check.sh` and `tools/look_assist_check.sh` cover WX-5d |
+| WX-6 | A headless gate for all of it | Existing gates cover WX-1 to WX-5d; polish and feature gates are integrated. CPU stall diagnostics repaired. Both-look/open-column conversion stays open: quiet pilot +53.57% exceeds the +1/3 runtime cap |
 
 ### WX-1 — the dock
 
@@ -303,14 +303,13 @@ They are independent unless a line says otherwise. Every one finishes with
      the name, as the top bar draws the same name. Captures of every size,
      scale, flyout and the dock in both looks: `build/wx5c-final/` (not
      committed; `build/critic/capture7.sh` remakes them).
+     **Done in the integration (2026-10-30), awaiting lead review:** inline
+     artist editing with track-bound focus/draft/commit and exact v1 bytes on
+     clear; track-specific scene tile posters through the shared budgeted
+     service. Names remain below the pictures and tile states are reported.
+     See `docs/POSTER_FRAMES.md` and the feature divergence rows.
      **Left:**
-     - Inline artist editing in the top bar is not built. The artist comes
-       from a treatment or a v2 `.musi` only. It needs a
-       `TextEntrySurface::TopBarArtist` in `ui/shell.rs` reading a
-       `top_bar_state.artist_editing` flag; the field, its commit through a
-       `ShellCommand` and the draw belong in `ui/top_bar.rs`.
      - The top bar spans the workspace, not the dock (open choice, §0).
-     - Scene tiles show names, not posters (§1's follow-up).
      - ~~The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
        only.~~ Restructured in WX-5d, below; the preview no longer shrinks
        for any of them.
@@ -328,23 +327,17 @@ They are independent unless a line says otherwise. Every one finishes with
    its own full-window screen on the surface, with the frame being encoded.
    Divergence rows carry the per-view decisions; the checks are named in
    the WX-6 row above.
+   **Done in the integration (2026-10-30), awaiting lead review:** welcome
+   notice seat and hover, opaque protocol pennants, Direct apply age and
+   changed-section count, READY's full two-line remediation, drawn route-card
+   reports and exact geometry checks, and the complete Lyrics widget-index
+   collision sweep. `tools/wx5_polish_check.sh` is in `verify.sh`.
+   EX4-c's CPU failure is fixed: it was a lifetime/startup counter scope error,
+   reproduced before WX-5d, not extra loss during the controlled stall.
+   `docs/HEADLESS_GPU.md` records the raw boundaries and both-renderer controls.
    **Left:**
    - `UiPanel` and the `inspector_open`/`dock_open` flags still exist, and
      `ColumnView` is derived from them rather than replacing them.
-   - The Direct chat's note about a rewritten treatment says it was applied
-     once; it has no "40 s ago" and no count of the sections it changed.
-   - The AI settings dialog's READY column is 96 px, so "Not implemented in
-     this build" ellipsizes; its hover carries the sentence.
-   - `open_route_editor_probe` still reports the inspector-row height (314,
-     338); the card the column draws is on `tune layout: … editor=`.
-   - In the 320 and 358 px columns the route editor's Clamp and Swap take
-     a second row.
-   - The band's two widget-index collision tests went with the band; the
-     column's indices have no such test yet.
-   - `tools/headless_check.sh` stops at "120 ms was outside the silent band"
-     on llvmpipe (`MZ_GL_LAUNCH=""`), and passes on the GPU. It is audio
-     timing, and it was not run on `master` to see whether it predates
-     WX-5d.
    - `headless_check.sh`'s pixel checks run with the column closed, because
      they aim at a full-width band. The column open, the default, is
      covered by the column checks and the gate's dark section.
@@ -355,9 +348,10 @@ They are independent unless a line says otherwise. Every one finishes with
      `ui.json` in its private config); the dark default has its own
      section. Converting the rest to both looks belongs with WX-6.
    - `tools/lyric_lane_capture.sh` is pinned to the light look the same way.
-   - `tools/poster_check.sh`'s budget step saw one stalled frame in five
-     runs, under GPU contention from a parallel agent. Probably load; if
-     it recurs on a quiet machine, it is real.
+   - WX-6's both-look/open-column conversion remains open. The quiet baseline
+     was 553.38 s and pilot 849.83 s (+53.57%), exceeding the +1/3 cap;
+     the pilot assertions were reverted. Five quiet GPU poster gates passed.
+     Optional CPU poster timing is a separate finding; see `HEADLESS_GPU.md`.
    - Retake the README screenshot after 5c.
    - Idea, not asked for: the Glyph Lattice as the welcome screen's hero
      (the Musializer mark on the honeycomb), with the secondary-panel wave.
@@ -502,8 +496,9 @@ notice cards still in the pre-redesign style.
   fails. Reverted byte for byte. The palette sweep walks the card's inks on
   the floating surface in both appearances; perturbing Info to the disabled
   tone fails it at 3.12:1.
-- **Left**: `build/redesign/wx5-leftover-survey.md` in the main checkout lists
-  every surface still in the old look, with sizes.
+- **Historical survey**: `build/redesign/wx5-leftover-survey.md` in the main
+  checkout predates the integrated polish. Current remaining work is under
+  Next sessions above; the survey is not a current completion inventory.
 
 **WX-1/2 (2026-10-21).**
 
@@ -579,3 +574,68 @@ notice cards still in the pre-redesign style.
   and Antigravity resume, Codex starts a new thread), and a model picker
   (each CLI uses its own configured default).
 
+
+## Integrated follow-up evidence (2026-10-30)
+
+The source branch handoffs were copied to
+`/home/wolfram/Projects/rusty-musializer/build/redesign/` before removal from
+the repository. Their implementation decisions are in `DIVERGENCES.md`, the
+poster service's contracts in `POSTER_FRAMES.md`, and capture ownership in
+`TRAPS.md`. Both new gates run in `verify.sh` after Look & Assist.
+
+The new private `left-drag=XxY` probe presses at `hover=`, moves twice, then
+releases through the same Widgets pointer reader as the lyric resize handler.
+`lyrics:` now reports the drawn lane rect and resize ownership. At 1280x720,
+default band, the lane is 49 px. A press and upward drag yields 30 px, persists
+it, and releases; downward requests remain capped by the band's slack. The
+actual request clamp is 22..66, not 50..66. Growing the whole band from its
+bottom-edge lane grip would require a layout/gesture decision; no production
+resize behavior was changed. `tools/lyric_grip_check.py` pins this boundary.
+
+Integration controls: route reports were perturbed in height, card rect and
+layout agreement (36 failures across GPU/CPU, six cards per renderer); every
+input was restored byte-for-byte and accepted again. Permissive and over-strict
+launcher faults each failed both renderer settings; malformed display strings
+were refused. The final lyric checker rejects a disabled resize press handler
+10 times per renderer. The source was restored byte-for-byte before running its
+mutant binary; the normal debug binary was rebuilt afterwards. Existing polish
+mutants were replayed through the integrated launcher: 36 surface failures and
+4 count failures per renderer, as intended. Source/diff digests and complete
+logs are in `build/wx5-integrated/`.
+
+Final integrated verification: **20 passed, 0 failed**, **1624.75 s**; includes
+current code map, both new WX-5 gates, and the ordinary GPU poster gate. The
+complete CPU headless gate also passed, **610.58 s**, through protocol resume
+and bad-digest rejection. CPU's controlled stall peaked at 6720/8192 with zero
+additional drops/underruns; cold-start lifetime loss is still reported. The CPU
+sampler recorded no competing Xvfb/compiler. The full-verify sampler has four
+unowned reparented-Xvfb observations, so its wall clock is not certified quiet.
+
+Requested differentials passed: layout **12.91 s** (348285 values plus 1388
+rail/2477 column records), Assist UI **15.21 s** (199 decisions plus 324 column
+rows), project I/O **15.11 s** (3061 values, six comparisons, maximum delta 0).
+They ran concurrently, so these are individual wall clocks including Cargo
+lock waits. No additional changed core module has a differential harness.
+The separate optional CPU poster timing failure remains recorded in
+`HEADLESS_GPU.md`; it was not loosened or folded into the CPU headless gate.
+
+Raw logs, checksums, negative controls and 1280x720 dark/light review captures
+are under `build/wx5-integrated/`. Only the copied fixture was opened; artist
+commit captures use a second local project copy. The handoffs remain outside
+the tracked tree in the main checkout's `build/redesign/`.
+
+All eight final 1280x720 PNGs were inspected: welcome notices clear the entry
+actions; scene tile pictures remain distinct with readable names; committed
+artist text fits the top bar; Direct's composer remains visible beside the
+playing preview. Direct uses the scripted fake agent without sending a prompt.
+The final playing Direct/Scenes/Look captures use ordinary budgeted scheduling,
+have nonzero analyzed PCM and zero output underruns, but report **13–14 lifetime
+analyzer-tap rejections**. Their epoch was not localized; these pictures are
+visual evidence, not lossless-playback proof. This remains an investigation
+note in the live queue. No playback formula was changed for it.
+
+An initial playing screenshot mistakenly requested `posters=settle`; that
+intentional unbounded diagnostic blocked for 829.7 ms and reported 55 output
+underruns. Its raw artifacts remain in `playing-settle-attempt/`. The accepted
+capture run uses ordinary scheduling; the screenshot-only assertion was not
+loosened. Original copied fixture bytes still match the main checkout's copy.

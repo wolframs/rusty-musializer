@@ -60,39 +60,6 @@ use crate::workspace::{Track, Workspace};
 
 // -- geometry, from `plug.c:5517-5523` ---------------------------------------
 
-/// The seven stacked zones of the editor area, in the oracle's order
-/// (`scene_route_editor_area_height`, `plug.c:5517-5523`).
-///
-/// Written as the sum the C writes rather than as `262.0`, because the numbers
-/// are what a later reader checks against the drawing code below: each one is the
-/// height of the block that consumes it, and `route_editor_row` advances its
-/// cursor by exactly these.
-#[rustfmt::skip]
-const ROUTE_EDITOR_AREA_HEIGHT: f32 = 24.0  // live caption + meter
-                                    + 52.0  // two rows of source buttons
-                                    + 40.0  // the low anchor
-                                    + 40.0  // the high anchor
-                                    + 70.0  // the transfer graph
-                                    + 26.0  // the curve stepper
-                                    + 32.0  // the action row
-                                    + 4.0; // trailing
-
-/// The band stepper only exists for [`AnalysisSource::Band`] (`plug.c:5522`).
-const ROUTE_EDITOR_BAND_ROW_HEIGHT: f32 = 24.0;
-
-/// The label/readout/`~` line above the editor area.
-///
-/// **Divergence, deliberate.** The C's setting row is 76 px with a 29 px header
-/// and 12 px of trailing rule space, so its expanded row is `area + 41`
-/// (`plug.c:6113`, `:6191`). This inspector's row is 46 px with a 22 px header
-/// and a 4 px gap, so its expanded row is `area + 26`. The *area* is reproduced
-/// exactly — it is the part with controls in it — and only the row furniture
-/// around it follows this inspector's own rhythm. Matching the C's 41 here would
-/// put 15 px of nothing under a block that already ends in its own 4 px of
-/// trailing space.
-const ROUTE_EDITOR_ROW_HEADER: f32 = 22.0;
-const ROUTE_EDITOR_ROW_GAP: f32 = 4.0;
-
 // -- widget ids ---------------------------------------------------------------
 //
 // All inside `widgets::id::INSPECTOR`, below the 900 the reset button uses. The
@@ -658,11 +625,9 @@ impl Shell {
 /// other entrance is a mouse click, and this repository has already paid twice
 /// for a surface no capture could reach.
 ///
-/// Returns the line the run prints as evidence. A screenshot cannot say whether
-/// the block under the cursor is the editor or a very tall slider, so the line
-/// names which setting opened, how tall the row it asked for is, and whether it
-/// opened onto a committed route or a fresh full-range draft.
-/// `headless_check.sh` asserts on it.
+/// Returns the startup request line. Geometry is not known until Look draws:
+/// the final `route editor:` line reads the actual card, alongside `tune layout:`.
+/// A request must not report the deleted band's row budget as drawn geometry.
 impl Shell {
     pub(crate) fn open_route_editor_probe(
         &mut self,
@@ -683,29 +648,13 @@ impl Shell {
         if !self.with_editor(|host| host.state.open(track_slot, scene, index, committed)) {
             return format!("route editor: {key} REFUSED");
         }
-        let (height, source) = self.peek_editor(|host| {
-            let source = host
-                .state
+        let source = self.peek_editor(|host| {
+            host.state
                 .draft()
-                .map_or("?", |draft| route_editor_state::source_label(draft.source));
-            (
-                ROUTE_EDITOR_ROW_HEADER
-                    + ROUTE_EDITOR_AREA_HEIGHT
-                    + if host
-                        .state
-                        .draft()
-                        .is_some_and(|draft| draft.source == AnalysisSource::Band)
-                    {
-                        ROUTE_EDITOR_BAND_ROW_HEIGHT
-                    } else {
-                        0.0
-                    }
-                    + ROUTE_EDITOR_ROW_GAP,
-                source,
-            )
+                .map_or("?", |draft| route_editor_state::source_label(draft.source))
         });
         format!(
-            "route editor: {key} open row={height}px source={source} committed={}",
+            "route editor request: {key} open source={source} committed={} geometry=after-draw",
             u8::from(committed.is_some())
         )
     }
@@ -888,6 +837,7 @@ pub struct LookColumn {
     last_track_press: Option<(usize, f64)>,
     /// The `tune layout:` line for the last frame Look drew in the column.
     report: String,
+    route_report: String,
 }
 
 /// Two presses on one track within this many seconds reset it (§3.3).
@@ -955,6 +905,10 @@ impl Shell {
             return String::new();
         }
         self.look_column.report.clone()
+    }
+
+    pub(crate) fn describe_route_editor(&self) -> String {
+        self.look_column.route_report.clone()
     }
 
     /// The tuning inspector: one slider per setting of the active scene.
@@ -1391,6 +1345,7 @@ impl Shell {
         let mut report_rows = Vec::with_capacity(order.len());
         let explore_report;
         let mut editor_report = String::from("none");
+        self.look_column.route_report.clear();
         {
             let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
             let d = &mut *clip;
@@ -2157,6 +2112,17 @@ impl Shell {
                     .is_some_and(|session| session.committed.is_some()),
             )
         });
+        self.look_column.route_report = format!(
+            "{} open row={}px source={} committed={} card={:.0},{:.0},{:.0},{:.0}",
+            descriptor.key,
+            layout.card.height,
+            route_editor_state::source_label(draft.source),
+            u8::from(has_committed),
+            layout.card.x,
+            layout.card.y,
+            layout.card.width,
+            layout.card.height,
+        );
         widgets::rounded_box(
             d,
             layout.card,

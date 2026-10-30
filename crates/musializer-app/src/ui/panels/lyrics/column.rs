@@ -99,32 +99,41 @@ pub(crate) struct ColumnEvidence {
 }
 
 /// Indices in [`ns::ACTIONS`] the column adds; the band uses 0..=8.
-mod action {
-    pub const PANES: u32 = 20;
-    pub const BACK_TO_STYLE: u32 = 24;
-    pub const PREVIOUS: u32 = 25;
-    pub const NEXT: u32 = 26;
-    pub const FOLLOW: u32 = 27;
-    pub const PLAYHEAD_WORD: u32 = 28;
+// Constants and their allocation table are one declaration, so a new column
+// index cannot silently escape the collision sweep. Namespaces stay in id::ALL.
+macro_rules! indices {
+    ($($name:ident = $first:literal / $count:literal;)*) => {
+        $(pub const $name: u32 = $first;)*
+        #[cfg(test)]
+        pub const ALL: &[(&str, u32, u32)] = &[$((stringify!($name), $name, $count)),*];
+    };
 }
-
-/// Indices in [`ns::CAPTION`] the column adds, above the band's (which end at
-/// [`caption_id::ZONE_HINTS`] plus a handful). Each slider row takes
-/// [`widgets::SLIDER_ROW_IDS`].
+mod action {
+    indices! {
+        PANES = 20 / 3;
+        BACK_TO_STYLE = 24 / 1;
+        PREVIOUS = 25 / 1;
+        NEXT = 26 / 1;
+        FOLLOW = 27 / 1;
+        PLAYHEAD_WORD = 28 / 2;
+    }
+}
 mod column_id {
-    pub const SIZE: u32 = 192;
-    pub const WIDTH: u32 = 196;
-    pub const BLUR: u32 = 200;
-    pub const SHADE: u32 = 204;
-    pub const ROUND: u32 = 208;
-    pub const INSET: u32 = 212;
-    pub const GLOW: u32 = 216;
-    pub const RADIUS: u32 = 220;
-    pub const DEPTH: u32 = 224;
-    pub const SWEEP: u32 = 228;
-    pub const INK_PLUS: u32 = 232;
-    pub const PLATE_PLUS: u32 = 233;
-    pub const IMPORT_CANCEL: u32 = 234;
+    indices! {
+        SIZE = 192 / 4;
+        WIDTH = 196 / 4;
+        BLUR = 200 / 4;
+        SHADE = 204 / 4;
+        ROUND = 208 / 4;
+        INSET = 212 / 4;
+        GLOW = 216 / 4;
+        RADIUS = 220 / 4;
+        DEPTH = 224 / 4;
+        SWEEP = 228 / 4;
+        INK_PLUS = 232 / 1;
+        PLATE_PLUS = 233 / 1;
+        IMPORT_CANCEL = 234 / 1;
+    }
 }
 
 /// `x,y,w,h` in whole logical pixels, the report lines' rect format.
@@ -2610,6 +2619,62 @@ fn dashed_circle(d: &mut RaylibDrawHandle<'_>, centre: Vector2, radius: f32, tin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_widget_indices_do_not_collide() {
+        let legacy_caption = [
+            ("FACE", caption_id::FACE, 3),
+            ("BACKING", caption_id::BACKING, 3),
+            ("ANCHOR", caption_id::ANCHOR, 9),
+            ("IMPORT_FACE", caption_id::IMPORT_FACE, 1),
+            ("REMOVE_FACE", caption_id::REMOVE_FACE, 1),
+            ("INK_SWATCHES", caption_id::INK_SWATCHES, 7),
+            ("PLATE_SWATCHES", caption_id::PLATE_SWATCHES, 6),
+            ("PICKER_DONE", caption_id::PICKER_DONE, 1),
+            ("PULSE_DRIVE", caption_id::PULSE_DRIVE, 6),
+            ("HUE_DRIVE", caption_id::HUE_DRIVE, 6),
+            ("GLOW_COLOR", caption_id::GLOW_COLOR, 1),
+            ("TUNE_CLAMP", caption_id::TUNE_CLAMP, 1),
+            ("TUNE_RESET", caption_id::TUNE_RESET, 1),
+            ("TUNE_CURVE_PREVIOUS", caption_id::TUNE_CURVE_PREVIOUS, 1),
+            ("TUNE_CURVE_NEXT", caption_id::TUNE_CURVE_NEXT, 1),
+            ("TUNE_SLIDERS", caption_id::TUNE_SLIDERS, 4),
+        ];
+        let mut seen = std::collections::HashMap::new();
+        for (namespace, allocations) in [
+            (ns::ACTIONS, action::ALL),
+            (ns::ACTIONS, &[("existing actions", 0, 9)][..]),
+            (ns::CAPTION, column_id::ALL),
+            (ns::CAPTION, &legacy_caption[..]),
+        ] {
+            assert!(widgets::id::ALL
+                .iter()
+                .any(|(_, value)| *value == namespace));
+            for &(name, first, count) in allocations {
+                for offset in 0..count {
+                    let id = widgets::widget_id(namespace, first + offset);
+                    assert_eq!(
+                        seen.insert(id, name),
+                        None,
+                        "{name} overlaps another control at index {}",
+                        first + offset
+                    );
+                }
+            }
+        }
+        assert_eq!(action::ALL.len(), 6);
+        assert_eq!(column_id::ALL.len(), 13);
+        assert_eq!(widgets::SLIDER_ROW_IDS, 4);
+        // Every registered namespace participates, including future ones.
+        for (_, namespace) in widgets::id::ALL {
+            if namespace == ns::ACTIONS || namespace == ns::CAPTION {
+                continue;
+            }
+            for index in 0..4096 {
+                assert!(!seen.contains_key(&widgets::widget_id(namespace, index)));
+            }
+        }
+    }
 
     #[test]
     fn the_pane_is_one_value_over_the_three_flags_and_round_trips() {

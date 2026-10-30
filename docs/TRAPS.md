@@ -185,3 +185,50 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   editor open" passes on a frame with no editor. Check for `plot@` in the
   report before believing it (WX-5d: `column_check.sh` ran that way until its
   own slab control asked).
+
+- **A lifetime peak cannot locate an injected stall.** EX4-c's CPU failure
+  was ring saturation **before frame 0's first drain**, not at the 120 ms
+  sleep in frame 60 (6720/8192 = 82%). The frame budget excludes startup
+  and lifetime audio counters do not. Read `audio stall:`'s raw before/after
+  counters over the intervention/recovery; keep the lifetime diagnostics
+  visible. A `*"0 dropped"*` shell glob also accepts `10 dropped`: counters
+  are parsed numerically now. Both renderers' controls must reject missing
+  late frames, overflow, additional drops and output starvation. Feed scoped
+  and lifetime peaks from one occupancy snapshot; two reads can straddle a
+  callback and produce apparently inconsistent epochs. The tap callback stops
+  at its first rejected push, so a nonzero drop counter undercounts that lost
+  callback tail; preserve the zero-loss meaning rather than interpreting a
+  count of two as exactly two lost PCM frames.
+
+- **Cross-commit probes need each commit's native preferences.** The pre-WX-5d
+  preference schema rejects `column_open` as an unknown field. Reusing the
+  newer gate's file on that binary selects the dark fallback and posts a
+  warning instead of the intended light fixture. A written theme is not a
+  loaded theme: assert `appearance:` before trusting comparison measurements.
+
+- **Quiet timing follows process ownership, not display numbers.** A gate
+  can own nested `xvfb-run` servers as well as its primary capture display
+  (the integrated fixed-display path instead reuses the ancestor's server). Counting every other Xvfb as a neighbouring agent invalidates good
+  samples; ignoring all Xvfb hides real contention. Follow the measuring
+  process's descendants and exclude only servers it owns. Retain known owned
+  PIDs through cleanup/reparenting and ignore dead zombies, otherwise a
+  single final sample can turn an owned server into false contention. Keep
+  receipts of the load, compiler processes and GPU model lock throughout the
+  run. An interrupted owner can leave a display socket/lock behind; remove it
+  only after identifying the owned PID in the lock and proving it dead.
+  `xvfb-run` can return just before its server disappears: await that cleanup
+  before immediately reusing a fixed display; do not remove a live lock.
+
+- **A fixed capture display is inherited by nested gates.** (WX-5 features,
+  2026-10-30.) `headless_check.sh` owns Xvfb for its whole run and calls the
+  treatment gate, which uses `headless_run.sh`. Making that wrapper always
+  start the assigned display broke the nested gate with `Xvfb failed to start`.
+  The wrapper may reuse a live assigned Xvfb only if the server's immediate
+  parent is in its own process ancestry. A sibling gate's server is refused;
+  the ancestor keeps teardown ownership. Both paths still apply mute, null
+  audio/Wayland endpoints, private config and the no-dialog PATH guard.
+
+- **Physical width is not logical card width.** At 1600x1080 the automatic
+  125% scale still gives a narrow route card (390/418 px). The integrated
+  route-height sweep explicitly selects 100% before pinning wide 354/382 px
+  cards; every assertion also checks the final drawn-card/layout agreement.
