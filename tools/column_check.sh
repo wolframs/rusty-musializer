@@ -23,8 +23,8 @@
 #   3. The accent census (`--primary 1`) in every view, both appearances —
 #      Look also with its route editor open, Assist also with a card open —
 #      with the two marks the report permits (the current lyric line's time
-#      and tick, the route plot's live dot), which fail the census once the
-#      report stops naming them; in the Render view the accent lies inside
+#      and tick, the route plot's live dot), and an accent slab in each named
+#      rect passes only while the report names it; in the Render view the accent lies inside
 #      the commit and the top bar's Render… holds none.
 #   4. ui.json: a dragged width and the view survive a restart; a pre-WX-5d
 #      file with `dock_width 480, dock_open true` opens a 480 column on Direct.
@@ -207,7 +207,9 @@ for theme in dark light; do
     for view in direct lyrics look look-route assist assist-open render; do
         name="census-$theme-$view"
         case "$view" in
-            look-route) probe="column=look,route=loom.weight" ;;
+            # At 1 s, where the treatment's first scene is the drawn one: the
+            # probe opens a route on the scene frame 0 draws.
+            look-route) probe="column=look,route=settings.spectrum.amplitude,time=1" ;;
             assist-open) probe="column=assist,assist=confirm" ;;
             *) probe="column=$view" ;;
         esac
@@ -218,12 +220,35 @@ for theme in dark light; do
         fi
     done
 done
-# The census's two permitted marks are real, and the report is what admits
-# them: the same pictures with the naming lines removed must fail.
-for view in lyrics look-route; do
+# The census's two permitted marks: the report is what admits them. The marks
+# as drawn are too thin to prove that (12 px text never reaches the accent
+# within the census's tolerance), so an accent slab goes into each named rect:
+# with the naming line it passes, and with that line removed it must fail.
+for pair in lyrics:time look-route:plot; do
+    view="${pair%%:*}"
+    key="${pair##*:}"
     name="census-dark-$view"
+    if ! grep -qE "\b$key@" "$OUT/$name.log"; then
+        fail "$view drew no $key@, so its mark is not in this census"
+        continue
+    fi
+    python3 - "$OUT/$name.png" "$OUT/$name.log" "$key" "$OUT/$name.painted.png" <<'PY'
+import re, sys
+from PIL import Image
+png, log, key, out = sys.argv[1:]
+text = open(log, encoding="utf-8", errors="replace").read()
+accent = re.search(r"^appearance:.* accent=#([0-9A-Fa-f]{6})", text, re.M).group(1)
+fill = tuple(int(accent[i:i + 2], 16) for i in (0, 2, 4))
+x, y, w, h = map(int, re.search(r"\b" + key + r"@(\d+),(\d+),(\d+),(\d+)", text).groups())
+image = Image.open(png).convert("RGB")
+image.paste(fill, (x + 4, y + 4, x + 24, y + 16))
+image.save(out)
+PY
     grep -vE '^(lyrics column|tune layout):' "$OUT/$name.log" >"$OUT/$name.unnamed.log"
-    if python3 tools/accent_census.py "$OUT/$name.png" "$OUT/$name.unnamed.log" --primary 1 \
+    python3 tools/accent_census.py "$OUT/$name.painted.png" "$OUT/$name.log" --primary 1 \
+        >"$OUT/$name.painted.census" 2>&1 ||
+        fail "the census refuses a mark the report names, in $view: $(tail -n 1 "$OUT/$name.painted.census")"
+    if python3 tools/accent_census.py "$OUT/$name.painted.png" "$OUT/$name.unnamed.log" --primary 1 \
         >"$OUT/$name.unnamed.census" 2>&1; then
         fail "the census passes $view without the report naming its mark, so the mark is not checked"
     fi
@@ -476,7 +501,7 @@ direct_run() { # direct_run NAME PROBE [extra]
 MZ_STATE_DIR="$OUT/state-welcome" tools/headless_run.sh --ui-scale 100 --size 1280x720 --probe-frames 20 \
     >"$OUT/welcome.log" 2>&1 || true
 case "$(line_of dock "$OUT/welcome.log")" in
-    *" rect=0,0,0,0"*) ;;
+    *"direct=[start ]"*) ;;
     *) fail "the Direct view drew over the welcome screen: $(line_of dock "$OUT/welcome.log" | tail -c 80)" ;;
 esac
 direct_run direct-empty ""
