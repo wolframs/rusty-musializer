@@ -85,7 +85,7 @@ def ai_check(tag):
         check(' '.join(lines)==text.upper(), 'READY reason unabridged '+tag+' '+text)
         if text=='Not implemented in this build':
             long.append(entry)
-            check(lines==['NOT IMPLEMENTED','IN THIS BUILD'], 'READY exact two lines '+tag)
+            check(lines==['NOT IMPLEMENTED IN','THIS BUILD'], 'READY exact two lines '+tag)
             boundary=tuple(map(float,re.search(r'@([\d.-]+),([\d.-]+),([\d.-]+),([\d.-]+)',entry).groups()))
             check(boundary[2:]==(130.,30.), 'READY exact seat '+tag)
             textpixels=crop(dim,(boundary[0]+12,boundary[1]+14,boundary[2]-12,13))
