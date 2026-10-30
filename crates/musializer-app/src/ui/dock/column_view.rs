@@ -127,7 +127,10 @@ impl Dock {
         let palette = crate::ui::theme::palette();
         let surface = of(palette.ui_surface);
         let rule = of(palette.ui_rule);
+        // No fade: the column's other views arrive at once, and egui's fade
+        // runs on the wall clock, so a frame would depend on when it was drawn.
         egui::Area::new(egui::Id::new("musializer_dock_column"))
+            .fade_in(false)
             .fixed_pos(rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
