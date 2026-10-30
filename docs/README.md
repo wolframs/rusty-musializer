@@ -17,12 +17,10 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 - [`MUSIC_VIDEO_CLI.md`](MUSIC_VIDEO_CLI.md) — directing a whole video with no
   window: the treatment file, `--vocabulary`, contact sheets and stills, the
   isolated launcher, and what the first video made this way ran into.
-- [`OPENAI_KNOT.md`](OPENAI_KNOT.md) — procedural weave, audio response and muted scene checks.
 
 - [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — workspace controls, appearance, toolkit boundary and real-input checks.
 - [`VIDEO_GENERATION.md`](VIDEO_GENERATION.md) — VG: the five generated-video picks on OpenRouter, prices and image inputs.
 - [`WORKSTATION.md`](WORKSTATION.md) — WX: the dock, the terminal, native agent sessions, live treatments and the restyle; parts and status.
-- [`WX5C_DESIGN.md`](WX5C_DESIGN.md) — WX-5c plan: the rail, flyouts, the big preview, the top bar and the lane head; seam, file ownership, gate addressing.
 - [`POSTER_FRAMES.md`](POSTER_FRAMES.md) — WX-5b's poster service: one frame per
   plan-lane run from the track's own audio, its recipe key, budget, isolation
   and measurements.
@@ -51,6 +49,15 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
 
 ## Operations and evidence
 
+- [`ATMOSPHERE_SCENES.md`](ATMOSPHERE_SCENES.md): Aurora Veil and Neon Tunnel,
+  their controls and measurements.
+- [`MATERIAL_SCENES.md`](MATERIAL_SCENES.md): Liquid Chrome and Iridescent Pool,
+  their controls and measurements.
+- [`ORGANIC_SCENES.md`](ORGANIC_SCENES.md): Metaball Garden and Voronoi Bloom,
+  their controls and measurements.
+- [`OPENAI_KNOT.md`](OPENAI_KNOT.md): procedural weave, audio response and muted
+  scene checks.
+
 - [`SCENE_GALLERY.md`](SCENE_GALLERY.md) — compact scene families, six native
   website-inspired scenes, compatibility and the visible gallery gate.
 
@@ -65,8 +72,6 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
   of tiny glyphs: the reference and its boundary, what the music drives, the
   lyric line in stroke capitals, the CPU lattice and its evidence.
 
-- [`LYRICS_GROUPING_REVIEW.md`](LYRICS_GROUPING_REVIEW.md) — two pending lyric
-  phrase judgments, browser audition, portable protocol bundle and resume state.
 - [`LYRICS_ASSIST_REPAIR_2026-09-06.md`](LYRICS_ASSIST_REPAIR_2026-09-06.md) —
   ten-track lyrics investigation, production repairs and unadjudicated evidence.
 
@@ -135,6 +140,12 @@ alone. Read them in this order if you are changing localization:
 `archive/` holds closed records. They are kept for their evidence and their
 method, not as instructions, and each carries its own archived-on header.
 
+- [`archive/LYRICS_GROUPING_REVIEW.md`](archive/LYRICS_GROUPING_REVIEW.md): two
+  resolved phrase judgments, browser audition and private evidence record.
+- [`archive/LYRICS_RECORDING_2026-09-08.md`](archive/LYRICS_RECORDING_2026-09-08.md):
+  recorded local lyrics failure, elapsed-clock repair and crop recovery results.
+- [`archive/WX5C_DESIGN.md`](archive/WX5C_DESIGN.md): the completed rail, flyout,
+  top bar and lane-head design, including its original division of work.
 - [`archive/C_PORT_HISTORY.md`](archive/C_PORT_HISTORY.md) — the boundary around
   the earlier C implementation: port-era annotations, `tests/differential/`,
   `tools/differential_*.sh` and `REWRITE_PLAN.md` are migration evidence, not a

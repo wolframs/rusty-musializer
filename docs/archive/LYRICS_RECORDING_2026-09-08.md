@@ -1,5 +1,9 @@
 # Recorded Timed lyrics failure, 2026-09-08
 
+> Archived on 2026-10-30. This records a private debugging session and its
+> measurements. Local evidence paths refer to uncommitted artifacts. Open lyrics
+> work is tracked in [the live queue](../../FEATURE_PARITY_PLAN.md).
+
 The elapsed counter is repaired. The recommended local timing path now
 recovers performed phrases from overlapping Whisper/MMS crops. Whole-track
 acoustic acceptance remains open under LT2.
@@ -9,12 +13,11 @@ acoustic acceptance remains open under LT2.
 Private evidence is in `build/lyrics-recording-2026-09-08/`:
 
 - `frames/12.png` through `frames/40.png`: one frame per second from the
-  operator's `2026-09-08 21-20-09.mp4`. These show the local job starting and
+  operator's local screen recording. These show the local job starting and
   remaining at `00:00 elapsed` while playback advances.
 - `later/` and `later.jpg`: supplementary five-second samples after 00:40,
   showing the completed result, Apply, Potential cues, and caption playback.
-- `prior-thread.md`: all 259 projected messages from T3 thread
-  `f185f01b-848d-4331-9870-b846e5ae2808`, exported read-only.
+- `prior-thread.md`: a read-only export of 259 messages from the prior session.
 - `findings.json`: source artifact hashes, local generation/cache facts,
   accepted lines and unresolved evidence.
 - `gemini-first-clip.json`, `gemini-0-25.json`, `gemini-58-30.json`: fresh

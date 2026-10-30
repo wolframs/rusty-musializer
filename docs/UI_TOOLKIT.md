@@ -3,8 +3,8 @@
 The right column holds Direct, Lyrics, Look, Assist and Render. The F8 modal
 Editor was retired on 2026-10-30 by the operator: "we'll retire it and ensure
 that all of its functionality gets correctly taken over into the new UI".
-Look owns scene settings, Explore, presets and mappings. Lyrics owns cue text,
-time fields, playhead stamps, Apply/Discard, navigation and undo. The transport,
+Look owns scene settings, Nudge and Surprise, saved looks and routes. Lyrics
+owns cue text, time fields, playhead stamps, Apply/Discard, navigation and undo. The transport,
 top bar and time axis remain available while editing.
 
 **Pixel look** is a group below Look's scene parameters: a filter on any scene,
@@ -26,9 +26,8 @@ The column has one visible lyric draft with Apply/Discard and context-change
 guards. The independent modal's per-cue hidden draft cache was retired with it;
 there are no competing lyric buffers or selection bridge. Column text fields
 retain keyboard ownership: use Tracks → Save while a field is focused, or
-Ctrl+S after leaving the field. The normal draft
-still participates in quit/recovery guards. This policy difference is listed
-in the retirement inventory for lead review.
+Ctrl+S after leaving the field. The normal draft still participates in
+quit/recovery guards.
 
 ## Integration boundary
 
@@ -49,11 +48,9 @@ in the retirement inventory for lead review.
 `tools/pixel_look_check.sh` presses report-addressed controls with `click=`,
 including gap controls; checks actual model values, native typed entry and
 Escape, both appearance choices and restart persistence; captures both scopes
-in dark/light at 960x640, 1280x720 and 1920x1080. It replaces the removed
-`egui_editor_check.sh`. Existing Lyrics/Look/column gates retain settings,
-cue edits, Save/undo, routing, dock and renderer coverage. Captures and negative
-controls live under `build/wx5-editor/`; handoff notes and inventory under
-`build/redesign/`. All app launches use the isolated, muted launcher.
+in dark/light at 960x640, 1280x720 and 1920x1080.
+Existing Lyrics/Look/column gates retain settings, cue edits, Save/undo, routing,
+dock and renderer coverage. All app launches use the isolated, muted launcher.
 
 ## Tokens and type (WX-5a, 2026-10-24)
 
@@ -105,7 +102,7 @@ by its channel order, so the two moved together.
 
 WX-5c added no roles and one style. `ButtonStyle::Ghost` is a control that
 draws only its glyph, in `ui_muted`, until it is hovered (`ui_hover`) or its
-state holds (the selection outline and tint): the rail's four icons, the
+state holds (the selection outline and tint): the rail's three icons, the
 transport's seek trio, readout, mute and fullscreen. The round play button is
 an `ui_ink` disc with the glyph in `ui_surface`, and the volume chip is a
 Neutral control with the level as a 3 px `ui_level` fill along its bottom and

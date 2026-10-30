@@ -1,5 +1,8 @@
 # Lyrics grouping review — 2026-09-07
 
+> Archived on 2026-10-30. Both phrase judgments are resolved. This is a
+> historical session record; local evidence paths refer to private artifacts.
+
 The lyrics investigation is paused at the operator's request. Both performed-phrase grouping decisions are resolved: the operator selected
 **two phrases** with **clear** confidence for each, and confirmed the displayed
 timing was “spot on”. Frozen model references remain unchanged; the human
@@ -7,9 +10,7 @@ adjudication is recorded separately for the next scoring pass.
 
 ## Listen and score
 
-On a device connected to the same Tailscale network, open
-the prepared listening session (served on the workstation's Tailscale address, port 4180).
-It uses the existing Listening Lab. **Compare the timed lyrics** shows
+The prepared listening session used the existing Listening Lab. **Compare the timed lyrics** shows
 synchronized one-phrase and two-phrase caption previews above the answer form.
 Their timelines share the playhead, label cue edges in original-track time, and
 mark the proposed gap. Click a cue to seek, use **Seek before gap**, or
@@ -60,15 +61,6 @@ Rust answers are beside the protocol as `grouping.answers.jsonl`.
 Use either surface; question ids are `groyper` and `floor`. If both surfaces
 are used, preserve both answer logs and resolve conflicting choices explicitly.
 
-The browser server is the user service `musializer-lyrics-grouping-review`,
-bound only to this machine's Tailscale address on port 4180. It remains available
-when the coding session ends, while the machine is awake. Check or stop it with:
-
-```sh
-systemctl --user status musializer-lyrics-grouping-review
-systemctl --user stop musializer-lyrics-grouping-review
-```
-
 To recreate the bundle in a fresh directory:
 
 ```sh
@@ -86,7 +78,7 @@ All ten actual normal Assist runs have finished. The final saved-candidate
 comparison uses reference v3 and matcher v6; original receipts retain their
 actual adapter versions (10 for tracks 01–07, 11 for 08–10). The full table is
 in `build/lyrics-acceptance-2026-09-06/NORMAL_ASSIST_CHECKPOINT.md` and the
-[investigation record](LYRICS_ASSIST_REPAIR_2026-09-06.md).
+[investigation record](../LYRICS_ASSIST_REPAIR_2026-09-06.md).
 These are model-reference disagreements, not adjudicated accuracy. The ≤3%
 per-track target with ±0.5-second edge tolerance remains unmet/unproven.
 No research helper remains running. On resume, apply the recorded human judgments before the next scoring pass.

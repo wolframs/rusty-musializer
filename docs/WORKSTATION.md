@@ -1,24 +1,12 @@
 # WX — the window as a directing workstation
 
-Opened 2026-10-21. The operator opened "Door, No Room" in the window, said the
-interface was ugly ("MAN IS THIS INTERFACE UGLY, WHAT WAS I THINKING :D"), and
-then asked for this:
+This guide describes the directing workspace: the video preview, timeline,
+manual controls, terminal and native agent sessions. Agents can write treatments
+while the window follows their edits. The controls remain available for manual
+editing.
 
-> maybe it's feasible to take inspiration from `pingdotgg/t3-code` and implement
-> Claude Code, Codex and Antigravity *into* the musializer main window. Or even
-> just having a terminal emulator in there to run coding agents next to the work
-> window would be good. … Best to split this into parts, set up a planning file,
-> and progress through it :)
-
-Earlier the same day they said they barely use the window by hand any more and
-are "not married to the musializer's current UI". Videos are now directed by
-agents writing treatments (`docs/MUSIC_VIDEO_CLI.md`). So the window's job
-changes. It used to be a dense editor. Now it is where you **watch** a video
-being directed and **talk** to whoever directs it. Editing by hand stays
-possible, but it is no longer the main thing the window is for.
-
-The queue row is WX in `FEATURE_PARITY_PLAN.md`. This file is the design record
-and the status of each part.
+The implementation record and remaining work are described below. The live queue
+is [FEATURE_PARITY_PLAN.md](../FEATURE_PARITY_PLAN.md).
 
 ## The mockup (WX-0)
 
@@ -157,10 +145,8 @@ service, `posters.rs`, `docs/POSTER_FRAMES.md`, merged 2026-10-24), a hairline a
 edge, glide ramp, grade bar and pixel mark inside its own span. The run under
 the playhead has an inset accent outline and its section an accent tick.
 Hit testing is unchanged and per section, so every gesture still works;
-double-clicking a run zooms the view to it. The lane is 44 px (was 24). Split
-in two by design (`build/redesign/wx5b-design.md` in the main checkout): the
-lane here, the poster-frame service beside it, with a seam commit (`cbbe6b8`)
-both were built against.
+double-clicking a run zooms the view to it. The lane is 44 px (was 24). The lane
+and poster-frame service were built separately against a seam commit (`cbbe6b8`).
 
 **F8 retirement (operator, 2026-10-30).** Look and Lyrics now carry the
 retired modal's work. Pixel look (whole video and section override, palettes,
@@ -168,9 +154,8 @@ short-edge count, kick) is a group below Look's parameters; Dark / Light is in
 its fixed footer. The modal file, application F8 shortcut, pencil icon and
 startup flag are deleted. The column's transport, top bar and time axis stay
 present. Shared egui appearance moved to `egui_theme.rs`; Direct and welcome
-retain their backend. `pixel_look_check.sh` replaces the modal's gate. The
-inventory and lead-review policy differences are in
-`build/redesign/wx5-editor-inventory.md` (untracked local evidence).
+retain their backend. `pixel_look_check.sh` replaces the modal's gate.
+[UI_TOOLKIT.md](UI_TOOLKIT.md) describes the column's draft and shortcut behavior.
 
 ### WX-6 — gate
 
@@ -179,14 +164,10 @@ scripted `/bin/sh` command, and the capture is checked for its output and its
 colours. Agent sessions run against **fake agent executables** that replay
 recorded NDJSON. The gate never starts a real agent and never spends credits.
 
-## Next sessions
+## Workspace implementation record
 
-The operator, 2026-10-21, after WX-0 to WX-4 landed: *"let's consolidate
-ourselves here first. I'm thinking that we should do separate sessions for
-the different steps following from here."* Each entry is one session's
-brief: what to build, where it touches, and how a session knows it is done.
-They are independent unless a line says otherwise. Every one finishes with
-`tools/verify.sh` green and `cargo build --release`.
+These entries record the WX-5 changes and their checks. Remaining work is listed
+under [Open work](#open-work) and tracked in the live queue.
 
 0. **First thing, before any WX-5 work** (operator, 2026-10-24: "first thing
    next session before the redesign"). Two small fixes left over from the
@@ -234,7 +215,7 @@ They are independent unless a line says otherwise. Every one finishes with
    **Done 2026-10-29** on `wx5-redesign` (Rail and Top bar in parallel,
    merged by the lead, then a critic pass; see the last bullet for what is
    left). The plan was
-   [`WX5C_DESIGN.md`](WX5C_DESIGN.md), written by the 5a/5b designer and
+   [`archive/WX5C_DESIGN.md`](archive/WX5C_DESIGN.md), written by the 5a/5b designer and
    accepted by the lead: a 46 px top bar over the workspace (not the dock,
    which keeps its full height — lead's call), a 52 px rail beside the
    preview and transport, Tracks/Scenes flyouts over the preview's left
@@ -264,7 +245,7 @@ They are independent unless a line says otherwise. Every one finishes with
      high until Rail's step 2 gives it 46 px. **Next:** branch Top bar's
      worktree from `82cd54f` (gate on `:79`), resume Rail at step 2 on
      `:78`, in parallel; critic pass after the merge.
-   - **Corrections to `WX5C_DESIGN.md` found by the seam:** `SaveState` has
+   - **Corrections to `archive/WX5C_DESIGN.md` found by the seam:** `SaveState` has
      five states, not four (`UnfiledWork`, "Unfiled work"); the panel-button
      shedding lives in `Shell::toolbar`'s candidate loop, not in
      `transport_bar`'s ladder; the top bar's Still duplicates the Export
@@ -313,7 +294,7 @@ They are independent unless a line says otherwise. Every one finishes with
      the name, as the top bar draws the same name. Captures of every size,
      scale, flyout and the dock in both looks: `build/wx5c-final/` (not
      committed; `build/critic/capture7.sh` remakes them).
-     **Done in the integration (2026-10-30), awaiting lead review:** inline
+     **Done in the integration (2026-10-30):** inline
      artist editing with track-bound focus/draft/commit and exact v1 bytes on
      clear; track-specific scene tile posters through the shared budgeted
      service. Names remain below the pictures and tile states are reported.
@@ -323,7 +304,6 @@ They are independent unless a line says otherwise. Every one finishes with
      - ~~The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
        only.~~ Restructured in WX-5d, below; the preview no longer shrinks
        for any of them.
-     - `README` screenshot still to retake (3a).
 3b. **WX-5d: one right column.** *Landed 2026-10-30.* Every secondary panel
    is a view of one column on the right: Direct (the dock, with the chat
    restyled to invite a conversation), Lyrics (Cues, Style, Effects), Look,
@@ -337,7 +317,7 @@ They are independent unless a line says otherwise. Every one finishes with
    its own full-window screen on the surface, with the frame being encoded.
    Divergence rows carry the per-view decisions; the checks are named in
    the WX-6 row above.
-   **Done in the integration (2026-10-30), awaiting lead review:** welcome
+   **Done in the integration (2026-10-30):** welcome
    notice seat and hover, opaque protocol pennants, Direct apply age and
    changed-section count, READY's full two-line remediation, drawn route-card
    reports and exact geometry checks, and the complete Lyrics widget-index
@@ -353,32 +333,30 @@ They are independent unless a line says otherwise. Every one finishes with
      covered by the column checks and the gate's dark section.
    - The welcome screen has no column, so an agent cannot
      be started before a track is open.
-3a. **Loose ends from WX-5a/5b**, small:
-   - The gate's pixel checks still run on the light look (a theme-only
-     `ui.json` in its private config); the dark default has its own
-     section. Converting the rest to both looks belongs with WX-6.
-   - `tools/lyric_lane_capture.sh` is pinned to the light look the same way.
-   - WX-6's both-look/open-column conversion remains open. The quiet baseline
-     was 553.38 s and pilot 849.83 s (+53.57%), exceeding the +1/3 cap;
-     the pilot assertions were reverted. Five quiet GPU poster gates passed.
-     Optional CPU poster timing is a separate finding; see `HEADLESS_GPU.md`.
-   - Retake the README screenshot after 5c.
-   - Idea, not asked for: the Glyph Lattice as the welcome screen's hero
-     (the Musializer mark on the honeycomb), with the secondary-panel wave.
-4. **WX-4 follow-ups**, small and independent:
-   - inline images in a chat (a contact sheet or still the agent wrote);
-   - a model picker per chat;
-   - resuming a Codex thread after its process dies (`thread/resume`);
-   - a "Follow a treatment…" picker in the dock;
-   - a first real Codex and Antigravity turn through the dock. Both have
-     only been exercised through their protocol probes, so far.
-5. **VG: generated video as material.** Scoped in
-   `docs/VIDEO_GENERATION.md`: five 1080p picks on OpenRouter, all with
-   first and last frames. Building it spends money, so it starts with the
-   consent and price-first route, then a treatment feature (a clip section,
-   or a generated bridge between two sections' frames).
-6. ~~Repair `tools/welcome_theme_check.sh`.~~ Done in the WX-5a polish
-   (the theme menu's rows had swapped).
+The welcome theme gate was repaired in the WX-5a polish after the theme menu's
+rows changed order.
+
+## Open work
+
+The live queue is [FEATURE_PARITY_PLAN.md](../FEATURE_PARITY_PLAN.md). The
+remaining workstation work is:
+
+- **WX-6 appearance coverage.** Convert the remaining pixel checks in
+  `headless_check.sh` and `lyric_lane_capture.sh` to both appearances and the
+  open column. The quiet baseline was 553.38 s and the pilot 849.83 s (+53.57%),
+  exceeding the +1/3 runtime cap; the pilot assertions were reverted. Five quiet
+  GPU poster gates passed. Optional CPU poster timing is a separate finding in
+  [HEADLESS_GPU.md](HEADLESS_GPU.md).
+- **Lyric lane resizing.** Decide whether dragging the lane grip should grow
+  the whole band. The current band limits downward growth.
+- **Native agent sessions.** Add inline images, a model picker per chat,
+  Codex thread resume after process exit, and a treatment file picker. Codex
+  and Antigravity still need a real turn through the dock; protocol probes
+  alone do not establish that integration.
+- **Generated video as material.** The scope is in
+  [VIDEO_GENERATION.md](VIDEO_GENERATION.md). Implementation needs the consent
+  and price display before paid generation, followed by treatment support for
+  clips or generated bridges.
 
 ## Decisions recorded along the way
 
@@ -506,9 +484,6 @@ notice cards still in the pre-redesign style.
   fails. Reverted byte for byte. The palette sweep walks the card's inks on
   the floating surface in both appearances; perturbing Info to the disabled
   tone fails it at 3.12:1.
-- **Historical survey**: `build/redesign/wx5-leftover-survey.md` in the main
-  checkout predates the integrated polish. Current remaining work is under
-  Next sessions above; the survey is not a current completion inventory.
 
 **WX-1/2 (2026-10-21).**
 
@@ -587,9 +562,8 @@ notice cards still in the pre-redesign style.
 
 ## Integrated follow-up evidence (2026-10-30)
 
-The source branch handoffs were copied to the main checkout's local
-`build/redesign/` directory before removal from the repository. Their implementation decisions are in `DIVERGENCES.md`, the
-poster service's contracts in `POSTER_FRAMES.md`, and capture ownership in
+Implementation decisions are in `DIVERGENCES.md`, the poster service's
+contracts in `POSTER_FRAMES.md`, and capture ownership in
 `TRAPS.md`. Both new gates run in `verify.sh` after Look & Assist.
 
 The new private `left-drag=XxY` probe presses at `hover=`, moves twice, then
@@ -630,8 +604,7 @@ The separate optional CPU poster timing failure remains recorded in
 
 Raw logs, checksums, negative controls and 1280x720 dark/light review captures
 are under `build/wx5-integrated/`. Only the copied fixture was opened; artist
-commit captures use a second local project copy. The handoffs remain outside
-the tracked tree in the main checkout's `build/redesign/`.
+commit captures use a second local project copy.
 
 All eight final 1280x720 PNGs were inspected: welcome notices clear the entry
 actions; scene tile pictures remain distinct with readable names; committed

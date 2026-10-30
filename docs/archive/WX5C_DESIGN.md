@@ -1,6 +1,8 @@
-> The 2026-10-30 retirement removes the modal pencil; the column toggle is the sole bottom icon. See UI_TOOLKIT.md.
-
 # WX-5c design note: the rail, the big preview, the top bar
+
+> Archived on 2026-10-30. WX-5c is implemented. This is the original design
+> and division of work, not an implementation brief. Current behavior and open
+> work are described in [WORKSTATION.md](../WORKSTATION.md).
 
 Written by the 5a/5b designer for the lead, 2026-10-24, and accepted by the
 lead the same day (with the dock keeping its full height). 5c builds on the
@@ -295,7 +297,7 @@ on the first capture; don't assume it.**
 
 It hands Rail the exact replacement for the save-badge crop in
 `headless_check.sh`, and drafts its AGENTS rows in
-`build/redesign/wx5c-topbar-rows.md`. It reads `UiPanel` and the inspector
+a separate design note. It reads `UiPanel` and the inspector
 through existing `Shell` methods; if it needs a new one, it asks Rail.
 
 **Separate worktrees,** as Service had: the Top bar agent in its own branch from

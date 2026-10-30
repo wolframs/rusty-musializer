@@ -38,6 +38,9 @@ music/
 *.analysis.json
 /caches/
 
+# Local reference files
+/OUTSIDE-DROPS/
+
 # Local coding-agent instructions that are not this repo's tracked guide
 /.hermes/
 

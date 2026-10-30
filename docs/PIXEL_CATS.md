@@ -73,7 +73,7 @@ default palette differs (the boot screen defaults to the handheld's greens).
 | 8 | `pixels` | 120–320 | 180 | The canvas's short side: smaller is chunkier |
 | 9 | `motion` | 0–2 | 1 | Scrolling, turning and idle animation |
 
-`hue` is a circle for Tune's Surprise, like every scene's hue. A voiced line
+`hue` is a circle for Look's Surprise, like every scene's hue. A voiced line
 (MV9-h) gives its voice's hue to the accent colour that marks the sung word.
 
 ## How it draws
@@ -142,7 +142,7 @@ and lasers, history rows, logo state).
 
 - **Core tests (23, `scenes::pixel_cats`).**
   - All six stagings share one settings shape and a `pixel-` token.
-  - The canvas rule holds in every shape the export panel offers.
+  - The canvas rule holds in every shape the Render view offers.
   - A line lands inside the first half of its cue.
   - Every staging draws its line, with cats, and draws a picture without one.
   - Every staging reacts to a synthetic groove and is byte-identical across
@@ -166,7 +166,7 @@ and lasers, history rows, logo state).
   - A second process draws the same still byte for byte.
   - A 9:16 still draws a 180x320 canvas.
 - **`tools/scene_gallery_check.py --picker-only`.** All seven families, and
-  every Pixel cats tile clicked at the 960x640 / 240 px sidebar minimum.
+  every Pixel cats tile clicked at 960x640.
 - **Differential.** `settings_post_legacy.txt` and
   `route_persistence_post_legacy.txt` gain only the 60 new rows, plus
   Threshold's `beyond` maximum moving 22 → 28 so the doorway can show a pixel
@@ -193,9 +193,7 @@ are in `build/pixel-scene/` with the scripts that wrote their treatments.
 
 - The source video's progress bar that never reaches 100 %, its pause menu
   flipping on hi-hat ticks, its handheld console with a scene inside it, and its
-  music box. The picker shows a family's tiles without scrolling at the minimum
-  sidebar up to six scenes, which set the count; these would be the next
-  stagings.
+  music box. These would be the next stagings.
 - Staging individual lines inside one section. As with Stage, cut one section
   per line (`docs/MUSIC_VIDEO_CLI.md`).
 - Scene-level chord colour jumps (the video's C–A♭–E hue thirds). A treatment

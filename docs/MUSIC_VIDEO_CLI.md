@@ -197,7 +197,7 @@ A section's tuning is the scene's defaults, then that scene's `scenes.<name>.set
 then the section's own `settings`. Settings are named, not positional:
 `"weight"`, `"loom.weight"` and `"settings.loom.weight"` are one control. A
 toggle takes `true`/`false` or `1`/`0`. An in-range value is snapped to the
-control's own precision, which is what the Tune panel does — the number in the
+control's own precision, which is what Look does — the number in the
 file is the number the readout shows.
 
 Two adjacent sections of the **same** scene keep the scene's running state and
