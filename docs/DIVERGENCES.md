@@ -316,3 +316,11 @@ control would be — see the disabled buttons and `ShellCommand::NotImplemented`
 A blank region is indistinguishable from a broken one, and a control that
 silently does nothing is worse than one that explains itself. This is also what
 makes an unfinished area show up in a capture instead of in a bug report.
+
+### EX4-c diagnostic window (2026-10-30)
+
+`--ui-probe audio-stall=MS` adds `audio stall:` with its requested duration,
+frame window, observed-frame count, raw peak/capacity and before/after drop
+and output-underrun counters. Lifetime report lines and application playback
+are unchanged. This invented probe seam distinguishes llvmpipe cold startup
+from the later controlled stall; see `HEADLESS_GPU.md`.

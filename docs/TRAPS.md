@@ -185,3 +185,12 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   editor open" passes on a frame with no editor. Check for `plot@` in the
   report before believing it (WX-5d: `column_check.sh` ran that way until its
   own slab control asked).
+
+- **A lifetime peak cannot locate an injected stall.** EX4-c's CPU failure
+  was ring saturation **before frame 0's first drain**, not at the 120 ms
+  sleep in frame 60 (6720/8192 = 82%). The frame budget excludes startup
+  and lifetime audio counters do not. Read `audio stall:`'s raw before/after
+  counters over the intervention/recovery; keep the lifetime diagnostics
+  visible. A `*"0 dropped"*` shell glob also accepts `10 dropped`: counters
+  are parsed numerically now. Both renderers' controls must reject missing
+  late frames, overflow, additional drops and output starvation.

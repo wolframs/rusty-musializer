@@ -414,9 +414,9 @@ esac
 # could distinguish it from a clean run. `peak ring fill` is the figure that
 # can, and `frame budget:` names the frame it happened on.
 #
-# 120 ms is chosen to sit *inside* the band on purpose: the assertions below
-# require `dropped=0` and `underruns=0`, so this fails if the new lines ever
-# stop being the only ones that fire.
+# 120 ms sits inside the band after startup. The scoped diagnostic below
+# pins zero losses during the intervention and recovery on both renderers;
+# GPU must also retain lifetime zero losses. CPU startup is reported separately.
 echo "=== the silent stall band ==="
 STALL_REPORT="$OUT_DIR/frame-stall-negative-control.txt"
 set +e
@@ -440,29 +440,14 @@ STALL_AUDIO="$(sed -n 's/^audio frames: *//p' "$STALL_REPORT")"
 STALL_UNDERRUNS="$(sed -n 's/^output underruns: *//p' "$STALL_REPORT")"
 echo "stalled run:  $STALL_BUDGET"
 echo "stalled run:  $STALL_AUDIO"
-case "$STALL_BUDGET" in
-    *"0 of 120 stalled"*|'')
-        echo "FAIL: a forced 120 ms stall was not counted by 'frame budget:'" >&2
-        exit 1
-        ;;
-esac
-case "$STALL_AUDIO" in
-    *"peak ring fill 0%"*|*"peak ring fill 1"[0-9]"%"|'')
-        echo "FAIL: a forced 120 ms stall did not move 'peak ring fill'" >&2
-        exit 1
-        ;;
-esac
-# The half that makes the line worth having: at 120 ms the counters that already
-# existed are still clean, so this run is indistinguishable from a healthy one
-# without the two new figures.
-case "$STALL_AUDIO" in
-    *"0 dropped"*) : ;;
-    *) echo "FAIL: 120 ms was outside the silent band (frames were dropped)" >&2; exit 1 ;;
-esac
-if [ "${STALL_UNDERRUNS:-1}" != "0" ]; then
-    echo "FAIL: 120 ms was outside the silent band (underruns=$STALL_UNDERRUNS)" >&2
-    exit 1
-fi
+# The lifetime peak includes startup: llvmpipe can fill the ring before
+# frame 0's first drain, while this later stall itself peaks at 82%.
+# Keep both lifetime lines, and measure the intervention and recovery using
+# raw frame-60..119 counter boundaries. No counter is reset. GPU must also
+# preserve lifetime dropped=0/underruns=0; CPU names the startup limitation.
+STALL_RENDERER=gpu
+[ -n "$MZ_GL" ] || STALL_RENDERER=cpu
+python3 tools/audio_stall_check.py "$STALL_REPORT" "$STALL_RENDERER" || exit 1
 # And a clean run must read clean, or the two lines are noise rather than signal.
 #
 # GX-2: clean *on a quiet machine*. The 25 ms budget has ~8.3 ms of headroom

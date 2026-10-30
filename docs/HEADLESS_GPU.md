@@ -131,3 +131,45 @@ that is invariant under ±1 rounding and coverage splitting, and the two
 renderers must both be in the negative-control loop when such a check is
 written (`MZ_GL_LAUNCH=""` forces the CPU path for exactly this).
 
+
+## EX4-c: a lifetime peak is not the injected stall (2026-10-30)
+
+The llvmpipe failure predates WX-5d. Preliminary repeated samples of the
+unchanged binaries (neighbouring captures present, not quiet acceptance):
+`3ec989e` failed 4/5, worst 124.3–125.1 ms, peak 100%, 0–3 dropped;
+`be507e1` failed 5/5, worst 124.0–124.2 ms, peak 100%, 1–3 dropped.
+Both reported zero output underruns. Final quiet measurements belong in the
+WX-6 report once the neighbouring gates finish.
+
+A temporary, reverted trace located the occupancy: **8192 frames at frame 0**,
+5056 at frame 1, 1440 at frame 2; **6720 at the injected stall, frame 60**.
+The latter is 82% of 8192, exactly the historical EX4-c measurement. The
+ordinary CPU run likewise reached 8160 before its first drain, although its
+measured steady frames remained 16.7 ms. Startup before the first drain is
+longer on llvmpipe; it is not the later 120 ms intervention overflowing.
+The existing frame budget deliberately excludes initialization, while the
+old audio peak/counters included it. Comparing those scopes was the accident.
+
+`audio stall:` now reports raw counter boundaries and occupancy from frame
+60 through recovery at frame 119. Nothing resets the lifetime diagnostics.
+With the new seam: GPU 123.0 ms / 6720 of 8192 / dropped 0..0 / underruns
+0..0; CPU 125.1 ms / 6720 of 8192 / dropped 3..3 / underruns 0..0.
+The gate pins the intervention (120 ms), frame 61, one late frame of 120,
+the 25 ms budget, 60 observations and the 8192-frame capacity. Occupancy
+must exceed the 4096-frame drain and remain below overflow. Callback phase
+makes that occupancy stochastic; these are buffer boundaries, not driver-
+fitted percentage tolerances. GPU still requires lifetime losses zero. CPU
+requires **zero additional drops and zero output underruns** throughout the
+intervention/recovery and names its pre-control startup losses in gate output.
+
+The unchanged GPU gate completed in 676.90 s (11.28 min); other sessions
+compiled and captured during parts of that baseline. Retain its load context
+when comparing runtime.
+
+Window negative controls on both renderers: a real 1 ms intervention (its
+request metadata relabelled 120 only in a diagnostic copy) fails late-frame
+and occupancy assertions; the real 750 ms control fails occupancy, drop delta
+and output starvation. Report-copy perturbations independently reject a zero
+peak, 59 observations, capacity 4096, ten additional drops (the old shell glob
+accepted the substring `0 dropped`), and one underrun. All 14 failed; original
+positive reports and the tracked working diff remained byte-identical.
