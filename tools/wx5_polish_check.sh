@@ -3,6 +3,7 @@
 # Usage: tools/wx5_polish_check.sh [output-dir]
 # MZ_BIN can name a source-perturbed negative-control binary.
 # MZ_GL_LAUNCH="" selects llvmpipe. Never starts a real agent or model.
+# WX5_POLISH_REPLAY=1 rechecks completed PNG/report pairs without launching.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MUSIALIZER_CAPTURE_DISPLAY="${MUSIALIZER_CAPTURE_DISPLAY:-:81}"
@@ -19,6 +20,7 @@ env = os.environ.copy()
 env['MZ_BIN'] = str(Path(env.get('MZ_BIN', 'target/debug/musializer')).resolve())
 env['MZ_STATE_DIR'] = str(out / 'state')
 env['SHELL'] = '/bin/sh'
+replay=os.environ.get('WX5_POLISH_REPLAY')=='1'
 fake = out / 'fake-agent'
 fake.write_text(f'#!/bin/sh\nexec /usr/bin/python3 "{root}/tools/fake_agent.py" "$@"\n')
 fake.chmod(0o755)
@@ -59,9 +61,12 @@ def capture(name, probe, args=(), extra=None, frames=30):
     command=['tools/headless_run.sh',*map(str,args),'--ui-scale',str(current_scale),
         '--ui-theme',current_theme,'--ui-probe',f'size={current_size},{probe}',
         '--probe-frames',str(frames),'--probe-shot',str(png)]
-    with log.open('w') as f:
-        result=subprocess.run(command, env=e, stdout=f, stderr=subprocess.STDOUT)
-    check(result.returncode==0, name+' launch')
+    if not replay:
+        with log.open('w') as f:
+            result=subprocess.run(command, env=e, stdout=f, stderr=subprocess.STDOUT)
+        check(result.returncode==0, name+' launch')
+    else:
+        check('Window closed successfully' in log.read_text(), name+' completed capture')
     text=log.read_text()
     assert png.is_file(), log
     return text, np.array(Image.open(png).convert('RGB'))
@@ -69,7 +74,8 @@ def crop(im,r):
     x,y,w,h=r; k=current_scale/100
     return im[round(y*k):round((y+h)*k),round(x*k):round((x+w)*k)]
 # The exact values below are independent pins, not copied from the report.
-# Pixel checks inspect opaque interiors; antialiased edges are excluded.
+# Fill checks inspect opaque interiors. Text uses coverage against its
+# background, allowing antialiased glyphs and renderer rounding.
 matrix=[('960x640',100),('1280x720',100),('1440x960',150)]
 if os.environ.get('WX5_POLISH_FAST')=='1': matrix=matrix[:1]
 for current_size,current_scale in matrix:
@@ -124,7 +130,9 @@ for current_size,current_scale in matrix:
             check(boundary[2:]==(130.,30.), 'READY exact seat '+tag)
             textpixels=crop(dim,(boundary[0]+12,boundary[1]+14,118,13))
             muted=(146,150,160) if current_theme=='dark' else (98,98,103)
-            check(np.count_nonzero(np.all(textpixels==muted,axis=2))>=3, 'READY second line actually visible '+tag)
+            background=np.array((23,26,31) if current_theme=='dark' else (255,255,255))
+            coverage=np.abs(textpixels.astype(int)-background).sum(axis=2)
+            check(np.count_nonzero(coverage>80)>=12, 'READY second line actually visible '+tag)
     check(bool(long), 'unbuilt route reason visible '+tag)
     for source,args,expected in [
       ('fresh',[],390),
@@ -147,11 +155,13 @@ for current_size,current_scale in matrix:
     def rewrite():
         updated=json.loads(json.dumps(show)); updated['segments'][2]['scene']='loom'
         tmp=out/'live.tmp'; tmp.write_text(json.dumps(updated)); tmp.replace(live)
-    writer=threading.Timer(3.5,rewrite); writer.start()
+    writer=threading.Timer(3.5,rewrite)
+    if not replay: writer.start()
     try:
         direct,di=capture('direct-applied-'+tag,'column=direct,play=0,agent=claude,follow=1',
             ['--treatment',live],frames=420)
-    finally: writer.join()
+    finally:
+        if not replay: writer.join()
     dock=line(direct,'dock')
     check('1 section changed' in dock and re.search(r'· \d+ s ago',dock), 'honest treatment count and age '+tag)
     check('notice@' in dock, 'apply note actually drawn '+tag)
