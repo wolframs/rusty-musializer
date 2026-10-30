@@ -1827,17 +1827,6 @@ impl Shell {
                 .draw(d, input.fonts, input.window, input.ui_scale);
         }
 
-        // Last, and deliberately so: a tooltip belongs above everything, and the
-        // toolbar that owns most of them is the *first* thing drawn. Requested
-        // where the control is and drawn here is the only ordering that works.
-        // Suppressed under the modal, where a tip from a control the user cannot
-        // reach would be drawn over the dialog explaining it.
-        if let Some(tooltip) = self.widgets.tooltip().cloned() {
-            if !modal {
-                widgets::draw_tooltip(d, input.fonts.ui(), &tooltip, input.window);
-            }
-        }
-
         // Fullscreen sheds the splitters along with the panels, so the one place
         // that answers a cursor request is not running. This is the substitute,
         // and it is at the *end* of the frame rather than the start on purpose:
@@ -3540,6 +3529,19 @@ impl Shell {
             true,
         ) {
             self.set_fullscreen(!self.fullscreen, commands);
+        }
+    }
+
+    /// Paint after the composition root has drawn egui, which owns Direct.
+    pub(crate) fn draw_overlay_tooltip(
+        &self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+    ) {
+        if !self.assist_settings.is_open() {
+            if let Some(tooltip) = self.widgets.tooltip() {
+                widgets::draw_tooltip(d, input.fonts.ui(), tooltip, input.window);
+            }
         }
     }
 

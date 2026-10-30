@@ -1385,6 +1385,7 @@ fn run(
         // key means one thing whether or not the dock has focus.
         let mut dock_commands: Vec<ShellCommand> = Vec::new();
         if !app.shell.artist_editing()
+            && !app.shell.assist_settings.is_open()
             && !dock.wants_keyboard()
             && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
@@ -1409,9 +1410,10 @@ fn run(
         // column; the workspace is not narrowed for it. The welcome screen
         // has no column, and its right side is the recent-project list.
         let dock_rect = (app.workspace.current().is_some()
-            && app.shell.column_view() == ui::shell::ColumnView::Direct)
-            .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
-            .filter(|rect| !rect.is_empty());
+            && app.shell.column_view() == ui::shell::ColumnView::Direct
+            && !app.shell.assist_settings.is_open())
+        .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
+        .filter(|rect| !rect.is_empty());
         let workspace_window = full_logical;
         if dock_rect.is_none() {
             app.shell.dock_keyboard = false;
@@ -2055,6 +2057,10 @@ fn run(
                 if let Err(error) = egui_backend.draw(&mut d, &thread) {
                     eprintln!("egui rendering: {error}");
                 }
+            }
+            {
+                let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+                app.shell.draw_overlay_tooltip(&mut ui_draw, &shell_input);
             }
             // Poster work, last in the drawing pair (WX-5b): the shell no
             // longer borrows the board, egui has left ordinary 2D state on the
