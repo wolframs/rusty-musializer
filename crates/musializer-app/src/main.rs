@@ -418,6 +418,7 @@ fn run(
         recent_editable: false,
         preset_selection: 0,
         preset_delete_armed: false,
+        pixel_notice_pending: false,
         shell: {
             let mut shell = Shell::with_preferences(ui_preferences);
             shell.session_credential_fingerprint = session_fingerprint;
@@ -2741,6 +2742,16 @@ fn run(
             }
         }
 
+        // Pixel drags update the finish live but acknowledge once, on release.
+        if app.pixel_notice_pending && !rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+            app.pixel_notice_pending = false;
+            app.shell.notify(
+                Severity::Success,
+                "Pixel look updated",
+                "The new pixel look is applied.",
+            );
+        }
+
         // The transaction edge is a frame with no durable mutation. This turns
         // every uninterrupted slider drag into one edit while keeping separate
         // button presses and editor Apply actions distinct (CX-3).
@@ -3029,6 +3040,7 @@ struct App {
     preset_selection: usize,
     preset_delete_armed: bool,
     shell: Shell,
+    pixel_notice_pending: bool,
 }
 
 impl App {
@@ -4690,6 +4702,7 @@ fn handle_scene_plan_edit(
         return;
     }
 
+    let pixel_only = matches!(edit, Edit::SetPixel { .. } | Edit::SetVideoPixel(_));
     let live_scene = app.scene.id();
     let result = {
         let Some(track) = app.workspace.current_mut() else {
@@ -4743,6 +4756,12 @@ fn handle_scene_plan_edit(
             &error.to_string(),
         ),
         Ok(()) => {
+            // A post-process filter reads the plan directly; it does not
+            // change which running scene owns deterministic state.
+            if pixel_only {
+                app.pixel_notice_pending = true;
+                return;
+            }
             let enabled = app
                 .workspace
                 .current()
@@ -6896,6 +6915,95 @@ fn dock_probes(
 mod tests {
     use super::display_refusal;
     use super::scene_clock_delta;
+
+    #[test]
+    fn pixel_edits_preserve_running_scene_and_exact_model_values() {
+        use super::*;
+        use musializer_core::project::pixel::Pixel;
+        use musializer_core::scene::{SceneDescriptor, SceneState};
+        use ui::panels::scene_timeline::ScenePlanEdit;
+        struct Progress(u32);
+        impl SceneState for Progress {
+            fn id(&self) -> SceneId {
+                SceneId::Spectrum
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let mut app = App {
+            scene: SceneInstance::new(
+                SceneDescriptor {
+                    id: SceneId::Spectrum,
+                    state_version: 1,
+                    make_state: |_| Box::new(Progress(42)),
+                },
+                7,
+            ),
+            workspace: Workspace::new(),
+            pending_settings: SceneSettings::default(),
+            pending_routes: RouteTable::new(),
+            pending_ascii: None,
+            shared_presets: PresetLibrary::new(),
+            preset_store_path: None,
+            presets_editable: false,
+            recent_path: None,
+            recent_editable: false,
+            preset_selection: 0,
+            preset_delete_armed: false,
+            pixel_notice_pending: false,
+            shell: Shell::new(),
+        };
+        app.workspace
+            .push(Track::new("fixture.wav".into(), 8.0, SceneId::Spectrum, 7).unwrap());
+        let look = Pixel {
+            pixels: 216,
+            ..Pixel::OFF
+        };
+        handle_scene_plan_edit(&mut app, ScenePlanEdit::SetVideoPixel(look), 2.0, 1.0);
+        assert_eq!(
+            app.workspace.current().unwrap().scene_switches.finish.pixel,
+            look
+        );
+        assert_eq!(
+            app.scene
+                .state()
+                .as_any()
+                .downcast_ref::<Progress>()
+                .unwrap()
+                .0,
+            42
+        );
+        assert!(app.pixel_notice_pending);
+        app.workspace
+            .current_mut()
+            .unwrap()
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .unwrap();
+        let id = app.workspace.current().unwrap().scene_switches.cues()[0].id;
+        handle_scene_plan_edit(
+            &mut app,
+            ScenePlanEdit::SetPixel {
+                cue_id: id,
+                pixel: Some(look),
+            },
+            2.0,
+            2.0,
+        );
+        assert_eq!(
+            app.workspace.current().unwrap().scene_switches.cues()[0].pixel,
+            Some(look)
+        );
+        assert_eq!(
+            app.scene
+                .state()
+                .as_any()
+                .downcast_ref::<Progress>()
+                .unwrap()
+                .0,
+            42
+        );
+    }
 
     #[test]
     fn treatment_section_changes_are_exact_for_a_stable_partition() {

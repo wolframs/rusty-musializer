@@ -266,7 +266,7 @@ impl Shell {
             metric::UI_FONT_MICRO,
             color::ui_muted(),
         );
-        if let Some(pixel) = next {
+        if let Some(pixel) = next.filter(|pixel| *pixel != current) {
             commands.push(ShellCommand::ScenePlan(if section {
                 ScenePlanEdit::SetPixel {
                     cue_id: covering.unwrap().id,
