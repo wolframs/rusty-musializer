@@ -5,13 +5,13 @@
 <h1 align="center">Musializer</h1>
 
 <p align="center">
-  <strong>Give your music a video worth watching.</strong><br>
-  A music video studio for Linux, built in Rust.
+  <strong>Make a music video from your song.</strong><br>
+  Reactive scenes, timed lyrics, and an agent to direct it with. Linux, Rust.
 </p>
 
 <p align="center">
-  <a href="#let-an-agent-direct-it">Direct with an agent</a> ·
-  <a href="#make-it-yours">What you can make</a> ·
+  <a href="#direct-with-an-agent">Direct with an agent</a> ·
+  <a href="#whats-in-it">What's in it</a> ·
   <a href="#get-started">Get started</a> ·
   <a href="#lyrics-and-assist">Lyrics &amp; Assist</a> ·
   <a href="#direct-from-the-command-line">Command line</a> ·
@@ -20,10 +20,9 @@
 
 ![Musializer paused on a lyric scene in the dark workspace, with the Direct column, scene-plan runs and waveform timeline.](docs/images/workspace-black-amber.png)
 
-Start with a song. Find a scene that suits it, let the bass move the picture,
-give the chorus a different look, and put the words where they're sung. Talk
-it through with an agent, shape each section by hand, or do both, with the
-preview and timeline in view the whole time.
+Musializer makes music videos from audio files. Pick scenes that react to the
+track, time the lyrics, and render an MP4. You can do all of it by hand, or have
+Claude Code, Codex or Antigravity edit the video from a chat next to the preview.
 
 <table>
   <tr>
@@ -40,10 +39,10 @@ preview and timeline in view the whole time.
 
 <p align="center"><sub>Six of 29 scenes, as stills straight from the renderer.</sub></p>
 
-## Let an agent direct it
+## Direct with an agent
 
-Open **Direct** and talk to Claude Code, Codex or Antigravity right beside the
-preview, or use the real terminal below them. Say what a section should feel
+Open **Direct** and talk to Claude Code, Codex or Antigravity beside the preview,
+or use the terminal below them. Say what a section should feel
 like, or ask for a still or a clip. The agent reads your project and writes a
 *treatment*, the one file that directs the video. Start the window with
 `--treatment song.treatment.json`, or drop that file onto it, and the preview
@@ -52,43 +51,43 @@ follows every valid edit while the music keeps playing.
 Each agent uses its own installed CLI and login. The
 [workstation guide](docs/WORKSTATION.md) covers the built-in sessions.
 
-## Make it yours
+## What's in it
 
-**Find a look for your track.** Open **Scenes** in the left rail and choose by
-eye: every tile is a poster frame rendered from your own song. There are luminous
+**Scenes.** Open **Scenes** in the left rail. Every tile is a poster frame
+rendered from your own song. There are luminous
 bars, landscapes, kinetic type and [Fluid Ink](docs/FLUID_INK.md)'s curling plumes.
 The [scene gallery](docs/SCENE_GALLERY.md) runs from reflective chrome to northern
 lights and stained glass. [Pixel cats](docs/PIXEL_CATS.md) turns each lyric line
 into a pixel-art gag, and [Glyph Lattice](docs/GLYPH_LATTICE.md) sets light and
-words in glowing cells. Each scene has its own controls and responds to your track.
+words on a grid of tiny glyphs. Each scene has its own controls and reacts to the audio.
 
-**Arrange the whole song.** Split the timeline into scenes, save different tuning
+**Sections and routes.** Split the timeline into scenes, save different tuning
 for each section, and place markers for moments you want to emphasize. Connect
 volume, beats, spectral changes, or individual frequency bands to scene settings
 through adjustable routes.
 
-**Make lyrics part of the picture.** Edit cue text and timing, stack lines, import
-a typeface, and choose placement, backing, glow, and shadow. Or let the line be
-the picture: Cadence sets it as glowing kinetic type. Stage gives it a poster,
+**Lyrics.** Edit cue text and timing, stack lines, import
+a typeface, and choose placement, backing, glow, and shadow. Or make the line the
+scene itself: Cadence sets it as glowing kinetic type. Stage gives it a poster,
 a terminal, a chat bubble, a stamped card, placards, or a market ticker.
 The lyric timeline supports dragging, splitting, merging, tap timing, and undo.
 
-**Stay in the picture.** **Direct**, **Lyrics**, **Look** and **Assist** share one
+**One column.** **Direct**, **Lyrics**, **Look** and **Assist** share one
 right column, so the preview, transport and timeline stay put when you switch.
 **Look** tunes the scene and its pixel/CRT filter, and Nudge and Surprise try new
 takes for you to keep or undo. Dark is the default; pick Light at startup or in
 Look's footer.
 
-**Export for where you'll share it.** Render a landscape video, a square post,
+**Export.** Render a landscape video, a square post,
 or a vertical clip. Export a whole track, a selected time window, or a still.
 High and Master quality use supersampling to preserve fine lines and bright
 detail. MP4 export supports software encoding and optional NVIDIA encoders.
 
 <table>
   <tr>
-    <td align="center" width="33%"><a href="docs/images/workspace-scenes.jpg"><img src="docs/images/workspace-scenes.jpg" alt="The Scenes flyout shows poster tiles for the Pixel cats family beside a lyric scene preview."></a><br><sub>Scenes: posters of your own song</sub></td>
-    <td align="center" width="33%"><a href="docs/images/workspace-lyrics.jpg"><img src="docs/images/workspace-lyrics.jpg" alt="The Lyrics column shows timed cues beside a Stage lyric chat bubble, with the scene plan and waveform below."></a><br><sub>Lyrics: a list that follows the playhead</sub></td>
-    <td align="center" width="33%"><a href="docs/images/workspace-look.jpg"><img src="docs/images/workspace-look.jpg" alt="The Look column shows scene controls beside the preview, with the timeline still in place."></a><br><sub>Look: tune it section by section</sub></td>
+    <td align="center" width="33%"><a href="docs/images/workspace-scenes.jpg"><img src="docs/images/workspace-scenes.jpg" alt="The Scenes flyout shows poster tiles for the Pixel cats family beside a lyric scene preview."></a><br><sub>Scenes</sub></td>
+    <td align="center" width="33%"><a href="docs/images/workspace-lyrics.jpg"><img src="docs/images/workspace-lyrics.jpg" alt="The Lyrics column shows timed cues beside a Stage lyric chat bubble, with the scene plan and waveform below."></a><br><sub>Lyrics</sub></td>
+    <td align="center" width="33%"><a href="docs/images/workspace-look.jpg"><img src="docs/images/workspace-look.jpg" alt="The Look column shows scene controls beside the preview, with the timeline still in place."></a><br><sub>Look</sub></td>
   </tr>
 </table>
 
@@ -254,7 +253,7 @@ An agent can't hear, so check section changes and lyric timing by ear before you
 post. Transitions are authored in a treatment for now: the window plays them but
 doesn't show or edit them yet.
 
-## Build on it
+## Development
 
 The renderer, audio engine and column controls use **raylib 6.0**.
 **egui 0.35** powers Direct, terminal sessions and the welcome theme picker.
