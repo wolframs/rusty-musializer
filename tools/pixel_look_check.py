@@ -161,7 +161,7 @@ def lyric_run(name, extra, drive=None):
 log=lyric_run('lyric-base','')
 report=line(log,'lyrics column')
 controls={name:centre(rect(report,name)) for name in ['prev','next','text','start','apply']}
-log=lyric_run('lyric-edit',f",click={controls['text'][0]}x{controls['text'][1]}",controls)
+log=lyric_run('lyric-edit','',controls)
 applied=json.loads(project.with_suffix('.after-apply.json').read_text())['lyrics']['cues']
 check(applied[0]['text']=='verified column phrase','Lyrics: native text Apply and Save persist the new words')
 check(applied[0]['start_seconds']==1.25 and applied[0]['end_seconds']==2.5,'Lyrics: native time Apply and Save persist exact 1.250..2.500 span')
