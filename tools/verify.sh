@@ -85,6 +85,16 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' HUP INT TERM
 
+# These gates press the app against a real project, which is not in the repo
+# (no user audio in the tree). A clone without one says so by name.
+fixture_step() {
+    if [ -d build/redesign/fixture ]; then
+        step "$@"
+    else
+        printf '\n\033[1m=== %s ===\033[0m\nskipped: needs a project in build/redesign/fixture\n' "$1"
+    fi
+}
+
 step() {
     local name="$1"
     shift
@@ -172,15 +182,16 @@ finish_queued_steps
 if [ "$QUICK" -eq 0 ]; then
     if command -v Xvfb >/dev/null 2>&1; then
         step "headless gate (window, audio, Spectrum)" tools/headless_check.sh
-        step "About (credits, licences, modal input, appearances)" tools/about_check.sh
+        fixture_step "About (credits, licences, modal input, appearances)" tools/about_check.sh
         step "dock gate (terminal in the window)" tools/dock_check.sh
         step "top bar (title, tabs, still, sheet, render)" tools/top_bar_check.sh
         step "column (views, the frame, census, dock, render, progress)" tools/column_check.sh
         step "lyrics column (cues, style, sample caption, 292 px browser)" tools/lyrics_column_check.sh
         step "pixel look (video, sections, appearance, persistence)" tools/pixel_look_check.sh
-        step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
-        step "WX-5 polish (welcome, protocol, Direct, READY, route geometry)" tools/wx5_polish_check.sh
-        step "scene posters and inline artist (tiles, editing, v1 bytes)" tools/wx5_features_check.sh
+        fixture_step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
+        fixture_step "lyric focus (typing elsewhere never reaches cues)" tools/lyric_focus_check.sh
+        fixture_step "WX-5 polish (welcome, protocol, Direct, READY, route geometry)" tools/wx5_polish_check.sh
+        fixture_step "scene posters and inline artist (tiles, editing, v1 bytes)" tools/wx5_features_check.sh
         step "fluid ink gate (audio and persistent replay)" tools/fluid_ink_check.sh
         step "scene gallery (families, audio, replay)" tools/scene_gallery_check.py
         step "pixel cats (six stagings, audio, replay)" tools/pixel_cats_check.py

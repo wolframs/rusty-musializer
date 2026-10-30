@@ -1916,7 +1916,7 @@ pub(crate) fn alpha(color: Color, amount: f32) -> Color {
 // ---------------------------------------------------------------------------
 //
 // One set of pieces for every view in the right column — Direct, Lyrics, Look,
-// Assist, Render — so the five read as one surface . Every number below
+// Assist, Render — so the five read as one surface. Every number below
 // is the approved mockup's, and every widget returns the rects it drew, because each view
 // prints a report line and a probe aims at a report line, never at a pixel
 // measured once.
