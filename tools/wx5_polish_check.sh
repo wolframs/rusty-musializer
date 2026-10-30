@@ -136,8 +136,11 @@ for current_size,current_scale in matrix:
     gaplog,_=capture('welcome-gap-'+tag,'notices=all,click='+point(gap))
     check(line(gaplog,'notices').split('cards=')[0]==notices.split('cards=')[0], 'welcome gap changes nothing '+tag)
     proto,pim=capture('protocol-'+tag,'column=closed,play=0', ['--protocol',protocol])
-    n=np.count_nonzero(np.all(pim==pennant,axis=2))
-    check(n>=30*(current_scale/100)**2, 'protocol opaque pennants '+tag)
+    mask=np.all(pim==pennant,axis=2)
+    n=np.count_nonzero(mask)
+    columns=np.flatnonzero(mask.any(axis=0))
+    groups=np.split(columns,np.where(np.diff(columns)>1)[0]+1) if columns.size else []
+    check(len(groups)==3 and n>=30*(current_scale/100)**2, 'protocol opaque pennants '+tag)
     ai_check(tag)
     for source,args,expected in [
       ('fresh',[],390),
