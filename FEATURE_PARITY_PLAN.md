@@ -27,6 +27,10 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
+## First-start agent cards — claimed 2026-10-30
+
+`t3/fix-agent-cards-tooltip-screenshot`: reproduce and fix pending shell-PATH discovery in Direct; correct its tooltip; replace the README screenshot. Scoped to runtime discovery, the Direct empty state/report and column gate. Lead review pending; no push or merge.
+
 ## F8 retirement — implemented, lead review pending 2026-10-30
 
 `t3/retire-f8-editor`: pixel filter and appearance moved into Look; modal deletion is its own commit; replacement press/state/persistence checks and the Direct README capture are implemented. Inventory and handoff evidence are in `build/redesign/`; negative controls and captures in `build/wx5-editor/`. The single guarded lyric-draft policy and in-field shortcut ownership are flagged for lead review. Nothing is pushed or merged to master.

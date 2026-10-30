@@ -565,7 +565,7 @@ fn save_tip(track: &Track, state: SaveState) -> String {
 
 fn tab_tip(tab: ModeTab) -> &'static str {
     match tab {
-        ModeTab::Direct => "Direct: the preview and the plan, no panel open",
+        ModeTab::Direct => "Direct: agent chats and the terminal",
         ModeTab::Lyrics => "Lyrics: the lines and their timing",
         ModeTab::Look => "Look: the tuning inspector [T]",
         ModeTab::Assist => "Assist: analysis and lyric timing",

@@ -145,6 +145,46 @@ field() { # field KEY LINE -> the value of `KEY=value`
     sed -nE "s/.*(^| )$1=([^ ]*).*/\\2/p" <<<"$2"
 }
 
+# First-start discovery: no agent override, no chat start or mode switch.
+# A controlled interactive shell reveals three executables only after a delay.
+# Each executable is inert; discovery must never execute an agent.
+mkdir -p "$OUT/agent-bin"
+for agent in claude codex agy; do
+    printf '#!/bin/sh\nexit 91\n' >"$OUT/agent-bin/$agent"
+    chmod +x "$OUT/agent-bin/$agent"
+done
+cat >"$OUT/discovery-shell" <<EOF
+#!/bin/sh
+/usr/bin/sleep 2
+printf '\\n__MUSIALIZER_PATH__%s\\n' '$OUT/agent-bin'
+EOF
+chmod +x "$OUT/discovery-shell"
+agent_states() {
+    local name="$1" frames="$2" shell="$3" expected="$4"
+    env -u MUSIALIZER_AGENT_CLAUDE -u MUSIALIZER_AGENT_CODEX -u MUSIALIZER_AGENT_AGY \
+        SHELL="$shell" MZ_STATE_DIR="$OUT/state-$name" tools/headless_run.sh \
+        --treatment "$SHOW" --ui-scale 100 --ui-probe 'size=1280x720,time=3,column=direct' \
+        --probe-frames "$frames" --probe-shot "$OUT/$name.png" >"$OUT/$name.log" 2>&1 || true
+    local dock
+    dock="$(line_of dock "$OUT/$name.log")"
+    for agent in claude codex agy; do
+        case "$dock" in
+            *"$agent:$expected"*) ;;
+            *) fail "$name: $agent expected $expected: $dock" ;;
+        esac
+    done
+    printf 'agent discovery (%s): %s\n' "$name" "$expected"
+}
+agent_states agents-pending 3 "$OUT/discovery-shell" 'checking:settled=false'
+agent_states agents-installed 240 "$OUT/discovery-shell" 'installed:settled=true'
+agent_states agents-missing 30 /bin/sh 'not-found:settled=true'
+# Narrow replay for this check's one GPU/CPU negative control; never a full CPU gate.
+if [ "${COLUMN_AGENT_DISCOVERY_ONLY:-0}" = 1 ]; then
+    printf 'agent discovery: %d failures\n' "$failures"
+    [ "$failures" -eq 0 ]
+    exit
+fi
+
 # --- 1. Tabs -----------------------------------------------------------------
 run base 30 "size=1280x720,time=3,column=direct"
 bar="$(line_of 'top bar' "$OUT/base.log")"

@@ -61,17 +61,50 @@ pub struct AgentProcess {
     stderr_tail: Vec<String>,
 }
 
-static SHELL_PATH: OnceLock<Mutex<Option<Receiver<Option<String>>>>> = OnceLock::new();
-static RESOLVED: OnceLock<Option<String>> = OnceLock::new();
+static SHELL_PATH: OnceLock<Mutex<ShellPath>> = OnceLock::new();
+
+struct ShellPath {
+    receiver: Receiver<Option<String>>,
+    // None means pending; Some(None) means the shell answered without a PATH.
+    resolved: Option<Option<String>>,
+}
+
+impl ShellPath {
+    fn poll(&mut self, wait: Duration) {
+        if self.resolved.is_some() {
+            return;
+        }
+        match self.receiver.recv_timeout(wait) {
+            Ok(path) => self.resolved = Some(path),
+            Err(mpsc::RecvTimeoutError::Disconnected) => self.resolved = Some(None),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+
+    fn locate(&mut self, program: &str, fallback: &str) -> Location {
+        self.poll(Duration::ZERO);
+        let path = self.resolved.as_ref().and_then(Option::as_deref);
+        if let Some(found) = resolve(program, path.unwrap_or(fallback)) {
+            Location::Found(found)
+        } else if self.resolved.is_none() {
+            Location::Checking
+        } else {
+            Location::NotFound
+        }
+    }
+}
 
 /// Starts asking the login shell for its PATH, once per process.
 pub fn warm_shell_path() {
     SHELL_PATH.get_or_init(|| {
-        let (tx, rx) = mpsc::channel();
+        let (tx, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(ask_shell_for_path());
         });
-        Mutex::new(Some(rx))
+        Mutex::new(ShellPath {
+            receiver,
+            resolved: None,
+        })
     });
 }
 
@@ -93,30 +126,32 @@ fn ask_shell_for_path() -> Option<String> {
 /// The login shell's PATH, waiting up to three seconds for the first answer.
 fn shell_path() -> Option<String> {
     warm_shell_path();
-    RESOLVED
-        .get_or_init(|| {
-            let lock = SHELL_PATH.get()?;
-            let receiver = lock.lock().ok()?.take()?;
-            // A shell that is slow or never answers leaves the current PATH.
-            receiver
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap_or_default()
-        })
-        .clone()
+    let mut state = SHELL_PATH.get()?.lock().ok()?;
+    state.poll(Duration::from_secs(3));
+    // A timeout leaves discovery pending, so later frames can collect it.
+    state.resolved.clone().flatten()
 }
 
-/// Where `program` would be found right now, without waiting: against the
-/// login shell's PATH if it has already answered, else this process's PATH.
-/// For the dock's empty state (WX-5d), which says whether each agent is
-/// installed before anyone presses Start; a frame cannot wait three seconds.
+/// An executable lookup must distinguish a pending shell PATH from absence.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Location {
+    Checking,
+    Found(PathBuf),
+    NotFound,
+}
+
+/// Starts discovery and collects its answer without waiting on the UI thread.
+/// Missing on the inherited PATH is inconclusive until the shell has answered.
 #[must_use]
-pub fn locate(program: &str) -> Option<PathBuf> {
-    let path = RESOLVED
+pub fn locate(program: &str) -> Location {
+    warm_shell_path();
+    let fallback = std::env::var("PATH").unwrap_or_default();
+    SHELL_PATH
         .get()
-        .cloned()
-        .flatten()
-        .or_else(|| std::env::var("PATH").ok())?;
-    resolve(program, &path)
+        .and_then(|state| state.lock().ok())
+        .map_or(Location::Checking, |mut state| {
+            state.locate(program, &fallback)
+        })
 }
 
 /// Resolves `program` against `path` the way `execvp` would.
@@ -400,6 +435,52 @@ mod tests {
         }
         let _ = std::fs::remove_file(&marker);
         assert!(!alive(child), "the agent's own child survived close()");
+    }
+
+    #[test]
+    fn discovery_collects_the_shell_answer_without_starting_an_agent() {
+        let (tx, receiver) = mpsc::channel();
+        let mut state = ShellPath {
+            receiver,
+            resolved: None,
+        };
+        assert_eq!(state.locate("sh", "/nonexistent"), Location::Checking);
+        tx.send(Some("/bin".into())).unwrap();
+        assert_eq!(
+            state.locate("sh", "/nonexistent"),
+            Location::Found(PathBuf::from("/bin/sh"))
+        );
+        assert_eq!(
+            state.locate("no-such-program-mz", "/bin"),
+            Location::NotFound
+        );
+    }
+
+    #[test]
+    fn a_timeout_keeps_discovery_pending_and_failure_settles_on_inherited_path() {
+        let (tx, receiver) = mpsc::channel();
+        let mut state = ShellPath {
+            receiver,
+            resolved: None,
+        };
+        state.poll(Duration::ZERO);
+        assert_eq!(
+            state.locate("no-such-program-mz", "/bin"),
+            Location::Checking
+        );
+        assert_eq!(
+            state.locate("sh", "/bin"),
+            Location::Found(PathBuf::from("/bin/sh"))
+        );
+        drop(tx);
+        assert_eq!(
+            state.locate("no-such-program-mz", "/bin"),
+            Location::NotFound
+        );
+        assert_eq!(
+            state.locate("sh", "/bin"),
+            Location::Found(PathBuf::from("/bin/sh"))
+        );
     }
 
     #[test]

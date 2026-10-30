@@ -42,12 +42,18 @@ fn dot(ui: &mut egui::Ui, colour: egui::Color32) {
     ui.painter().circle_filled(rect.center(), 3.0, colour);
 }
 
-/// Whether `agent` can be started: its test override, or its command on the
-/// PATH this process can see right now.
-fn installed(agent: Agent) -> bool {
+/// The same state drives the painted card and its report.
+fn installed(agent: Agent) -> &'static str {
     let override_var = format!("MUSIALIZER_AGENT_{}", agent.command().to_uppercase());
-    std::env::var_os(&override_var).is_some_and(|value| !value.is_empty())
-        || musializer_runtime::agent_process::locate(agent.command()).is_some()
+    if std::env::var_os(&override_var).is_some_and(|value| !value.is_empty()) {
+        return "installed";
+    }
+    use musializer_runtime::agent_process::Location;
+    match musializer_runtime::agent_process::locate(agent.command()) {
+        Location::Found(_) => "installed",
+        Location::Checking => "checking",
+        Location::NotFound => "not-found",
+    }
 }
 
 impl Dock {
@@ -388,7 +394,12 @@ impl Dock {
                 );
                 ui.add_space(6.0);
                 for agent in Agent::ALL {
-                    let found = installed(agent);
+                    let state = installed(agent);
+                    let found = state == "installed";
+                    if state == "checking" {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(50));
+                    }
                     egui::Frame::new()
                         .fill(of(palette.ui_raised))
                         .stroke(Stroke::new(1.0, of(palette.ui_rule)))
@@ -403,10 +414,10 @@ impl Dock {
                                     ui.spacing_mut().item_spacing.y = 2.0;
                                     ui.label(RichText::new(agent.label()).size(14.0).color(ink));
                                     ui.label(micro(
-                                        if found {
-                                            "Installed"
-                                        } else {
-                                            "Not found on PATH"
+                                        match state {
+                                            "installed" => "Installed",
+                                            "checking" => "Checking…",
+                                            _ => "Not found on PATH",
                                         },
                                         weak,
                                     ));
@@ -439,7 +450,7 @@ impl Dock {
                                             )
                                         };
                                         let response = ui.add(button).on_hover_text(tip);
-                                        starts.push((agent.command(), response.rect));
+                                        starts.push((agent.command(), response.rect, state));
                                         if response.clicked() {
                                             start = Some(agent);
                                         }
@@ -750,13 +761,19 @@ impl Dock {
                 "start {}",
                 self.start_rects
                     .iter()
-                    .map(|(name, rect)| format!("{name}@{}", at(rect)))
+                    .map(|(name, rect, _)| format!("{name}@{}", at(rect)))
                     .collect::<Vec<_>>()
                     .join(";")
             ),
         };
+        let agents = self
+            .start_rects
+            .iter()
+            .map(|(name, _, state)| format!("{name}:{state}:settled={}", *state != "checking"))
+            .collect::<Vec<_>>()
+            .join(";");
         format!(
-            "open={open} tabs={} [{}] keyboard={} pane={} direct=[{direct}] chat=[{chat}] terminal=[{terminal}]",
+            "open={open} tabs={} [{}] keyboard={} pane={} direct=[{direct}] agents=[{agents}] chat=[{chat}] terminal=[{terminal}]",
             tabs.len(),
             tabs.join(", "),
             self.keyboard,
