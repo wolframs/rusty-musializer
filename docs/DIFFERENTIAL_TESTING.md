@@ -157,3 +157,7 @@ empty) left it too: the copy changed on 2026-08-18 (e8e2aa6) and the on-demand
 harness had been red on 13 of them since nobody ran it; they are pinned post-legacy
 by name and the filter asserts it drops exactly 16. Negative control: CARD_PADDING
 13 -> 14 fails all 264 column rows, the oracle half stays green.
+
+2026-10-30: the operator-retired modal removes its rail slot. The post-legacy
+layout pins three icons, the bottom column toggle, and the 3-icon threshold
+ladder (146/140/116 px); legacy UiRect/timeline records are untouched.

@@ -481,8 +481,6 @@ pub struct ToolbarResult {
 
 /// Shell state that survives between frames.
 pub struct Shell {
-    /// Egui editor dialog. Its modal input boundary protects legacy text fields.
-    pub editor_open: bool,
     /// The right-hand dock: terminals and agents (WX-1). Not modal; the
     /// workspace lays itself out beside it.
     pub dock_open: bool,
@@ -728,7 +726,7 @@ pub struct Shell {
     pub open_flyout: Option<Flyout>,
     /// The rail of the last workspace frame drawn, for the `rail:` line.
     /// `None` on the welcome screen, which has no rail, and in the fullscreen
-    /// and editor frames, which hide it.
+    /// frames, which hide it.
     pub(crate) last_rail: Option<musializer_core::ui::workspace_layout::WorkspaceRail>,
     /// Where the open flyout drew in the last frame, for the same line.
     pub(crate) last_flyout: Option<UiRect>,
@@ -1292,7 +1290,6 @@ impl Shell {
         // screen it covered the format strip along the bottom edge — which a
         // headless capture is what showed.
         Self {
-            editor_open: false,
             dock_open: ui_preferences.dock_open,
             dock_keyboard: false,
             poster_requests: Vec::new(),
@@ -1479,8 +1476,7 @@ impl Shell {
         {
             return SaveAffordance::TopBar;
         }
-        // The editor frame, which hides the workspace's chrome while its own
-        // modal is up; Ctrl+S still saves.
+        // A frame without the rail retains the keyboard save affordance.
         SaveAffordance::Fullscreen
     }
 
@@ -1527,9 +1523,6 @@ impl Shell {
     /// one about `tracks_mode` — which is exactly the state review 1.12 is about.
     #[must_use]
     pub fn frame_for(&self, window: (f32, f32), _workspace: &Workspace) -> WorkspaceFrame {
-        if self.editor_open && !self.assist_settings.is_open() {
-            return WorkspaceFrame::editor_beside(window, self.editor_panel(window));
-        }
         if self.fullscreen {
             return WorkspaceFrame::fullscreen(window.0, window.1, true);
         }
@@ -1703,7 +1696,7 @@ impl Shell {
         // means nothing underneath can be pressed. The dialog draws its controls
         // into a bank of its own, which this claim cannot reach. See
         // `ui/assist_settings.rs`'s module comment.
-        let modal = self.assist_settings.is_open() || self.editor_open;
+        let modal = self.assist_settings.is_open();
         if modal {
             self.widgets.button(
                 d,
@@ -1745,7 +1738,7 @@ impl Shell {
         let toolbar = self.toolbar(d, frame, under, &mut commands);
         self.last_rail = frame.rail_layout;
         self.last_flyout = None;
-        self.column_frame = if !self.fullscreen && !self.editor_open {
+        self.column_frame = if !self.fullscreen {
             frame.column
         } else {
             UiRect::default()
@@ -1756,7 +1749,7 @@ impl Shell {
 
         if !self.fullscreen {
             // WX-5c: the top bar and the rail. Both rects are empty in the
-            // fullscreen and editor frames.
+            // fullscreen frames.
             self.top_bar(d, under, frame.top_bar, &mut commands);
             self.rail(d, frame, under, &mut commands);
             // Not drawn under the modal, and not for tidiness: the lyrics cue
@@ -1773,12 +1766,8 @@ impl Shell {
             if !modal && self.column_view() == ColumnView::Look {
                 self.inspector(d, under, &mut commands);
             }
-            if !self.editor_open {
-                self.column_views(d, frame, under, &mut commands);
-            }
-            if !self.editor_open {
-                self.splitters(d, frame, under, &mut commands);
-            }
+            self.column_views(d, frame, under, &mut commands);
+            self.splitters(d, frame, under, &mut commands);
         }
         self.widgets.set_ui_scale(pointer_scale);
         // The protocol question card sits over the preview's bottom edge, and
@@ -1871,7 +1860,7 @@ impl Shell {
     /// Draws [`Shell::hud_readout`] at the top left of `region` (the preview
     /// less an open flyout), clipped to it, in the long form when it fits.
     ///
-    /// With no preview (the editor frame) it goes to the window's corner, as
+    /// With no preview it goes to the window's corner, as
     /// before. Off unless [`Shell::hud_visible`]; the long/short choice reads
     /// the width it actually gets, so a flyout shortens it rather than
     /// letting it run under the inspector.
@@ -1993,7 +1982,7 @@ impl Shell {
         // No track, no rail and no top bar (WX-5c §1).
         self.last_rail = None;
         self.top_bar_state = super::top_bar::TopBarState::default();
-        if self.editor_open || appearance_input_blocked {
+        if appearance_input_blocked {
             self.widgets.button(
                 d,
                 widgets::widget_id(super::assist_settings::MODAL_BLOCK_NAMESPACE, 0),
@@ -2530,14 +2519,6 @@ impl Shell {
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
-        if d.is_key_pressed(raylib::consts::KeyboardKey::KEY_F8)
-            && !d.is_mouse_button_down(raylib::consts::MouseButton::MOUSE_BUTTON_LEFT)
-            && !self.text_entry_has_focus()
-            && self.lyric_draft_allows_context_change(input.workspace)
-        {
-            self.editor_open = true;
-            return;
-        }
         let mut keys = KeyboardFrame::read(d);
         keys.escape |= std::mem::take(&mut self.probe_escape);
         if self.artist_editing() && keys.escape {
@@ -2769,7 +2750,7 @@ impl Shell {
         // `transport_bar::TransportRow`'s, raylib-free and swept for
         // monotonicity: the seek trio goes first, then the inline timecode
         // (to the band's header), then the scrub bar. Tune, Export, Lyrics and
-        // Assist are the top bar's tabs and Editor and Dock the rail's icons
+        // Assist are the top bar's tabs and the column toggle the rail's bottom icon
         // since WX-5c, so none of them is here to shed.
         let Some(row) = TransportRow::layout(bar, timecode_width, has_track) else {
             return ToolbarResult::default();
@@ -3024,7 +3005,7 @@ impl Shell {
         // so the tooltip explaining the refusal can be asked for.
         let state = self.widgets.button(d, id, scrub.hit);
         let mouse = input.ui_scale.mouse(d);
-        let dragging = if self.editor_open || self.assist_settings.is_open() {
+        let dragging = if self.assist_settings.is_open() {
             None
         } else {
             self.transport_scrub(
@@ -4096,7 +4077,7 @@ impl Shell {
 
         let mouse = input.ui_scale.mouse(d);
         let over_panel = panel.contains_point(mouse.x, mouse.y);
-        let input_allowed = !self.editor_open && !self.assist_settings.is_open();
+        let input_allowed = !self.assist_settings.is_open();
         if over_panel && input_allowed {
             self.track_scroll.wheel(d.get_mouse_wheel_move(), &metrics);
         }

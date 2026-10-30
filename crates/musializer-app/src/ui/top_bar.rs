@@ -1123,10 +1123,7 @@ impl Shell {
 
     /// Keyboard ownership is queried before egui gathers and drains text.
     pub fn artist_editing(&self) -> bool {
-        self.top_bar_state.artist_editing
-            && !self.fullscreen
-            && !self.editor_open
-            && !self.assist_settings.is_open()
+        self.top_bar_state.artist_editing && !self.fullscreen && !self.assist_settings.is_open()
     }
 
     /// Probe input still requires a real tile-slot press to open the draft.
@@ -1146,9 +1143,6 @@ impl Shell {
     pub fn describe_top_bar(&self) -> String {
         if self.fullscreen {
             return "hidden (fullscreen)".to_owned();
-        }
-        if self.editor_open {
-            return "hidden (editor)".to_owned();
         }
         let state = &self.top_bar_state;
         let (Some(rect), Some(layout)) = (state.drawn, state.layout.as_ref()) else {

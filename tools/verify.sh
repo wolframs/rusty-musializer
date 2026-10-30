@@ -176,6 +176,7 @@ if [ "$QUICK" -eq 0 ]; then
         step "top bar (title, tabs, still, sheet, render)" tools/top_bar_check.sh
         step "column (views, the frame, census, dock, render, progress)" tools/column_check.sh
         step "lyrics column (cues, style, sample caption, 292 px browser)" tools/lyrics_column_check.sh
+        step "pixel look (video, sections, appearance, persistence)" tools/pixel_look_check.sh
         step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
         step "WX-5 polish (welcome, protocol, Direct, READY, route geometry)" tools/wx5_polish_check.sh
         step "scene posters and inline artist (tiles, editing, v1 bytes)" tools/wx5_features_check.sh

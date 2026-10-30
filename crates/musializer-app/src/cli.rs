@@ -646,8 +646,6 @@ pub struct Cli {
     pub ui_probe: Option<UiProbe>,
     /// Rust-side shell scaling. CLI wins over the per-user preference file.
     pub ui_scale: Option<UiScalePreference>,
-    /// Open the egui editor at launch; useful for the migration audition.
-    pub editor_ui: bool,
     /// Session-only appearance override.
     pub ui_theme: Option<crate::ui::theme::UiTheme>,
 
@@ -968,7 +966,7 @@ where
                 },
             },
 
-            "--editor-ui" => cli.editor_ui = true,
+            "--editor-ui" => cli.warn("--editor-ui was retired; use the Look or Lyrics column"),
             "--ui-theme" => match value_of(&argv, i).and_then(crate::ui::theme::UiTheme::parse) {
                 Some(theme) => cli.ui_theme = Some(theme),
                 None => cli.warn("--ui-theme wants dark or light (black-amber or light-blue)"),
@@ -1647,7 +1645,6 @@ Export:
 
 Diagnostics:
   --mute                  Start with the output volume at zero
-  --editor-ui             Open the Tune / Lyrics editor
   --ui-theme NAME         Appearance this launch: dark (the default) or light;
                           black-amber and light-blue name the same two
   --ui-scale VALUE        Shell scale: auto, 100, 125, 150, 175, or 200
@@ -1662,6 +1659,7 @@ Diagnostics:
                           scene-pick=NAME selects a scene through the normal edit path,
                           flyout=tracks|scenes|none opens a rail flyout,
                           column=direct|lyrics|look|assist|render|closed
+                          pixel=video|section reveals Look’s pixel filter
                           shows that column view (not with panel=),
                           column-width=PX, column-switch=VIEW (frame 40),
                           lyrics-pane=cues|style|effects,
@@ -1942,9 +1940,27 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_editor_flags_preserve_track_and_reject_unknown_theme() {
-        let cli = parsed(&["--editor-ui", "--ui-theme", "black-amber", "song.mp3"]);
-        assert!(cli.editor_ui);
+    fn retired_editor_startup_flag_is_refused_and_pixel_probe_is_named() {
+        let cli = parsed(&["--editor-ui"]);
+        assert!(cli.error);
+        assert!(cli
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("--editor-ui")));
+        assert_eq!(
+            parse_ui_probe("pixel=section").unwrap().pixel_scope,
+            Some(true)
+        );
+        assert_eq!(
+            parse_ui_probe("pixel=video").unwrap().pixel_scope,
+            Some(false)
+        );
+        assert!(parse_ui_probe("pixel=unknown").is_none());
+    }
+
+    #[test]
+    fn appearance_flags_preserve_track_and_reject_unknown_theme() {
+        let cli = parsed(&["--ui-theme", "black-amber", "song.mp3"]);
         assert_eq!(cli.ui_theme, Some(crate::ui::theme::UiTheme::BlackAmber));
         let invalid = parsed(&["--ui-theme", "unknown"]);
         assert!(invalid.ui_theme.is_none());

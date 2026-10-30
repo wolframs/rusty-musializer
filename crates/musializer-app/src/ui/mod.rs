@@ -19,7 +19,7 @@ pub mod assist_settings;
 pub mod column;
 pub mod dock;
 pub mod egui_backend;
-pub mod egui_editor;
+pub mod egui_theme;
 pub mod icons;
 pub mod mapping_editor;
 pub mod panels;

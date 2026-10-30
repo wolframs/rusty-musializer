@@ -2612,6 +2612,18 @@ mod tests {
     // close-before-and-after helper; that helper is gone with the global.
 
     #[test]
+    fn pixel_value_keyboard_ownership_ends_when_look_is_hidden() {
+        let mut shell = Shell::default();
+        let mut field = TextField::new(TextRules::ascii_query(6));
+        field.set_focused(true);
+        shell.look_column.pixel_typing = Some(field);
+        shell.inspector_open = true;
+        assert!(shell.tune_value_typing());
+        shell.inspector_open = false;
+        assert!(!shell.tune_value_typing());
+    }
+
+    #[test]
     fn manual_hue_motion_leaves_other_routes_available() {
         let mut shell = Shell::new();
         let mut values = SceneSettings::default();

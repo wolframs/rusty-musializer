@@ -1,114 +1,57 @@
-# Toolkit editor and appearance
+# Workspace controls and appearance
 
-Choose **Theme** in the top-right corner of the startup/project starter screen,
-before opening audio or a project. The choice applies immediately and is saved
-for future launches. Editor uses the same picker and selection.
+The right column holds Direct, Lyrics, Look, Assist and Render. The F8 modal
+Editor was retired on 2026-10-30 by the operator: "we'll retire it and ensure
+that all of its functionality gets correctly taken over into the new UI".
+Look owns scene settings, Explore, presets and mappings. Lyrics owns cue text,
+time fields, playhead stamps, Apply/Discard, navigation and undo. The transport,
+top bar and time axis remain available while editing.
 
-Open **Editor** in the playback toolbar or press **F8**. The right-hand editor
-has Tune and Lyrics tabs, Play/Pause, five-second seek buttons, Save project,
-and a Dark or Light appearance selector. Appearance saves in workstation UI
-preferences, independently of music projects and exported scenes. Dark is the
-default since WX-5a (2026-10-24); both appearances cover the whole workspace.
+**Pixel look** is a group below Look's scene parameters: a filter on any scene,
+scoped to Whole video or This section under the playhead. Choose a palette,
+console colours or Pixels only, set the short-edge pixel count (slider or typed
+value), and choose Answer the kick. A section can inherit The video's look or
+explicitly turn it Off. Listed treatment colours remain visible and untouched
+until another palette is chosen. Commands are the same `SetVideoPixel` and
+`SetPixel`; values, defaults, schema and `.musi` bytes are unchanged.
 
-This is the first representative migration to **egui 0.35**, retaining the raylib
-scene renderer, audio engine and export path. Tune uses the real scene setting
-descriptors; Lyrics edits existing cues with text, start and end fields. Apply
-uses the existing lyric validation and undo history. Save project and Ctrl+S
-work inside Editor; unapplied lyric drafts must be applied before their text or
-timing becomes project data. Close Editor before using the workspace undo shortcut. Unapplied drafts survive closing/reopening
-within the current application session; they are not saved to disk. Unapplied
-drafts participate in the existing quit warning, including when Editor is closed.
-Opening follows the timeline's selected cue; closing selects the cue last edited
-back in the timeline. Previous/Next navigate cues without losing their drafts.
-Escape or F8 closes Editor. Long titles truncate with a full-title hover hint,
-and the save status remains visible beside Save project.
+Dark / Light is a quiet segmented switch in Look's fixed footer. The welcome
+appearance picker remains available before opening audio. Explicit choices
+persist in workstation UI preferences, independently of projects and exports.
+`--ui-theme dark|light` and `black-amber|light-blue` remain session overrides.
+`--editor-ui` was deliberately removed; use the column tabs, or `column=look`
+in a UI probe. There is no application F8 binding or pencil rail slot.
 
-The rest of the workspace remains on its existing controls. Future panel moves
-should reuse the command boundary and theme rather than duplicate business logic.
-The editor is modal for workspace input while playback and preview continue.
-While open, inactive workspace panels are hidden and the complete scene is fitted
-to the space on its left. This prevents the controls from covering the artwork.
-Closing restores the previous workspace layout.
+The column has one visible lyric draft with Apply/Discard and context-change
+guards. The independent modal's per-cue hidden draft cache was retired with it;
+there are no competing lyric buffers or selection bridge. The normal draft
+still participates in quit/recovery guards. This policy difference is listed
+in the retirement inventory for lead review.
 
 ## Integration boundary
 
-- `ui/egui_editor.rs` builds widgets and emits `ShellCommand` / `LyricsEdit`.
-- `main.rs` applies those through the normal persistence, dirty and undo paths.
-- `ui/egui_backend/` translates raylib input, textures and tessellated meshes.
-  It adapts MIT-licensed egui-raylib code (license alongside the module), with
-  deferred texture frees, atlas upload flushing, clipping and focus handling.
-- `ui/theme.rs` owns the appearance enum, the `Palette` both appearances fill
-  in, and the type scale (`metric::UI_FONT_*`). raylib reads them through
-  `theme::color`, egui through `egui_editor::apply_theme`, which derives every
-  `Visuals` colour, text style and the interface face from them (WX-5a). Nothing
-  in egui carries a colour or size of its own. The pure core has no toolkit
-  state.
-- Draw egui last on the default framebuffer, after raylib mode guards finish.
-  Its backend must drop before the window/context.
-
-`--editor-ui` opens the editor at startup. `--ui-theme dark|light` (or the
-persisted names `black-amber|light-blue`, which mean the same) sets a session
-override; changing the selector explicitly saves a preference.
-These flags combine with normal track/project paths and `--ui-scale`.
+- raylib column widgets emit `ShellCommand` / `LyricsEdit`; `main.rs` owns
+  persistence, dirty marking and undo.
+- `ui/egui_theme.rs` owns shared egui styling and the welcome picker, with its
+  pointer-ownership and contrast tests. All tokens come from `ui/theme.rs`.
+- `ui/egui_backend/` remains the input/texture/mesh bridge for Direct, terminal
+  sessions, popups and welcome. egui 0.35 remains a required dependency.
+- egui draws last on the default framebuffer, after raylib mode guards end;
+  its backend drops before the window/context.
+- Pure `core::ui::pixel_look` and `tune_groups` own geometry and choice rules.
+  Numeric tests pin exact layouts and compare serialized projects against the
+  toolkit's explicit values.
 
 ## Checks
 
-`tools/egui_editor_check.sh` drives real pointer, wheel and keyboard events in
-private Xvfb with process-muted playback and an unreachable audio sink. It checks
-setting persistence, cue text/timing persistence, undo of the entire cue array,
-and theme persistence/reload, with screenshots and JSON evidence under `build/`.
-Focused editor tests cover real egui input events, draft retention and contrast.
-The normal headless gate covers the scene renderer and exports after the
-[raylib 6 upgrade](RAYLIB_6_UPGRADE.md).
-
-The 2026-09-08 real-input run is recorded at
-`build/egui-editor-modal-final/result.json`, including a regression check that a
-click over the covered transport leaves the paused playhead at 0.800 seconds.
-`build/egui-verify-final.log` records the quick gate (8 passed), including
-1,728 passing Rust tests and one intentionally ignored runtime test.
-
-The complete headless run (`build/egui-headless-final.log`) passed scene,
-framebuffer, caption, export and protocol assertions. Its sole remaining failure
-was an outdated recovery button coordinate in the existing layout test. The
-corrected recovery section was rerun in full and passed snapshot integrity,
-guarded reopen and restart checks (`build/raylib-upgrade/recovery-qa/result.log`).
-The full headless script was not repeated after that test-only correction.
-The release build log is `build/egui-release-final.log`.
-
-## UX review, 2026-09-08
-
-The focused editor view fits the complete export-shaped preview beside the
-controls. Inactive tracks, scene browser and timeline no longer sit beneath it;
-closing restores them. A pencil icon distinguishes Editor from the old Tune
-inspector. Save and Ctrl+S work inside the editor, transport labels show the
-current action, and five-second seeking avoids having to leave to audition a
-different passage. Cue navigation preserves drafts and returns selection to the
-workspace timeline. Long titles no longer compete with save controls; scrolling
-uses the remaining panel height instead of a fixed header estimate.
-
-The broader audit covered Welcome, the workspace, Tune, Lyrics, Assist and Export
-at 960x640 and 1280x900, across the two themes. Assist status lines now ellipsize
-inside the panel and reveal the full diagnostic on hover. Normal playing-to-paused
-behavior was checked with Fence Around: the preview remains visible. A launch
-parked before any audio analysis can still have a blank spectrum; that is distinct
-from normal pause.
-
-All captures use private Xvfb, --mute, unreachable Pulse/Wayland endpoints and
-isolated preferences. No Plasma login session is needed for these checks.
-The quick verification log is `build/ux-verify-final.log`, and the release build
-log is `build/ux-release.log`. Visual evidence is under `build/ux-review/`.
-
-The final real-input run is `build/ux-review/egui-final4/result.json`: settings,
-scrolling, cue navigation, draft retention, Apply, in-editor Save, workspace undo,
-Escape without quitting, F8 reopen and theme reload passed. At minimum size,
-`build/ux-review/editor-tune-reset-960.png` confirms Reset is reachable. Escape is
-owned by application/editor handlers; raylib's implicit Escape-to-quit is disabled.
-
-Startup theme coverage: `tools/welcome_theme_check.sh` checks both theme choices,
-persistence across restart, and opening audio through the normal picker followed
-by Editor without reverting the skin. Its evidence is under
-`build/welcome-theme-check/`. Pointer ownership is restricted to the picker and
-its popup, so the startup actions stay interactive.
+`tools/pixel_look_check.sh` presses report-addressed controls with `click=`,
+including gap controls; checks actual model values, native typed entry and
+Escape, both appearance choices and restart persistence; captures both scopes
+in dark/light at 960x640, 1280x720 and 1920x1080. It replaces the removed
+`egui_editor_check.sh`. Existing Lyrics/Look/column gates retain settings,
+cue edits, Save/undo, routing, dock and renderer coverage. Captures and negative
+controls live under `build/wx5-editor/`; handoff notes and inventory under
+`build/redesign/`. All app launches use the isolated, muted launcher.
 
 ## Tokens and type (WX-5a, 2026-10-24)
 
@@ -125,10 +68,7 @@ rules it encodes:
 - **Selection is an outline and a tint** (`ui_selected` + `ui_selected_edge`,
   `widgets::button_look`, `widgets::selected_fill`), focus rings use the same
   outline, and a filled amount — slider, meter, scrub bar, the played waveform —
-  is `ui_level`, a warm grey. egui sliders go through
-  `egui_editor::level_slider`, which scopes the rail to `ui_control_edge` and
-  its trailing fill to `ui_level`: egui paints a rail in the button rest fill,
-  which with the palette applied was the panel's own colour.
+  is `ui_level`, a warm grey. The column uses `widgets::slider_row` for scene values and pixel size.
 - **Controls are rounded** (`metric::UI_RADIUS`, `widgets::control_box`); lanes
   and list rows stay square because they are data on an axis.
 - **Things that float are one object** (2026-10-29): a notice card, the

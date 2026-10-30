@@ -453,7 +453,7 @@ The `look:` line gains `pixel=drew (N frames, shaders ok/ok, 320x180 cells of 6
 px, handheld)`, `pixel=off` or `pixel=UNAVAILABLE`, and says `dissolving 0.50`
 mid-dissolve. `scene marks:` counts the sections with a look of their own.
 
-In the window, the Editor's Tune tab (the pencil button, or `--editor-ui`) picks
+In the window, Look's Pixel look group picks
 the look for the whole video and for the section under the playhead, with its
 pixel size and whether it answers the kick; the scene lane marks a section's
 own look with a checker of its palette. Both write the same fields a treatment
@@ -630,7 +630,7 @@ Said here so nobody looks for a flag:
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
 - Authoring a transition, a grade, a glide, the rest of the finish or voices in
-  the window (the pixel look is the exception: the Editor's Tune tab picks it).
+  the window (the pixel look is the exception: Look's Pixel look group picks it).
   They come from a treatment and are saved in the `.musi`. The scene lane
   *shows* them — a light band for how a segment arrives, a ramp for a glide, a
   palette strip for a grade, a dark band for the outro, and a selected

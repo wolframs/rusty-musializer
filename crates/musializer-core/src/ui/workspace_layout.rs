@@ -167,7 +167,7 @@ pub const RAIL_WIDTH: f32 = 52.0;
 /// A flyout's width (§1). It floats over the preview's left edge.
 pub const FLYOUT_WIDTH: f32 = 336.0;
 /// A rail icon's box at full size, and the smallest it may shrink to before
-/// the bottom pair is dropped.
+/// the bottom toggle is dropped.
 pub const RAIL_ICON_SIZE: f32 = 36.0;
 pub const RAIL_ICON_MINIMUM: f32 = 28.0;
 /// Between two icons of one group.
@@ -178,26 +178,19 @@ pub const RAIL_ICON_MARGIN: f32 = 10.0;
 /// bottom group stops sitting at the bottom and stacks under the top one.
 pub const RAIL_GROUP_GAP: f32 = 12.0;
 
-/// The four rail icons, top to bottom (§1).
+/// The three rail icons, top to bottom (§1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RailIcon {
     /// The tracks flyout: open, add, save, the track list.
     Tracks,
     /// The scenes flyout: the picker and the ASCII image footer.
     Scenes,
-    /// The toolkit editor (F8), moved here from the transport.
-    Editor,
     /// The dock (Ctrl+`), moved here from the transport.
     Dock,
 }
 
 impl RailIcon {
-    pub const ALL: [RailIcon; 4] = [
-        RailIcon::Tracks,
-        RailIcon::Scenes,
-        RailIcon::Editor,
-        RailIcon::Dock,
-    ];
+    pub const ALL: [RailIcon; 3] = [RailIcon::Tracks, RailIcon::Scenes, RailIcon::Dock];
 
     /// The token the `rail:` report line prints.
     #[must_use]
@@ -205,7 +198,6 @@ impl RailIcon {
         match self {
             RailIcon::Tracks => "tracks",
             RailIcon::Scenes => "scenes",
-            RailIcon::Editor => "editor",
             RailIcon::Dock => "dock",
         }
     }
@@ -222,9 +214,9 @@ pub struct WorkspaceRail {
     /// From the top bar's bottom to the band's top, [`RAIL_WIDTH`] wide.
     pub rail: UiRect,
     /// One box per [`RailIcon`], in [`RailIcon::ALL`]'s order. `None` when the
-    /// rail is too short to seat it: Editor and Dock go first (both have a key),
+    /// rail is too short to seat it: the column toggle goes first (it has a key),
     /// then Scenes; Tracks is the last to go.
-    pub icons: [Option<UiRect>; 4],
+    pub icons: [Option<UiRect>; 3],
     /// Where a flyout opens: at the rail's right edge, from the top bar's
     /// bottom to the window's. It may cover the transport and the band, because
     /// it is transient.
@@ -235,10 +227,10 @@ impl WorkspaceRail {
     /// Lays the rail out for a window (logical units), a top bar of
     /// `top_bar_height`, and a band whose top edge is `band_top`.
     ///
-    /// The icons sit in two groups: Tracks and Scenes from the top, Editor and
-    /// Dock from the bottom. A rail too short for the gap between them stacks
-    /// the bottom pair under the top pair; one too short for that shrinks every
-    /// icon toward [`RAIL_ICON_MINIMUM`]; below that the bottom pair is
+    /// Tracks and Scenes sit at the top, the column toggle at the bottom.
+    /// A rail too short for the gap between them stacks
+    /// the bottom toggle under the top pair; one too short for that shrinks every
+    /// icon toward [`RAIL_ICON_MINIMUM`]; below that the bottom toggle is
     /// dropped, then Scenes. Each step strictly needs less height than the one
     /// before, so a rail that grows never loses an icon.
     ///
@@ -270,7 +262,7 @@ impl WorkspaceRail {
         let height = rail.height;
         // Height the icons alone ask for, with `n` icons of side `s` stacked.
         let stacked = |n: f32, s: f32| RAIL_ICON_MARGIN * 2.0 + n * s + (n - 1.0) * RAIL_ICON_GAP;
-        let split = stacked(4.0, RAIL_ICON_SIZE) + RAIL_GROUP_GAP - RAIL_ICON_GAP;
+        let split = stacked(3.0, RAIL_ICON_SIZE) + RAIL_GROUP_GAP - RAIL_ICON_GAP;
         let x = |s: f32| (RAIL_WIDTH - s) * 0.5;
         let at = |index: usize, s: f32| {
             UiRect::new(
@@ -280,19 +272,18 @@ impl WorkspaceRail {
                 s,
             )
         };
-        let mut icons = [None; 4];
+        let mut icons = [None; 3];
         if height >= split {
-            // Two groups: the top pair from the top, the bottom pair from the
+            // Two groups: the top pair from the top, the bottom toggle from the
             // bottom, the slack between them.
             let s = RAIL_ICON_SIZE;
             icons[0] = Some(at(0, s));
             icons[1] = Some(at(1, s));
             let bottom = rail.y + rail.height - RAIL_ICON_MARGIN;
-            icons[3] = Some(UiRect::new(x(s), bottom - s, s, s));
-            icons[2] = Some(UiRect::new(x(s), bottom - s * 2.0 - RAIL_ICON_GAP, s, s));
-        } else if height >= stacked(4.0, RAIL_ICON_MINIMUM) {
-            // One column of four, as large as fits.
-            let s = ((height - RAIL_ICON_MARGIN * 2.0 - 3.0 * RAIL_ICON_GAP) / 4.0)
+            icons[2] = Some(UiRect::new(x(s), bottom - s, s, s));
+        } else if height >= stacked(3.0, RAIL_ICON_MINIMUM) {
+            // One column of three, as large as fits.
+            let s = ((height - RAIL_ICON_MARGIN * 2.0 - 2.0 * RAIL_ICON_GAP) / 3.0)
                 .clamp(RAIL_ICON_MINIMUM, RAIL_ICON_SIZE)
                 .floor();
             for (index, icon) in icons.iter_mut().enumerate() {
@@ -408,45 +399,42 @@ mod tests {
         assert_eq!(rail.flyout, UiRect::new(52.0, 46.0, 336.0, 674.0));
         assert_eq!(rail.icons[0], Some(UiRect::new(8.0, 56.0, 36.0, 36.0)));
         assert_eq!(rail.icons[1], Some(UiRect::new(8.0, 98.0, 36.0, 36.0)));
-        assert_eq!(rail.icons[2], Some(UiRect::new(8.0, 372.0, 36.0, 36.0)));
-        assert_eq!(rail.icons[3], Some(UiRect::new(8.0, 414.0, 36.0, 36.0)));
-        assert_eq!(rail.icon(RailIcon::Dock), rail.icons[3]);
+        assert_eq!(rail.icons[2], Some(UiRect::new(8.0, 414.0, 36.0, 36.0)));
+        assert_eq!(rail.icon(RailIcon::Dock), rail.icons[2]);
 
         // 960x640, the minimum: the band starts at 380.
         let rail = WorkspaceRail::layout(960.0, 640.0, TOP_BAR_HEIGHT, 380.0).unwrap();
         assert_eq!(rail.rail, UiRect::new(0.0, 46.0, 52.0, 334.0));
         assert_eq!(rail.flyout, UiRect::new(52.0, 46.0, 336.0, 594.0));
-        assert_eq!(rail.icons[2], Some(UiRect::new(8.0, 292.0, 36.0, 36.0)));
-        assert_eq!(rail.icons[3], Some(UiRect::new(8.0, 334.0, 36.0, 36.0)));
+        assert_eq!(rail.icons[2], Some(UiRect::new(8.0, 334.0, 36.0, 36.0)));
     }
 
     #[test]
-    fn a_short_rail_stacks_then_shrinks_then_drops_its_bottom_pair() {
-        // 182 is exactly four full icons stacked plus the margins; 188 the two
-        // groups with their 12 px between.
-        let split = WorkspaceRail::layout(1280.0, 720.0, 46.0, 46.0 + 188.0).unwrap();
-        assert_eq!(split.icons[1], Some(UiRect::new(8.0, 98.0, 36.0, 36.0)));
-        assert_eq!(split.icons[2], Some(UiRect::new(8.0, 146.0, 36.0, 36.0)));
-        assert_eq!(split.icons[3], Some(UiRect::new(8.0, 188.0, 36.0, 36.0)));
-        let stacked = WorkspaceRail::layout(1280.0, 720.0, 46.0, 46.0 + 187.0).unwrap();
+    fn a_short_rail_stacks_then_shrinks_then_drops_its_bottom_toggle() {
+        let split = WorkspaceRail::layout(1280.0, 720.0, 46.0, 192.0).unwrap();
+        assert_eq!(
+            split.icons,
+            [
+                Some(UiRect::new(8.0, 56.0, 36.0, 36.0)),
+                Some(UiRect::new(8.0, 98.0, 36.0, 36.0)),
+                Some(UiRect::new(8.0, 146.0, 36.0, 36.0))
+            ]
+        );
+        let stacked = WorkspaceRail::layout(1280.0, 720.0, 46.0, 191.0).unwrap();
         assert_eq!(stacked.icons[2], Some(UiRect::new(8.0, 140.0, 36.0, 36.0)));
-        assert_eq!(stacked.icons[3], Some(UiRect::new(8.0, 182.0, 36.0, 36.0)));
-        // 160 px: four icons of 30.
-        let shrunk = WorkspaceRail::layout(1280.0, 720.0, 46.0, 46.0 + 160.0).unwrap();
-        assert_eq!(shrunk.icons[0], Some(UiRect::new(11.0, 56.0, 30.0, 30.0)));
-        assert_eq!(shrunk.icons[3], Some(UiRect::new(11.0, 164.0, 30.0, 30.0)));
-        // 149 px: four of 28 need 150, so the bottom pair goes.
-        let pair = WorkspaceRail::layout(1280.0, 720.0, 46.0, 46.0 + 149.0).unwrap();
+        let shrunk = WorkspaceRail::layout(1280.0, 720.0, 46.0, 176.0).unwrap();
+        assert_eq!(shrunk.icons[0], Some(UiRect::new(10.0, 56.0, 32.0, 32.0)));
+        assert_eq!(shrunk.icons[2], Some(UiRect::new(10.0, 132.0, 32.0, 32.0)));
+        let pair = WorkspaceRail::layout(1280.0, 720.0, 46.0, 161.0).unwrap();
         assert_eq!(pair.icons[2], None);
-        assert_eq!(pair.icons[3], None);
         assert_eq!(pair.icons[1], Some(UiRect::new(8.0, 98.0, 36.0, 36.0)));
-        let one = WorkspaceRail::layout(1280.0, 720.0, 46.0, 46.0 + 50.0).unwrap();
+        let one = WorkspaceRail::layout(1280.0, 720.0, 46.0, 96.0).unwrap();
         assert_eq!(
             one.icons,
-            [Some(UiRect::new(12.0, 56.0, 28.0, 28.0)), None, None, None]
+            [Some(UiRect::new(12.0, 56.0, 28.0, 28.0)), None, None]
         );
-        let none = WorkspaceRail::layout(1280.0, 720.0, 46.0, 46.0 + 47.0).unwrap();
-        assert_eq!(none.icons, [None; 4]);
+        let none = WorkspaceRail::layout(1280.0, 720.0, 46.0, 93.0).unwrap();
+        assert_eq!(none.icons, [None; 3]);
     }
 
     #[test]
@@ -468,7 +456,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seated, 4);
+        assert_eq!(seated, 3);
         assert!(WorkspaceRail::layout(f32::NAN, 720.0, 46.0, 400.0).is_none());
         assert!(WorkspaceRail::layout(40.0, 720.0, 46.0, 400.0).is_none());
         // A window narrower than rail plus flyout gives the flyout what is left.

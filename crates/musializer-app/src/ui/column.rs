@@ -109,7 +109,7 @@ pub fn column_band_height(window_height: f32, requested: Option<f32>) -> f32 {
 impl Shell {
     /// The column's rect in the frame being drawn, head included: what a
     /// view draws into. Empty when the column is closed or the frame
-    /// (fullscreen, the editor) hides it.
+    /// (fullscreen) hides it.
     #[must_use]
     pub(crate) fn column_rect(&self) -> UiRect {
         self.column_frame
@@ -122,22 +122,8 @@ impl Shell {
             .then(|| column_layout::column_width(window_width, self.ui_preferences.column_width))
     }
 
-    /// Where the F8 Editor's panel goes (WX-5d §3.6): the column's own place
-    /// — its x, the full height, 16 px from the top, the bottom and the
-    /// window's right edge — so opening it moves nothing on the right.
-    #[must_use]
-    pub fn editor_panel(&self, window: (f32, f32)) -> UiRect {
-        let width = column_layout::column_width(window.0, self.ui_preferences.column_width);
-        UiRect::new(
-            window.0 - width,
-            16.0,
-            (width - 16.0).max(0.0),
-            (window.1 - 32.0).max(0.0),
-        )
-    }
-
     /// The workspace frame (§1); `Shell::frame_for` calls it whenever the
-    /// frame is neither fullscreen nor the editor.
+    /// frame is not fullscreen.
     #[must_use]
     pub(crate) fn column_frame_for(&self, window: (f32, f32)) -> WorkspaceFrame {
         let mut frame = WorkspaceFrame::with_column(

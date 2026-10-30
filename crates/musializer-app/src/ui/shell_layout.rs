@@ -157,12 +157,12 @@ pub struct WorkspaceFrame {
     /// The top bar across the workspace (WX-5c, `docs/WX5C_DESIGN.md` §4): the
     /// title, the mode tabs, Still / Contact sheet / Render. It spans the
     /// workspace, never the inspector's column or the dock (§0), and is
-    /// [`TOP_BAR_HEIGHT`] tall. Empty in the fullscreen and editor frames,
+    /// [`TOP_BAR_HEIGHT`] tall. Empty in the fullscreen frames,
     /// which hide it.
     pub top_bar: UiRect,
     /// The left rail of icons beside the preview and the transport (§1). It
     /// stops at the band, which keeps the full workspace width (§0). Empty in
-    /// the fullscreen and editor frames.
+    /// the fullscreen frames.
     pub rail: UiRect,
     /// The rail's icons and where a flyout opens, from
     /// [`WorkspaceRail::layout`]. `None` wherever [`Self::rail`] is empty.
@@ -317,21 +317,6 @@ impl WorkspaceFrame {
         } else {
             UiRect::new(window_width.max(0.0), top, 0.0, 0.0)
         };
-        frame
-    }
-
-    /// [`Self::editor`] beside a given panel: with the column layout the
-    /// Editor takes the column's place (WX-5d §3.6), so F8 no longer moves
-    /// the right edge.
-    #[must_use]
-    pub fn editor_beside(window: (f32, f32), panel: UiRect) -> Self {
-        let mut frame = Self::fullscreen(window.0, window.1, false);
-        frame.preview = UiRect::new(
-            16.0,
-            16.0,
-            (panel.x - 32.0).max(0.0),
-            (window.1 - 32.0).max(0.0),
-        );
         frame
     }
 

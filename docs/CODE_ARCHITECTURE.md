@@ -28,8 +28,8 @@ handles, OS process handles, global mutable state, or filesystem side effects.
 Both `musializer-runtime` and `musializer-app` depend on it; core does not depend
 on either one.
 
-The application has an egui editor alongside its existing workspace panels.
-Toolkit widgets emit the same settings commands and lyric edits; `main.rs`
+The application uses raylib column controls and an egui Direct/welcome surface.
+Column widgets emit settings commands and lyric edits; `main.rs`
 applies them through the established model, undo and persistence boundaries.
 The raylib adapter owns input and GPU resources and draws after the scene and
 legacy chrome. Appearance is workstation state, never scene/export state.

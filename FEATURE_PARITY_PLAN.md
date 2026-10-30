@@ -33,13 +33,10 @@ grammar and schemas.
 
 ## UI toolkit follow-through
 
-The representative egui Tune/Lyrics editor and two workstation themes are
-implemented; see [UI_TOOLKIT](docs/UI_TOOLKIT.md). Remaining migration work:
-
-- Move the other workspace panels through the existing command boundary.
-- Decide whether unfinished toolkit drafts should persist across application restarts.
-- Evaluate simultaneous timeline editing in the focused editor view; the current
-  view restores the timeline when closed.
+The right-column workspace replaces the duplicate modal; shared egui styling,
+Direct and the welcome picker remain. See [UI_TOOLKIT](docs/UI_TOOLKIT.md).
+Remaining follow-through: decide whether unfinished toolkit chat drafts should
+persist across application restarts.
 
 ## Deliberate exclusions
 

@@ -74,7 +74,7 @@ pub enum ScenePlanEdit {
     },
     SetEnabled(bool),
     /// One section's pixel look (2026-10-24): `None` wears the video's,
-    /// `Some(Pixel::OFF)` switches it off there. Written by the Editor's Tune
+    /// `Some(Pixel::OFF)` switches it off there. Written by Look's Pixel look
     /// tab; the same field a treatment's section `pixel` compiles into.
     SetPixel {
         cue_id: u64,

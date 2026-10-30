@@ -1,3 +1,5 @@
+> Historical restyle brief. The duplicate modal was retired on 2026-10-30; current controls and coverage are in UI_TOOLKIT.md.
+
 # WX-5 redesign — lead brief (2026-10-24)
 
 *Committed as written for the run; paths under `build/` were that run's scratch

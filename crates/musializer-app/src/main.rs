@@ -425,12 +425,10 @@ fn run(
         },
     };
     app.shell.set_ui_scale_override(options.ui_scale);
-    app.shell.editor_open = options.editor_ui;
     // WX-5d: the column opens where `ui.json` left it (absent: on Direct).
     app.shell.seed_column_from_preferences();
-    let mut editor_backend = ui::egui_backend::EguiBackend::default();
-    let mut editor = ui::egui_editor::EditorState::default();
-    let mut editor_was_active = false;
+    let mut egui_backend = ui::egui_backend::EguiBackend::default();
+    let mut welcome_theme = options.ui_theme.unwrap_or(app.shell.appearance());
     // WX-1/2: terminals and agents beside the workspace. Declared after the
     // egui backend, so it drops (and hangs up on its shells) first.
     let mut dock = ui::dock::Dock::default();
@@ -448,8 +446,7 @@ fn run(
             app.shell.open_flyout = flyout;
         }
     }
-    editor.theme = options.ui_theme.unwrap_or(app.shell.appearance());
-    ui::theme::set_current(editor.theme);
+    ui::theme::set_current(welcome_theme);
     // Batch/probe runs never touch the operator's state directory. Tests that
     // exercise recovery opt into a scratch location explicitly.
     let recovery_enabled = is_session_run(&options)
@@ -1420,7 +1417,7 @@ fn run(
             // (WX-5d §2). Without this a terminal that hid the dock with
             // Ctrl+` kept the keyboard, and the chord could not reopen it.
             if dock.wants_keyboard() {
-                dock.release_keyboard(editor_backend.ctx());
+                dock.release_keyboard(egui_backend.ctx());
             }
         }
         // Reasserted every frame rather than set once, so the tooltip a capture is
@@ -1552,14 +1549,8 @@ fn run(
         if rl.window_should_close() {
             let discards_work = app.workspace.any_unsaved_work()
                 || app.shell.lyric_draft_is_dirty(&app.workspace)
-                || app.shell.route_edit_is_dirty()
-                || editor.has_dirty_drafts();
-            if confirm_close(
-                &mut app,
-                export.is_some(),
-                editor.has_dirty_drafts(),
-                &mut close_warned,
-            ) {
+                || app.shell.route_edit_is_dirty();
+            if confirm_close(&mut app, export.is_some(), &mut close_warned) {
                 if discards_work {
                     if let Err(error) = recovery_store.discard() {
                         eprintln!("warning: explicit discard could not remove recovery: {error}");
@@ -1786,24 +1777,10 @@ fn run(
             let _ = ensure_song_atlas_map(&audio, &mut app, music.as_ref());
         }
 
-        // Build the toolkit-owned editor before the raylib drawing pair. Legacy
-        // input stays modal-blocked for the whole frame, including a close click.
-        let editor_active = app.shell.editor_open && !app.shell.assist_settings.is_open();
-        let mut editor_output = ui::egui_editor::EditorOutput::default();
-        if editor_active
-            && !editor_was_active
-            && app.shell.lyrics.draft_owner() == app.workspace.current_index()
-        {
-            if let Some(track) = app.workspace.current() {
-                editor.focus_cue(track, app.shell.lyrics.selected_id);
-            }
-        }
-        editor_was_active = editor_active;
-        let welcome_theme_active = app.workspace.current().is_none() && !editor_active;
+        let welcome_theme_active = app.workspace.current().is_none();
+        let mut appearance_commands = Vec::new();
         let mut welcome_input_blocked = false;
-        // One egui pass for every toolkit surface on screen: the dock, the
-        // Editor and the welcome theme picker. The dock is built first, so
-        // keys a terminal used are gone before the Editor reads its Escape.
+        // One egui pass for the dock and welcome appearance picker.
         // The dock's probes run whether or not Direct is on screen (WX-5d):
         // a reply that arrives behind another view is what the Direct tab's
         // dot is for, and a probe that only ran while the dock was shown
@@ -1828,7 +1805,7 @@ fn run(
             }
         }
         if app.shell.artist_editing() && dock.wants_keyboard() {
-            dock.release_keyboard(editor_backend.ctx());
+            dock.release_keyboard(egui_backend.ctx());
             app.shell.dock_keyboard = false;
         }
         if report.frames == 12 {
@@ -1838,22 +1815,21 @@ fn run(
                 }
             }
         }
-        let egui_active = editor_active || welcome_theme_active || dock_rect.is_some();
+        let egui_active = welcome_theme_active || dock_rect.is_some();
         if egui_active {
-            editor_backend.begin_frame(
+            egui_backend.begin_frame(
                 &mut rl,
                 ui_scale.value(),
-                (editor_active || welcome_theme_active || dock.wants_keyboard())
-                    && !app.shell.artist_editing(),
+                (welcome_theme_active || dock.wants_keyboard()) && !app.shell.artist_editing(),
             );
             if let Some(bounds) = dock_rect {
-                ui::egui_editor::apply_theme(editor_backend.ctx(), editor.theme);
+                ui::egui_theme::apply_theme(egui_backend.ctx(), ui::theme::current());
                 let context = dock_context(&app, follow.as_ref(), time_seconds);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
                 );
-                let output = dock.show(editor_backend.ctx(), rect, &context);
+                let output = dock.show(egui_backend.ctx(), rect, &context);
                 if output.toggle {
                     app.shell.toggle_column_view(
                         ui::shell::ColumnView::Direct,
@@ -1866,37 +1842,18 @@ fn run(
                 }
             }
             app.shell.dock_keyboard = app.shell.dock_open && dock.wants_keyboard();
-            if editor_active {
-                let bounds = app.shell.editor_panel(workspace_window);
-                let rect = egui::Rect::from_min_size(
-                    egui::pos2(bounds.x, bounds.y),
-                    egui::vec2(bounds.width, bounds.height),
-                );
-                editor_output = editor.show(
-                    editor_backend.ctx(),
-                    rect,
-                    app.workspace.current(),
-                    app.scene.id(),
-                    app.workspace.current_index(),
-                    time_seconds,
-                    playing,
-                );
-                if let Some(theme) = editor_output.theme {
-                    editor_output.commands.push(app.shell.set_appearance(theme));
-                }
-            }
             if welcome_theme_active {
-                let (theme, owns_input) = ui::egui_editor::welcome_theme(
-                    editor_backend.ctx(),
+                let (theme, owns_input) = ui::egui_theme::welcome_theme(
+                    egui_backend.ctx(),
                     workspace_window,
-                    &mut editor.theme,
+                    &mut welcome_theme,
                 );
                 if let Some(theme) = theme {
-                    editor_output.commands.push(app.shell.set_appearance(theme));
+                    appearance_commands.push(app.shell.set_appearance(theme));
                 }
                 welcome_input_blocked = owns_input;
             }
-            editor_backend.end_frame(&mut rl);
+            egui_backend.end_frame(&mut rl);
         }
 
         // The Direct tab's dot, and one notice when an agent starts waiting
@@ -1988,8 +1945,8 @@ fn run(
                 .draw_welcome(&mut ui_draw, &shell_input, welcome_input_blocked);
             drop(ui_draw);
             if egui_active {
-                if let Err(error) = editor_backend.draw(&mut d, &thread) {
-                    eprintln!("editor rendering: {error}");
+                if let Err(error) = egui_backend.draw(&mut d, &thread) {
+                    eprintln!("egui rendering: {error}");
                 }
             }
         } else {
@@ -2093,8 +2050,8 @@ fn run(
             commands = app.shell.draw(&mut ui_draw, &layout, &shell_input);
             drop(ui_draw);
             if egui_active {
-                if let Err(error) = editor_backend.draw(&mut d, &thread) {
-                    eprintln!("editor rendering: {error}");
+                if let Err(error) = egui_backend.draw(&mut d, &thread) {
+                    eprintln!("egui rendering: {error}");
                 }
             }
             // Poster work, last in the drawing pair (WX-5b): the shell no
@@ -2110,16 +2067,8 @@ fn run(
             );
         }
         posters.enqueue(app.shell.take_poster_requests());
-        // A held legacy gesture may predate opening the editor with F8.
-        // Only the modal owner's commands can cross the application boundary.
-        if editor_active {
-            commands.clear();
-        }
-        commands.append(&mut editor_output.commands);
+        commands.append(&mut appearance_commands);
         commands.append(&mut dock_commands);
-        if editor_output.close_requested {
-            app.shell.editor_open = false;
-        }
 
         // The lyrics editor writes through the track rather than through a
         // `ShellCommand` per keystroke: an edit is a whole cue operation and the
@@ -2127,11 +2076,7 @@ fn run(
         // Drained against the current slot, not blindly (review 1.3): an edit
         // authored on another track is dropped and reported rather than written
         // through the cue id it happens to share with this one.
-        let mut edits = app.shell.drain_lyric_edits(app.workspace.current_index());
-        if editor_active {
-            edits.clear();
-        }
-        edits.append(&mut editor_output.lyric_edits);
+        let edits = app.shell.drain_lyric_edits(app.workspace.current_index());
         if !edits.is_empty() {
             let now = rl.get_time();
             if let Some(track) = app.workspace.current_mut() {
@@ -2172,19 +2117,6 @@ fn run(
                         "Lyric edit was refused",
                         &error.to_string(),
                     );
-                }
-            }
-        }
-
-        if editor_output.close_requested
-            && app.shell.lyrics.draft_owner() == app.workspace.current_index()
-        {
-            if let Some(track) = app.workspace.current() {
-                // Opening requires a clean legacy draft and modal input keeps it
-                // untouched. Rebind after Apply so old field values aren't
-                // mistaken for a new draft against the updated cue.
-                if let Some(id) = editor.selected_cue(track) {
-                    app.shell.lyrics.select_single(&track.lyrics, id);
                 }
             }
         }
@@ -4975,12 +4907,7 @@ fn mark_current_track_dirty(app: &mut App, now_seconds: f64) {
 /// refuses the **first** request and says why, in the tray and on stderr, and
 /// honours the second. That is finite, it never loses work without having said
 /// so, and it is the smallest invention that satisfies both halves.
-fn confirm_close(
-    app: &mut App,
-    exporting: bool,
-    toolkit_draft: bool,
-    already_warned: &mut bool,
-) -> bool {
+fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> bool {
     let dirty = app
         .workspace
         .tracks()
@@ -4994,7 +4921,7 @@ fn confirm_close(
     // twice about the same decision. Guarding quit the way the track row is
     // guarded would be worse still — refusing to close an application is not a
     // reasonable answer to a half-typed lyric.
-    let lyric_draft = app.shell.lyric_draft_is_dirty(&app.workspace) || toolkit_draft;
+    let lyric_draft = app.shell.lyric_draft_is_dirty(&app.workspace);
     // The remaining conditions the C weighs — staged Assist suggestions, a
     // running analysis and a running export — arrive through `assist` and
     // `exporting`.
