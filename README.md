@@ -22,22 +22,34 @@
 Start with a song. Find a scene that suits it, let the bass move the picture,
 give the chorus a different look, and put the words where they're sung.
 Musializer brings scene direction, timed lyrics, and video export into one
-workspace, with playback and preview beside the controls as you work.
+workspace. Talk to an agent in Direct or shape each section by hand, with the
+preview and timeline in view.
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/images/scene-pixel-chapel.jpg" alt="Pixel cats sing a lyric line on a chant staff beneath a rose window."><br><sub>Pixel cats · Rose Window</sub></td>
+    <td width="33%"><img src="docs/images/scene-glyphs.jpg" alt="A solid of light and a lyric line glow on a lattice of tiny glyphs."><br><sub>Glyph Lattice</sub></td>
+    <td width="33%"><img src="docs/images/scene-fluid.jpg" alt="Luminous blue and violet ink curls into plumes on a dark field."><br><sub>Fluid Ink</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/scene-chrome.jpg" alt="A liquid chrome ring rises above a reflective metallic sea."><br><sub>Liquid Chrome</sub></td>
+    <td><img src="docs/images/scene-aurora.jpg" alt="Aurora curtains glow above mountains and a still night lake."><br><sub>Aurora Veil</sub></td>
+    <td><img src="docs/images/scene-stage.jpg" alt="The song's words fill a bold typographic poster on a warm paper background."><br><sub>Stage</sub></td>
+  </tr>
+</table>
 
 ## Make it yours
 
-**Find a look for your track.** Try the luminous bars of Spectrum, the shifting
-characters of Phosphor Dream, the landscapes of Song Atlas, or Cadence's animated
-letterforms. [Fluid Ink](docs/FLUID_INK.md) stirs luminous dye into curling plumes
-with the music. The [scene gallery](docs/SCENE_GALLERY.md) adds reflective chrome,
-northern lights, merging blobs, a neon tunnel, stained glass and iridescent water.
-[Pixel cats](docs/PIXEL_CATS.md) stages each line as a pixel-art gag behind a CRT:
-a boot screen, a lyric editor, a side-scroller, a barbershop quartet, monks under
-a rose window and a gabber tunnel. [Glyph Lattice](docs/GLYPH_LATTICE.md) turns a
-solid of light on a honeycomb of tiny glyphs, kicks running along its edges, and
-can set the sung line in the same glowing cells.
-Family tabs keep the picker compact, with room to read the scene names. Each
-scene has its own controls and responds to your track.
+**Find a look for your track.** Try luminous bars, landscapes, kinetic type,
+or [Fluid Ink](docs/FLUID_INK.md)'s curling plumes. The
+[scene gallery](docs/SCENE_GALLERY.md) ranges from reflective chrome to northern
+lights and stained glass. [Pixel cats](docs/PIXEL_CATS.md) turns each lyric line
+into a pixel-art gag. [Glyph Lattice](docs/GLYPH_LATTICE.md) sets light and words
+in glowing cells. Each scene has its own controls and responds to your track.
+The **Scenes** flyout groups them by family, with real poster frames rendered
+from your track so you can choose by eye.
+
+![The Scenes flyout shows poster tiles for the Pixel cats family beside a lyric scene preview.](docs/images/workspace-scenes.jpg)
 
 **Arrange the whole song.** Split the timeline into scenes, save different tuning
 for each section, and place markers for moments you want to emphasize. Connect
@@ -46,14 +58,18 @@ through adjustable routes.
 
 **Make lyrics part of the picture.** Edit cue text and timing, stack lines, import
 a typeface, and choose placement, backing, glow, and shadow. Or let the line be
-the picture: Cadence sets it as glowing kinetic type, and Stage stages it — as a
-poster, a terminal, a chat bubble, a stamped card, placards, or a market ticker. The lyric timeline
-supports dragging, splitting, merging, tap timing, and undo.
+the picture: Cadence sets it as glowing kinetic type. Stage gives it a poster,
+a terminal, a chat bubble, a stamped card, placards, or a market ticker.
+The lyric timeline supports dragging, splitting, merging, tap timing, and undo.
 
-**Choose your workspace.** Light / blue and Black / amber are available from the
-startup screen or the **Look** footer. Your choice is remembered. Use **Look**
-to shape the scene and its pixel/CRT filter, and **Lyrics** to edit cues beside
-the preview, transport and timeline.
+![The Lyrics column shows timed cues beside a Stage lyric chat bubble, with the scene plan and waveform below.](docs/images/workspace-lyrics.jpg)
+
+**Choose your workspace.** **Direct**, **Lyrics**, **Look** and **Assist** share
+one right column. Switch tabs while the preview, transport and timeline stay
+put. Use Look to tune the scene and its pixel/CRT filter. Dark is the default;
+choose Light at startup or in Look's footer. Your choice is remembered.
+
+![The Look column exposes scene controls beside the preview, with the timeline still in place.](docs/images/workspace-look.jpg)
 
 **Export for where you'll share it.** Render a landscape video, a square post,
 or a vertical clip. Export a whole track, a selected time window, or a still.
@@ -85,16 +101,18 @@ cargo build --release
 ./target/release/musializer
 ```
 
-Choose a theme, then **Open audio** or drop a track into the window. You can also
-launch directly into a song:
+Choose **Open audio** or drop a track into the window. You can also launch
+directly into a song:
 
 ```sh
 ./target/release/musializer "path/to/song.mp3"
 ```
 
-1. Choose a scene and open **Look** to try its controls while the music plays.
+1. Open **Scenes** in the left rail and pick a poster. Try **Look** while the
+   music plays.
 2. Open **Lyrics** to edit words and timing; arrange sections on the timeline.
-3. Open **Render…**, choose the canvas and quality, and render your video.
+3. Choose **Render…** to open Render in the column. Set the shape, size and
+   quality, then **Choose file and render** to save your video.
 
 Save your work as a `.musi` project to return to its scenes, tuning, routes, and
 lyrics. To add Musializer to your application menu and associate project files:
@@ -152,12 +170,19 @@ Run `./target/release/musializer --help` for all options.
 
 ## Let an agent direct it
 
-Everything above can also be done without the window. An AI coding agent — or a
-script, or you in a terminal — can write a video as one file, look at what it
-made, revise it, and render it, all from the command line.
+**Talk to an agent beside the preview.** Open **Direct** for native chats with
+Claude Code, Codex or Antigravity, or use its real terminal. Each agent needs
+its own installed CLI and login. Ask it to shape a *treatment*: the file that
+directs your video. Start the window with `--treatment song.treatment.json`, or
+drop that file onto it, and the preview follows valid edits live. Keep the music
+playing while you work on the next section together.
+See the [workstation guide](docs/WORKSTATION.md) for the built-in sessions.
 
-**The file is a *treatment*.** It says which scene plays when, how each section
-is tuned, how it arrives (a burn, a flash on the drop, an iris out of black),
+**Direct from the command line, too.** An agent, a script, or you in a terminal
+can write a treatment, inspect frames, revise it, and render without the window.
+
+**A treatment describes the whole video.** It says which scene plays when, how
+each section is tuned, how it arrives (a burn, a flash on the drop, an iris out of black),
 what the audio drives, and which lyric line is on screen from when to when.
 Settings are named, not positional, and a mistake is refused by name with the
 valid choices, so an agent can correct itself from the error.
@@ -179,7 +204,7 @@ valid choices, so an agent can correct itself from the error.
 }
 ```
 
-**The loop is ask, write, look, render.**
+**Write, look, revise, render.**
 
 ```sh
 tools/headless_run.sh --vocabulary                       # 1. what can I name? scenes, settings, transitions
@@ -202,12 +227,6 @@ tools/headless_run.sh --treatment song.treatment.json \
 - **`tools/headless_run.sh`** runs the app on a private virtual display, muted,
   and passes its arguments through. Nothing appears on your screen and nothing
   plays through your speakers while an agent works.
-- **A look, not just scenes.** A section can be held to a palette (`grade`),
-  the whole video finished like film (`finish`: bloom, toning, vignette, grain),
-  a section's tuning eased in from the one before (`glide`), and lines made to
-  arrive out of focus. The `threshold` scene is a room with a door whose
-  doorway shows another scene *live* — walk the camera through it and the plan
-  cuts to that scene without a seam.
 - **`tools/align_lyrics.py song.mp3 song.lyrics.json`** times the track's own
   embedded lyrics in seconds, and a treatment can take the file by path.
 
@@ -217,8 +236,8 @@ full format, what each report line means, and what the first video made this
 way taught. [`docs/examples/example.treatment.json`](docs/examples/example.treatment.json)
 is a complete treatment to start from.
 
-What an agent cannot do is hear. Where sections change and when a line is sung
-come from analysis and alignment, so check the timing by ear before you post.
+Check section changes and lyric timing by ear before you post. Analysis and
+alignment give you a starting point.
 And transitions are authored in a treatment for now: the window plays them but
 does not yet show or edit them.
 
