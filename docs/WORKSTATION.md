@@ -304,13 +304,14 @@ They are independent unless a line says otherwise. Every one finishes with
      scale, flyout and the dock in both looks: `build/wx5c-final/` (not
      committed; `build/critic/capture7.sh` remakes them).
      **Left:**
-     - Inline artist editing in the top bar is not built. The artist comes
-       from a treatment or a v2 `.musi` only. It needs a
-       `TextEntrySurface::TopBarArtist` in `ui/shell.rs` reading a
-       `top_bar_state.artist_editing` flag; the field, its commit through a
-       `ShellCommand` and the draw belong in `ui/top_bar.rs`.
+     - Inline artist editing is implemented on `t3/scene-posters-artist-edit`
+       (2026-10-30), awaiting lead review. It adds
+       `TextEntrySurface::TopBarArtist`, a track-bound draft and commit, and
+       exact v1 byte restoration on clear. See `WX5_FEATURES_EVIDENCE.md`.
      - The top bar spans the workspace, not the dock (open choice, §0).
-     - Scene tiles show names, not posters (§1's follow-up).
+     - Scene tile posters (§1's follow-up) are implemented on the same branch,
+       through the existing budgeted service, awaiting lead review. Names remain
+       below the posters; every tile reports its actual draw state.
      - ~~The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
        only.~~ Restructured in WX-5d, below; the preview no longer shrinks
        for any of them.

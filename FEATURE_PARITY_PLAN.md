@@ -66,10 +66,12 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
-**WX-5 scene posters and inline artist — in progress (2026-10-30).**
+**WX-5 scene posters and inline artist — built, awaiting lead review (2026-10-30).**
 Claimed by `t3/scene-posters-artist-edit`, from `be507e1`: track-specific
 scene flyout posters through the budgeted service; in-place artist editing
-with v1 byte restoration on clear. Gate: `tools/wx5_features_check.sh`.
+with v1 byte restoration on clear. GPU and CPU feature gates pass; temporary
+faults fail both. Gate: `tools/wx5_features_check.sh`; implementation and
+evidence: `docs/WX5_FEATURES_EVIDENCE.md`.
 
 
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
