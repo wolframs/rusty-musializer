@@ -55,9 +55,10 @@
 # COLUMN_BIN names a different binary, for a negative control without
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
 #
-# NEGATIVE CONTROLS, run 2026-10-29 on the GPU path and on llvmpipe
-# (MZ_GL_LAUNCH=""), each a binary built from a perturbed tree that was then
-# restored with `git checkout` and shown clean; identical failures on both:
+# NEGATIVE CONTROLS, run again 2026-10-30 on the merged tree, on the GPU path
+# and on llvmpipe (MZ_GL_LAUNCH=""), each a binary built from a perturbed tree
+# that was then restored with `git checkout` and shown clean; the same checks
+# fail on both renderers:
 #   A (16 failures): the tab press calling nothing (check 1's five, the gap
 #     control still green, and check 4's restart, whose save is a tab
 #     press); the column 1 px wider on Lyrics (check 2 at all four sizes);
@@ -74,6 +75,10 @@
 #     drawn on the raised fill and the prompt outlined in the rule tone
 #     (outline 0.00, Allow brightness 27 against >= 170); the window's apply
 #     never noted — while the unrewritten-treatment control stayed green.
+#   D (5 failures): the waiting Assist card and the footer's warning dot
+#     drawn in the accent, so selection reads as *now* (census assist and
+#     assist-open, both appearances: 1208 px on the outline, the dot at
+#     936,701); the dock left drawing on the welcome screen (check 8).
 # The frame-0 control first failed on llvmpipe alone: a readback there
 # returned the newest frame, not the one before (docs/TRAPS.md), so the
 # probe now holds the encoder and photographs a still screen.
@@ -206,14 +211,15 @@ done
 for theme in dark light; do
     for view in direct lyrics look look-route assist assist-open render; do
         name="census-$theme-$view"
+        at=3
         case "$view" in
             # At 1 s, where the treatment's first scene is the drawn one: the
             # probe opens a route on the scene frame 0 draws.
-            look-route) probe="column=look,route=settings.spectrum.amplitude,time=1" ;;
+            look-route) at=1 probe="column=look,route=settings.spectrum.amplitude" ;;
             assist-open) probe="column=assist,assist=confirm" ;;
             *) probe="column=$view" ;;
         esac
-        run "$name" 30 "size=1280x720,time=3,$probe" --ui-theme "$theme"
+        run "$name" 30 "size=1280x720,time=$at,$probe" --ui-theme "$theme"
         if ! python3 tools/accent_census.py "$OUT/$name.png" "$OUT/$name.log" --primary 1 \
             >"$OUT/$name.census" 2>&1; then
             fail "census $theme $view: $(tail -n 3 "$OUT/$name.census" | tr '\n' ' ')"
