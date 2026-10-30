@@ -587,9 +587,8 @@ notice cards still in the pre-redesign style.
 
 ## Integrated follow-up evidence (2026-10-30)
 
-The source branch handoffs were copied to
-`/home/wolfram/Projects/rusty-musializer/build/redesign/` before removal from
-the repository. Their implementation decisions are in `DIVERGENCES.md`, the
+The source branch handoffs were copied to the main checkout's local
+`build/redesign/` directory before removal from the repository. Their implementation decisions are in `DIVERGENCES.md`, the
 poster service's contracts in `POSTER_FRAMES.md`, and capture ownership in
 `TRAPS.md`. Both new gates run in `verify.sh` after Look & Assist.
 
