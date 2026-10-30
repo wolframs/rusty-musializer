@@ -1,11 +1,9 @@
-//! The dock: a right-hand region for terminals and the agents run in them
-//! (WX-1, WX-2; design in `docs/WORKSTATION.md`).
+//! The dock: the terminals and the agents run in them (WX-1, WX-2), drawn as
+//! the right column's Direct view since WX-5d (`dock/column_view.rs`; design
+//! in `docs/WORKSTATION.md`).
 //!
-//! **Not modal**, unlike the egui Editor. The composition root hands the
-//! workspace a window narrower by [`Dock::width_for`], so every raylib panel
-//! lays itself out beside the dock and no hit test changes. The dock is drawn
-//! in the same egui pass as the Editor and is built *before* it, so a key the
-//! terminal used (Escape above all, which interrupts an agent) is gone from
+//! **Not modal**, unlike the egui Editor. The dock is drawn in the same egui
+//! pass as the Editor and is built *before* it, so a key the terminal used (Escape above all, which interrupts an agent) is gone from
 //! the frame's input by the time the Editor looks for its own Escape.
 //!
 //! **Keyboard ownership** is the terminal's focus, carried one frame: the
@@ -31,20 +29,12 @@ pub mod terminal_view;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use egui::{Context, Rect, RichText, Stroke};
+use egui::{Context, Rect};
 
-use crate::ui::theme::color32;
 use musializer_runtime::terminal::{GridSize, Session, Spawn};
 
 use chat_view::ChatTab;
 use terminal_view::TerminalView;
-
-/// The dock's own bounds. 360 is about 44 columns, the least an agent's TUI
-/// is still usable in.
-pub const MINIMUM: f32 = 360.0;
-pub const MAXIMUM: f32 = 1100.0;
-/// The grab strip on the dock's left edge.
-const GRIP: f32 = 6.0;
 
 /// An agent CLI the dock can start in a tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,16 +136,6 @@ impl Tab {
         }
     }
 
-    fn exited(&self) -> bool {
-        match &self.body {
-            Body::Terminal(terminal) => terminal
-                .session
-                .as_ref()
-                .is_some_and(|session| session.exit().is_some()),
-            Body::Chat(_) => false,
-        }
-    }
-
     fn focus(&mut self) {
         match &mut self.body {
             Body::Terminal(terminal) => terminal.view.focus_next = true,
@@ -216,8 +196,6 @@ impl Terminal {
 pub struct DockOutput {
     /// Hide the dock (Ctrl+` from inside a terminal).
     pub toggle: bool,
-    /// The user finished dragging the dock to this width.
-    pub resized: Option<f32>,
     /// Stop following the treatment (WX-3).
     pub stop_following: bool,
 }
@@ -225,19 +203,12 @@ pub struct DockOutput {
 #[derive(Default)]
 pub struct Dock {
     tabs: Vec<Tab>,
-    active: usize,
     keyboard: bool,
     shells_opened: u32,
-    dragging: Option<f32>,
-    /// Ctrl+` opened the dock before it had a tab; the first tab takes focus.
-    focus_first: bool,
     /// Whether the agent buttons open a native chat (the default) or the
     /// agent's own TUI in a terminal tab.
     agents_in_terminal: bool,
     opened: u64,
-    /// Drawn as the column's Direct view (WX-5d): the column owns the grip,
-    /// and the head is the column's 40 px head.
-    in_column: bool,
     /// Agent replies the user has had on screen; more than this is an
     /// unseen reply, the Direct tab's ink dot.
     seen_replies: usize,
@@ -307,8 +278,7 @@ impl Dock {
             body: Body::Terminal(terminal),
             id,
         });
-        self.active = self.tabs.len() - 1;
-        self.terminal_active = Some(self.active);
+        self.terminal_active = Some(self.tabs.len() - 1);
     }
 
     fn next_id(&mut self) -> egui::Id {
@@ -326,13 +296,12 @@ impl Dock {
             body: Body::Chat(chat),
             id,
         });
-        self.active = self.tabs.len() - 1;
-        self.chat_active = Some(self.active);
+        self.chat_active = Some(self.tabs.len() - 1);
     }
 
     /// Sends `text` to the active chat as if typed (`--ui-probe agent-say=`).
     pub fn probe_say(&mut self, text: &str, context: &DockContext) {
-        let index = self.chat_index();
+        let index = self.current_chat().unwrap_or(usize::MAX);
         if let Some(Body::Chat(chat)) = self.tabs.get_mut(index).map(|tab| &mut tab.body) {
             chat.probe_say(text, context);
         }
@@ -341,7 +310,7 @@ impl Dock {
     /// Answers the active chat's open permission prompts
     /// (`--ui-probe agent-decide=`).
     pub fn probe_decide(&mut self, allow: bool) {
-        let index = self.chat_index();
+        let index = self.current_chat().unwrap_or(usize::MAX);
         if let Some(Body::Chat(chat)) = self.tabs.get_mut(index).map(|tab| &mut tab.body) {
             chat.probe_decide(allow);
         }
@@ -365,7 +334,7 @@ impl Dock {
     /// Types `text` into the active terminal (`--ui-probe dock-run=`). Xvfb
     /// has no keyboard; key encoding is covered by `keys`' own tests.
     pub fn probe_write(&mut self, text: &str) {
-        let index = self.terminal_index();
+        let index = self.current_terminal().unwrap_or(usize::MAX);
         if let Some(Body::Terminal(Terminal {
             session: Some(session),
             ..
@@ -375,41 +344,17 @@ impl Dock {
         }
     }
 
-    /// The chat the probes and the Direct view address: the column's shown
-    /// chat, or the dock's active tab.
-    fn chat_index(&self) -> usize {
-        if self.in_column {
-            self.current_chat().unwrap_or(usize::MAX)
-        } else {
-            self.active
-        }
-    }
-
-    /// The terminal the probes address, by the same rule.
-    fn terminal_index(&self) -> usize {
-        if self.in_column {
-            self.current_terminal().unwrap_or(usize::MAX)
-        } else {
-            self.active
-        }
-    }
-
     /// Asks the active terminal to take the keyboard on the next frame.
     pub fn focus_active(&mut self) {
-        // In the column the pane's terminal when it is open, else the chat's
-        // composer: what Ctrl+` lands on is what the user would type into.
-        let index = if self.in_column {
-            if self.terminal_open {
-                self.terminal_index()
-            } else {
-                self.chat_index()
-            }
+        // The pane's terminal when it is open, else the chat's composer: what
+        // Ctrl+` lands on is what the user would type into.
+        let index = if self.terminal_open {
+            self.current_terminal()
         } else {
-            self.active
+            self.current_chat()
         };
-        match self.tabs.get_mut(index) {
-            Some(tab) => tab.focus(),
-            None => self.focus_first = true,
+        if let Some(tab) = index.and_then(|index| self.tabs.get_mut(index)) {
+            tab.focus();
         }
     }
 
@@ -417,9 +362,6 @@ impl Dock {
         if index < self.tabs.len() {
             let mut tab = self.tabs.remove(index);
             tab.close();
-            if self.active >= self.tabs.len() {
-                self.active = self.tabs.len().saturating_sub(1);
-            }
         }
     }
 
@@ -435,26 +377,7 @@ impl Dock {
     /// asserted without reading pixels.
     #[must_use]
     pub fn describe(&self, open: bool) -> String {
-        if self.in_column {
-            return self.describe_column(open);
-        }
-        if self.tabs.is_empty() {
-            return format!("open={open} tabs=0");
-        }
-        let tabs: Vec<String> = self.tabs.iter().map(Tab::title).collect();
-        let detail = match &self.tabs[self.active].body {
-            Body::Terminal(terminal) => {
-                let (state, screen) = terminal_state(terminal);
-                format!("{state} keyboard={} screen={screen:?}", self.keyboard)
-            }
-            Body::Chat(chat) => format!("keyboard={} {}", self.keyboard, chat.describe()),
-        };
-        format!(
-            "open={open} tabs={} [{}] active={} {detail}",
-            tabs.len(),
-            tabs.join(", "),
-            self.active,
-        )
+        self.describe_column(open)
     }
 
     /// Gives up the keyboard (WX-5d §2): the dock left the screen, so no
@@ -522,214 +445,9 @@ impl Dock {
         (badge, notice)
     }
 
-    /// Builds the dock into `rect` (egui points).
+    /// Builds the dock into `rect` (egui points): the column's Direct view.
     pub fn show(&mut self, ctx: &Context, rect: Rect, context: &DockContext) -> DockOutput {
-        if self.in_column {
-            return self.show_column(ctx, rect, context);
-        }
-        let mut output = DockOutput::default();
-        if self.tabs.is_empty() {
-            let focus = std::mem::take(&mut self.focus_first);
-            self.open_tab(None, context, focus);
-        }
-        let visuals = ctx.global_style().visuals.clone();
-        let surface = visuals.panel_fill;
-        let rule = visuals.widgets.noninteractive.bg_stroke.color;
-        egui::Area::new(egui::Id::new("musializer_dock"))
-            .fixed_pos(rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.set_width(rect.width());
-                ui.set_height(rect.height());
-                ui.set_clip_rect(rect);
-                ui.painter().rect_filled(rect, 0.0, surface);
-                ui.painter().line_segment(
-                    [rect.left_top(), rect.left_bottom()],
-                    Stroke::new(1.0, rule),
-                );
-                self.grip(ui, rect, &mut output);
-                let inner = rect.shrink2(egui::vec2(0.0, 0.0));
-                let mut child = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(inner.shrink2(egui::vec2(10.0, 8.0)))
-                        .layout(egui::Layout::top_down(egui::Align::Min)),
-                );
-                output.stop_following = self.header(&mut child, context);
-                child.add_space(6.0);
-                let body = child.available_rect_before_wrap();
-                let mut keyboard = false;
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    let mut body_ui = child.new_child(egui::UiBuilder::new().max_rect(body));
-                    match &mut tab.body {
-                        Body::Terminal(terminal) => {
-                            let restart = if let Some(session) = terminal.session.as_mut() {
-                                let view = terminal.view.show(&mut body_ui, tab.id, session);
-                                keyboard = view.has_focus;
-                                output.toggle |= view.toggle_dock;
-                                view.restart
-                            } else {
-                                body_ui.label(
-                                    RichText::new(format!(
-                                        "Could not start the terminal: {}",
-                                        terminal.error.as_deref().unwrap_or("unknown error")
-                                    ))
-                                    .color(color32::ui_danger()),
-                                );
-                                body_ui.button("Try again").clicked()
-                            };
-                            if restart {
-                                terminal.start(true);
-                            }
-                        }
-                        Body::Chat(chat) => {
-                            keyboard = chat.show(&mut body_ui, context).has_focus;
-                        }
-                    }
-                }
-                self.keyboard = keyboard;
-            });
-        output
-    }
-
-    fn grip(&mut self, ui: &mut egui::Ui, rect: Rect, output: &mut DockOutput) {
-        let grip = Rect::from_min_max(
-            rect.left_top(),
-            egui::pos2(rect.left() + GRIP, rect.bottom()),
-        );
-        let response = ui.interact(grip, egui::Id::new("dock_grip"), egui::Sense::drag());
-        if response.hovered() || response.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-            ui.painter().line_segment(
-                [grip.center_top(), grip.center_bottom()],
-                Stroke::new(2.0, ui.visuals().selection.stroke.color),
-            );
-        }
-        if response.drag_started() {
-            self.dragging = Some(rect.width());
-        }
-        if let (Some(width), Some(pos)) = (self.dragging.as_mut(), response.interact_pointer_pos())
-        {
-            let screen = ui.ctx().content_rect().right();
-            *width = (screen - pos.x).clamp(MINIMUM, MAXIMUM);
-        }
-        if response.drag_stopped() {
-            output.resized = self.dragging.take();
-        }
-    }
-
-    /// Returns whether "stop following" was pressed.
-    fn header(&mut self, ui: &mut egui::Ui, context: &DockContext) -> bool {
-        let mut stop = false;
-        let mut close = None;
-        let mut open: Option<Option<Agent>> = None;
-        if !self.in_column {
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for (index, tab) in self.tabs.iter().enumerate() {
-                    let selected = index == self.active;
-                    let title = tab.title();
-                    let exited = tab.exited();
-                    let text = if exited {
-                        RichText::new(format!("{title} ·")).weak()
-                    } else {
-                        RichText::new(title)
-                    };
-                    if ui.selectable_label(selected, text).clicked() {
-                        self.active = index;
-                        if let Some(tab) = self.tabs.get_mut(index) {
-                            tab.focus();
-                        }
-                        break;
-                    }
-                    if selected
-                        && ui
-                            .small_button("×")
-                            .on_hover_text("Close this tab and hang up on what runs in it")
-                            .clicked()
-                    {
-                        close = Some(index);
-                    }
-                }
-                if ui.small_button("+").on_hover_text("New terminal").clicked() {
-                    open = Some(None);
-                }
-            });
-        }
-        let mut chat = None;
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            for agent in Agent::ALL {
-                let tip = if self.agents_in_terminal {
-                    format!("{} in a terminal tab, in {}", agent.label(), context.place)
-                } else {
-                    format!("Chat with {}, working in {}", agent.label(), context.place)
-                };
-                if ui.button(agent.label()).on_hover_text(tip).clicked() {
-                    if self.agents_in_terminal {
-                        open = Some(Some(agent));
-                    } else {
-                        chat = Some(agent);
-                    }
-                }
-            }
-            ui.checkbox(&mut self.agents_in_terminal, "in terminal")
-                .on_hover_text(
-                    "Open the agent's own interface in a terminal tab instead of a chat",
-                );
-        });
-        ui.add(
-            egui::Label::new(
-                RichText::new(format!("in {}", context.place))
-                    .small()
-                    .weak(),
-            )
-            .truncate(),
-        )
-        .on_hover_text("New tabs start in this folder");
-        if let Some(following) = &context.following {
-            ui.horizontal(|ui| {
-                let (text, colour) = match &following.error {
-                    Some(_) => (
-                        format!("following {} · last change refused", following.name),
-                        color32::ui_danger(),
-                    ),
-                    None => (
-                        format!(
-                            "following {} · {}",
-                            following.name,
-                            match following.applied {
-                                0 => "applies on save".to_string(),
-                                1 => "applied once".to_string(),
-                                n => format!("applied {n} times"),
-                            }
-                        ),
-                        color32::ui_success(),
-                    ),
-                };
-                let label =
-                    ui.add(egui::Label::new(RichText::new(text).small().color(colour)).truncate());
-                let hover = following.error.clone().unwrap_or_else(|| {
-                    "Saving this file applies it to the preview at the playhead. \
-                     It is also in $MUSIALIZER_TREATMENT for new tabs."
-                        .to_string()
-                });
-                label.on_hover_text(hover);
-                stop = ui
-                    .small_button("stop")
-                    .on_hover_text("Stop following; the preview keeps what was applied")
-                    .clicked();
-            });
-        }
-        if let Some(index) = close {
-            self.close_tab(index);
-        }
-        if let Some(agent) = open {
-            self.open_tab(agent, context, true);
-        }
-        if let Some(agent) = chat {
-            self.open_chat(agent, context);
-        }
-        stop
+        self.show_column(ctx, rect, context)
     }
 }
 
