@@ -90,6 +90,14 @@ controls fail as expected; full verification is 16/18 (code map, shared gate's o
 route-height expectations). Evidence and the integration step:
 [`docs/WX5_POLISH.md`](docs/WX5_POLISH.md), `tools/wx5_polish_check.sh`.
 
+**WX-5 scene posters and inline artist — built, awaiting lead review (2026-10-30).**
+Claimed by `t3/scene-posters-artist-edit`, from `be507e1`: track-specific
+scene flyout posters through the budgeted service; in-place artist editing
+with v1 byte restoration on clear. GPU and CPU feature gates pass; temporary
+faults fail both. Gate: `tools/wx5_features_check.sh`; implementation and
+evidence: `docs/WX5_FEATURES_EVIDENCE.md`.
+
+
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
 after the modal.com hero the operator wanted in his own form. Kicks run comets

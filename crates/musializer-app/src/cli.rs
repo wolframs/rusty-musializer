@@ -375,6 +375,9 @@ pub struct UiProbe {
     /// because it is the one whose effect (closing a flyout) no click can
     /// stand in for; another key is added by name, never by keycode.
     pub key_escape: bool,
+    /// Artist draft input at frame 12; requires click= to focus the real slot.
+    pub artist_text: Option<String>,
+    pub artist_action: Option<crate::ui::top_bar::ArtistAction>,
     /// `notices=all` or `notices=info+warning+...` (WX-5 follow-up): post one
     /// sample notice of each named severity, in that order, through the
     /// shell's own `notify`, so a capture can photograph every kind of card
@@ -1440,6 +1443,18 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
                     .collect::<Option<Vec<_>>>()?
             };
         }
+        "artist-text" => {
+            probe.artist_text = Some(value.to_owned());
+        }
+        "artist-action" => {
+            probe.artist_action = Some(match value {
+                "draft" => crate::ui::top_bar::ArtistAction::Draft,
+                "commit" => crate::ui::top_bar::ArtistAction::Commit,
+                "cancel" => crate::ui::top_bar::ArtistAction::Cancel,
+                "clear" => crate::ui::top_bar::ArtistAction::Clear,
+                _ => return None,
+            });
+        }
         "key" => match value {
             "escape" => probe.key_escape = true,
             _ => return None,
@@ -1638,6 +1653,8 @@ Diagnostics:
                           lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,
                           progress-shot=N photographs export frame N,
+                          artist-text=TEXT,artist-action=draft|commit|cancel|clear
+                          types into the artist slot at frame 12 (requires click=),
                           key=escape presses Escape once,
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,

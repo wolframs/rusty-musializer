@@ -25,9 +25,9 @@
 //!   the user's words: drawn in the interface face as the mockup sets them
 //!   when the chrome bank covers every character, else in the authored face,
 //!   which covers the user's alphabet.
-//!   **No artist is drawn when there is none**: nothing on disk carries one
-//!   unless a treatment or a v2 `.musi` said so, and a guess from a file name
-//!   is the thing the operator asked not to see;
+//!   An empty artist gets a quiet Add artist invitation. Clicking opens an
+//!   inline draft; Enter commits, Escape or clicking away cancels. The artist
+//!   is never guessed from a file name;
 //! - the info line, `5:22 · 1080p 16:9 · 30 fps`, from the track's duration
 //!   and its render config;
 //! - the save state as a dot and a word, all five [`SaveState`]s, coloured
@@ -44,7 +44,8 @@
 //!
 //! [`TopBarLayout::plan`] picks one whole composition from a ladder whose
 //! widths strictly decrease: the info line goes first (the duration is on the
-//! transport and the format in the Export panel), then the artist, then
+//! transport and the format in the Export panel), then the artist slot
+//! shortens to 72 px (remaining editable), then
 //! "Contact sheet" becomes "Sheet", then the save word leaves its dot (the
 //! tooltip keeps it), and at each rung the tabs try the bar's centre before
 //! packing beside the title. The property its test sweeps is the transport
@@ -103,6 +104,8 @@ const TAB_SLOT: u32 = 0;
 const STILL_SLOT: u32 = 10;
 const SHEET_SLOT: u32 = 11;
 const RENDER_SLOT: u32 = 12;
+const ARTIST_SLOT: u32 = 22;
+
 /// The info line as a press (WX-5d): it opens the Render view.
 const FORMAT_SLOT: u32 = 13;
 
@@ -111,13 +114,17 @@ const FORMAT_SLOT: u32 = 13;
 /// Lives on [`Shell`] as `top_bar_state`, and is this file's to grow: a field
 /// added here needs no edit to `ui/shell.rs`. Reset to the default on the
 /// welcome screen, which has no top bar.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct TopBarState {
     /// The rect the bar was drawn into, `None` when it had no room.
     pub drawn: Option<UiRect>,
     /// The words it drew, and where.
     pub title: String,
     pub artist: Option<String>,
+    pub artist_editing: bool,
+    pub artist_draft: Option<ArtistDraft>,
+    pub artist_event: String,
+    pub artist_probe: Option<(Option<String>, ArtistAction)>,
     pub info: String,
     pub info_shown: bool,
     pub save: Option<SaveState>,
@@ -133,13 +140,62 @@ pub(crate) struct TopBarState {
     pub scale: f32,
 }
 
+/// A draft is bound to the audio identity; switching tracks discards it.
+#[derive(Clone, Debug)]
+pub(crate) struct ArtistDraft {
+    track: std::path::PathBuf,
+    field: super::text_input::TextField,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtistAction {
+    Draft,
+    Commit,
+    Cancel,
+    Clear,
+}
+
+/// One metadata edit. Empty text clears the extension, so schema_version()
+/// returns v1 again; no persisted schema flag or format change is involved.
+pub(crate) fn commit_artist(track: &mut Track, text: &str, now: f64) -> bool {
+    let artist = text.trim();
+    if artist.len() > musializer_core::project::model::capacity::NAME
+        || artist.chars().any(char::is_control)
+    {
+        return false;
+    }
+    let previous = track
+        .project_metadata
+        .as_ref()
+        .map_or("", |m| m.artist.as_str());
+    if previous == artist {
+        return false;
+    }
+    let title = project_title(track);
+    let project_id = format!(
+        "track-{}",
+        &track.audio_sha256[..track.audio_sha256.len().min(16)]
+    );
+    let metadata =
+        track
+            .project_metadata
+            .get_or_insert_with(|| musializer_core::project::model::Metadata {
+                title,
+                project_id,
+                ..Default::default()
+            });
+    metadata.artist = artist.to_owned();
+    track.mark_dirty(now);
+    true
+}
+
 /// The natural widths of everything the bar might draw, measured by the
 /// caller in the faces that will draw them. A separate value so the layout
 /// is arithmetic a test can sweep without a window.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TopBarMeasures {
     pub title: f32,
-    /// Zero when the project names no artist.
+    /// The artist text, or the quiet Add artist invitation, or the draft.
     pub artist: f32,
     pub info: f32,
     pub save_word: f32,
@@ -247,7 +303,14 @@ impl TopBarLayout {
         squeeze: bool,
     ) -> Option<Self> {
         let show_info = shed < Shed::Info && m.info > 0.0;
-        let show_artist = shed < Shed::Artist && m.artist > 0.0;
+        // Editing must remain reachable even at the minimum window. The
+        // artist rung now shortens the slot rather than removing it.
+        let show_artist = m.artist > 0.0;
+        let artist_width = if shed >= Shed::Artist {
+            m.artist.min(72.0)
+        } else {
+            m.artist.min(160.0)
+        };
         let sheet_short = shed >= Shed::SheetWord;
         let show_word = shed < Shed::SaveWord;
         let (tab_padding, action_padding, cluster_gap) = shed.insets();
@@ -274,7 +337,7 @@ impl TopBarLayout {
             + MARK_SIZE
             + MARK_GAP
             + if show_artist {
-                NAME_GAP + m.artist
+                NAME_GAP + artist_width
             } else {
                 0.0
             }
@@ -324,8 +387,8 @@ impl TopBarLayout {
         let title = line(x, title_width);
         x += title_width;
         let artist = show_artist.then(|| {
-            let rect = line(x + NAME_GAP, m.artist);
-            x += NAME_GAP + m.artist;
+            let rect = line(x + NAME_GAP, artist_width);
+            x += NAME_GAP + artist_width;
             rect
         });
         let info = show_info.then(|| {
@@ -594,11 +657,22 @@ impl Shell {
         self.top_bar_state.drawn = None;
         self.top_bar_state.layout = None;
         if rect.is_empty() {
+            self.cancel_artist_edit();
             return;
         }
         let Some(track) = input.workspace.current() else {
+            self.cancel_artist_edit();
             return;
         };
+        if self.assist_settings.is_open()
+            || self
+                .top_bar_state
+                .artist_draft
+                .as_ref()
+                .is_some_and(|draft| draft.track != track.file_path)
+        {
+            self.cancel_artist_edit();
+        }
 
         widgets::fill(d, rect, color::ui_surface());
         d.draw_line_ex(
@@ -617,7 +691,12 @@ impl Shell {
         // authored face instead, which covers the user's alphabet; the bar
         // never draws a `?` for a character in a name.
         let chrome = musializer_runtime::font::AuthoredText::from_ui(ui);
-        let names = format!("{title}{}", artist.as_deref().unwrap_or(""));
+        let draft_text = self
+            .top_bar_state
+            .artist_draft
+            .as_ref()
+            .map_or("", |draft| draft.field.edit.text());
+        let names = format!("{title}{}{draft_text}", artist.as_deref().unwrap_or(""));
         let authored = if chrome.missing(&names) == 0 {
             chrome
         } else {
@@ -643,9 +722,14 @@ impl Shell {
         let tab_list: &[ModeTab] = &ModeTab::ALL;
         let measures = TopBarMeasures {
             title: authored.measure_text(&title, TITLE_SIZE, 0.0).x,
-            artist: artist.as_deref().map_or(0.0, |artist| {
-                authored.measure_text(artist, ARTIST_SIZE, 0.0).x
-            }),
+            artist: if self.top_bar_state.artist_editing {
+                160.0
+            } else {
+                authored
+                    .measure_text(artist.as_deref().unwrap_or("Add artist"), ARTIST_SIZE, 0.0)
+                    .x
+                    .clamp(64.0, 160.0)
+            },
             info: widgets::measure_tabular(ui, &info, META_SIZE),
             save_word: widgets::measure(ui, &save_word, META_SIZE),
             tabs: tab_list
@@ -681,14 +765,83 @@ impl Shell {
         let title_id = widgets::widget_id(widgets::id::TOP_BAR, 20);
         self.widgets
             .hint(d, hover(layout.title), title_id, layout.title, &title_tip);
-        if let (Some(artist), Some(area)) = (&artist, layout.artist) {
-            authored.draw_text(
+        if let Some(area) = layout.artist {
+            let area = UiRect::new(
+                area.x,
+                rect.y + (rect.height - CONTROL_HEIGHT) * 0.5,
+                area.width,
+                CONTROL_HEIGHT,
+            );
+            let id = widgets::widget_id(widgets::id::TOP_BAR, ARTIST_SLOT);
+            let button = self.widgets.button(d, id, area);
+            if button.clicked && !self.top_bar_state.artist_editing {
+                let mut field =
+                    super::text_input::TextField::new(musializer_core::ui::text_edit::TextRules {
+                        max_bytes: musializer_core::project::model::capacity::NAME,
+                        ascii_only: false,
+                    });
+                field.bind(artist.as_deref().unwrap_or(""));
+                field.set_focused(true);
+                field.edit.select_all();
+                self.top_bar_state.artist_draft = Some(ArtistDraft {
+                    track: track.file_path.clone(),
+                    field,
+                });
+                self.top_bar_state.artist_editing = true;
+                self.top_bar_state.artist_event = "opened".into();
+            }
+            if self.top_bar_state.artist_editing {
+                let mut action = if d.is_key_pressed(raylib::consts::KeyboardKey::KEY_ESCAPE) {
+                    ArtistAction::Cancel
+                } else if d.is_key_pressed(raylib::consts::KeyboardKey::KEY_ENTER)
+                    || d.is_key_pressed(raylib::consts::KeyboardKey::KEY_KP_ENTER)
+                {
+                    ArtistAction::Commit
+                } else {
+                    ArtistAction::Draft
+                };
+                if let Some((text, probe_action)) = self.top_bar_state.artist_probe.take() {
+                    if let Some(draft) = self.top_bar_state.artist_draft.as_mut() {
+                        if let Some(text) = text {
+                            let _ = draft.field.edit.set_text(&text);
+                        }
+                        if probe_action == ArtistAction::Clear {
+                            draft.field.edit.clear();
+                        }
+                    }
+                    action = probe_action;
+                }
+                if let Some(draft) = self.top_bar_state.artist_draft.as_mut() {
+                    draft
+                        .field
+                        .draw_with_face(d, authored, area, ARTIST_SIZE, "Artist", true);
+                    // Clicking away cancels the draft. Enter is the only commit.
+                    if !draft.field.is_focused() && action == ArtistAction::Draft {
+                        action = ArtistAction::Cancel;
+                    }
+                }
+                self.finish_artist_edit(action, commands);
+            } else {
+                if button.hovered {
+                    widgets::control_box(d, area, color::ui_hover(), color::ui_hover(), 1.0);
+                }
+                let label = artist.as_deref().unwrap_or("Add artist");
+                let shown = authored.ellipsize(label, area.width, ARTIST_SIZE, 0.0);
+                authored.draw_text(
+                    d,
+                    &shown,
+                    Vector2::new(area.x, text_y(ARTIST_SIZE)),
+                    ARTIST_SIZE,
+                    0.0,
+                    color::ui_muted(),
+                );
+            }
+            self.widgets.hint(
                 d,
-                artist,
-                Vector2::new(area.x, text_y(ARTIST_SIZE)),
-                ARTIST_SIZE,
-                0.0,
-                color::ui_muted(),
+                button,
+                id,
+                area,
+                "Artist: click to edit · Enter saves · Escape cancels · empty clears",
             );
         }
         // The info line: tabular, so the duration does not jitter between
@@ -917,7 +1070,15 @@ impl Shell {
             }
         }
 
+        let artist_editing = self.top_bar_state.artist_editing;
+        let artist_draft = self.top_bar_state.artist_draft.take();
+        let artist_event = std::mem::take(&mut self.top_bar_state.artist_event);
+        let artist_probe = self.top_bar_state.artist_probe.take();
         self.top_bar_state = TopBarState {
+            artist_editing,
+            artist_draft,
+            artist_event,
+            artist_probe,
             drawn: Some(rect),
             title,
             artist,
@@ -930,6 +1091,51 @@ impl Shell {
             render_view,
             scale: input.ui_scale.value(),
         };
+    }
+
+    pub(crate) fn cancel_artist_edit(&mut self) {
+        self.top_bar_state.artist_editing = false;
+        self.top_bar_state.artist_draft = None;
+        self.top_bar_state.artist_probe = None;
+    }
+
+    /// Shared by real Enter/Escape and the headless input seam.
+    fn finish_artist_edit(&mut self, action: ArtistAction, commands: &mut Vec<ShellCommand>) {
+        if action == ArtistAction::Draft {
+            return;
+        }
+        if let Some(draft) = self.top_bar_state.artist_draft.take() {
+            if action != ArtistAction::Cancel {
+                commands.push(ShellCommand::SetArtist {
+                    track: draft.track,
+                    artist: draft.field.edit.text().trim().to_owned(),
+                });
+            }
+            self.top_bar_state.artist_event = if action == ArtistAction::Cancel {
+                "cancelled"
+            } else {
+                "committed"
+            }
+            .into();
+        }
+        self.top_bar_state.artist_editing = false;
+    }
+
+    /// Keyboard ownership is queried before egui gathers and drains text.
+    pub fn artist_editing(&self) -> bool {
+        self.top_bar_state.artist_editing
+            && !self.fullscreen
+            && !self.editor_open
+            && !self.assist_settings.is_open()
+    }
+
+    /// Probe input still requires a real tile-slot press to open the draft.
+    pub fn probe_artist(&mut self, text: Option<String>, action: ArtistAction) {
+        if self.artist_editing() {
+            self.top_bar_state.artist_probe = Some((text, action));
+        } else {
+            self.top_bar_state.artist_event = "probe-refused-no-focus".into();
+        }
     }
 
     /// The `top bar:` report line (§4): title, artist, info, save state, tabs
@@ -1010,8 +1216,31 @@ impl Shell {
             if state.render_view { "(view)" } else { "" },
             at(layout.actions[2]),
         ) + &format!(
-            " format={}",
-            layout.info.map_or_else(|| "hidden".to_owned(), at)
+            " format={} artist-slot={} artist-editing={} artist-draft={:?} artist-event={} ffmpeg={}",
+            layout.info.map_or_else(|| "hidden".to_owned(), at),
+            layout.artist.map_or_else(
+                || "none".to_owned(),
+                |area| format!(
+                    "artist@{}",
+                    at(UiRect::new(
+                        area.x,
+                        rect.y + (rect.height - CONTROL_HEIGHT) * 0.5,
+                        area.width,
+                        CONTROL_HEIGHT
+                    ))
+                )
+            ),
+            state.artist_editing,
+            state
+                .artist_draft
+                .as_ref()
+                .map(|draft| draft.field.edit.text()),
+            if state.artist_event.is_empty() {
+                "none"
+            } else {
+                &state.artist_event
+            },
+            state.render_live
         )
     }
 }
@@ -1028,7 +1257,7 @@ mod tests {
             artist: if artist { 126.0 } else { 0.0 },
             info: 168.0,
             save_word: 38.0,
-            tabs: vec![44.0, 46.0, 32.0, 48.0, 46.0],
+            tabs: vec![44.0, 46.0, 32.0, 46.0],
             actions: [32.0, 92.0, 62.0],
             sheet_short: 38.0,
         }
@@ -1070,7 +1299,7 @@ mod tests {
     fn the_clusters_never_overlap() {
         let m = measures(true);
         let mut width = 2560.0;
-        while width >= 640.0 {
+        while width >= 960.0 {
             let layout = TopBarLayout::plan(bar(width), &m);
             let left = UiRect::new(
                 0.0,
@@ -1178,5 +1407,74 @@ mod tests {
             project_artist(&track).as_deref(),
             Some("Chaos Cat Familiar")
         );
+    }
+    #[test]
+    fn inline_artist_clear_returns_the_original_v1_bytes() {
+        let mut track = Track::new(
+            "fixture.wav".into(),
+            20.0,
+            musializer_core::scene::SceneId::Spectrum,
+            7,
+        )
+        .unwrap();
+        track.audio_sha256 = "a".repeat(64);
+        let bytes = |track: &Track| {
+            let project =
+                crate::project::build_project(track, "fixture.wav", None, None, None, 44100, 1)
+                    .unwrap();
+            (
+                project.schema_version(),
+                musializer_core::project::io::serialize(&project).unwrap(),
+            )
+        };
+        let original = bytes(&track);
+        assert_eq!(original.0, 1);
+        assert!(commit_artist(&mut track, "  Chaos Cat Familiar  ", 1.0));
+        assert_eq!(bytes(&track).0, 2);
+        assert_eq!(
+            track.project_metadata.as_ref().unwrap().artist,
+            "Chaos Cat Familiar"
+        );
+        assert!(commit_artist(&mut track, "", 2.0));
+        assert_eq!(bytes(&track), original);
+        assert!(!commit_artist(&mut track, "", 3.0));
+        assert!(!commit_artist(&mut track, &"x".repeat(129), 4.0));
+        assert_eq!(bytes(&track), original);
+    }
+
+    #[test]
+    fn artist_commit_and_cancel_use_the_same_draft_without_a_window() {
+        let mut shell = Shell::new();
+        let draft = || {
+            let mut field = super::super::text_input::TextField::new(
+                musializer_core::ui::text_edit::TextRules {
+                    max_bytes: 128,
+                    ascii_only: false,
+                },
+            );
+            field.bind("Space Mono F M T");
+            field.set_focused(true);
+            ArtistDraft {
+                track: "fixture.wav".into(),
+                field,
+            }
+        };
+        let mut commands = Vec::new();
+        shell.top_bar_state.artist_draft = Some(draft());
+        shell.top_bar_state.artist_editing = true;
+        shell.finish_artist_edit(ArtistAction::Cancel, &mut commands);
+        assert!(commands.is_empty());
+        assert!(!shell.artist_editing());
+        shell.top_bar_state.artist_draft = Some(draft());
+        shell.top_bar_state.artist_editing = true;
+        shell.finish_artist_edit(ArtistAction::Commit, &mut commands);
+        assert_eq!(
+            commands,
+            vec![ShellCommand::SetArtist {
+                track: "fixture.wav".into(),
+                artist: "Space Mono F M T".into()
+            }]
+        );
+        assert!(!shell.artist_editing());
     }
 }

@@ -1379,7 +1379,8 @@ fn run(
         // the terminal reports the chord itself (`DockOutput::toggle`), so the
         // key means one thing whether or not the dock has focus.
         let mut dock_commands: Vec<ShellCommand> = Vec::new();
-        if !dock.wants_keyboard()
+        if !app.shell.artist_editing()
+            && !dock.wants_keyboard()
             && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
@@ -1789,12 +1790,24 @@ fn run(
                 }
             }
         }
+        if app.shell.artist_editing() && dock.wants_keyboard() {
+            dock.release_keyboard(editor_backend.ctx());
+            app.shell.dock_keyboard = false;
+        }
+        if report.frames == 12 {
+            if let Some(probe) = options.ui_probe.as_ref() {
+                if let Some(action) = probe.artist_action {
+                    app.shell.probe_artist(probe.artist_text.clone(), action);
+                }
+            }
+        }
         let egui_active = editor_active || welcome_theme_active || dock_rect.is_some();
         if egui_active {
             editor_backend.begin_frame(
                 &mut rl,
                 ui_scale.value(),
-                editor_active || welcome_theme_active || dock.wants_keyboard(),
+                (editor_active || welcome_theme_active || dock.wants_keyboard())
+                    && !app.shell.artist_editing(),
             );
             if let Some(bounds) = dock_rect {
                 ui::egui_editor::apply_theme(editor_backend.ctx(), editor.theme);
@@ -2338,6 +2351,15 @@ fn run(
                             seconds,
                             &mut scene_clock_previous,
                         );
+                    }
+                }
+                ShellCommand::SetArtist { track, artist } => {
+                    if let Some(current) = app
+                        .workspace
+                        .current_mut()
+                        .filter(|current| current.file_path == track)
+                    {
+                        ui::top_bar::commit_artist(current, &artist, rl.get_time());
                     }
                 }
                 ShellCommand::SelectScene(id) => {

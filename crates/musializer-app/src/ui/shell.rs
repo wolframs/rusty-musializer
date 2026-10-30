@@ -47,6 +47,11 @@ pub enum ShellCommand {
     /// Absolute transport position in seconds.
     Seek(f64),
     SelectScene(SceneId),
+    /// Inline top-bar metadata edit, bound to the track that opened it.
+    SetArtist {
+        track: PathBuf,
+        artist: String,
+    },
     /// Show the scene owning an existing route draft without rewriting a scene
     /// plan or changing the track's saved base scene.
     ResumeRouteDraft {
@@ -245,6 +250,7 @@ impl ShellCommand {
             // Scene binding, tuning, routes, events, plan and output settings are
             // all fields of the serialized project.
             ShellCommand::SelectScene(_)
+            | ShellCommand::SetArtist { .. }
             | ShellCommand::SetSetting { .. }
             | ShellCommand::ResetScene(_)
             | ShellCommand::SetAutoScenes(_)
@@ -1137,6 +1143,7 @@ pub(crate) struct TransportScrubInput {
 /// test that sweeps `ALL`.** Nothing else in the shell asks about focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TextEntrySurface {
+    TopBarArtist,
     /// The lyrics editor's cue field.
     LyricCue,
     /// The font browser's family filter.
@@ -1149,8 +1156,13 @@ pub(crate) enum TextEntrySurface {
 }
 
 impl TextEntrySurface {
-    pub(crate) const ALL: [Self; 4] =
-        [Self::LyricCue, Self::FontQuery, Self::TuneValue, Self::Dock];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::TopBarArtist,
+        Self::LyricCue,
+        Self::FontQuery,
+        Self::TuneValue,
+        Self::Dock,
+    ];
 }
 
 /// The keys one frame of the shell can act on, read out of raylib in one place.
@@ -2528,6 +2540,9 @@ impl Shell {
         }
         let mut keys = KeyboardFrame::read(d);
         keys.escape |= std::mem::take(&mut self.probe_escape);
+        if self.artist_editing() && keys.escape {
+            self.top_bar_state.artist_probe = Some((None, super::top_bar::ArtistAction::Cancel));
+        }
         if keys.toggle_inspector {
             // T is Look's tab (WX-5d §2): it opens Look, and on Look it
             // closes the column, as pressing the selected tab does. Here
@@ -2555,6 +2570,9 @@ impl Shell {
         context: KeyboardContext,
         commands: &mut Vec<ShellCommand>,
     ) {
+        if self.artist_editing() {
+            return;
+        }
         if keys.control {
             let plus = keys.scale_up;
             let minus = keys.scale_down;
@@ -3567,6 +3585,7 @@ impl Shell {
     /// the same stranded-state defect as UX0-A02, one layer up.
     fn text_entry_focused(&self, surface: TextEntrySurface) -> bool {
         match surface {
+            TextEntrySurface::TopBarArtist => self.artist_editing(),
             // The cue field is drawn by, and only by, the lyrics panel.
             TextEntrySurface::LyricCue => self.panel == UiPanel::Lyrics && self.lyrics.is_typing(),
             // The filter is a hit-tested region rather than a
@@ -6201,6 +6220,7 @@ mod tests {
     /// it takes focus — which is the half of UX0-A06 that was missed.
     fn focus(shell: &mut Shell, surface: TextEntrySurface) {
         match surface {
+            TextEntrySurface::TopBarArtist => shell.top_bar_state.artist_editing = true,
             TextEntrySurface::LyricCue => {
                 shell.panel = UiPanel::Lyrics;
                 let document = musializer_core::project::lyrics::LyricsDocument::new(120.0)
@@ -6355,6 +6375,9 @@ mod tests {
             // The dock hides without the composition root clearing its flag
             // first, which is the same stranded state one surface over (WX-1).
             shell.dock_open = false;
+            if surface == TextEntrySurface::TopBarArtist {
+                shell.fullscreen = true;
+            }
             shell.begin_frame(UiScale::default(), false);
 
             assert!(
@@ -6719,6 +6742,10 @@ mod tests {
 
         let durable: Vec<ShellCommand> = vec![
             ShellCommand::SelectScene(SceneId::Loom),
+            ShellCommand::SetArtist {
+                track: "fixture.wav".into(),
+                artist: "Artist".into(),
+            },
             ShellCommand::SetSetting {
                 scene: SceneId::Loom,
                 index: 0,
