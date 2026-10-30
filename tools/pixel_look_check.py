@@ -30,6 +30,7 @@ def line(log, label):
     return found[-1]
 def run(name, scope='video', click=None, size='1280x720', theme='dark', owned=True, state=None, reveal=True, typed=None):
     probe=f'size={size},column=look,time=2,play=0'+(f',pixel={scope}' if reveal else '')
+    if typed: probe+=f',save-to={out/name}.musi'
     if click: probe+=f',click={click[0]}x{click[1]}'
     cmd=['tools/headless_run.sh','--treatment',str(out/f'{owned}.treatment.json'),'--ui-scale','100','--hud=0',
          '--ui-probe',probe,'--probe-frames','180' if typed else '24','--probe-shot',str(out/f'{name}.png')]
@@ -70,6 +71,10 @@ for scope in ['video','section']:
     check(field(report,'pixels')==str(expected),f'{scope}: short edge exactly {expected} pixels')
     report,_=run(f'{scope}-typed',scope,centre(rect(base[scope],'value')),typed='commit')
     check(field(report,'pixels')=='216' and field(report,'typing')=='false',f'{scope}: pressed value chip and native keys commit 216')
+    saved=out/f'{scope}-typed.musi'
+    saved_doc=json.loads(saved.read_text()) if saved.exists() else {}
+    pixel=(saved_doc.get('scene_switches',{}).get('finish',{}).get('pixel',{}) if scope=='video' else (saved_doc.get('scene_switches',{}).get('cues') or [{}])[0].get('pixel',{}))
+    check(pixel.get('pixels')==216,f'{scope}: native Ctrl+S persists exact edited count in .musi')
     report,_=run(f'{scope}-typed-cancel',scope,centre(rect(base[scope],'value')),typed='cancel')
     check(field(report,'pixels')=='144' and field(report,'typing')=='false',f'{scope}: Escape discards typed pixel count')
     r=rect(base[scope],'kick-1')

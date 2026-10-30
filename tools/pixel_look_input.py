@@ -33,6 +33,8 @@ try:
     for char in '216': key(ord(char),1); key(ord(char),0)
     sym=0xff1b if os.environ.get('PIXEL_LOOK_CANCEL') else 0xff0d
     key(sym,1); key(sym,0)
+    # The field has released focus: save through the workspace's real chord.
+    key(0xffe3,1); key(ord('s'),1); key(ord('s'),0); key(0xffe3,0)
     sys.exit(process.wait(timeout=15))
 finally:
     if process.poll() is None: process.terminate(); process.wait(timeout=5)
