@@ -827,11 +827,8 @@ impl Readiness {
 
     /// The full sentence behind the badge, for its tooltip.
     ///
-    /// The badge itself is 96 px wide and its text is ellipsized to fit, which
-    /// turned "pip install torchaudio into the alignment venv" into
-    /// "pip inst…" — a remediation nobody could act on (AP3-R S9). The label is
-    /// the short form and this is the long one, and the badge is hoverable so
-    /// that both exist.
+    /// The label names the readiness state in full, wrapping when needed;
+    /// the hover adds the longer remediation steps (AP3-R S9).
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
@@ -2838,7 +2835,7 @@ impl AssistSettingsDialog {
     }
 
     /// Readiness for one resolved route: [`execution::evaluate_route`]'s answer,
-    /// dressed for a 96 px badge.
+    /// shared with the execution gate.
     ///
     /// §5 invariant 4: **every** required piece has to be present, and the badge
     /// names the *first* one that is not. Before AP3-R S3 this answered `Ready`
@@ -3819,12 +3816,8 @@ impl AssistSettingsDialog {
         state.clicked || self.take_activation(focus)
     }
 
-    /// A readiness pill with a tooltip carrying the whole remediation.
-    ///
-    /// The badge is 96 px and ellipsizes; the sentence a user has to act on is
-    /// longer than that in every interesting case (AP3-R S9). Registering the
-    /// box as a widget is what makes it hoverable at all — `badge` is a free
-    /// function that only draws.
+    /// A readiness dot and complete wrapped reason, with remediation on hover.
+    /// Its widget target covers both lines (WX-5 polish).
     fn readiness_badge(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
