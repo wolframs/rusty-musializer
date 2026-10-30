@@ -232,7 +232,7 @@ impl Dock {
                     None => self.empty_state(&mut middle_ui, context),
                 }
                 keyboard |= self.terminal_pane(ui, pane, context, &mut output);
-                self.keyboard = keyboard;
+                self.keyboard = keyboard || ctx.egui_wants_keyboard_input();
             });
         output
     }
@@ -325,11 +325,38 @@ impl Dock {
         if let Some(index) = shown {
             if ui
                 .add(egui::Button::new(RichText::new("\u{00d7}").color(weak)).frame(false))
-                .on_hover_text("End this chat; the conversation can be resumed from a new one")
+                .on_hover_text("Close this chat and discard its transcript and draft")
                 .clicked()
             {
-                self.close_tab(index);
-                self.chat_active = None;
+                if matches!(&self.tabs[index].body, Body::Chat(chat) if chat.needs_close_confirmation())
+                {
+                    self.close_chat_confirmation = Some(self.tabs[index].id);
+                } else {
+                    self.close_tab(index);
+                }
+            }
+        }
+        if let Some(id) = self.close_chat_confirmation {
+            let mut close = false;
+            let mut cancel = false;
+            egui::Window::new("Close this chat?")
+                .id(id.with("confirm_close"))
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label("This stops any running turn and discards the transcript and draft.");
+                    ui.horizontal(|ui| {
+                        cancel = ui.button("Keep chat").clicked();
+                        close = ui.button("Close chat").clicked();
+                    });
+                });
+            if close {
+                if let Some(index) = self.tabs.iter().position(|tab| tab.id == id) {
+                    self.close_tab(index);
+                }
+            }
+            if close || cancel {
+                self.close_chat_confirmation = None;
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -539,10 +566,19 @@ impl Dock {
         let mut toggle = false;
         let mut open = false;
         let mut cycle = None;
+        let mut close = false;
         head_ui.label(micro(&title, weak));
         head_ui
             .add(egui::Label::new(RichText::new(&context.place).size(11.0).color(weak)).truncate());
         head_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if terminal.is_some()
+                && ui
+                    .add(egui::Button::new(RichText::new("×").color(weak)).frame(false))
+                    .on_hover_text("Close this terminal and stop its processes")
+                    .clicked()
+            {
+                close = true;
+            }
             let chevron = if self.terminal_open { "\u{2013}" } else { "+" };
             if self.terminal_open
                 && ui
@@ -581,6 +617,15 @@ impl Dock {
                 }
             }
         });
+        if close {
+            if let Some(index) = terminal {
+                self.close_tab(index);
+            }
+            if self.current_terminal().is_none() {
+                self.terminal_open = false;
+            }
+            return false;
+        }
         // A press on a collapsed head opens the pane.
         if !self.terminal_open
             && ui

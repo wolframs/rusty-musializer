@@ -242,6 +242,11 @@ impl ChatTab {
             let resume = self.transcript.session.clone();
             self.start(context, resume.as_deref());
         }
+        // Failed restarts must leave the draft and transcript untouched. The
+        // start error is already shown above the composer.
+        if self.process.is_none() {
+            return;
+        }
         let text = if self.with_context && !context.now.is_empty() {
             format!("[Musializer: {}]\n{typed}", context.now)
         } else {
@@ -427,6 +432,10 @@ impl ChatTab {
         self.transcript
             .entries
             .push(Entry::Notice { text, error: false });
+    }
+
+    pub(super) fn needs_close_confirmation(&self) -> bool {
+        self.transcript.busy || !self.composer.is_empty()
     }
 
     /// Whether the chat could not start.
@@ -767,18 +776,31 @@ impl ChatTab {
             .inner_margin(egui::Margin::symmetric(12, 10))
             .show(&mut composer_ui, |ui| {
                 ui.set_width(ui.available_width());
-                let response = ui.add(
-                    egui::TextEdit::multiline(&mut self.composer)
-                        .id(composer_id)
-                        .frame(egui::Frame::NONE)
-                        .margin(egui::Margin::ZERO)
-                        .desired_rows(1)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(
-                            RichText::new(format!("Ask {} to direct\u{2026}", self.agent.label()))
-                                .color(c.weak),
-                        ),
-                );
+                // Keep the newest input visible without displacing Send or
+                // crossing into the terminal pane below this fixed composer.
+                let response = egui::ScrollArea::vertical()
+                    .id_salt(self.id.with("composer_scroll"))
+                    .max_height(22.0)
+                    .min_scrolled_height(0.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.composer)
+                                .id(composer_id)
+                                .frame(egui::Frame::NONE)
+                                .margin(egui::Margin::ZERO)
+                                .desired_rows(1)
+                                .desired_width(f32::INFINITY)
+                                .hint_text(
+                                    RichText::new(format!(
+                                        "Ask {} to direct\u{2026}",
+                                        self.agent.label()
+                                    ))
+                                    .color(c.weak),
+                                ),
+                        )
+                    })
+                    .inner;
                 if std::mem::take(&mut self.focus_next) {
                     response.request_focus();
                 }
@@ -931,6 +953,24 @@ fn of_edge() -> egui::Color32 {
 
 #[cfg(test)]
 mod polish_tests {
+    #[test]
+    fn failed_restart_preserves_draft_and_does_not_start_a_turn() {
+        let context = super::DockContext {
+            // A nonexistent cwd makes launch fail even on machines with a CLI.
+            working_directory: Some("/nonexistent/musializer-chat-test".into()),
+            ..super::DockContext::default()
+        };
+        let mut chat = super::ChatTab::new(super::Agent::Claude, &context, egui::Id::new("failed"));
+        chat.composer = "keep this prompt".into();
+        let before = chat.transcript.counts();
+        chat.send(&context);
+        assert!(chat.process.is_none());
+        assert!(chat.error.is_some());
+        assert_eq!(chat.composer, "keep this prompt");
+        assert_eq!(chat.transcript.counts(), before);
+        assert!(!chat.transcript.busy);
+    }
+
     #[test]
     fn treatment_note_age_uses_elapsed_wall_time() {
         assert_eq!(super::note_age(0), "0 s ago");
