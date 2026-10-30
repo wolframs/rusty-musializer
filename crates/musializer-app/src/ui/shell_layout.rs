@@ -154,7 +154,7 @@ impl ShellWidths {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorkspaceFrame {
     pub widths: ShellWidths,
-    /// The top bar across the workspace (WX-5c, `docs/WX5C_DESIGN.md` §4): the
+    /// The top bar across the workspace (WX-5c, `docs/archive/WX5C_DESIGN.md` §4): the
     /// title, the mode tabs, Still / Contact sheet / Render. It spans the
     /// workspace, never the inspector's column or the dock (§0), and is
     /// [`TOP_BAR_HEIGHT`] tall. Empty in the fullscreen frames,

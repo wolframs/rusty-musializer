@@ -1,4 +1,4 @@
-//! The right column's geometry (WX-5d, `build/redesign/wx5d-design.md` §1).
+//! The right column's geometry (WX-5d).
 //!
 //! **Owner: the Frame builder.** Raylib-free, so the width rule — one width for
 //! every view, `clamp(round(0.28 × window), 320, 460)` and never less than a

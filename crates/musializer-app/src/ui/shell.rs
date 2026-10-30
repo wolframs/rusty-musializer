@@ -481,6 +481,7 @@ pub struct ToolbarResult {
 
 /// Shell state that survives between frames.
 pub struct Shell {
+    pub about: super::about::About,
     /// The right-hand dock: terminals and agents (WX-1). Not modal; the
     /// workspace lays itself out beside it.
     pub dock_open: bool,
@@ -1290,6 +1291,7 @@ impl Shell {
         // screen it covered the format strip along the bottom edge — which a
         // headless capture is what showed.
         Self {
+            about: super::about::About::default(),
             dock_open: ui_preferences.dock_open,
             dock_keyboard: false,
             poster_requests: Vec::new(),
@@ -1696,8 +1698,8 @@ impl Shell {
         // means nothing underneath can be pressed. The dialog draws its controls
         // into a bank of its own, which this claim cannot reach. See
         // `ui/assist_settings.rs`'s module comment.
-        let modal = self.assist_settings.is_open();
-        if modal {
+        let modal = self.assist_settings.is_open() || self.about.open;
+        if self.assist_settings.is_open() {
             self.widgets.button(
                 d,
                 widgets::widget_id(super::assist_settings::MODAL_BLOCK_NAMESPACE, 0),
@@ -1725,7 +1727,11 @@ impl Shell {
         // the scenes flyout; a stale line would read as a picker on screen.
         self.scene_picker_report = "not drawn".to_owned();
         let occluded = ShellInput {
-            ui_scale: input.ui_scale.occluded(flyout),
+            ui_scale: input.ui_scale.occluded(if self.about.open {
+                Some(UiRect::new(0.0, 0.0, input.window.0, input.window.1))
+            } else {
+                flyout
+            }),
             ..*input
         };
         let under = &occluded;
@@ -1766,10 +1772,17 @@ impl Shell {
             if !modal && self.column_view() == ColumnView::Look {
                 self.inspector(d, under, &mut commands);
             }
-            self.column_views(d, frame, under, &mut commands);
+            if !self.about.open {
+                self.column_views(d, frame, under, &mut commands);
+            }
             self.splitters(d, frame, under, &mut commands);
         }
         self.widgets.set_ui_scale(pointer_scale);
+        // About also covers the late notice tray. The final overlay restores
+        // real input after both native chrome and egui have drawn underneath.
+        if self.about.open {
+            self.widgets.set_ui_scale(under.ui_scale);
+        }
         // The protocol question card sits over the preview's bottom edge, and
         // the notice tray stacks *above* it rather than over it — the first
         // smoke capture had the session-start notice covering the question
@@ -1968,10 +1981,30 @@ impl Shell {
         // The welcome screen has no timed lane, so the modifier can never be
         // consulted; passing the real key state anyway keeps one rule.
         self.begin_frame(input.ui_scale, shift_held(d));
+        let blocked_input = ShellInput {
+            ui_scale: input
+                .ui_scale
+                .occluded(self.about.open.then_some(UiRect::new(
+                    0.0,
+                    0.0,
+                    input.window.0,
+                    input.window.1,
+                ))),
+            ..*input
+        };
+        let input = &blocked_input;
         // No track, no rail and no top bar (WX-5c §1).
         self.last_rail = None;
         self.top_bar_state = super::top_bar::TopBarState::default();
-        if appearance_input_blocked {
+        if self.about.open {
+            self.widgets
+                .set_ui_scale(input.ui_scale.occluded(Some(UiRect::new(
+                    0.0,
+                    0.0,
+                    input.window.0,
+                    input.window.1,
+                ))));
+        } else if appearance_input_blocked {
             self.widgets.button(
                 d,
                 widgets::widget_id(super::assist_settings::MODAL_BLOCK_NAMESPACE, 0),
@@ -2205,6 +2238,7 @@ impl Shell {
             color::ui_muted(),
         );
 
+        self.about_welcome(d, input);
         self.recent_column(d, input, &frame, &mut commands);
 
         self.notice_tray(d, font, input.ui_scale.value(), frame.notice_region());

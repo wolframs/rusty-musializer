@@ -33,7 +33,7 @@
 //!
 //! # The row since WX-5c
 //!
-//! The mockup's transport (`docs/WX5C_DESIGN.md` §2): a round play button, the
+//! The mockup's transport (`docs/archive/WX5C_DESIGN.md` §2): a round play button, the
 //! timecode, the fine-seek trio, the scrub bar, and on the right the readout
 //! toggle, mute with a volume chip, and fullscreen. Tune, Export, Lyrics and
 //! Assist left the row for the top bar's tabs and Editor and Dock for the rail,

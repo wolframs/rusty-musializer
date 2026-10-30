@@ -205,8 +205,7 @@ pub fn groups(scene: SceneId) -> Vec<GroupRows> {
 // ---------------------------------------------------------------------------
 // The Look column's geometry.
 //
-// Everything below is the mockup's (`build/redesign/wx5d/look-*.png`) in
-// numbers. The app measures text and passes widths in; nothing here draws.
+// Everything below is the approved mockup's in numbers. The app measures text and passes widths in; nothing here draws.
 // ---------------------------------------------------------------------------
 
 /// Left and right inset of everything in the column's body (`.body`'s 14 px,

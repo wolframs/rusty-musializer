@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The top bar gate (WX-5c, docs/WX5C_DESIGN.md §4 and §8): the title row, its
+# The top bar gate (WX-5c, docs/archive/WX5C_DESIGN.md §4 and §8): the title row, its
 # tabs and its three actions, checked headless.
 #
 #   tools/top_bar_check.sh [OUTPUT_DIR]        # default build/top-bar-check

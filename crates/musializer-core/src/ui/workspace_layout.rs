@@ -155,7 +155,7 @@ impl UiRect {
     }
 }
 
-/// The top bar's height in logical units (WX-5c, `docs/WX5C_DESIGN.md` §4).
+/// The top bar's height in logical units (WX-5c, `docs/archive/WX5C_DESIGN.md` §4).
 ///
 /// **Post-legacy, no oracle**: the C has no top bar. Here rather than in the
 /// app because the rail starts where the bar ends, and [`WorkspaceRail`] is

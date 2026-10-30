@@ -178,6 +178,8 @@ impl UiPanel {
 /// existed — if a surface cannot be photographed, it does not get reviewed.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiProbe {
+    /// Opens the same About surface as the logo, before a report-addressed press.
+    pub about: bool,
     pub panel: UiPanel,
     pub fullscreen: bool,
     /// The transport is parked unless this is set.
@@ -1244,6 +1246,7 @@ fn apply_lyrics_pane(probe: &mut UiProbe, pane: LyricsPaneProbe) {
 /// which the caller turns into a message naming the pair.
 fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
     match key {
+        "about" => probe.about = parse_probe_flag(value)?,
         "panel" => probe.panel = UiPanel::from_name(value)?,
         "fullscreen" => probe.fullscreen = parse_probe_flag(value)?,
         "play" => probe.playing = parse_probe_flag(value)?,

@@ -20,3 +20,5 @@ pub mod scenes;
 pub mod timing;
 pub mod treatment;
 pub mod ui;
+
+pub mod credits;

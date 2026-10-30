@@ -1,5 +1,4 @@
-//! The right column: one place every secondary view draws (WX-5d,
-//! `build/redesign/wx5d-design.md`).
+//! The right column: one place every secondary view draws (WX-5d).
 //!
 //! **Owner: the Frame builder.** Direct (the dock), Lyrics, Look, Assist and
 //! Render share one column of one width beside the preview, instead of each

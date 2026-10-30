@@ -1,0 +1,1977 @@
+
+
+vendor/raylib-6.0/src/external/cgltf.h
+
+/*
+ * -- jsmn.c start --
+ * Source: https://github.com/zserge/jsmn
+ * License: MIT
+ *
+ * Copyright (c) 2010 Serge A. Zaitsev
+
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+/* cgltf is distributed under MIT license:
+ *
+ * Copyright (c) 2018-2021 Johannes Kuhlmann
+
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+vendor/raylib-6.0/src/external/cgltf_write.h
+
+/* cgltf is distributed under MIT license:
+ *
+ * Copyright (c) 2019-2021 Philip Rideout
+
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+vendor/raylib-6.0/src/external/dirent.h
+
+/****************************************************************************
+
+    Declaration of POSIX directory browsing functions and types for Win32.
+
+    Author:  Kevlin Henney (kevlin@acm.org, kevlin@curbralan.com)
+    History: Created March 1997. Updated June 2003.
+             Reviewed by Ramon Santamaria for raylib on January 2020.
+
+    Copyright Kevlin Henney, 1997, 2003. All rights reserved.
+
+    Permission to use, copy, modify, and distribute this software and its
+    documentation for any purpose is hereby granted without fee, provided
+    that this copyright and permissions notice appear in all copies and
+    derivatives.
+    
+    This software is supplied "as is" without express or implied warranty.
+
+    But that said, if there are any problems please get in touch.
+
+****************************************************************************/
+
+/****************************************************************************
+
+    Implementation of POSIX directory browsing functions and types for Win32.
+
+    Author:  Kevlin Henney (kevlin@acm.org, kevlin@curbralan.com)
+    History: Created March 1997. Updated June 2003.
+             Reviewed by Ramon Santamaria for raylib on January 2020.
+
+    Copyright Kevlin Henney, 1997, 2003. All rights reserved.
+
+    Permission to use, copy, modify, and distribute this software and its
+    documentation for any purpose is hereby granted without fee, provided
+    that this copyright and permissions notice appear in all copies and
+    derivatives.
+    
+    This software is supplied "as is" without express or implied warranty.
+
+    But that said, if there are any problems please get in touch.
+
+****************************************************************************/
+
+vendor/raylib-6.0/src/external/dr_flac.h
+
+/*
+This software is available as a choice of the following licenses. Choose
+whichever you prefer.
+
+===============================================================================
+ALTERNATIVE 1 - Public Domain (www.unlicense.org)
+===============================================================================
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>
+
+===============================================================================
+ALTERNATIVE 2 - MIT No Attribution
+===============================================================================
+Copyright 2023 David Reid
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+vendor/raylib-6.0/src/external/dr_mp3.h
+
+/*
+This software is available as a choice of the following licenses. Choose
+whichever you prefer.
+
+===============================================================================
+ALTERNATIVE 1 - Public Domain (www.unlicense.org)
+===============================================================================
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>
+
+===============================================================================
+ALTERNATIVE 2 - MIT No Attribution
+===============================================================================
+Copyright 2023 David Reid
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+vendor/raylib-6.0/src/external/dr_wav.h
+
+/*
+This software is available as a choice of the following licenses. Choose
+whichever you prefer.
+
+===============================================================================
+ALTERNATIVE 1 - Public Domain (www.unlicense.org)
+===============================================================================
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>
+
+===============================================================================
+ALTERNATIVE 2 - MIT No Attribution
+===============================================================================
+Copyright 2023 David Reid
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+vendor/raylib-6.0/src/external/fix_win32_compatibility.h
+
+/**********************************************************************************************
+*
+*   fix_win32_compatibility.h   Utility to help include windows.h with raylib projects
+*
+*   Useage: #include "fix_win32_compatibility.h" any library that uses windows.h
+*                                     order is critical, this must be done before raylib
+*
+*   LICENSE: MIT
+*
+*   Copyright (c) 2025 Jeffery Myers
+*
+*   Permission is hereby granted, free of charge, to any person obtaining a copy
+*   of this software and associated documentation files (the "Software"), to deal
+*   in the Software without restriction, including without limitation the rights
+*   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+*   copies of the Software, and to permit persons to whom the Software is
+*   furnished to do so, subject to the following conditions:
+*
+*   The above copyright notice and this permission notice shall be included in all
+*   copies or substantial portions of the Software.
+*
+*   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+*   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+*   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+*   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+*   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+*   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+*   SOFTWARE.
+*
+**********************************************************************************************/
+
+vendor/raylib-6.0/src/external/glad.h
+
+/*
+** Copyright (c) 2008-2018 The Khronos Group Inc.
+**
+** Permission is hereby granted, free of charge, to any person obtaining a
+** copy of this software and/or associated documentation files (the
+** "Materials"), to deal in the Materials without restriction, including
+** without limitation the rights to use, copy, modify, merge, publish,
+** distribute, sublicense, and/or sell copies of the Materials, and to
+** permit persons to whom the Materials are furnished to do so, subject to
+** the following conditions:
+**
+** The above copyright notice and this permission notice shall be included
+** in all copies or substantial portions of the Materials.
+**
+** THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+** EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+** MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+** IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+** CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+** TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+** MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+*/
+
+vendor/raylib-6.0/src/external/glad_gles2.h
+
+/*
+** Copyright (c) 2008-2018 The Khronos Group Inc.
+**
+** Permission is hereby granted, free of charge, to any person obtaining a
+** copy of this software and/or associated documentation files (the
+** "Materials"), to deal in the Materials without restriction, including
+** without limitation the rights to use, copy, modify, merge, publish,
+** distribute, sublicense, and/or sell copies of the Materials, and to
+** permit persons to whom the Materials are furnished to do so, subject to
+** the following conditions:
+**
+** The above copyright notice and this permission notice shall be included
+** in all copies or substantial portions of the Materials.
+**
+** THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+** EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+** MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+** IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+** CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+** TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+** MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+*/
+
+vendor/raylib-6.0/src/external/m3d.h
+
+/*
+ * m3d.h
+ * https://gitlab.com/bztsrc/model3d
+ *
+ * Copyright (C) 2020 bzt (bztsrc@gitlab)
+ *
+ * Permission is hereby granted, free of charge, to any person
+ * obtaining a copy of this software and associated documentation
+ * files (the "Software"), to deal in the Software without
+ * restriction, including without limitation the rights to use, copy,
+ * modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be
+ * included in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+ * HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+ * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ *
+ * @brief ANSI C89 / C++11 single header importer / exporter SDK for the Model 3D (.M3D) format
+ * https://gitlab.com/bztsrc/model3d
+ *
+ * PNG decompressor included from (with minor modifications to make it C89 valid):
+ *  stb_image - v2.13 - public domain image loader - http://nothings.org/stb_image.h
+ *
+ * @version: 1.0.0
+ */
+
+vendor/raylib-6.0/src/external/miniaudio.h
+
+/*
+This software is available as a choice of the following licenses. Choose
+whichever you prefer.
+
+===============================================================================
+ALTERNATIVE 1 - Public Domain (www.unlicense.org)
+===============================================================================
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>
+
+===============================================================================
+ALTERNATIVE 2 - MIT No Attribution
+===============================================================================
+Copyright 2025 David Reid
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+vendor/raylib-6.0/src/external/qoa.h
+
+/*
+
+Copyright (c) 2023, Dominic Szablewski - https://phoboslab.org
+SPDX-License-Identifier: MIT
+
+QOA - The "Quite OK Audio" format for fast, lossy audio compression
+
+
+-- Data Format
+
+QOA encodes pulse-code modulated (PCM) audio data with up to 255 channels, 
+sample rates from 1 up to 16777215 hertz and a bit depth of 16 bits.
+
+The compression method employed in QOA is lossy; it discards some information
+from the uncompressed PCM data. For many types of audio signals this compression
+is "transparent", i.e. the difference from the original file is often not
+audible.
+
+QOA encodes 20 samples of 16 bit PCM data into slices of 64 bits. A single
+sample therefore requires 3.2 bits of storage space, resulting in a 5x
+compression (16 / 3.2).
+
+A QOA file consists of an 8 byte file header, followed by a number of frames.
+Each frame contains an 8 byte frame header, the current 16 byte en-/decoder
+state per channel and 256 slices per channel. Each slice is 8 bytes wide and
+encodes 20 samples of audio data.
+
+All values, including the slices, are big endian. The file layout is as follows:
+
+struct {
+	struct {
+		char     magic[4];         // magic bytes "qoaf"
+		uint32_t samples;          // samples per channel in this file
+	} file_header;
+
+	struct {
+		struct {
+			uint8_t  num_channels; // no. of channels
+			uint24_t samplerate;   // samplerate in hz
+			uint16_t fsamples;     // samples per channel in this frame
+			uint16_t fsize;        // frame size (includes this header)
+		} frame_header;
+
+		struct {
+			int16_t history[4];    // most recent last
+			int16_t weights[4];    // most recent last
+		} lms_state[num_channels];
+
+		qoa_slice_t slices[256][num_channels];
+
+	} frames[ceil(samples / (256 * 20))];
+} qoa_file_t;
+
+Each `qoa_slice_t` contains a quantized scalefactor `sf_quant` and 20 quantized
+residuals `qrNN`:
+
+.- QOA_SLICE -- 64 bits, 20 samples --------------------------/  /------------.
+|        Byte[0]         |        Byte[1]         |  Byte[2]  \  \  Byte[7]   |
+| 7  6  5  4  3  2  1  0 | 7  6  5  4  3  2  1  0 | 7  6  5   /  /    2  1  0 |
+|------------+--------+--------+--------+---------+---------+-\  \--+---------|
+|  sf_quant  |  qr00  |  qr01  |  qr02  |  qr03   |  qr04   | /  /  |  qr19   |
+`-------------------------------------------------------------\  \------------`
+
+Each frame except the last must contain exactly 256 slices per channel. The last
+frame may contain between 1 .. 256 (inclusive) slices per channel. The last
+slice (for each channel) in the last frame may contain less than 20 samples; the
+slice still must be 8 bytes wide, with the unused samples zeroed out.
+
+Channels are interleaved per slice. E.g. for 2 channel stereo:
+slice[0] = L, slice[1] = R, slice[2] = L, slice[3] = R ...
+
+A valid QOA file or stream must have at least one frame. Each frame must contain
+at least one channel and one sample with a samplerate between 1 .. 16777215
+(inclusive).
+
+If the total number of samples is not known by the encoder, the samples in the
+file header may be set to 0x00000000 to indicate that the encoder is
+"streaming". In a streaming context, the samplerate and number of channels may
+differ from frame to frame. For static files (those with samples set to a
+non-zero value), each frame must have the same number of channels and same
+samplerate.
+
+Note that this implementation of QOA only handles files with a known total
+number of samples.
+
+A decoder should support at least 8 channels. The channel layout for channel
+counts 1 .. 8 is:
+
+	1. Mono
+	2. L, R
+	3. L, R, C
+	4. FL, FR, B/SL, B/SR
+	5. FL, FR, C, B/SL, B/SR
+	6. FL, FR, C, LFE, B/SL, B/SR
+	7. FL, FR, C, LFE, B, SL, SR
+	8. FL, FR, C, LFE, BL, BR, SL, SR
+
+QOA predicts each audio sample based on the previously decoded ones using a
+"Sign-Sign Least Mean Squares Filter" (LMS). This prediction plus the
+dequantized residual forms the final output sample.
+
+*/
+
+vendor/raylib-6.0/src/external/qoaplay.c
+
+/*******************************************************************************************
+*
+*   qoaplay - QOA stream playing helper functions
+*
+*   qoaplay is a tiny abstraction to read and decode a QOA file "on the fly".
+*   It reads and decodes one frame at a time with minimal memory requirements.
+*   qoaplay also provides some functions to seek to a specific frame.
+*
+*   LICENSE: MIT License
+*
+*   Copyright (c) 2023 Dominic Szablewski (@phoboslab), reviewed by Ramon Santamaria (@raysan5)
+*
+*   Permission is hereby granted, free of charge, to any person obtaining a copy
+*   of this software and associated documentation files (the "Software"), to deal
+*   in the Software without restriction, including without limitation the rights
+*   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+*   copies of the Software, and to permit persons to whom the Software is
+*   furnished to do so, subject to the following conditions:
+*
+*   The above copyright notice and this permission notice shall be included in all
+*   copies or substantial portions of the Software.
+*
+*   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+*   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+*   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+*   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+*   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+*   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+*   SOFTWARE.
+*
+**********************************************************************************************/
+
+vendor/raylib-6.0/src/external/qoi.h
+
+/*
+
+Copyright (c) 2021, Dominic Szablewski - https://phoboslab.org
+SPDX-License-Identifier: MIT
+
+
+QOI - The "Quite OK Image" format for fast, lossless image compression
+
+-- About
+
+QOI encodes and decodes images in a lossless format. Compared to stb_image and
+stb_image_write QOI offers 20x-50x faster encoding, 3x-4x faster decoding and
+20% better compression.
+
+
+-- Synopsis
+
+// Define `QOI_IMPLEMENTATION` in *one* C/C++ file before including this
+// library to create the implementation.
+
+#define QOI_IMPLEMENTATION
+#include "qoi.h"
+
+// Encode and store an RGBA buffer to the file system. The qoi_desc describes
+// the input pixel data.
+qoi_write("image_new.qoi", rgba_pixels, &(qoi_desc){
+	.width = 1920,
+	.height = 1080,
+	.channels = 4,
+	.colorspace = QOI_SRGB
+});
+
+// Load and decode a QOI image from the file system into a 32bbp RGBA buffer.
+// The qoi_desc struct will be filled with the width, height, number of channels
+// and colorspace read from the file header.
+qoi_desc desc;
+void *rgba_pixels = qoi_read("image.qoi", &desc, 4);
+
+
+
+-- Documentation
+
+This library provides the following functions;
+- qoi_read    -- read and decode a QOI file
+- qoi_decode  -- decode the raw bytes of a QOI image from memory
+- qoi_write   -- encode and write a QOI file
+- qoi_encode  -- encode an rgba buffer into a QOI image in memory
+
+See the function declaration below for the signature and more information.
+
+If you don't want/need the qoi_read and qoi_write functions, you can define
+QOI_NO_STDIO before including this library.
+
+This library uses malloc() and free(). To supply your own malloc implementation
+you can define QOI_MALLOC and QOI_FREE before including this library.
+
+This library uses memset() to zero-initialize the index. To supply your own
+implementation you can define QOI_ZEROARR before including this library.
+
+
+-- Data Format
+
+A QOI file has a 14 byte header, followed by any number of data "chunks" and an
+8-byte end marker.
+
+struct qoi_header_t {
+	char     magic[4];   // magic bytes "qoif"
+	uint32_t width;      // image width in pixels (BE)
+	uint32_t height;     // image height in pixels (BE)
+	uint8_t  channels;   // 3 = RGB, 4 = RGBA
+	uint8_t  colorspace; // 0 = sRGB with linear alpha, 1 = all channels linear
+};
+
+Images are encoded row by row, left to right, top to bottom. The decoder and
+encoder start with {r: 0, g: 0, b: 0, a: 255} as the previous pixel value. An
+image is complete when all pixels specified by width * height have been covered.
+
+Pixels are encoded as
+ - a run of the previous pixel
+ - an index into an array of previously seen pixels
+ - a difference to the previous pixel value in r,g,b
+ - full r,g,b or r,g,b,a values
+
+The color channels are assumed to not be premultiplied with the alpha channel
+("un-premultiplied alpha").
+
+A running array[64] (zero-initialized) of previously seen pixel values is
+maintained by the encoder and decoder. Each pixel that is seen by the encoder
+and decoder is put into this array at the position formed by a hash function of
+the color value. In the encoder, if the pixel value at the index matches the
+current pixel, this index position is written to the stream as QOI_OP_INDEX.
+The hash function for the index is:
+
+	index_position = (r * 3 + g * 5 + b * 7 + a * 11) % 64
+
+Each chunk starts with a 2- or 8-bit tag, followed by a number of data bits. The
+bit length of chunks is divisible by 8 - i.e. all chunks are byte aligned. All
+values encoded in these data bits have the most significant bit on the left.
+
+The 8-bit tags have precedence over the 2-bit tags. A decoder must check for the
+presence of an 8-bit tag first.
+
+The byte stream's end is marked with 7 0x00 bytes followed a single 0x01 byte.
+
+
+The possible chunks are:
+
+
+.- QOI_OP_INDEX ----------.
+|         Byte[0]         |
+|  7  6  5  4  3  2  1  0 |
+|-------+-----------------|
+|  0  0 |     index       |
+`-------------------------`
+2-bit tag b00
+6-bit index into the color index array: 0..63
+
+A valid encoder must not issue 2 or more consecutive QOI_OP_INDEX chunks to the
+same index. QOI_OP_RUN should be used instead.
+
+
+.- QOI_OP_DIFF -----------.
+|         Byte[0]         |
+|  7  6  5  4  3  2  1  0 |
+|-------+-----+-----+-----|
+|  0  1 |  dr |  dg |  db |
+`-------------------------`
+2-bit tag b01
+2-bit   red channel difference from the previous pixel between -2..1
+2-bit green channel difference from the previous pixel between -2..1
+2-bit  blue channel difference from the previous pixel between -2..1
+
+The difference to the current channel values are using a wraparound operation,
+so "1 - 2" will result in 255, while "255 + 1" will result in 0.
+
+Values are stored as unsigned integers with a bias of 2. E.g. -2 is stored as
+0 (b00). 1 is stored as 3 (b11).
+
+The alpha value remains unchanged from the previous pixel.
+
+
+.- QOI_OP_LUMA -------------------------------------.
+|         Byte[0]         |         Byte[1]         |
+|  7  6  5  4  3  2  1  0 |  7  6  5  4  3  2  1  0 |
+|-------+-----------------+-------------+-----------|
+|  1  0 |  green diff     |   dr - dg   |  db - dg  |
+`---------------------------------------------------`
+2-bit tag b10
+6-bit green channel difference from the previous pixel -32..31
+4-bit   red channel difference minus green channel difference -8..7
+4-bit  blue channel difference minus green channel difference -8..7
+
+The green channel is used to indicate the general direction of change and is
+encoded in 6 bits. The red and blue channels (dr and db) base their diffs off
+of the green channel difference and are encoded in 4 bits. I.e.:
+	dr_dg = (cur_px.r - prev_px.r) - (cur_px.g - prev_px.g)
+	db_dg = (cur_px.b - prev_px.b) - (cur_px.g - prev_px.g)
+
+The difference to the current channel values are using a wraparound operation,
+so "10 - 13" will result in 253, while "250 + 7" will result in 1.
+
+Values are stored as unsigned integers with a bias of 32 for the green channel
+and a bias of 8 for the red and blue channel.
+
+The alpha value remains unchanged from the previous pixel.
+
+
+.- QOI_OP_RUN ------------.
+|         Byte[0]         |
+|  7  6  5  4  3  2  1  0 |
+|-------+-----------------|
+|  1  1 |       run       |
+`-------------------------`
+2-bit tag b11
+6-bit run-length repeating the previous pixel: 1..62
+
+The run-length is stored with a bias of -1. Note that the run-lengths 63 and 64
+(b111110 and b111111) are illegal as they are occupied by the QOI_OP_RGB and
+QOI_OP_RGBA tags.
+
+
+.- QOI_OP_RGB ------------------------------------------.
+|         Byte[0]         | Byte[1] | Byte[2] | Byte[3] |
+|  7  6  5  4  3  2  1  0 | 7 .. 0  | 7 .. 0  | 7 .. 0  |
+|-------------------------+---------+---------+---------|
+|  1  1  1  1  1  1  1  0 |   red   |  green  |  blue   |
+`-------------------------------------------------------`
+8-bit tag b11111110
+8-bit   red channel value
+8-bit green channel value
+8-bit  blue channel value
+
+The alpha value remains unchanged from the previous pixel.
+
+
+.- QOI_OP_RGBA ---------------------------------------------------.
+|         Byte[0]         | Byte[1] | Byte[2] | Byte[3] | Byte[4] |
+|  7  6  5  4  3  2  1  0 | 7 .. 0  | 7 .. 0  | 7 .. 0  | 7 .. 0  |
+|-------------------------+---------+---------+---------+---------|
+|  1  1  1  1  1  1  1  1 |   red   |  green  |  blue   |  alpha  |
+`-----------------------------------------------------------------`
+8-bit tag b11111111
+8-bit   red channel value
+8-bit green channel value
+8-bit  blue channel value
+8-bit alpha channel value
+
+*/
+
+vendor/raylib-6.0/src/external/rlsw.h
+
+/**********************************************************************************************
+*
+*   rlsw v1.5 - An OpenGL 1.1-style software renderer implementation
+*
+*   DESCRIPTION:
+*       rlsw is a custom OpenGL 1.1-style implementation on software, intended to provide all
+*       functionality available on rlgl.h library used by raylib, becoming a direct software
+*       rendering replacement for OpenGL 1.1 backend and allowing to run raylib on GPU-less
+*       devices when required
+*
+*   FEATURES:
+*       - Rendering to custom internal framebuffer with multiple color modes supported:
+*           - Color buffer: RGB - 8-bit (3:3:2) | RGB - 16-bit (5:6:5) | RGB - 24-bit (8:8:8)
+*           - Depth buffer: D - 8-bit (unorm) | D - 16-bit (unorm) | D - 24-bit (unorm)
+*       - Rendering modes supported: POINT, LINES, TRIANGLE, QUADS
+*           - Additional features: Polygon modes, Point width, Line width
+*       - Clipping support for all rendering modes
+*       - Texture features supported:
+*           - All uncompressed texture formats supported by raylib
+*           - Texture Minification/Magnification checks
+*           - Point and Bilinear filtering
+*           - Texture Wrap Modes with separate checks for S/T coordinates
+*       - Vertex Arrays support with direct primitive drawing mode
+*       - Matrix Stack support (Matrix Push/Pop)
+*       - Other GL misc features:
+*           - GL-style getter functions
+*           - Framebuffer resizing
+*           - Perspective correction
+*           - Scissor clipping
+*           - Depth testing
+*           - Blend modes
+*           - Face culling
+*
+*   ADDITIONAL NOTES:
+*       Check PR for more info: https://github.com/raysan5/raylib/pull/4832
+*
+*   CONFIGURATION:
+*       #define RLSW_IMPLEMENTATION
+*           Generates the implementation of the library into the included file
+*           If not defined, the library is in header only mode and can be included in other headers
+*           or source files without problems. But only ONE file should hold the implementation
+*
+*       #define RLSW_USE_SIMD_INTRINSICS
+*           Detect and use SIMD intrinsics on the host compilation platform
+*           SIMD could improve rendering considerable vectorizing some raster operations
+*           but the target platforms running the compiled program with SIMD enabled
+*           must support the SIMD the program has been built for, making them only
+*           recommended under specific situations and only if the developers know
+*           what are they doing; this flag is not defined by default
+*
+*       rlsw capabilities could be customized defining some internal
+*       values before library inclusion (default values listed):
+*
+*           #define SW_FRAMEBUFFER_OUTPUT_BGRA      true
+*           #define SW_FRAMEBUFFER_COLOR_TYPE       R8G8B8A8
+*           #define SW_FRAMEBUFFER_DEPTH_TYPE       D32
+*           #define SW_MAX_PROJECTION_STACK_SIZE    2
+*           #define SW_MAX_MODELVIEW_STACK_SIZE     8
+*           #define SW_MAX_TEXTURE_STACK_SIZE       2
+*           #define SW_MAX_TEXTURES                 128
+*
+*
+*   LICENSE: MIT
+*
+*   Copyright (c) 2025-2026 Le Juez Victor (@Bigfoot71), reviewed by Ramon Santamaria (@raysan5)
+*
+*   Permission is hereby granted, free of charge, to any person obtaining a copy
+*   of this software and associated documentation files (the "Software"), to deal
+*   in the Software without restriction, including without limitation the rights
+*   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+*   copies of the Software, and to permit persons to whom the Software is
+*   furnished to do so, subject to the following conditions:
+*
+*   The above copyright notice and this permission notice shall be included in all
+*   copies or substantial portions of the Software.
+*
+*   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+*   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+*   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+*   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+*   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+*   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+*   SOFTWARE.
+*
+**********************************************************************************************/
+
+vendor/raylib-6.0/src/external/rltexgpu.h
+
+/**********************************************************************************************
+*
+*   rltexgpu v1.2 - GPU compressed textures loading and saving
+*
+*   DESCRIPTION:
+*
+*     Load GPU compressed image data from image files provided as memory data arrays,
+*     data is loaded compressed, ready to be loaded into GPU
+*
+*     Note that some file formats (DDS, PVR, KTX) also support uncompressed data storage.
+*     In those cases data is loaded uncompressed and format is returned
+*
+*   FIXME: This library still depends on raylib due to the following reasons:
+*     - rl_save_ktx_to_memory() requires rlGetGlTextureFormats() from rlgl.h
+*
+*   TODO:
+*     - Review rl_load_ktx_from_memory() to support KTX v2.2 specs
+*
+*   CONFIGURATION:
+*
+*   #define RLTEXGPU_SUPPORT_DDS
+*   #define RLTEXGPU_SUPPORT_PKM
+*   #define RLTEXGPU_SUPPORT_KTX
+*   #define RLTEXGPU_SUPPORT_PVR
+*   #define RLTEXGPU_SUPPORT_ASTC
+*       Define desired file formats to be supported
+*
+*   #define RLTEXGPU_SHOW_LOG_INFO
+*       Define, if you wish to see warnings generated by the library
+*       This will include <stdio.h> unless you provide your own RLTEXGPU_LOG
+*   #define RLTEXGPU_LOG
+*       Define, if you wish to provide your own warning function
+*       Make sure that this macro puts newline character '\n' at the end
+*
+*   #define RLTEXGPU_MALLOC
+*   #define RLTEXGPU_FREE
+*       Define those macros in order to provide your own libc-compliant allocator;
+*       not doing so will include <stdlib.h>
+*       If you're providing any of those, you must provide ALL of them,
+*       otherwise the code will (most likely) crash...
+*
+*   #define RLTEXGPU_NULL
+*       Define in order to provide your own libc-compliant NULL pointer;
+*       not doing so will include <stdlib.h>
+*
+*   #define RLTEXGPU_MEMCPY
+*       Define in order to provide your own libc-compliant 'memcpy' function;
+*       not doing so will include <string.h>
+*
+*   #define RLGPUTEXAPI
+*       Define to compiler-specific intrinsic, if you wish to export public functions
+*       There is no need to do so when statically linking
+*
+*   VERSIONS HISTORY:
+*       1.2 (18-Mar-2026) Renamed library to `rltexgpu`
+*                         Improved usage as standalone linrary
+*                         Decouple logging and memory allocation from raylib
+*
+*       1.1 (15-Jul-2025) Several minor fixes related to specific image formats; some work has been done
+*           in order to decouple the library from raylib by introducing few new macros; library still
+*           requires raylib in order to function properly
+*
+*       1.0 (17-Sep-2022) First version has been created by migrating part of compressed-texture-loading
+*           functionality from raylib src/rtextures.c into self-contained library
+*
+*   LICENSE: zlib/libpng
+*
+*   Copyright (c) 2013-2026 Ramon Santamaria (@raysan5)
+*
+*   This software is provided "as-is", without any express or implied warranty. In no event
+*   will the authors be held liable for any damages arising from the use of this software.
+*
+*   Permission is granted to anyone to use this software for any purpose, including commercial
+*   applications, and to alter it and redistribute it freely, subject to the following restrictions:
+*
+*     1. The origin of this software must not be misrepresented; you must not claim that you
+*     wrote the original software. If you use this software in a product, an acknowledgment
+*     in the product documentation would be appreciated but is not required.
+*
+*     2. Altered source versions must be plainly marked as such, and must not be misrepresented
+*     as being the original software.
+*
+*     3. This notice may not be removed or altered from any source distribution.
+*
+**********************************************************************************************/
+
+vendor/raylib-6.0/src/external/rprand.h
+
+/**********************************************************************************************
+*
+*   rprand v1.0 - A simple and easy-to-use pseudo-random numbers generator (PRNG)
+*
+*   FEATURES:
+*       - Pseudo-random values generation, 32 bits: [0..4294967295]
+*       - Sequence generation avoiding duplicate values
+*       - Using standard and proven prng algorithm (Xoshiro128**)
+*       - State initialized with a separate generator (SplitMix64)
+*
+*   LIMITATIONS:
+*       - No negative numbers, up to the user to manage them
+*
+*   POSSIBLE IMPROVEMENTS:
+*       - Support 64 bits generation
+*
+*   ADDITIONAL NOTES:
+*     This library implements two pseudo-random number generation algorithms:
+*
+*         - Xoshiro128** : https://prng.di.unimi.it/xoshiro128starstar.c
+*         - SplitMix64   : https://prng.di.unimi.it/splitmix64.c
+*
+*     SplitMix64 is used to initialize the Xoshiro128** state, from a provided seed
+*
+*     It's suggested to use SplitMix64 to initialize the state of the generators starting from
+*     a 64-bit seed, as research has shown that initialization must be performed with a generator
+*     radically different in nature from the one initialized to avoid correlation on similar seeds.
+*
+*   CONFIGURATION:
+*       #define RPRAND_IMPLEMENTATION
+*           Generates the implementation of the library into the included file.
+*           If not defined, the library is in header only mode and can be included in other headers
+*           or source files without problems. But only ONE file should hold the implementation.
+*
+*   DEPENDENCIES: none
+*
+*   VERSIONS HISTORY:
+*       1.0 (01-Jun-2023) First version
+*
+*
+*   LICENSE: zlib/libpng
+*
+*   Copyright (c) 2023 Ramon Santamaria (@raysan5)
+*
+*   This software is provided "as-is", without any express or implied warranty. In no event
+*   will the authors be held liable for any damages arising from the use of this software.
+*
+*   Permission is granted to anyone to use this software for any purpose, including commercial
+*   applications, and to alter it and redistribute it freely, subject to the following restrictions:
+*
+*     1. The origin of this software must not be misrepresented; you must not claim that you
+*     wrote the original software. If you use this software in a product, an acknowledgment
+*     in the product documentation would be appreciated but is not required.
+*
+*     2. Altered source versions must be plainly marked as such, and must not be misrepresented
+*     as being the original software.
+*
+*     3. This notice may not be removed or altered from any source distribution.
+*
+**********************************************************************************************/
+
+vendor/raylib-6.0/src/external/sdefl.h
+
+/*# Small Deflate
+`sdefl` is a small bare bone lossless compression library in ANSI C (ISO C90)
+which implements the Deflate (RFC 1951) compressed data format specification standard.
+It is mainly tuned to get as much speed and compression ratio from as little code
+as needed to keep the implementation as concise as possible.
+
+## Features
+- Portable single header and source file duo written in ANSI C (ISO C90)
+- Dual license with either MIT or public domain
+- Small implementation
+    - Deflate: 525 LoC
+    - Inflate: 320 LoC
+- Webassembly:
+    - Deflate ~3.7 KB (~2.2KB compressed)
+    - Inflate ~3.6 KB (~2.2KB compressed)
+
+## Usage:
+This file behaves differently depending on what symbols you define
+before including it.
+
+Header-File mode:
+If you do not define `SDEFL_IMPLEMENTATION` before including this file, it
+will operate in header only mode. In this mode it declares all used structs
+and the API of the library without including the implementation of the library.
+
+Implementation mode:
+If you define `SDEFL_IMPLEMENTATION` before including this file, it will
+compile the implementation . Make sure that you only include
+this file implementation in *one* C or C++ file to prevent collisions.
+
+### Benchmark
+
+| Compressor name         | Compression| Decompress.| Compr. size | Ratio |
+| ------------------------| -----------| -----------| ----------- | ----- |
+| miniz 1.0 -1            |   122 MB/s |   208 MB/s |    48510028 | 48.51 |
+| miniz 1.0 -6            |    27 MB/s |   260 MB/s |    36513697 | 36.51 |
+| miniz 1.0 -9            |    23 MB/s |   261 MB/s |    36460101 | 36.46 |
+| zlib 1.2.11 -1          |    72 MB/s |   307 MB/s |    42298774 | 42.30 |
+| zlib 1.2.11 -6          |    24 MB/s |   313 MB/s |    36548921 | 36.55 |
+| zlib 1.2.11 -9          |    20 MB/s |   314 MB/s |    36475792 | 36.48 |
+| sdefl 1.0 -0            |   127 MB/s |   355 MB/s |    40004116 | 39.88 |
+| sdefl 1.0 -1            |   111 MB/s |   413 MB/s |    38940674 | 38.82 |
+| sdefl 1.0 -5            |    45 MB/s |   436 MB/s |    36577183 | 36.46 |
+| sdefl 1.0 -7            |    38 MB/s |   432 MB/s |    36523781 | 36.41 |
+| libdeflate 1.3 -1       |   147 MB/s |   667 MB/s |    39597378 | 39.60 |
+| libdeflate 1.3 -6       |    69 MB/s |   689 MB/s |    36648318 | 36.65 |
+| libdeflate 1.3 -9       |    13 MB/s |   672 MB/s |    35197141 | 35.20 |
+| libdeflate 1.3 -12      |  8.13 MB/s |   670 MB/s |    35100568 | 35.10 |
+
+### Compression
+Results on the [Silesia compression corpus](http://sun.aei.polsl.pl/~sdeor/index.php?page=silesia):
+
+| File    |   Original | `sdefl 0`    | `sdefl 5`  | `sdefl 7`   |
+| --------| -----------| -------------| ---------- | ------------|
+| dickens | 10.192.446 | 4,260,187    |  3,845,261 |   3,833,657 |
+| mozilla | 51.220.480 | 20,774,706   | 19,607,009 |  19,565,867 |
+| mr      |  9.970.564 | 3,860,531    |  3,673,460 |   3,665,627 |
+| nci     | 33.553.445 | 4,030,283    |  3,094,526 |   3,006,075 |
+| ooffice |  6.152.192 | 3,320,063    |  3,186,373 |   3,183,815 |
+| osdb    | 10.085.684 | 3,919,646    |  3,649,510 |   3,649,477 |
+| reymont |  6.627.202 | 2,263,378    |  1,857,588 |   1,827,237 |
+| samba   | 21.606.400 | 6,121,797    |  5,462,670 |   5,450,762 |
+| sao     |  7.251.944 | 5,612,421    |  5,485,380 |   5,481,765 |
+| webster | 41.458.703 | 13,972,648   | 12,059,432 |  11,991,421 |
+| xml     |  5.345.280 | 886,620      |    674,009 |     662,141 |
+| x-ray   |  8.474.240 | 6,304,655    |  6,244,779 |   6,244,779 |
+
+## License
+```
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2020-2023 Micha Mettke
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+```
+*/
+
+vendor/raylib-6.0/src/external/sinfl.h
+
+/*
+# Small Deflate
+`sdefl` is a small bare bone lossless compression library in ANSI C (ISO C90)
+which implements the Deflate (RFC 1951) compressed data format specification standard.
+It is mainly tuned to get as much speed and compression ratio from as little code
+as needed to keep the implementation as concise as possible.
+
+## Features
+- Portable single header and source file duo written in ANSI C (ISO C90)
+- Dual license with either MIT or public domain
+- Small implementation
+    - Deflate: 525 LoC
+    - Inflate: 500 LoC
+- Webassembly:
+    - Deflate ~3.7 KB (~2.2KB compressed)
+    - Inflate ~3.6 KB (~2.2KB compressed)
+
+## Usage:
+This file behaves differently depending on what symbols you define
+before including it.
+
+Header-File mode:
+If you do not define `SINFL_IMPLEMENTATION` before including this file, it
+will operate in header only mode. In this mode it declares all used structs
+and the API of the library without including the implementation of the library.
+
+Implementation mode:
+If you define `SINFL_IMPLEMENTATION` before including this file, it will
+compile the implementation. Make sure that you only include
+this file implementation in *one* C or C++ file to prevent collisions.
+
+### Benchmark
+
+| Compressor name         | Compression| Decompress.| Compr. size | Ratio |
+| ------------------------| -----------| -----------| ----------- | ----- |
+| miniz 1.0 -1            |   122 MB/s |   208 MB/s |    48510028 | 48.51 |
+| miniz 1.0 -6            |    27 MB/s |   260 MB/s |    36513697 | 36.51 |
+| miniz 1.0 -9            |    23 MB/s |   261 MB/s |    36460101 | 36.46 |
+| zlib 1.2.11 -1          |    72 MB/s |   307 MB/s |    42298774 | 42.30 |
+| zlib 1.2.11 -6          |    24 MB/s |   313 MB/s |    36548921 | 36.55 |
+| zlib 1.2.11 -9          |    20 MB/s |   314 MB/s |    36475792 | 36.48 |
+| sdefl 1.0 -0            |   127 MB/s |   355 MB/s |    40004116 | 39.88 |
+| sdefl 1.0 -1            |   111 MB/s |   413 MB/s |    38940674 | 38.82 |
+| sdefl 1.0 -5            |    45 MB/s |   436 MB/s |    36577183 | 36.46 |
+| sdefl 1.0 -7            |    38 MB/s |   432 MB/s |    36523781 | 36.41 |
+| libdeflate 1.3 -1       |   147 MB/s |   667 MB/s |    39597378 | 39.60 |
+| libdeflate 1.3 -6       |    69 MB/s |   689 MB/s |    36648318 | 36.65 |
+| libdeflate 1.3 -9       |    13 MB/s |   672 MB/s |    35197141 | 35.20 |
+| libdeflate 1.3 -12      |  8.13 MB/s |   670 MB/s |    35100568 | 35.10 |
+
+### Compression
+Results on the [Silesia compression corpus](http://sun.aei.polsl.pl/~sdeor/index.php?page=silesia):
+
+| File    |   Original | `sdefl 0`    | `sdefl 5`  | `sdefl 7`   |
+| --------| -----------| -------------| ---------- | ------------|
+| dickens | 10.192.446 | 4,260,187    |  3,845,261 |   3,833,657 |
+| mozilla | 51.220.480 | 20,774,706   | 19,607,009 |  19,565,867 |
+| mr      |  9.970.564 | 3,860,531    |  3,673,460 |   3,665,627 |
+| nci     | 33.553.445 | 4,030,283    |  3,094,526 |   3,006,075 |
+| ooffice |  6.152.192 | 3,320,063    |  3,186,373 |   3,183,815 |
+| osdb    | 10.085.684 | 3,919,646    |  3,649,510 |   3,649,477 |
+| reymont |  6.627.202 | 2,263,378    |  1,857,588 |   1,827,237 |
+| samba   | 21.606.400 | 6,121,797    |  5,462,670 |   5,450,762 |
+| sao     |  7.251.944 | 5,612,421    |  5,485,380 |   5,481,765 |
+| webster | 41.458.703 | 13,972,648   | 12,059,432 |  11,991,421 |
+| xml     |  5.345.280 | 886,620      |    674,009 |     662,141 |
+| x-ray   |  8.474.240 | 6,304,655    |  6,244,779 |   6,244,779 |
+
+## License
+```
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2020-2023 Micha Mettke
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+```
+*/
+
+vendor/raylib-6.0/src/external/stb_image.h
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/stb_image_resize2.h
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/stb_image_write.h
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/stb_perlin.h
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/stb_rect_pack.h
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/stb_truetype.h
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/stb_vorbis.c
+
+/*
+------------------------------------------------------------------------------
+This software is available under 2 licenses -- choose whichever you prefer.
+------------------------------------------------------------------------------
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+------------------------------------------------------------------------------
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+Anyone is free to copy, modify, publish, use, compile, sell, or distribute this
+software, either in source code form or as a compiled binary, for any purpose,
+commercial or non-commercial, and by any means.
+In jurisdictions that recognize copyright laws, the author or authors of this
+software dedicate any and all copyright interest in the software to the public
+domain. We make this dedication for the benefit of the public at large and to
+the detriment of our heirs and successors. We intend this dedication to be an
+overt act of relinquishment in perpetuity of all present and future rights to
+this software under copyright law.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+------------------------------------------------------------------------------
+*/
+
+vendor/raylib-6.0/src/external/tinyobj_loader_c.h
+
+/*
+   The MIT License (MIT)
+
+   Copyright (c) 2016 - 2019 Syoyo Fujita and many contributors.
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+   THE SOFTWARE.
+   */
+
+vendor/raylib-6.0/src/external/vox_loader.h
+
+/*
+   The MIT License (MIT)
+
+   Copyright (c) 2021 Johann Nadalutti.
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+   THE SOFTWARE.
+
+
+	vox_loader - v1.01
+			 no warranty implied; use at your own risk
+
+	Do this:
+	#define VOX_LOADER_INCLUDE__H
+	before you include this file in* one* C or C++ file to create the implementation.
+
+	// i.e. it should look like this:
+	#include ...
+	#include ...
+	#include ...
+	#define VOX_LOADER_INCLUDE__H
+	#include "vox_loader.h"
+
+revision history:
+	1.00  (2021-09-03)	first released version
+	1.01  (2021-09-07)	Support custom memory allocators
+						Removed Raylib dependencies
+						Changed Vox_LoadFileName to Vox_LoadFromMemory
+    1.02  (2021-09-10)  @raysan5: Reviewed some formating
+    1.03  (2021-10-02)  @catmanl: Reduce warnings on gcc
+    1.04  (2021-10-17)  @warzes: Fixing the error of loading VOX models
+
+*/
+
+vendor/raylib-6.0/src/external/glfw/LICENSE.md
+
+Copyright (c) 2002-2006 Marcus Geelnard
+
+Copyright (c) 2006-2019 Camilla Löwy
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would
+   be appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not
+   be misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source
+   distribution.
+
+
+
+vendor/raylib-6.0/src/external/glfw/CONTRIBUTORS.md
+
+# Acknowledgements
+
+GLFW exists because people around the world donated their time and lent their
+skills.  This list only includes contributions to the main repository and
+excludes other invaluable contributions like language bindings and text and
+video tutorials.
+
+ - Bobyshev Alexander
+ - Laurent Aphecetche
+ - Matt Arsenault
+ - Takuro Ashie
+ - ashishgamedev
+ - David Avedissian
+ - Luca Bacci
+ - Keith Bauer
+ - John Bartholomew
+ - Coşku Baş
+ - Bayemite
+ - Niklas Behrens
+ - Andrew Belt
+ - Nevyn Bengtsson
+ - Niklas Bergström
+ - Denis Bernard
+ - BiBi
+ - Doug Binks
+ - blanco
+ - Waris Boonyasiriwat
+ - Kyle Brenneman
+ - Rok Breulj
+ - TheBrokenRail
+ - Kai Burjack
+ - Martin Capitanio
+ - Nicolas Caramelli
+ - David Carlier
+ - Arturo Castro
+ - Chi-kwan Chan
+ - Victor Chernyakin
+ - TheChocolateOre
+ - Ali Chraghi
+ - Joseph Chua
+ - Ian Clarkson
+ - Michał Cichoń
+ - Lambert Clara
+ - Anna Clarke
+ - Josh Codd
+ - Yaron Cohen-Tal
+ - Omar Cornut
+ - Andrew Corrigan
+ - Bailey Cosier
+ - Noel Cower
+ - CuriouserThing
+ - Bill Currie
+ - Jason Daly
+ - danhambleton
+ - Jarrod Davis
+ - Olivier Delannoy
+ - Paul R. Deppe
+ - Michael Dickens
+ - Роман Донченко
+ - Mario Dorn
+ - Wolfgang Draxinger
+ - Jonathan Dummer
+ - Ralph Eastwood
+ - Fredrik Ehnbom
+ - Robin Eklind
+ - Jan Ekström
+ - Siavash Eliasi
+ - Ahmad Fatoum
+ - Nikita Fediuchin
+ - Felipe Ferreira
+ - Michael Fogleman
+ - forworldm
+ - Jason Francis
+ - Gerald Franz
+ - Mário Freitas
+ - GeO4d
+ - Marcus Geelnard
+ - Gegy
+ - ghuser404
+ - Charles Giessen
+ - Ryan C. Gordon
+ - Stephen Gowen
+ - Kovid Goyal
+ - Kevin Grandemange
+ - Eloi Marín Gratacós
+ - Grzesiek11
+ - Stefan Gustavson
+ - Andrew Gutekanst
+ - Stephen Gutekanst
+ - Jonathan Hale
+ - Daniel Hauser
+ - hdf89shfdfs
+ - Moritz Heinemann
+ - Sylvain Hellegouarch
+ - Björn Hempel
+ - Matthew Henry
+ - heromyth
+ - Lucas Hinderberger
+ - Paul Holden
+ - Hajime Hoshi
+ - Warren Hu
+ - Charles Huber
+ - Brent Huisman
+ - Florian Hülsmann
+ - illustris
+ - InKryption
+ - IntellectualKitty
+ - Aaron Jacobs
+ - JannikGM
+ - Erik S. V. Jansson
+ - jjYBdx4IL
+ - Peter Johnson
+ - Toni Jovanoski
+ - Arseny Kapoulkine
+ - Cem Karan
+ - Osman Keskin
+ - Koray Kilinc
+ - Josh Kilmer
+ - Byunghoon Kim
+ - Cameron King
+ - Peter Knut
+ - Christoph Kubisch
+ - Yuri Kunde Schlesner
+ - Rokas Kupstys
+ - Konstantin Käfer
+ - Eric Larson
+ - Guillaume Lebrun
+ - Francis Lecavalier
+ - Jong Won Lee
+ - Robin Leffmann
+ - Glenn Lewis
+ - Shane Liesegang
+ - Anders Lindqvist
+ - Leon Linhart
+ - Marco Lizza
+ - lo-v-ol
+ - Eyal Lotem
+ - Aaron Loucks
+ - Ned Loynd
+ - Luflosi
+ - lukect
+ - Tristam MacDonald
+ - Jean-Luc Mackail
+ - Hans Mackowiak
+ - Ramiro Magno
+ - Дмитри Малышев
+ - Zbigniew Mandziejewicz
+ - Adam Marcus
+ - Célestin Marot
+ - Kyle McDonald
+ - David V. McKay
+ - David Medlock
+ - Bryce Mehring
+ - Jonathan Mercier
+ - Marcel Metz
+ - Liam Middlebrook
+ - mightgoyardstill
+ - Ave Milia
+ - Icyllis Milica
+ - Jonathan Miller
+ - Kenneth Miller
+ - Bruce Mitchener
+ - Jack Moffitt
+ - Ravi Mohan
+ - Jeff Molofee
+ - Alexander Monakov
+ - Pierre Morel
+ - Jon Morton
+ - Pierre Moulon
+ - Martins Mozeiko
+ - Pascal Muetschard
+ - James Murphy
+ - Julian Møller
+ - Julius Häger
+ - Nat!
+ - NateIsStalling
+ - ndogxj
+ - F. Nedelec
+ - n3rdopolis
+ - Kristian Nielsen
+ - Joel Niemelä
+ - Victor Nova
+ - Kamil Nowakowski
+ - onox
+ - Denis Ovod
+ - Ozzy
+ - Andri Pálsson
+ - luz paz
+ - Peoro
+ - Braden Pellett
+ - Christopher Pelloux
+ - Michael Pennington
+ - Arturo J. Pérez
+ - Vladimir Perminov
+ - Olivier Perret
+ - Anthony Pesch
+ - Orson Peters
+ - Emmanuel Gil Peyrot
+ - Cyril Pichard
+ - Pilzschaf
+ - Keith Pitt
+ - Stanislav Podgorskiy
+ - Konstantin Podsvirov
+ - Nathan Poirier
+ - Pokechu22
+ - Alexandre Pretyman
+ - Pablo Prietz
+ - przemekmirek
+ - pthom
+ - Martin Pulec
+ - Guillaume Racicot
+ - Juan Ramos
+ - Christian Rauch
+ - Philip Rideout
+ - Eddie Ringle
+ - Max Risuhin
+ - Joe Roback
+ - Jorge Rodriguez
+ - Jari Ronkainen
+ - Luca Rood
+ - Ed Ropple
+ - Aleksey Rybalkin
+ - Mikko Rytkönen
+ - Riku Salminen
+ - Yoshinori Sano
+ - Brandon Schaefer
+ - Sebastian Schuberth
+ - Scr3amer
+ - Jan Schuerkamp
+ - Christian Sdunek
+ - Matt Sealey
+ - Steve Sexton
+ - Arkady Shapkin
+ - Mingjie Shen
+ - Ali Sherief
+ - Yoshiki Shibukawa
+ - Dmitri Shuralyov
+ - Joao da Silva
+ - Daniel Sieger
+ - Daljit Singh
+ - Michael Skec
+ - Daniel Skorupski
+ - Slemmie
+ - Anthony Smith
+ - Bradley Smith
+ - Cliff Smolinsky
+ - Patrick Snape
+ - Erlend Sogge Heggen
+ - Olivier Sohn
+ - Julian Squires
+ - Johannes Stein
+ - Pontus Stenetorp
+ - Michael Stocker
+ - Justin Stoecker
+ - Elviss Strazdins
+ - Paul Sultana
+ - Nathan Sweet
+ - TTK-Bandit
+ - Nuno Teixeira
+ - Jared Tiala
+ - Sergey Tikhomirov
+ - Arthur Tombs
+ - TronicLabs
+ - Ioannis Tsakpinis
+ - Samuli Tuomola
+ - Matthew Turner
+ - urraka
+ - Elias Vanderstuyft
+ - Stef Velzel
+ - Jari Vetoniemi
+ - Ricardo Vieira
+ - Nicholas Vitovitch
+ - Vladimír Vondruš
+ - Simon Voordouw
+ - Corentin Wallez
+ - Torsten Walluhn
+ - Patrick Walton
+ - Jim Wang
+ - Xo Wang
+ - Andre Weissflog
+ - Jay Weisskopf
+ - Frank Wille
+ - Andy Williams
+ - Joel Winarske
+ - Richard A. Wilkes
+ - Tatsuya Yatagawa
+ - Ryogo Yoshimura
+ - Lukas Zanner
+ - Andrey Zholos
+ - Aihui Zhu
+ - Santi Zupancic
+ - Jonas Ådahl
+ - Lasse Öörni
+ - Leonard König
+ - All the unmentioned and anonymous contributors in the GLFW community, for bug
+   reports, patches, feedback, testing and encouragement
+

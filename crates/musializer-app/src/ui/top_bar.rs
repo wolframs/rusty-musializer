@@ -1,4 +1,4 @@
-//! The top bar (WX-5c, `docs/WX5C_DESIGN.md` §4): the mark, the project
+//! The top bar (WX-5c, `docs/archive/WX5C_DESIGN.md` §4): the mark, the project
 //! title and its status, the mode tabs, and Still / Contact sheet / Render.
 //!
 //! **Owner: the Top bar agent.** This file is the seam the 5c split was cut
@@ -746,6 +746,7 @@ impl Shell {
 
         // The name: mark, title, artist.
         draw_mark(d, layout.mark);
+        self.about_logo(d, layout.mark);
         let shown_title = authored.ellipsize(&title, layout.title.width + 0.5, TITLE_SIZE, 0.0);
         authored.draw_text(
             d,

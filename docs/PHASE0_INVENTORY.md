@@ -2421,3 +2421,5 @@ has no effect. The selected behavior is described before Start and recorded in
 `assist-manifest.json` as `lyric_inventory`. `lyrics.performance.json` retains
 source audio wording and exact local reference spans. This choice does not
 change the audio-transfer boundary or authorize another provider.
+
+`--ui-probe about=1` opens the in-app attribution surface; `about:` reports its live table row count, modal and control rectangles, notice index, scroll position and last action. `key=escape` follows the same modal dismissal path as native Escape.

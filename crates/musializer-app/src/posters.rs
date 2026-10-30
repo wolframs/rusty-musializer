@@ -1,7 +1,7 @@
 //! Track-specific poster frames, one per plan-lane run (WX-5b).
 //!
 //! **This file is the seam between the plan lane and the poster service**
-//! (`build/redesign/wx5b-design.md` in the main checkout, §3). The read side
+//! (`docs/POSTER_FRAMES.md`). The read side
 //! below — [`PosterRequest`], [`PosterView`], [`PosterBoard::view`] and
 //! [`PosterBoard::describe`] — is what the lane is written against; the service
 //! fills in everything behind it (the recipe and key in

@@ -172,6 +172,7 @@ finish_queued_steps
 if [ "$QUICK" -eq 0 ]; then
     if command -v Xvfb >/dev/null 2>&1; then
         step "headless gate (window, audio, Spectrum)" tools/headless_check.sh
+        step "About (credits, licences, modal input, appearances)" tools/about_check.sh
         step "dock gate (terminal in the window)" tools/dock_check.sh
         step "top bar (title, tabs, still, sheet, render)" tools/top_bar_check.sh
         step "column (views, the frame, census, dock, render, progress)" tools/column_check.sh

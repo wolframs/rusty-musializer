@@ -1,4 +1,4 @@
-//! The lane head: one 26 px row above the plan lane (WX-5c, `docs/WX5C_DESIGN.md`
+//! The lane head: one 26 px row above the plan lane (WX-5c, `docs/archive/WX5C_DESIGN.md`
 //! §3).
 //!
 //! **Not a port.** It replaces two rows the band used to carry — the manual

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# The column gate (WX-5d, build/redesign/wx5d-design.md §5, the Frame checks):
+# The column gate (WX-5d):
 # the right column, checked headless.
 #
 #   tools/column_check.sh [OUTPUT_DIR]        # default build/column-check

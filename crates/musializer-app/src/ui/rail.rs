@@ -1,4 +1,4 @@
-//! The rail and its flyouts (WX-5c, `docs/WX5C_DESIGN.md` §1).
+//! The rail and its flyouts (WX-5c, `docs/archive/WX5C_DESIGN.md` §1).
 //!
 //! The rail replaces the 320 px sidebar: four icons beside the preview and the
 //! transport — Tracks and Scenes at the top, the column toggle at the bottom —

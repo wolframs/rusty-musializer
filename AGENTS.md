@@ -190,6 +190,7 @@ number disagrees, grep it there before debugging from scratch.
   Full-frame washes use `BLEND_ALPHA_PREMULTIPLY`. Read per-plane PSNR.
 - **`--probe-shot` photographs the frame before the last** on the GPU and the
   last on llvmpipe; photograph a state held still for two frames.
+- **A modal masks late chrome too.** Keep its pointer occluder through the notice tray; restore real input only for the overlay. See `docs/TRAPS.md`.
 - **A stranded pointer claim is invisible in a picture**; the next interaction
   misbehaves. `gesture=none` on `timeline:` proves the release was taken.
 - **`--ui-probe hover=XxY`**, not a comma; the spec is comma-separated.

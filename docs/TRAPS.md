@@ -252,3 +252,13 @@ and private-config guards.
   Every UI clipboard read goes through `runtime::clipboard::text`, which checks
   null and copies while GLFW's buffer is valid. Found by the native terminal
   focus check on an isolated Xvfb, 2026-10-30.
+
+## A modal's pointer mask includes late chrome
+
+About's panels used an occluded widget scale, but `Shell::draw` restored the
+plain scale before drawing the notice tray. A press in an empty part of About
+could therefore claim the covered notice's close button before the dialog saw
+it. Mask every underlay widget, including the late tray; restore real input in
+the final overlay after native chrome and egui. `about_check.py` addresses that
+covered close from `notices:` and pins the unchanged tray, alongside the normal
+interior-gap control. No fixed pixel is a substitute for that report target.

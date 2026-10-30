@@ -5,8 +5,7 @@
 //! aim at rects from the `lyrics column:` and `caption style:` lines rather than
 //! at pixels measured once.
 //!
-//! Every number here is the approved mockup's (`build/redesign/wx5d-src/
-//! mock.py`, the `lyrics_cues` and `lyrics_style_1280` pages): body padding
+//! Every number here is the approved mockup's: body padding
 //! 12/14, a 6 px card with 12 px padding and 9 px between its rows, 30 px
 //! controls, 34 px list rows one pixel apart. Labels are fixed English words, so
 //! button widths are constants too; a label that outgrows its box is fitted by

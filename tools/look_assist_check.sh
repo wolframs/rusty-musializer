@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# The Look & Assist column gate (WX-5d, build/redesign/wx5d-design.md §3.3,
-# §3.4 and §5): Look and Assist drawn in the right column, pressed and
+# The Look & Assist column gate (WX-5d): Look and Assist drawn in the right column, pressed and
 # photographed headless.
 #
 #   tools/look_assist_check.sh [OUTPUT_DIR]      # default build/look-assist-check
