@@ -492,6 +492,52 @@ mod tests {
     }
 
     #[test]
+    fn every_locked_registry_package_has_an_embedded_notice() {
+        use sha2::{Digest, Sha256};
+        let lock = include_str!("../../../Cargo.lock");
+        let bundle = CREDITS
+            .iter()
+            .find(|c| c.name == "Additional dependency notices")
+            .unwrap()
+            .notice
+            .unwrap();
+        let expected: BTreeSet<String> = lock
+            .split("[[package]]")
+            .skip(1)
+            .filter(|block| {
+                block
+                    .lines()
+                    .any(|line| line.starts_with("source = \"registry+"))
+            })
+            .map(|block| {
+                let field = |key: &str| {
+                    block
+                        .lines()
+                        .find_map(|line| line.strip_prefix(key))
+                        .unwrap()
+                        .trim_matches('"')
+                };
+                format!("{} {}", field("name = "), field("version = "))
+            })
+            .collect();
+        let rows: Vec<_> = bundle
+            .lines()
+            .filter_map(|line| line.strip_prefix("Package: "))
+            .map(str::to_owned)
+            .collect();
+        let actual: BTreeSet<_> = rows.iter().cloned().collect();
+        assert_eq!(rows.len(), actual.len(), "duplicate package notice");
+        assert_eq!(actual, expected, "locked dependency notices are incomplete");
+        assert!(
+            bundle.contains(&format!(
+                "Cargo.lock SHA-256: {:x}",
+                Sha256::digest(lock.as_bytes())
+            )),
+            "refresh notices after Cargo.lock changes"
+        );
+    }
+
+    #[test]
     fn every_embedded_project_font_has_exactly_one_credit() {
         let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources/fonts");
         let expected: BTreeSet<_> = fs::read_dir(fonts)

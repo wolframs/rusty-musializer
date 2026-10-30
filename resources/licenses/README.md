@@ -6,12 +6,13 @@ adapted egui bridge's MIT licence. About → Licence reads only embedded text.
 
 The named crate notices were copied verbatim from the corresponding package
 in `Cargo.lock` and its Cargo registry source. `locked-dependencies.txt`
-collects the packaged licence/notice files of the Linux normal, build and test
-dependency graph (`cargo tree --locked --target x86_64-unknown-linux-gnu
---prefix none -e normal,build,dev`). Build/test-only entries are conservative
-attribution, not a claim that their executables are bundled. Each section
-records the exact package version, declared SPDX expression and repository.
-Regenerate this bundle when changing the lockfile; retain the original notices.
+collects the packaged licence/notice files of **every registry package in
+Cargo.lock**, including other-target and build/test-only packages conservatively;
+this is not a claim that their executables are bundled. Each section records the
+exact package version, declared SPDX expression and repository. Run
+`tools/refresh_credits_notices.py` after fetching locked package sources. It is
+offline, fails on missing source notices, and records Cargo.lock's SHA-256.
+An exact unit test pins both the complete package set and lockfile digest.
 
 The registry omits the monorepo licences for some packages. Their notices were
 retrieved from these original repositories on 2026-10-30:
@@ -19,6 +20,7 @@ retrieved from these original repositories on 2026-10-30:
 - egui/ecolor/emath/epaint 0.35.0: https://github.com/emilk/egui/blob/0.35.0/LICENSE-MIT
 - raylib/raylib-sys 6.0.0 bindings: https://github.com/raylib-rs/raylib-rs/blob/master/LICENSE.md
 - AccessKit: https://github.com/AccessKit/accesskit/blob/main/LICENSE-MIT
+- r-efi 6.0.0: https://github.com/r-efi/r-efi/blob/v6.0.0/AUTHORS
 - profiling: https://github.com/aclysma/profiling/blob/master/LICENSE-MIT
 
 `Hack-Regular.txt`, `OFL.txt`, `UFL.txt`, and
@@ -46,3 +48,7 @@ https://github.com/openai/whisper/blob/main/LICENSE ,
 https://github.com/pytorch/pytorch/blob/main/LICENSE , and
 https://github.com/pytorch/audio/blob/main/LICENSE .
 Configured agent/provider terms vary and are deliberately not assigned a licence.
+
+The notice reader uses the existing built-in authored face when a notice contains
+letters outside the interface atlas; source BOM markers are ignored as layout
+controls. `about:` reports its serving face and missing-glyph count.

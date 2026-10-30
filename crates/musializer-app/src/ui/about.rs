@@ -9,7 +9,7 @@ use musializer_core::{
     credits::{CREDITS, VERSION},
     ui::workspace_layout::UiRect,
 };
-use musializer_runtime::font::UiFonts;
+use musializer_runtime::font::{AuthoredText, UiFonts};
 use raylib::prelude::*;
 
 #[derive(Default)]
@@ -28,7 +28,10 @@ pub struct About {
     down: UiRect,
     up: UiRect,
     overflow: f32,
-    notice_lines: Option<(usize, u32, Vec<String>)>,
+    notice_key: Option<(usize, u32, u32, &'static str)>,
+    notice_lines: Vec<String>,
+    notice_face: &'static str,
+    notice_missing: usize,
     last_action: &'static str,
 }
 
@@ -51,14 +54,14 @@ fn layout(window: (f32, f32)) -> (UiRect, UiRect) {
 }
 
 /// Split long URLs as well as prose; never ellipsize a licence notice.
-fn wrap(font: &UiFonts, text: &str, width: f32, size: f32) -> Vec<String> {
+fn wrap(font: &impl widgets::TextFace, text: &str, width: f32, size: f32) -> Vec<String> {
     let mut lines = Vec::new();
-    for paragraph in text.lines() {
+    for paragraph in text.lines().map(|line| line.trim_start_matches('\u{feff}')) {
         let mut line = String::new();
         for word in paragraph.split_whitespace() {
             if !line.is_empty() {
                 let candidate = format!("{line} {word}");
-                if widgets::measure(font, &candidate, size) > width {
+                if font.measure_text(&candidate, size, 0.0).x > width {
                     lines.push(std::mem::take(&mut line));
                 } else {
                     line.push(' ');
@@ -66,7 +69,7 @@ fn wrap(font: &UiFonts, text: &str, width: f32, size: f32) -> Vec<String> {
             }
             for ch in word.chars() {
                 let candidate = format!("{line}{ch}");
-                if !line.is_empty() && widgets::measure(font, &candidate, size) > width {
+                if !line.is_empty() && font.measure_text(&candidate, size, 0.0).x > width {
                     lines.push(std::mem::take(&mut line));
                 }
                 line.push(ch);
@@ -130,6 +133,7 @@ impl Shell {
         self.about.notice = None;
         self.about.scroll = 0.0;
         self.about.last_action = "opened";
+        self.about.notice_key = None;
     }
 
     /// Called after egui, on the default framebuffer in logical coordinates.
@@ -208,6 +212,11 @@ impl Shell {
             self.about.last_action = "close";
         }
         let notice = self.about.notice;
+        if notice.is_none() {
+            self.about.notice_key = None;
+            self.about.notice_face = "none";
+            self.about.notice_missing = 0;
+        }
         if notice.is_some() && button(&mut self.widgets, d, 3, self.about.back, "← Back") {
             self.about.notice = None;
             self.about.scroll = 0.0;
@@ -250,35 +259,49 @@ impl Shell {
                 color::ui_ink(),
             );
             y += 12.0;
-            if self
-                .about
-                .notice_lines
-                .as_ref()
-                .is_none_or(|(id, width, _)| *id != index || *width != body.width.to_bits())
-            {
-                self.about.notice_lines = Some((
-                    index,
-                    body.width.to_bits(),
-                    wrap(
-                        font,
-                        credit.notice.unwrap_or(""),
-                        body.width - 12.0,
-                        metric::UI_FONT_CAPTION,
-                    ),
-                ));
+            let chrome = AuthoredText::from_ui(font);
+            let authored = input.fonts.authored();
+            let key = (
+                index,
+                body.width.to_bits(),
+                input.ui_scale.value().to_bits(),
+                authored.name(),
+            );
+            if self.about.notice_key != Some(key) {
+                let content = credit.notice.unwrap_or("");
+                let missing = |face: AuthoredText<'_>| {
+                    content
+                        .chars()
+                        .filter(|&ch| ch != '\u{feff}' && !face.repertoire().covers(ch))
+                        .count()
+                };
+                let face = if missing(chrome) == 0 {
+                    chrome
+                } else {
+                    authored
+                };
+                self.about.notice_face = face.name();
+                self.about.notice_missing = missing(face);
+                self.about.notice_lines =
+                    wrap(&face, content, body.width - 12.0, metric::UI_FONT_CAPTION);
+                self.about.notice_key = Some(key);
             }
-            let lines = &self.about.notice_lines.as_ref().unwrap().2;
+            let face = if self.about.notice_face == chrome.name() {
+                chrome
+            } else {
+                authored
+            };
+            let lines = &self.about.notice_lines;
             let step = metric::UI_FONT_CAPTION + 5.0;
             for (line_index, line) in lines.iter().enumerate() {
                 let line_y = y + line_index as f32 * step;
                 if line_y + step >= body.y && line_y <= body.y + body.height {
-                    widgets::draw_text(
+                    face.draw_text(
                         &mut clip,
-                        font,
                         line,
-                        body.x,
-                        line_y,
+                        Vector2::new(body.x.round(), line_y.round()),
                         metric::UI_FONT_CAPTION,
+                        0.0,
                         color::ui_ink(),
                     );
                 }
@@ -420,15 +443,39 @@ impl Shell {
     pub fn describe_about(&self) -> String {
         let a = &self.about;
         let at = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
-        format!("open={} rows={} notice={} action={} rect@{} body@{} logo@{} welcome@{} licence@{} close@{} gap@{} scrim@0,0,8,8 back@{} up@{} down@{} scroll={:.0}/{:.0}",
+        format!("open={} rows={} notice={} action={} rect@{} body@{} logo@{} welcome@{} licence@{} close@{} gap@{} scrim@0,0,8,8 back@{} up@{} down@{} scroll={:.0}/{:.0} notice-face={} missing={}",
             a.open, CREDITS.len(), a.notice.map_or_else(|| "none".to_owned(), |n| n.to_string()), a.last_action,
-            at(a.panel),at(a.body),at(a.logo),at(a.welcome),at(a.licence),at(a.close),at(a.gap),at(a.back),at(a.up),at(a.down),a.scroll,a.overflow)
+            at(a.panel),at(a.body),at(a.logo),at(a.welcome),at(a.licence),at(a.close),at(a.gap),at(a.back),at(a.up),at(a.down),a.scroll,a.overflow,a.notice_face,a.notice_missing)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn every_notice_is_covered_by_the_builtin_legal_reader_repertoire() {
+        use musializer_runtime::font::GlyphRepertoire;
+        for credit in CREDITS {
+            if let Some(notice) = credit.notice {
+                let missing: Vec<_> = notice
+                    .chars()
+                    .filter(|&ch| ch != '\u{feff}' && !GlyphRepertoire::Curated.covers(ch))
+                    .collect();
+                assert_eq!(missing, Vec::<char>::new(), "{}", credit.name);
+            }
+        }
+        let glfw = CREDITS
+            .iter()
+            .find(|c| c.name.starts_with("raylib component notices"))
+            .unwrap()
+            .notice
+            .unwrap();
+        assert!(
+            GlyphRepertoire::InterfaceSubset.missing(glfw) > 0,
+            "the supplementary Cyrillic contributors exercise the fallback"
+        );
+    }
+
     #[test]
     fn modal_layout_fits_both_window_sizes_and_scales() {
         for (width, height) in [(960.0, 640.0), (1280.0, 720.0)] {

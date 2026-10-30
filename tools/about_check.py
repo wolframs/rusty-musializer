@@ -78,7 +78,7 @@ check('open=false' in baseline, 'About starts closed')
 opened, opened_log = run('logo', click=point(baseline, 'logo'))
 check('open=true' in opened and 'action=opened' in opened, 'pressing the logo opens About')
 licence, _ = run('licence', about=True, click=point(opened, 'licence'))
-check('open=true' in licence and 'notice=0 ' in licence and 'action=licence' in licence,
+check('open=true' in licence and 'notice=0 ' in licence and 'action=licence' in licence and 'notice-face=ui missing=0' in licence,
       'pressing the first licence reads the embedded Musializer MIT notice')
 if os.environ.get('ABOUT_CHECK_NEGATIVE_ONLY') == '1':
     raise SystemExit(0)
