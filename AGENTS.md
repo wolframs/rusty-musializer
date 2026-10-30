@@ -175,6 +175,7 @@ number disagrees, grep it there before debugging from scratch.
   column by column.
 - **Widget id namespaces are minted only in `widgets::id`'s `ALL` table.** A
   collision test over a hand-written subset proves nothing.
+- **Empty clipboard reads** go through `runtime::clipboard::text`; raylib-rs 6.0 dereferences GLFW's null result.
 - **raylib-rs slice wrappers are wrong until checked**: `load_font_from_memory`,
   `Wave::load_samples` and `Image::get_image_data` all were. Image and sample
   readers go through `runtime::decode`, fonts through `runtime::font`.

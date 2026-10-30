@@ -273,7 +273,7 @@ fn add_event_keys(events: &mut Vec<Event>, rl: &RaylibHandle, modifiers: Modifie
                     match key {
                         Key::C => events.push(Event::Copy),
                         Key::V => {
-                            if let Ok(text) = rl.get_clipboard_text() {
+                            if let Ok(text) = musializer_runtime::clipboard::text(rl) {
                                 events.push(Event::Paste(text))
                             }
                         }

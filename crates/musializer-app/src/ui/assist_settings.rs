@@ -6783,7 +6783,7 @@ impl AssistSettingsDialog {
                 });
             }
             if control && d.is_key_pressed(Key::KEY_V) {
-                if let Ok(clipboard) = d.get_clipboard_text() {
+                if let Ok(clipboard) = musializer_runtime::clipboard::text(d) {
                     let pasted: String = clipboard
                         .chars()
                         .filter(|character| !character.is_control())
@@ -6799,7 +6799,7 @@ impl AssistSettingsDialog {
                 self.sync_models_dir();
             }
             if control && d.is_key_pressed(Key::KEY_V) {
-                if let Ok(clipboard) = d.get_clipboard_text() {
+                if let Ok(clipboard) = musializer_runtime::clipboard::text(d) {
                     for character in clipboard.chars().filter(|c| !c.is_control()) {
                         self.models_dir_field.push(character);
                     }

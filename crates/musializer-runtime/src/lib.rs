@@ -16,6 +16,7 @@
 pub mod agent_process;
 pub mod assist;
 pub mod audio_bridge;
+pub mod clipboard;
 pub mod decode;
 pub mod draw;
 pub mod feedback;

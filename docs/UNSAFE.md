@@ -7,6 +7,7 @@ comment stating why it holds. Current islands:
 
 | Where | Why | Invariant |
 | --- | --- | --- |
+| `runtime::clipboard::text` | raylib-rs 6.0 dereferences a nullable GLFW clipboard result | One block, called with a live window handle on the UI thread; null becomes empty text, otherwise the NUL-terminated GLFW buffer is UTF-8 checked and copied before the next clipboard call |
 | `runtime::audio_bridge` | raylib's `AudioCallback` is a bare `extern "C"` fn with no user-data pointer, so the ring must be reachable from a `static`; the vendored output-underrun counter is exposed by one no-argument C function | The callback only touches a lock-free SPSC ring — no allocation, lock, or syscall. `attach`/`detach` are `unsafe` and document the stream-lifetime contract; the diagnostic getter locks inside C and returns only an integer |
 | `runtime::draw` | raylib's default 1x1 texture is a non-owning handle, and the safe `Texture2D` would unload it on drop | The ffi draw wrappers take a `&mut impl RaylibDraw`, so an active drawing context is proven at compile time |
 | `runtime::draw` colour helpers | `ColorFromHSV`/`ColorAlpha` are pure C arithmetic | No global state; safe to call anywhere |
