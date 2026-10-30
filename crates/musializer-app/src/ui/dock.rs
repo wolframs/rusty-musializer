@@ -220,6 +220,7 @@ pub struct Dock {
     /// a stale one falls back to the newest of its kind.
     chat_active: Option<usize>,
     terminal_active: Option<usize>,
+    close_chat_confirmation: Option<egui::Id>,
     /// The Direct view's terminal pane: expanded, and its dragged height.
     terminal_open: bool,
     terminal_height: Option<f32>,
@@ -246,19 +247,29 @@ impl Dock {
             .ok()
             .filter(|shell| !shell.is_empty())
             .unwrap_or_else(|| "/bin/sh".to_string());
+        // Batch launches deliberately clear SHELL to skip rc discovery. The
+        // PTY library treats an empty value as an executable name, so make
+        // its terminal fallback explicit without changing normal login shells.
+        let empty_shell = std::env::var_os("SHELL").is_some_and(|shell| shell.is_empty());
+        let mut env = context.env.clone();
+        if empty_shell {
+            env.insert("SHELL".into(), program.clone());
+        }
         let spawn = Spawn {
-            program: agent.map(|agent| {
-                (
-                    program.clone(),
-                    vec![
-                        "-i".into(),
-                        "-c".into(),
-                        format!("{}; exec \"$SHELL\" -i", agent.command()),
-                    ],
-                )
-            }),
+            program: agent
+                .map(|agent| {
+                    (
+                        program.clone(),
+                        vec![
+                            "-i".into(),
+                            "-c".into(),
+                            format!("{}; exec \"$SHELL\" -i", agent.command()),
+                        ],
+                    )
+                })
+                .or_else(|| empty_shell.then(|| (program.clone(), vec!["-i".into()]))),
             working_directory: context.working_directory.clone(),
-            env: context.env.clone(),
+            env,
         };
         let label = if agent.is_none() {
             self.shells_opened += 1;
@@ -364,6 +375,19 @@ impl Dock {
         if index < self.tabs.len() {
             let mut tab = self.tabs.remove(index);
             tab.close();
+            // Both selections are indices into the same mixed tab list.
+            for active in [&mut self.chat_active, &mut self.terminal_active] {
+                *active = active.and_then(|selected| {
+                    if selected == index {
+                        None
+                    } else {
+                        Some(selected - usize::from(selected > index))
+                    }
+                });
+            }
+            if self.close_chat_confirmation == Some(tab.id) {
+                self.close_chat_confirmation = None;
+            }
         }
     }
 

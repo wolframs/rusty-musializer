@@ -1827,17 +1827,6 @@ impl Shell {
                 .draw(d, input.fonts, input.window, input.ui_scale);
         }
 
-        // Last, and deliberately so: a tooltip belongs above everything, and the
-        // toolbar that owns most of them is the *first* thing drawn. Requested
-        // where the control is and drawn here is the only ordering that works.
-        // Suppressed under the modal, where a tip from a control the user cannot
-        // reach would be drawn over the dialog explaining it.
-        if let Some(tooltip) = self.widgets.tooltip().cloned() {
-            if !modal {
-                widgets::draw_tooltip(d, input.fonts.ui(), &tooltip, input.window);
-            }
-        }
-
         // Fullscreen sheds the splitters along with the panels, so the one place
         // that answers a cursor request is not running. This is the substitute,
         // and it is at the *end* of the frame rather than the start on purpose:
@@ -2927,6 +2916,7 @@ impl Shell {
                 }
             }
         }
+        report.push(format!("playhead={shown_time:.3}"));
         self.transport_report = report.join(" ");
         ToolbarResult {
             timecode_inline: row.timecode.is_some(),
@@ -3543,6 +3533,19 @@ impl Shell {
         }
     }
 
+    /// Paint after the composition root has drawn egui, which owns Direct.
+    pub(crate) fn draw_overlay_tooltip(
+        &self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+    ) {
+        if !self.assist_settings.is_open() {
+            if let Some(tooltip) = self.widgets.tooltip() {
+                widgets::draw_tooltip(d, input.fonts.ui(), tooltip, input.window);
+            }
+        }
+    }
+
     /// Whether any text field is taking keystrokes.
     ///
     /// The shell reads the keyboard before any panel is drawn, so a panel with a
@@ -3551,7 +3554,7 @@ impl Shell {
     ///
     /// It asks every surface in [`TextEntrySurface`] and nothing else; that enum
     /// is where a new one is declared (review 1.6, UX0-A06).
-    fn text_entry_has_focus(&self) -> bool {
+    pub(crate) fn text_entry_has_focus(&self) -> bool {
         TextEntrySurface::ALL
             .iter()
             .any(|surface| self.text_entry_focused(*surface))

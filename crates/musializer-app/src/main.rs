@@ -418,6 +418,7 @@ fn run(
         recent_editable: false,
         preset_selection: 0,
         preset_delete_armed: false,
+        pixel_notice_pending: false,
         shell: {
             let mut shell = Shell::with_preferences(ui_preferences);
             shell.session_credential_fingerprint = session_fingerprint;
@@ -432,6 +433,7 @@ fn run(
     // WX-1/2: terminals and agents beside the workspace. Declared after the
     // egui backend, so it drops (and hangs up on its shells) first.
     let mut dock = ui::dock::Dock::default();
+    let mut dock_cache = DockContextCache::new();
     if let Some(probe) = options.ui_probe.as_ref() {
         app.shell.dock_open |= probe.dock;
     }
@@ -1383,6 +1385,7 @@ fn run(
         // key means one thing whether or not the dock has focus.
         let mut dock_commands: Vec<ShellCommand> = Vec::new();
         if !app.shell.artist_editing()
+            && !app.shell.assist_settings.is_open()
             && !dock.wants_keyboard()
             && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
@@ -1407,9 +1410,10 @@ fn run(
         // column; the workspace is not narrowed for it. The welcome screen
         // has no column, and its right side is the recent-project list.
         let dock_rect = (app.workspace.current().is_some()
-            && app.shell.column_view() == ui::shell::ColumnView::Direct)
-            .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
-            .filter(|rect| !rect.is_empty());
+            && app.shell.column_view() == ui::shell::ColumnView::Direct
+            && !app.shell.assist_settings.is_open())
+        .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
+        .filter(|rect| !rect.is_empty());
         let workspace_window = full_logical;
         if dock_rect.is_none() {
             app.shell.dock_keyboard = false;
@@ -1785,8 +1789,8 @@ fn run(
         // a reply that arrives behind another view is what the Direct tab's
         // dot is for, and a probe that only ran while the dock was shown
         // could never stage one.
+        let context = dock_context(&mut dock_cache, &app, follow.as_ref(), time_seconds);
         {
-            let context = dock_context(&app, follow.as_ref(), time_seconds);
             // The window's own treatment applies, noted in the shown chat.
             dock.observe(&context);
             if let Some(probe) = options.ui_probe.as_ref() {
@@ -1824,7 +1828,6 @@ fn run(
             );
             if let Some(bounds) = dock_rect {
                 ui::egui_theme::apply_theme(egui_backend.ctx(), ui::theme::current());
-                let context = dock_context(&app, follow.as_ref(), time_seconds);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
@@ -2054,6 +2057,10 @@ fn run(
                 if let Err(error) = egui_backend.draw(&mut d, &thread) {
                     eprintln!("egui rendering: {error}");
                 }
+            }
+            {
+                let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+                app.shell.draw_overlay_tooltip(&mut ui_draw, &shell_input);
             }
             // Poster work, last in the drawing pair (WX-5b): the shell no
             // longer borrows the board, egui has left ordinary 2D state on the
@@ -2741,6 +2748,16 @@ fn run(
             }
         }
 
+        // Pixel drags update the finish live but acknowledge once, on release.
+        if app.pixel_notice_pending && !rl.is_mouse_button_down(MouseButton::MOUSE_BUTTON_LEFT) {
+            app.pixel_notice_pending = false;
+            app.shell.notify(
+                Severity::Success,
+                "Pixel look updated",
+                "The new pixel look is applied.",
+            );
+        }
+
         // The transaction edge is a frame with no durable mutation. This turns
         // every uninterrupted slider drag into one edit while keeping separate
         // button presses and editor Apply actions distinct (CX-3).
@@ -3029,6 +3046,7 @@ struct App {
     preset_selection: usize,
     preset_delete_armed: bool,
     shell: Shell,
+    pixel_notice_pending: bool,
 }
 
 impl App {
@@ -4690,6 +4708,7 @@ fn handle_scene_plan_edit(
         return;
     }
 
+    let pixel_only = matches!(edit, Edit::SetPixel { .. } | Edit::SetVideoPixel(_));
     let live_scene = app.scene.id();
     let result = {
         let Some(track) = app.workspace.current_mut() else {
@@ -4743,6 +4762,12 @@ fn handle_scene_plan_edit(
             &error.to_string(),
         ),
         Ok(()) => {
+            // A post-process filter reads the plan directly; it does not
+            // change which running scene owns deterministic state.
+            if pixel_only {
+                app.pixel_notice_pending = true;
+                return;
+            }
             let enabled = app
                 .workspace
                 .current()
@@ -5249,12 +5274,48 @@ fn changed_sections(
 /// Where a new dock tab starts and what it is told (WX-2): the project's
 /// folder, else the track's, else home; and the paths an agent started there
 /// needs to direct this window from the command line.
+struct DockContextCache {
+    env: std::collections::HashMap<String, String>,
+    guide: Option<PathBuf>,
+    launcher: Option<PathBuf>,
+    home: Option<PathBuf>,
+    instructions: Option<(Option<PathBuf>, String)>,
+}
+
+impl DockContextCache {
+    fn new() -> Self {
+        let mut env = std::collections::HashMap::new();
+        if let Ok(exe) = std::env::current_exe() {
+            env.insert("MUSIALIZER_BIN".into(), exe.display().to_string());
+        }
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let guide = checkout.join("docs/MUSIC_VIDEO_CLI.md").canonicalize().ok();
+        let launcher = checkout.join("tools/headless_run.sh").canonicalize().ok();
+        for (name, path) in [
+            ("MUSIALIZER_GUIDE", &guide),
+            ("MUSIALIZER_HEADLESS_RUN", &launcher),
+        ] {
+            if let Some(path) = path {
+                env.insert(name.into(), path.display().to_string());
+            }
+        }
+        Self {
+            env,
+            guide,
+            launcher,
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            instructions: None,
+        }
+    }
+}
+
 fn dock_context(
+    cache: &mut DockContextCache,
     app: &App,
     follow: Option<&TreatmentFollow>,
     time_seconds: f64,
 ) -> ui::dock::DockContext {
-    let mut env = std::collections::HashMap::new();
+    let mut env = cache.env.clone();
     let following = follow.map(|follow| {
         env.insert(
             "MUSIALIZER_TREATMENT".to_string(),
@@ -5268,23 +5329,6 @@ fn dock_context(
             error: follow.last_error.clone(),
         }
     });
-    if let Ok(exe) = std::env::current_exe() {
-        env.insert("MUSIALIZER_BIN".to_string(), exe.display().to_string());
-    }
-    // The directing guide and the isolated launcher, when this binary still
-    // sits in its checkout.
-    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let guide = checkout.join("docs/MUSIC_VIDEO_CLI.md").canonicalize().ok();
-    let launcher = checkout.join("tools/headless_run.sh").canonicalize().ok();
-    if let Some(guide) = &guide {
-        env.insert("MUSIALIZER_GUIDE".to_string(), guide.display().to_string());
-    }
-    if let Some(launcher) = &launcher {
-        env.insert(
-            "MUSIALIZER_HEADLESS_RUN".to_string(),
-            launcher.display().to_string(),
-        );
-    }
     let mut now = Vec::new();
     let mut directory = None;
     if let Some(track) = app.workspace.current() {
@@ -5322,9 +5366,9 @@ fn dock_context(
             directory = track.file_path.parent().map(Path::to_path_buf);
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = &cache.home;
     let directory = directory.or_else(|| home.clone());
-    let place = match (&directory, &home) {
+    let place = match (&directory, home) {
         (Some(dir), Some(home)) => match dir.strip_prefix(home) {
             Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
             Ok(rest) => format!("~/{}", rest.display()),
@@ -5336,11 +5380,18 @@ fn dock_context(
     if let Some(follow) = follow {
         now.push(format!("treatment {}", follow.name()));
     }
-    let instructions = dock_instructions(
-        follow.map(|follow| follow.path.as_path()),
-        guide.as_deref(),
-        launcher.as_deref(),
-    );
+    let treatment = follow.map(|follow| follow.path.as_path());
+    if cache
+        .instructions
+        .as_ref()
+        .is_none_or(|(path, _)| path.as_deref() != treatment)
+    {
+        cache.instructions = Some((
+            treatment.map(Path::to_path_buf),
+            dock_instructions(treatment, cache.guide.as_deref(), cache.launcher.as_deref()),
+        ));
+    }
+    let instructions = cache.instructions.as_ref().unwrap().1.clone();
     ui::dock::DockContext {
         working_directory: directory,
         env,
@@ -5372,7 +5423,7 @@ fn dock_instructions(
             path.display()
         )),
         None => lines.push(
-            "The window follows no treatment yet. If you write one, the operator can drop it \
+            "The window follows no treatment yet. If you write one, the user can drop it \
              on the window, and from then on every save is applied live."
                 .to_string(),
         ),
@@ -6896,6 +6947,95 @@ fn dock_probes(
 mod tests {
     use super::display_refusal;
     use super::scene_clock_delta;
+
+    #[test]
+    fn pixel_edits_preserve_running_scene_and_exact_model_values() {
+        use super::*;
+        use musializer_core::project::pixel::Pixel;
+        use musializer_core::scene::{SceneDescriptor, SceneState};
+        use ui::panels::scene_timeline::ScenePlanEdit;
+        struct Progress(u32);
+        impl SceneState for Progress {
+            fn id(&self) -> SceneId {
+                SceneId::Spectrum
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let mut app = App {
+            scene: SceneInstance::new(
+                SceneDescriptor {
+                    id: SceneId::Spectrum,
+                    state_version: 1,
+                    make_state: |_| Box::new(Progress(42)),
+                },
+                7,
+            ),
+            workspace: Workspace::new(),
+            pending_settings: SceneSettings::default(),
+            pending_routes: RouteTable::new(),
+            pending_ascii: None,
+            shared_presets: PresetLibrary::new(),
+            preset_store_path: None,
+            presets_editable: false,
+            recent_path: None,
+            recent_editable: false,
+            preset_selection: 0,
+            preset_delete_armed: false,
+            pixel_notice_pending: false,
+            shell: Shell::new(),
+        };
+        app.workspace
+            .push(Track::new("fixture.wav".into(), 8.0, SceneId::Spectrum, 7).unwrap());
+        let look = Pixel {
+            pixels: 216,
+            ..Pixel::OFF
+        };
+        handle_scene_plan_edit(&mut app, ScenePlanEdit::SetVideoPixel(look), 2.0, 1.0);
+        assert_eq!(
+            app.workspace.current().unwrap().scene_switches.finish.pixel,
+            look
+        );
+        assert_eq!(
+            app.scene
+                .state()
+                .as_any()
+                .downcast_ref::<Progress>()
+                .unwrap()
+                .0,
+            42
+        );
+        assert!(app.pixel_notice_pending);
+        app.workspace
+            .current_mut()
+            .unwrap()
+            .record_scene_cue(SceneId::Spectrum, 0.0)
+            .unwrap();
+        let id = app.workspace.current().unwrap().scene_switches.cues()[0].id;
+        handle_scene_plan_edit(
+            &mut app,
+            ScenePlanEdit::SetPixel {
+                cue_id: id,
+                pixel: Some(look),
+            },
+            2.0,
+            2.0,
+        );
+        assert_eq!(
+            app.workspace.current().unwrap().scene_switches.cues()[0].pixel,
+            Some(look)
+        );
+        assert_eq!(
+            app.scene
+                .state()
+                .as_any()
+                .downcast_ref::<Progress>()
+                .unwrap()
+                .0,
+            42
+        );
+    }
 
     #[test]
     fn treatment_section_changes_are_exact_for_a_stable_partition() {

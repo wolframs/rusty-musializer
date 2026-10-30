@@ -517,7 +517,7 @@ impl Shell {
         let label = settings::descriptor(draft.scene, draft.setting_index)
             .map_or("setting", |descriptor| descriptor.label);
         let detail = format!(
-            "Unapplied route: {} / {label}, track {}. Use Edit draft or Discard draft in Tune.",
+            "Unapplied route: {} / {label}, track {}. Use Edit draft or Discard draft in Look.",
             draft.scene.display_name(),
             draft.track_slot + 1
         );

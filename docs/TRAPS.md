@@ -245,3 +245,10 @@ unchanged ancestor-ownership check in headless_run, and kills **and waits** in
 its EXIT trap. Do not weaken ownership checks or remove another server's lock.
 Every child launch still carries mute, unreachable Wayland/audio, dialog PATH
 and private-config guards.
+
+- **Empty X11 clipboard is a null pointer.** raylib-rs 6.0's
+  `get_clipboard_text` calls `CStr::from_ptr` without checking GLFW's nullable
+  `GetClipboardText`. Ctrl+V with no text owner can terminate the process.
+  Every UI clipboard read goes through `runtime::clipboard::text`, which checks
+  null and copies while GLFW's buffer is valid. Found by the native terminal
+  focus check on an isolated Xvfb, 2026-10-30.

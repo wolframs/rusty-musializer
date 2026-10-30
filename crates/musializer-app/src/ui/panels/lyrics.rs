@@ -2631,6 +2631,12 @@ impl Shell {
     ) {
         use raylib::consts::KeyboardKey as Key;
 
+        // The always-visible lane shares keyboard ownership with every text
+        // surface, including the dock's egui composer and terminal.
+        if self.text_entry_has_focus() {
+            return;
+        }
+
         if !lyric_clipboard_keys_allowed(
             editor.style_pane,
             editor.font_pane,

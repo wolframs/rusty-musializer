@@ -342,7 +342,7 @@ impl TextField {
                 }
             }
             if d.is_key_pressed(Key::KEY_V) {
-                match d.get_clipboard_text() {
+                match musializer_runtime::clipboard::text(d) {
                     Ok(clipboard) => match self.edit.insert(&clipboard) {
                         Ok(flattened) => {
                             event.changed = true;
