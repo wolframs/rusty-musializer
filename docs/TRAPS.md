@@ -206,9 +206,9 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   warning instead of the intended light fixture. A written theme is not a
   loaded theme: assert `appearance:` before trusting comparison measurements.
 
-- **Quiet timing follows process ownership, not display numbers.** A full gate
-  starts its own nested `xvfb-run` servers as well as its primary capture
-  display. Counting every other Xvfb as a neighbouring agent invalidates good
+- **Quiet timing follows process ownership, not display numbers.** A gate
+  can own nested `xvfb-run` servers as well as its primary capture display
+  (the integrated fixed-display path instead reuses the ancestor's server). Counting every other Xvfb as a neighbouring agent invalidates good
   samples; ignoring all Xvfb hides real contention. Follow the measuring
   process's descendants and exclude only servers it owns. Retain known owned
   PIDs through cleanup/reparenting and ignore dead zombies, otherwise a
@@ -227,3 +227,8 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   parent is in its own process ancestry. A sibling gate's server is refused;
   the ancestor keeps teardown ownership. Both paths still apply mute, null
   audio/Wayland endpoints, private config and the no-dialog PATH guard.
+
+- **Physical width is not logical card width.** At 1600x1080 the automatic
+  125% scale still gives a narrow route card (390/418 px). The integrated
+  route-height sweep explicitly selects 100% before pinning wide 354/382 px
+  cards; every assertion also checks the final drawn-card/layout agreement.

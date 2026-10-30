@@ -156,6 +156,8 @@ number disagrees, grep it there before debugging from scratch.
 - **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
   never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
   compositor. Never write `env -u WAYLAND_DISPLAY`.
+- **Auto scale changes logical card width.** Pin route geometry at an explicit
+  scale, and compare both drawn reports; see `docs/TRAPS.md`.
 - **A nested gate already holds `MUSIALIZER_CAPTURE_DISPLAY`.** Reuse only
   an Xvfb owned by a calling ancestor; refuse other process trees. Keep every
   isolation guard on both the reuse and new-server paths. See `docs/TRAPS.md`.

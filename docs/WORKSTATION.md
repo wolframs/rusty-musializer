@@ -54,7 +54,7 @@ spec:
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
 | WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail, top bar, big preview) done 2026-10-29; 5d (one right column for every secondary panel) landed 2026-10-30 |
-| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); `tools/column_check.sh`, `tools/lyrics_column_check.sh` and `tools/look_assist_check.sh` cover WX-5d |
+| WX-6 | A headless gate for all of it | Existing gates cover WX-1 to WX-5d; polish and feature gates are integrated. CPU stall diagnostics repaired. Both-look/open-column conversion stays open: quiet pilot +53.57% exceeds the +1/3 runtime cap |
 
 ### WX-1 — the dock
 
@@ -592,3 +592,14 @@ it, and releases; downward requests remain capped by the band's slack. The
 actual request clamp is 22..66, not 50..66. Growing the whole band from its
 bottom-edge lane grip would require a layout/gesture decision; no production
 resize behavior was changed. `tools/lyric_grip_check.py` pins this boundary.
+
+Integration controls: route reports were perturbed in height, card rect and
+layout agreement (36 failures across GPU/CPU, six cards per renderer); every
+input was restored byte-for-byte and accepted again. Permissive and over-strict
+launcher faults each failed both renderer settings; malformed display strings
+were refused. The final lyric checker rejects a disabled resize press handler
+10 times per renderer. The source was restored byte-for-byte before running its
+mutant binary; the normal debug binary was rebuilt afterwards. Existing polish
+mutants were replayed through the integrated launcher: 36 surface failures and
+4 count failures per renderer, as intended. Source/diff digests and complete
+logs are in `build/wx5-integrated/`.

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +23,9 @@ def check(ok, message):
 
 
 def run(name, theme, probe, state=None):
-    state = state or out / (name + '-state')
+    if state is None:
+        state = out / (name + '-state')
+        shutil.rmtree(state / 'config', ignore_errors=True)
     e = env | {'MZ_STATE_DIR': str(state)}
     cmd = ['tools/headless_run.sh', str(out / 'fixture.wav'), '--ui-theme', theme,
            '--probe-frames', '30', '--ui-probe', 'size=1280x720,play=1' + (',' + probe if probe else ''),

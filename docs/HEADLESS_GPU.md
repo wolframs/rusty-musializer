@@ -339,3 +339,20 @@ change reserves :83 for isolated hand probes and supplies VirtualGL's shell
 utilities. No app UI or poster implementation changed. The pre-wave throwaway
 worktree is gone. The final handoff includes a release build and no owned
 background process; its command result is reported with the branch commits.
+
+## Integrated CPU poster timing (2026-10-30)
+
+The integrated code retains the optional CPU poster failure under a process-
+ownership sampler: `poster_check.sh` exited 1 in **39.07 s**, with **1/150**
+frames over 25 ms with posters (worst **25.6 ms**, frame 20), versus **0/150**
+without (worst **16.7 ms**). No competing Xvfb, cargo or rustc was sampled;
+`gpu-run status` reported the model lock free before the run. This does not
+identify a cause, but quiet GPU passes do not establish a CPU pass. The source
+Features branch also reproduced a failure on `be507e1` (4 versus 0 stalls);
+its paired runs establish variability, not a regression introduced here.
+No poster assertion or timing tolerance was loosened.
+
+`verify.sh` invokes `poster_check.sh` in its normal GPU environment. The
+standalone CPU `headless_check.sh` does not invoke this separate poster gate;
+its own poster data/drawing checks still run. Raw integrated reports and the
+process/load samples are under `build/wx5-integrated/cpu-poster*`.

@@ -5062,7 +5062,8 @@ echo "=== lyric grip press/drag, default and expanded band ==="
 python3 tools/lyric_grip_check.py "$OUT_DIR/lyric-grip"
 
 echo "=== the route editor card, inside the Tune inspector ==="
-# Narrow columns wrap Clamp/Swap; wider columns seat them in one row.
+# At explicit 100% scale, narrow columns wrap Clamp/Swap; wider columns
+# seat them in one row. Auto scale at 1080p would still be a narrow column.
 # Read the final drawn card and require its exact agreement with tune layout.
 ROUTE_EDITOR_FAILED=0
 for size in 1280x720 960x640 1600x1080; do
@@ -5070,13 +5071,13 @@ for size in 1280x720 960x640 1600x1080; do
     band_height=418
     if [ "$size" = 1600x1080 ]; then fresh_height=354; band_height=382; fi
     capture "route-collapsed-$size" "$size" \
-        --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
+        --ui-scale 100 --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --ui-probe "panel=tune,play=1" || ROUTE_EDITOR_FAILED=1
     capture "route-editor-band-$size" "$size" \
-        --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
+        --ui-scale 100 --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --ui-probe "panel=tune,play=1,route=loom.weight" || ROUTE_EDITOR_FAILED=1
     capture "route-editor-fresh-$size" "$size" \
-        --scene loom --ui-probe "panel=tune,play=1,route=loom.density" \
+        --ui-scale 100 --scene loom --ui-probe "panel=tune,play=1,route=loom.density" \
         || ROUTE_EDITOR_FAILED=1
     python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-band-$size.txt" \
         "$band_height" Band 1 settings.loom.weight || ROUTE_EDITOR_FAILED=1
@@ -5086,7 +5087,7 @@ done
 
 # Pulse's auto petal fold is a fresh Balance draft, in the wide card.
 capture "route-editor-pulse-balance-1600x1080" 1600x1080 \
-    --scene pulse --ui-probe "panel=tune,play=1,route=pulse.petals" \
+    --ui-scale 100 --scene pulse --ui-probe "panel=tune,play=1,route=pulse.petals" \
     || ROUTE_EDITOR_FAILED=1
 python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-pulse-balance-1600x1080.txt" \
     354 Balance 0 settings.pulse.petals || ROUTE_EDITOR_FAILED=1
