@@ -35,6 +35,9 @@
 #                   installed (GPU rendering), otherwise none (Mesa on the CPU,
 #                   correct but several times slower). Set it empty to force CPU.
 #   MZ_VGL_DEVICE   the VirtualGL device, default egl0.
+#   MZ_XVFB_DISPLAY exact private display (e.g. :81); default automatic.
+#                   Separate from MUSIALIZER_CAPTURE_DISPLAY: the main gate
+#                   holds that server while launching nested wrapper gates.
 #   MZ_SCREEN       the virtual screen, default 2560x1440x24.
 #   MZ_STATE_DIR    where the private config lives, default build/headless-run.
 
@@ -108,8 +111,8 @@ done
 } >&2
 
 XVFB_DISPLAY=(-a)
-if [ -n "${MUSIALIZER_CAPTURE_DISPLAY:-}" ]; then
-    XVFB_DISPLAY=(--server-num="${MUSIALIZER_CAPTURE_DISPLAY#:}")
+if [ -n "${MZ_XVFB_DISPLAY:-}" ]; then
+    XVFB_DISPLAY=(--server-num="${MZ_XVFB_DISPLAY#:}")
 fi
 exec xvfb-run "${XVFB_DISPLAY[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \
