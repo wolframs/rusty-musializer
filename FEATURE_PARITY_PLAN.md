@@ -27,9 +27,9 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
-## First-start agent cards — claimed 2026-10-30
+## First-start agent cards — implemented, lead review pending 2026-10-30
 
-`t3/fix-agent-cards-tooltip-screenshot`: reproduce and fix pending shell-PATH discovery in Direct; correct its tooltip; replace the README screenshot. Scoped to runtime discovery, the Direct empty state/report and column gate. Lead review pending; no push or merge.
+`t3/fix-agent-cards-tooltip-screenshot`: first-start shell-PATH discovery and truthful pending cards/report, Direct tooltip and README capture implemented. Scoped checks and GPU/CPU negative-control evidence are in `build/redesign/`; lead review pending, no push or merge.
 
 ## F8 retirement — implemented, lead review pending 2026-10-30
 
