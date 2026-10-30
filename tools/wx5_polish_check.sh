@@ -7,7 +7,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MUSIALIZER_CAPTURE_DISPLAY="${MUSIALIZER_CAPTURE_DISPLAY:-:81}"
-export MZ_XVFB_DISPLAY="$MUSIALIZER_CAPTURE_DISPLAY"
 pgrep -af Xvfb || true
 python3 - "${1:-build/wx5-polish}" <<'PY'
 import ast, hashlib, json, os, re, subprocess, sys, threading

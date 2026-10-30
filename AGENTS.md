@@ -153,14 +153,12 @@ One line each. These are the rules; `docs/TRAPS.md` has the failure each one
 caused and how to recognise its symptom. When a capture looks plausible but a
 number disagrees, grep it there before debugging from scratch.
 
-- **A fixed Xvfb display reaches nested gates**: reuse only when its server
-  belongs to an ancestor gate; never attach to a sibling session.
 - **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
   never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
   compositor. Never write `env -u WAYLAND_DISPLAY`.
-- **A nested gate already holds `MUSIALIZER_CAPTURE_DISPLAY`.** The wrapper's
-  exact-display opt-in is `MZ_XVFB_DISPLAY`; never implicitly reuse the parent
-  gate's display for nested private-wrapper launches.
+- **A nested gate already holds `MUSIALIZER_CAPTURE_DISPLAY`.** Reuse only
+  an Xvfb owned by a calling ancestor; refuse other process trees. Keep every
+  isolation guard on both the reuse and new-server paths. See `docs/TRAPS.md`.
 - **The dialog `PATH` guard** (`ENTRY_NO_DIALOG_PATH`) is per call site; a hand
   probe that clicks anything must carry it.
 - **`kdialog` with no display** aborts with `SIGABRT` and summons Apport. Keep

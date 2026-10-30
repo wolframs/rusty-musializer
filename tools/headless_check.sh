@@ -5058,81 +5058,35 @@ case "$beat_line" in
         ;;
 esac
 
-echo "=== the route editor row, inside the Tune inspector ==="
-# Three states of the same row, at 720p and at the 960x640 minimum, because the
-# expanded editor is the tallest thing the inspector ever hosts and the minimum
-# window is where it stops fitting:
-#
-#   collapsed  a routed setting shows its summary and live meter instead of a
-#              slider, which is the state a user reaches without opening anything
-#   band       the editor opened onto a committed band route, which is the taller
-#              of the two shapes (the band stepper adds 24 px)
-#   fresh      the editor opened on an unrouted setting, so the draft is the
-#              full-range RMS route `route_editor_open` seeds
-#
-# The `route editor:` line is the evidence a screenshot cannot give: it names the
-# setting, the row height that was actually asked for, and whether the draft came
-# from a committed route or was seeded fresh.
+echo "=== the route editor card, inside the Tune inspector ==="
+# Narrow columns wrap Clamp/Swap; wider columns seat them in one row.
+# Read the final drawn card and require its exact agreement with tune layout.
 ROUTE_EDITOR_FAILED=0
-for size in 1280x720 960x640; do
+for size in 1280x720 960x640 1600x1080; do
+    fresh_height=390
+    band_height=418
+    if [ "$size" = 1600x1080 ]; then fresh_height=354; band_height=382; fi
     capture "route-collapsed-$size" "$size" \
         --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --ui-probe "panel=tune,play=1" || ROUTE_EDITOR_FAILED=1
-
     capture "route-editor-band-$size" "$size" \
         --scene loom --route 'loom.weight:band:2:0:1:0.4:2.2:smoothstep' \
         --ui-probe "panel=tune,play=1,route=loom.weight" || ROUTE_EDITOR_FAILED=1
-
     capture "route-editor-fresh-$size" "$size" \
         --scene loom --ui-probe "panel=tune,play=1,route=loom.density" \
         || ROUTE_EDITOR_FAILED=1
+    python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-band-$size.txt" \
+        "$band_height" Band 1 settings.loom.weight || ROUTE_EDITOR_FAILED=1
+    python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-fresh-$size.txt" \
+        "$fresh_height" RMS 0 settings.loom.density || ROUTE_EDITOR_FAILED=1
 done
 
-for name in band fresh; do
-    for size in 1280x720 960x640; do
-        line="$(sed -n 's/^route editor: //p' "$OUT_DIR/route-editor-$name-$size.txt" | head -n1)"
-        printf '%-30s %s\n' "route-editor-$name-$size" "${line:-<absent>}"
-        case "$line" in
-            *" open row="*) ;;
-            *)
-                echo "FAIL: the route editor did not open for $name at $size" >&2
-                ROUTE_EDITOR_FAILED=1
-                ;;
-        esac
-    done
-done
-
-# Pulse Field is the reason the post-legacy perceptual sources exist. Its legacy
-# `0 = auto` petal fold opens as the exact hidden rule made editable:
-# Balance (bass-heavy..treble-heavy) -> 3..9. Use 1080p because this is the sixth
-# setting and the application deliberately asks a 720p user to enlarge rather
-# than putting a second scrollbar inside the inspector.
+# Pulse's auto petal fold is a fresh Balance draft, in the wide card.
 capture "route-editor-pulse-balance-1600x1080" 1600x1080 \
     --scene pulse --ui-probe "panel=tune,play=1,route=pulse.petals" \
     || ROUTE_EDITOR_FAILED=1
-PULSE_BALANCE_ROW="$(sed -n 's/^route editor: //p' \
-    "$OUT_DIR/route-editor-pulse-balance-1600x1080.txt" | head -n1)"
-echo "pulse auto fold: ${PULSE_BALANCE_ROW:-<absent>}"
-case "$PULSE_BALANCE_ROW" in
-    *"settings.pulse.petals open row=314px source=Balance committed=0"*) ;;
-    *)
-        echo "FAIL: Pulse petal auto did not open as a fresh Balance -> 3..9 route" >&2
-        ROUTE_EDITOR_FAILED=1
-        ;;
-esac
-
-# The committed route is 24 px taller than the fresh one, because its source is
-# `band` and the band stepper is a row. Asserting the difference is what
-# distinguishes "the editor opened" from "the editor opened onto the right draft".
-BAND_ROW="$(sed -n 's/^route editor: .* row=\([0-9.]*\)px .*/\1/p' \
-    "$OUT_DIR/route-editor-band-1280x720.txt" | head -n1)"
-FRESH_ROW="$(sed -n 's/^route editor: .* row=\([0-9.]*\)px .*/\1/p' \
-    "$OUT_DIR/route-editor-fresh-1280x720.txt" | head -n1)"
-echo "row heights: band=${BAND_ROW:-?} fresh=${FRESH_ROW:-?} (band is 24 px taller)"
-if [ "${BAND_ROW:-0}" != "338" ] || [ "${FRESH_ROW:-0}" != "314" ]; then
-    echo "FAIL: expected row heights 338 (band) and 314 (fresh)" >&2
-    ROUTE_EDITOR_FAILED=1
-fi
+python3 tools/route_geometry_check.py "$OUT_DIR/route-editor-pulse-balance-1600x1080.txt" \
+    354 Balance 0 settings.pulse.petals || ROUTE_EDITOR_FAILED=1
 
 # A key that names no setting must fail the command line rather than quietly
 # photographing an unexpanded row. This is the negative control for the whole

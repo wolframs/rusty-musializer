@@ -303,15 +303,13 @@ They are independent unless a line says otherwise. Every one finishes with
      the name, as the top bar draws the same name. Captures of every size,
      scale, flyout and the dock in both looks: `build/wx5c-final/` (not
      committed; `build/critic/capture7.sh` remakes them).
+     **Done in the integration (2026-10-30), awaiting lead review:** inline
+     artist editing with track-bound focus/draft/commit and exact v1 bytes on
+     clear; track-specific scene tile posters through the shared budgeted
+     service. Names remain below the pictures and tile states are reported.
+     See `docs/POSTER_FRAMES.md` and the feature divergence rows.
      **Left:**
-     - Inline artist editing is implemented on `t3/scene-posters-artist-edit`
-       (2026-10-30), awaiting lead review. It adds
-       `TextEntrySurface::TopBarArtist`, a track-bound draft and commit, and
-       exact v1 byte restoration on clear. See `WX5_FEATURES_EVIDENCE.md`.
      - The top bar spans the workspace, not the dock (open choice, §0).
-     - Scene tile posters (§1's follow-up) are implemented on the same branch,
-       through the existing budgeted service, awaiting lead review. Names remain
-       below the posters; every tile reports its actual draw state.
      - ~~The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
        only.~~ Restructured in WX-5d, below; the preview no longer shrinks
        for any of them.
@@ -329,22 +327,19 @@ They are independent unless a line says otherwise. Every one finishes with
    its own full-window screen on the surface, with the frame being encoded.
    Divergence rows carry the per-view decisions; the checks are named in
    the WX-6 row above.
+   **Done in the integration (2026-10-30), awaiting lead review:** welcome
+   notice seat and hover, opaque protocol pennants, Direct apply age and
+   changed-section count, READY's full two-line remediation, drawn route-card
+   reports and exact geometry checks, and the complete Lyrics widget-index
+   collision sweep. `tools/wx5_polish_check.sh` is in `verify.sh`.
+   EX4-c's CPU failure is fixed: it was a lifetime/startup counter scope error,
+   reproduced before WX-5d, not extra loss during the controlled stall.
+   `docs/HEADLESS_GPU.md` records the raw boundaries and both-renderer controls.
    **Left:**
    - `UiPanel` and the `inspector_open`/`dock_open` flags still exist, and
      `ColumnView` is derived from them rather than replacing them.
-   - Direct apply age and section-count polish: implemented on
-     `t3/wx5-ui-polish-fixes`; capture gate `tools/wx5_polish_check.sh`.
-   - READY copy polish: 130 px, two full lines; see the polish divergence rows.
-   - Route probe polish: the final report uses the drawn card; the shared gate
-     still needs its old 314/338 expectations updated by its owner.
    - In the 320 and 358 px columns the route editor's Clamp and Swap take
-     a second row.
-   - Lyrics column indices now generate allocation tables and have a collision
-     sweep against the retained controls and all `widgets::id::ALL` namespaces.
-   - `tools/headless_check.sh` stops at "120 ms was outside the silent band"
-     on llvmpipe (`MZ_GL_LAUNCH=""`), and passes on the GPU. It is audio
-     timing, and it was not run on `master` to see whether it predates
-     WX-5d.
+     a second row (deliberate layout).
    - `headless_check.sh`'s pixel checks run with the column closed, because
      they aim at a full-width band. The column open, the default, is
      covered by the column checks and the gate's dark section.
@@ -355,9 +350,10 @@ They are independent unless a line says otherwise. Every one finishes with
      `ui.json` in its private config); the dark default has its own
      section. Converting the rest to both looks belongs with WX-6.
    - `tools/lyric_lane_capture.sh` is pinned to the light look the same way.
-   - `tools/poster_check.sh`'s budget step saw one stalled frame in five
-     runs, under GPU contention from a parallel agent. Probably load; if
-     it recurs on a quiet machine, it is real.
+   - WX-6's both-look/open-column conversion remains open. The quiet baseline
+     was 553.38 s and pilot 849.83 s (+53.57%), exceeding the +1/3 cap;
+     the pilot assertions were reverted. Five quiet GPU poster gates passed.
+     Optional CPU poster timing is a separate finding; see `HEADLESS_GPU.md`.
    - Retake the README screenshot after 5c.
    - Idea, not asked for: the Glyph Lattice as the welcome screen's hero
      (the Musializer mark on the honeycomb), with the secondary-panel wave.
@@ -579,3 +575,20 @@ notice cards still in the pre-redesign style.
   and Antigravity resume, Codex starts a new thread), and a model picker
   (each CLI uses its own configured default).
 
+
+## Integrated follow-up evidence (2026-10-30)
+
+The source branch handoffs were copied to
+`/home/wolfram/Projects/rusty-musializer/build/redesign/` before removal from
+the repository. Their implementation decisions are in `DIVERGENCES.md`, the
+poster service's contracts in `POSTER_FRAMES.md`, and capture ownership in
+`TRAPS.md`. Both new gates run in `verify.sh` after Look & Assist.
+
+The new private `left-drag=XxY` probe presses at `hover=`, moves twice, then
+releases through the same Widgets pointer reader as the lyric resize handler.
+`lyrics:` now reports the drawn lane rect and resize ownership. At 1280x720,
+default band, the lane is 49 px. A press and upward drag yields 30 px, persists
+it, and releases; downward requests remain capped by the band's slack. The
+actual request clamp is 22..66, not 50..66. Growing the whole band from its
+bottom-edge lane grip would require a layout/gesture decision; no production
+resize behavior was changed. `tools/lyric_grip_check.py` pins this boundary.

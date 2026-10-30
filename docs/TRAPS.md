@@ -219,17 +219,6 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   `xvfb-run` can return just before its server disappears: await that cleanup
   before immediately reusing a fixed display; do not remove a live lock.
 
-- **A nested capture gate already holds its display** (WX-5 polish, 2026-10-30).
-  `headless_check.sh` starts Xvfb on `MUSIALIZER_CAPTURE_DISPLAY` and then calls
-  treatment checks whose launches use `headless_run.sh`. Making the wrapper
-  implicitly take that same variable makes every nested launch fail with
-  `xvfb-run: error: Xvfb failed to start`. The wrapper's explicit opt-in is
-  `MZ_XVFB_DISPLAY`; a standalone worker maps its assigned capture display to
-  that variable, while existing nested gates retain automatic private displays.
-  An explicit occupied display must still fail, never silently move to another
-  worker's assignment. The polish negative control held an owned `:81` open and
-  verified refusal on both GPU and CPU, then stopped and reaped that server.
-
 - **A fixed capture display is inherited by nested gates.** (WX-5 features,
   2026-10-30.) `headless_check.sh` owns Xvfb for its whole run and calls the
   treatment gate, which uses `headless_run.sh`. Making that wrapper always

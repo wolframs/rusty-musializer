@@ -3,7 +3,7 @@
 # Every launch is muted/isolated by headless_run.sh. Points are derived from
 # report rectangles, including the gaps. WX5_ONLY=posters|artist|captures narrows
 # a negative-control run; WX5_BIN selects its binary. No tool touches ~/Music.
-# Source negative controls and GPU/CPU receipts: docs/WX5_FEATURES_EVIDENCE.md.
+# Source negative controls and GPU/CPU receipts: docs/POSTER_FRAMES.md.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export MUSIALIZER_CAPTURE_DISPLAY="${MUSIALIZER_CAPTURE_DISPLAY:-:82}"

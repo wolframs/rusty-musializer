@@ -79,24 +79,16 @@ changes were reverted and remain unmerged; `headless_check.sh` and
 `lyric_lane_capture.sh` still need the appearance conversion. Replay only
 pixel-bearing captures, resolve the classifier/targeting failures in the
 headless report, then run both-renderer negative controls. The default 49 px
-lyric lane draws a dead resize grip (minimum request 50), requiring the UI
-owner. No app UI file was changed for this investigation.
+lyric lane cannot grow past the fixed band's slack. Integration reproduced a
+working shrink to 30 px (the actual minimum request is 22). Growing the band
+through this grip remains a layout decision, separate from appearance coverage.
 
-**WX-5 polish — built on `t3/wx5-ui-polish-fixes`, ready for lead review (2026-10-30).**
-Welcome notice placement/hover, protocol pennant contrast, treatment apply age
-and changed-section count, AI readiness copy, truthful route geometry, and
-column widget-index collision coverage. Both renderer matrices pass; negative
-controls fail as expected; full verification is 16/18 (code map, shared gate's obsolete
-route-height expectations). Evidence and the integration step:
-[`docs/WX5_POLISH.md`](docs/WX5_POLISH.md), `tools/wx5_polish_check.sh`.
-
-**WX-5 scene posters and inline artist — built, awaiting lead review (2026-10-30).**
-Claimed by `t3/scene-posters-artist-edit`, from `be507e1`: track-specific
-scene flyout posters through the budgeted service; in-place artist editing
-with v1 byte restoration on clear. GPU and CPU feature gates pass; temporary
-faults fail both. Gate: `tools/wx5_features_check.sh`; implementation and
-evidence: `docs/WX5_FEATURES_EVIDENCE.md`.
-
+**WX-5 integration — claimed by `t3/integrate-wx5-wx6-features` (2026-10-30).**
+Integrate the three completed branches, consolidate display ownership, pin drawn
+route geometry, and run final GPU/CPU and differential gates. Polish, scene
+posters and inline artist editing are implemented; lead review remains open.
+The handoffs are archived in the main checkout's `build/redesign/`; durable
+behavior and evidence belong in `WORKSTATION.md` and `POSTER_FRAMES.md`.
 
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),

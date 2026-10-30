@@ -210,13 +210,12 @@ exposes the old shell substring bug (`10 dropped` contains `0 dropped`). Both
 positive inputs still pass after restoration. Temporary trace instrumentation
 was restored byte-for-byte before the production seam was written.
 
-The isolated hand launcher gained optional `MZ_CAPTURE_DISPLAY=:83`, separate
-from the gate's display setting so nested hand launches can still auto-allocate.
-It refuses malformed displays (exit 2) and occupied sockets (exit 1), rather
-than attaching to someone else's server. Each refusal was checked in CPU and
-GPU environments; real 1 ms probes on both renderers verified the positive
-fixed-display path. `cut` and `hostname` are allowed in its dialog guard PATH
-because VirtualGL invokes them. No dialog program was exposed.
+The isolated launcher originally gained a branch-local fixed-display option.
+Integration consolidates it to `MUSIALIZER_CAPTURE_DISPLAY=:N` for all callers;
+see `DIVERGENCES.md` and `TRAPS.md`. Malformed assignments and foreign or
+unverifiable occupied displays are refused. An ancestor gate's Xvfb may be
+reused, with every isolation guard still applied. VirtualGL needs `cut` and
+`hostname` in the guarded PATH; no dialog program is exposed.
 
 ### WX-6 appearance pilot and runtime cap
 
@@ -277,11 +276,13 @@ No proposed pixel thresholds from that candidate ship here. In particular:
 - Embedded lane-alignment probes omitted the explicit appearance and looked
   for light seams in dark frames. Every environment boundary needs the native
   preferences and an appearance assertion.
-- The default frame caps the lyric lane to **49 px** while its minimum resize
-  request is **50 px**. Both looks draw a resize grip (36 px on rows 682 and
-  684) that cannot move. An expanded 330 px band permits the requested 66 px
-  lane. That app UI defect is outside this task's permission to edit UI files;
-  it needs the UI owner. Accepting a dead grip would conceal the defect.
+- The default frame caps the lyric lane to **49 px**. The pilot called its
+  grip dead and attributed it to a 50 px minimum. Integration's press/drag
+  reproduction corrects that diagnosis: the actual minimum is **22 px**, and
+  an upward drag shrinks the default lane to **30 px**, persists and releases.
+  A downward request is capped at 49 by fixed-band slack; an expanded 330 px
+  band permits 66. Growing the band through this grip remains a layout choice.
+  `tools/lyric_grip_check.py` pins both directions.
 
 To fit the cap, replay only pixel-bearing captures; do not duplicate discovery
 rungs, input scripts and state/persistence suites. Then resolve the classifier,
