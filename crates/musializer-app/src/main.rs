@@ -1400,8 +1400,10 @@ fn run(
         dock.tick();
         let full_logical = ui_scale.logical_size(physical_window);
         // WX-5d: the dock is the column's Direct view, drawn into the
-        // column; the workspace is not narrowed for it.
-        let dock_rect = (app.shell.column_view() == ui::shell::ColumnView::Direct)
+        // column; the workspace is not narrowed for it. The welcome screen
+        // has no column, and its right side is the recent-project list.
+        let dock_rect = (app.workspace.current().is_some()
+            && app.shell.column_view() == ui::shell::ColumnView::Direct)
             .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
             .filter(|rect| !rect.is_empty());
         let workspace_window = full_logical;

@@ -250,7 +250,11 @@ export XDG_DATA_HOME="$XDG_ROOT/data"
 # (`=== the dark appearance, as a new user gets it ===`). Only the theme is
 # set; every split stays a new user's, which is what the paragraph above is for.
 mkdir -p "$XDG_CONFIG_HOME/musializer"
-printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' \
+# `column_open` false: every point this gate aims at the band was measured with
+# the band at the window's width, which since WX-5d is the column closed.
+# `tools/column_check.sh` and the dark section below run the column's default,
+# open on Direct.
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"column_open":false}\n' \
     >"$XDG_CONFIG_HOME/musializer/ui.json"
 
 FIXTURE="$OUT_DIR/fixture-sweep.wav"
@@ -753,7 +757,7 @@ echo "=== an export cannot inherit the preview's trails ==="
 # WX-5d: every Render control is read off the `render view:` line, never typed.
 # The share row is under the fold at 720, so its points come from a taller run.
 capture "render-points" 1280x720 --ui-probe "panel=export" || SWEEP_FAILED=1
-capture "render-points-tall" 1280x900 --ui-probe "panel=export" || SWEEP_FAILED=1
+capture "render-points-tall" 1280x900 --ui-scale 100 --ui-probe "panel=export" || SWEEP_FAILED=1
 render_point() {
     # render_point KEY [LOG]: the centre of the control the line names.
     python3 - "$1" "$OUT_DIR/${2:-render-points}.txt" <<'PY'
@@ -1356,7 +1360,7 @@ fi
 # the same deterministic replay; the checks below prove that reuse reaches the
 # MP4 rather than stopping at a plausible report line.
 echo "=== the share frame is encoded frame zero only ==="
-capture "click-share-frame" 1280x900 \
+capture "click-share-frame" 1280x900 --ui-scale 100 \
     --ui-probe "panel=export,time=4.0,click=$(render_point playhead render-points-tall)" || SWEEP_FAILED=1
 SHARE_SELECTION="$(sed -n 's/^export share: *//p' \
     "$OUT_DIR/click-share-frame.txt")"
@@ -3710,7 +3714,7 @@ else
     # plan is actually painted; a plausible empty strip or a missing lane is
     # white here and reads zero. Disabled stays visible but deliberately muted.
     SCENE_LANE_Y="$(sed -n 's/^lane head:.* auto=[0-9]*,\([0-9]*\),.*/\1/p' "$AUTO_SCENE_DIR/enabled.txt" | tail -1)"
-    SCENE_LANE_CROP="800:12:100:$(( SCENE_LANE_Y + 44 ))"
+    SCENE_LANE_CROP="1000:12:100:$(( SCENE_LANE_Y + 44 ))"
     ENABLED_LANE_SAT="$(ffprobe -v error -f lavfi \
         -i "movie=$AUTO_SCENE_DIR/enabled.png,crop=$SCENE_LANE_CROP,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1)"
@@ -5196,15 +5200,13 @@ lane_alignment() {
     fi
 }
 for size in 1280x720 960x640; do
-    # Three lanes wherever the cue lane is drawn, which since D4 is every state
-    # except Export and Assist — those two take the whole band for their own
-    # budgets, so the lane would push their bodies down rather than into slack.
-    # This is a strengthening rather than a bookkeeping change: the closed lane
+    # Three lanes in every state: since WX-5d no panel takes the band, so the
+    # cue lane is always there. This is a strengthening rather than a bookkeeping change: the closed lane
     # is drawn from a different call site than the open one, and this is what
     # proves it lands on the same time axis as the waveform above it.
     lane_alignment "panel-none-$size" 3
     lane_alignment "panel-tune-$size" 3
-    lane_alignment "panel-export-$size" 2
+    lane_alignment "panel-export-$size" 3
     lane_alignment "panel-lyrics-$size" 3
     # The seeded project, which is the only frame with cue blocks in the lane.
     lane_alignment "lyrics-cues-$size" 3
@@ -5630,12 +5632,16 @@ else
     echo "census control: an accent slab on the rail fails the census, as it must"
 fi
 
-# 4. The export panel draws ink on its dark fill. The light check's crop, read
-# against the crop's own background; and a control crop in the same panel, to
-# the right of the CLIP readout, where nothing is drawn.
-DARK_EXPORT_INK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" 340:90:10:474)"
-DARK_EXPORT_BLANK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" 300:24:900:486)"
-echo "dark export panel: ink=${DARK_EXPORT_INK:-?} blank=${DARK_EXPORT_BLANK:-?} (control), fill $(python3 tools/chrome_probe.py fill "$DARK_DIR/dark-export-1280x720.png" 340:90:10:474)"
+# 4. The Render view draws ink on its dark fill: the summary card, read against
+# the crop's own background; and a control crop in the same view, in the head
+# between the title and the close button, where nothing is drawn.
+DARK_RV="$(sed -n 's/^render view: *//p' "$DARK_DIR/dark-export-1280x720.txt" | tail -1)"
+DARK_EXPORT_CROP="$(echo "$DARK_RV" | sed -n 's/.*summary=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\3:\4:\1:\2/p')"
+DARK_BLANK_CROP="$(echo "$DARK_RV" | sed -n 's/^rect=\([0-9]*\),\([0-9]*\),.*/120:24:\1:\2/p' \
+    | awk -F: '{print $1 ":" $2 ":" $3 + 120 ":" $4 + 8}')"
+DARK_EXPORT_INK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" "$DARK_EXPORT_CROP")"
+DARK_EXPORT_BLANK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" "$DARK_BLANK_CROP")"
+echo "dark export panel: ink=${DARK_EXPORT_INK:-?} blank=${DARK_EXPORT_BLANK:-?} (control), fill $(python3 tools/chrome_probe.py fill "$DARK_DIR/dark-export-1280x720.png" "$DARK_EXPORT_CROP")"
 if [ "${DARK_EXPORT_INK:-0}" -lt 120 ]; then
     echo "FAIL: the dark export panel drew no ink" >&2
     DARK_FAILED=1
@@ -5650,7 +5656,7 @@ DARK_TIP_TEXT="$(ffprobe -v error -f lavfi \
     -i "movie=$DARK_DIR/dark-tip-mute.png,crop=140:24:$((DARK_MCX - 71)):$((DARK_TIP_TOOLBAR - 34)),signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 DARK_TIP_ADDED="$(python3 tools/chrome_probe.py changed "$DARK_DIR/dark-tip-mute.png" \
-    "$DARK_DIR/dark-tip-bare.png" "140:24:1050:$((${DARK_TIP_TOOLBAR:-363} - 26))")"
+    "$DARK_DIR/dark-tip-bare.png" "140:24:$((DARK_MCX - 71)):$((${DARK_TIP_TOOLBAR:-363} - 34))")"
 echo "dark tooltip: text luma max=${DARK_TIP_TEXT:-?} pixels added=${DARK_TIP_ADDED:-?}"
 if [ "${DARK_TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null || [ "${DARK_TIP_ADDED:-0}" -lt 150 ]; then
     echo "FAIL: no tooltip where the mute button's tip should be, on the dark appearance" >&2

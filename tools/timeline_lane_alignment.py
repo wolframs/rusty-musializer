@@ -29,6 +29,8 @@ Usage:  timeline_lane_alignment.py PNG LANES [UI_SCALE_PERCENT [APPEARANCE]]
         since 2026-10-24; it picks the palette below and the border classifier.
 """
 
+import pathlib
+import re
 import sys
 
 import numpy as np
@@ -99,6 +101,20 @@ def measure(path, lanes, ui_scale=100, appearance="light-blue"):
     TROUGH, ACCENT = palette["trough"], palette["accent"]
     image = np.array(Image.open(path).convert("RGB")).astype(int)
     height, width, _ = image.shape
+
+    # The column sits beside the band and has trough-toned rows of its own, so
+    # the search stops at the band's right edge, from the run's report (the
+    # `.txt` beside the capture) when it has one.
+    report = pathlib.Path(path).with_suffix(".txt")
+    if report.exists():
+        found = re.search(
+            r"^column:.* band=(\d+),(\d+),(\d+),(\d+)",
+            report.read_text(encoding="utf-8", errors="replace"),
+            re.M,
+        )
+        if found and int(found.group(3)) > 0:
+            right = int(found.group(1)) + int(found.group(3))
+            image[:, round(right * ui_scale / 100.0) :] = (255, 0, 255)
 
     # EXACT match, tolerance zero, and the margin is measured rather than
     # chosen. The trough is an opaque fill, and an opaque fill is bit-exact on

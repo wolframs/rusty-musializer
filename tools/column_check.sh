@@ -48,7 +48,9 @@
 #      the waiting prompt outlined in the warning tone with an ink Allow;
 #      the census in both appearances; Allow reaches the agent and its reply
 #      is drawn; a followed treatment rewritten mid-run is noted in the chat
-#      as a notice, and an unrewritten one is not.
+#      as a notice, and an unrewritten one is not. The welcome screen, which
+#      has no column, draws no dock (the control is every run above with a
+#      track, whose `dock: rect=` is the column's).
 #
 # COLUMN_BIN names a different binary, for a negative control without
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
@@ -470,6 +472,13 @@ direct_run() { # direct_run NAME PROBE [extra]
         --ui-probe "size=1920x1080,time=3,column=direct${probe:+,$probe}" --probe-frames "${FRAMES:-120}" \
         --probe-shot "$OUT/$name.png" "$@" >"$OUT/$name.log" 2>&1 || true
 }
+# The welcome screen has no column: its right side is the recent-project list.
+MZ_STATE_DIR="$OUT/state-welcome" tools/headless_run.sh --ui-scale 100 --size 1280x720 --probe-frames 20 \
+    >"$OUT/welcome.log" 2>&1 || true
+case "$(line_of dock "$OUT/welcome.log")" in
+    *" rect=0,0,0,0"*) ;;
+    *) fail "the Direct view drew over the welcome screen: $(line_of dock "$OUT/welcome.log" | tail -c 80)" ;;
+esac
 direct_run direct-empty ""
 column_rect="$(rect rect "$(line_of column "$OUT/direct-empty.log")" | tr ' ' ',')"
 empty="$(direct_of "$OUT/direct-empty.log")"
