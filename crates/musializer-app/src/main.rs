@@ -433,6 +433,7 @@ fn run(
     // WX-1/2: terminals and agents beside the workspace. Declared after the
     // egui backend, so it drops (and hangs up on its shells) first.
     let mut dock = ui::dock::Dock::default();
+    let mut dock_cache = DockContextCache::new();
     if let Some(probe) = options.ui_probe.as_ref() {
         app.shell.dock_open |= probe.dock;
     }
@@ -1786,8 +1787,8 @@ fn run(
         // a reply that arrives behind another view is what the Direct tab's
         // dot is for, and a probe that only ran while the dock was shown
         // could never stage one.
+        let context = dock_context(&mut dock_cache, &app, follow.as_ref(), time_seconds);
         {
-            let context = dock_context(&app, follow.as_ref(), time_seconds);
             // The window's own treatment applies, noted in the shown chat.
             dock.observe(&context);
             if let Some(probe) = options.ui_probe.as_ref() {
@@ -1825,7 +1826,6 @@ fn run(
             );
             if let Some(bounds) = dock_rect {
                 ui::egui_theme::apply_theme(egui_backend.ctx(), ui::theme::current());
-                let context = dock_context(&app, follow.as_ref(), time_seconds);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
@@ -5268,12 +5268,48 @@ fn changed_sections(
 /// Where a new dock tab starts and what it is told (WX-2): the project's
 /// folder, else the track's, else home; and the paths an agent started there
 /// needs to direct this window from the command line.
+struct DockContextCache {
+    env: std::collections::HashMap<String, String>,
+    guide: Option<PathBuf>,
+    launcher: Option<PathBuf>,
+    home: Option<PathBuf>,
+    instructions: Option<(Option<PathBuf>, String)>,
+}
+
+impl DockContextCache {
+    fn new() -> Self {
+        let mut env = std::collections::HashMap::new();
+        if let Ok(exe) = std::env::current_exe() {
+            env.insert("MUSIALIZER_BIN".into(), exe.display().to_string());
+        }
+        let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let guide = checkout.join("docs/MUSIC_VIDEO_CLI.md").canonicalize().ok();
+        let launcher = checkout.join("tools/headless_run.sh").canonicalize().ok();
+        for (name, path) in [
+            ("MUSIALIZER_GUIDE", &guide),
+            ("MUSIALIZER_HEADLESS_RUN", &launcher),
+        ] {
+            if let Some(path) = path {
+                env.insert(name.into(), path.display().to_string());
+            }
+        }
+        Self {
+            env,
+            guide,
+            launcher,
+            home: std::env::var_os("HOME").map(PathBuf::from),
+            instructions: None,
+        }
+    }
+}
+
 fn dock_context(
+    cache: &mut DockContextCache,
     app: &App,
     follow: Option<&TreatmentFollow>,
     time_seconds: f64,
 ) -> ui::dock::DockContext {
-    let mut env = std::collections::HashMap::new();
+    let mut env = cache.env.clone();
     let following = follow.map(|follow| {
         env.insert(
             "MUSIALIZER_TREATMENT".to_string(),
@@ -5287,23 +5323,6 @@ fn dock_context(
             error: follow.last_error.clone(),
         }
     });
-    if let Ok(exe) = std::env::current_exe() {
-        env.insert("MUSIALIZER_BIN".to_string(), exe.display().to_string());
-    }
-    // The directing guide and the isolated launcher, when this binary still
-    // sits in its checkout.
-    let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let guide = checkout.join("docs/MUSIC_VIDEO_CLI.md").canonicalize().ok();
-    let launcher = checkout.join("tools/headless_run.sh").canonicalize().ok();
-    if let Some(guide) = &guide {
-        env.insert("MUSIALIZER_GUIDE".to_string(), guide.display().to_string());
-    }
-    if let Some(launcher) = &launcher {
-        env.insert(
-            "MUSIALIZER_HEADLESS_RUN".to_string(),
-            launcher.display().to_string(),
-        );
-    }
     let mut now = Vec::new();
     let mut directory = None;
     if let Some(track) = app.workspace.current() {
@@ -5341,9 +5360,9 @@ fn dock_context(
             directory = track.file_path.parent().map(Path::to_path_buf);
         }
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = &cache.home;
     let directory = directory.or_else(|| home.clone());
-    let place = match (&directory, &home) {
+    let place = match (&directory, home) {
         (Some(dir), Some(home)) => match dir.strip_prefix(home) {
             Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
             Ok(rest) => format!("~/{}", rest.display()),
@@ -5355,11 +5374,18 @@ fn dock_context(
     if let Some(follow) = follow {
         now.push(format!("treatment {}", follow.name()));
     }
-    let instructions = dock_instructions(
-        follow.map(|follow| follow.path.as_path()),
-        guide.as_deref(),
-        launcher.as_deref(),
-    );
+    let treatment = follow.map(|follow| follow.path.as_path());
+    if cache
+        .instructions
+        .as_ref()
+        .is_none_or(|(path, _)| path.as_deref() != treatment)
+    {
+        cache.instructions = Some((
+            treatment.map(Path::to_path_buf),
+            dock_instructions(treatment, cache.guide.as_deref(), cache.launcher.as_deref()),
+        ));
+    }
+    let instructions = cache.instructions.as_ref().unwrap().1.clone();
     ui::dock::DockContext {
         working_directory: directory,
         env,

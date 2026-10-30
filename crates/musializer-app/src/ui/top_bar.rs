@@ -130,9 +130,6 @@ pub(crate) struct TopBarState {
     pub save: Option<SaveState>,
     pub save_reason: Option<String>,
     pub layout: Option<TopBarLayout>,
-    /// Whether Render… was live (it is disabled, with its reason, without
-    /// FFmpeg on PATH).
-    pub render_live: bool,
     /// Whether the Render view was open (WX-5d): Render… wore the selection
     /// look instead of the accent.
     pub render_view: bool,
@@ -1007,9 +1004,6 @@ impl Shell {
         if sheet.clicked {
             commands.push(ShellCommand::ExportContactSheet);
         }
-        // The Export panel's own rule: a render needs FFmpeg, and a button that
-        // cannot press says why rather than vanishing.
-        let render_live = ffmpeg_available();
         let render_id = widgets::widget_id(widgets::id::TOP_BAR, RENDER_SLOT);
         let render_view = self.column_view() == super::shell::ColumnView::Render;
         {
@@ -1087,7 +1081,6 @@ impl Shell {
             save: Some(state),
             save_reason: reason,
             layout: Some(layout),
-            render_live,
             render_view,
             scale: input.ui_scale.value(),
         };
@@ -1234,7 +1227,7 @@ impl Shell {
             } else {
                 &state.artist_event
             },
-            state.render_live
+            ffmpeg_available()
         )
     }
 }
