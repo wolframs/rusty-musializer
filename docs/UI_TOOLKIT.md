@@ -24,7 +24,9 @@ in a UI probe. There is no application F8 binding or pencil rail slot.
 
 The column has one visible lyric draft with Apply/Discard and context-change
 guards. The independent modal's per-cue hidden draft cache was retired with it;
-there are no competing lyric buffers or selection bridge. The normal draft
+there are no competing lyric buffers or selection bridge. Column text fields
+retain keyboard ownership: use Tracks → Save while a field is focused, or
+Ctrl+S after leaving the field. The normal draft
 still participates in quit/recovery guards. This policy difference is listed
 in the retirement inventory for lead review.
 

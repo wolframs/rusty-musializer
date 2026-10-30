@@ -1843,6 +1843,7 @@ fn run(
             }
             app.shell.dock_keyboard = app.shell.dock_open && dock.wants_keyboard();
             if welcome_theme_active {
+                welcome_theme = ui::theme::current();
                 let (theme, owns_input) = ui::egui_theme::welcome_theme(
                     egui_backend.ctx(),
                     workspace_window,
