@@ -150,7 +150,7 @@ if [ "${#REUSE_DISPLAY[@]}" -gt 0 ]; then
     exec env "${REUSE_DISPLAY[@]}" \
         WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
         PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
-    SHELL= \
+        SHELL= \
         XDG_CONFIG_HOME="$STATE_DIR/config" \
         PATH="$STATE_DIR/bin" \
         "${GL[@]}" "$BIN" --mute "$@"

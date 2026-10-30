@@ -159,10 +159,19 @@ cat >"$OUT/discovery-shell" <<EOF
 printf '\\n__MUSIALIZER_PATH__%s\\n' '$OUT/agent-bin'
 EOF
 chmod +x "$OUT/discovery-shell"
+# headless_run deliberately clears SHELL so batch captures never read the
+# operator's rc. Only this owned fixture wrapper opts into our inert shell.
+cat >"$OUT/discovery-launch" <<'EOF'
+#!/bin/sh
+SHELL="$COLUMN_DISCOVERY_SHELL" exec "$COLUMN_REAL_BIN" "$@"
+EOF
+printf '#!/bin/sh\nexit 0\n' >"$OUT/discovery-missing-shell"
+chmod +x "$OUT/discovery-launch" "$OUT/discovery-missing-shell"
 agent_states() {
     local name="$1" frames="$2" shell="$3" expected="$4"
     env -u MUSIALIZER_AGENT_CLAUDE -u MUSIALIZER_AGENT_CODEX -u MUSIALIZER_AGENT_AGY \
-        SHELL="$shell" MZ_STATE_DIR="$OUT/state-$name" tools/headless_run.sh \
+        MZ_BIN="$OUT/discovery-launch" COLUMN_DISCOVERY_SHELL="$shell" COLUMN_REAL_BIN="$MZ_BIN" \
+        MZ_STATE_DIR="$OUT/state-$name" tools/headless_run.sh \
         --treatment "$SHOW" --ui-scale 100 --ui-probe 'size=1280x720,time=3,column=direct' \
         --probe-frames "$frames" --probe-shot "$OUT/$name.png" >"$OUT/$name.log" 2>&1 || true
     local dock
@@ -177,7 +186,7 @@ agent_states() {
 }
 agent_states agents-pending 3 "$OUT/discovery-shell" 'checking:settled=false'
 agent_states agents-installed 240 "$OUT/discovery-shell" 'installed:settled=true'
-agent_states agents-missing 30 /bin/sh 'not-found:settled=true'
+agent_states agents-missing 30 "$OUT/discovery-missing-shell" 'not-found:settled=true'
 # Narrow replay for this check's one GPU/CPU negative control; never a full CPU gate.
 if [ "${COLUMN_AGENT_DISCOVERY_ONLY:-0}" = 1 ]; then
     printf 'agent discovery: %d failures\n' "$failures"

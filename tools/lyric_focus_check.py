@@ -77,11 +77,15 @@ def drive():
         ready = Image.open(os.environ['FOCUS_BASE_SHOT']).convert('RGB').crop(ready_box).tobytes()
         for _ in range(200):
             painted = ImageGrab.grab(xdisplay=os.environ['DISPLAY']).convert('RGB').crop(ready_box).tobytes()
-            if painted == ready:
+            # Screenshot readback and X11 capture can round the logo's
+            # antialiased/gradient pixels by one; a black loading frame is far
+            # outside this mean-distance bound.
+            if sum(abs(a - b) for a, b in zip(painted, ready)) <= 3 * len(ready):
                 break
             assert process.poll() is None, 'app ended before its first frame'
             time.sleep(.1)
         else:
+            ImageGrab.grab(xdisplay=os.environ['DISPLAY']).save(os.environ['FOCUS_INPUT_SHOT'] + '.ready-failed.png')
             raise AssertionError('app never painted its ready mark')
         time.sleep(.5)
         points = json.loads(os.environ['FOCUS_POINTS'])
@@ -111,8 +115,29 @@ def drive():
         press(0xff1b)
         click(points['outside'])
         chord('s')
+        time.sleep(.4)
+        # Ask GLFW to close cleanly after Save rather than burning hundreds
+        # of idle frames on a software rasterizer. The app still prints its
+        # final report and reaps its dock; the frame limit is the fallback.
+        class ClientMessage(C.Structure):
+            _fields_ = [('type', C.c_int), ('serial', C.c_ulong),
+                        ('send_event', C.c_int), ('display', C.c_void_p),
+                        ('window', C.c_ulong), ('message_type', C.c_ulong),
+                        ('format', C.c_int), ('data', C.c_long * 5)]
+        x.XInternAtom.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+        x.XInternAtom.restype = C.c_ulong
+        x.XSendEvent.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.c_void_p]
+        event = (C.c_long * 24)()
+        message = C.cast(event, C.POINTER(ClientMessage)).contents
+        message.type, message.send_event, message.display = 33, 1, d
+        message.window = children[count.value - 1]
+        message.message_type = x.XInternAtom(d, b'WM_PROTOCOLS', 0)
+        message.format = 32
+        message.data[0] = x.XInternAtom(d, b'WM_DELETE_WINDOW', 0)
+        x.XSendEvent(d, message.window, 0, 0, C.byref(event))
+        x.XFlush(d)
         print('focus-input: native keys delivered to ' + os.environ['FOCUS_SURFACE'], flush=True)
-        return process.wait(timeout=20)
+        return process.wait(timeout=60)
     finally:
         if process.poll() is None:
             process.terminate()
