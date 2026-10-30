@@ -61,8 +61,9 @@ for scope in ['video','section']:
         check(state==choice if choice in ['off','inherit'] else state.startswith(choice+':144:'),f'{scope}: palette {choice} reached model: {state}')
         # Each palette has an adjacent gap (the space above its row).
         r=rect(base[scope],f'choice-{index}')
-        gap,_=run(f'{scope}-gap-{index}',scope,(r[0]+r[2]//2,r[1]-4))
+        gap,gaplog=run(f'{scope}-gap-{index}',scope,(r[0]+r[2]//2,r[1]-4))
         check(field(gap,'video')==field(base[scope],'video') and field(gap,'section')==field(base[scope],'section'),f'{scope}: palette {index} gap changes nothing')
+        check('claimed=nothing' in line(gaplog,'click probe'), f'{scope}: palette {index} gap claims nothing')
     r=rect(base[scope],'size'); point=(r[0]+r[2]//4,r[1]+r[3]//2)
     expected=math.floor(48+(point[0]-r[0])/r[2]*672+0.5)
     report,_=run(f'{scope}-size',scope,point)
@@ -84,11 +85,13 @@ for scope in ['video','section']:
     finally: (out/'True.treatment.json').write_bytes(original)
     check(field(report,'kick')=='0.000,0.000,0.000',f'{scope}: kick off zeros all three values')
     r=rect(base[scope],'kick-0')
-    gap,_=run(f'{scope}-kick-gap',scope,(r[0]+r[2]//2,r[1]-4))
+    gap,gaplog=run(f'{scope}-kick-gap',scope,(r[0]+r[2]//2,r[1]-4))
     check(field(gap,'kick')=='0.000,0.000,0.000',f'{scope}: kick gap changes nothing')
+    check('claimed=nothing' in line(gaplog,'click probe'), f'{scope}: kick gap claims nothing')
     r=rect(base[scope],'value')
-    gap,_=run(f'{scope}-size-gap',scope,(r[0]+r[2]//2,r[1]-4))
+    gap,gaplog=run(f'{scope}-size-gap',scope,(r[0]+r[2]//2,r[1]-4))
     check(field(gap,'pixels')=='144',f'{scope}: size gap changes nothing')
+    check('claimed=nothing' in line(gaplog,'click probe'), f'{scope}: size gap claims nothing')
 
 report,_=run('scope-to-section','video',centre(rect(base['video'],'scope-1')))
 check(field(report,'scope')=='section','press This section changes scope')
@@ -106,8 +109,9 @@ for i, theme in enumerate(['dark','light']):
     check(line(log,'appearance').startswith('black-amber' if i==0 else 'light-blue'),f'{theme}: press changes rendered appearance')
     report,log=run(f'theme-restart-{theme}',theme=None,state=state)
     check(line(log,'appearance').startswith('black-amber' if i==0 else 'light-blue'),f'{theme}: appearance persists across restart')
-    prefs=json.loads((state/'config'/'musializer'/'ui.json').read_text())
-    check(prefs['theme']==('black-amber' if i==0 else 'light-blue'),f'{theme}: actual preference file matches')
+    prefs_path=state/'config'/'musializer'/'ui.json'
+    prefs=json.loads(prefs_path.read_text()) if prefs_path.exists() else {}
+    check(prefs.get('theme')==('black-amber' if i==0 else 'light-blue'),f'{theme}: actual preference file matches')
 r=rect(base['video'],'theme-0')
 report,log=run('theme-gap',click=(r[0]+r[2]//2,r[1]-5))
 check(line(log,'appearance').startswith('black-amber'),'appearance gap changes nothing')
