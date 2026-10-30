@@ -129,3 +129,5 @@ appearance's lane fill (7.186638077640:1 dark, 6.230594944630:1 light), separate
 from the blue light accent. Answered protocol pennants shorten instead of
 fading below the contrast bar. READY reasons use tracked micro text and wrap in
 a 130 px seat, keeping their full sentence visible.
+
+About opens from the top-left logo (tooltip: “About Musializer”) or the quiet welcome control; its theme-role floating surface, scrollable credits and embedded notices close with ×, Escape or the scrim and own input while open.

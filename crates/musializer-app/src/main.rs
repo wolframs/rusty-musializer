@@ -981,6 +981,9 @@ fn run(
                 app.shell.panel = probe.panel;
             }
             app.shell.fullscreen = probe.fullscreen;
+            if probe.about {
+                app.shell.open_about();
+            }
             if let Some(width) = probe.sidebar_width {
                 app.shell.ui_preferences.sidebar_width = Some(width);
             }
@@ -1384,6 +1387,7 @@ fn run(
         let mut dock_commands: Vec<ShellCommand> = Vec::new();
         if !app.shell.artist_editing()
             && !dock.wants_keyboard()
+            && !app.shell.about.open
             && rl.is_key_pressed(KeyboardKey::KEY_GRAVE)
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
@@ -1815,7 +1819,7 @@ fn run(
                 }
             }
         }
-        let egui_active = welcome_theme_active || dock_rect.is_some();
+        let egui_active = !app.shell.about.open && (welcome_theme_active || dock_rect.is_some());
         if egui_active {
             egui_backend.begin_frame(
                 &mut rl,
@@ -1950,6 +1954,11 @@ fn run(
                     eprintln!("egui rendering: {error}");
                 }
             }
+            {
+                let mut overlay = d.begin_mode2D(ui_scale.camera());
+                app.shell.widgets.set_ui_scale(ui_scale);
+                app.shell.draw_about(&mut overlay, &shell_input);
+            }
         } else {
             let layout = app.shell.layout(&shell_input);
 
@@ -2054,6 +2063,11 @@ fn run(
                 if let Err(error) = egui_backend.draw(&mut d, &thread) {
                     eprintln!("egui rendering: {error}");
                 }
+            }
+            {
+                let mut overlay = d.begin_mode2D(ui_scale.camera());
+                app.shell.widgets.set_ui_scale(ui_scale);
+                app.shell.draw_about(&mut overlay, &shell_input);
             }
             // Poster work, last in the drawing pair (WX-5b): the shell no
             // longer borrows the board, egui has left ordinary 2D state on the
@@ -6681,6 +6695,7 @@ impl Report {
         println!("posters:         {}", self.posters);
         // WX-5c: the top bar and the rail, from the last frame drawn.
         println!("top bar:         {}", self.top_bar);
+        println!("about:           {}", app.shell.describe_about());
         println!("notices:         {}", self.notices);
         println!("rail:            {}", self.rail);
         println!("lane head:       {}", self.lane_head);

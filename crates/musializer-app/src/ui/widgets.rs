@@ -2866,6 +2866,8 @@ pub const fn widget_id(namespace: u32, index: u32) -> u64 {
 /// enumerates a hand-written list — and there were three such tests, each
 /// checking a different stale subset, all green.
 pub mod id {
+    /// About entry points and modal controls.
+    pub const ABOUT: u32 = 25;
     /// Pixel filter and workspace appearance controls in Look.
     pub const PIXEL_LOOK: u32 = 24;
     pub const TOOLBAR: u32 = 1;
@@ -2969,7 +2971,8 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 29] = [
+    pub const ALL: [(&str, u32); 30] = [
+        ("ABOUT", ABOUT),
         ("PIXEL_LOOK", PIXEL_LOOK),
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),

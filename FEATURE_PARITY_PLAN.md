@@ -27,6 +27,10 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
+## About and attribution — in progress 2026-10-30
+
+`t3/about-credits-window`: source-audited credits and embedded notices, modal, report-addressed press gate. Implementation sub-agent; no push or merge.
+
 ## First-start agent cards — implemented, lead review pending 2026-10-30
 
 `t3/fix-agent-cards-tooltip-screenshot`: first-start shell-PATH discovery and truthful pending cards/report, Direct tooltip and README capture implemented. Scoped checks and GPU/CPU negative-control evidence are in `build/redesign/`; lead review pending, no push or merge.

@@ -749,6 +749,7 @@ impl Shell {
 
         // The name: mark, title, artist.
         draw_mark(d, layout.mark);
+        self.about_logo(d, layout.mark);
         let shown_title = authored.ellipsize(&title, layout.title.width + 0.5, TITLE_SIZE, 0.0);
         authored.draw_text(
             d,

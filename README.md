@@ -276,3 +276,9 @@ timed-lyric comparisons when a judgment needs human ears.
 | Workspace controls and themes | [UI toolkit](docs/UI_TOOLKIT.md) |
 | Code ownership and data flows | [Architecture](docs/CODE_ARCHITECTURE.md) |
 | A module or command | [Code map](docs/CODE_MAP.md) · [CLI and formats](docs/PHASE0_INVENTORY.md)
+
+## Credits
+
+Rusty Musializer grew from Alexey Kutepov (Tsoding) and the Musializer contributors' original project.
+Phosphor Dream is adapted with permission from Digi's `dreamscape.py`.
+The app's About window has the full credits and licence notices.
