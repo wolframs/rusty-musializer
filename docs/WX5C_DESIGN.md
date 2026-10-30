@@ -3,10 +3,8 @@
 # WX-5c design note: the rail, the big preview, the top bar
 
 Written by the 5a/5b designer for the lead, 2026-10-24, and accepted by the
-lead the same day (with the dock keeping its full height). `BRIEF.md` is
-[`WX5_BRIEF.md`](WX5_BRIEF.md), the run's working brief. 5c follows BRIEF.md
-"Rail and preview (5c)" and builds on the 5b tree (runs, posters merged by the
-critic). It can be split between two Opus agents working at the same time:
+lead the same day (with the dock keeping its full height). 5c builds on the
+5b tree (runs, posters merged by the critic). It can be split between two Opus agents working at the same time:
 
 - **Rail**: the frame, the rail and its flyouts, the transport, the lane head.
   That is me.
