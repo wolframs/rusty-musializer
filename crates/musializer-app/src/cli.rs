@@ -475,6 +475,9 @@ pub struct UiProbe {
     /// `column-width=N` (WX-5d): the column's dragged width, in the split
     /// bounds every other width probe takes.
     pub column_width: Option<f32>,
+    /// `pixel=video|section`: reveal the Look filter and choose its scope.
+    /// Invented because Xvfb has no wheel; edits still require real click=.
+    pub pixel_scope: Option<bool>,
     /// `column-switch=VIEW` (WX-5d): change the column to VIEW on frame 40,
     /// through the press path, after `dock-focus=` (frame 20) and
     /// `agent-say=` (frame 30) have run. Invented because the claims about
@@ -1374,6 +1377,13 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "timeline-height" => probe.timeline_height = Some(parse_split_position(value)?),
         "hover" => probe.hover = Some(parse_point(value)?),
         "click" => probe.click = Some(parse_point(value)?),
+        "pixel" => {
+            probe.pixel_scope = Some(match value {
+                "video" => false,
+                "section" => true,
+                _ => return None,
+            })
+        }
         "wheel" => {
             let notches: f32 = value.parse().ok()?;
             // Bounded because the factor is `1.2^notches`: past a handful the

@@ -1003,6 +1003,9 @@ fn run(
             } else {
                 f64::INFINITY
             };
+            if let Some(section) = probe.pixel_scope {
+                app.shell.probe_pixel_scope(section);
+            }
             hover_at = probe.hover;
             // `click=` parks the pointer too, so a run that passed both would
             // fight over `SetMousePosition`; the click wins, being the more
@@ -6769,6 +6772,7 @@ impl Report {
                 app.shell.describe_caption_style(&app.workspace),
             ),
             ("route editor:", app.shell.describe_route_editor()),
+            ("pixel look:", app.shell.describe_pixel_look()),
             (
                 "tune layout:",
                 app.shell.describe_tune_layout(&app.workspace),

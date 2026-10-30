@@ -27,6 +27,10 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
+## F8 retirement — implementation claimed 2026-10-30
+
+`t3/retire-f8-editor`: inventory in `build/redesign/wx5-editor-inventory.md`; move pixel filter and appearance to Look, retire the duplicate modal in a separate commit, replace coverage and retake the README. Lead review before master.
+
 ## UI toolkit follow-through
 
 The representative egui Tune/Lyrics editor and two workstation themes are

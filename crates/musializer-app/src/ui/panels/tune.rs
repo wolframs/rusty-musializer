@@ -46,6 +46,8 @@ use musializer_core::ui::tune_explore::{
     self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
 };
 use musializer_core::ui::tune_groups;
+#[path = "tune/pixel.rs"]
+mod pixel;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
@@ -357,6 +359,8 @@ impl Shell {
     /// there and it has to know about this field.
     pub(crate) fn tune_value_typing(&self) -> bool {
         self.peek_editor(|host| host.typing.is_some())
+            || (self.column_view() == super::super::shell::ColumnView::Look
+                && self.look_column.pixel_typing.is_some())
     }
 
     /// Puts a value chip in the state a user reaches by clicking it, for
@@ -826,6 +830,9 @@ pub(crate) fn tune_state_line(
 pub struct LookColumn {
     /// The list's scroll offset, in logical px.
     offset: f32,
+    pixel_section: bool,
+    pixel_reveal: bool,
+    pixel_typing: Option<TextField>,
     /// What the offset is for: a new track or scene starts at the top.
     context: Option<(usize, SceneId)>,
     /// Scroll the open route editor into view on the next frame.
@@ -838,6 +845,8 @@ pub struct LookColumn {
     /// The `tune layout:` line for the last frame Look drew in the column.
     report: String,
     route_report: String,
+    pixel_report: String,
+    appearance_report: String,
 }
 
 /// Two presses on one track within this many seconds reset it (§3.3).
@@ -1226,6 +1235,7 @@ impl Shell {
         self.with_editor(|host| host.explore.retarget(target));
         if self.look_column.context != Some((track_slot, scene)) {
             self.look_column.context = Some((track_slot, scene));
+            self.look_column.pixel_typing = None;
             self.look_column.offset = 0.0;
         }
 
@@ -1271,6 +1281,7 @@ impl Shell {
             .draft()
             .is_some_and(|draft| draft.source == AnalysisSource::Band);
         let spec = tune_groups::LookSpec {
+            pixel_look: true,
             groups: groups
                 .iter()
                 .map(|rows| (rows.group, rows.indices.len()))
@@ -1304,6 +1315,12 @@ impl Shell {
                 &spec,
                 layout.offset - scroll_wheel * LOOK_WHEEL_STEP,
             );
+        }
+        if std::mem::take(&mut self.look_column.pixel_reveal) {
+            if let Some(area) = layout.pixel {
+                let offset = tune_groups::reveal_offset(&layout, area);
+                layout = tune_groups::look_layout(head.body, &spec, offset);
+            }
         }
         if self.look_column.reveal_editor {
             self.look_column.reveal_editor = false;
@@ -1378,6 +1395,9 @@ impl Shell {
             }
             commands.extend(presets.into_iter().map(ShellCommand::Preset));
 
+            if let Some(area) = layout.pixel {
+                self.pixel_look_column(d, input, area, commands);
+            }
             let label_width = look_label_width(card_width);
             for group in &layout.groups {
                 widgets::section_head(
@@ -1467,11 +1487,12 @@ impl Shell {
                 "Every value back to its default; a second press confirms"
             },
         );
+        self.appearance_control(d, input, layout.footer_hint, commands);
         let hint = [widgets::MicroRun::muted(
             "~ follows the music \u{00b7} double-click resets",
         )];
         let hint_width = widgets::micro_width(font, &hint);
-        if hint_width <= layout.footer_hint.width {
+        if hint_width <= layout.footer_hint.width - 132.0 {
             widgets::draw_micro(
                 d,
                 font,

@@ -264,6 +264,7 @@ const PRESET_ACTION_GAP: f32 = 4.0;
 /// the caller in the faces it draws with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookSpec {
+    pub pixel_look: bool,
     /// Rows per drawn group, in drawing order (from [`groups`]).
     pub groups: Vec<(Group, usize)>,
     /// A route draft for another scene or track is waiting (its bar draws first).
@@ -319,6 +320,7 @@ pub struct GroupLayout {
 /// with the scroll offset already applied to the list.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookLayout {
+    pub pixel: Option<UiRect>,
     pub title: UiRect,
     pub scope: UiRect,
     /// The scrolling list's window; the list is clipped to it.
@@ -534,6 +536,13 @@ pub fn look_layout(body: UiRect, spec: &LookSpec, offset: f32) -> LookLayout {
         }
         groups.push(GroupLayout { group, head, rows });
     }
+    let pixel = spec.pixel_look.then(|| {
+        y += BLOCK_GAP;
+        let area = UiRect::new(x, y, width, super::pixel_look::HEIGHT);
+        y += super::pixel_look::HEIGHT;
+        area
+    });
+
     let content_height = y + LIST_BOTTOM_PADDING;
     let max_offset = (content_height - viewport.height).max(0.0);
     let offset = if offset.is_finite() {
@@ -601,6 +610,7 @@ pub fn look_layout(body: UiRect, spec: &LookSpec, offset: f32) -> LookLayout {
     );
 
     LookLayout {
+        pixel: pixel.map(moved),
         title,
         scope,
         viewport,
@@ -737,6 +747,7 @@ mod tests {
 
     fn cadence_spec() -> LookSpec {
         LookSpec {
+            pixel_look: false,
             groups: vec![
                 (Group::Type, 4),
                 (Group::Motion, 3),
@@ -756,6 +767,22 @@ mod tests {
     /// The 1920x1080 column's body: x 1460, below the 46 px top bar and the
     /// 40 px head, 460 wide.
     const BODY_1920: UiRect = UiRect::new(1460.0, 86.0, 460.0, 994.0);
+
+    #[test]
+    fn pixel_filter_extends_the_list_without_moving_parameters() {
+        let spec = LookSpec {
+            pixel_look: true,
+            ..cadence_spec()
+        };
+        let layout = look_layout(BODY_1920, &spec, 0.0);
+        assert_eq!(layout.pixel, Some(UiRect::new(1474.0, 822.0, 432.0, 290.0)));
+        assert_eq!(layout.content_height, 970.0);
+        assert_eq!(layout.max_offset, 84.0);
+        assert_eq!(
+            layout.groups,
+            look_layout(BODY_1920, &cadence_spec(), 0.0).groups
+        );
+    }
 
     #[test]
     fn the_1920_column_places_every_block_exactly() {
