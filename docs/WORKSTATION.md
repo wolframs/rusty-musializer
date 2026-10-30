@@ -341,6 +341,15 @@ They are independent unless a line says otherwise. Every one finishes with
      a second row.
    - The band's two widget-index collision tests went with the band; the
      column's indices have no such test yet.
+   - `tools/headless_check.sh` stops at "120 ms was outside the silent band"
+     on llvmpipe (`MZ_GL_LAUNCH=""`), and passes on the GPU. It is audio
+     timing, and it was not run on `master` to see whether it predates
+     WX-5d.
+   - `headless_check.sh`'s pixel checks run with the column closed, because
+     they aim at a full-width band. The column open, the default, is
+     covered by the column checks and the gate's dark section.
+   - The welcome screen has no column, so an agent cannot
+     be started before a track is open.
 3a. **Loose ends from WX-5a/5b**, small:
    - The gate's pixel checks still run on the light look (a theme-only
      `ui.json` in its private config); the dark default has its own
