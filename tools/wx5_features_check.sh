@@ -117,6 +117,7 @@ if only in ('all','posters'):
     # Ordinary scheduling, while music plays: this is not the unbounded settle.
     log=run('playing-posters','size=1280x720,play=1,scene-family=pixel-cats',180)
     stats=line(log,'posters')
+    check('budget=3ms/8ms' in stats, 'the poster service retains its exact 3ms/8ms budgets')
     step=float(re.search(r'step-worst=([\d.]+)',stats)[1]); frame=float(re.search(r'frame-worst=([\d.]+)',stats)[1])
     check(step <= 3+frame+1.5, f'playing budget: step {step:.1f} <= 3 + frame {frame:.1f} + timer slack')
     check(re.findall(r'pixel-[\w-]+:(\w+)@',line(log,'scene picker')) == ['ready']*6, 'six posters arrive under the playing budget')
