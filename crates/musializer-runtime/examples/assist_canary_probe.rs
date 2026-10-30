@@ -252,13 +252,15 @@ fn run_execution_probe(output: &Path, helper: &Path, audio: &Path) -> Result<(),
         spec.lyrics_file = None;
         let dump_path = job_dir.join("child-environ.txt");
         if dump {
-            // SAFETY-adjacent note: this sets a variable in *this* process so
+            // SAFETY: this sets a variable in *this* process so
             // the child inherits it. The probe is single-threaded and the
             // variable carries a path, never a credential.
             unsafe { std::env::set_var("MUSIALIZER_ASSIST_ENV_DUMP", &dump_path) };
         } else {
+            // SAFETY: this probe is single-threaded; no concurrent environment readers.
             unsafe { std::env::remove_var("MUSIALIZER_ASSIST_ENV_DUMP") };
         }
+        // SAFETY: single-threaded probe; this variable carries only an output path.
         unsafe { std::env::set_var("MUSIALIZER_ASSIST_DRY_RUN_REPORT", &report) };
 
         let mut job = AssistJob::start(&spec, 0).map_err(|error| format!("{label}: {error}"))?;
@@ -287,7 +289,9 @@ fn run_execution_probe(output: &Path, helper: &Path, audio: &Path) -> Result<(),
             },
         );
     }
+    // SAFETY: the single-threaded probe has reaped all helper jobs above.
     unsafe { std::env::remove_var("MUSIALIZER_ASSIST_ENV_DUMP") };
+    // SAFETY: same single-threaded cleanup; no concurrent environment readers.
     unsafe { std::env::remove_var("MUSIALIZER_ASSIST_DRY_RUN_REPORT") };
     Ok(())
 }
