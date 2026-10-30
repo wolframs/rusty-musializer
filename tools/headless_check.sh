@@ -3722,8 +3722,13 @@ else
         -i "movie=$AUTO_SCENE_DIR/disabled.png,crop=$SCENE_LANE_CROP,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1)"
     echo "scene lane saturation: enabled=${ENABLED_LANE_SAT:-?} disabled=${DISABLED_LANE_SAT:-?}"
-    if [ "${ENABLED_LANE_SAT%%.*}" -lt 30 ] 2>/dev/null \
-        || [ "${DISABLED_LANE_SAT%%.*}" -lt 10 ] 2>/dev/null; then
+    # Measured with the band at full width: 21.3 and 11.4; a crop that misses
+    # the lane reads 1.3. The 30 here before WX-5d was the old crop's own number
+    # (30.005), not a line between two states. What separates the states is
+    # drawn or not, and the disabled plan's being the quieter of the two.
+    if [ "${ENABLED_LANE_SAT%%.*}" -lt 15 ] 2>/dev/null \
+        || [ "${DISABLED_LANE_SAT%%.*}" -lt 8 ] 2>/dev/null \
+        || [ "${DISABLED_LANE_SAT%%.*}" -ge "${ENABLED_LANE_SAT%%.*}" ] 2>/dev/null; then
         echo "FAIL: the editable scene-plan lane was not visibly drawn in both states" >&2
         SWEEP_FAILED=1
     fi
