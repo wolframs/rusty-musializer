@@ -193,4 +193,28 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   counters over the intervention/recovery; keep the lifetime diagnostics
   visible. A `*"0 dropped"*` shell glob also accepts `10 dropped`: counters
   are parsed numerically now. Both renderers' controls must reject missing
-  late frames, overflow, additional drops and output starvation.
+  late frames, overflow, additional drops and output starvation. Feed scoped
+  and lifetime peaks from one occupancy snapshot; two reads can straddle a
+  callback and produce apparently inconsistent epochs. The tap callback stops
+  at its first rejected push, so a nonzero drop counter undercounts that lost
+  callback tail; preserve the zero-loss meaning rather than interpreting a
+  count of two as exactly two lost PCM frames.
+
+- **Cross-commit probes need each commit's native preferences.** The pre-WX-5d
+  preference schema rejects `column_open` as an unknown field. Reusing the
+  newer gate's file on that binary selects the dark fallback and posts a
+  warning instead of the intended light fixture. A written theme is not a
+  loaded theme: assert `appearance:` before trusting comparison measurements.
+
+- **Quiet timing follows process ownership, not display numbers.** A full gate
+  starts its own nested `xvfb-run` servers as well as its primary capture
+  display. Counting every other Xvfb as a neighbouring agent invalidates good
+  samples; ignoring all Xvfb hides real contention. Follow the measuring
+  process's descendants and exclude only servers it owns. Retain known owned
+  PIDs through cleanup/reparenting and ignore dead zombies, otherwise a
+  single final sample can turn an owned server into false contention. Keep
+  receipts of the load, compiler processes and GPU model lock throughout the
+  run. An interrupted owner can leave a display socket/lock behind; remove it
+  only after identifying the owned PID in the lock and proving it dead.
+  `xvfb-run` can return just before its server disappears: await that cleanup
+  before immediately reusing a fixed display; do not remove a live lock.

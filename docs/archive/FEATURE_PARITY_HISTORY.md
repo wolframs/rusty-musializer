@@ -4869,3 +4869,22 @@ still open stuff ;)").
 
 **Left open:** MV9-l, editing any of it in the window.
 
+
+## WX-6 headless investigation (2026-10-30)
+
+EX4-c's CPU failure predates WX-5d: five quiet native-prefix runs each on
+`3ec989e` and `be507e1` all reached lifetime peak 100%, reported dropped counters of 1–2 and
+failed the original assertion, with zero output underruns. Temporary tracing
+located saturation before the first drain; the later 120 ms stall still
+peaked at the historical 6720/8192 (82%). The gate now measures raw counters
+and occupancy over that intervention/recovery, preserving GPU lifetime zero
+losses and explicitly reporting CPU cold-start losses. No playback or UI
+behavior changed. Full measurements, the two-renderer negative controls and
+WX-6 runtime-cap outcome are in `docs/HEADLESS_GPU.md`.
+
+Five quiet complete poster gates had zero stalled frames with budget on and
+off. No poster change was needed. The appearance/open-column conversion is
+still open: its quiet GPU pilot took 849.83 s versus 553.38 s (+53.57%),
+exceeded the runtime cap and exposed classifier,
+probe-targeting and a default lyric resize-grip issue; no pixel loosening was
+committed. See the live queue and headless report before resuming it.

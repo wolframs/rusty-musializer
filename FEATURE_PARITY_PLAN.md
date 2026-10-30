@@ -66,6 +66,22 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
+failure is diagnosed and fixed on `t3/headless-wx6`: it predates WX-5d (5/5
+quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
+the first drain, not during the injected stall. Five quiet poster gates passed;
+no poster change was needed. See `docs/HEADLESS_GPU.md` for evidence and the
+CPU counter contract.
+
+The paired-look/open-column prototype exceeded the operator's +1/3 GPU runtime
+cap: **553.38 s baseline, 849.83 s pilot (+53.57%)**, both quiet. Its pixel
+changes were reverted and remain unmerged; `headless_check.sh` and
+`lyric_lane_capture.sh` still need the appearance conversion. Replay only
+pixel-bearing captures, resolve the classifier/targeting failures in the
+headless report, then run both-renderer negative controls. The default 49 px
+lyric lane draws a dead resize grip (minimum request 50), requiring the UI
+owner. No app UI file was changed for this investigation.
+
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
 after the modal.com hero the operator wanted in his own form. Kicks run comets
