@@ -98,8 +98,9 @@ check(field(report,'scope')=='section','press This section changes scope')
 report,_=run('scope-to-video','section',centre(rect(base['section'],'scope-0')))
 check(field(report,'scope')=='video','press Whole video changes scope')
 r=rect(base['video'],'scope-0')
-report,_=run('scope-gap','video',(r[0]+r[2]//2,r[1]-5))
+report,gaplog=run('scope-gap','video',(r[0]+r[2]//2,r[1]-5))
 check(field(report,'scope')=='video','scope gap changes nothing')
+check('claimed=nothing' in line(gaplog,'click probe'),'scope gap claims nothing')
 report,_=run('inherited','section',owned=False)
 check(field(report,'current')=="The-video's-look" and 'size@' not in report and 'kick-0@' not in report,'inherited section has no owned size or kick control')
 for i, theme in enumerate(['dark','light']):
@@ -115,6 +116,7 @@ for i, theme in enumerate(['dark','light']):
 r=rect(base['video'],'theme-0')
 report,log=run('theme-gap',click=(r[0]+r[2]//2,r[1]-5))
 check(line(log,'appearance').startswith('black-amber'),'appearance gap changes nothing')
+check('claimed=nothing' in line(log,'click probe'),'appearance gap claims nothing')
 if not os.environ.get('PIXEL_LOOK_FAST'):
     for size in ['960x640','1280x720','1920x1080']:
         for theme in ['dark','light']:
