@@ -77,6 +77,26 @@ def capture(name, probe, args=(), extra=None, frames=30):
 def crop(im,r):
     x,y,w,h=r; k=current_scale/100
     return im[round(y*k):round((y+h)*k),round(x*k):round((x+w)*k)]
+def direct_check(tag, recut):
+    live=out/'live.treatment.json'; live.write_text(json.dumps(show))
+    def rewrite():
+        updated=json.loads(json.dumps(show))
+        if recut: updated['segments'][2]['at']=5
+        else: updated['segments'][2]['scene']='loom'
+        tmp=out/'live.tmp'; tmp.write_text(json.dumps(updated)); tmp.replace(live)
+    writer=threading.Timer(3.5,rewrite)
+    if not replay: writer.start()
+    try:
+        direct,di=capture(('direct-recut-' if recut else 'direct-applied-')+tag,'column=direct,play=0,agent=claude,follow=1',
+            ['--treatment',live],frames=420)
+    finally:
+        if not replay: writer.join()
+    dock=line(direct,'dock')
+    if recut:
+        check('Window applied' in dock and not re.search(r'\b\d+ sections? changed',dock) and re.search(r'· \d+ s ago',dock), 'recut omits uncertain count and keeps age '+tag)
+    else:
+        check('1 section changed' in dock and re.search(r'· \d+ s ago',dock), 'honest treatment count and age '+tag)
+    check('notice@' in dock, 'apply note actually drawn '+tag)
 def ai_check(tag):
     dialog,dim=capture('ai-settings-'+tag,'column=assist,play=0',['--treatment',treatment],
         {'MUSIALIZER_ASSIST_SETTINGS_OPEN':'routing','MUSIALIZER_ASSIST_SETTINGS_SCROLL':'10000'})
@@ -105,6 +125,10 @@ if os.environ.get('WX5_POLISH_FAST')=='1': matrix=matrix[:1]
 for current_size,current_scale in matrix:
   for current_theme in ['dark','light']:
     tag=f'{current_theme}-{current_size}-{current_scale}'
+    if os.environ.get('WX5_POLISH_ONLY')=='direct':
+        direct_check(tag, False)
+        direct_check(tag, True)
+        continue
     if os.environ.get('WX5_POLISH_ONLY')=='ai':
         ai_check(tag)
         continue
@@ -161,21 +185,8 @@ for current_size,current_scale in matrix:
                 'route Band press changes actual height '+tag)
         # The layout's editor starts with the same setting@card.
         check(','.join(f'{v:.0f}' for v in card) in layout.split(' editor=')[-1], 'route report agrees with draw '+source+' '+tag)
-    # A real atomic rewrite while the foreground app runs, followed by join.
-    live=out/'live.treatment.json'; live.write_text(json.dumps(show))
-    def rewrite():
-        updated=json.loads(json.dumps(show)); updated['segments'][2]['scene']='loom'
-        tmp=out/'live.tmp'; tmp.write_text(json.dumps(updated)); tmp.replace(live)
-    writer=threading.Timer(3.5,rewrite)
-    if not replay: writer.start()
-    try:
-        direct,di=capture('direct-applied-'+tag,'column=direct,play=0,agent=claude,follow=1',
-            ['--treatment',live],frames=420)
-    finally:
-        if not replay: writer.join()
-    dock=line(direct,'dock')
-    check('1 section changed' in dock and re.search(r'· \d+ s ago',dock), 'honest treatment count and age '+tag)
-    check('notice@' in dock, 'apply note actually drawn '+tag)
+    direct_check(tag, False)
+    direct_check(tag, True)
 print(f'{len(failures)} polish checks failed; captures in {out}',flush=True)
 sys.exit(bool(failures))
 PY
