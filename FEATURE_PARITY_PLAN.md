@@ -66,10 +66,13 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
-**WX-5 polish — in progress on `t3/wx5-ui-polish-fixes` (2026-10-30).**
+**WX-5 polish — built on `t3/wx5-ui-polish-fixes`, ready for lead review (2026-10-30).**
 Welcome notice placement/hover, protocol pennant contrast, treatment apply age
 and changed-section count, AI readiness copy, truthful route geometry, and
-column widget-index collision coverage. Evidence: `tools/wx5_polish_check.sh`.
+column widget-index collision coverage. Both renderer matrices pass; negative
+controls fail as expected; full verification is 16/18 (code map, shared gate's obsolete
+route-height expectations). Evidence and the integration step:
+[`docs/WX5_POLISH.md`](docs/WX5_POLISH.md), `tools/wx5_polish_check.sh`.
 
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
