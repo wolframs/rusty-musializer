@@ -17,7 +17,7 @@
   <a href="docs/README.md">Documentation</a>
 </p>
 
-![Musializer playing a track in the Black / amber theme, with a reactive Spectrum preview, scene controls, and a waveform timeline.](docs/images/workspace-black-amber.png)
+![Musializer paused on a lyric scene in the dark workspace, with the Direct column, scene-plan runs and waveform timeline.](docs/images/workspace-black-amber.png)
 
 Start with a song. Find a scene that suits it, let the bass move the picture,
 give the chorus a different look, and put the words where they're sung.
@@ -51,8 +51,9 @@ poster, a terminal, a chat bubble, a stamped card, placards, or a market ticker.
 supports dragging, splitting, merging, tap timing, and undo.
 
 **Choose your workspace.** Light / blue and Black / amber are available from the
-startup screen. Your choice is remembered. Open **Editor** with the pencil button
-or **F8** to tune the scene and edit lyric cues beside a fully visible preview.
+startup screen or the **Look** footer. Your choice is remembered. Use **Look**
+to shape the scene and its pixel/CRT filter, and **Lyrics** to edit cues beside
+the preview, transport and timeline.
 
 **Export for where you'll share it.** Render a landscape video, a square post,
 or a vertical clip. Export a whole track, a selected time window, or a still.
@@ -91,9 +92,9 @@ launch directly into a song:
 ./target/release/musializer "path/to/song.mp3"
 ```
 
-1. Choose a scene and press **F8** to try its controls while the music plays.
-2. Close Editor to arrange scene changes and timed lyrics on the timeline.
-3. Open **Export**, choose the canvas and quality, and render your video.
+1. Choose a scene and open **Look** to try its controls while the music plays.
+2. Open **Lyrics** to edit words and timing; arrange sections on the timeline.
+3. Open **Render…**, choose the canvas and quality, and render your video.
 
 Save your work as a `.musi` project to return to its scenes, tuning, routes, and
 lyrics. To add Musializer to your application menu and associate project files:
@@ -223,8 +224,8 @@ does not yet show or edit them.
 
 ## Build on it
 
-The renderer and audio engine use **raylib 6.0**. **egui 0.35** powers the new
-Tune / Lyrics Editor and theme picker; the other panels are still being migrated.
+The renderer, audio engine and column controls use **raylib 6.0**.
+**egui 0.35** powers Direct, terminal sessions and the welcome theme picker.
 The pure Rust core owns analysis, project data, and timing. Runtime code handles
 audio devices, files, and helper processes.
 
@@ -241,6 +242,6 @@ timed-lyric comparisons when a judgment needs human ears.
 
 | Looking for… | Start here |
 | --- | --- |
-| Editor behavior and themes | [UI toolkit](docs/UI_TOOLKIT.md) |
+| Workspace controls and themes | [UI toolkit](docs/UI_TOOLKIT.md) |
 | Code ownership and data flows | [Architecture](docs/CODE_ARCHITECTURE.md) |
 | A module or command | [Code map](docs/CODE_MAP.md) · [CLI and formats](docs/PHASE0_INVENTORY.md)
