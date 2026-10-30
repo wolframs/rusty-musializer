@@ -310,13 +310,14 @@ impl ChatTab {
             })
             .collect();
         format!(
-            "chat users={users} replies={replies} tools={tools} prompts={prompts} busy={} model={} last={:?}{} notes={notes:?}",
+            "chat users={users} replies={replies} tools={tools} prompts={prompts} busy={} model={} last={:?}{} notes={notes:?} draft-lines={}",
             self.transcript.busy,
             self.transcript.model.as_deref().unwrap_or("?"),
             self.transcript.last_reply().unwrap_or("").chars().take(120).collect::<String>(),
             self.error
                 .as_deref()
                 .map_or_else(String::new, |error| format!(" error={error:?}")),
+            self.composer.lines().count(),
         )
     }
 }
@@ -765,7 +766,19 @@ impl ChatTab {
         let composer_id = self.id.with("composer");
         let mut send = false;
         if self.composer_focused
-            && composer_ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter))
+            && composer_ui.input_mut(|input| {
+                // egui's consume_key(NONE) also matches Shift+Enter. Leave
+                // that event for TextEdit so it inserts a newline.
+                let mut send = false;
+                input.events.retain(|event| {
+                    let matched = matches!(event, egui::Event::Key {
+                        key: Key::Enter, pressed: true, modifiers, ..
+                    } if *modifiers == Modifiers::NONE);
+                    send |= matched;
+                    !matched
+                });
+                send
+            })
         {
             send = true;
         }
